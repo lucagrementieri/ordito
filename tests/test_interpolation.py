@@ -18,7 +18,7 @@ from tests.conversions import (
 )
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("average_onto_faces", "igl", "pyvista")
 def test_average_onto_faces(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -45,7 +45,7 @@ def test_average_onto_faces(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(face_values_wp.numpy(), face_values_pv, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("average_onto_vertices", "pymeshlab", "igl", "pyvista")
 def test_average_onto_vertices(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -93,7 +93,7 @@ def test_average_onto_vertices(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(vertex_values_wp.numpy(), vertex_values_pv, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("average_from_edges_onto_vertices", "igl")
 def test_average_from_edges_onto_vertices(request: pytest.FixtureRequest, mesh_name: str):
     """

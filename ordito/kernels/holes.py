@@ -16,6 +16,7 @@ from ordito.kernels.halfedge import halfedge_endpoints, halfedge_prev
 from ordito.kernels.predicates import (
     circumcircle_diameter,
     dihedral_angle,
+    newell_term,
     project_out_normal,
     side_lengths,
     triangle_aspect_ratio,
@@ -247,7 +248,7 @@ def loop_rim_metrics(
     out_loop_pos[t] = a
     out_keys[t] = kernel_array.pack_edge_key(u, v, base)
     wp.atomic_max(out_max_edge_sq, ell, wp.length_sq(c - a))
-    wp.atomic_add(out_normal, ell, wp.cross(a, c))
+    wp.atomic_add(out_normal, ell, newell_term(a, c, vertices[flat_loops[loop_offsets[ell]]]))
 
 
 @wp.kernel

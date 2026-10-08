@@ -4,7 +4,13 @@ import warp as wp
 
 from ordito.constants import TILE_1D
 from ordito.kernels.array import OverloadTable
-from ordito.kernels.reduce import block_chunk, block_chunk_1d, commit_block_sum, commit_block_total
+from ordito.kernels.reduce import (
+    block_chunk,
+    block_chunk_1d,
+    block_sum,
+    commit_block_sum,
+    commit_block_total,
+)
 from ordito.kernels.triangles import (
     face_area_weighted_centroid,
     face_signed_volume,
@@ -33,86 +39,34 @@ def mesh_signed_volume(
 
 
 @wp.kernel
-def centroid_tiled(
+def centroid_partials(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     n_faces: wp.int32,
-    out_totals: wp.array[wp.float32],
+    out_partials: wp.array[wp.vec4],
 ) -> None:
-    # CUDA path, launched via wp.launch_tiled with block_dim=TILE_1D: each lane computes one face's
-    # area-weighted centroid contribution, the block reduces each component cooperatively with
-    # wp.tile_sum, and lane 0 commits four atomics per block (out-of-range lanes contribute zero).
-    # CPU MUST NOT use this: the lanes partition the **outer** work (the face list), so the stride
-    # is the constant `TILE_1D` and not `wp.block_dim()` -- and `wp.launch_tiled` runs one lane per
-    # block on the CPU device through Warp 1.18 (unless the experimental
-    # `wp.config.enable_cpu_blocks` is set), where that lane would see one face per tile. This
-    # is the constant-stride case of the rule in `.claude/CLAUDE.md` section 2.2, and it is why this
-    # reduction keeps a device pair where `kernels/visibility.py::obscurance` needs only one
-    # kernel. See `centroid_sliced` and `_device.prefers_tiled_reduction`.
+    # Each block's area-weighted centroid sum (components 0-2) and area (component 3), stored in the
+    # block's own slot for ``reduce.sum`` to fold in a fixed order. A block owns the
+    # ``ITEMS_PER_BLOCK_1D`` faces ``block_chunk_1d`` gives it and its lanes stride them by
+    # ``wp.block_dim()`` -- so the one CPU lane walks them all (CLAUDE.md section 2.2) and one
+    # kernel serves both devices -- and the per-face contribution is
+    # ``triangles.face_area_weighted_centroid``.
     #
-    # **Rewriting it into the lane-strided `ITEMS_PER_BLOCK_1D` fold was measured and declined**,
-    # and the reason is worth keeping, because the same rewrite is worth several-fold on the
-    # `registration` and `points` accumulators (`.claude/CLAUDE.md` section 13.2). Built as
-    # `tile_chunk(n_faces, chunk, ITEMS_PER_BLOCK_1D)` plus a `wp.block_dim()` stride -- which would
-    # also make it portable and retire `centroid_sliced` -- it measures flat at every mesh size. The
-    # fold pays on *atomic contention*, and contention here is `blocks x slots`: four slots is an
-    # order of magnitude short of the accumulators that won, which carry twenty-five and
-    # forty-three. Below that the launch floor hides it. With no CUDA win to pay for it the
-    # portability is not free either -- `blocks_1d(n)` would give the CPU path far fewer,
-    # single-lane blocks than `slice_count`'s threads -- so the device pair stays.
-    #
-    # One ``(4,)`` accumulator rather than a ``(3,)`` and a ``(1,)``: slots 0-2 are the
-    # area-weighted centroid sum and slot 3 the area sum. The wrapper's return is a host-side
-    # ``wp.vec3``, so both have to cross the bus -- and a readback's cost is almost all fixed, so
-    # one read of four floats beats two reads of three and one. ``centroid_sliced`` writes the
-    # same four slots. Measured 1.75x on ``surface_centroid``, which also loses an allocation and
-    # a launch argument.
-    #
-    # The per-face contribution is ``triangles.face_area_weighted_centroid``, shared with
-    # ``centroid_sliced`` below so the two paths cannot drift; see it for why the area is taken
-    # from the corners this kernel already holds.
-    i, t = wp.tid()
-    f = i * TILE_1D + t
-    contrib = wp.vec3(0.0, 0.0, 0.0)
-    area = wp.float32(0.0)
-    if f < n_faces:
-        contrib, area = face_area_weighted_centroid(vertices, faces, f)
-    commit_block_sum(t, wp.vec4(contrib[0], contrib[1], contrib[2], area), out_totals, 0)
-
-
-@wp.kernel
-def centroid_sliced(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    n_faces: wp.int32,
-    n_slices: wp.int32,
-    out_totals: wp.array[wp.float32],
-) -> None:
-    # Portable path: one thread per face slice walks a strided slice, accumulates locally and
-    # commits four atomics. Lane-free, so it is correct on the CPU device where `centroid_tiled`
-    # is not; it gives up the block shuffle-reduce and is measurably slower on CUDA at a large face
-    # count, which is why both exist.
-    #
-    # The bug this sibling exists to prevent: running `centroid_tiled` on the CPU device silently
-    # averaged **every TILE_1D-th face** rather than every face, because `wp.launch_tiled` gives
-    # that device one lane per block, so `t` is always 0 and `f = i * TILE_1D + t` skips the rest of
-    # each tile. It was invisible on a symmetric mesh, whose every-Nth-face centroid is still the
-    # true centroid.
-    #
-    # The per-face contribution is the same shared ``triangles.face_area_weighted_centroid``
-    # `centroid_tiled` folds, which is what makes the two paths the same reduction over the same
-    # summands and their disagreement purely one of summation order.
-    j = wp.int32(wp.tid())
-    total = wp.vec3(0.0, 0.0, 0.0)
-    area_total = wp.float32(0.0)
-    for f in range(j, n_faces, n_slices):
-        contrib, area = face_area_weighted_centroid(vertices, faces, f)
-        total = total + contrib
-        area_total = area_total + area
-    wp.atomic_add(out_totals, 0, total[0])
-    wp.atomic_add(out_totals, 1, total[1])
-    wp.atomic_add(out_totals, 2, total[2])
-    wp.atomic_add(out_totals, 3, area_total)
+    # Partials rather than an atomic commit: one ``atomic_add`` per block summed the blocks in
+    # arrival order, so on CUDA the centroid's last bits moved from run to run, and with them every
+    # point ``sample.sample_volume`` fans from it -- a seeded draw was not reproducible (10
+    # distinct centroids in 10 calls on every scan mesh). It is also the faster form: against the
+    # old one-tile-per-block atomic kernel 5.4x at 28 M faces and 1.1x at 0.87 M on CUDA, level
+    # below; against the old lane-free ``_sliced`` CPU kernel 1.1-1.4x small and 2.1x at 28 M.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(n_faces, block)
+    total = wp.vec4(0.0, 0.0, 0.0, 0.0)
+    for k in range(lane, count, wp.block_dim()):
+        contrib, area = face_area_weighted_centroid(vertices, faces, offset + k)
+        total += wp.vec4(contrib[0], contrib[1], contrib[2], area)
+    block_total = block_sum(total)
+    if lane == 0:
+        out_partials[block] = block_total
 
 
 @wp.func

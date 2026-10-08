@@ -14,8 +14,9 @@ Four functions on two cost shapes:
   on a long rim.
 * ``mesh_with_mesh`` — the only quadratic-ish one. A ``wp.Mesh`` BVH is built over the smaller mesh
   and every triangle of the other supplies an AABB query, so the cost tracks the number of
-  *candidate* pairs (capped per query triangle by ``max_triangle_collisions``) rather than the face
-  count. This is the benchmark that moves when the separating-axis narrow phase changes.
+  *candidate* pairs (every box overlap; ``max_triangle_collisions`` is only the first stride)
+  rather than the face count. This is the benchmark that moves when the separating-axis narrow
+  phase changes.
 * ``segments_with_plane`` — a pure ``wp.map`` over independent segments; the array-primitive
   baseline.
 
@@ -55,9 +56,10 @@ benchmark case is ordito-only.
 
 Caps
 ----
-``mesh_with_mesh`` stops at ``bunny``: the broad phase allocates ``max_triangle_collisions``
-candidate slots per query triangle, so the pair buffer alone is ``16 * n_faces`` ints before the
-narrow phase filters it. ``clip_mesh_with_field``'s pyvista row stops there too, VTK's clip being a
+``mesh_with_mesh`` stops at ``bunny``: the broad phase allocates at least
+``max_triangle_collisions`` candidate slots per query triangle, so the pair buffer alone is
+``16 * n_faces`` ints (more where a face overflows) before the narrow phase filters it.
+``clip_mesh_with_field``'s pyvista row stops there too, VTK's clip being a
 single-threaded per-cell sweep.
 
 Geometry
@@ -434,8 +436,9 @@ def test_mesh_with_mesh(bench_case: BenchCase, offset_fraction: float) -> None:
 
     Cost is the number of overlapping triangle *pairs*, so the translation distance is the axis
     rather than the face count. The ``deep`` row shares most of its volume with the original and
-    the ``grazing`` row barely touches it; the gap is the collision density, and the fixed
-    ``max_triangle_collisions`` cap silently truncates once the broad phase saturates.
+    the ``grazing`` row barely touches it; the gap is the collision density. A face whose box
+    overlaps more than ``max_triangle_collisions`` others makes the broad phase walk again at the
+    wider stride, so a saturated row pays a second walk rather than losing pairs.
 
     pyvista's ``intersection`` returns the same *unordered* segment soup ordito does, which is what
     makes it the value reference for this group as well as a cost one. Note what its ``grazing`` row

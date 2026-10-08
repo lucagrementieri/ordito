@@ -225,14 +225,14 @@ reading converted four kernels away from tile reductions for nothing. Platform d
 that separates the two cases: §12.2.
 
 Where the lanes would partition the **outer** work the grid is over (a whole-array reduction with
-no per-item dimension: `measures.centroid_tiled`, `metrics.chamfer_*_tiled`) there is no
+no per-item dimension: `metrics.chamfer_*_tiled`) there is no
 block-owned sequence and no `wp.block_dim()`. Such a kernel either keeps a *constant* stride and
 launches on CUDA only, with a lane-free `_sliced` sibling for CPU (the
 `_device.prefers_tiled_reduction` pair), or stays lane-free on both. A single portable kernel is not
 available. A strided loop is one token from portable; a block-index partition is a rewrite.
 
 Models: `kernels/visibility.py::obscurance` (one block per point, lanes over its ray bundle,
-3.2-11.8x against one thread per point) and `kernels/measures.py::centroid_tiled`.
+3.2-11.8x against one thread per point) and `kernels/metrics.py::chamfer_nn_term_tiled`.
 
 **A lane-strided reduction's tuning variable is the fold width, not lane redundancy.** Launch it
 `dim=kernel_reduce.blocks_1d(n)` so each block owns `ITEMS_PER_BLOCK_1D` elements, never
@@ -1386,27 +1386,90 @@ Reuse `tests/conftest.py` fixtures (each returns `(mesh_tm, mesh_wp)`):
 | `boy_surface` | Closed, watertight, **non-orientable**, χ = 1: the `False` branch of `is_orientable` / `face_orientation_bits`, `make_winding_consistent`'s impossible case |
 | `mobius` | Non-orientable with a boundary: same predicates, one 78-edge loop, χ = 0 |
 | `bohemian_dome` | Closed genus 1 that self-intersects: `homology_generators` at genus 1, `is_self_intersecting` on a closed input |
-| `saddle_graded` | Open disk, one rim, clean, but triangles of aspect ratio ~4 900 (longest edge over its altitude): every open-mesh comparison, to meet an ill-conditioned operator |
+| `saddle_graded` | **The default open fixture** (`OPEN_MESHES`): 34 x 34 disk graded as `|t|^3.4`, 1 156 vertices, one 132-edge rim, clean, but triangles of aspect ratio ~4 800 (longest edge over its altitude); `saddle_graded_large_arrays()` is the 68 x 68 one two size-dependent regression tests keep |
+| `sphere_irregular` | **The default closed fixture** (`CLOSED_MESHES`): one component, χ = 2, convex hull of 500 random directions on a bumpy non-convex star-shaped surface; degree 3-12, aspect up to ~300, 72 % obtuse faces (negative cotangent weights), curvature of both signs, shuffled vertex/face/corner order, rotated and off-origin |
+| `sphere_irregular_hollow` | `sphere_irregular` around an inward-wound bumpy inner shell of 200 directions (radius at most 0.45 inside an outer one of at least 0.5): a solid with a cavity, two components, the hard replacement of `cave_cube` |
+| `torus_irregular`, `torus_irregular_holes` | The same recipe on a genus-1 torus (periodic Delaunay, needles up to aspect ~540, 500 vertices); with holes of 3-, 7- and 24-edge rims, χ = -3 (`BOUNDARY_MESHES`) |
+| `sphere_irregular_cap`, `sphere_irregular_band` | `sphere_irregular` cut by one plane (one planar 91-edge rim) and between two (planar rims of 99 and 78 edges): the hard `hemisphere` / `half_torus`, for a planar-rim premise |
+| `convex_irregular_cap`, `convex_irregular_band` | A convex irregular body cut the same ways (convex planar rims; 62 and 79 edges on the band), needles intact: only where a filler must not fold a reflex rim corner, which the bumpy caps break |
+| `sphere_well_shaped`, `sphere_well_shaped_open`, `torus_well_shaped` | `sphere_irregular`'s / `torus_irregular`'s surfaces over 400 dart-thrown points: degree 4-8, a third obtuse, scrambled, **no needle** (aspect ~6). For a premise the needles or cone vertices break (`float32` edge lengths, normal displacement, a heat field with one minimum); the open one has one jagged rim |
+| `sphere_round`, `torus_round` | The well-shaped samplings on the exact unit sphere and the exact torus `R = 1`, `r = 0.4`, placed in one known frame (`conftest.round_frame_coordinates` undoes it): analytic curvature oracles only |
 
 The bohemian three (built by `creation.parametric_surface`) are the only non-orientable / odd-χ
 inputs; a boolean predicate asserted only on orientable fixtures tests one branch.
 `parametric_surface` builds thirteen more surfaces that are not fixtures yet: add one rather than
 hand-rolling a degenerate mesh.
 
-**`saddle_graded` is in `OPEN_MESHES` (so in `MESHES`) and in every parity list whose function
-takes an open manifold disk.** It is `benchmarks`' mesh at 68 x 68 (4 624 vertices, 8 978 faces;
+**Keep the hardest fixture per class, not many easy ones.** `MESHES` is `sphere_irregular` and
+`saddle_graded`: a regular solid (`icosahedron`, twelve degree-5 vertices) or a small icosphere
+slice (`hemisphere`, whose 504 halfedges fit one 1 024-item block) covers nothing these do not,
+while the hard ones reach varying degree, negative cotangent weights, needles, multi-block folds
+and index order with no spatial meaning. `BOUNDARY_MESHES` adds `torus_irregular_holes` for
+boundary-loop tests. **A test about topology names the fixture that has it** -- several
+components (`cave_cube`), another χ (`torus`, `boy_surface`, `mobius`), several rims -- and a test
+whose *premise* the hard fixtures break names a well-shaped one, with the number beside the list.
+The swap to this set (2026-10-08, 4 243 -> 3 902 items a CUDA pass) sorted every failure into
+the classes below. **Then the hard fixtures were shrunk** (`sphere_irregular` and the tori from
+1 500 to 500 vertices, `saddle_graded` from 68 x 68 to 34 x 34): every hard property survives --
+degree 3-12, aspect ~300 / ~540 / ~4 800, ~70 % obtuse faces, more than 1 024 halfedges, rims past
+16 edges -- and four more test claims proved wrong on the coarser meshes (heat distance above the
+graph distance: the method's own 6.6 % error, not the true geodesic; an absolute CG residual where
+the contract is the componentwise backward error; perimeters compared without a `float32` floor).
+**Then every single-mesh test moved to the hard fixtures too** (`icosahedron` -> `sphere_irregular`,
+`hemisphere` -> `saddle_graded`, `torus` -> `torus_irregular`; premise failures reverted with
+their numbers), which found five ordito defects, each fixed and pinned (next list).
+
+- *Ordito defect* (found by the hard fixtures, fixed; detail in the owning Part II section): a
+  Newell sum about the coordinate origin (§12.4); a geodesic walk's start direction mapped by a
+  gauge, stopping at a corner and never passing through a vertex (§16.6); a parallel Poisson-disk
+  elimination without the sequential algorithm's global weight floor (§16.7); a Gaussian
+  curvature angle sum in `float32` (§16.6); `max_tangent_sphere` converging on Warp's `float32`
+  closest point (§16.6). A docstring that disagreed with its kernel (`remove_folded_faces`) too.
+- *Premise* (keeps a specific fixture): a Delaunay mesh (`intrinsic_delaunay` leaving it alone),
+  a convex one (ambient occlusion zero), a planar rim (`_PLANAR_RIM_MESHES`), no ears, no saddle
+  regions (`filter_mut_dif_laplacian`'s chaotic reciprocal), well-shaped triangles for any path
+  that re-derives a mesh from `float32` lengths or re-rounded vertices (`_INTRINSIC_MESHES`,
+  `_CARRY_MESHES`), hard-coded counts.
+- *Frame* (2026-10-08 sweep): the scrambled fixtures sit off the origin (scale 1.7, rotated,
+  shift `(0.3, -2.1, 1.4)`), so a test that puts a probe at the origin, cuts at `z = 0` expecting
+  an equator, or assumes a unit radius goes vacuous or measures something else. Probe at
+  `center_mass`; an analytic oracle uses `sphere_round` / `torus_round` and
+  `conftest.round_frame_coordinates`. `sphere_irregular` is also not star-shaped about its
+  centroid (two inverted tetrahedra), which `sample_volume` rejects.
+- *Oracle limit*: potpourri3d's `MeshSignedHeatSolver` is 7.6 % of the range off the exact
+  geodesic magnitude on `sphere_irregular` (ordito 2.8 %; 27 % against 2.3 % on its 1 500-vertex
+  form); pymeshlab's signed distance 7.0e-4 off igl's exact one (ordito 2.9e-7; 1.1e-3 and a wrong
+  sign at 1 500).
+- *Wrong claim in the test*: `extend_scalar` interpolates only where every cotangent weight is
+  non-negative (M-matrix); on `sphere_irregular` both ordito and geometry-central return 5.43 for
+  sources in [1, 5] (-6.18 at 1 500 vertices). A thickened shell's volume exceeds `area * thickness` on a saddle (Steiner).
+  Barycentric coordinates of a rounded point move by `eps |p| / altitude`, and an intrinsic
+  Delaunay weight that should be zero rounds by its row's scale -- bounds must scale with the
+  conditioning, not be absolute.
+- *Comparison artefact* (resolved 2026-10-08): `transport_tangent_vectors` against potpourri3d on
+  `sphere_irregular` read a median 0.55 degrees apart (90th percentile 3.2) through a Euclidean
+  world embedding of each library's 2-D answer; in the intrinsic coordinates both libraries
+  actually use (§7.6, potpourri3d) the two agree to 3.1e-3 degrees at worst.
+
+`saddle_graded` was first `benchmarks`' mesh at 68 x 68 (4 624 vertices, 8 978 faces;
 `conftest.saddle_graded_arrays`, vertices rounded to `float32` so a reference and ordito see one
 geometry): the spacing is cubed along `x`, so the worst aspect ratio matches the 133 x 133
 benchmark's (4 858 against 4 719). It reproduced both failures the benchmark mesh exposed (heat
 method 4.4 % mean / 38 % worst off `igl.exact_geodesic` before the settle fix; `harmonic(k=2)`
 29 % of the range off a SciPy solve, fixed by the verified fixed-value solves, §16.16) and found
-more (§12.4, §16.8, §16.12). **Where a test excludes it, the reason is written beside the list with numbers**; the
-recurring ones:
+more (§12.4, §16.8, §16.12). **Shrunk to 34 x 34 at exponent 3.4 (2026-10-08)**, the same worst
+aspect at a quarter of the vertices, chosen by running today's regression tests against each
+pre-fix tree: the needle numerics (19-20 tests before 2d11f7e3) and the `k = 2` stall still fail
+there; the heat settle rule does not (its pre-fix error sits under the parity bounds below ~40 x 40
+at exponent 3.4, and at exponent 4.5 the needles pass what `float32` can represent: 16 current
+tests fail on rounding, not ordito). So the settle-rule test and the fairing refactorization
+test keep `saddle_graded_large_arrays()`. **Where a test excludes it, the reason is written beside
+the list with numbers**; the recurring ones:
 
 - *Not ordito*: a reference's float32 formula cancels on its needles (§7.6: MeshLib's
   `gradientInTri` / `triangleAspectRatio` float overloads, pytorch3d's normal clamp) -- switch the
   reference to its double overload rather than exclude.
-- *The premise*: its rim is a 268-vertex saddle curve, not planar (fill comparisons that rest on
+- *The premise*: its rim is a saddle curve (132 vertices; 268 at 68 x 68), not planar (fill comparisons that rest on
   every triangulation covering one region; `_PLANAR_RIM_MESHES` in `test_holes.py`), and two of its
   corners are ears.
 - *Input precision*: an intrinsic (edge-length) path takes `float32` lengths, which do not
@@ -1423,7 +1486,7 @@ recurring ones:
 - Edge-case tests (empty points/faces, single-triangle) may use minimal inline buffers; a
   **single-triangle** mesh is the safe way to reach an "empty mesh" guard on CUDA.
 - **Fixture sets are shared**: `CLOSED_MESHES`, `OPEN_MESHES`, `MESHES = CLOSED_MESHES +
-  OPEN_MESHES` in `tests/conftest.py`. Import them; keep a local list only for a genuinely
+  OPEN_MESHES`, and `BOUNDARY_MESHES` in `tests/conftest.py`. Import them; keep a local list only for a genuinely
   different set, with a comment why (`test_adjacency.py` drops `cave_cube`: coplanar box faces make
   every adjacency angle 0 or pi/2).
 - **`trimesh.slice_plane` output is a poor reference input**: a hemisphere from `icosphere(2)`
@@ -1537,7 +1600,12 @@ Reuse `tests/comparisons.py`: `lexsort_rows`, `assert_unordered_rows_equal`, `un
 `same_partition`, `canonical_winding`, `assert_same_up_to_sign`,
 `assert_cyclic_permutation_equal`, `assert_same_loop_set`, `trimesh_outline_loops`,
 `fraction_within`, `symmetric_chamfer`, `chamfer_two_sided`, `symmetric_surface_distance`,
-`hausdorff_two_sided`, `hausdorff_surface_two_sided`.
+`hausdorff_two_sided`, `hausdorff_surface_two_sided`, `sparse_allclose`.
+
+**Compare a sparse operator with `sparse_allclose`, never `np.allclose(a.toarray(), b.toarray())`**:
+it is the same rule over the union of the two patterns. Densified, a `(2n, 2n)` operator on
+`saddle_graded` was most of its tests' cost (the energies, Laplacian, parametrization and adjacency
+files went from ~11 s to ~5 s on CUDA).
 
 And `tests/conversions.py`: `numpy_to_warp`, `numpy_to_warp_uv`, `points_to_warp`,
 `points_to_warp_uv`, `trimesh_to_warp`, `warp_to_trimesh`, `trimesh_to_open3d`,
@@ -1646,14 +1714,26 @@ vertices, `int32` faces).
 - **A zero cotangent weight** (both opposite angles right, i.e. every diagonal-split quad grid:
   `cave_cube`, `half_torus`) erases that edge's phase from `get_connection_laplacian()`, so it
   cannot be an oracle there (`tests/test_tangent.py`).
-- **At a boundary source its tangent coordinates are not those of `get_tangent_frames`.**
-  Transporting from a boundary vertex, every direction comes out rotated by exactly the angle
-  between ordito's and potpourri3d's `basis_x` there (0.93 degrees on `hemisphere`, which the
-  transport test recorded as agreement; 14.77 at `saddle_graded`'s corner); from an interior
-  source the offset is 0. At a rim *corner* neither library carries a vector to a constant field on
-  a flat disk (the tangent angles are rescaled there). Gauge-fixed comparisons (transport, log
-  map) take an interior source. Its `compute_log_map` radius is the less accurate one on a graded
-  mesh: 3.4 % of the diagonal off `igl.exact_geodesic` (median) against ordito's 0.46 %.
+- **Its tangent coordinates are normalized polar angles, not Euclidean components in
+  `get_tangent_frames`' basis.** A vertex's corner angles are rescaled to a full turn (half a turn
+  at a boundary vertex) and a vector is read by that angle -- ordito's convention too
+  (`halfedge_tangent_angles`); only angle 0 differs. geometry-central's `basis_x` is *fitted* to
+  the fan: `arg sum_k proj(e_k) exp(-i theta_k)`, a boundary vertex adding its closing rim edge at
+  half a turn. So the exact gauge transform is one per-vertex rotation `c_v`
+  (`tests/test_heat._potpourri3d_angle_offsets`): transport then agrees to 3.1e-3 degrees at worst
+  on `sphere_irregular`, 2.8e-4 from a boundary source on `saddle_graded`. **Pushing either 2-D
+  answer to 3-D as `u * basis_x + v * basis_y` is wrong wherever the fan is not flat** (0.55
+  degrees median on `sphere_irregular`; every boundary source rotated by the frame offset there,
+  14.77 degrees at `saddle_graded`'s corner) -- which read for a while as a disagreement between
+  the libraries and as "the gauge fix fails at a boundary source". Mutation: dropping the closing
+  edge from `c_v` sends rim vertices 55-98 degrees off. The log maps still differ by more than
+  the gauge (different constructions: 10.6 % of the diagonal from an interior source of
+  `saddle_graded`, 29 % from its corner). Its `compute_log_map` radius is the less accurate one on
+  a graded mesh: 3.4 % of the diagonal off `igl.exact_geodesic` (median) against ordito's 0.46 %.
+- **`MeshSignedHeatSolver` is not an oracle on an irregular mesh** (no robust option): on
+  `sphere_irregular` its field is 7.6 % of the range off the exact geodesic magnitude to the curve
+  (correlation 0.975; 27 % and 0.70 on its 1 500-vertex form), where ordito's is 2.8 % (0.991). `heat_signed_distance`'s parity test keeps
+  `icosahedron`.
 
 #### pymeshlab (`ml`)
 
@@ -1678,6 +1758,10 @@ where it is a *better* oracle than the incumbent. Every trap **fails green**:
   512-edge rims; `get_hausdorff_distance(samplenum=8)`; `generate_sampling_poisson_disk(radius=0%)`
   autoguesses; `generate_surface_reconstruction_ball_pivoting(clustering=0)` reconstructs nothing
   (and is *faster* for it). Assert on the returned dict and that the reference produced output.
+- **`compute_scalar_by_distance_from_another_mesh_per_vertex(signeddist=True)` is off on
+  needles**: 7.0e-4 from igl's exact pseudonormal distance on `sphere_irregular` (1.1e-3 and one
+  wrong sign of 400 on its 1 500-vertex form), where ordito is 2.9e-7; the `signed_distance_on_mesh` test skips
+  its pymeshlab assert there.
 - **`get_hausdorff_distance` `maxdist` defaults to a bbox percentage and returns `inf`** for
   farther pairs: pass `maxdist=ml.PureValue(1e6)`. Its `min` is a sound upper bound, tight
   whenever a sample lands on the witness (always for a convex polytope pair): a registered oracle
@@ -1711,6 +1795,12 @@ where it is a *better* oracle than the incumbent. Every trap **fails green**:
   reconstructor print anyway (pytest fd capture absorbs it).
 - **`face_normal_matrix()` after `compute_normal_per_face()` is unnormalised** (`2 * area`): it
   checks normals *and* areas.
+- **`compute_curvature_principal_directions_per_vertex`'s default method is not an oracle on an
+  irregular sampling** (2026-10-08): plain `"Quadric Fitting"` puts its first direction within 0.99
+  of the meridian at only 56 % of `torus_round`'s vertices and ~45 degrees from both lines of
+  curvature at the worst (`|cos|` 0.708; Taubin, PCA and normal cycles 0.707-0.726).
+  `"Scale Dependent Quadric Fitting"` is (worst 0.9927, every vertex); pass it, with
+  `autoclean=False`.
 - **Pass counts are conventions**: Taubin `stepsmoothnum` counts lambda-mu *pairs* (ordito /
   trimesh do one half-step per iteration: `2 * stepsmoothnum`); `get_scalar_statistics_per_vertex`
   `"med"` is the element at `n // 2 - 1`, one below the middle, for both parities.
@@ -1844,7 +1934,10 @@ virtualenv. Licences MIT / BSD-3 (no subtree to avoid).
   and *does* move points (unlike MeshLab); `geodesic` puts the ordered path in
   `vtkOriginalPointIds` (Euclidean length = `geodesic_distance`); `sample` marks misses with
   `vtkValidPointMask` and `vtkGhostType`; `voxelize_binary_mask` writes a **point** array `mask` on
-  a cell-centred grid (*solid*: its set is contained in ordito's `mode="solid"`). Deprecated in
+  a cell-centred grid (*solid*: its set is contained in ordito's `mode="solid"`). Given
+  `dimensions=` it fits a *different* spacing per axis to a non-cubic box (0.134 / 0.125 / 0.127
+  on `sphere_irregular` at 32 cells), which no cubic grid matches: pass the lattice as
+  `reference_volume=pv.ImageData(...)`. Deprecated in
   0.48.4: module-level `pv.voxelize` / `pv.voxelize_volume` (hard `DeprecationError`),
   `select_enclosed_points` (→ `select_interior_points`, array `selected_points`),
   `extract_geometry` (→ `extract_surface(algorithm=None)`), `n_faces_strict` (→ `n_faces`).
@@ -2697,6 +2790,13 @@ Consequence: the shared argmin/argmax/swap helpers in `kernels/array.py` are con
 - **There is no `wp.any` / `wp.all` over vector components** and no generic vector annotation
   beyond `Any`: per-component predicates stay as per-type funcs behind a dtype-keyed dispatch
   (`is_close_vec3`).
+- **A Newell sum is taken about a point of the loop, never the coordinate origin**
+  (2026-10-08, `predicates.newell_term(a, b, origin)`, used by `boundary.loop_directed_areas`,
+  `holes.loop_rim_metrics` and `polyline.accumulate_radius_frame` with the loop's first vertex).
+  `sum cross(p_i, p_i+1)` is translation-invariant in exact arithmetic and cancels in `float32`
+  as `|p| / size` grows: on `torus_irregular_holes` (scrambled off the origin) a 3-edge hole's
+  area was 6.3e-5 off igl's against 2.6e-8 now, and `polyline_normal` of a small loop far from
+  the origin was 118.8 degrees off. Any per-loop cross-product sum is this shape.
 - **FMA fusion makes a degenerate triangle's area ~1e-8 on CUDA and exactly 0 on CPU.** Warp's
   `fuse_fp` is ON by default and fuses `a*b - c*d` into `fma(a,b,-(c*d))`, so `triangle_cross` of a
   face with a repeated vertex is `0` on CPU and ~`1e-8` on CUDA, flipping it to "nondegenerate"
@@ -3348,6 +3448,13 @@ prefix scan (~600 ns); if the level's own work is under that, the rewrite loses 
   elements as before, one more per factor of 1 024 after. Integer sums keep the atomic (exact in
   any order); internal device-resident float folds (`smoothing`'s `adil_sum`,
   `points._point_sum`) still commit atomically.
+- **`measures.surface_centroid` takes the same fixed order** (2026-10-08,
+  `kernels/measures.centroid_partials` + `reduce.sum` over `wp.vec4`): one portable kernel, blocks
+  owning `ITEMS_PER_BLOCK_1D` faces and storing their partial, replacing the CUDA one-tile atomic /
+  CPU `_sliced` pair. The atomic form returned 10 distinct centroids in 10 calls on every scan
+  mesh, so `sample_volume`'s seeded draw (fanned from it) was not reproducible on CUDA. Faster
+  too: 5.4x at `lucy`, 1.1x at `dragon`, level at `bunny_decimated` on CUDA; 1.1-2.1x on CPU. The
+  old "the fold measured flat" decline was priced on speed alone.
 - **A `wp.tile(v, preserve_type=True)` keeps a vector tile** and `wp.tile_sum` reduces it
   componentwise in **one** tree, bit-identical to one reduction per component, for vectors,
   matrices and `wp.types.vector(length=N)`. Pack several same-dtype quantities into one vector for
@@ -5452,6 +5559,54 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   (§14.10). Both sum per query in walk order where the scatter added by atomics, so values move by
   float32 rounding (≤ 1.2e-6 relative of the field's range).
 
+- **`discrete_gaussian_curvature` sums its angles in `float64`** (2026-10-08): a `float32` angle
+  sum of up to a dozen corners near `2 pi` leaves the defect, a small difference, with ~1e-6
+  absolute error, 7.4e-5 relative of the field on `sphere_irregular` (degree 3-12) against
+  7.7e-6 now; the per-corner angles stay `float32`.
+
+#### thickness, geodesic walk
+
+- **`thickness(method="max_sphere")`'s shrink step runs in `float64` after Warp's query picks the
+  face** (2026-10-08, `visibility.step_sphere_shrink` over `predicates.point_triangle_offset`; the
+  shared `tangent_sphere_radius` is `Any`-generic, the seed keeps `float32`). Two `float32` terms
+  each moved the answer by more than the convergence threshold: `mesh_query_point_no_sign`'s point
+  is up to ~2e-5 off (§12.4), above the `TOLERANCE_PLANAR` the stopping gap is tested against, and
+  the tangent radius `|d|^2 / 2 d.n` divides by a dot product that cancels as the sphere closes
+  in. Against trimesh's converged answer on the same inputs: 5.2e-6 / 1.4e-5 radius off (CPU /
+  CUDA) before, 3e-8 / 9e-8 after; 1.01x on the `thickness_interior` rows. Rounding the *inputs*
+  to `float32` moves trimesh's own answer by 1.4e-5 on `sphere_irregular`, so the test hands
+  trimesh the rounded points and normals.
+- **`trace_from_vertex` reads its start direction as geometry-central does, and passes through
+  vertices** (2026-10-08, `kernels/geodesic_walk.start_direction_at_vertex`, `continue_through_vertex`,
+  `corner_hit`). The vertex's tangent space is the fan with corner angles rescaled to a full turn
+  (half at a boundary vertex), Polthier and Schmies' normalized angle; a 3-D direction's projected
+  polar angle is read in a frame whose zero is `arg sum_k proj(e_k) exp(-i theta_k)` over every
+  outgoing edge (a boundary fan's closing rim edge included, at `theta = pi`), using the
+  angle-weighted normal. Measured, not read: potpourri3d's first segments are reproduced to
+  1.5e-6 degrees by that formula, and its vertex submodule is empty in `reference/`. **It is the
+  more correct convention, so it is the only one**: gauge-free (potpourri3d unchanged to 1.5e-6
+  degrees under vertex and face renumbering), defined at every vertex. The first version placed a
+  direction between the two projected edges that bracket it, which follows an edge exactly but has
+  no answer where a saddle's projected fan folds; its fallback was a rescaled angle off the ring's
+  first edge, which moved the start by up to 35 degrees under renumbering at 7 of the 40 strongest
+  `sphere_irregular` vertices (all saddles). Left out of the fan's rim edge, the frame was off by
+  ~60 degrees at a boundary corner. Off the surface at a rim vertex potpourri3d walks along
+  whichever edge the direction lands on; ordito traces nothing (documented). A walk reaching a
+  vertex (within `CORNER_SLACK` of a corner) leaves it Polthier's straightest way, half the total
+  angle on each side, instead of stopping. Pinned by `test_trace_from_vertex_matches_potpourri3d`
+  (Class A, same input), `..._does_not_depend_on_the_numbering` and
+  `..._passes_through_the_vertex_an_edge_leads_to`; anchoring on the first edge alone fails all
+  five arms.
+- **`geodesic_path` is exactly as good as the heat field it descends, and on an obtuse-heavy mesh
+  that is poor** (2026-10-08). On `sphere_irregular` the plain heat field has a spurious local
+  minimum (vertex 300: 0.196 against 0.59 straight-line), so 142 of 499 paths stop there, and
+  along a path `|grad phi|` runs 0.27-2.0, so a reached path can be 1.68x the exact geodesic
+  (1.42 on `torus_irregular`). potpourri3d's identical method gives the same field to 2e-5 of the
+  range; its intrinsic-Delaunay `use_robust=True` field has *two* such minima and leaves 238
+  paths short, so retriangulating is not the fix. The walk is faithful (identical paths on
+  either library's field); the test compares against the same walk over potpourri3d's field. OPEN:
+  a spurious minimum stops a path silently (documented in `descend_field`).
+
 ### 16.7 `sample`
 
 - **`sample_surface` / `sample_volume` draw `lower_bound(cdf, randf * total)` over the unnormalized
@@ -5500,6 +5655,16 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   on paper (each thread writes its own slot and every reader of a written slot is excluded by a
   second test); a kernel clearing state it has just read needs an allowlist entry for check 13.
 
+- **`sample_surface_poisson_disk`'s parallel elimination needs the sequential algorithm's global
+  floor** (2026-10-08, `kernels/sample.alive_negated_weight`, `find_local_maxima(weight_floor=)`).
+  Yuksel's elimination removes the heaviest point and repeats until `count` remain; removing every
+  local maximum of the weight per round is equivalent only while no removed maximum is lighter
+  than the `excess`-th heaviest alive weight, else the last round removes points the sequential
+  algorithm keeps and keeps heavier ones it removes. Each round sorts the alive weights and passes
+  that weight as a floor; the result equals a heap-driven sequential elimination's set exactly
+  (`test_sample_surface_poisson_disk_keeps_the_sequential_elimination_set`), and the minimum
+  spacing is ~0.70 `r_max`, as open3d's.
+
 ### 16.8 `smoothing`, `laplacian`, `energies` (operators and smoothers)
 
 - **REMOVED: batching several CG iterations per conditional-graph test.** The overshoot is a
@@ -5531,6 +5696,13 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   offset of exactly zero): answer the skip-versus-identity question from the code replaced. Its
   three volumes are summed by `wp.utils.array_sum`, deliberately the same reduction (not
   `measures.volume`'s tiled one), because the correction is a difference of nearly equal volumes.
+- **Normal displacement folds at a cone vertex, at any distance** (2026-10-08): where an incident
+  face sits more than 90 degrees from the vertex normal, moving the vertex along it inverts that
+  face. `sphere_irregular` has such vertices: `inflate` leaves 17 self-intersecting faces at 0.1
+  mean edge of pressure and 93 at 0.5 (none on `sphere_well_shaped`), and `levelset.thicken_mesh`
+  folds the same way. Both docstrings state the limit; neither guards it (a whole-mesh intersection
+  test per call); `offset_mesh` is the fold-free alternative. A test of "no self-intersection"
+  after a normal displacement needs a needle-free fixture, and says so.
 - **`smoothing.inflate`'s inherited volume constraint is load-bearing** (it restores the volume
   the smoothing half-step removed); exposing it as a keyword was declined (§4.2). **It is device
   resident** (2026-10-03, `smoothing._VolumeConstraint`, shared with `filter_laplacian`): the
@@ -5760,8 +5932,8 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   that mesh's later solves skip the CG (§16.16). Fixed: 1.11 % / 5.74 % on `saddle_graded` (potpourri3d
   1.15 / 5.77); the 68 x 68 graded saddle's one-shot and reused-operator distance is 2.6e-4 of the
   range off potpourri3d (was 0.38) and its transport 2.4e-6 degrees off `spsolve` (was 180);
-  `test_heat_geodesic_on_a_graded_mesh_matches_potpourri3d` /
-  `test_transport_on_a_graded_mesh_matches_a_direct_solve` fail on the old code. Cost, interleaved
+  `test_heat_geodesic_on_the_large_graded_saddle_matches_potpourri3d` (on the 68 x 68 saddle; the
+  default 34 x 34 one cannot show it) fails on the old code. Cost, interleaved
   A/B: the verification read 0.95-1.01x on every well-conditioned row; the graded one-shot rows pay
   the CG that failed plus the factorization (`heat_geodesic` 0.75x, `transport` 0.23x, `log_map`
   0.58x, `extend_scalar` 0.56x, now correct), the graded rows on a kept `Trimesh` go straight to
@@ -5879,6 +6051,15 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   `heat_geodesic` row's 231 polynomial launches are this method's floor.
 - **Tangent-field quantities are gauge-dependent and the float32 transport-angle storage sets a
   noise floor** (§12.4, §7.6).
+
+- **On a mesh of mostly obtuse triangles the heat method's error is large, and it is the
+  method's** (2026-10-08): `sphere_irregular` (72 % obtuse) reads up to 0.588 of a 5.18 range off
+  `igl.exact_geodesic` (mean 0.201), `torus_irregular` 0.558 of 4.93, exactly potpourri3d's
+  identical method (2e-5 of the range apart). A test against the exact distance bounds ordito's
+  per-vertex error by potpourri3d's plus 1e-4 of the range (a half / doubled timestep exceeds it
+  by 0.197 / 0.046). `use_robust` only mollifies lengths, so on a nondegenerate mesh it is the
+  plain call; potpourri3d's flag also retriangulates intrinsically, which cuts the worst error to
+  0.372 there but adds spurious minima (§16.6).
 
 ### 16.11 `validation`, `adjacency`, `halfedge`, connected components
 
@@ -6057,6 +6238,22 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   `mesh_collision_pairs` / `mesh_with_mesh` run the narrow phase inside the segment kernel;
   `mesh_with_plane` computes plane dots in-kernel. A box predicate with an optional rotation must
   **branch, not multiply by the identity** (`0 * inf` is `nan`).
+- **The triangle-pair broad phase is complete whatever its capacity** (2026-10-08,
+  `intersection.face_box_candidates`, shared by `mesh_with_mesh`, `mesh_collision_pairs`,
+  `collision_masks` and the self-intersection mask / predicate). It wrote at most
+  `max_triangle_collisions` candidates per query face and *stopped walking*, so every pair past
+  the cap was silently dropped: two `sphere_irregular` copies offset by 1.2 (a needle's box
+  overlaps up to 81 faces) lost 48 of 189 crossing segments at the default 16, found by the
+  MeshLib section comparison and confirmed by a `float64` brute force; `dragon`'s self-test has
+  120 faces past 32 (up to 51). Now `collect_face_box_candidates` keeps walking, counts every
+  candidate and raises a conditional `atomic_max` overflow word; one `read_scalar` decides whether
+  to re-collect at the peak stride. `max_triangle_collisions` is the first stride. Price, against
+  HEAD (CUDA, min of 5): self-mask 1.15x / 1.11x faster on the bunnies (the inline loop), and at
+  the default raised 32 -> 64 `dragon` 1.09x faster (it no longer overflows; at 32 the regrow cost
+  0.87x); `mesh_with_mesh` 0.93x / 0.78x at `bunny_decimated` / `bunny` (the extra sync; a
+  capacity sweep there is mixed, so 16 stays). Pinned by
+  `test_face_box_candidates_finds_every_overlapping_box` and
+  `test_triangle_pair_answers_do_not_depend_on_the_capacity` (both fail with the regrow disabled).
 - **`remove_unreferenced_vertices`** is one mark, scan and compaction; `kernels/triangles.
   sort_face_indices` is deleted. A union-find pass's readback-free forms keep the deterministic
   property: a mask-then-scan compaction is deterministic where an atomic cursor is not.

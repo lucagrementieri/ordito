@@ -63,14 +63,19 @@ def trace_from_vertex(
     unit direction traces at most a unit distance, and a direction along the normal traces nothing.
     That is ``potpourri3d.GeodesicTracer``'s convention too.
 
-    Which incident face the ray starts in is decided in the vertex's *flattened* tangent space
-    ([`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles]): rescaling the
-    incident corner angles to a full turn makes the fan a disk, so every tangent direction lands in
-    exactly one wedge, including directions a naive per-face projection would place outside all of
-    them. At a boundary vertex the fan spans only half a disk, and a direction outside it — pointing
-    off the surface — traces nothing.
+    The direction is read as a polar angle in the vertex's tangent space, the fan with its corner
+    angles rescaled to a full turn (half a turn at a boundary vertex) -- the normalized angle of
+    Polthier and Schmies. Its zero is placed by fitting the whole fan: each incident edge, projected
+    into the tangent plane, is rotated back by its normalized angle, and the sum of those vectors is
+    the direction of angle zero. So the start depends neither on how the mesh is numbered nor on
+    the tangent frame, and it is defined at cone and saddle vertices alike; at a vertex whose fan is
+    flat, a direction along an edge leaves along it. This is ``potpourri3d.GeodesicTracer``'s
+    convention. At a boundary vertex a direction outside the fan points off the surface and traces
+    nothing.
 
-    A walk stops early when it reaches the mesh boundary or exceeds ``max_steps`` edge crossings.
+    A walk that runs into a vertex leaves it as a straightest geodesic, with half the vertex's total
+    angle on either side. It stops early when it reaches the mesh boundary (or a boundary vertex) or
+    exceeds ``max_steps`` edge crossings.
 
     Parameters
     ----------
@@ -91,8 +96,9 @@ def trace_from_vertex(
         ray's starting face.
     frames
         ``(n_vertices,)`` triple of precomputed
-        [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames], or ``None``. They
-        define each vertex's tangent plane, which sets both the trace length and the starting wedge.
+        [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames], or ``None``. Their
+        normal defines each vertex's tangent plane, which sets the trace length and the start; the
+        in-plane axes do not matter.
     max_steps
         Maximum edge crossings per ray.
 

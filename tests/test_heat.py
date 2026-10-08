@@ -48,9 +48,12 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
-import ordito.typing as odt
-from benchmarks.meshes import BUILDERS
-from tests.conftest import MESHES, saddle_graded_arrays
+from tests.conftest import (
+    MESHES,
+    ROUND_FRAME_SHIFT,
+    saddle_graded_arrays,
+    saddle_graded_large_arrays,
+)
 from tests.conversions import (
     bsr_to_dense,
     meshlib_scalars_to_numpy,
@@ -63,10 +66,6 @@ from tests.conversions import (
     trimesh_to_warp,
     warp_empty,
 )
-
-# Not ``conftest.MESHES``: both predate that constant and neither has ever carried ``cave_cube``.
-_HEAT_MESHES = ["icosahedron", "hemisphere", "half_torus", "saddle_graded"]
-_HEAT_MESHES_SMALL = ["icosahedron", "hemisphere"]
 
 Icosphere5 = tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]]
 
@@ -112,7 +111,7 @@ def graded_saddle(device: str) -> GradedSaddle:
 # --- heat_operators -----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_heat_operators_are_the_matrices_its_docstring_names(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -176,7 +175,7 @@ def test_heat_operators_are_the_matrices_its_docstring_names(
 
 
 def test_heat_operators_reject_cot_entries_with_use_robust(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     The two arguments ask for different half-cotangent tables, so together they are an error.
@@ -186,7 +185,7 @@ def test_heat_operators_reject_cot_entries_with_use_robust(
     look like it was honoured while the extrinsic table was used, which is exactly the failure a
     caller reaches for ``use_robust`` to avoid.
     """
-    _mesh_tm, mesh_wp = icosphere_coarse
+    _mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     cot_entries_wp = od.laplacian.cotmatrix_entries(vertices_wp, faces_wp)
     with pytest.raises(ValueError, match="mutually exclusive"):
@@ -194,10 +193,10 @@ def test_heat_operators_reject_cot_entries_with_use_robust(
 
 
 def test_heat_operators_honour_an_explicit_diffusion_time(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """``t`` reaches the assembled system rather than being recomputed from the edge lengths."""
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = sphere_irregular
     n_vertices = int(mesh_tm.vertices.shape[0])
 
     heat_system, *_rest, _cot, _normals, _areas = od.heat.heat_operators(
@@ -215,9 +214,11 @@ def test_heat_operators_honour_an_explicit_diffusion_time(
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize(
+    ("mesh_name", "bit_reproducible"), [("sphere_irregular", True), ("saddle_graded", False)]
+)
 def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, bit_reproducible: bool
 ) -> None:
     """
     Ordito against ordito: the two forms of the call are one computation.
@@ -225,7 +226,14 @@ def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
     Not a parity assert; the oracle for the distances themselves is
     [`test_heat_geodesic_matches_igl`]. The first `Trimesh` call runs the same solves as the
     ``vertices, faces`` form (equal to 1e-12); the second goes to the factorizations the mesh kept,
-    which agree to the Poisson solve's tolerance (1e-6 of the range here; measured below 1e-9).
+    and equals a mesh factored before its first call to 1e-12 of the range (measured 0 on CPU,
+    2.4e-16 on CUDA).
+
+    Against the iterated form the factored one differs by the settled diffusion's own accuracy:
+    its stop is a *change* test at relative 1e-6 (``heat._HEAT_CHANGE_TOLERANCE``), not an error
+    bound, and the distance it leaves is 1.2e-6 / 9.9e-7 of the range off the factored answer on
+    ``sphere_irregular`` (CPU / CUDA), 1.1e-9 / 3.4e-10 on ``saddle_graded``. The bar is 3x the
+    worst, 4e-6; a factorization of the wrong system misses it by orders.
 
     On ``saddle_graded`` the first comparison is at 1e-8 of the range instead: on CUDA the
     ``vertices, faces`` call is not bit-reproducible there -- two identical calls differ by up to
@@ -245,12 +253,16 @@ def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
     second_np = od.heat.heat_geodesic(mesh, sources_wp).numpy()
 
     assert internal_np.max() > 0.0
-    if mesh_name == "saddle_graded":
-        assert np.abs(first_np - internal_np).max() < 1e-8 * np.ptp(internal_np)
-    else:
+    if bit_reproducible:
         assert np.allclose(first_np, internal_np, rtol=1e-12, atol=1e-12)
+    else:
+        assert np.abs(first_np - internal_np).max() < 1e-8 * np.ptp(internal_np)
     assert mesh.heat_solver().nbytes > 0
-    assert np.abs(second_np - internal_np).max() < 1e-6 * np.ptp(internal_np)
+    prefactored = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    prefactored.heat_solver().factor()
+    prefactored_np = od.heat.heat_geodesic(prefactored, sources_wp).numpy()
+    assert np.abs(second_np - prefactored_np).max() <= 1e-12 * np.ptp(internal_np)
+    assert np.abs(second_np - internal_np).max() < 4e-6 * np.ptp(internal_np)
 
 
 def _heat_geodesic_igl(
@@ -263,20 +275,8 @@ def _heat_geodesic_igl(
 
 @pytest.mark.parametrize(
     ("mesh_name", "n_sources"),
-    [
-        ("icosahedron", 1),
-        ("hemisphere", 1),
-        ("icosahedron", 2),
-        ("saddle_graded", 1),
-        ("saddle_graded", 2),
-    ],
-    ids=[
-        "icosahedron",
-        "hemisphere",
-        "icosahedron_two_sources",
-        "saddle_graded",
-        "saddle_graded_two_sources",
-    ],
+    [("sphere_irregular", 1), ("saddle_graded", 1), ("sphere_irregular", 2)],
+    ids=["sphere_irregular", "saddle_graded", "sphere_irregular_two_sources"],
 )
 @pytest.mark.parity("heat_geodesic", "igl")
 @pytest.mark.parity("heat_geodesic_conditioning", "igl")
@@ -317,7 +317,9 @@ def test_heat_geodesic_matches_igl(
     "is where it is timed. Putting it in heat_geodesic would price a different algorithm under "
     "that group's name. The values are nonetheless comparable, which is what this test checks.",
 )
-def test_heat_geodesic_matches_meshlib(device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_heat_geodesic_matches_meshlib(
+    device: str, sphere_round: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
     """
     Class C (a bound against the truth): two approximations of the same geodesic field.
 
@@ -325,13 +327,15 @@ def test_heat_geodesic_matches_meshlib(device: str, icosphere: tuple[tm.Trimesh,
     local Eikonal update -- where ``heat_geodesic`` is Crane et al.'s heat method. Neither is exact
     on a triangulation, so comparing them to each other alone would be a claim about two errors. The
     sphere is the fixture that fixes that: its geodesics are great-circle arcs, so the *exact*
-    answer is known and each method can be measured against it.
+    answer is known and each method can be measured against it. ``sphere_round`` is an irregular
+    sampling of an exact sphere (radius 1.7): the premise is the closed form, which no bumpy fixture
+    has.
 
-    Measured from one source on ``icosphere(3)``, as the worst absolute deviation from the exact
-    arc length: ordito **0.0515** and meshlib **0.0442**, i.e. 1.6 % and 1.4 % of the field's
-    range. The two agree with each other to **0.067** with a correlation of **0.99983** -- so they
-    differ from each other by about as much as each differs from the truth, which is the honest
-    statement about two first-order methods and is what the asserts encode.
+    Measured from one source, as the worst absolute deviation from the exact arc length: ordito
+    **0.120** and meshlib **0.100**, i.e. 2.3 % and 1.9 % of the field's 5.20 range. The two agree
+    with each other to **0.153** with a correlation of **0.99979** -- so they differ from each other
+    by about as much as each differs from the truth, which is the honest statement about two
+    first-order methods and is what the asserts encode.
 
     Its ``startVertices`` is a ``VertBitSet`` over the vertex domain -- there is no index-list
     overload for the single-source case -- and the result is a ``VertScalars``, read through
@@ -339,24 +343,24 @@ def test_heat_geodesic_matches_meshlib(device: str, icosphere: tuple[tm.Trimesh,
     on one silently yields a 0-d object array.
 
     **Mutation probe**, and what it says is that the three asserts divide the work unevenly. The
-    measured errors against the exact field are 0.0515 (ordito) and 0.0442 (meshlib) against a
-    0.1571 bar, and the correlation is 0.99983 against a 0.999 bar. Mutating the ordito field:
+    measured errors against the exact field are 0.120 (ordito) and 0.100 (meshlib) against a 0.364
+    bar (7 % of the range, 3x the larger), and the correlation is 0.99979 against a 0.999 bar.
+    Mutating the ordito field:
 
-    | mutation      | error vs the 5 % bar | correlation vs the 0.999 bar |
+    | mutation      | error vs the 7 % bar | correlation vs the 0.999 bar |
     |---------------|----------------------|------------------------------|
-    | shuffle       | 2.753 -- **fails**   | -0.014 -- **fails**          |
-    | scale x1.10   | 0.273 -- **fails**   | 0.99983 -- passes            |
-    | scale x1.05   | 0.124 -- passes      | 0.99983 -- passes            |
+    | shuffle       | 4.069 -- **fails**   | -0.011 -- **fails**          |
+    | scale x1.10   | 0.444 -- **fails**   | 0.99979 -- passes            |
+    | scale x1.05   | 0.189 -- passes      | 0.99979 -- passes            |
 
     So the **correlation cannot see a scale error at all** (it is scale-invariant), and the error
-    bar is what carries that half -- but only past ~5 %, because the bar *is* 5 % and the field
-    already spends a third of it on discretization. That is the honest limit of this comparison and
-    not a threshold to tighten: 5 % is where two first-order methods genuinely sit, which the
-    paragraph above already argues. A finer claim needs a finer mesh, not a smaller number.
+    bar is what carries that half -- but only past ~7 %, because the field already spends a third
+    of the bar on discretization. That is the honest limit of this comparison and not a threshold
+    to tighten: a finer claim needs a finer mesh, not a smaller number.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_round
     source = 0
-    centre_np = mesh_tm.vertices.mean(axis=0)
+    centre_np = ROUND_FRAME_SHIFT
     directions_np = mesh_tm.vertices - centre_np
     directions_np /= np.linalg.norm(directions_np, axis=1, keepdims=True)
     radius = float(np.linalg.norm(mesh_tm.vertices[source] - centre_np))
@@ -374,9 +378,9 @@ def test_heat_geodesic_matches_meshlib(device: str, icosphere: tuple[tm.Trimesh,
 
     assert distance_ml.shape == distance_wp.shape
     assert distance_ml.max() > 0.9 * exact_np.max()  # non-vacuity: it really propagated
-    # Each within 5 % of the exact great-circle field, and closer to each other than that.
-    assert np.abs(distance_wp - exact_np).max() < 0.05 * exact_np.max()
-    assert np.abs(distance_ml - exact_np).max() < 0.05 * exact_np.max()
+    # Each within 7 % of the exact great-circle field, and correlated with each other.
+    assert np.abs(distance_wp - exact_np).max() < 0.07 * exact_np.max()
+    assert np.abs(distance_ml - exact_np).max() < 0.07 * exact_np.max()
     assert np.corrcoef(distance_wp, distance_ml)[0, 1] > 0.999
 
 
@@ -408,44 +412,41 @@ def test_heat_geodesic_matches_igl_far_from_the_sources(
     assert np.abs(distance_wp - distance_igl).max() < 5e-3 * np.ptp(distance_igl)
 
 
-@pytest.mark.parametrize("reuse", [False, True], ids=["one_shot", "trimesh"])
-def test_heat_geodesic_on_a_graded_mesh_matches_potpourri3d(
-    device: str, graded_saddle: GradedSaddle, reuse: bool
-) -> None:
+def test_heat_geodesic_on_the_large_graded_saddle_matches_potpourri3d(device: str) -> None:
     """
     Class A at 1e-3 of the distance range against geometry-central's factorized heat method.
 
-    The settle rule stopped the heat solve on round-off: on this mesh conjugate gradient's
-    iterate "settles" with the far field wrong by up to 1e30 relative, and the distance was 38 % of
-    the range off potpourri3d (and 4.4 % mean, 38 % worst off ``igl.exact_geodesic``, against the
-    method's own 1.1 % / 6.2 %). The settled iterate's componentwise backward error flags it and
-    the solve falls back to a direct factorization. Measured agreement 2.6e-4 of the range, both
-    one-shot and on a `Trimesh` (whose second call goes to the kept factorizations directly).
+    The regression test for the settle rule stopping the heat solve on round-off: on the 68 x 68
+    graded saddle conjugate gradient's iterate "settles" with the far field wrong by up to 1e30
+    relative, and the distance sat 38 % of the range off potpourri3d. The settled iterate's
+    componentwise backward error flags it and the solve falls back to a factorization (measured
+    2.6e-4). It needs this size: on the default 34 x 34 ``saddle_graded`` the pre-fix error stays
+    under the parity bounds, so no default-fixture test can catch the defect.
     """
-    vertices_np, faces_np, vertices_wp, faces_wp = graded_saddle
+    vertices_np, faces_np = saddle_graded_large_arrays()
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, np.ravel(faces_np), device)
     sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
-    mesh = od.Trimesh(vertices_wp, faces_wp)
-    for _ in range(2 if reuse else 1):
-        distance_wp = (
-            od.heat.heat_geodesic(mesh, sources_wp)
-            if reuse
-            else od.heat.heat_geodesic(vertices_wp, faces_wp, sources_wp)
-        ).numpy()
-        distance_pp = pp3d.MeshHeatMethodDistanceSolver(
-            vertices_np, faces_np.astype(np.int32), use_robust=False
-        ).compute_distance(0)
-        assert np.ptp(distance_pp) > 1.0
-        assert np.abs(distance_wp - distance_pp).max() < 1e-3 * np.ptp(distance_pp)
+    distance_wp = od.heat.heat_geodesic(vertices_wp, faces_wp, sources_wp).numpy()
+    distance_pp = pp3d.MeshHeatMethodDistanceSolver(
+        vertices_np, faces_np.astype(np.int32), use_robust=False
+    ).compute_distance(0)
+    assert np.ptp(distance_pp) > 1.0
+    assert np.abs(distance_wp - distance_pp).max() < 1e-3 * np.ptp(distance_pp)
 
 
-def test_heat_geodesic_approximates_exact(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_heat_geodesic_approximates_exact(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class A at 8e-2 relative and 1e-1 absolute: ``igl.exact_geodesic`` is the true distance.
+    Class C: the error against ``igl.exact_geodesic`` is the heat method's own, vertex by vertex.
 
-    The heat method only approximates it, so the tolerance is the method's own first-order error
-    on a 12-vertex mesh rather than a solver disagreement.
+    The heat method only approximates the true distance, and on ``sphere_irregular`` (72 % obtuse
+    triangles, so cotangent weights of both signs) by a lot: up to 0.588 of a 5.18 range, mean
+    0.201. A fixed tolerance would be the method's error on whichever mesh set it. What is ordito's
+    is whether it adds to that error, so each vertex's error is bounded by potpourri3d's identical
+    method (``use_robust=False``) plus 1e-4 of the range; measured, ordito exceeds it by at most
+    1.8e-5 of the range. Mutation probes: a timestep of half or twice the default exceeds it by
+    0.197 / 0.046 of the range, a field scaled by 1.01 by 9.1e-3.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
     n_vertices = len(vertices_np)
@@ -458,14 +459,19 @@ def test_heat_geodesic_approximates_exact(icosahedron: tuple[tm.Trimesh, wp.Mesh
     sources_wp = wp.array(sources_np.astype(np.int32), dtype=wp.int32, device=mesh_wp.device)
     distance_wp = od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources_wp)
 
-    # Heat method is an approximation of the true geodesic distance; a loose tolerance.
-    assert np.allclose(distance_wp.numpy(), distance_exact, rtol=8e-2, atol=1e-1)
+    distance_pp = pp3d.MeshHeatMethodDistanceSolver(
+        vertices_np, faces_np.astype(np.int32), use_robust=False
+    ).compute_distance(0)
+    error_pp = np.abs(distance_pp - distance_exact)
+    assert error_pp.max() > 1e-2 * np.ptp(distance_exact)  # the method's error is not negligible
+    error_wp = np.abs(distance_wp.numpy() - distance_exact)
+    assert np.all(error_wp <= error_pp + 1e-4 * np.ptp(distance_exact))
 
 
 def test_heat_geodesic_source_is_zero_and_nonnegative(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     sources_np = np.array([0], dtype=np.int32)
     sources_wp = wp.array(sources_np, dtype=wp.int32, device=mesh_wp.device)
 
@@ -475,7 +481,7 @@ def test_heat_geodesic_source_is_zero_and_nonnegative(
     assert np.allclose(distance[sources_np], 0.0, atol=1e-4)
 
 
-@pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_heat_geodesic_cpu_matches_cuda(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: the CPU solve is the CUDA solve. Pins the removal of the old CUDA-only guard.
@@ -500,7 +506,7 @@ def test_heat_geodesic_cpu_matches_cuda(request: pytest.FixtureRequest, mesh_nam
     assert np.allclose(distances["cpu"], distances["cuda:0"], rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", _HEAT_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("heat_geodesic", "potpourri3d", "pymeshlab")
 @pytest.mark.parity("heat_geodesic_conditioning", "potpourri3d", "pymeshlab")
 def test_heat_geodesic_matches_potpourri3d_plain_and_pymeshlab(
@@ -541,6 +547,7 @@ def test_heat_geodesic_matches_potpourri3d_plain_and_pymeshlab(
     **Bug class excluded:** a wrong timestep or a wrong mass lumping. Both leave the field smooth,
     monotone and zero at the source -- so they pass every self-consistency test in this module --
     and both shift the whole field by several percent, which two independent references pin down.
+
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device)
@@ -569,11 +576,17 @@ def test_heat_geodesic_matches_potpourri3d_plain_and_pymeshlab(
 
 
 @pytest.mark.parametrize(
-    "mesh_name", ["icosahedron", "hemisphere", "half_torus", "saddle_graded", "torus"]
+    ("mesh_name", "euclidean_bound"),
+    [
+        ("sphere_irregular", True),
+        ("saddle_graded", False),
+        ("sphere_well_shaped_open", True),
+        ("torus_irregular", True),
+    ],
 )
 @pytest.mark.parity("heat_geodesic", "pyvista")
 def test_heat_geodesic_is_bounded_by_the_graph_distance(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, euclidean_bound: bool
 ) -> None:
     """
     Class C, a two-sided bound on a value with no correspondence to compare against.
@@ -587,17 +600,19 @@ def test_heat_geodesic_is_bounded_by_the_graph_distance(
     **Bug class excluded:** a field on the wrong *scale*. A wrong timestep, a missing mass lumping
     or a lost square root all leave the field smooth, monotone and zero at the source -- so every
     self-consistency test in this module still passes -- while moving its magnitude, and the upper
-    bound is sharp enough to see that. Measured ``heat / graph`` over 20 random targets per fixture:
-    max **0.866 / 0.983 / 0.934 / 0.969**, so a field inflated by more than ~2% on ``hemisphere``
-    fails it (a 1.5x scaling fails on all four).
+    bound is sharp enough to see that. It bounds the *true* geodesic, which the heat method only
+    approximates: on ``sphere_irregular`` it overshoots the graph distance by up to 6.6 % (2.479
+    against 2.324, where ``igl.exact_geodesic`` reads 2.309 and potpourri3d's identical method
+    2.479), so the bound carries a 10 % slack for the method's own error; a 1.5x scaling still
+    fails it everywhere.
 
     The lower bound is checked only at the Euclidean-**farthest** vertex, and that restriction is
     the finding rather than a convenience: at short range the heat method *undershoots* the
-    straight-line distance, measured 0.911 against 1.051 between adjacent-ish vertices of the
-    icosahedron and 0.728 against 0.829 on ``half_torus``. So "heat >= Euclidean" is false in
-    general and true where the two are far apart -- margins there are 36% / 53% / 0.5% / 30%, the
-    thin one being ``half_torus``, whose farthest pair is nearly straight-line reachable across its
-    opening.
+    straight-line distance, measured 0.106 against 0.413 on ``sphere_irregular`` (its obtuse
+    triangles' spurious minimum), 0.018 against 0.041 on ``torus_irregular`` and 0.509 against
+    0.683 on ``sphere_well_shaped_open``. So "heat >= Euclidean" is false in general and true where
+    the two are far apart -- margins there are 32 % / 28 % / 26 % on those three. On
+    ``saddle_graded`` it is false even at the farthest pair (below).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = int(mesh_tm.vertices.shape[0])
@@ -613,7 +628,7 @@ def test_heat_geodesic_is_bounded_by_the_graph_distance(
     for target in targets_np:
         graph_pv = float(mesh_pv.geodesic_distance(0, int(target)))
         assert graph_pv > 0.0  # the reference answered, so the bound is not vacuous
-        assert heat_np[int(target)] <= graph_pv
+        assert heat_np[int(target)] <= 1.1 * graph_pv
 
     # The lower bound bites only at range -- see the docstring -- and only where the Euclidean
     # distance sits further below the geodesic than the method's own error. Not on
@@ -623,13 +638,15 @@ def test_heat_geodesic_is_bounded_by_the_graph_distance(
     # scale bug, that crosses the line.
     farthest = int(np.argmax(np.linalg.norm(mesh_tm.vertices - mesh_tm.vertices[0], axis=1)))
     euclidean_np = float(np.linalg.norm(mesh_tm.vertices[farthest] - mesh_tm.vertices[0]))
-    assert heat_np[farthest] <= float(mesh_pv.geodesic_distance(0, farthest))
-    if mesh_name != "saddle_graded":
+    # The same 10 % slack as above: on ``torus_irregular`` the farthest vertex reads 4.614 against
+    # a graph distance of 4.576 and an exact 4.322, and potpourri3d's identical method 4.614.
+    assert heat_np[farthest] <= 1.1 * float(mesh_pv.geodesic_distance(0, farthest))
+    if euclidean_bound:
         assert euclidean_np <= heat_np[farthest]
 
 
 # --- the heat method's robust path (potpourri3d use_robust=True reference) -------------
-@pytest.mark.parametrize("mesh_name", _HEAT_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_robust_heat_geodesic_matches_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -733,7 +750,7 @@ def _distance_pp(
 # returns NaN), and on ``half_torus`` the two libraries agree only to a correlation of 0.39 — both
 # are solving a degenerate problem there and degrade differently. The structural tests below still
 # cover ``half_torus``, and they pass.
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity(
     "heat_signed_distance_constraint",
     "potpourri3d",
@@ -796,7 +813,11 @@ def test_heat_signed_distance_level_set_constraint_matches_potpourri3d(
         assert on_curve_pp > 1e-3
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron"])
+# Not ``sphere_irregular``: there the reference is the less accurate side. Against
+# ``igl.exact_geodesic`` to the curve's vertices, |ordito| correlates 0.991 with a mean error of
+# 2.8 % of the range, potpourri3d's ``MeshSignedHeatSolver`` (no robust option) 0.975 and 7.6 %
+# (0.70 and 27 % on its 1 500-vertex form), so the comparison there measures the reference.
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular"])
 @pytest.mark.parity("heat_signed_distance", "potpourri3d")
 @pytest.mark.parity("heat_signed_distance_conditioning", "potpourri3d")
 def test_heat_signed_distance_matches_potpourri3d(
@@ -849,7 +870,7 @@ def test_heat_signed_distance_matches_potpourri3d(
     assert np.abs(distance_wp - distance_pp).mean() < 0.05 * scale
 
 
-@pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_signed_distance_magnitude_is_the_unsigned_distance(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -867,7 +888,7 @@ def test_signed_distance_magnitude_is_the_unsigned_distance(
     assert np.abs(np.abs(signed) - unsigned).mean() < 0.15 * span
 
 
-@pytest.mark.parametrize("mesh_name", _HEAT_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_signed_distance_is_positive_inside_the_curve(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -885,7 +906,7 @@ def test_signed_distance_is_positive_inside_the_curve(
     assert (distance[outside] < 0.0).all()
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_reversing_the_curve_negates_the_field(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -905,7 +926,7 @@ def test_reversing_the_curve_negates_the_field(
     assert np.allclose(forward, -backward, rtol=1e-3, atol=1e-4)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_zero_set_constraint_pins_the_curve(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, curve_np, curve_wp = _one_ring_cycle(mesh_tm, mesh_wp)
@@ -927,8 +948,8 @@ def test_zero_set_constraint_pins_the_curve(request: pytest.FixtureRequest, mesh
     assert np.abs(pinned - shifted).mean() < 0.1 * span
 
 
-def test_multiple_curves_via_offsets(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = icosahedron
+def test_multiple_curves_via_offsets(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    mesh_tm, mesh_wp = sphere_irregular
     _, first, first_wp = _one_ring_cycle(mesh_tm, mesh_wp, which=0)
     _, second, _ = _one_ring_cycle(mesh_tm, mesh_wp, which=5)
     packed = wp.array(np.concatenate([first, second]), dtype=wp.int32, device=mesh_wp.device)
@@ -948,9 +969,9 @@ def test_multiple_curves_via_offsets(icosahedron: tuple[tm.Trimesh, wp.Mesh]) ->
 
 
 def test_open_curve_still_changes_sign_across_itself(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     _, curve_np, _ = _one_ring_cycle(mesh_tm, mesh_wp)
     curve_np = curve_np[:3]
     curve_wp = wp.array(curve_np, dtype=wp.int32, device=mesh_wp.device)
@@ -965,8 +986,8 @@ def test_open_curve_still_changes_sign_across_itself(
     assert distance.min() < 0.0 < distance.max()
 
 
-def test_invalid_level_set_constraint(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
+def test_invalid_level_set_constraint(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="level_set_constraint"):
         od.heat.heat_signed_distance(
             mesh_wp.points,
@@ -989,15 +1010,51 @@ def _solver_pp(mesh_tm: tm.Trimesh) -> pp3d.MeshVectorHeatSolver:
     )
 
 
-def _frames(mesh_wp: wp.Mesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    basis_x, basis_y, normal = od.tangent_space.vertex_tangent_frames(
-        mesh_wp.points, mesh_wp.indices
-    )
-    return basis_x.numpy(), basis_y.numpy(), normal.numpy()
-
-
 def _to_world(tangent: np.ndarray, basis_x: np.ndarray, basis_y: np.ndarray) -> np.ndarray:
     return tangent[:, 0:1] * basis_x + tangent[:, 1:2] * basis_y
+
+
+def _potpourri3d_angle_offsets(
+    mesh_tm: tm.Trimesh, mesh_wp: wp.Mesh, solver_pp: pp3d.MeshVectorHeatSolver
+) -> np.ndarray:
+    """
+    Per vertex, where ordito's tangent angle 0 lies in potpourri3d's tangent coordinates.
+
+    Both libraries express a tangent vector by its *normalized* polar angle -- the corner angles
+    of the fan rescaled to a full turn (half a turn at a boundary vertex) -- and differ only in
+    which direction is angle 0: ordito's is the vertex's first ring halfedge, so halfedge ``h``
+    sits at ``halfedge_tangent_angles[h]``; geometry-central's ``basis_x`` is fitted to the whole
+    fan, ``arg sum_k proj(e_k) exp(-i theta_k)`` with a boundary vertex's closing rim edge at half
+    a turn (the convention ``kernels/geodesic_walk.start_direction_at_vertex`` reproduces). So
+    potpourri3d reads ordito's halfedge ``h`` at ``theta_h + c_v`` with ``c_v`` the argument of
+    that sum taken in its own frame, and an ordito vector is potpourri3d's rotated by ``-c_v``.
+    Exact in the intrinsic coordinates both libraries solve in, unlike reading either vector's
+    components as Euclidean coordinates in its frame, which is off wherever a fan is not flat.
+    """
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
+    basis_x_pp, basis_y_pp, _ = (np.asarray(basis) for basis in solver_pp.get_tangent_frames())
+    theta_np = od.tangent_space.halfedge_tangent_angles(mesh_wp.points, mesh_wp.indices).numpy()
+
+    origin_np = faces_np.reshape(-1)
+    target_np = np.roll(faces_np, -1, axis=1).reshape(-1)
+    edge_np = vertices_np[target_np] - vertices_np[origin_np]
+    projected_np = (edge_np * basis_x_pp[origin_np]).sum(axis=1) + 1j * (
+        edge_np * basis_y_pp[origin_np]
+    ).sum(axis=1)
+    anchor_np = np.zeros(vertices_np.shape[0], dtype=np.complex128)
+    np.add.at(anchor_np, origin_np, projected_np * np.exp(-1j * theta_np.astype(np.float64)))
+
+    # A boundary halfedge a -> b (no reverse): at b the fan's closing edge points to a, at pi.
+    n_vertices = vertices_np.shape[0]
+    key_np = origin_np * n_vertices + target_np
+    boundary_np = ~np.isin(key_np, target_np * n_vertices + origin_np)
+    closing_np = vertices_np[origin_np[boundary_np]] - vertices_np[target_np[boundary_np]]
+    at_np = target_np[boundary_np]
+    closing_x_np = (closing_np * basis_x_pp[at_np]).sum(axis=1)
+    closing_y_np = (closing_np * basis_y_pp[at_np]).sum(axis=1)
+    np.add.at(anchor_np, at_np, -(closing_x_np + 1j * closing_y_np))
+    return np.angle(anchor_np)
 
 
 def _unit_transport_source(device: wp.DeviceLike) -> tuple[wp.array[wp.int32], wp.array[wp.vec2]]:
@@ -1058,9 +1115,10 @@ def test_extend_scalar_matches_potpourri3d(request: pytest.FixtureRequest, mesh_
     assert within_band.mean() > 0.99
     assert np.abs(extended_wp.numpy() - extended_pp).max() < 0.1
     assert np.abs(extended_wp.numpy() - extended_pp).mean() < 1e-3
-    # The extension interpolates: it never leaves the range of its sources.
-    assert extended_wp.numpy().min() >= values_np.min() - 1e-6
-    assert extended_wp.numpy().max() <= values_np.max() + 1e-6
+    # No range invariant here: both fixtures carry negative cotangent weights, and there the ratio
+    # of two diffusions is not a convex combination. On ``sphere_irregular`` it reaches 5.43 for
+    # sources in [1, 5], and geometry-central on the same discretization returns the same value to
+    # 2.3e-5; the invariant is asserted on ``icosphere(5)`` in the far-field test below.
 
 
 def test_extend_scalar_matches_potpourri3d_far_from_the_sources(
@@ -1089,10 +1147,17 @@ def test_extend_scalar_matches_potpourri3d_far_from_the_sources(
     )
     assert np.ptp(extended_pp) > 1.9
     assert np.abs(extended_wp - extended_pp).max() < 1e-3
+    # The extension interpolates where every cotangent weight is non-negative, as on this Delaunay
+    # sphere: ``M - tL`` is then an M-matrix, both diffusions are non-negative and their ratio is a
+    # convex combination of the source values, so it never leaves their range.
+    assert extended_wp.min() >= values_np.min() - 1e-6
+    assert extended_wp.max() <= values_np.max() + 1e-6
 
 
-def test_extend_scalar_single_source_is_constant(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
+def test_extend_scalar_single_source_is_constant(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    _, mesh_wp = sphere_irregular
     extended = od.heat.extend_scalar(
         mesh_wp.points,
         mesh_wp.indices,
@@ -1158,67 +1223,57 @@ def test_transport_on_a_flat_patch_is_constant(device: str) -> None:
 # ``cave_cube`` is left out: potpourri3d returns NaN on it. Its quad faces are split by diagonals
 # whose two opposite angles are both right angles, so those cotangent weights are exactly zero and
 # geometry-central's direct factorization of the connection Laplacian fails ("factorization
-# failed").
-# It is covered by the disconnected-component test below instead.
-@pytest.mark.parametrize("mesh_name", _HEAT_MESHES)
+# failed"). It is covered by the disconnected-component test below instead.
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded", "torus_irregular"])
 @pytest.mark.parity("transport_tangent_vectors", "potpourri3d")
 @pytest.mark.parity("vector_heat_scale", "potpourri3d")
 def test_transport_tangent_vectors_matches_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B (gauge fix): both 2-D fields are pushed to 3-D world vectors before comparing.
+    Class B (gauge fix): potpourri3d's vectors rotated into ordito's tangent coordinates.
 
     A tangent component is meaningless across libraries -- each measures from its own reference
-    direction -- so the named transform expresses both answers in each library's *own* frames and
-    compares the resulting world vectors, which are gauge-invariant. Comparing the raw ``vec2``
-    components instead is exactly what section 6 forbids here.
+    direction -- so the named transform is the per-vertex rotation between the two
+    (``_potpourri3d_angle_offsets``): both express a vector by its normalized polar angle, and only
+    angle 0 differs. Measured worst direction difference over every vertex, from the first interior
+    vertex: **3.1e-3** degrees on ``sphere_irregular`` (median 8.6e-5), 2.3e-4 on
+    ``saddle_graded``, 4.4e-4 on ``torus_irregular``; from a boundary vertex of ``saddle_graded``
+    2.8e-4. The bar is 1e-2 degrees.
 
-    **The source is the first interior vertex, not vertex 0.** At a boundary source the gauge fix
-    does not hold: potpourri3d's tangent coordinates there are not those of the frame
-    ``get_tangent_frames`` reports, so every transported direction came out rotated by exactly the
-    angle between the two libraries' ``basis_x`` at the source -- 0.93 degrees on ``hemisphere``
-    (the median this test used to record), 14.77 degrees at ``saddle_graded``'s corner. From an
-    interior source that offset is 0. (Neither library transports a boundary *corner*'s vector to
-    a constant field on a flat disk -- the tangent angles there are rescaled -- so a corner source
-    tests no transport either.)
+    **The transform is the substance.** Pushing both 2-D answers to 3-D through each library's
+    frame instead (``u * basis_x + v * basis_y``) reads Euclidean coordinates where both libraries
+    hold normalized angles; it agrees only where a fan is flat, and it put the two 0.55 degrees
+    apart in the median on ``sphere_irregular`` (90th percentile 3.2; 2.9 on ``torus_irregular``),
+    which was recorded as an open discrepancy, and made every boundary source look rotated by the
+    frame offset there. **Mutation probe:** dropping the boundary vertex's closing rim edge from the
+    offset leaves interior vertices right and sends the worst rim vertex to 55-98 degrees.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     solver_pp = _solver_pp(mesh_tm)
-    basis_x_pp, basis_y_pp, _ = (np.asarray(basis) for basis in solver_pp.get_tangent_frames())
-    basis_x, basis_y, _ = _frames(mesh_wp)
+    offset_np = _potpourri3d_angle_offsets(mesh_tm, mesh_wp, solver_pp)
 
     border = np.asarray(igl.is_border_vertex(mesh_tm.faces.astype(np.int64)), dtype=bool)
-    source = int(np.flatnonzero(~border)[0])
-    vector = np.array([[1.0, 0.0]], dtype=np.float32)
-    # The same *world* vector for both libraries: ordito's basis_x at the source, re-expressed in
-    # potpourri3d's frame there.
-    vector_pp = [
-        [float(basis_x[source] @ basis_x_pp[source]), float(basis_x[source] @ basis_y_pp[source])]
-    ]
-
-    transported_wp, _ = od.heat.transport_tangent_vectors(
-        mesh_wp.points,
-        mesh_wp.indices,
-        wp.array(np.array([source], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device),
-        points_to_warp_uv(vector, mesh_wp.device),
-    )
-    transported_pp = np.asarray(solver_pp.transport_tangent_vectors([source], vector_pp))
-
-    world_wp = _to_world(transported_wp.numpy(), basis_x, basis_y)
-    world_pp = _to_world(transported_pp, basis_x_pp, basis_y_pp)
-    assert np.allclose(np.linalg.norm(world_wp, axis=1), 1.0, rtol=5e-2, atol=5e-2)
-    cosine = (world_wp * world_pp).sum(axis=1) / (
-        np.linalg.norm(world_wp, axis=1) * np.linalg.norm(world_pp, axis=1) + 1e-12
-    )
-    angle = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
-    # Measured medians from the interior source: 0.0 (icosahedron), 0.0056 (hemisphere), 0.018
-    # (half_torus), 0.0 (saddle_graded) degrees, so 0.1 clears the worst by 5x and still fails the
-    # 0.93-degree constant offset a boundary source produced on ``hemisphere``. The *median* is the
-    # statistic to use: on the cut locus (and on a 12-vertex icosahedron, most of which is cut
-    # locus) the transported direction is genuinely undefined and the two libraries disagree
-    # freely there.
-    assert np.median(angle) < 0.1
+    sources = [int(np.flatnonzero(~border)[0])]
+    if border.any():
+        sources.append(int(np.flatnonzero(border)[0]))
+    for source in sources:
+        # The same tangent vector for both: ordito's (1, 0), at angle c_source in potpourri3d's.
+        transported_wp, _ = od.heat.transport_tangent_vectors(
+            mesh_wp.points,
+            mesh_wp.indices,
+            wp.array(np.array([source], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device),
+            points_to_warp_uv(np.array([[1.0, 0.0]], dtype=np.float32), mesh_wp.device),
+        )
+        start_pp = np.exp(1j * offset_np[source])
+        transported_pp = np.asarray(
+            solver_pp.transport_tangent_vectors([source], [[start_pp.real, start_pp.imag]])
+        )
+        ordito_np = transported_wp.numpy().astype(np.float64) @ np.array([1.0, 1j])
+        aligned_pp = (transported_pp @ np.array([1.0, 1j])) * np.exp(-1j * offset_np)
+        assert np.allclose(np.abs(ordito_np), 1.0, rtol=5e-2, atol=5e-2)
+        angle = np.degrees(np.abs(np.angle(ordito_np * np.conj(aligned_pp))))
+        assert angle.max() < 1e-2, f"source {source}: worst {angle.max():.2e} degrees"
 
 
 def test_transport_on_a_graded_mesh_matches_a_direct_solve(
@@ -1260,7 +1315,7 @@ def test_transport_on_a_graded_mesh_matches_a_direct_solve(
     assert angle.max() < 1e-3
 
 
-@pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_transport_preserves_source_magnitudes(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1278,19 +1333,20 @@ def test_transport_preserves_source_magnitudes(
     assert np.allclose(np.linalg.norm(transported.numpy(), axis=1), magnitude, rtol=1e-4, atol=1e-4)
 
 
-def test_transport_does_not_cross_components(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transport_does_not_cross_components(
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
-    Not a library comparison: potpourri3d returns NaN on this mesh (see the note above).
+    Not a library comparison: nothing is transported across the gap between two components.
 
-    ``cave_cube`` is a cube shell around a smaller cube shell: two components. Nothing can be
-    transported across the gap, so the cavity's vertices must come back at zero rather than with a
-    smeared value. The validity mask is then exactly "reachable, and not the antipodal corner":
-    those are the two ways a direction fails to exist, and the vectors alone distinguish neither
-    from an ordinary answer -- the cavity's eight vertices and the antipode all read zero on CPU,
-    while on CUDA the antipode reads *full length* in a direction that is pure round-off. The mask
-    is the same array on both.
+    ``sphere_irregular_hollow`` is an irregular shell inside another: two components, and the
+    source (vertex 0) lies on the 200-vertex inner one. The 500 vertices of the other shell must
+    come back at zero rather than with a smeared value, and the validity mask is exactly
+    "reachable": measured, every reachable vertex at unit length (to 6e-8) and resolved, every
+    other exactly zero and unresolved. (The other way a direction fails to exist, a symmetric
+    cut-locus point, is ``cave_cube``'s and has its own test below.)
     """
-    _, mesh_wp = cave_cube
+    _, mesh_wp = sphere_irregular_hollow
     transported, resolved = od.heat.transport_tangent_vectors(
         mesh_wp.points, mesh_wp.indices, *_unit_transport_source(mesh_wp.device)
     )
@@ -1301,31 +1357,12 @@ def test_transport_does_not_cross_components(cave_cube: tuple[tm.Trimesh, wp.Mes
     ).numpy()
     reachable = labels == labels[0]
 
-    # The outer shell's corner diagonally opposite the source is excluded, and not as a tolerance
-    # dodge: it is a point of the cut locus with three-fold symmetry about the body diagonal, so the
-    # three shortest paths deliver copies of the source vector 120 degrees apart whose sum is
-    # exactly zero. Measured on this fixture: exactly 0.0 at diffusion times 1e-3, 1e-2 and 1e-1 (so
-    # it is not short-time underflow), unchanged by rotating the source vector (so it is not a bad
-    # input direction), and restored in proportion to a symmetry-breaking jitter of the vertices
-    # (1.4e-04 at 1e-3, 1.2e-02 at 1e-1).
-    #
-    # What survives the cancellation is round-off, and the two devices round differently: CPU
-    # returns exactly zero and is scaled to zero, CUDA returns 8.7e-09 of the field maximum and is
-    # scaled to unit length. Neither is more correct, and no threshold can pick the round-off out --
-    # ``half_torus`` resolves genuine directions down to 8.0e-10 of its maximum, below this noise.
-    # ``test_transport_cancels_at_a_symmetric_cut_locus_point`` pins the cancellation itself.
-    positions_np = mesh_wp.points.numpy()
-    antipode = int(np.argmin(np.linalg.norm(positions_np + positions_np[0], axis=1)))
-    assert reachable[antipode]
-    resolvable = reachable & (np.arange(magnitude.size) != antipode)
-
     assert np.isfinite(magnitude).all()
-    # Seven of the outer shell's eight corners, so the comparison below is not vacuous.
-    assert resolvable.sum() == 7
-    assert np.allclose(magnitude[resolvable], 1.0, rtol=1e-4, atol=1e-4)
+    # Both components are populated, so neither half of the comparison is vacuous.
+    assert 0 < reachable.sum() < reachable.size
+    assert np.allclose(magnitude[reachable], 1.0, rtol=1e-4, atol=1e-4)
     assert np.allclose(magnitude[~reachable], 0.0, rtol=1e-6, atol=1e-6)
-    assert np.array_equal(resolved.numpy(), resolvable)
-    assert not ((magnitude == 0.0) & resolved.numpy()).any()
+    assert np.array_equal(resolved.numpy(), reachable)
 
 
 def test_transport_cancels_at_a_symmetric_cut_locus_point(
@@ -1344,6 +1381,14 @@ def test_transport_cancels_at_a_symmetric_cut_locus_point(
     the unperturbed answer is the zero vector) to 1.99 (CUDA), against a 0.25 threshold — 4x. Every
     other vertex moves a median 0.0007-0.0034 and at most 0.0089, against a 0.02 threshold — 5.9x.
     The two populations are 112x apart at their closest.
+
+    Premise, and why the fixture is ``cave_cube``: an exactly symmetric cut-locus point. The outer
+    shell's corner diagonally opposite the source has three-fold symmetry about the body diagonal,
+    so the three shortest paths deliver copies of the source vector 120 degrees apart whose sum is
+    exactly zero -- 0.0 at diffusion times 1e-3, 1e-2 and 1e-1 (not short-time underflow),
+    unchanged by rotating the source vector. What survives is round-off, and the devices round
+    differently: CPU returns exactly zero and is scaled to zero, CUDA 8.7e-09 of the field maximum,
+    scaled to unit length. No irregular fixture has an exact symmetry to cancel on.
     """
     _, mesh_wp = cave_cube
     sources_wp, vectors_wp = _unit_transport_source(mesh_wp.device)
@@ -1371,7 +1416,7 @@ def test_transport_cancels_at_a_symmetric_cut_locus_point(
 
 @pytest.mark.parametrize("scale", [1e-3, 1e5])
 def test_transport_is_invariant_to_mesh_scale(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], scale: float
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], scale: float
 ) -> None:
     """
     Class A: the same surface in different units transports to the same tangent field.
@@ -1381,7 +1426,7 @@ def test_transport_is_invariant_to_mesh_scale(
     to the field. Against an absolute cutoff the failure is a *silent* zero field rather than an
     error: 43 of this fixture's 97 vertices came back at zero magnitude at scale 1e5, and 0 do now.
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     sources_wp, vectors_wp = _unit_transport_source(mesh_wp.device)
     unit, _ = od.heat.transport_tangent_vectors(
         mesh_wp.points, mesh_wp.indices, sources_wp, vectors_wp
@@ -1399,19 +1444,21 @@ def test_transport_is_invariant_to_mesh_scale(
     assert np.allclose(rescaled.numpy(), unit.numpy(), rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.parametrize(("mesh_name", "n_resolved"), [("icosahedron", 11), ("hemisphere", 97)])
+@pytest.mark.parametrize(
+    ("mesh_name", "n_resolved"),
+    [("sphere_irregular", 500), ("saddle_graded", 1156), ("cave_cube", 7)],
+)
 def test_transport_validity_mask_flags_the_unresolvable(
     request: pytest.FixtureRequest, mesh_name: str, n_resolved: int
 ) -> None:
     """
     Class A against resolved counts measured on both devices.
 
-    The counts are the point of the mask: they are identical on CPU and CUDA (11 / 97) where
-    the *vectors* are not, because at a cancelling vertex CPU returns the zero vector and CUDA
-    returns a full-length one. ``hemisphere`` resolves every vertex, so the boolean assert is
-    parametrized over inputs producing both answers rather than only the interesting one.
-    ``cave_cube``'s mask (7 resolved) is pinned exactly in
-    ``test_transport_does_not_cross_components``.
+    The counts are the point of the mask: they are identical on CPU and CUDA where the *vectors*
+    are not, because at a cancelling vertex CPU returns the zero vector and CUDA returns a
+    full-length one. The two irregular fixtures resolve every vertex (500 and 1 156), so the boolean
+    assert is parametrized over an input producing the other answer too: ``cave_cube``, 7 of its 16
+    vertices -- the outer shell less its symmetric antipode, the cavity unreachable.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     sources_wp, vectors_wp = _unit_transport_source(mesh_wp.device)
@@ -1446,27 +1493,25 @@ def test_log_map_radius_is_the_geodesic_distance(
 # on
 # ``cave_cube`` (zero cotangent weights, as above), and a 12-vertex icosahedron is too coarse for
 # either library's log map to mean much.
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("log_map", "potpourri3d")
 def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B (gauge fix by an explicit rotation): both log maps live in the source's tangent plane.
 
     Unlike the transport test, the gauge here is a single rotation for the whole field -- both maps
-    measure angles in *one* tangent plane, the source vertex's -- so the transform recovers that
-    angle from the two ``basis_x`` directions and rotates potpourri3d's answer by it. The fixture
-    choice is explained in the comment above: neither ``cave_cube`` nor ``icosahedron`` can serve.
+    measure angles in *one* tangent plane, the source vertex's -- so the transform is that vertex's
+    offset between the two libraries' angle 0 (``_potpourri3d_angle_offsets``) and rotates
+    potpourri3d's answer by it. The fixture choice is explained in the comment above.
 
-    The source is the first interior vertex, for the reason
-    [`test_transport_tangent_vectors_matches_potpourri3d`] gives: at a boundary source the gauge
-    fix does not hold (vertex 0 is a corner of ``saddle_graded``, where the median error was 19.7 %
-    of the diagonal; on ``hemisphere`` the boundary source read 10 % where the interior one reads
-    6.8 %).
+    The source is the first interior vertex. The gauge holds at a boundary source too (it does for
+    transport), but the two constructions differ most there: from ``saddle_graded``'s corner the
+    median error is 29 % of the diagonal against 10.6 % from the interior vertex, and the angles
+    alone differ by a median 34 degrees against 13.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     solver_pp = _solver_pp(mesh_tm)
-    basis_x_pp, basis_y_pp, _ = (np.asarray(basis) for basis in solver_pp.get_tangent_frames())
-    basis_x, _, _ = _frames(mesh_wp)
+    offset_np = _potpourri3d_angle_offsets(mesh_tm, mesh_wp, solver_pp)
 
     border = np.asarray(igl.is_border_vertex(mesh_tm.faces.astype(np.int64)), dtype=bool)
     source = int(np.flatnonzero(~border)[0])
@@ -1474,10 +1519,9 @@ def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: 
     logarithm_pp = np.asarray(solver_pp.compute_log_map(source, "VectorHeat"))
 
     # Both maps live in the source vertex's tangent plane but measure angles from their own
-    # reference
-    # direction, so potpourri3d's has to be rotated into ordito's before the two can be compared.
-    cosine = float(basis_x[source] @ basis_x_pp[source])
-    sine = float(basis_x[source] @ basis_y_pp[source])
+    # reference direction, so potpourri3d's has to be rotated into ordito's before the two can be
+    # compared.
+    cosine, sine = float(np.cos(offset_np[source])), float(np.sin(offset_np[source]))
     rotation = np.array([[cosine, sine], [-sine, cosine]])
     aligned_pp = logarithm_pp @ rotation.T
 
@@ -1485,7 +1529,7 @@ def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: 
     error = np.linalg.norm(logarithm_wp - aligned_pp, axis=1)
     # The two constructions differ (this one reads the angle off the distance gradient), so they
     # agree only to a few percent of the mesh scale: measured 6.8 % of the bounding diagonal on
-    # ``hemisphere`` (97 vertices), 2.1 % on ``half_torus`` (544) and 10.9 % on ``saddle_graded``,
+    # ``hemisphere`` (97 vertices), 2.1 % on ``half_torus`` (544) and 10.6 % on ``saddle_graded``,
     # where most of it is potpourri3d's radius -- 3.4 % of the diagonal off ``igl.exact_geodesic``
     # in the median, against ordito's 0.46 % (1.5 % against 5.0 % on ``hemisphere``).
     assert np.median(error) < 0.15 * scale
@@ -1514,13 +1558,13 @@ def test_log_map_radius_matches_potpourri3d_far_from_the_sources(icosphere5: Ico
     assert np.abs(radius_wp - exact_np).max() < 0.06
 
 
-def test_log_map_is_zero_at_its_source(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
+def test_log_map_is_zero_at_its_source(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = sphere_irregular
     logarithm = od.heat.log_map(mesh_wp.points, mesh_wp.indices, 3).numpy()
     assert np.allclose(logarithm[3], 0.0, rtol=1e-6, atol=1e-6)
 
 
-def test_log_map_is_invariant_to_mesh_scale(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_log_map_is_invariant_to_mesh_scale(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: the same surface in different units maps to the same angles, scaled.
 
@@ -1542,7 +1586,7 @@ def test_log_map_is_invariant_to_mesh_scale(icosphere_coarse: tuple[tm.Trimesh, 
     expected to agree between the two scales, or to read as zero on one device and not the other,
     independently of this bug.
     """
-    _, mesh_wp = icosphere_coarse
+    _, mesh_wp = sphere_irregular
     cut_locus = 3  # this mesh's antipode of vertex 0 -- see the docstring above
     unit = od.heat.log_map(mesh_wp.points, mesh_wp.indices, 0).numpy()
     rescaled = od.heat.log_map(
@@ -1573,7 +1617,11 @@ def test_log_map_is_invariant_to_mesh_scale(icosphere_coarse: tuple[tm.Trimesh, 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", _HEAT_MESHES)
+# Not ``saddle_graded``: there every ``vertices, faces`` call fails its settle check and factors, so
+# this ordito-against-ordito check costs seconds a call on the CPU device, while the graded reuse
+# path keeps its oracles in ``test_transport_on_a_graded_mesh_matches_a_direct_solve`` and
+# ``test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy``.
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_reused_operators_give_the_same_transport(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1594,49 +1642,46 @@ def test_reused_operators_give_the_same_transport(
     # matrices, so the same answer. Not *bit* for bit, though — conjugate gradient reduces with
     # atomics, and the factorization answers to its own tolerance. Measured: transport agrees to
     # 2e-15, and the log map to 4e-7 absolute, which is float32 epsilon on its own output. Off the
-    # cut locus only, where the direction is round-off and the two solves' round-off differs (the
-    # icosahedron's antipode: 0.06 apart; see ``transport_tangent_vectors``' Notes); the log map's
-    # radius is compared everywhere. The signed field integrates the normalized diffused field,
-    # whose direction at that antipode is round-off, so on the icosahedron alone the signed field is
-    # round-off throughout: a 2e-7 relative perturbation of the vertices -- their own float32
-    # rounding -- moves it by 8-11 % of its span. The two solves' fields differ by 1.4e-2 of the
-    # span (5.2e-3 before the cotangents were formed as ``dot / |cross|``, an ulp-level change of
-    # every weight), so the bound is 5e-2 there: above that floor, below the perturbation's reach.
-    resolved = od.heat.transport_tangent_vectors(mesh_wp.points, mesh_wp.indices, sources, vectors)[
-        1
-    ].numpy()
-    assert resolved.any()
-    signed_tolerance = 5e-2 if mesh_name == "icosahedron" else 1e-5
+    # cut locus only, where the direction is round-off and the two solves' round-off differs (on a
+    # 12-vertex icosahedron the antipode's directions sat 0.06 apart; see
+    # ``transport_tangent_vectors``' Notes); the log map's radius is compared everywhere. On the
+    # icosahedron the signed field was round-off throughout and needed a 5e-2 bound; the fixtures
+    # here hold 1e-5.
     points, indices = mesh_wp.points, mesh_wp.indices
+    transported_wp, resolved_wp = od.heat.transport_tangent_vectors(
+        points, indices, sources, vectors
+    )
+    transported, resolved = transported_wp.numpy(), resolved_wp.numpy()
+    assert resolved.any()
     everywhere = np.ones_like(resolved)
-    # Each row: the field from ``vertices, faces``, the same field from the mesh, where to compare.
-    calls: list[tuple[Callable[[], np.ndarray], Callable[[], np.ndarray], np.ndarray, float]] = [
+    # Each row: the field from ``vertices, faces``, the same field from the mesh, where to compare,
+    # and whether to compare its per-vertex length everywhere too (the log map's radius).
+    calls: list[
+        tuple[Callable[[], np.ndarray], Callable[[], np.ndarray], np.ndarray, float, bool]
+    ] = [
         (
-            lambda: od.heat.transport_tangent_vectors(points, indices, sources, vectors)[0].numpy(),
+            lambda: transported,
             lambda: od.heat.transport_tangent_vectors(mesh, sources, vectors)[0].numpy(),
             resolved,
             1e-5,
+            False,
         ),
         (
             lambda: od.heat.log_map(points, indices, 0).numpy(),
             lambda: od.heat.log_map(mesh, 0).numpy(),
             resolved,
             1e-5,
-        ),
-        (
-            lambda: np.linalg.norm(od.heat.log_map(points, indices, 0).numpy(), axis=1),
-            lambda: np.linalg.norm(od.heat.log_map(mesh, 0).numpy(), axis=1),
-            everywhere,
-            1e-5,
+            True,
         ),
         (
             lambda: od.heat.heat_signed_distance(points, indices, curve_wp).numpy(),
             lambda: od.heat.heat_signed_distance(mesh, curve_wp).numpy(),
             everywhere,
-            signed_tolerance,
+            1e-5,
+            False,
         ),
     ]
-    for on_vertices, on_mesh, rows, tolerance in calls:
+    for on_vertices, on_mesh, rows, tolerance, with_radius in calls:
         fresh = on_vertices()
         for _ in range(2):
             reused = on_mesh()
@@ -1644,11 +1689,18 @@ def test_reused_operators_give_the_same_transport(
             # near-zero in a field of size one carries no information about the solve's agreement.
             span = float(np.abs(fresh).max())
             assert np.allclose(fresh[rows], reused[rows], rtol=0.0, atol=tolerance * span)
+            if with_radius:
+                radius_fresh = np.linalg.norm(fresh, axis=1)
+                radius_reused = np.linalg.norm(reused, axis=1)
+                radius_span = float(radius_fresh.max())
+                assert np.allclose(
+                    radius_fresh, radius_reused, rtol=0.0, atol=tolerance * radius_span
+                )
     assert mesh.heat_solver().nbytes > 0
 
 
 def test_trimesh_keeps_one_heat_solver_per_diffusion_time(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: a `Trimesh` solves at the ``t`` it is asked for, with a solver per ``t``.
@@ -1657,7 +1709,7 @@ def test_trimesh_keeps_one_heat_solver_per_diffusion_time(
     never answer for another: ``t`` differs by six orders of magnitude between the two calls, so a
     wrong key would not be subtle.
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     sources, vectors = _unit_transport_source(mesh_wp.device)
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     od.heat.transport_tangent_vectors(mesh, sources, vectors, t=1e-6)
@@ -1677,7 +1729,7 @@ def test_trimesh_keeps_one_heat_solver_per_diffusion_time(
 
 
 @pytest.mark.parametrize("on_trimesh", [False, True], ids=["system", "trimesh"])
-@pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_diffuse_tangent_field_solves_its_own_system(
     request: pytest.FixtureRequest, mesh_name: str, on_trimesh: bool
 ) -> None:
@@ -1687,8 +1739,12 @@ def test_diffuse_tangent_field_solves_its_own_system(
     This entry point is public because the *source* is where the vector-valued methods differ while
     the solve is shared, so what has to be pinned is the equation rather than any particular field.
     Applying the operator back to the answer is the direct check, and it is independent of the CG
-    path that produced it. Measured residual 1.5e-09 against a unit source. Both forms: the
-    system, and a `Trimesh` whose own vector heat system the solve must be.
+    path that produced it, and it is held to the solve's own contract: the componentwise backward
+    error ``|b - A x| / (|A| |x| + |b|)`` under ``SETTLE_BACKWARD_ERROR``, the bar past which a
+    settled iterate falls back to a factorization (measured 3.9e-8 on ``sphere_irregular``, whose
+    iterate settles, and 2e-16 on ``saddle_graded``, which factors; an absolute residual bound read
+    6e-7 on the first and says nothing about scale). Both forms: the system, and a `Trimesh` whose
+    own vector heat system the solve must be.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = int(mesh_tm.vertices.shape[0])
@@ -1710,9 +1766,19 @@ def test_diffuse_tangent_field_solves_its_own_system(
 
     # Non-trivial: diffusion reaches every vertex, so this is not solving for zero.
     assert np.all(np.linalg.norm(diffused_wp.numpy(), axis=1) > 0.0)
-    residual_wp = wp.zeros(n_vertices, dtype=wp.vec2d, device=mesh_wp.points.device)
-    odt.bsr_mv(vector_system, diffused_wp, residual_wp, alpha=1.0, beta=0.0)
-    assert np.abs(residual_wp.numpy() - source_np).max() < 1e-7
+    offsets_np = vector_system.offsets.numpy()[: n_vertices + 1]
+    system_sp = sp.bsr_matrix(
+        (
+            vector_system.values.numpy()[: offsets_np[-1]],
+            vector_system.columns.numpy()[: offsets_np[-1]],
+            offsets_np,
+        ),
+        shape=(2 * n_vertices, 2 * n_vertices),
+    ).tocsr()
+    diffused_np = diffused_wp.numpy().ravel()
+    residual_np = system_sp @ diffused_np - source_np.ravel()
+    scale_np = abs(system_sp) @ np.abs(diffused_np) + np.abs(source_np.ravel())
+    assert (np.abs(residual_np) / scale_np).max() < od.linalg.SETTLE_BACKWARD_ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -1792,16 +1858,8 @@ def test_trimesh_factors_on_the_second_solve_and_reuses_it(
     assert np.abs(distances[2] - distances[1]).max() < 1e-12 * span
 
 
-@pytest.fixture
-def saddle_graded_benchmark(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """Return ``benchmarks``' ``saddle_graded`` (17 689 vertices) on ``device``."""
-    vertices_np, faces_np = BUILDERS["saddle_graded"]()
-    return numpy_to_warp(vertices_np, np.ravel(faces_np), device)
-
-
 def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
-    saddle_graded_benchmark: tuple[wp.array[wp.vec3], wp.array[wp.int32]],
-    monkeypatch: pytest.MonkeyPatch,
+    graded_saddle: GradedSaddle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Class A at 1e-10 of the range: the diffused heat against ``scipy``'s solve of the same system.
@@ -1811,7 +1869,7 @@ def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
     mesh keeps: the second solve builds nothing. The reference is ``spsolve`` on the solver's own
     heat system, so the comparison is of the linear solve alone.
     """
-    vertices_wp, faces_wp = saddle_graded_benchmark
+    _, _, vertices_wp, faces_wp = graded_saddle
     mesh = od.Trimesh(vertices_wp, faces_wp)
     built = _count_factorizations(monkeypatch)
     solver = mesh.heat_solver()
@@ -1841,9 +1899,7 @@ def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
 
 @pytest.mark.parametrize("on_trimesh", [False, True], ids=["vertices_faces", "trimesh"])
 def test_a_discarded_factorization_is_logged(
-    saddle_graded_benchmark: tuple[wp.array[wp.vec3], wp.array[wp.int32]],
-    caplog: pytest.LogCaptureFixture,
-    on_trimesh: bool,
+    graded_saddle: GradedSaddle, caplog: pytest.LogCaptureFixture, on_trimesh: bool
 ) -> None:
     """
     Not a library comparison: the ``INFO`` record says exactly when a factorization is dropped.
@@ -1851,7 +1907,7 @@ def test_a_discarded_factorization_is_logged(
     On the graded saddle the heat solve falls back to a factorization. The ``vertices, faces``
     call then drops it and says so; the `Trimesh` call keeps it and says nothing.
     """
-    vertices_wp, faces_wp = saddle_graded_benchmark
+    _, _, vertices_wp, faces_wp = graded_saddle
     sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=vertices_wp.device)
     mesh = od.Trimesh(vertices_wp, faces_wp)
     with caplog.at_level(logging.INFO, logger="ordito.heat"):
@@ -1865,14 +1921,14 @@ def test_a_discarded_factorization_is_logged(
 
 
 def test_nothing_is_logged_where_nothing_was_factored(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], caplog: pytest.LogCaptureFixture
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], caplog: pytest.LogCaptureFixture
 ) -> None:
     """
     Not a library comparison: a one-shot call on a well-conditioned mesh builds nothing to drop.
 
     So the ``vertices, faces`` form logs nothing at ``INFO``.
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     sources, vectors = _unit_transport_source(mesh_wp.device)
     with caplog.at_level(logging.INFO, logger="ordito.heat"):
         od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources)
@@ -1882,7 +1938,7 @@ def test_nothing_is_logged_where_nothing_was_factored(
 
 
 def test_release_factorizations_frees_them(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Not a library comparison: ``Trimesh.release_factorizations`` drops what the solvers kept.
@@ -1890,7 +1946,7 @@ def test_release_factorizations_frees_them(
     After two calls the mesh holds two factorizations; released, it holds none, and the next call
     starts counting afresh (it iterates, building nothing).
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     sources, _ = _unit_transport_source(mesh_wp.device)
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     built = _count_factorizations(monkeypatch)
@@ -1912,8 +1968,10 @@ def test_release_factorizations_frees_them(
 # ---------------------------------------------------------------------------
 
 
-def test_tangent_to_world_reproduces_the_frames(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
+def test_tangent_to_world_reproduces_the_frames(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    _, mesh_wp = sphere_irregular
     basis_x_wp, basis_y_wp, _ = od.tangent_space.vertex_tangent_frames(
         mesh_wp.points, mesh_wp.indices
     )

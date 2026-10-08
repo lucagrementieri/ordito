@@ -17,7 +17,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito.constants import TOLERANCE_MERGE
 from tests.comparisons import lexsort_rows, same_partition
-from tests.conftest import CLOSED_MESHES
+from tests.conftest import CLOSED_MESHES, MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     numpy_to_meshlib,
@@ -26,17 +26,13 @@ from tests.conversions import (
     warp_empty,
 )
 
-# Not ``conftest.MESHES``: ``cave_cube`` is dropped because its coplanar box faces make every
-# adjacency angle exactly 0 or pi/2, so the three curved fixtures carry the coverage here.
-_ADJACENCY_MESHES = ["icosahedron", "half_torus", "hemisphere", "saddle_graded"]
-
 
 def _adjacency_order(adjacency_np: np.ndarray) -> np.ndarray:
     """Row order that sorts ``(f0, f1)`` adjacency pairs canonically."""
     return np.lexsort((adjacency_np[:, 1], adjacency_np[:, 0]))
 
 
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_adjacency", "trimesh")
 def test_face_adjacency(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """Class A: face pairs and their shared edges, elementwise after a canonical row sort."""
@@ -53,7 +49,7 @@ def test_face_adjacency(request: pytest.FixtureRequest, mesh_name: str) -> None:
     assert np.array_equal(adjacency_edges_wp.numpy()[order_wp], adjacency_edges_tm[order_tm])
 
 
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_face_adjacency_radix_is_invariant_to_an_oversized_base(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -75,7 +71,7 @@ def test_face_adjacency_radix_is_invariant_to_an_oversized_base(
         )
 
 
-@pytest.mark.parametrize("mesh_name", [*CLOSED_MESHES, "icosphere", "boy_surface"])
+@pytest.mark.parametrize("mesh_name", [*CLOSED_MESHES, "sphere_irregular", "boy_surface"])
 @pytest.mark.parametrize("n_vertices_given", [False, True])
 def test_face_adjacency_edges_paired_matches_the_grouped_path(
     request: pytest.FixtureRequest, mesh_name: str, n_vertices_given: bool
@@ -203,7 +199,7 @@ def test_half_a_precomputed_pair_raises_even_on_an_empty_mesh(
         function(*args, adjacency_wp)
 
 
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_the_precomputed_pair_reaches_the_same_answer_as_deriving_it(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -266,7 +262,7 @@ def test_require_paired_adjacency_accepts_both_and_neither(device: str) -> None:
             od.adjacency.require_paired_adjacency(*half)
 
 
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("vertex_face_adjacency", "igl")
 def test_vertex_face_adjacency_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -329,7 +325,7 @@ def test_vertex_face_adjacency_zero_rows_with_faces(device: str) -> None:
     assert np.array_equal(payload_wp.numpy(), np.zeros(3, dtype=np.int32))
 
 
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_adjacency_unshared", "trimesh")
 def test_face_adjacency_unshared(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """Class A: the off-edge corner of each adjacent face, elementwise after a row sort."""
@@ -354,7 +350,7 @@ def test_face_adjacency_unshared(request: pytest.FixtureRequest, mesh_name: str)
     assert np.array_equal(unshared_wp.numpy(), unshared_precomputed_wp.numpy())
 
 
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_adjacency", "igl")
 @pytest.mark.parity("face_adjacency_unshared", "igl")
 def test_face_adjacency_and_unshared_match_igl(
@@ -457,7 +453,7 @@ def test_face_adjacency_unshared_duplicate_faces(device: str) -> None:
     assert np.array_equal(unshared_wp.numpy(), off_edge_np)
 
 
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_adjacency_angles", "trimesh")
 def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -487,17 +483,23 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
     angles_tm_lookup = {
         (int(row[0]), int(row[1])): float(angles_tm[i]) for i, row in enumerate(adjacency_tm)
     }
+    adjacency_np = adjacency_wp.numpy()
     for result_wp in (angles_wp, angles_precomputed_wp):
         angles_wp_lookup = {
-            (int(row[0]), int(row[1])): float(result_wp.numpy()[i])
-            for i, row in enumerate(adjacency_wp.numpy())
+            (int(row[0]), int(row[1])): float(angle)
+            for row, angle in zip(adjacency_np, result_wp.numpy(), strict=True)
         }
         assert angles_wp_lookup.keys() == angles_tm_lookup.keys()
-        for key, angle_tm in angles_tm_lookup.items():
-            assert np.isclose(angles_wp_lookup[key], angle_tm, rtol=1e-4, atol=5e-4)
+        keys = list(angles_tm_lookup)
+        assert np.allclose(
+            [angles_wp_lookup[key] for key in keys],
+            [angles_tm_lookup[key] for key in keys],
+            rtol=1e-4,
+            atol=5e-4,
+        )
 
 
-@pytest.mark.parametrize("mesh_name", ["cave_cube", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular_hollow", "saddle_graded"])
 @pytest.mark.parity(
     "face_adjacency_angles",
     "meshlib",
@@ -577,7 +579,7 @@ def test_face_adjacency_angles_matches_meshlib(
 
 
 @pytest.mark.parity("face_adjacency_projections", "trimesh")
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_face_adjacency_projections(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B (dict index): the projection is keyed by its adjacency *pair*, not by row position.
@@ -701,7 +703,7 @@ def test_face_adjacency_projections_unshared_length_mismatch_raises(device: str)
         )
 
 
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_adjacency_convex", "trimesh")
 def test_face_adjacency_convex(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -792,7 +794,7 @@ def _two_copies(mesh_tm: tm.Trimesh) -> tm.Trimesh:
     return doubled_tm
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_connected_component_labels", "igl", "meshlib", "pyvista")
 @pytest.mark.parity("face_connected_component_labels_depth", "igl", "scipy")
 def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(
@@ -824,8 +826,9 @@ def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(
       the *first* component ``1``, so even a pack-by-first-appearance comparison fails and only the
       partition is shared (pyvista ships its own ``pack_labels`` for the same reason).
 
-    Both a single-component fixture and a two-copy union are checked, because a labelling that
-    collapsed everything into one component would pass on the first alone. On the union, ordito
+    Each fixture and its two-copy union are checked, because a labelling that collapsed everything
+    into one component would pass on a single-component fixture alone (``cave_cube`` is two
+    components already, its union four). On the union, ordito
     against ordito: compressing the pre-hooked forest changes no label.
     ``connected_components.ecl_compress`` runs between the pre-hook and the hook only from
     ``ECL_COMPRESS_FROM`` faces, which no fixture reaches, so the threshold is lowered to force it.
@@ -908,7 +911,9 @@ def test_face_connected_component_labels_is_per_edge(device: str) -> None:
     assert np.unique(labels_wp).size == 2
 
 
-@pytest.mark.parametrize("mesh_name", ["icosphere", "cave_cube", "hemisphere"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
+)
 @pytest.mark.parametrize("bounded", [False, True])
 def test_sorted_face_edge_keys(
     request: pytest.FixtureRequest, mesh_name: str, bounded: bool

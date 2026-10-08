@@ -8,13 +8,16 @@ from typing import cast
 import igl
 import numpy as np
 import pytest
+import scipy.sparse as sp
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
+from scipy.sparse.csgraph import connected_components
 
 import ordito as od
 import ordito.typing as odt
 from tests.comparisons import lexsort_rows, same_partition
+from tests.conftest import MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -69,7 +72,7 @@ def test_crease_edges_thresholds(
     assert np.allclose(lengths_np, 1.0, rtol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("crease_edges", "pymeshlab")
 def test_crease_edges_matches_pymeshlab(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -168,7 +171,7 @@ def test_crease_edges_matches_pyvista(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> N
     assert np.array_equal(lexsort_rows(np.sort(creases_wp.numpy(), axis=1)), lexsort_rows(edges_pv))
 
 
-def test_crease_edges_include_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_crease_edges_include_boundary(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Ordito against ordito: the flag adds exactly the boundary edges and nothing else.
 
@@ -177,7 +180,7 @@ def test_crease_edges_include_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -
     external oracle -- the boundary count is asserted non-zero first so the union cannot hold
     trivially.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     interior_np = od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=40.0).numpy()
     with_boundary_np = od.seams.crease_edges(
         mesh_wp.points, mesh_wp.indices, angle=40.0, include_boundary=True
@@ -191,7 +194,7 @@ def test_crease_edges_include_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -
 
 
 def test_crease_edges_bucketed_match_the_key_sort(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Ordito against ordito: the bucketed mates give the key sort's creases and boundary, in order.
@@ -199,9 +202,10 @@ def test_crease_edges_bucketed_match_the_key_sort(
     The sort path carries the oracles (pymeshlab, MeshLib, pyvista); on the bucket path only the
     flagged halfedges are sorted, both classes in one sort, so each block -- creases, then the
     boundary edges -- is pinned to strictly ascending ``(max, min)`` keys and the whole to the sort
-    path's rows.
+    path's rows. On ``sphere_irregular_cap``, whose bumps carry creases past 10 degrees beside its
+    rim; ``saddle_graded`` has none, which would leave the crease block empty.
     """
-    _mesh_tm, mesh_wp = hemisphere
+    _mesh_tm, mesh_wp = sphere_irregular_cap
     vertices, faces = mesh_wp.points, mesh_wp.indices
     sorted_np = od.seams.crease_edges(vertices, faces, 10.0, include_boundary=True).numpy()
     n_creases = od.seams.crease_edges(vertices, faces, 10.0).shape[0]
@@ -242,10 +246,10 @@ def test_cut_along_edges_with_no_edges_is_the_identity(
 
 
 def test_cut_along_edges_all_interior_edges_gives_a_triangle_soup(
-    device: str, icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """Cutting everything leaves one vertex per corner: the definition of a soup."""
-    sphere_tm, _sphere_tm_wp = icosphere_coarse
+    sphere_tm, _sphere_tm_wp = sphere_irregular
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
     all_edges_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=0.0)
     cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, all_edges_wp)
@@ -254,7 +258,7 @@ def test_cut_along_edges_all_interior_edges_gives_a_triangle_soup(
 
 
 def test_cut_along_edges_ignores_the_winding(
-    device: str, icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Ordito against ordito: reversing some faces' winding does not change which corners merge.
@@ -266,7 +270,7 @@ def test_cut_along_edges_ignores_the_winding(
     caller's own ``twins`` table can reach); a cut that joins the wrong corners there splits or
     merges vertices the consistent cut does not.
     """
-    sphere_tm, _sphere_tm_wp = icosphere_coarse
+    sphere_tm, _sphere_tm_wp = sphere_irregular
     faces_np = np.asarray(sphere_tm.faces, dtype=np.int32)
     flipped = np.arange(faces_np.shape[0]) % 7 == 0
     flipped_faces_np = faces_np.copy()
@@ -390,7 +394,7 @@ def _ordered_loop_np(edges_np: np.ndarray) -> list[int]:
     "igl.cut_mesh does take the same edge set and carries the timed row; the comparison here is on "
     "the one input shape both accept.",
 )
-def test_cut_along_edges_matches_meshlib(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_cut_along_edges_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B on the split: the same vertex duplication, from an ordered loop instead of edge rows.
 
@@ -400,14 +404,14 @@ def test_cut_along_edges_matches_meshlib(icosphere_coarse: tuple[tm.Trimesh, wp.
     consecutive pair becomes an ``EdgeId`` through ``MeshTopology.findEdge``, which is the lookup
     the rest of this suite's EdgeId plumbing rests on.
 
-    Measured on the equator of ``icosphere(2)``: a 22-edge loop takes both libraries from 162
-    vertices to **184** with the face count unchanged at 320 -- the same 22 duplications, since a
+    Measured on ``sphere_irregular`` cut at ``z = 0``: a 42-edge loop takes both libraries from 500
+    vertices to **542** with the face count unchanged at 996 -- the same 42 duplications, since a
     cut adds one copy per loop vertex and creates no geometry.
 
     The face count is asserted precisely because it must *not* move: a cut that retriangulated, or
     one that dropped the seam faces, would still plausibly raise the vertex count.
     """
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
     region_np = mesh_tm.vertices[:, 2] > 0.0
@@ -617,7 +621,7 @@ def _quad_mesh(device: str) -> tuple[wp.array[wp.int32], np.ndarray]:
 
 
 @pytest.mark.parity("uv_seam_edges", "pymeshlab")
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parametrize("include_boundary", [True, False])
 def test_uv_seam_vertex_mask_matches_pymeshlab(
     request: pytest.FixtureRequest, mesh_name: str, include_boundary: bool
@@ -654,7 +658,8 @@ def test_uv_seam_vertex_mask_matches_pymeshlab(
         assert bool((mask_wp.numpy() != selected_pml).any()) == (not mesh_tm.is_watertight)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
+# Not ``conftest.MESHES``: the spherical wedge atlas has no foldover on ``cave_cube``.
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_uv_seam_edges_matches_igl_port(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B (row-set canonicalization): all three blocks equal the ``igl::seam_edges`` CPU port.
@@ -664,9 +669,9 @@ def test_uv_seam_edges_matches_igl_port(request: pytest.FixtureRequest, mesh_nam
     predicate, the one MeshLab cannot express, is the thing under test.
 
     Each block is pinned to a per-fixture count first, because a block that is empty on both sides
-    compares equal and asserts nothing. Measured: 5 seams and 2 foldovers on either fixture, and 0
-    boundaries on ``icosahedron`` against 24 on ``hemisphere`` -- a closed mesh has no UV boundary
-    to report, so there the emptiness *is* the claim rather than a gap in the comparison.
+    compares equal and asserts nothing. Measured: 5 seams, 2 foldovers and 0 boundaries on
+    ``icosahedron``; 17, 98 and 132 on ``saddle_graded`` -- a closed mesh has no UV boundary to
+    report, so there the emptiness *is* the claim rather than a gap in the comparison.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
@@ -797,10 +802,10 @@ def test_uv_seam_edges_corner_uv_matches_explicit_indices(device: str) -> None:
 
 
 def test_seam_edge_vertices_boundaries_match_oriented_boundary(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Boundary rows name the same directed edges ``oriented_boundary_edges`` reports."""
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     wedge_uv_np = _spherical_wedge_atlas(np.asarray(mesh_tm.vertices, dtype=np.float64), faces_np)
     _seams_wp, boundaries_wp, _foldovers_wp = od.seams.uv_seam_edges(
@@ -815,15 +820,19 @@ def test_seam_edge_vertices_boundaries_match_oriented_boundary(
     assert np.array_equal(lexsort_rows(pairs_np), lexsort_rows(oriented_np))
 
 
-def test_seam_edge_vertices_feeds_cut_along_edges(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_seam_edge_vertices_feeds_cut_along_edges(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Not a library comparison: the detect-convert-cut loop on an atlas' own seams.
 
     Seam pairs come out smaller-index-first (the forward halfedge is by definition the one running
-    that way), and feeding them to the cut duplicates vertices along the ring while leaving the
-    face count, the surface area and the component count untouched.
+    that way), and feeding them to the cut duplicates vertices along the seams while leaving the
+    face count and the surface area untouched, and separates exactly the pieces the seams enclose
+    (on ``sphere_irregular``, randomly rotated, the fans straddling the pole axis close seam rings
+    of their own: 7 pieces).
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     wedge_uv_np = _spherical_wedge_atlas(np.asarray(mesh_tm.vertices, dtype=np.float64), faces_np)
     seams_wp, _boundaries_wp, _foldovers_wp = od.seams.uv_seam_edges(
@@ -843,7 +852,23 @@ def test_seam_edge_vertices_feeds_cut_along_edges(icosahedron: tuple[tm.Trimesh,
     assert cut_faces_wp.size == mesh_wp.indices.size
     assert cut_vertices_wp.size > int(mesh_tm.vertices.shape[0])
     assert np.isclose(cut_tm.area, mesh_tm.area, rtol=1e-5)
-    assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 1
+    # The cut separates exactly the pieces the seam edges enclose: the faces' components once the
+    # seam edges are removed from the dual graph, counted independently with SciPy.
+    seam_keys = {tuple(sorted(pair)) for pair in pairs_np.tolist()}
+    dual_rows, dual_cols = [], []
+    for (face_a, face_b), edge in zip(
+        mesh_tm.face_adjacency, mesh_tm.face_adjacency_edges, strict=True
+    ):
+        if tuple(sorted(edge.tolist())) not in seam_keys:
+            dual_rows.append(face_a)
+            dual_cols.append(face_b)
+    n_faces = faces_np.shape[0]
+    dual = sp.coo_matrix(
+        (np.ones(len(dual_rows)), (np.array(dual_rows), np.array(dual_cols))),
+        shape=(n_faces, n_faces),
+    )
+    expected_components = int(connected_components(dual, directed=False)[0])
+    assert _face_component_count(cut_vertices_wp, cut_faces_wp) == expected_components
     # The cut turned the seam ring into a real boundary.
     assert int(od.boundary.boundary_edges(cut_vertices_wp, cut_faces_wp).shape[0]) > 0
 

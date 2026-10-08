@@ -344,6 +344,11 @@ def inflate(
     Uses of it: puffing a thin shell out to a printable thickness, opening a collapsed scan, and
     supplying a starting surface a fitting loop can shrink back onto data.
 
+    Like any displacement along vertex normals it can fold the surface at a sharp vertex, one with
+    an incident face turned more than 90 degrees from its normal;
+    [`ordito.validation.face_self_intersecting_mask`][ordito.validation.face_self_intersecting_mask]
+    names the faces.
+
     ``pressure`` is an absolute distance per pass, in the mesh's own units, so scale it off
     something intrinsic -- a fraction of the mean edge length is the usual choice. With ``gradual``
     pass ``k`` of ``n`` uses ``pressure * (k + 1) / n`` rather than the full amount, which is

@@ -1,7 +1,10 @@
+from typing import Any
+
 import warp as wp
 
 from ordito.constants import TOLERANCE_PLANAR_CONSTANT
-from ordito.kernels.array import RegisterBlockedTable, morton_code_30
+from ordito.kernels.array import RegisterBlockedTable, morton_code_30, to_vec3d
+from ordito.kernels.predicates import point_triangle_offset
 from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import block_sum
 from ordito.kernels.tangent_space import any_perpendicular
@@ -357,16 +360,15 @@ def sphere_center(point: wp.vec3, normal: wp.vec3, radius: wp.float32) -> wp.vec
 
 
 @wp.func
-def tangent_sphere_radius(
-    point: wp.vec3, normal: wp.vec3, touch: wp.vec3
-) -> tuple[wp.float32, wp.bool]:
+def tangent_sphere_radius(point: Any, normal: Any, touch: Any) -> tuple[Any, wp.bool]:
     # Radius of the sphere tangent at ``point`` (centre along ``normal``) that passes through
     # ``touch``, and whether it exists: the shared rule of the support seed and the shrink step,
     # which reject a vanishing denominator identically and differ only in what they keep instead.
+    # Generic over the precision: the seed forms it in ``float32``, the shrink step in ``float64``.
     diff = touch - point
-    denom = wp.float32(2.0) * wp.dot(diff, normal)
-    if wp.abs(denom) < TOLERANCE_PLANAR_CONSTANT:
-        return wp.float32(0.0), False
+    denom = wp.dot(diff, normal) * type(diff[0])(2.0)
+    if wp.abs(denom) < type(denom)(TOLERANCE_PLANAR_CONSTANT):
+        return type(denom)(0.0), False
     return wp.length_sq(diff) / denom, True
 
 
@@ -550,14 +552,34 @@ def step_sphere_shrink(
     center = centers[tid]
     still_shrinking = wp.bool(False)
     if not_converged[tid]:
-        nearest, nearest_distance, _face = closest_point_query(mesh_id, center, max_t)
-        dist_to_start = wp.length(center - p)
-        if not (wp.abs(nearest_distance - dist_to_start) < TOLERANCE_PLANAR_CONSTANT):
-            new_r, found = tangent_sphere_radius(p, normals[tid], nearest)
+        _nearest, distance, face = closest_point_query(mesh_id, center, max_t)
+        # Warp's query picks the face; everything after is ``float64``. The point Warp places on
+        # the face is up to ~2e-5 off, above the tolerance the gap is tested against, and the
+        # tangent radius divides by a dot product that cancels as the sphere closes in, so
+        # ``float32`` there moved the answer by more than the convergence threshold. A miss (the
+        # centre past ``max_t``) keeps the query's convention: the touch point is the centre
+        # itself, which halves the radius.
+        point_d = to_vec3d(p)
+        normal_d = to_vec3d(normals[tid])
+        center_d = point_d + normal_d * wp.float64(radius)
+        touch = center_d
+        gap = wp.abs(wp.float64(distance) - wp.length(center_d - point_d))
+        if face >= 0:
+            mesh = wp.mesh_get(mesh_id)
+            offset = point_triangle_offset(
+                center_d,
+                to_vec3d(mesh.points[mesh.indices[3 * face]]),
+                to_vec3d(mesh.points[mesh.indices[3 * face + 1]]),
+                to_vec3d(mesh.points[mesh.indices[3 * face + 2]]),
+            )
+            touch = center_d - offset
+            gap = wp.abs(wp.length(offset) - wp.length(center_d - point_d))
+        if not (gap < wp.float64(TOLERANCE_PLANAR_CONSTANT)):
+            new_r, found = tangent_sphere_radius(point_d, normal_d, touch)
             if found:
-                still_shrinking = radius - new_r >= convergence_threshold
-                radius = new_r
-                center = sphere_center(p, normals[tid], new_r)
+                still_shrinking = wp.float64(radius) - new_r >= wp.float64(convergence_threshold)
+                radius = wp.float32(new_r)
+                center = sphere_center(p, normals[tid], radius)
     out_radii[tid] = radius
     out_centers[tid] = center
     out_not_converged[tid] = still_shrinking

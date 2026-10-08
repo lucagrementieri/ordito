@@ -31,7 +31,7 @@ import warp as wp
 
 import ordito as od
 from ordito import _launch
-from ordito._device import prefers_tiled_reduction, read_scalar, require_same_device, slice_count
+from ordito._device import read_scalar, require_same_device
 from ordito.constants import TILE_1D
 from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
@@ -144,29 +144,19 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
     if f == 0:
         return wp.vec3(float("nan"), float("nan"), float("nan"))
     device = vertices.device
-    # One accumulator, read once: slots 0-2 hold the area-weighted centroid sum and slot 3 the
-    # area sum. See the kernel.
-    totals = _launch.zeros(4, dtype=wp.float32, device=device)
-    if prefers_tiled_reduction(device):
-        _launch.launch_tiled(
-            kernel_measures.centroid_tiled,
-            dim=[(f + TILE_1D - 1) // TILE_1D],
-            inputs=[vertices, faces, wp.int32(f), totals],
-            block_dim=TILE_1D,
-            device=device,
-        )
-    else:
-        n_slices = slice_count(f, device)
-        _launch.launch(
-            kernel_measures.centroid_sliced,
-            dim=n_slices,
-            inputs=[vertices, faces, wp.int32(f), wp.int32(n_slices), totals],
-            device=device,
-        )
-    # One unavoidable readback: the return type is a host-side wp.vec3, so the sums have to cross
-    # to the host to be divided, and the kernel put all four of them in one buffer to do it in a
-    # single sync.
-    weighted = totals.numpy()
+    # Per-block sums (slots 0-2 the area-weighted centroid sum, 3 the area), folded by
+    # ``reduce.sum`` in a fixed order so the centroid is the same bits on every run. One readback:
+    # the return type is a host-side wp.vec3, so the sums cross to the host to be divided.
+    blocks = kernel_reduce.blocks_1d(f)
+    partials = _launch.empty(blocks, dtype=wp.vec4, device=device)
+    _launch.launch_tiled(
+        kernel_measures.centroid_partials,
+        dim=[blocks],
+        inputs=[vertices, faces, wp.int32(f), partials],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    weighted = od.reduce.sum(partials)
     total_area = float(weighted[3])
     if total_area == 0.0:
         # Every face degenerate: the weights are all zero, so there is no weighted mean. Same

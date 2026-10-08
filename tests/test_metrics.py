@@ -307,9 +307,11 @@ def test_chamfer_points_to_points_matches_pytorch3d(device: str) -> None:
     assert np.allclose(chamfer_wp, float(chamfer_p3d), rtol=1e-6, atol=0.0)
 
 
-def _pairing(icosphere: tuple[tm.Trimesh, wp.Mesh], pairing: str) -> tuple[np.ndarray, np.ndarray]:
+def _pairing(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], pairing: str
+) -> tuple[np.ndarray, np.ndarray]:
     """``(x, y)`` for the three pairings that decide the backward cloud search."""
-    vertices_np = np.asarray(icosphere[0].vertices, dtype=np.float32)
+    vertices_np = np.asarray(sphere_irregular[0].vertices, dtype=np.float32)
     rng = np.random.default_rng(31)
     jittered_np = (vertices_np + rng.normal(scale=1e-4, size=vertices_np.shape)).astype(np.float32)
     if pairing == "coincident":
@@ -331,7 +333,7 @@ _BACKWARD_BACKEND = {"coincident": None, "displaced": "bvh", "partial": "bvh"}
 @pytest.mark.parametrize("size_gate", [False, True])
 def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
     device: str,
-    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
     pairing: str,
     size_gate: bool,
     monkeypatch: pytest.MonkeyPatch,
@@ -348,7 +350,7 @@ def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
     """
     if not size_gate:
         monkeypatch.setattr(od.metrics, "_GRID_BACKWARD_MIN_POINTS", 0)
-    x_np, y_np = _pairing(icosphere, pairing)
+    x_np, y_np = _pairing(sphere_irregular, pairing)
     distance_xy_np = KDTree(y_np).query(x_np)[0]
     distance_yx_np = KDTree(x_np).query(y_np)[0]
     assert np.ptp(distance_yx_np) > 1e-5  # not a constant answer (7.4)
@@ -382,7 +384,7 @@ def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
 @pytest.mark.parametrize("pairing", ["coincident", "displaced", "partial"])
 def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
     device: str,
-    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
     pairing: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -394,7 +396,7 @@ def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
     two candidates tie. The size threshold is lowered so the fixture reaches the choice.
     """
     monkeypatch.setattr(od.metrics, "_GRID_BACKWARD_MIN_POINTS", 0)
-    x_np, y_np = (a.astype(np.float64) for a in _pairing(icosphere, pairing))
+    x_np, y_np = (a.astype(np.float64) for a in _pairing(sphere_irregular, pairing))
     n, m = len(x_np), len(y_np)
     nn_xy = KDTree(y_np).query(x_np)[1]
     nn_yx = KDTree(x_np).query(y_np)[1]
@@ -424,7 +426,9 @@ def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
+)
 def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: both metrics are reductions of ``igl.point_mesh_squared_distance`` in each direction.
@@ -464,7 +468,7 @@ def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh
 _MESHLIB_FLT_MAX = 3.4028234663852886e38
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_irregular_hollow"])
 @pytest.mark.parity("chamfer_points_to_mesh", "meshlib")
 def test_chamfer_points_to_mesh_forward_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
@@ -639,7 +643,7 @@ def test_chamfer_points_to_mesh_matches_pytorch3d(device: str) -> None:
     assert not np.allclose(both_wp, scalar_p3d, rtol=1e-3, atol=0.0)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_irregular_hollow"])
 @pytest.mark.parity("chamfer_points_to_mesh", "igl")
 def test_chamfer_and_hausdorff_points_to_mesh(
     request: pytest.FixtureRequest, mesh_name: str
@@ -915,20 +919,31 @@ def _reduce_np(per_point: np.ndarray, reduction: str) -> float:
     return float(per_point.mean() if reduction == "mean" else per_point.sum())
 
 
-def _fd_grad(loss_fn: Callable[[], float], arr: np.ndarray, eps: float = 1e-3) -> np.ndarray:
-    """Central finite-difference gradient of ``loss_fn`` w.r.t. in-place array ``arr``."""
-    grad = np.zeros_like(arr)
+def _fd_grad(
+    loss_fn: Callable[[], float],
+    arr: np.ndarray,
+    eps: float = 1e-3,
+    indices: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    Central finite-difference gradient of ``loss_fn`` w.r.t. in-place array ``arr``.
+
+    Over every coordinate, or only the flat ``indices`` (returned in that order) -- two loss
+    evaluations a coordinate, so a sample keeps the check affordable on a mesh of hundreds of
+    vertices.
+    """
     flat = arr.reshape(-1)
-    grad_flat = grad.reshape(-1)
-    for idx in range(flat.size):
+    coordinates = np.arange(flat.size) if indices is None else indices
+    grad = np.zeros(coordinates.size)
+    for slot, idx in enumerate(coordinates):
         original = flat[idx]
         flat[idx] = original + eps
         loss_plus = loss_fn()
         flat[idx] = original - eps
         loss_minus = loss_fn()
         flat[idx] = original
-        grad_flat[idx] = (loss_plus - loss_minus) / (2.0 * eps)
-    return grad
+        grad[slot] = (loss_plus - loss_minus) / (2.0 * eps)
+    return grad if indices is not None else grad.reshape(arr.shape)
 
 
 @pytest.mark.parity(
@@ -994,7 +1009,7 @@ def test_chamfer_points_to_points_loss_grad_matches_pytorch3d(
 
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 def test_chamfer_points_to_mesh_loss_grad(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], reduction: _DiffReduction
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], reduction: _DiffReduction
 ) -> None:
     """
     Not a library comparison: the two-sided loss against central differences of a NumPy mirror.
@@ -1003,7 +1018,7 @@ def test_chamfer_points_to_mesh_loss_grad(
     no library differentiates this two-sided loss; the forward-only loss has pytorch3d's autograd
     as its oracle below. The assignments are held at the ones the loss itself computes.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.device
     verts_np = np.asarray(mesh_tm.vertices, dtype=np.float32).astype(np.float64)
     faces_np = np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1)
@@ -1136,9 +1151,11 @@ def test_chamfer_points_to_mesh_loss_grad_matches_pytorch3d(
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 @pytest.mark.parametrize("single_directional", [False, True])
 def test_chamfer_mesh_to_mesh_loss_grad(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], reduction: _DiffReduction, single_directional: bool
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    reduction: _DiffReduction,
+    single_directional: bool,
 ) -> None:
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.device
     verts_a_np = np.asarray(mesh_tm.vertices, dtype=np.float32).astype(np.float64)
     faces_np = np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1)
@@ -1160,8 +1177,11 @@ def test_chamfer_mesh_to_mesh_loss_grad(
         return total
 
     loss_np = evaluate_loss_np()
-    grad_a_np = _fd_grad(evaluate_loss_np, verts_a_np)
-    grad_b_np = _fd_grad(evaluate_loss_np, verts_b_np)
+    # 48 seeded coordinates of each cloud: the finite difference costs two loss evaluations a
+    # coordinate, and every coordinate of a 500-vertex pair was 28-57 s an arm.
+    sampled = np.random.default_rng(5).choice(verts_a_np.size, size=48, replace=False)
+    grad_a_np = _fd_grad(evaluate_loss_np, verts_a_np, indices=sampled)
+    grad_b_np = _fd_grad(evaluate_loss_np, verts_b_np, indices=sampled)
 
     tape = wp.Tape()
     loss_wp = od.metrics.chamfer_mesh_to_mesh_loss(
@@ -1179,9 +1199,12 @@ def test_chamfer_mesh_to_mesh_loss_grad(
     assert verts_a_wp.grad is not None
     assert verts_b_wp.grad is not None
     assert np.allclose(loss_wp.numpy()[0], loss_np, rtol=_FD_RTOL, atol=_FD_ATOL)
-    assert np.allclose(verts_a_wp.grad.numpy(), grad_a_np, rtol=_FD_RTOL, atol=_FD_ATOL)
+    grad_a_wp = verts_a_wp.grad.numpy().reshape(-1)[sampled]
+    assert np.allclose(grad_a_wp, grad_a_np, rtol=_FD_RTOL, atol=_FD_ATOL)
+    assert np.abs(grad_a_np).max() > 0.0  # the sampled coordinates carry gradient
     if not single_directional:
-        assert np.allclose(verts_b_wp.grad.numpy(), grad_b_np, rtol=_FD_RTOL, atol=_FD_ATOL)
+        grad_b_wp = verts_b_wp.grad.numpy().reshape(-1)[sampled]
+        assert np.allclose(grad_b_wp, grad_b_np, rtol=_FD_RTOL, atol=_FD_ATOL)
 
 
 @pytest.mark.parametrize("kernel_device", ["cpu", "cuda:0"])

@@ -247,7 +247,7 @@ def test_make_solid_closes_and_connects_open_shells(device: str) -> None:
     assert welded_faces_wp.size > largest_faces_wp.size
 
 
-def test_make_solid_leaves_a_solid_alone(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_make_solid_leaves_a_solid_alone(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: a mesh that is already a solid comes back as one, unchanged in size.
 
@@ -255,7 +255,7 @@ def test_make_solid_leaves_a_solid_alone(icosphere_coarse: tuple[tm.Trimesh, wp.
     a filler that patched a hole that was not there, or a component filter that dropped the mesh.
     The counts are asserted exactly rather than bounded, since nothing here has anything to do.
     """
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = sphere_irregular
 
     solid_wp, solid_faces_wp = od.repair.make_solid(mesh_wp.points, mesh_wp.indices)
     solid_tm = _assert_is_a_solid(solid_wp, solid_faces_wp)
@@ -350,14 +350,14 @@ def test_remove_unreferenced_vertices_matches_igl(
     """
     Class A: all four returns against ``igl.remove_unreferenced``, with and without spares.
 
-    On the fully referenced icosahedron the call is the identity; with four unreferenced vertices
-    appended the compaction is real. The forward map and the inverse map are both compared, not
-    just the compacted buffers: a compaction that dropped the right vertices but numbered them
+    On the fully referenced ``sphere_irregular`` the call is the identity; with four unreferenced
+    vertices appended the compaction is real. The forward map and the inverse map are both compared,
+    not just the compacted buffers: a compaction that dropped the right vertices but numbered them
     differently would pass on the first two returns alone, and every caller that keeps per-vertex
     data alongside relies on the maps.
     """
     if case == "fully_referenced":
-        mesh_tm, _mesh_wp = request.getfixturevalue("icosahedron")
+        mesh_tm, _mesh_wp = request.getfixturevalue("sphere_irregular")
         vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
         faces_np = np.asarray(mesh_tm.faces, dtype=np.int32)
     else:
@@ -425,7 +425,7 @@ def test_remove_unreferenced_sentinel(device: str):
 
 @pytest.mark.parity("remove_unreferenced_vertices", "meshlib")
 def test_remove_unreferenced_vertices_matches_meshlib_pack(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], device: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
     """
     Class A on both compacted buffers, and the clearest demonstration of MeshLib's ``pack()``.
@@ -443,7 +443,7 @@ def test_remove_unreferenced_vertices_matches_meshlib_pack(
     comparison would be vacuous. Positions are compared after a lexsort because the two compactions
     renumber differently; the face *count* is exact on both sides.
     """
-    mesh_tm, _mesh_wp = icosphere_coarse
+    mesh_tm, _mesh_wp = sphere_irregular
     orphan = 7
     faces_np = mesh_tm.faces[~(mesh_tm.faces == orphan).any(axis=1)]
     n_vertices = mesh_tm.vertices.shape[0]
@@ -581,7 +581,7 @@ def test_remove_duplicated_vertices_matches_igl(device: str, case: str) -> None:
 
 
 def test_remove_duplicate_vertices_epsilon_negative_coordinates(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
     """
     Class B (partition): igl decides which vertices merge when the grid indices go negative.
@@ -593,7 +593,7 @@ def test_remove_duplicate_vertices_epsilon_negative_coordinates(
     # Any mesh spanning the origin rounds to negative grid indices, which the row packing cannot
     # take directly. The fixture is centred at (-1, 0, 2), so every duplicated vertex below has at
     # least one negative coordinate; igl is the oracle for which ones merge.
-    mesh_tm, _ = icosahedron
+    mesh_tm, _ = sphere_irregular
     vertices_np = np.vstack((mesh_tm.vertices, mesh_tm.vertices[:4] + 1e-9)).astype(np.float64)
     assert vertices_np.min() < 0.0
     faces_np = np.asarray(mesh_tm.faces, dtype=np.int32)
@@ -769,7 +769,7 @@ def _faces_2d(faces_wp: wp.array[wp.int32]) -> np.ndarray:
 @pytest.mark.parametrize("epsilon", [0.0, 1e-6])
 @pytest.mark.parity("remove_duplicated_vertices", "open3d", "pymeshlab", "pyvista", "meshlib")
 def test_remove_duplicated_vertices_welds_a_soup_like_the_references(
-    device: str, epsilon: float, icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]
+    device: str, epsilon: float, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Welding an unwelded soup, the one repair group whose ``epsilon`` sweep maps across all three.
@@ -788,15 +788,15 @@ def test_remove_duplicated_vertices_welds_a_soup_like_the_references(
 
     Class B on the *positions*: every reference renumbers the survivors differently, so the vertex
     sets are compared after a lexsort. Counting alone would be too weak -- a welder that merged the
-    wrong pairs can still land on 162 -- which is why the positions are asserted and the count is
-    only the headline. Measured: 960 soup positions collapse to exactly 162 on every side at both
-    epsilon values, matching the icosphere's true vertex count.
+    wrong pairs can still land on 500 -- which is why the positions are asserted and the count is
+    only the headline. Measured: 2 988 soup positions collapse to exactly 500 on every side at both
+    epsilon values, matching ``sphere_irregular``'s true vertex count.
 
     MeshLib is Class B on the survivors too: ``uniteCloseVertices`` welds in place and reports a
     *count*. The result is not returned -- the mesh is mutated and the return is the number of
-    vertices merged (798 here, from 960 soup positions down to the icosphere's 162) -- so it is
+    vertices merged (2 488 here, from 2 988 soup positions down to the mesh's 500) -- so it is
     read back through [`meshlib_to_trimesh`][tests.conversions.meshlib_to_trimesh], which packs
-    first; without the pack the buffer still holds the 960 slots. ``uniteOnlyBd=False`` is the
+    first; without the pack the buffer still holds the 2 988 slots. ``uniteOnlyBd=False`` is the
     setting that matches ordito and is passed explicitly: MeshLib's default is ``True``, which
     welds only vertices on a boundary and would leave an interior soup untouched. On this input
     every position is a boundary vertex of its own triangle, so the default happens to agree --
@@ -804,7 +804,7 @@ def test_remove_duplicated_vertices_welds_a_soup_like_the_references(
     pairing: it flags **both** members of a close pair (2 bits for 1 duplicate, measured), where
     ordito's answer is the survivors.
     """
-    mesh_tm, _mesh_tm_wp = icosphere_coarse
+    mesh_tm, _mesh_tm_wp = sphere_irregular
     soup_np = np.ascontiguousarray(mesh_tm.vertices[mesh_tm.faces].reshape(-1, 3))
     faces_np = np.arange(soup_np.shape[0], dtype=np.int32).reshape(-1, 3)
 
@@ -833,7 +833,7 @@ def test_remove_duplicated_vertices_welds_a_soup_like_the_references(
     n_merged_ml = mm.uniteCloseVertices(mesh_ml, epsilon, False)
     vertices_ml = meshlib_to_trimesh(mesh_ml).vertices
 
-    assert n_merged_ml == soup_np.shape[0] - mesh_tm.vertices.shape[0]  # 798 of 960
+    assert n_merged_ml == soup_np.shape[0] - mesh_tm.vertices.shape[0]  # 2 488 of 2 988
     assert unique_wp.size == len(mesh_tm.vertices)
     assert vertices_pml.shape[0] == len(mesh_tm.vertices)
     assert vertices_o3d.shape[0] == len(mesh_tm.vertices)
@@ -852,14 +852,16 @@ def test_remove_duplicated_vertices_welds_a_soup_like_the_references(
     assert len(coincident_pv) == 0
 
 
-def test_reverse_winding_leaves_its_input_alone(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_reverse_winding_leaves_its_input_alone(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Not a parity assert: the free function allocates rather than rewriting the caller's buffer.
 
     Worth pinning because the kernel it launches is safe in place (``creation`` uses it that way),
     so an in-place shortcut here would pass every value test while corrupting a shared buffer.
     """
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     before = mesh_wp.indices.numpy().copy()
     reversed_faces = od.repair.reverse_winding(mesh_wp.indices)
     assert reversed_faces.ptr != mesh_wp.indices.ptr
@@ -868,7 +870,7 @@ def test_reverse_winding_leaves_its_input_alone(icosphere: tuple[tm.Trimesh, wp.
 
 @pytest.mark.parity("make_winding_consistent", "pymeshlab")
 def test_make_winding_consistent_matches_pymeshlab(
-    device: str, icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Orientation repair against MeshLab's, which reaches the identical winding on every face.
@@ -881,11 +883,11 @@ def test_make_winding_consistent_matches_pymeshlab(
 
     Class B twice: ``canonical_winding`` rotates each triangle to start at its lowest index (a
     rotation preserves orientation, so a flipped face still compares unequal) and a lexsort removes
-    the face ordering. Measured on an icosphere with every third face reversed, the two agree face
-    for face **without** needing the global-flip escape -- both anchor on the first face of the
+    the face ordering. Measured on ``sphere_irregular`` with every third face reversed, they agree
+    face for face **without** needing the global-flip escape -- both anchor on the first face of the
     component -- so the test asserts the strict form and would catch a flip if one appeared.
     """
-    mesh_tm, _mesh_tm_wp = icosphere_coarse
+    mesh_tm, _mesh_tm_wp = sphere_irregular
     flipped_np = mesh_tm.faces.copy()
     flipped_np[::3] = flipped_np[::3][:, ::-1]
 
@@ -914,7 +916,7 @@ def test_make_winding_consistent_matches_pymeshlab(
 @pytest.mark.parametrize("flip_seed_face", [False, True])
 @pytest.mark.parity("make_winding_consistent", "meshlib")
 def test_make_winding_consistent_matches_meshlib(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], device: str, flip_seed_face: bool
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str, flip_seed_face: bool
 ) -> None:
     """
     Class B: the same flip set up to a global flip, which is the gauge the two libraries fix apart.
@@ -933,7 +935,7 @@ def test_make_winding_consistent_matches_meshlib(
     length of its highest set bit, so an unpadded read fails by shape on exactly the meshes where
     few faces are wrong.
     """
-    mesh_tm, _mesh_wp = icosphere_coarse
+    mesh_tm, _mesh_wp = sphere_irregular
     rng = np.random.default_rng(3)
     n_faces = mesh_tm.faces.shape[0]
     flipped = rng.choice(np.arange(1, n_faces), size=39, replace=False)
@@ -967,7 +969,7 @@ def test_make_winding_consistent_matches_meshlib(
 
 @pytest.mark.parity("make_winding_consistent", "igl", "trimesh")
 def test_make_winding_consistent_matches_igl_and_trimesh(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class B against igl, exactly, and Class B against trimesh, up to the global flip.
@@ -990,7 +992,7 @@ def test_make_winding_consistent_matches_igl_and_trimesh(
     component the two windings agree face normal for face normal up to that global flip. The
     impossible case is [`test_make_winding_consistent_on_a_non_orientable_mesh`].
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     faces_flipped = mesh_tm.faces.copy()
     faces_flipped[::2] = faces_flipped[::2][:, ::-1]
     _, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_flipped, mesh_wp.device)
@@ -1135,7 +1137,7 @@ def test_make_winding_consistent_keeps_each_components_lowest_face(device: str) 
 
 
 @pytest.mark.parity("make_volume", "trimesh", "pyvista")
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_irregular_hollow"])
 def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A on the enclosed volume, and a pinned three-way split over what "orient" means.
@@ -1147,13 +1149,13 @@ def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name
     ``compute_normals(consistent_normals=True, auto_orient_normals=True)``.
 
     **Two other libraries have an obviously-named filter that does something else, and this fixture
-    is the one that tells them apart.** Measured on an ``icosphere(2)``, signed volume, target
-    +4.047045:
+    is the one that tells them apart.** Measured on ``sphere_irregular``, signed volume, target
+    +21.572407:
 
     | input | pyvista | open3d ``orient_triangles`` | pymeshlab ``re_orient_faces_coherently`` |
     |---|---|---|---|
-    | 20 of 320 faces reversed (inconsistent) | +4.047045 | +4.047045 | -4.047045 |
-    | every face reversed (consistent, inward) | **+4.047045** | **-4.047045** | -4.047045 |
+    | 62 of 996 faces reversed (inconsistent) | +21.572407 | +21.572407 | +21.572407 |
+    | every face reversed (consistent, inward) | **+21.572407** | **-21.572407** | -21.572407 |
 
     On a *locally inconsistent* mesh, making the winding coherent recovers the majority orientation
     and therefore looks like this operation -- which is why a probe on that input alone reads all
@@ -1163,12 +1165,13 @@ def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name
     described.
 
     **And pyvista parts company on a multi-shell mesh, which is why its equality runs on
-    ``icosahedron`` only.** ``cave_cube`` is a unit cube with an inner void, so its enclosed solid
-    is ``outer - cavity``; ordito returns **0.9990** and pyvista **1.0010**, i.e. pyvista orients
-    each shell outward *from itself* -- including the cavity's, which then adds instead of
-    subtracting -- where ordito orients for a positive total. Both are defensible readings of
-    "outward" and only one is this function's contract, so the divergence is asserted as a sum
-    rather than papered over with a tolerance.
+    ``sphere_irregular`` only.** ``sphere_irregular_hollow`` is a shell around an inner void, so its
+    enclosed solid is ``outer - cavity``; ordito returns **21.0318** and pyvista **22.1130**, i.e.
+    pyvista orients each shell outward *from itself* -- including the cavity's, which then adds
+    instead of subtracting -- where ordito orients for a positive total. Both are defensible
+    readings of "outward" and only one is this function's contract, so the divergence is asserted
+    exactly: the two sum to twice the outer shell's volume (21.5724) and differ by twice the
+    cavity's (0.5406).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_inward = mesh_tm.faces[:, ::-1].copy()  # reverse every face -> inward normals
@@ -1202,10 +1205,12 @@ def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name
             np.asarray(oriented_pv.points), np.asarray(oriented_pv.regular_faces), process=False
         ).volume
     )
-    if mesh_name == "cave_cube":
+    if mesh_tm.body_count > 1:
         # Two shells: pyvista turns the cavity outward too, so its volume gains what ours loses.
         assert volume_pv > ours_tm.volume
-        assert np.isclose(volume_pv + ours_tm.volume, 2.0, rtol=1e-3, atol=1e-3)
+        shells = sorted(abs(shell.volume) for shell in mesh_tm.split(only_watertight=False))
+        assert np.isclose(volume_pv + ours_tm.volume, 2.0 * shells[-1], rtol=1e-6, atol=0.0)
+        assert np.isclose(volume_pv - ours_tm.volume, 2.0 * shells[0], rtol=1e-6, atol=0.0)
     else:
         assert np.isclose(volume_pv, ours_tm.volume, rtol=1e-5, atol=1e-5)
 
@@ -1223,7 +1228,7 @@ def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name
     assert np.isclose(volume_pml, -ours_tm.volume, rtol=1e-5, atol=1e-5)
 
 
-def test_make_normals_outward(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_make_normals_outward(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: both defects at once -- inconsistent winding *and* global inversion.
 
@@ -1231,7 +1236,7 @@ def test_make_normals_outward(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     fixing orientation alone cannot run on inconsistent input, so only the pair together
     produces a volume.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     faces_bad = mesh_tm.faces.copy()
     faces_bad[::2] = faces_bad[::2][:, ::-1]  # inconsistent winding
     faces_bad = faces_bad[:, ::-1]  # then invert everything
@@ -1250,8 +1255,8 @@ def test_make_normals_outward(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     assert np.allclose(ours_tm.face_normals, reference_tm.face_normals, atol=1e-5)
 
 
-def test_make_volume_multibody(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = icosahedron
+def test_make_volume_multibody(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
     n_vertices = vertices_np.shape[0]
@@ -1921,10 +1926,7 @@ def _assert_split_is_manifold_and_final(
 )
 @pytest.mark.parity("split_non_manifold_vertices", "igl")
 def test_split_nonmanifold_matches_igl(
-    mesh_kind: str,
-    device: str,
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    mesh_kind: str, device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class B: the same vertex split as ``igl.split_nonmanifold``, up to which copy gets which index.
@@ -1958,22 +1960,25 @@ def test_split_nonmanifold_matches_igl(
         vertices_np, faces_np = _three_faces_on_one_edge_np()
         expected_new = 9  # every corner its own vertex: no pair of the three is oppositely wound
     elif mesh_kind == "flipped_face":
-        mesh_tm, _ = icosahedron
+        mesh_tm, _ = sphere_irregular
         vertices_np = mesh_tm.vertices.astype(np.float32)
         faces_np = mesh_tm.faces.astype(np.int32).copy()
         faces_np[-1] = faces_np[-1][::-1]
-        expected_new = 15  # the flipped face is cut free of all three neighbours
+        # The flipped face is cut free of all three neighbours: one new copy per corner.
+        expected_new = int(vertices_np.shape[0]) + 3
     elif mesh_kind == "boundary":
-        sphere_tm, _sphere_wp = icosphere_coarse
+        sphere_tm, _sphere_wp = sphere_irregular
         hemisphere_tm = sphere_tm.slice_plane(
-            plane_origin=np.zeros(3), plane_normal=np.array([0.0, 0.0, 1.0]), cap=False
+            plane_origin=sphere_tm.vertices.mean(axis=0),
+            plane_normal=np.array([0.0, 0.0, 1.0]),
+            cap=False,
         )
         hemisphere_tm.merge_vertices()
         vertices_np = hemisphere_tm.vertices.astype(np.float32)
         faces_np = hemisphere_tm.faces.astype(np.int32)
         expected_new = int(vertices_np.shape[0])  # a boundary is not a reason to split
     else:
-        mesh_tm, _ = icosahedron
+        mesh_tm, _ = sphere_irregular
         vertices_np = mesh_tm.vertices.astype(np.float32)
         faces_np = mesh_tm.faces.astype(np.int32)
         expected_new = int(vertices_np.shape[0])
@@ -2042,7 +2047,7 @@ def test_split_nonmanifold_matches_meshlib(mesh_kind: str, device: str) -> None:
 
 
 def test_split_nonmanifold_splits_a_duplicated_face_further_than_igl(
-    device: str, icosahedron: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class D exemption, pinned: the one documented divergence from igl, on a duplicated face.
@@ -2056,7 +2061,7 @@ def test_split_nonmanifold_splits_a_duplicated_face_further_than_igl(
     rather than quietly altering the output of a repair function. The split's post-condition --
     edge-manifold out, every face kept, a fixpoint -- holds here as on every other input.
     """
-    mesh_tm, _ = icosahedron
+    mesh_tm, _ = sphere_irregular
     vertices_np = mesh_tm.vertices.astype(np.float32)
     faces_np = np.vstack([mesh_tm.faces.astype(np.int32), mesh_tm.faces.astype(np.int32)[:1]])
 
@@ -2067,8 +2072,12 @@ def test_split_nonmanifold_splits_a_duplicated_face_further_than_igl(
         np.ascontiguousarray(faces_np, dtype=np.int64).reshape(-1, 3)
     )
 
-    assert new_vertices_np.shape[0] == 18, "all three copies of each shared vertex split apart"
-    assert np.asarray(source_igl).size == 15, "igl keeps one pair of the three joined"
+    n_vertices = vertices_np.shape[0]
+    # The duplicated face's three corners each split three ways (+6); igl joins one pair (+3).
+    assert new_vertices_np.shape[0] == n_vertices + 6, (
+        "all three copies of each shared vertex split"
+    )
+    assert np.asarray(source_igl).size == n_vertices + 3, "igl keeps one pair of the three joined"
     # Both answers are legal repairs of the same input: manifold, with every face kept.
     assert _new_faces_np.shape[0] == faces_np.shape[0] == np.asarray(_faces_igl).shape[0]
     faces_wp = wp.array(np.ascontiguousarray(faces_np).ravel(), dtype=wp.int32, device=device)
@@ -2322,8 +2331,10 @@ def test_remove_degenerate_faces_matches_meshlib(device: str) -> None:
         )
 
 
-def test_collapse_small_triangles_removes_sliver(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = icosahedron
+def test_collapse_small_triangles_removes_sliver(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_np = mesh_tm.vertices.astype(np.float32)
     a, b = vertices_np[0], vertices_np[1]
     near_edge = a + 0.5 * (b - a) + 1e-6 * (b - a)  # almost on segment a->b
@@ -2385,6 +2396,14 @@ def test_collapse_small_triangles_fan_chain(device: str) -> None:
     assert _triangle_set_close(collapsed_np, ref, atol=1e-3)
 
 
+# ``icosphere_coarse``, not ``sphere_irregular``: the comparison rests on "small triangle" and
+# "short edge" picking the same faces, which holds only without needles. ordito collapses by area
+# (igl's rule), MeshLib by edge length; on ``sphere_irregular`` with the same 20 planted edges the
+# natural needles reach 1.1e-6 of ``2 bbd**2`` while a face on a shrunk edge keeps its full height,
+# so the two sets overlap at every ``epsilon`` (at 1e-5 ordito collapses 39 edges where MeshLib,
+# below the mesh's shortest natural edge, collapses the 20; at 1e-7 ordito collapses 3). The area
+# rule itself is checked on ``sphere_irregular`` against the transcription of igl's algorithm,
+# ``test_collapse_small_triangles_removes_sliver``.
 @pytest.mark.parity("collapse_small_triangles", "meshlib")
 def test_collapse_small_triangles_matches_meshlib(
     icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], device: str
@@ -2477,6 +2496,40 @@ def test_remove_folded_faces_drops_the_fold(
         .numpy()
         .any()
     )
+
+
+def test_remove_folded_faces_drops_exactly_the_folded_pairs(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: exactly the folded faces go, nothing else.
+
+    A face is folded when a neighbour meets it past 160 degrees -- trimesh's
+    ``face_adjacency_angles``, the angle between the two normals -- *and* its normal points against
+    the sum of its neighbours' normals, so of a fold's two faces only the one turned back over its
+    ring goes. The expected set is computed that way from trimesh. ``sphere_irregular`` carries one
+    such pair (163.9 degrees at its sharpest spike) among 1 494 edges whose angles reach every value
+    below it; the kept faces are compared by their corner positions, since the vertices are
+    compacted.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    adjacency = mesh_tm.face_adjacency
+    folded_pairs = adjacency[np.degrees(mesh_tm.face_adjacency_angles) > 160.0]
+    assert folded_pairs.shape[0] > 0  # non-vacuity: the fixture does fold
+    normals = np.asarray(mesh_tm.face_normals)
+    consensus = np.zeros_like(normals)
+    np.add.at(consensus, adjacency[:, 0], normals[adjacency[:, 1]])
+    np.add.at(consensus, adjacency[:, 1], normals[adjacency[:, 0]])
+    against = np.einsum("ij,ij->i", normals, consensus) < 0.0
+    dropped = np.zeros(mesh_tm.faces.shape[0], dtype=bool)
+    dropped[folded_pairs.ravel()] = True
+    dropped &= against
+    assert 0 < dropped.sum() < folded_pairs.size  # one face of the fold, not both
+    expected_np = np.asarray(mesh_tm.vertices)[mesh_tm.faces[~dropped]]
+
+    kept_vertices_wp, kept_faces_wp = od.repair.remove_folded_faces(mesh_wp.points, mesh_wp.indices)
+    kept_np = kept_vertices_wp.numpy()[kept_faces_wp.numpy().reshape(-1, 3)].astype(np.float64)
+    assert_unordered_rows_equal(kept_np.reshape(-1, 9), expected_np.reshape(-1, 9))
 
 
 def _self_intersecting_count_ml(
@@ -2641,7 +2694,7 @@ def test_fix_self_intersections_voxel_rebuilds(
 
 
 def test_fix_self_intersections_leaves_a_clean_mesh_alone(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: a clean input is returned unchanged, and the three value guards.
@@ -2650,7 +2703,7 @@ def test_fix_self_intersections_leaves_a_clean_mesh_alone(
     decide whether to run at all, so a mesh with nothing wrong must come back with the same faces
     rather than through one round of cut-and-refill.
     """
-    _, mesh_wp = icosphere_coarse
+    _, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     assert not od.validation.is_self_intersecting(mesh_wp)
 
@@ -2672,7 +2725,7 @@ def test_fix_self_intersections_leaves_a_clean_mesh_alone(
 
 @pytest.mark.parametrize("hops", [0, 1, 2, 3])
 def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], hops: int
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], hops: int
 ) -> None:
     """
     Ordito against ordito: the loop's face-ring dilation is ``expand_vertex_mask``'s.
@@ -2685,7 +2738,7 @@ def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
     called before; it carries its own oracle in ``tests/test_selection.py``. Non-vacuity: the
     seed is a few faces, and every hop grows the answer.
     """
-    _, mesh_wp = icosphere_coarse
+    _, mesh_wp = sphere_irregular
     faces_wp = mesh_wp.indices
     n_vertices = mesh_wp.points.size
     n_faces = faces_wp.size // 3
@@ -2995,7 +3048,7 @@ def test_flatten_degree3_vertices_moves_an_independent_set(device: str) -> None:
     assert abs(after) < 1e-3 * abs(before)  # flat is honest here; inverted is not
 
 
-def test_remove_tunnels_count_is_unconditional(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_remove_tunnels_count_is_unconditional(torus_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: that this count is *not* behind ``return_count``, deliberately.
 
@@ -3005,7 +3058,7 @@ def test_remove_tunnels_count_is_unconditional(torus: tuple[tm.Trimesh, wp.Mesh]
     correctly, which is why it stays a third return element. Pinned so a future consistency pass
     does not sweep it up with the others.
     """
-    _mesh_tm, mesh_wp = torus
+    _mesh_tm, mesh_wp = torus_irregular
     result = od.repair.remove_tunnels(mesh_wp.points, mesh_wp.indices, 1e-9)
     assert len(result) == 3
     assert isinstance(result[2], int)
@@ -3392,7 +3445,7 @@ def handles_64(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     "are the two post-conditions that stop a shattering cut. All three are timed in their own "
     "groups.",
 )
-@pytest.mark.parametrize("mesh_name", ["torus", "genus_two", "handles_64"])
+@pytest.mark.parametrize("mesh_name", ["torus_irregular", "genus_two", "handles_64"])
 def test_remove_tunnels_drops_the_genus_by_the_count_it_reports(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -3487,7 +3540,7 @@ def test_remove_tunnels_iterates_to_a_sphere(genus_two: tuple[tm.Trimesh, wp.Mes
 
 
 def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(
-    torus: tuple[tm.Trimesh, wp.Mesh], icosphere: tuple[tm.Trimesh, wp.Mesh]
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh], sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Not a library comparison: see above. The two do-nothing branches, which are the safety claim.
@@ -3496,7 +3549,7 @@ def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(
     equivalent -- that is what makes the function safe to run on a mesh whose genus is intended. And
     a genus-0 input has no basis at all, so it returns before cutting anything.
     """
-    _, torus_wp = torus
+    _, torus_wp = torus_irregular
     kept_vertices_wp, kept_faces_wp, removed = od.repair.remove_tunnels(
         torus_wp.points, torus_wp.indices, 0.5
     )
@@ -3504,7 +3557,7 @@ def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(
     assert np.array_equal(kept_faces_wp.numpy(), torus_wp.indices.numpy())
     assert np.array_equal(kept_vertices_wp.numpy(), torus_wp.points.numpy())
 
-    _, sphere_wp = icosphere
+    _, sphere_wp = sphere_irregular
     assert _genus(sphere_wp.indices) == 0
     _, sphere_faces_wp, sphere_removed = od.repair.remove_tunnels(
         sphere_wp.points, sphere_wp.indices, 1e9
@@ -3635,7 +3688,10 @@ _CLEAN_MESH_REPAIR_CASES = [
         "collapse_small_triangles",
         lambda v, f: od.repair.collapse_small_triangles(v, f, epsilon=1e-9),
     ),
-    ("remove_folded_faces", lambda v, f: od.repair.remove_folded_faces(v, f)),
+    # Not ``remove_folded_faces``: ``sphere_irregular`` has one genuine fold (a 163.9-degree
+    # dihedral at its sharpest spike, past the 160-degree default), so it is not a clean input for
+    # that predicate; ``test_remove_folded_faces_drops_exactly_the_folded_pairs`` holds it to the
+    # exact set instead.
 ]
 
 
@@ -3645,7 +3701,7 @@ _CLEAN_MESH_REPAIR_CASES = [
     ids=[case[0] for case in _CLEAN_MESH_REPAIR_CASES],
 )
 def test_repair_clean_mesh_is_a_noop(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
     repair_fn: Callable[
         [wp.array[wp.vec3], wp.array[wp.int32]], tuple[wp.array[wp.vec3], wp.array[wp.int32]]
     ],
@@ -3660,7 +3716,7 @@ def test_repair_clean_mesh_is_a_noop(
     collapsing case and this its identity. ``remove_non_manifold_faces`` also hands back the
     caller's own vertex buffer, since nothing was rebuilt.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = repair_fn(mesh_wp.points, mesh_wp.indices)
     assert np.array_equal(faces_wp.numpy().reshape(-1, 3), mesh_tm.faces)
     assert np.allclose(vertices_wp.numpy(), mesh_wp.points.numpy(), rtol=1e-6, atol=1e-6)
@@ -3708,11 +3764,11 @@ _INVALID_ARGUMENT_CASES = [
     ids=[case[0] for case in _INVALID_ARGUMENT_CASES],
 )
 def test_repair_rejects_invalid_arguments(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
     repair_fn: Callable[[wp.array[wp.vec3], wp.array[wp.int32]], object],
     match: str,
 ) -> None:
     """Not a library comparison: each documented ``ValueError``, raised before any work."""
-    _mesh_tm, mesh_wp = icosphere_coarse
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match=match):
         repair_fn(mesh_wp.points, mesh_wp.indices)

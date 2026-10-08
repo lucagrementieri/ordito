@@ -601,7 +601,7 @@ def test_icp_point_to_point_matches_meshlib(device: str) -> None:
 @pytest.mark.parity("icp_point_to_plane_cloud", "open3d")
 @pytest.mark.parity("icp_point_to_plane_tukey", "open3d")
 def test_icp_point_to_plane_matches_open3d(
-    device: str, robust_kernel: _RobustKernel, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, robust_kernel: _RobustKernel, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class C (a fit-error bound): point-to-plane ICP against Open3D's, plain and robust.
@@ -618,7 +618,7 @@ def test_icp_point_to_plane_matches_open3d(
     solved slightly differently on the two sides, so they stop at marginally different iterates;
     both still land on the target to better than 1e-5 RMS, which the final assert pins.
     """
-    mesh_tm, _mesh_tm_wp = icosphere
+    mesh_tm, _mesh_tm_wp = sphere_irregular
     target_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
     normals_np = np.asarray(mesh_tm.vertex_normals, dtype=np.float32)
     rotation_np, translation_np = _rigid_transform(0.08, [0.1, 0.9, 0.2], [0.02, -0.01, 0.015])
@@ -659,7 +659,7 @@ def test_icp_point_to_plane_matches_open3d(
 @pytest.mark.parity("icp_point_to_plane_cloud", "open3d")
 @pytest.mark.parametrize("max_iterations", [0, 1, 3, 30])
 def test_icp_point_to_plane_cost_matches_open3d_evaluation(
-    device: str, max_iterations: int, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, max_iterations: int, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class B (``cost == rmse^2 * n``): ``cost`` is Open3D's own evaluation of the returned pose.
@@ -675,7 +675,7 @@ def test_icp_point_to_plane_cost_matches_open3d_evaluation(
     pose fails them by ``inf``, 75x and 15x (mutation probe), and the converged arm is where the two
     conventions meet.
     """
-    mesh_tm, _mesh_tm_wp = icosphere
+    mesh_tm, _mesh_tm_wp = sphere_irregular
     target_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
     normals_np = np.asarray(mesh_tm.vertex_normals, dtype=np.float32)
     rotation_np, translation_np = _rigid_transform(0.08, [0.1, 0.9, 0.2], [0.02, -0.01, 0.015])
@@ -708,7 +708,7 @@ def test_icp_point_to_plane_cost_matches_open3d_evaluation(
 
 @pytest.mark.parity("icp_point_to_plane_cloud", "meshlib")
 def test_icp_point_to_plane_matches_meshlib(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class A on the recovered transform: the same solver object, at its **default** method.
@@ -724,11 +724,11 @@ def test_icp_point_to_plane_matches_meshlib(
     ordito is handed. Without them the constructor accepts the cloud and the linearized step has no
     plane to project onto.
 
-    Measured on ``icosphere(3)`` misaligned by 0.08 rad: the transforms agree to **6.0e-06** and the
-    moved clouds to **7.4e-06** per point, against a starting RMS of 0.0706 -- so the 1e-4 bound
-    carries a 13x margin and both sides genuinely converged (final RMS 6.7e-06 and 1.0e-06).
+    Measured on ``sphere_irregular`` misaligned by 0.08 rad: the transforms agree to **3.0e-07**
+    and the moved clouds to **6.6e-07** per point, against a starting RMS of 0.194 -- so the 1e-4
+    bound carries a 150x margin and both sides genuinely converged (final RMS 2.9e-07 and 9.0e-08).
     """
-    mesh_tm, _mesh_wp = icosphere
+    mesh_tm, _mesh_wp = sphere_irregular
     target_np = np.ascontiguousarray(mesh_tm.vertices)
     normals_np = np.ascontiguousarray(mesh_tm.vertex_normals)
     rotation_np, translation_np = _rigid_transform(0.08, [0.1, 0.9, 0.2], [0.02, -0.01, 0.015])
@@ -767,8 +767,8 @@ def test_icp_point_to_plane_matches_meshlib(
     assert _rms(moved_ml, target_np) < 1e-4
 
 
-def test_icp_point_to_point_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = half_torus
+def test_icp_point_to_point_mesh(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
     rotation_np, translation_np = _rigid_transform(0.1, [0.2, 0.6, 0.3], [0.03, -0.02, 0.04])
     source_np = (vertices_np @ rotation_np.T + translation_np).astype(np.float32)
@@ -850,7 +850,7 @@ def test_icp_convergence_stop_matches_the_host_rule(device: str) -> None:
     ids=["no_iteration", "one", "pinned", "converged", "gated"],
 )
 def test_icp_transformed_is_matrix_image(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], target: str, options: _IcpOptions
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], target: str, options: _IcpOptions
 ) -> None:
     """
     Not a library comparison: the returned points are the source under the returned matrix.
@@ -862,7 +862,7 @@ def test_icp_transformed_is_matrix_image(
     non-trivial, and every arm but the first must have moved it. Mutation probe: dropping the
     post-loop transform fails every arm that iterates.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
     rotation_np, translation_np = _rigid_transform(0.1, [0.2, 0.6, 0.3], [0.03, -0.02, 0.04])
     source_np = (vertices_np @ rotation_np.T + translation_np).astype(np.float32)
@@ -969,7 +969,7 @@ def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
     "time either the build or a warmed query depending on call order, the hazard CLAUDE.md "
     "section 7.6 records. Its cloud form already carries the timed row.",
 )
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded", "unit_box"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "unit_box"])
 def test_icp_point_to_plane_mesh_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1035,8 +1035,8 @@ def test_icp_point_to_plane_mesh_matches_meshlib(
     assert _rms(moved_ml, vertices_np) < 1e-4
 
 
-def test_icp_point_to_plane_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = half_torus
+def test_icp_point_to_plane_mesh(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
     rotation_np, translation_np = _rigid_transform(0.1, [0.2, 0.6, 0.3], [0.03, -0.02, 0.04])
     source_np = (vertices_np @ rotation_np.T + translation_np).astype(np.float32)
@@ -1055,7 +1055,7 @@ def test_icp_point_to_plane_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None
 
 @pytest.mark.parametrize("max_iterations", [0, 1, 3, 30])
 def test_icp_point_to_plane_cost_is_the_returned_poses_objective(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], max_iterations: int
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], max_iterations: int
 ) -> None:
     """
     Class A, against trimesh's closest point: ``cost`` scores the transform actually returned.
@@ -1072,7 +1072,7 @@ def test_icp_point_to_plane_cost_is_the_returned_poses_objective(
     normals give different residuals, and the two sides break the tie independently; at the far
     starting pose that is 0.12 % of the sum.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
     rotation_np, translation_np = _rigid_transform(0.1, [0.2, 0.6, 0.3], [0.03, -0.02, 0.04])
     source_np = (vertices_np @ rotation_np.T + translation_np).astype(np.float32)
@@ -1093,9 +1093,9 @@ def test_icp_point_to_plane_cost_is_the_returned_poses_objective(
     assert np.isclose(cost_od, cost_tm, rtol=1e-2, atol=1e-9), (cost_od, cost_tm)
 
 
-def test_icp_point_to_plane_robust_outliers(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_icp_point_to_plane_robust_outliers(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     rng = np.random.default_rng(11)
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
     rotation_np, translation_np = _rigid_transform(0.08, [0.1, 0.5, 0.3], [0.02, -0.01, 0.03])
     source_np = (vertices_np @ rotation_np.T + translation_np).astype(np.float32)
@@ -1122,9 +1122,9 @@ def test_icp_point_to_plane_robust_outliers(half_torus: tuple[tm.Trimesh, wp.Mes
 
 
 @pytest.mark.parametrize("target", ["cloud", "mesh"])
-@pytest.mark.parametrize("scale", [0.02, 0.05])
+@pytest.mark.parametrize("scale", [0.01, 0.02])
 def test_icp_point_to_plane_tukey_converges_from_outside_its_kernel(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], scale: float, target: str
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], scale: float, target: str
 ) -> None:
     """
     Class C (a fit error against the exact answer): Tukey ICP from a start mostly outside ``c``.
@@ -1135,12 +1135,14 @@ def test_icp_point_to_plane_tukey_converges_from_outside_its_kernel(
     an explicit ``robust_scale`` normally puts the fit in: a biweight gives those correspondences
     zero weight, so ``sum w r^2`` *rises* for several iterations while the pose improves. Stopping
     on that sum -- what ``icp_point_to_plane`` did -- ended the fit after two iterations, at RMS
-    ``6.9e-2`` / ``5.1e-3`` (cloud / mesh, ``c = 0.02``) and ``2.6e-4`` / ``4.3e-4``
-    (``c = 0.05``), against the ``1e-5`` bound here; the Tukey loss it stops on now falls
-    monotonically and the fit reaches ``4e-7`` to ``1.8e-6``, a 5.5x margin under the bound. The
-    mutation probe is restoring ``weight * r^2`` for Tukey in ``robust_loss``: all four cases fail.
+    ``6.9e-2`` / ``5.1e-3`` (cloud / mesh, ``c = 0.02``, measured on ``half_torus``), against the
+    ``1e-5`` bound here; the Tukey loss it stops on now falls monotonically. On ``saddle_graded``
+    the starting residuals exceed ``c`` at 92.6 % / 80.3 % of the points (``c = 0.01`` / ``0.02``;
+    at 0.05 only 19 %, outside the regime) and the fit reaches ``1.5e-7`` to ``4.5e-7``, a 22x
+    margin under the bound. The mutation probe is restoring ``weight * r^2`` for Tukey in
+    ``robust_loss``: all four cases failed on ``half_torus``.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
     normals_np = np.asarray(mesh_tm.vertex_normals, dtype=np.float32)
     rotation_np, translation_np = _rigid_transform(0.08, [0.1, 0.5, 0.3], [0.02, -0.01, 0.03])
@@ -1335,7 +1337,7 @@ def test_robust_scale_ignores_the_length_of_the_target_normals(device: str) -> N
 
 @pytest.mark.parametrize("robust_kernel", ["huber", "tukey"])
 def test_icp_point_to_plane_accepts_non_unit_target_normals(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], robust_kernel: _RobustKernel
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], robust_kernel: _RobustKernel
 ) -> None:
     """
     Ordito against ordito: a fit with non-unit target normals against one with unit normals.
@@ -1346,9 +1348,15 @@ def test_icp_point_to_plane_accepts_non_unit_target_normals(
     normals differ from the unit ones in their last bits). A tenth of the source is displaced so the
     robust kernel has outliers to weigh. With the raw table in the scale, the scale follows the
     normals' lengths and the two fits weigh different correspondences.
+
+    The premise is a fit the target pins down: on ``sphere_irregular`` the two poses agree to
+    9e-8 / 1.5e-7 (CPU / CUDA) after 30 iterations. Not on ``saddle_graded``, whose nearly flat
+    graded patch lets the pose slide: last-bit normal differences move one iteration by up to
+    1.7e-5, and the CPU Huber trajectory carries that to 1e-2 by iteration 30, ending at a *lower*
+    cost (0.80434 against 0.80445) -- the problem's conditioning, not the normalization.
     """
     rng = np.random.default_rng(41)
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = sphere_irregular
     device_wp = mesh_wp.device
     vertices_np, _ = _mesh_vertices_faces(mesh_tm)
     normals_np = np.asarray(mesh_tm.vertex_normals, dtype=np.float32)
@@ -1453,7 +1461,7 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     ids=["no_iteration", "one", "pinned", "converged", "all_rejected", "all_rejected_one"],
 )
 def test_icp_point_to_plane_mesh_transformed_is_matrix_image(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], options: _IcpOptions
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], options: _IcpOptions
 ) -> None:
     """
     Not a library comparison: the returned points are the source under the returned matrix.
@@ -1469,7 +1477,7 @@ def test_icp_point_to_plane_mesh_transformed_is_matrix_image(
     one-iteration zero-weight arm is the closing pass after a weightless round: that round must
     leave an identity step for it to apply, and leaving the step buffer unwritten fails it.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
     rotation_np, translation_np = _rigid_transform(0.1, [0.2, 0.6, 0.3], [0.03, -0.02, 0.04])
     source_np = (vertices_np @ rotation_np.T + translation_np).astype(np.float32)

@@ -18,6 +18,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from tests.comparisons import same_partition
+from tests.conftest import MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     trimesh_to_meshlib,
@@ -51,9 +52,7 @@ def test_edges_to_csr_roundtrip(device: str) -> None:
         assert set(row.tolist()) == neighbors[v]
 
 
-@pytest.mark.parametrize(
-    "mesh_name", ["icosphere_coarse", "hemisphere", "saddle_graded", "unit_box"]
-)
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_edges_to_neighbor_lists_matches_igl(
     mesh_name: str, request: pytest.FixtureRequest
 ) -> None:
@@ -308,9 +307,9 @@ def test_connected_component_labels_matches_pymeshlab(
     Parametrized over three ratios that produce **different** answers on a 20 / 320 / 2 048-face
     three-component mesh -- 0, 20 and 340 faces selected -- so no constant mask can pass.
     """
-    mesh_a_tm, _mesh_a_wp = request.getfixturevalue("icosahedron")
-    mesh_b_tm, _mesh_b_wp = request.getfixturevalue("hemisphere")
-    mesh_c_tm, _mesh_c_wp = request.getfixturevalue("half_torus")
+    mesh_a_tm, _mesh_a_wp = request.getfixturevalue("sphere_irregular")
+    mesh_b_tm, _mesh_b_wp = request.getfixturevalue("saddle_graded")
+    mesh_c_tm, _mesh_c_wp = request.getfixturevalue("saddle_graded")
     combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
     assert isinstance(combined_tm, tm.Trimesh)
     device = str(_mesh_a_wp.points.device)
@@ -357,9 +356,9 @@ def test_connected_component_labels_matches_meshlib(request: pytest.FixtureReque
     there are vertices, and the component *sizes* are asserted to be the fixtures' vertex counts
     before the partition is compared.
     """
-    mesh_a_tm, mesh_a_wp = request.getfixturevalue("icosahedron")
-    mesh_b_tm, _mesh_b_wp = request.getfixturevalue("hemisphere")
-    mesh_c_tm, _mesh_c_wp = request.getfixturevalue("half_torus")
+    mesh_a_tm, mesh_a_wp = request.getfixturevalue("sphere_irregular")
+    mesh_b_tm, _mesh_b_wp = request.getfixturevalue("saddle_graded")
+    mesh_c_tm, _mesh_c_wp = request.getfixturevalue("saddle_graded")
     combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
     assert isinstance(combined_tm, tm.Trimesh)
     n_vertices = combined_tm.vertices.shape[0]
@@ -540,9 +539,9 @@ def test_face_connected_component_labels(request: pytest.FixtureRequest) -> None
     expected component count three, which is asserted so the comparison cannot pass on one
     blob.
     """
-    mesh_a_tm, mesh_a_wp = request.getfixturevalue("icosahedron")
-    mesh_b_tm, mesh_b_wp = request.getfixturevalue("hemisphere")
-    mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
+    mesh_a_tm, mesh_a_wp = request.getfixturevalue("sphere_irregular")
+    mesh_b_tm, mesh_b_wp = request.getfixturevalue("saddle_graded")
+    mesh_c_tm, mesh_c_wp = request.getfixturevalue("saddle_graded")
 
     concat_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
     assert isinstance(concat_tm, tm.Trimesh)
@@ -752,7 +751,7 @@ def _spike_field(n_vertices: int) -> np.ndarray:
 
 
 @pytest.mark.parametrize("threshold", [0.5, 1.0, 3.0])
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("shortest_path_envelope", "pymeshlab")
 def test_shortest_path_envelope_matches_pymeshlab(
     request: pytest.FixtureRequest, mesh_name: str, threshold: float
@@ -784,7 +783,7 @@ def test_shortest_path_envelope_matches_pymeshlab(
 
 @pytest.mark.parametrize("n_sources", [1, 3])
 def test_shortest_path_envelope_is_the_edge_graph_distance(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], n_sources: int
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], n_sources: int
 ) -> None:
     """
     Class A against ``scipy.sparse.csgraph.dijkstra``: seeded with zeros, this *is* the distance.
@@ -794,7 +793,7 @@ def test_shortest_path_envelope_is_the_edge_graph_distance(
     is named for, and why the package needs no second shortest-path implementation. Both sides take
     the same graph, so the only difference is float32 against float64: measured 7.1e-07.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     n_vertices = mesh_tm.vertices.shape[0]
     sources_np = np.arange(n_sources)
 
@@ -821,9 +820,11 @@ def test_shortest_path_envelope_is_the_edge_graph_distance(
     assert np.allclose(envelope_wp.numpy(), distance_sp, rtol=1e-5, atol=1e-5)
 
 
-def test_shortest_path_envelope_respects_the_bound(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_shortest_path_envelope_respects_the_bound(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """After convergence no edge violates the cap, and nothing was raised."""
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
     threshold = 2.0
     rng = np.random.default_rng(7)
     values_np = rng.uniform(0.0, 5.0, size=mesh_tm.vertices.shape[0])
@@ -844,7 +845,7 @@ def test_shortest_path_envelope_respects_the_bound(half_torus: tuple[tm.Trimesh,
     assert np.isclose(saturated_np.min(), values_np.min(), rtol=1e-5, atol=1e-5)
 
 
-def test_shortest_path_envelope_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_shortest_path_envelope_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     The argument checks, and the guard on a negative edge weight.
 
@@ -853,7 +854,7 @@ def test_shortest_path_envelope_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh])
     ``max_iterations`` grows -- silently wrong rather than raising, exactly what the docstring's
     "not admissible" note warns about.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     adjacency = _length_weighted_csr(mesh_wp)
     values_wp = wp.zeros(mesh_tm.vertices.shape[0], dtype=wp.float32, device=mesh_wp.device)
     with pytest.raises(ValueError, match="max_iterations must be non-negative"):

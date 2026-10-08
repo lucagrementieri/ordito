@@ -9,13 +9,14 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from tests.comparisons import assert_nonconstant, fraction_within
+from tests.conftest import ROUND_FRAME_ROTATION, ROUND_FRAME_SHIFT, round_frame_coordinates
 from tests.conversions import points_to_warp, trimesh_to_pymeshlab
 
 
 @pytest.mark.parity("principal_curvature", "igl")
-def test_principal_curvature(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Class A: curvature values against libigl on an icosahedron, frame-dependent path."""
-    mesh_tm, mesh_wp = icosahedron
+def test_principal_curvature(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """Class A: curvature values against libigl, frame-dependent path."""
+    mesh_tm, mesh_wp = sphere_irregular
 
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int32)
@@ -30,8 +31,8 @@ def test_principal_curvature(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     assert np.allclose(pv2_wp.numpy(), pv2_igl, atol=1e-3, rtol=1e-3)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
-def test_principal_curvature_half_torus(request: pytest.FixtureRequest, mesh_name: str) -> None:
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
+def test_principal_curvature_graded(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Values and directions against libigl where curvature varies, on both shape-operator paths.
 
@@ -64,7 +65,7 @@ def test_principal_curvature_half_torus(request: pytest.FixtureRequest, mesh_nam
     pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
         mesh_wp.points, mesh_wp.indices, frame_independent=False
     )
-    # Tolerance is relaxed relative to the icosahedron test: float32 input vs libigl float64,
+    # Tolerance is relaxed relative to the closed-mesh test: float32 input vs libigl float64,
     # plus slight radius difference from avg_edge_length rounding.
     assert np.allclose(pv1_wp.numpy()[mask], pv1_igl[mask], atol=5e-2, rtol=5e-2)
     assert np.allclose(pv2_wp.numpy()[mask], pv2_igl[mask], atol=5e-2, rtol=5e-2)
@@ -95,62 +96,71 @@ def test_principal_curvature_half_torus(request: pytest.FixtureRequest, mesh_nam
 
 
 @pytest.mark.parity("principal_curvature", "pymeshlab")
-def test_principal_curvature_directions_match_pymeshlab(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_principal_curvature_directions_match_pymeshlab(
+    torus_round: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
-    Class B on the principal *direction*, which is the only quantity MeshLab exposes comparably.
+    Class B on the principal *directions*, which are the only quantity MeshLab exposes comparably.
 
-    ``compute_curvature_principal_directions_per_vertex`` writes two direction matrices and its
-    ``vertex_curvature_principal_dir1_matrix()`` entries are **unit vectors** -- measured ``|d1| ==
-    1`` at every vertex -- so the curvature *magnitudes* are simply not in them. Its scalar output
-    is a mean curvature over a neighbourhood MeshLab derives itself rather than from a radius, and
-    it correlates 0.94 with ordito's with a systematic offset (max deviation 0.82), so it is not a
-    value oracle either. The direction is, and the transform is the usual eigenvector sign freedom:
-    an eigenvector is defined up to sign, so the comparison is ``|dot| == 1``.
+    ``compute_curvature_principal_directions_per_vertex`` writes two direction matrices of **unit
+    vectors**, so the curvature magnitudes are not in them; its scalar output is a mean curvature
+    over a neighbourhood MeshLab derives itself, not a value oracle. The transform is the usual
+    eigenvector sign freedom: the comparison is ``|dot| == 1``.
 
     **Fixture choice is the substance here.** Principal directions are only defined where the two
-    principal curvatures differ, so ``torus`` -- whose curvature gap is at minimum 2.63 and median
-    3.25 -- is the fixture, and the two obvious alternatives are excluded for measured reasons: on
-    an ``icosphere`` every point is umbilic (``k1 == k2``, so any orthonormal tangent pair is a
-    valid answer and the agreement reads a meaningless 0.62), and ``half_torus``'s gap falls to
-    0.096, where only 54% of vertices reach ``|dot| > 0.99``.
+    principal curvatures differ, and checking them needs a surface whose answer is known:
+    ``torus_round`` (an exact torus of revolution, irregularly sampled) has its meridian as the
+    first direction at every vertex (curvature 2.5 against at most 0.71 along the parallel).
 
-    **Measured, and the mutation probes.** On ``torus`` the worst ``|dot|`` over all 1 024 vertices
-    is **0.9997** against a 0.99 bound -- a 33x margin on the deviation from 1. Pairing ordito's
-    first direction with MeshLab's *second* instead collapses it to a mean of 0.058 and only 2.3% of
-    vertices above the bound; comparing it against the vertex normal gives a mean of 0.002 and 0%.
-    So neither an axis swap nor "return any tangent vector" survives.
+    **The method is load-bearing.** MeshLab's plain ``"Quadric Fitting"`` (the filter's default) is
+    not an oracle on an irregular sampling: its first direction is within 0.99 of the meridian at
+    only 56 % of ``torus_round``'s vertices and about 45 degrees from both lines of curvature at
+    the worst (``|cos|`` 0.708 against the better line; Taubin, PCA and normal cycles likewise reach
+    0.707-0.726). ``"Scale Dependent Quadric Fitting"`` is: worst 0.9927 against the meridian, all
+    400 vertices. ordito's ``PD1`` is the meridian at every vertex too (worst 0.9625, the fit's
+    accuracy, matched by libigl's own fit; ``test_principal_directions_match_the_analytic_torus``).
 
-    MeshLab's second direction is deliberately **not** asserted: 94.8% of vertices agree to 0.99 but
-    the remaining 5% fall to 0.009, i.e. MeshLab and ordito order the two eigenvectors differently
-    at some vertices. That is an ordering convention, and pinning the first direction is the part
-    that says the two computed the same shape operator.
+    **Measured, and the mutation probes.** Against that method ordito's first direction reads worst
+    **0.9468**, median 0.9967, and the second worst 0.9855, in both modes. The bars are 0.84 and
+    0.95 (3x the measured deviation from 1) plus a median above 0.99. Pairing ordito's first
+    direction with MeshLab's *second* gives a mean of 0.035 and no vertex above 0.88; an arbitrary
+    tangent vector (normal cross the z axis) a mean of 0.65 and 24 % of vertices above 0.88. So
+    neither an axis swap nor "return any tangent vector" survives.
 
     ``autoclean=False`` is load-bearing: the filter defaults to deleting unreferenced vertices,
     which would silently renumber the output against ordito's.
     """
-    mesh_tm, mesh_wp = torus
+    mesh_tm, mesh_wp = torus_round
 
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.compute_curvature_principal_directions_per_vertex(
-        method="Quadric Fitting", autoclean=False
+        method="Scale Dependent Quadric Fitting", autoclean=False
     )
     assert meshset_pml.current_mesh().vertex_number() == mesh_tm.vertices.shape[0]
-    direction_pml = np.asarray(
+    first_pml = np.asarray(
         meshset_pml.current_mesh().vertex_curvature_principal_dir1_matrix(), dtype=np.float64
     )
-    direction_pml /= np.linalg.norm(direction_pml, axis=1, keepdims=True)
+    second_pml = np.asarray(
+        meshset_pml.current_mesh().vertex_curvature_principal_dir2_matrix(), dtype=np.float64
+    )
+    first_pml /= np.linalg.norm(first_pml, axis=1, keepdims=True)
+    second_pml /= np.linalg.norm(second_pml, axis=1, keepdims=True)
 
-    direction_wp, _direction2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
+    first_wp, second_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
         mesh_wp.points, mesh_wp.indices
     )
-    # The fixture must actually have distinct principal curvatures, or the directions are arbitrary.
-    assert np.abs(pv1_wp.numpy() - pv2_wp.numpy()).min() > 1.0
+    # The fixture must actually have distinct principal curvatures, or the directions are arbitrary:
+    # the fitted gap is at least 0.31 (true minimum 1.79 / 1.7 = 1.05 in the placed frame).
+    assert np.abs(pv1_wp.numpy() - pv2_wp.numpy()).min() > 0.1
 
-    dots_np = np.abs(np.einsum("ij,ij->i", direction_pml, direction_wp.numpy()))
-    assert dots_np.min() > 0.99, f"worst |dot| {dots_np.min():.4f}"
+    first_np = np.abs(np.einsum("ij,ij->i", first_pml, first_wp.numpy()))
+    second_np = np.abs(np.einsum("ij,ij->i", second_pml, second_wp.numpy()))
+    assert first_np.min() > 0.84, f"worst |dot| {first_np.min():.4f}"
+    assert np.median(first_np) > 0.99
+    assert second_np.min() > 0.95, f"worst |dot| {second_np.min():.4f}"
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("discrete_gaussian_curvature", "trimesh")
 def test_discrete_gaussian_curvature(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -180,27 +190,27 @@ def test_discrete_gaussian_curvature(request: pytest.FixtureRequest, mesh_name: 
     assert np.allclose(gauss_curvature_wp.numpy(), gauss_curvature_tm, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize(("mesh_name", "radius"), [("icosahedron", 2.0), ("icosphere", 0.5)])
+@pytest.mark.parametrize("radius", [2.0, 0.5])
 @pytest.mark.parity("discrete_mean_curvature", "trimesh")
 def test_discrete_mean_curvature(
-    request: pytest.FixtureRequest, mesh_name: str, radius: float
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], radius: float
 ) -> None:
     """
     Class A: the ball mean-curvature measure against trimesh's, over every vertex.
 
-    **Two fixtures, because either alone tests half of it.** On the ``icosahedron`` the radius of
-    2.0 exceeds the mesh, so every query integrates the whole surface -- the case that exercises
-    the ball clipping rather than avoiding it. But the icosahedron is *regular*, so that answer is
-    one number repeated: measured on trimesh's side, **1 unique value across all 12 vertices, spread
-    exactly 0.0**. A comparison of two constant arrays cannot see a permuted result, an off-by-one
-    in the gather or a query/vertex index swap -- only a global scale error. The ``icosphere`` at
-    0.5 is the per-vertex half: 10 distinct values over its 642 vertices at a spread of 0.0497, and
-    the assert below checks that the reference really did vary before comparing to it.
+    **Two radii, because they exercise different halves of the ball.** At 0.5 (1.3 mean edges) a
+    ball holds a vertex's few rings; at 2.0 it spans half the mesh (extent 4.0-4.3), so every query
+    clips a large part of the surface against the ball. Both answers vary per vertex on
+    ``sphere_irregular`` -- 500 distinct values each, spread 2.57 (signs mixed) and 7.30 -- so a
+    permuted result, an off-by-one in the gather or a query/vertex index swap is visible, and the
+    assert below checks that the reference really did vary before comparing to it. (On a regular
+    icosahedron the whole-surface radius gave one value repeated, which could see only a global
+    scale error.)
 
     ``benchmarks/test_curvature.py`` records why pymeshlab cannot be the oracle here (a
     different operator, 0.982 correlation with a 7 % offset).
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     points_tm = mesh_tm.vertices
     mean_curvature_tm = tm.curvature.discrete_mean_curvature_measure(mesh_tm, points_tm, radius)
 
@@ -209,8 +219,7 @@ def test_discrete_mean_curvature(
         points_wp, mesh_wp.points, mesh_wp.indices, radius
     )
     # Non-vacuous on the curved fixture: a constant reference would pass any per-vertex bug.
-    if mesh_name != "icosahedron":
-        assert_nonconstant(mean_curvature_tm, tol=1e-3)
+    assert_nonconstant(mean_curvature_tm, tol=1e-3)
     assert np.allclose(mean_curvature_wp.numpy(), mean_curvature_tm, rtol=1e-5, atol=1e-5)
 
 
@@ -219,7 +228,7 @@ def test_discrete_mean_curvature(
     reason="needs a second device to make the current device differ from the arrays' device",
 )
 def test_discrete_gaussian_curvature_ignores_the_current_device(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ):
     """
     Class A: ``discrete_gaussian_curvature`` answers on its inputs' device, not Warp's current one.
@@ -228,7 +237,7 @@ def test_discrete_gaussian_curvature_ignores_the_current_device(
     forwarded no ``device=`` once went unseen, because the ordinary tests run with the arrays'
     device already current.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     radius = 0.5
     points_tm = mesh_tm.vertices
     face_angles_tm = mesh_tm.face_angles
@@ -328,7 +337,7 @@ def test_principal_directions_stay_orthogonal_on_an_axis_aligned_field(
 
 @pytest.mark.parametrize("radius", [2, 5])
 def test_principal_directions_are_a_frame_at_an_umbilic_point(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], radius: int
+    sphere_round: tuple[tm.Trimesh, wp.Mesh], radius: int
 ) -> None:
     """
     Not a library comparison: at an umbilic point no reference fixes *which* pair is returned.
@@ -336,8 +345,8 @@ def test_principal_directions_are_a_frame_at_an_umbilic_point(
     A sphere is umbilic everywhere -- the two principal curvatures are equal, so every tangent
     direction is a principal direction and the shape operator is a multiple of the identity. No
     oracle can pin ``PD1`` there, which is exactly why
-    ``test_principal_curvature_directions_match_pymeshlab`` refuses ``icosphere`` as a direction
-    fixture (the agreement reads a meaningless 0.62) and picks ``torus`` instead. What is still a
+    ``test_principal_curvature_directions_match_pymeshlab`` takes ``torus_round`` and not a
+    sphere (on ``icosphere`` the agreement read a meaningless 0.62). What is still a
     contract, and what nothing asserted before, is that the pair is a **frame**: two orthonormal
     vectors spanning the tangent plane. The helper that answers a degenerate 2x2 returns the
     reference frame's own two axes, so which frame it is depends on the vertex numbering, but that
@@ -357,12 +366,15 @@ def test_principal_directions_are_a_frame_at_an_umbilic_point(
     tangency assert, which is a weaker and more incidental guard.
 
     A quadric fitted over a wide spherical cap also overestimates curvature, and the bias grows
-    monotonically with the ball -- mean ``PV1`` here reads 1.0195 / 1.0407 / 1.1185 / 1.3628 at
-    radius 2 / 3 / 5 / 8 against a true ``1 / r`` of 1.0. That is a property of the method, not a
-    defect, so the magnitude assert is a one-sided bracket rather than a tolerance: the fit never
-    reads *under* a sphere's curvature, and at the default radius it reads 12% over.
+    with the ball -- scaled mean ``PV1`` reads 1.032 at radius 2 and 1.227 at radius 5 on
+    ``sphere_round`` (400 dart-thrown vertices), against a true ``1 / r`` of 1. That is a property
+    of the method, not a defect, so the magnitude assert is a one-sided bracket rather than a
+    tolerance: the fit never reads *under* a sphere's curvature.
+
+    ``sphere_round`` is the premise: an umbilic surface, irregularly sampled (no bumpy fixture is
+    umbilic anywhere).
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_round
 
     pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
         mesh_wp.points, mesh_wp.indices, radius=radius
@@ -375,7 +387,7 @@ def test_principal_directions_are_a_frame_at_an_umbilic_point(
     )
 
     # Non-vacuity: the fixture must actually be umbilic, or this is the anisotropic test again.
-    assert np.abs(pv1_np - pv2_np).max() < 0.05, "icosphere must be umbilic to the fit's accuracy"
+    assert np.abs(pv1_np - pv2_np).max() < 0.05, "the sphere must be umbilic to the fit's accuracy"
     # Non-vacuity: zeros are the failed-fit signal and satisfy every invariant below for free.
     assert np.all(np.linalg.norm(pd1_np, axis=1) > 0.5)
 
@@ -389,16 +401,18 @@ def test_principal_directions_are_a_frame_at_an_umbilic_point(
     assert np.abs(np.einsum("ij,ij->i", normal_np, pd2_np)).max() < 1e-5
     # The discrete normal is itself the exact radial one on a sphere, to within the tessellation:
     # that is what says the frame sits in the *surface's* tangent plane and not merely in a plane
-    # of ordito's own choosing.
-    radial_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    # of ordito's own choosing. On this irregular sampling the area-weighted normal sits up to 6.4
+    # degrees off radial (``|cos|`` 0.9937; the angle-weighted one 2.4), so the bar is 0.98, 3x the
+    # measured deviation; an arbitrary tangent-plane normal reads near 0.
+    radial_np = np.asarray(mesh_tm.vertices, dtype=np.float64) - ROUND_FRAME_SHIFT
     radial_np /= np.linalg.norm(radial_np, axis=1, keepdims=True)
-    assert np.abs(np.einsum("ij,ij->i", radial_np, normal_np)).min() > 0.999
+    assert np.abs(np.einsum("ij,ij->i", radial_np, normal_np)).min() > 0.98
 
     # The magnitudes an umbilic point does determine: both principal curvatures are 1 / r, the
-    # same at every vertex. Spread measured 0.0040 at radius 2 and 0.0130 at 5, against a 0.05 bar
-    # (12x and 3.8x); the scaled means are 1.0195 and 1.1185, inside the bracket the fit's own
-    # cap bias sets.
-    sphere_radius = float(np.linalg.norm(mesh_tm.vertices, axis=1).mean())
+    # same at every vertex. Spread measured 0.0142 at radius 2 and 0.0238 at 5 (curvature 1 / 1.7),
+    # against a 0.05 bar; the scaled means are 1.024-1.032 and 1.209-1.227, inside the bracket the
+    # fit's own cap bias sets (the smallest scaled value 1.011 and 1.186: never under).
+    sphere_radius = float(np.linalg.norm(mesh_tm.vertices - ROUND_FRAME_SHIFT, axis=1).mean())
     assert np.ptp(pv1_np) < 0.05, "a sphere's curvature is the same at every vertex"
     assert np.ptp(pv2_np) < 0.05
     assert 1.0 <= float(pv1_np.mean()) * sphere_radius <= 1.25
@@ -407,7 +421,7 @@ def test_principal_directions_are_a_frame_at_an_umbilic_point(
 
 @pytest.mark.parametrize("frame_independent", [True, False])
 def test_principal_directions_match_the_analytic_torus(
-    torus: tuple[tm.Trimesh, wp.Mesh], frame_independent: bool
+    torus_round: tuple[tm.Trimesh, wp.Mesh], frame_independent: bool
 ) -> None:
     """
     Class A against a closed form: on a torus the principal directions are the parameter curves.
@@ -427,20 +441,25 @@ def test_principal_directions_match_the_analytic_torus(
     is what the assert reads. The magnitudes are left to the igl and pymeshlab comparisons above,
     since the quadric fit's cap bias makes them a weaker claim than the directions.
 
-    Measured: ``min |cos|`` is **1.0000** for both families over all 1024 vertices, in both modes.
-    Before the second direction was derived as a cross product it was 1.0000 for the meridians and
-    **0.0000** for the parallels -- the returned pair failed to contain one of the two lines of
-    curvature at all on some vertices -- which is the regression this pins. The bar is 0.99, and
-    the fixture cannot be vacuous: on this torus the two principal curvatures differ by at least
-    1.79 everywhere, so there is no umbilic vertex for the directions to be arbitrary at.
+    Measured on ``torus_round`` (400 dart-thrown vertices on ``R = 1``, ``r = 0.4``, two principal
+    curvatures at least 1.79 apart everywhere, so no umbilic vertex): ``|cos|`` worst **0.9625**
+    for the meridians and 0.9917 for the parallels, median 0.9977 / 0.9994, in both modes. That is
+    the quadric fit's accuracy on an irregular sampling, not a defect: libigl's own fit on the same
+    mesh reads 0.9626 / 0.9884 at radius 2 and 0.9577 / 0.9832 at radius 5. Before the second
+    direction was derived as a cross product the parallels read **0.0000** -- the returned pair
+    failed to contain one of the two lines of curvature at all on some vertices -- which is the
+    regression this pins. The bars are a worst ``|cos|`` above 0.88 (3x the measured deviation)
+    and a median above 0.99, which a systematic tilt of the frame would fail.
     """
-    mesh_tm, mesh_wp = torus
+    mesh_tm, mesh_wp = torus_round
     major_radius, minor_radius = 1.0, 0.4
 
     # Recover each vertex's (meridian, parallel) frame from its position. The tube's centre circle
     # has radius ``major_radius``, so the vector from the nearest point on it is the surface normal
     # direction, and the two tangents follow from it.
-    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    # The analytic frame lives in the torus's canonical coordinates; ordito's directions are rotated
+    # into them (a direction ignores the shift and the scale).
+    vertices_np = round_frame_coordinates(mesh_tm.vertices)
     angle_np = np.arctan2(vertices_np[:, 1], vertices_np[:, 0])
     axis_np = np.stack(
         [np.cos(angle_np), np.sin(angle_np), np.zeros_like(angle_np)], axis=1
@@ -461,7 +480,7 @@ def test_principal_directions_match_the_analytic_torus(
     pd1_wp, pd2_wp, _, _ = od.curvature.principal_curvature(
         mesh_wp.points, mesh_wp.indices, frame_independent=frame_independent
     )
-    pd1_np, pd2_np = pd1_wp.numpy(), pd2_wp.numpy()
+    pd1_np, pd2_np = pd1_wp.numpy() @ ROUND_FRAME_ROTATION, pd2_wp.numpy() @ ROUND_FRAME_ROTATION
     assert np.all(np.linalg.norm(pd1_np, axis=1) > 0.5), "every fit must have produced a frame"
 
     # The returned pair must *contain* both lines of curvature. Which of PD1/PD2 carries which is
@@ -473,22 +492,24 @@ def test_principal_directions_match_the_analytic_torus(
             np.abs(np.einsum("ij,ij->i", pd1_np, exact_np)),
             np.abs(np.einsum("ij,ij->i", pd2_np, exact_np)),
         )
-        assert alignment_np.min() > 0.99, f"{name}: worst |cos| {alignment_np.min():.4f}"
+        assert alignment_np.min() > 0.88, f"{name}: worst |cos| {alignment_np.min():.4f}"
+        assert np.median(alignment_np) > 0.99, f"{name}: median |cos| {np.median(alignment_np):.4f}"
 
 
-def test_principal_curvature_is_reproducible(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_principal_curvature_is_reproducible(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Ordito against ordito: the consumer that made ``vertex_normals``' summation order visible.
 
-    The oracle for the values is ``test_principal_curvature_half_torus``; this pins
+    The oracle for the values is ``test_principal_curvature_graded``; this pins
     repeatability. The quadric fit is ill conditioned at a near-flat vertex, so it amplified the
     one-ULP (1.19e-07) run-to-run movement of a ``float32`` atomic accumulator into curvature
-    swings of up to **7.96e-04** absolute and **77 % relative** on this fixture -- at 19 of 544
+    swings of up to **7.96e-04** absolute and **77 % relative** on ``half_torus`` -- at 19 of 544
     vertices, and not as a swap of ``PV1`` with ``PV2`` (the *sorted* pair moved by the same
-    amount). ``vertices.vertex_normals`` accumulates in ``float64`` now, which is where the fix
-    is; ``test_vertex_normals_are_reproducible`` guards that layer directly.
+    amount). ``saddle_graded`` keeps the near-flat vertices that amplify it (its saddle centre).
+    ``vertices.vertex_normals`` accumulates in ``float64`` now, which is where the fix is;
+    ``test_vertex_normals_are_reproducible`` guards that layer directly.
     """
-    _, mesh_wp = half_torus
+    _, mesh_wp = saddle_graded
 
     runs = []
     for _ in range(8):
@@ -497,8 +518,8 @@ def test_principal_curvature_is_reproducible(half_torus: tuple[tm.Trimesh, wp.Me
         )
         runs.append((pv1_wp.numpy().copy(), pv2_wp.numpy().copy()))
 
-    # Non-vacuity: a constant or all-zero field would compare equal to itself for free.
-    assert np.ptp(runs[0][0]) > 1.0
+    # Non-vacuity: a constant or all-zero field would compare equal to itself for free (range 0.61).
+    assert np.ptp(runs[0][0]) > 0.2
     for pv1_np, pv2_np in runs[1:]:
         assert np.array_equal(runs[0][0], pv1_np)
         assert np.array_equal(runs[0][1], pv2_np)
@@ -506,19 +527,22 @@ def test_principal_curvature_is_reproducible(half_torus: tuple[tm.Trimesh, wp.Me
 
 @pytest.mark.parametrize("scale", [1e-3, 3e-4, 1e-6, 1e-9])
 def test_principal_curvature_is_scale_equivariant(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], scale: float
+    sphere_round: tuple[tm.Trimesh, wp.Mesh], scale: float
 ) -> None:
     """
     Ordito against ordito: curvature has units of 1/length, so scaling the mesh scales it back.
 
     The oracle sits on the unit-scale side, which
-    ``test_principal_curvature`` / ``test_principal_curvature_half_torus`` pin against libigl; this
+    ``test_principal_curvature`` / ``test_principal_curvature_graded`` pin against libigl; this
     only asks that shrinking the mesh does not change the answer it reports in the mesh's own
     units. It did: the quadric fit's normal matrix has a diagonal spanning ``h^8`` to ``h^2`` at
     mesh scale ``h``, so the absolute singularity threshold in
     ``kernels.linalg.solve_normal_equations`` rejected well-conditioned fits and the kernel's
-    fallback wrote zero curvature -- 42 of 642 vertices at ``1e-3`` and all 642 at ``3e-4``,
-    with nothing raised.
+    fallback wrote zero curvature -- 42 of 642 vertices at ``1e-3`` and all 642 at ``3e-4`` on
+    ``icosphere(3)``, with nothing raised.
+
+    ``sphere_round`` is the premise: a fallback zero is caught by every vertex carrying a curvature
+    far from zero, which a bumpy fixture's (crossing zero) does not.
 
     The two smallest scales pin a *second*, independent break that lived one layer down and is
     fixed in ``kernels.triangles.face_normals_and_area``: an absolute floor on ``|cross|`` there
@@ -526,7 +550,7 @@ def test_principal_curvature_is_scale_equivariant(
     curvature. ``test_vertices.py::test_vertex_normals_area_matches_igl_at_any_scale`` is that
     layer's own guard; this one is the consumer that found it.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_round
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
 
     _, _, pv1_unit_wp, pv2_unit_wp = od.curvature.principal_curvature(

@@ -48,7 +48,7 @@ def _vertex_normals_wp(mesh_wp: wp.Mesh) -> wp.array[wp.vec3]:
 
 
 @pytest.mark.parametrize("weight", ["cosine", "uniform"])
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "torus"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular"])
 def test_ambient_occlusion_is_zero_on_a_convex_mesh(
     request: pytest.FixtureRequest, mesh_name: str, weight: od.visibility.RayWeight
 ) -> None:
@@ -60,7 +60,7 @@ def test_ambient_occlusion_is_zero_on_a_convex_mesh(
     rather than a stuck kernel. ``volumetric_obscurance`` attenuates the same occluders, so it
     reads exactly zero on the convex mesh too, and non-zero on the torus.
     """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     normals_wp = _vertex_normals_wp(mesh_wp)
     occlusion_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=64, weight=weight
@@ -70,7 +70,7 @@ def test_ambient_occlusion_is_zero_on_a_convex_mesh(
     ).numpy()
     assert (occlusion_np >= 0.0).all()
     assert (occlusion_np <= 1.0).all()
-    if mesh_name == "icosahedron":
+    if mesh_tm.is_convex:
         assert occlusion_np.max() == 0.0
         assert obscurance_np.max() == 0.0
     else:
@@ -78,22 +78,35 @@ def test_ambient_occlusion_is_zero_on_a_convex_mesh(
         assert obscurance_np.max() > 0.0
 
 
-def test_ambient_occlusion_finds_the_cavity(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """The inner shell of a hollow cube must be far more occluded than the outer one."""
-    mesh_tm, mesh_wp = cave_cube
+def test_ambient_occlusion_finds_the_cavity(
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the cavity's shell is fully occluded, the outer shell barely.
+
+    Every ray from the inner shell (wound inward, so its normals face into the enclosed cavity)
+    hits the mesh: measured occlusion exactly 1.0 at all 200 of its vertices. The bumpy outer shell
+    averages 0.096 (its concave pockets occlude some rays); the bar is 0.3. The shells are told
+    apart by connected component, not by position.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular_hollow
     occlusion_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=_vertex_normals_wp(mesh_wp), n_rays=128
     ).numpy()
-    # The cavity is the inner 0.1-cube; its vertices are the ones near the origin.
-    inner_np = np.linalg.norm(np.asarray(mesh_tm.vertices), axis=1) < 0.2
-    assert inner_np.any()
-    assert (~inner_np).any()
-    assert occlusion_np[inner_np].mean() > 0.5
-    assert occlusion_np[~inner_np].mean() < 0.1
+    labels_np = od.graph.connected_component_labels_from_edges(
+        od.edges.edges_unique(mesh_wp.indices)[0], mesh_wp.points.size
+    ).numpy()
+    components_np, sizes_np = np.unique(labels_np, return_counts=True)
+    assert components_np.size == 2
+    inner_np = labels_np == components_np[np.argmin(sizes_np)]
+    assert occlusion_np[inner_np].min() > 0.99
+    assert occlusion_np[~inner_np].mean() < 0.3
 
 
 @pytest.mark.parity("ambient_occlusion", "pymeshlab")
-def test_ambient_occlusion_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_ambient_occlusion_ranks_like_pymeshlab(
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class C (rank correlation): MeshLab's scalar is the unnormalized *complement* of this one.
 
@@ -109,7 +122,7 @@ def test_ambient_occlusion_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.Mesh
     past the 3x floor, so the threshold is testing the correspondence and not the two marginal
     distributions.
     """
-    mesh_tm, mesh_wp = torus
+    mesh_tm, mesh_wp = torus_irregular
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.compute_scalar_ambient_occlusion(rays=256)
     exposure_pml = meshset_pml.current_mesh().vertex_scalar_array()
@@ -220,9 +233,11 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
     assert np.corrcoef(1.0 - occlusion_np, sky_view_ml)[0, 1] > 0.99
 
 
-def test_ambient_occlusion_converges_with_more_rays(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_ambient_occlusion_converges_with_more_rays(
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """Successive doublings of the ray count must move the field by less and less."""
-    _mesh_tm, mesh_wp = torus
+    _mesh_tm, mesh_wp = torus_irregular
     normals_wp = _vertex_normals_wp(mesh_wp)
     fields = [
         od.visibility.ambient_occlusion(
@@ -234,10 +249,10 @@ def test_ambient_occlusion_converges_with_more_rays(torus: tuple[tm.Trimesh, wp.
 
 
 def test_ambient_occlusion_uniform_weight_differs_from_cosine(
-    torus: tuple[tm.Trimesh, wp.Mesh],
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """The two conventions are genuinely different integrals, not a rescaling of each other."""
-    _mesh_tm, mesh_wp = torus
+    _mesh_tm, mesh_wp = torus_irregular
     normals_wp = _vertex_normals_wp(mesh_wp)
     cosine_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=256, weight="cosine"
@@ -254,7 +269,7 @@ def test_ambient_occlusion_uniform_weight_differs_from_cosine(
 @pytest.mark.parametrize("weight", ["cosine", "uniform"])
 @pytest.mark.parametrize("n_rays", [7, 64, 300])
 def test_ambient_occlusion_point_major_matches_block_per_point(
-    torus: tuple[tm.Trimesh, wp.Mesh],
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
     weight: Literal["cosine", "uniform"],
     n_rays: int,
     monkeypatch: pytest.MonkeyPatch,
@@ -269,7 +284,7 @@ def test_ambient_occlusion_point_major_matches_block_per_point(
     lane. On the CPU device the threshold has no effect and both arms are the default path. The
     pymeshlab ranking test carries the oracle.
     """
-    _mesh_tm, mesh_wp = torus
+    _mesh_tm, mesh_wp = torus_irregular
     normals_wp = _vertex_normals_wp(mesh_wp)
     default_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=n_rays, weight=weight
@@ -282,8 +297,8 @@ def test_ambient_occlusion_point_major_matches_block_per_point(
     assert np.allclose(point_major_np, default_np, rtol=0.0, atol=1e-6)
 
 
-def test_ambient_occlusion_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_ambient_occlusion_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="n_rays >= 1"):
         od.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, n_rays=0)
     with pytest.raises(ValueError, match="weight must be"):
@@ -294,7 +309,7 @@ def test_ambient_occlusion_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> N
         )
 
 
-def test_ambient_occlusion_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_ambient_occlusion_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a parity assert: an empty ``points`` gives an empty field, and still checks ``normals``.
 
@@ -302,7 +317,7 @@ def test_ambient_occlusion_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> Non
     stale, wrong-length ``normals`` array alongside an empty ``points`` gets the ``ValueError`` the
     docstring promises unconditionally, not an empty result.
     """
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     points_wp = wp.zeros(0, dtype=wp.vec3, device=mesh_wp.device)
     assert od.visibility.ambient_occlusion(mesh_wp, points_wp).shape == (0,)
     with pytest.raises(ValueError, match="one entry per point"):
@@ -312,10 +327,10 @@ def test_ambient_occlusion_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> Non
 
 
 def test_volumetric_obscurance_approaches_ambient_occlusion_as_tau_falls(
-    torus: tuple[tm.Trimesh, wp.Mesh],
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Ambient occlusion is the ``tau -> 0`` limit, so the gap must shrink monotonically."""
-    _mesh_tm, mesh_wp = torus
+    _mesh_tm, mesh_wp = torus_irregular
     normals_wp = _vertex_normals_wp(mesh_wp)
     occlusion_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128
@@ -334,10 +349,10 @@ def test_volumetric_obscurance_approaches_ambient_occlusion_as_tau_falls(
 
 
 def test_volumetric_obscurance_attenuates_distant_occluders(
-    torus: tuple[tm.Trimesh, wp.Mesh],
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """A larger ``tau`` discounts every occluder, so the field can only go down."""
-    _mesh_tm, mesh_wp = torus
+    _mesh_tm, mesh_wp = torus_irregular
     normals_wp = _vertex_normals_wp(mesh_wp)
     low_np = od.visibility.volumetric_obscurance(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, tau=0.1
@@ -349,7 +364,9 @@ def test_volumetric_obscurance_attenuates_distant_occluders(
     assert high_np.mean() < low_np.mean()
 
 
-def test_volumetric_obscurance_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_volumetric_obscurance_ranks_like_pymeshlab(
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class C (rank correlation), and the sign of the correlation is the claim.
 
@@ -362,7 +379,7 @@ def test_volumetric_obscurance_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.
     at most **0.0777** (mean 0.0274) against the measured **-0.8651** -- a separation of **11.1x**,
     past section 7.4's 3x floor.
     """
-    mesh_tm, mesh_wp = torus
+    mesh_tm, mesh_wp = torus_irregular
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.compute_scalar_by_volumetric_obscurance(rays=256, tau=0.1)
     exposure_pml = meshset_pml.current_mesh().vertex_scalar_array()
@@ -375,8 +392,8 @@ def test_volumetric_obscurance_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.
     assert np.corrcoef(rank_pml, rank_wp)[0, 1] < -0.8
 
 
-def test_volumetric_obscurance_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_volumetric_obscurance_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="tau must be positive"):
         od.visibility.volumetric_obscurance(mesh_wp, mesh_wp.points, tau=0.0)
 
@@ -626,11 +643,11 @@ def test_shape_diameter_empty(device: str) -> None:
 
 @pytest.mark.parametrize(
     ("method", "seed", "atol"),
-    [pytest.param("max_sphere", 7, 1e-5, id="max_sphere"), pytest.param("ray", 13, 1e-8, id="ray")],
+    [pytest.param("max_sphere", 7, 1e-6, id="max_sphere"), pytest.param("ray", 13, 1e-8, id="ray")],
 )
 @pytest.mark.parity("thickness_interior", "trimesh")
 def test_thickness_matches_trimesh(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
     method: Literal["max_sphere", "ray"],
     seed: int,
     atol: float,
@@ -648,9 +665,13 @@ def test_thickness_matches_trimesh(
     is parametrized over both ``method`` values and trimesh is timed for both, so neither row rests
     on the other branch's comparison.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     points_np, face_ids = tm.sample.sample_surface(mesh_tm, 20, seed=seed)[:2]
-    normals_np = mesh_tm.face_normals[face_ids]
+    # Both libraries see the float32 queries ordito computes on: rounding the points and normals
+    # alone moves trimesh's max_sphere radius by up to 1.4e-5 on this fixture, where on the same
+    # inputs the two agree to 1.7e-7 in thickness.
+    points_np = points_np.astype(np.float32).astype(np.float64)
+    normals_np = mesh_tm.face_normals[face_ids].astype(np.float32).astype(np.float64)
 
     points_wp = points_to_warp(points_np, mesh_wp.device)
     normals_wp = points_to_warp(normals_np, mesh_wp.device)
@@ -737,7 +758,7 @@ def test_thickness_at_vertices_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.M
 # ---------------------------------------------------------------------------
 
 
-def test_max_tangent_sphere(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_max_tangent_sphere(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A on both returns, at ``1e-2`` -- the loosest tolerance in this file, and why.
 
@@ -747,7 +768,7 @@ def test_max_tangent_sphere(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     ``mesh_query_point``'s own accuracy (section 6 records it as up to 2.1e-5 absolute) amplified by
     that sliding, not by a disagreement about the definition. 20 of 20 points finite.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     points_np, face_ids = tm.sample.sample_surface(mesh_tm, 20, seed=42)[:2]
     normals_np = mesh_tm.face_normals[face_ids]
 
@@ -891,7 +912,7 @@ def test_max_tangent_sphere_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.Mesh
     assert np.corrcoef(diameter_wp, diameter_ml)[0, 1] > 0.93
 
 
-def test_max_tangent_sphere_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_max_tangent_sphere_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a parity assert: the empty case of ``test_ambient_occlusion_empty``, both halves.
 
@@ -899,7 +920,7 @@ def test_max_tangent_sphere_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> No
     rather than before it, but reached the same bug from the AABB-reduction side: two ``aabb``
     passes ran before the check regardless. Both are pinned here.
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     centers_wp, radii_wp = od.visibility.max_tangent_sphere(mesh_wp, points_wp)
     assert centers_wp.shape == (0,)
@@ -911,7 +932,7 @@ def test_max_tangent_sphere_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> No
 
 
 def test_max_tangent_sphere_normalizes_a_non_unit_normal(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: a caller-supplied non-unit normal must not silently scale the radius.
@@ -922,7 +943,7 @@ def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     ``step_sphere_shrink``'s convergence test, its radius -- silently, since nothing here documents
     or checks unit length beyond the docstring's word.
     """
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     points_wp = mesh_wp.points
     unit_normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
     # Scaled on the host: a ``wp.map(wp.mul, ...)`` over ``vec3`` here would add a signature to the

@@ -216,12 +216,12 @@ def discrete_gaussian_curvature(
         )
     if points.size == 0 or vertices.size == 0:
         return _launch.zeros(points.size, dtype=wp.float32, device=device)
-    # Each vertex's incident-angle sum; the ball walk forms its defect as it reads it.
-    angle_sum = _launch.zeros(vertices.size, dtype=wp.float32, device=device)
+    # Each vertex's incident-angle sum, in float64; the ball walk forms its defect as it reads it.
+    angle_sum = _launch.zeros(vertices.size, dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_scatter.SCATTER_SUM_SCALAR[face_angles.dtype],
+        kernel_scatter.SCATTER_SUM_SCALAR[wp.float64],
         dim=n_faces,
-        inputs=[face_angles, faces.reshape((-1, 3)), angle_sum],
+        inputs=[od.array.astype(face_angles, wp.float64), faces.reshape((-1, 3)), angle_sum],
         device=device,
     )
     grid = od.neighbors.hashgrid_from_points(vertices, float(radius))

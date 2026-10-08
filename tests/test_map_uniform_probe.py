@@ -60,7 +60,7 @@ def test_map_accepts_a_float_scalar_uniform(device: str) -> None:
 
 
 def test_map_accepts_a_uint64_mesh_id_and_queries_inside_the_func(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     ``wp.map`` carries a ``wp.Mesh.id`` as a scalar uniform, and mesh queries work in the func.
@@ -71,7 +71,7 @@ def test_map_accepts_a_uint64_mesh_id_and_queries_inside_the_func(
     This is what makes ``remesh._reproject_pass``-shaped work expressible as a map: the whole body
     is one closest-point query per vertex against a fixed mesh.
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     device = mesh_wp.device
     # Push every vertex outward, then snap back: the result must return to the surface.
     original_np = mesh_wp.points.numpy()

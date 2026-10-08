@@ -23,7 +23,7 @@ from meshlib import mrmeshpy as mm
 import ordito as od
 import ordito.typing as odt
 from tests.conftest import MESHES
-from tests.conversions import points_to_warp, trimesh_to_meshlib, warp_empty
+from tests.conversions import numpy_to_warp, points_to_warp, trimesh_to_meshlib, warp_empty
 
 
 def _rays(mesh_tm: tm.Trimesh, n_rays: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -116,20 +116,27 @@ def test_trace_from_vertex_walks_the_requested_distance_on_the_surface(
     assert distance_tm.max() < 1e-5 * scale
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
+)
 @pytest.mark.parity("trace_rays", "potpourri3d")
 @pytest.mark.parity("trace_locality", "potpourri3d")
 def test_trace_from_vertex_matches_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class A on the arc length, Class C on the endpoint -- and the split is the point.
+    Class A: the same input direction, the same walk.
 
-    The traced *length* is the contract and matches geometry-central to ``1e-4``. The *endpoint*
-    cannot: the two libraries resolve a walk crossing exactly through a vertex differently, and the
-    path accumulates that choice at every crossing, so it is bounded by half a mean edge length
-    instead. Asserting the endpoint at ``allclose`` would be asserting a tie-break neither library
-    documents; asserting only the length would miss a path that wandered.
+    Both libraries read a 3-D direction at a vertex as a normalized polar angle (the corner angles
+    rescaled to a full turn, half a turn at a boundary vertex) in a tangent frame fitted to the
+    whole fan, so the start is gauge-free and defined at cone and saddle vertices alike. Random rays
+    plus one from each of the two most negative and two most positive interior angle defects and two
+    from rim vertices into the fan, so the convention's hard cases are in the set: first segments
+    agree to a hundredth of a degree, arc lengths to 1e-6 and endpoints to 1e-3 of a mean edge. The
+    one difference is a rim start pointing off the surface: ordito traces nothing, potpourri3d
+    walks along whichever edge it lands on, so those rays are not compared. Probed: the bracketing
+    convention this replaced (a direction placed between the projected edges that bracket it)
+    started up to 9 degrees off at a cone vertex and missed endpoints by up to 1.83 edges.
 
     Carries the ``trace_locality`` marker as well: that group is this same call on a second axis
     (mesh diameter at pinned vertex count), so one comparison answers for both rows.
@@ -138,36 +145,179 @@ def test_trace_from_vertex_matches_potpourri3d(
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     start_np, directions_np = _rays(mesh_tm, 12, seed=2)
+    angle_sums = np.zeros(vertices_np.shape[0])
+    np.add.at(angle_sums, mesh_tm.faces.ravel(), mesh_tm.face_angles.ravel())
+    defects = 2.0 * np.pi - angle_sums
+    rim = np.unique(
+        mesh_tm.edges_sorted[tm.grouping.group_rows(mesh_tm.edges_sorted, require_count=1)]
+    )
+    defects[rim] = 0.0
+    order = np.argsort(defects)
+    extremes = np.concatenate((order[:2], order[-2:])).astype(np.int32)
+    if rim.size == 0:  # a closed fixture: strong saddle and cone starts
+        assert (
+            defects[extremes].min() < -np.radians(10.0) < np.radians(10.0) < defects[extremes].max()
+        )
+    # Rim starts aim into the fan, at an incident face's centroid: a direction pointing off the
+    # surface traces nothing in ordito, where potpourri3d walks along whichever edge it lands on.
+    rim_starts = rim[:2].astype(np.int32)
+    into_fan = np.array(
+        [mesh_tm.triangles_center[mesh_tm.vertex_faces[v][0]] - vertices_np[v] for v in rim_starts]
+    ).reshape(-1, 3)
+    into_fan *= np.linalg.norm(directions_np[0]) / np.linalg.norm(into_fan, axis=1, keepdims=True)
+    start_np = np.concatenate((start_np, extremes, rim_starts))
+    directions_np = np.concatenate(
+        (directions_np, directions_np[: extremes.size], into_fan.astype(np.float32))
+    )
 
-    points_wp, offsets_wp = _trace(mesh_wp, start_np, directions_np)
-    curves = od.array.split(points_wp, offsets_wp)
-
+    curves = od.array.split(*_trace(mesh_wp, start_np, directions_np))
     tracer_pp = pp3d.GeodesicTracer(vertices_np, faces_np)
-    edge_length = float(
+    edge_length = float(np.linalg.norm(np.diff(vertices_np[mesh_tm.edges], axis=1), axis=2).mean())
+    walked = 0
+    for ray, start in enumerate(start_np):
+        points = np.asarray(curves[ray].numpy(), dtype=np.float64)
+        path_pp = np.asarray(
+            tracer_pp.trace_geodesic_from_vertex(int(start), directions_np[ray].astype(np.float64))
+        )
+        if points.shape[0] == 1:  # only a rim start whose direction points off the surface
+            assert start in rim
+            assert ray < start_np.size - rim_starts.size
+            continue
+        walked += 1
+        leaving, leaving_pp = points[1] - points[0], path_pp[1] - path_pp[0]
+        cosine = leaving @ leaving_pp / (np.linalg.norm(leaving) * np.linalg.norm(leaving_pp))
+        assert np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))) < 1e-2
+        assert np.isclose(_path_length(path_pp), _path_length(points), rtol=1e-6, atol=0.0)
+        assert np.linalg.norm(points[-1] - path_pp[-1]) < 1e-3 * edge_length
+    assert walked >= 12
+
+
+def _normalized_edge_direction(
+    mesh_tm: tm.Trimesh, normal: np.ndarray, vertex: int, k: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return the unit tangent direction whose normalized polar angle at ``vertex`` is edge ``k``'s.
+
+    A transcription of the convention ``trace_from_vertex`` documents, for a closed fan: corner
+    angles rescaled to a full turn, normalized angle 0 placed by fitting the projected edges, each
+    rotated back by its normalized angle. Edges are in the fan's counter-clockwise order.
+    """
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    following, corner = {}, {}
+    for face, angles in zip(mesh_tm.faces, mesh_tm.face_angles, strict=True):
+        if vertex in face:
+            slot = list(face).index(vertex)
+            following[face[(slot + 1) % 3]] = face[(slot + 2) % 3]
+            corner[face[(slot + 1) % 3]] = angles[slot]
+    fan = [min(following)]
+    while len(fan) < len(following):
+        fan.append(following[fan[-1]])
+    corners = np.array([corner[n] for n in fan])
+    theta = 2.0 * np.pi * np.concatenate(([0.0], np.cumsum(corners)[:-1])) / corners.sum()
+    axis_x = np.cross(normal, [1.0, 0.0, 0.0] if abs(normal[0]) < 0.9 else [0.0, 1.0, 0.0])
+    axis_x /= np.linalg.norm(axis_x)
+    axis_y = np.cross(normal, axis_x)
+    edges = vertices_np[fan] - vertices_np[vertex]
+    anchor = np.angle(np.sum((edges @ axis_x + 1j * (edges @ axis_y)) * np.exp(-1j * theta)))
+    return np.cos(anchor + theta[k]) * axis_x + np.sin(anchor + theta[k]) * axis_y, edges[k]
+
+
+def test_trace_from_vertex_passes_through_the_vertex_an_edge_leads_to(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: a ray at an edge's normalized angle follows it through its far vertex.
+
+    At ``sphere_irregular``'s strongest cone vertex (a 130-degree defect, four edges) the direction
+    whose normalized polar angle is an incident edge's leaves along that edge and so runs exactly
+    into its far vertex. That walk once stopped there, because the opposite edge's crossing landed a
+    rounding outside [0, 1]; it now passes through, with half the vertex's total angle on either
+    side (the straightest continuation), and traces its whole length.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_np = np.asarray(mesh_tm.vertices)
+    angle_sums = np.zeros(vertices_np.shape[0])
+    np.add.at(angle_sums, mesh_tm.faces.ravel(), mesh_tm.face_angles.ravel())
+    cone = int(np.argmax(np.abs(2.0 * np.pi - angle_sums)))
+    assert abs(2.0 * np.pi - angle_sums[cone]) > np.radians(90.0)
+    normal = (
+        od.tangent_space.vertex_tangent_frames(mesh_wp.points, mesh_wp.indices)[2]
+        .numpy()[cone]
+        .astype(np.float64)
+    )
+    length = 5.0 * float(
         np.linalg.norm(
-            mesh_tm.vertices[mesh_tm.edges[:, 1]] - mesh_tm.vertices[mesh_tm.edges[:, 0]], axis=1
+            vertices_np[mesh_tm.vertex_neighbors[cone]] - vertices_np[cone], axis=1
         ).mean()
     )
-    for ray, (start, direction) in enumerate(zip(start_np, directions_np, strict=True)):
-        path_pp = np.asarray(
-            tracer_pp.trace_geodesic_from_vertex(int(start), direction.astype(np.float64))
+    rays = [
+        _normalized_edge_direction(mesh_tm, normal, cone, k)
+        for k in range(len(mesh_tm.vertex_neighbors[cone]))
+    ]
+    directions = np.array([length * unit for unit, _ in rays], dtype=np.float32)
+    points_wp, offsets_wp = _trace(mesh_wp, np.full(len(rays), cone), directions)
+    for (_, edge), curve in zip(rays, od.array.split(points_wp, offsets_wp), strict=True):
+        points = np.asarray(curve.numpy(), dtype=np.float64)
+        assert points.shape[0] > 2  # it walked, and through the far vertex
+        assert np.isclose(_path_length(points), length, rtol=1e-5, atol=0.0)
+        leaving = points[1] - points[0]
+        cosine = leaving @ edge / (np.linalg.norm(leaving) * np.linalg.norm(edge))
+        assert np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))) < 0.1
+
+
+def test_trace_from_vertex_does_not_depend_on_the_numbering(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: renumbering the vertices and faces leaves every path where it was.
+
+    The start direction is read in a frame fitted to the whole fan, so no edge -- and so no index
+    -- is special. Rays from the ten vertices of largest angle defect, cones and saddles, on the
+    mesh and on a copy with vertices, faces and each face's corners shuffled: endpoints within
+    1e-4 of a mean edge. A direction placed among the projected edges that bracket it fell back to
+    the ring's first edge at a saddle, whose projected fan folds, and moved by up to 35 degrees.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces)
+    angle_sums = np.zeros(vertices_np.shape[0])
+    np.add.at(angle_sums, faces_np.ravel(), mesh_tm.face_angles.ravel())
+    starts = np.argsort(-np.abs(2.0 * np.pi - angle_sums))[:10].astype(np.int32)
+    assert (2.0 * np.pi - angle_sums[starts]).min() < -np.radians(30.0)  # saddles are among them
+    rng = np.random.default_rng(4)
+    directions = rng.normal(size=(starts.size, 3)).astype(np.float32)
+
+    order = rng.permutation(vertices_np.shape[0])
+    rank = np.empty_like(order)
+    rank[order] = np.arange(order.size)
+    shuffled = rank[faces_np][rng.permutation(faces_np.shape[0])]
+    shift = rng.integers(0, 3, shuffled.shape[0])
+    shuffled = np.take_along_axis(shuffled, (np.arange(3)[None, :] + shift[:, None]) % 3, axis=1)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np[order], shuffled.ravel(), mesh_wp.device)
+
+    paths = od.array.split(*_trace(mesh_wp, starts, directions))
+    paths_shuffled = od.array.split(
+        *od.geodesic_walk.trace_from_vertex(
+            vertices_wp,
+            faces_wp,
+            wp.array(rank[starts].astype(np.int32), dtype=wp.int32, device=mesh_wp.device),
+            points_to_warp(directions, mesh_wp.device),
         )
-        points = curves[ray].numpy()
-        # The arc length is the contract and matches exactly.
-        assert np.isclose(_path_length(points), _path_length(path_pp), rtol=1e-4, atol=1e-5)
-        # The endpoint only agrees to a fraction of an edge length: the two libraries resolve a
-        # vertex crossing differently, and the walk accumulates that over every crossing.
-        assert np.linalg.norm(points[-1] - path_pp[-1]) < 0.5 * edge_length
+    )
+    edge_length = float(np.linalg.norm(np.diff(vertices_np[mesh_tm.edges], axis=1), axis=2).mean())
+    for path, path_shuffled in zip(paths, paths_shuffled, strict=True):
+        assert path.size > 1
+        assert np.linalg.norm(path.numpy()[-1] - path_shuffled.numpy()[-1]) < 1e-4 * edge_length
 
 
-def test_trace_from_vertex_stops_at_the_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_trace_from_vertex_stops_at_the_boundary(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: rays fired off the rim must stop there, not wrap or leave.
 
     trimesh again supplies only the surface-distance oracle. The step-cap assert is what separates
     *stopping* from *running out of iterations* -- both give a short path, and only one is right.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     # Aim from every boundary vertex along the outward direction with a long reach: each ray must
     # stop at the rim rather than wrap around or leave the surface.
     _, _, is_boundary_wp = od.halfedge.vertex_one_rings(
@@ -195,7 +345,7 @@ def test_trace_from_vertex_stops_at_the_boundary(hemisphere: tuple[tm.Trimesh, w
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("trace_from_face", "potpourri3d")
 def test_trace_from_face_matches_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
@@ -250,9 +400,9 @@ def test_trace_from_face_matches_potpourri3d(
 
 
 def test_trace_from_face_zero_direction_is_a_single_point(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     points_wp, offsets_wp = od.geodesic_walk.trace_from_face(
         mesh_wp.points,
         mesh_wp.indices,
@@ -282,7 +432,12 @@ def test_trace_empty(device: str) -> None:
 # descend_field / geodesic_path
 # --------------------------------------------------------------------------------------
 
-_PATH_MESHES = ["icosphere", "torus", "unit_box"]
+# Not ``sphere_irregular``: its heat field (72 % obtuse faces) has a spurious local minimum at
+# vertex 300, where 142 of the 499 paths to vertex 0 stop -- the method's limit, matched by
+# potpourri3d's identical field (CLAUDE.md section 16.6). A path test needs a field whose one
+# minimum is the source; ``sphere_well_shaped`` (every one of 399 paths arrives) and
+# ``torus_irregular`` have that from vertex 0.
+_PATH_MESHES = ["sphere_well_shaped", "torus_irregular", "unit_box"]
 
 
 def _paths_to_source(mesh_wp: wp.Mesh, targets_np: np.ndarray) -> list[wp.array[wp.vec3]]:
@@ -305,14 +460,21 @@ def test_geodesic_path_is_never_shorter_than_the_exact_geodesic(
 
     ``igl.exact_geodesic`` propagates MMP windows and is *globally* exact, so it is a true lower
     bound on the length of any path between the same two vertices -- and the assertion is that
-    ordito never comes in under it. Measured over three fixtures, the minimum ratio is
-    **1.0000-1.0005** and the median 1.0000-1.0185, with the worst single path 1.08 long on
-    ``unit_box``, where a cube's exact geodesics run along flat faces that a first-order field
+    ordito never comes in under it. Measured over the three ``_PATH_MESHES``, the minimum ratio is
+    **1.0000-1.0126** and the median 1.0000-1.0353; the worst single path is 1.42 long on
+    ``torus_irregular`` (the heat field's gradient, below), 1.12 on ``sphere_well_shaped`` and 1.08
+    on ``unit_box``, where a cube's exact geodesics run along flat faces that a first-order field
     resolves poorly.
 
     The upper bound is asserted too, because an inequality alone would pass for a wildly detoured
-    path. It is deliberately loose (1.35): this is the heat method's accuracy showing through, not
-    the walk's, and a tighter bound would be a test of the diffusion time rather than of the path.
+    path -- and it is taken against the **same walk over potpourri3d's field**, not against a
+    fixed ratio, because the excess is the heat method's. A descent's length is the integral of
+    ``dphi / |grad phi|``, and on an irregular mesh the heat field's gradient is far from unit
+    (0.27 to 2.0 along one ``sphere_irregular`` path): ordito's paths come out up to 1.42 times the
+    exact geodesic on ``torus_irregular``, and descending potpourri3d's identical method
+    (``use_robust=False``, the fields agree to 2e-5 of the range) gives the same paths. So ordito's
+    path must match the reference-field path to 1e-3 of its length, which a detour in the walk or
+    a wrong field fails and the method's error does not.
 
     ``igl.exact_geodesic`` needs **all six** arguments -- a four-argument call binds ``vt`` to
     ``fs`` and returns an empty array rather than raising -- so both face sets are passed
@@ -343,7 +505,21 @@ def test_geodesic_path_is_never_shorter_than_the_exact_geodesic(
 
     ratio_np = lengths_np / exact_igl
     assert ratio_np.min() > 0.999  # never shorter than the exact geodesic
-    assert ratio_np.max() < 1.35  # nor absurdly longer: the heat field's accuracy, not the walk's
+
+    distance_pp = pp3d.MeshHeatMethodDistanceSolver(
+        vertices_np, np.ascontiguousarray(mesh_tm.faces, dtype=np.int32), use_robust=False
+    ).compute_distance(0)
+    device = mesh_wp.points.device
+    points_pp, offsets_pp = od.geodesic_walk.descend_field(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(distance_pp, dtype=wp.float64, device=device),
+        wp.array(targets_np, dtype=wp.int32, device=device),
+    )
+    lengths_pp = np.array(
+        [float(od.polyline.polyline_length(path)) for path in od.array.split(points_pp, offsets_pp)]
+    )
+    assert np.allclose(lengths_np, lengths_pp, rtol=1e-3, atol=0.0)
 
 
 @pytest.mark.parametrize("mesh_name", _PATH_MESHES)
@@ -399,16 +575,17 @@ def test_geodesic_path_reaches_its_source(request: pytest.FixtureRequest, mesh_n
 
 @pytest.mark.parity("geodesic_path", "potpourri3d")
 def test_geodesic_path_matches_potpourri3d_on_a_sphere(
-    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class C: within a per-cent of ``EdgeFlipGeodesicSolver``'s *exact* path, on a sphere.
 
     potpourri3d flips edges until the path is locally shortest, so its length is the exact geodesic
     for that homotopy class -- and on a simply-connected surface that is *the* geodesic. Measured on
-    ``icosphere(3)`` over 24 targets: ordito is never shorter (minimum ratio **1.0000**), median
-    **1.0051** and worst **1.0917**. The gap is the heat field's first-order accuracy, which is the
-    price of getting every path from one solve.
+    ``sphere_well_shaped`` over 24 targets: ordito is never shorter (minimum ratio **1.0000**),
+    median **1.0116** and worst **1.0848**. The gap is the heat field's first-order accuracy, which
+    is the price of getting every path from one solve. (On ``sphere_irregular`` a path stopping at
+    the field's spurious minimum reads 0.04 of the geodesic; see ``_PATH_MESHES``.)
 
     **This fixture is simply connected on purpose.** On a torus the comparison inverts, for a
     reason that is not an error on either side: ``find_geodesic_path`` shortens within the
@@ -417,7 +594,7 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
     than the reference there. That is why the globally exact lower bound in the test above uses
     ``igl.exact_geodesic`` instead, and why this comparison stays on the sphere.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_well_shaped
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     solver_pp = pp3d.EdgeFlipGeodesicSolver(
         vertices_np, np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
@@ -447,7 +624,7 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
 
 
 def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], hemisphere: tuple[tm.Trimesh, wp.Mesh]
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], saddle_graded: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Not a library comparison: the two documented ways a descent stops before the stop value.
@@ -458,10 +635,10 @@ def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
     the descent starts at the *source*, whose value is already at the stop -- so the path is one
     point, which is the honest answer rather than an error.
 
-    At a **mesh boundary** the walk stops where the surface does: on the hemisphere, descending a
+    At a **mesh boundary** the walk stops where the surface does: on ``saddle_graded``, descending a
     field whose minimum lies off the rim leaves paths ending on the rim.
     """
-    _, sphere_wp = icosphere
+    _, sphere_wp = sphere_irregular
     device = sphere_wp.points.device
     source_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
     distance_wp = od.heat.heat_geodesic(sphere_wp.points, sphere_wp.indices, source_wp)
@@ -473,19 +650,19 @@ def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
 
     # A boundary: the field's source is a rim vertex, so paths from the far side reach it, but a
     # field with no reachable minimum stops on the rim instead.
-    mesh_tm, hemi_wp = hemisphere
-    rim_wp = od.boundary.boundary_vertex_indices(hemi_wp.points, hemi_wp.indices)
+    mesh_tm, open_wp = saddle_graded
+    rim_wp = od.boundary.boundary_vertex_indices(open_wp.points, open_wp.indices)
     assert rim_wp.size > 0
-    hemi_distance_wp = od.heat.heat_geodesic(
-        hemi_wp.points, hemi_wp.indices, odt.as_dense(rim_wp[:1])
+    open_distance_wp = od.heat.heat_geodesic(
+        open_wp.points, open_wp.indices, odt.as_dense(rim_wp[:1])
     )
     interior_np = np.setdiff1d(
         np.arange(mesh_tm.vertices.shape[0], dtype=np.int32), rim_wp.numpy()
     )[:8]
     points_wp, path_offsets_wp = od.geodesic_walk.descend_field(
-        hemi_wp.points,
-        hemi_wp.indices,
-        hemi_distance_wp,
+        open_wp.points,
+        open_wp.indices,
+        open_distance_wp,
         wp.array(interior_np, dtype=wp.int32, device=device),
     )
     assert points_wp.size > interior_np.size  # every path has more than a point
@@ -493,7 +670,7 @@ def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
 
 
 def test_descend_field_accepts_the_precomputed_pair_values_first(
-    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: ``vertex_faces=`` takes the pair values first.
@@ -508,7 +685,7 @@ def test_descend_field_accepts_the_precomputed_pair_values_first(
 
     See [`array.pack_1d_arrays`][ordito.array.pack_1d_arrays] for the convention itself.
     """
-    _, mesh_wp = icosphere
+    _, mesh_wp = sphere_irregular
     device = mesh_wp.points.device
     n_vertices = mesh_wp.points.size
     source_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
@@ -531,9 +708,9 @@ def test_descend_field_accepts_the_precomputed_pair_values_first(
     assert np.allclose(derived_points.numpy(), supplied_points.numpy(), rtol=1e-5, atol=1e-5)
 
 
-def test_descend_field_guards_and_empty(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_descend_field_guards_and_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: the length guard and the empty batch."""
-    _, mesh_wp = icosphere
+    _, mesh_wp = sphere_irregular
     device = mesh_wp.points.device
     values_wp = wp.zeros(3, dtype=wp.float64, device=device)
     with pytest.raises(ValueError, match="one entry per vertex"):
@@ -571,7 +748,9 @@ def _shortened_generators(
 
 
 @pytest.mark.parity("shorten_loop", "potpourri3d")
-def test_shorten_loop_preserves_the_homotopy_class(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_shorten_loop_preserves_the_homotopy_class(
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class B: equal after a named transform -- flow both loops to the geodesic in their class.
 
@@ -591,7 +770,7 @@ def test_shorten_loop_preserves_the_homotopy_class(torus: tuple[tm.Trimesh, wp.M
     grid whose rows are not geodesics, because a one-ring move cannot step the loop off a row
     without lengthening the edge path first.
     """
-    mesh_tm, mesh_wp = torus
+    mesh_tm, mesh_wp = torus_irregular
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     loops_wp, shortened_wp, sweeps = _shortened_generators(mesh_wp)
     assert len(loops_wp) == 2  # non-vacuity: genus 1, so there are two generators to shorten
@@ -620,7 +799,7 @@ def test_shorten_loop_preserves_the_homotopy_class(torus: tuple[tm.Trimesh, wp.M
     assert improved >= 1  # and the sweeps did something: 1.411x on this fixture's major generator
 
 
-@pytest.mark.parametrize("mesh_name", ["torus", "genus_two"])
+@pytest.mark.parametrize("mesh_name", ["torus_irregular", "genus_two"])
 @pytest.mark.parity(
     "shorten_loop",
     "meshlib",
@@ -695,7 +874,9 @@ def test_shorten_loop_bounded_by_meshlib(request: pytest.FixtureRequest, mesh_na
     assert max(ratios) > 1.0 + 1e-3  # non-vacuity: an exactly-equal fixture would assert nothing
 
 
-def test_shorten_loop_accepts_precomputed_connectivity(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_shorten_loop_accepts_precomputed_connectivity(
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Ordito against ordito: the ``twins`` / ``rings`` arguments do not change the sweep.
 
@@ -704,7 +885,7 @@ def test_shorten_loop_accepts_precomputed_connectivity(torus: tuple[tm.Trimesh, 
     precomputed halfedge structure -- which every caller holding a ``Trimesh`` now can -- reaches
     the identical cycles, since the loop walk reads nothing else about the topology.
     """
-    _mesh_tm, mesh_wp = torus
+    _mesh_tm, mesh_wp = torus_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     loops_wp = od.homology.homology_generators(vertices_wp, faces_wp)
     assert len(loops_wp) == 2  # non-vacuity: genus 1, so there are two generators to shorten
@@ -721,7 +902,7 @@ def test_shorten_loop_accepts_precomputed_connectivity(torus: tuple[tm.Trimesh, 
 
 
 def test_shorten_loop_returns_valid_non_separating_cycles(
-    torus: tuple[tm.Trimesh, wp.Mesh],
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: no reference shortens a loop along mesh edges.
@@ -733,7 +914,7 @@ def test_shorten_loop_returns_valid_non_separating_cycles(
     boundary loops, where a contractible cycle would cut a disk off and leave two components. A
     length check cannot see the difference, because a loop collapsing onto a disk gets shorter.
     """
-    _, mesh_wp = torus
+    _, mesh_wp = torus_irregular
     device = mesh_wp.indices.device
     _loops_wp, shortened_wp, _sweeps = _shortened_generators(mesh_wp)
 
@@ -843,7 +1024,7 @@ def test_shorten_loop_regrows_its_buffers_and_matches(
 
 
 def test_shorten_loop_is_idempotent_and_handles_edge_cases(
-    torus: tuple[tm.Trimesh, wp.Mesh],
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: a fixed point of a monotone local rule has no external oracle.
@@ -852,7 +1033,7 @@ def test_shorten_loop_is_idempotent_and_handles_edge_cases(
     fails its acceptance test -- which pins that the stopping rule and the acceptance rule agree. A
     loop too short to have a triple, and an empty list, come back untouched.
     """
-    _, mesh_wp = torus
+    _, mesh_wp = torus_irregular
     _loops_wp, once_wp, _sweeps = _shortened_generators(mesh_wp)
     twice_wp, sweeps = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, once_wp)
     assert sweeps == 2  # one sweep per parity, both finding nothing to do

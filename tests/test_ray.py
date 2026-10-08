@@ -56,7 +56,7 @@ def _upward_rays(mesh_tm: tm.Trimesh, n: int, seed: int) -> tuple[np.ndarray, np
     return origins_np, directions_np
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_intersects_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A on ``intersects_first`` and ``intersects_any``, Class B on ``intersects_location``.
@@ -95,16 +95,18 @@ def test_intersects_match_trimesh(request: pytest.FixtureRequest, mesh_name: str
     assert np.array_equal(ray_wp_np[order_wp], ray_tm[order_tm])
 
 
-def test_intersects_location_cave_cube(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
+def test_intersects_location_hollow_shell(sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class B (segment canonicalization): a 20x20 ray grid fired ``+z`` through the hollow fixture.
 
-    Each ray reports its *first* hit, on both sides (``multiple_hits=False``), so every hit lies on
-    the outer wall's bottom face: its ``z`` is the mesh's lowest and its ``xy`` the ray's own, an
-    analytic answer beside trimesh's. The grid overhangs the footprint, so its edge rays miss on
-    both sides. Row order is not defined by either library, so the hits are compared sorted by ray.
+    Each ray reports its *first* hit, on both sides (``multiple_hits=False``): its ``xy`` is the
+    ray's own and its ``z`` the lowest of every crossing along that ray (trimesh's
+    ``multiple_hits=True`` lists them all; through the hollow sphere a ray crosses up to four
+    walls), a check beside trimesh's own first hit. The grid overhangs the footprint, so its edge
+    rays miss on both sides. Row order is not defined by either library, so the hits are compared
+    sorted by ray.
     """
-    mesh_tm, mesh_wp = cave_cube
+    mesh_tm, mesh_wp = sphere_irregular_hollow
     origins_np = tm.util.grid_linspace(
         mesh_tm.bounds[:, :2] + np.reshape([-0.02, 0.02], (-1, 1)), 20
     )
@@ -125,12 +127,16 @@ def test_intersects_location_cave_cube(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
     assert 0 < ray_tm.size < len(origins_np)  # hits, and misses at the overhang
     assert np.array_equal(ray_wp_np[order_wp], ray_tm[order_tm])
     assert np.allclose(loc_wp_np[order_wp], loc_tm[order_tm], rtol=1e-5, atol=1e-4)
+    all_loc_tm, all_ray_tm, _all_tri_tm = mesh_tm.ray.intersects_location(
+        origins_np, directions_np, multiple_hits=True
+    )
+    assert np.bincount(all_ray_tm).max() > 2  # non-vacuity: some ray crosses the cavity
     for p, r in zip(loc_wp_np[order_wp], ray_wp_np[order_wp], strict=False):
         assert np.allclose(p[:2], origins_np[r][:2], rtol=1e-5, atol=1e-5)
-        assert np.isclose(p[2], mesh_tm.bounds[0, 2], atol=1e-4)
+        assert np.isclose(p[2], all_loc_tm[all_ray_tm == r, 2].min(), atol=1e-4)
 
 
-def test_ray_queries_miss_together(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_ray_queries_miss_together(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A on an all-miss answer, which is a claim here rather than a vacuous comparison.
 
@@ -140,7 +146,7 @@ def test_ray_queries_miss_together(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> N
     all-``False`` hit mask and trimesh's, and an infinite longest ray as ``trimesh.proximity``
     reports it.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     n = 100
     origins_np = np.random.default_rng(1).random((n, 3)).astype(np.float32)
     directions_np = np.tile([0.0, 1.0, 0.0], (n, 1)).astype(np.float32)
@@ -193,7 +199,7 @@ def _multi_ray_intersect_ml(
     return result_ml
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("intersects_first", "meshlib")
 @pytest.mark.parity("intersects_any", "meshlib")
 @pytest.mark.parity("intersects_location", "meshlib")
@@ -259,7 +265,7 @@ def test_intersects_match_meshlib(request: pytest.FixtureRequest, mesh_name: str
 @pytest.mark.parity("intersects_first", "open3d")
 @pytest.mark.parity("intersects_any", "open3d")
 @pytest.mark.parity("intersects_location", "open3d")
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A on the first two, Class B on the third: Embree answers each group with its own method.
@@ -330,8 +336,8 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
     assert np.allclose(locations_wp.numpy()[order_wp], points_o3d, rtol=1e-5, atol=1e-5)
 
 
-def test_intersects_empty_rays(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = icosahedron
+def test_intersects_empty_rays(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
+    _, mesh_wp = sphere_irregular
     origins_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     directions_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     assert od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
@@ -345,7 +351,7 @@ def test_intersects_empty_rays(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
 
 @pytest.mark.parametrize("n_origins", [0, 4])
 def test_intersects_rejects_mismatched_shapes(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], n_origins: int
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], n_origins: int
 ):
     """
     Not a library comparison: an argument-validation guard, which no reference library exposes.
@@ -356,7 +362,7 @@ def test_intersects_rejects_mismatched_shapes(
     call returned an empty answer for a question that has none; with ``n_origins=4`` alone the
     guard passes wherever it is placed, so the ``0`` arm is the one doing the work.
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     origins_wp = warp_empty(n_origins, wp.vec3, mesh_wp.device)
     directions_wp = warp_empty(n_origins + 3, wp.vec3, mesh_wp.device)
     for query in (
@@ -369,7 +375,7 @@ def test_intersects_rejects_mismatched_shapes(
             query(mesh_wp, origins_wp, directions_wp)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_longest_ray(request: pytest.FixtureRequest, mesh_name: str):
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rng = np.random.default_rng(3)
@@ -386,8 +392,8 @@ def test_longest_ray(request: pytest.FixtureRequest, mesh_name: str):
     _assert_longest_ray_allclose(distances_wp_np, distances_tm_np)
 
 
-def test_longest_ray_surface_normals(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    mesh_tm, mesh_wp = icosahedron
+def test_longest_ray_surface_normals(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
+    mesh_tm, mesh_wp = sphere_irregular
     rng = np.random.default_rng(11)
     n = 64
     query_np = rng.random((n, 3)).astype(np.float64)
@@ -401,14 +407,14 @@ def test_longest_ray_surface_normals(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _assert_longest_ray_allclose(distances_wp_np, distances_tm_np)
 
 
-def test_contains_points(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
+def test_contains_points(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A: inside/outside against ``Trimesh.contains``, over three deliberately-placed groups.
 
     Points near the centre, just outside the bounds, and far away -- the third group is what
     catches a ray that runs out of range rather than reporting a miss.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     rng = np.random.default_rng(7)
 
     inside_np = mesh_tm.center_mass + rng.normal(scale=0.05, size=(50, 3))
@@ -437,7 +443,9 @@ def test_contains_points(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     assert np.array_equal(contains_wp, mesh_tm.contains(center_np))
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "torus"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "torus_irregular"]
+)
 @pytest.mark.parity("winding_number", "pyvista")
 def test_contains_points_matches_pyvista(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -469,23 +477,32 @@ def test_contains_points_matches_pyvista(request: pytest.FixtureRequest, mesh_na
     assert np.array_equal(od.ray.contains_points(mesh_wp, points_wp).numpy(), contains_pv)
 
 
-def test_contains_cavity(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
+def test_contains_cavity(sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh]):
     """
-    Class A: the origin sits in ``cave_cube``'s hollow, so it must read *outside*.
+    Class A: a point in the hollow reads *outside*, one in the shell between reads *inside*.
 
-    The one case a bounding-box or convex test gets wrong, and the reason this fixture exists.
-    trimesh agrees, so the comparison is direct rather than an asserted constant.
+    The cavity's centre (the inner shell's vertex mean) is the one case a bounding-box or convex
+    test gets wrong, and the reason this fixture exists; 0.9 of the way from it to the outer shell's
+    farthest vertex the ray has crossed the inner shell into the solid. trimesh agrees on both, so
+    the comparison is direct rather than an asserted constant, and both answers appear.
     """
-    mesh_tm, mesh_wp = cave_cube
-    origin_np = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
+    mesh_tm, mesh_wp = sphere_irregular_hollow
+    shells = mesh_tm.split(only_watertight=False)
+    inner_tm = min(shells, key=lambda shell: len(shell.vertices))
+    outer_tm = max(shells, key=lambda shell: len(shell.vertices))
+    centre_np = inner_tm.vertices.mean(axis=0)
+    farthest_np = outer_tm.vertices[
+        np.argmax(np.linalg.norm(outer_tm.vertices - centre_np, axis=1))
+    ]
+    points_np = np.array([centre_np, centre_np + 0.9 * (farthest_np - centre_np)], dtype=np.float32)
 
-    points_wp = points_to_warp(origin_np, mesh_wp.device)
+    points_wp = points_to_warp(points_np, mesh_wp.device)
     contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
-    assert not contains_wp.any()
-    assert np.array_equal(contains_wp, mesh_tm.contains(origin_np))
+    assert contains_wp.tolist() == [False, True]
+    assert np.array_equal(contains_wp, mesh_tm.contains(points_np))
 
 
-def test_contains_empty_points(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = icosahedron
+def test_contains_empty_points(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
+    _, mesh_wp = sphere_irregular
     points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     assert od.ray.contains_points(mesh_wp, points_wp).numpy().shape == (0,)

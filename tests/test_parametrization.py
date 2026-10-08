@@ -14,7 +14,8 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
-from benchmarks.meshes import BUILDERS
+from tests.comparisons import sparse_allclose
+from tests.conftest import saddle_graded_arrays
 from tests.conversions import (
     mesh_igl,
     numpy_to_warp,
@@ -122,7 +123,7 @@ def test_flipped_faces_on_known_windings(
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("map_vertices_to_circle", "igl")
 def test_map_vertices_to_circle_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """Class A: the arc-length circle map against ``igl.map_vertices_to_circle``, no transform."""
@@ -146,7 +147,7 @@ def test_map_vertices_to_circle_single_vertex_loop(device: str):
     assert np.isfinite(circle_wp.numpy()).all()
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity(
     "graph_laplacian",
     "igl",
@@ -163,27 +164,29 @@ def test_graph_laplacian_matches_igl(request: pytest.FixtureRequest, mesh_name: 
     Class B: igl has no ``graph_laplacian``, so the reference is assembled from its adjacency.
 
     The named transform is ``A - diag(rowsum(A))`` over ``igl.adjacency_matrix``: the definition of
-    the umbrella operator, built on the reference side. Note igl's adjacency is sized by
-    ``F.max() + 1`` rather than ``len(V)`` (section 6), which is why this runs on ``hemisphere``,
-    where every vertex is referenced.
+    the umbrella operator, built on the reference side. Note igl's adjacency is sized by ``F.max() +
+    1`` rather than ``len(V)`` (CLAUDE.md section 7.6), which is why it runs on fixtures where every
+    vertex is referenced.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, faces_np = mesh_igl(mesh_tm)
     n_vertices = mesh_wp.points.size
 
     operator_wp = od.laplacian.graph_laplacian(mesh_wp.points, mesh_wp.indices)
-    operator_dense = scipy.sparse.csr_matrix(
+    operator_csr = scipy.sparse.csr_matrix(
         (operator_wp.values.numpy(), operator_wp.columns.numpy(), operator_wp.offsets.numpy()),
         shape=(n_vertices, n_vertices),
-    ).toarray()
+    )
 
-    adjacency_igl = igl.adjacency_matrix(faces_np).toarray().astype(np.float64)
-    laplacian_igl = adjacency_igl - np.diag(adjacency_igl.sum(axis=1))
+    adjacency_igl = igl.adjacency_matrix(faces_np).astype(np.float64)
+    laplacian_igl = adjacency_igl - scipy.sparse.diags(
+        np.asarray(adjacency_igl.sum(axis=1)).ravel()
+    )
 
-    assert np.allclose(operator_dense, laplacian_igl, rtol=1e-5, atol=1e-5)
+    assert sparse_allclose(operator_csr, laplacian_igl, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("harmonic", "igl")
 @pytest.mark.parity("harmonic_conditioning", "igl")
 def test_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
@@ -248,7 +251,7 @@ def _polyharmonic_reference(
 
 
 @pytest.mark.parametrize("k", [2, 3])
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular_cap", "sphere_irregular_band"])
 def test_polyharmonic_matches_reference(request: pytest.FixtureRequest, mesh_name: str, k: int):
     """
     Class B: igl's operators with the barycentric mass, solved directly, at ``1e-4``.
@@ -274,16 +277,17 @@ def test_polyharmonic_matches_reference(request: pytest.FixtureRequest, mesh_nam
 
 def test_biharmonic_on_a_graded_patch_matches_a_direct_solve(device: str):
     """
-    Class B against ``_polyharmonic_reference`` on the graded saddle, at 7 % of the UV range.
+    Class B against ``_polyharmonic_reference`` on the graded saddle, at 1 % of the UV range.
 
-    The graded patch's biharmonic system has a condition number near 1e17, past what conjugate
-    gradient reaches in ``float64``: it stalled at a 3 % residual for its whole iteration cap and
-    returned a map 0.54 of the range away, with no warning. The solve is verified now and falls
-    back to a factorization. The bar is the system's own ambiguity: direct solves under four
-    SuperLU orderings disagree with each other by 0.6 to 2.2 % of the range (ordito sits 1.4 % from
-    the default one), all with backward errors below 1e-8.
+    The graded patch's biharmonic system is past what conjugate gradient reaches in ``float64``: it
+    stalled for its whole iteration cap and returned a map 0.76 of the range away on this fixture
+    (0.29 on the 68 x 68 one, 0.54 on ``benchmarks``' 133 x 133), with no warning. The solve is
+    verified now and falls back to a factorization: measured 4.4e-5 of the range, so the bound is
+    over 200x off the agreement and 76x under the defect. On the benchmark mesh the answer is
+    itself ambiguous at the percent level (direct solves under four SuperLU orderings disagree by
+    0.6 to 2.2 %), which is why this runs on the smaller fixture.
     """
-    vertices_np, faces_np = BUILDERS["saddle_graded"]()
+    vertices_np, faces_np = saddle_graded_arrays()
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(vertices_np), np.asarray(faces_np, dtype=np.int32).ravel(), device
     )
@@ -300,16 +304,16 @@ def test_biharmonic_on_a_graded_patch_matches_a_direct_solve(device: str):
     )
 
     assert np.ptp(uv_ref) > 1.0
-    assert np.abs(uv_wp.numpy() - uv_ref).max() < 0.07 * np.ptp(uv_ref)
+    assert np.abs(uv_wp.numpy() - uv_ref).max() < 0.01 * np.ptp(uv_ref)
 
 
-def test_biharmonic_is_deterministic(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_biharmonic_is_deterministic(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     # Regression guard for operator-assembly nondeterminism: the float64-native biharmonic operator
     # must give the same result across repeated calls. The original defect sized a rebuild's triplet
     # buffers by ``BsrMatrix.nnz`` (the capacity, not the entry count) and so fed the uninitialized
     # tail to ``bsr_from_triplets``, manifesting as ~1e22 / NaN corruption; a tight tolerance (well
     # above conjugate-gradient's ~1e-8 atomic last-ULP jitter) reliably catches a regression.
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
     first = od.parametrization.harmonic(
         mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, k=2
@@ -321,7 +325,7 @@ def test_biharmonic_is_deterministic(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
         assert np.allclose(again, first, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 def test_tutte_matches_igl_reference(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class B: igl has no ``tutte``, so the reference is its fixed-value minimizer on ``D - A``.
@@ -359,9 +363,9 @@ def test_tutte_matches_igl_reference(request: pytest.FixtureRequest, mesh_name: 
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
 
 
-def test_tutte_disk_is_fold_free(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_tutte_disk_is_fold_free(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     # A disk-topology mesh with a convex (circle) boundary yields a bijective, fold-free Tutte map.
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
     uv_wp = od.parametrization.tutte(mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp)
     assert od.parametrization.face_flipped_indices(uv_wp, mesh_wp.indices).numpy().size == 0
@@ -384,7 +388,7 @@ def _arap_igl(
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("arap", "igl")
 def test_arap_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -411,7 +415,7 @@ def test_arap_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
 
 
-def test_arap_free_boundary_matches_igl(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_arap_free_boundary_matches_igl(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A on the free-boundary branch: only two vertices pinned, the rest of the rim moving.
 
@@ -419,7 +423,7 @@ def test_arap_free_boundary_matches_igl(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     none to solve; this is the same comparison with 4 iterations and almost the whole rim free.
     """
     # Pin only two boundary vertices to their harmonic UV; the rest of the boundary is free.
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = mesh_igl(mesh_tm)
 
     _, _, uv_init_wp = _harmonic_warm_start(mesh_wp)
@@ -438,12 +442,12 @@ def test_arap_free_boundary_matches_igl(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-3, atol=1e-3)
 
 
-def test_arap_default_tolerance_tracks_a_tight_solve(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_arap_default_tolerance_tracks_a_tight_solve(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     # ``arap`` defaults its inner CG to 1e-7 rather than the 1e-8 the other solvers use: its global
     # solves are inner steps of a truncated outer iteration. Guard that the looser default still
     # tracks a tight solve two orders below it, far inside the 1e-4 gate the igl oracles use. The
     # pinned rows must equal the prescribed UV exactly (they are re-enforced every iteration).
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     boundary_wp, boundary_uv_wp, uv_init_wp = _harmonic_warm_start(mesh_wp)
 
     uv_default_wp = od.parametrization.arap(
@@ -462,9 +466,9 @@ def test_arap_default_tolerance_tracks_a_tight_solve(hemisphere: tuple[tm.Trimes
     assert np.array_equal(uv_default_wp.numpy()[boundary_wp.numpy()], boundary_uv_wp.numpy())
 
 
-def test_arap_all_vertices_fixed(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_arap_all_vertices_fixed(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     # Every vertex pinned: the prescribed UV is returned with no solve, so this runs on CPU too.
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     n_vertices = mesh_wp.points.size
     rng = np.random.default_rng(7)
     fixed_uv_np = rng.standard_normal((n_vertices, 2)).astype(np.float32)
@@ -479,7 +483,7 @@ def test_arap_all_vertices_fixed(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.array_equal(uv_wp.numpy(), fixed_uv_np)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("lscm", "igl")
 def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -504,7 +508,7 @@ def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
 
 
-def test_lscm_closed_mesh_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
+def test_lscm_closed_mesh_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A on the degenerate closed-mesh branch, where the area term vanishes.
 
@@ -513,7 +517,7 @@ def test_lscm_closed_mesh_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     because the boundary fixtures never exercise it.
     """
     # Closed mesh: A = 0, Q = -repdiag(L, 2). igl.lscm accepts closed input.
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_np, faces_np = mesh_igl(mesh_tm)
 
     pins_np = np.array([0, 7], dtype=np.int32)
@@ -529,9 +533,9 @@ def test_lscm_closed_mesh_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
 
 
-def test_lscm_is_fold_free(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_lscm_is_fold_free(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     # LSCM of a disk-topology open surface with two pins is conformal and fold-free.
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     _, pins_wp = _two_rim_pins(mesh_wp)
     pins_uv_wp = wp.array(
         np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float32), dtype=wp.vec2, device=mesh_wp.device
@@ -687,10 +691,10 @@ _GUARD_CASES: list[tuple[str, Callable[[wp.Mesh], object], str]] = [
     ids=[name for name, _, _ in _GUARD_CASES],
 )
 def test_solvers_reject_malformed_constraints(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], call: Callable[[wp.Mesh], object], message: str
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], call: Callable[[wp.Mesh], object], message: str
 ):
     """Not a parity assert: every guard raises before any solve, so each runs on the CPU too."""
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     with pytest.raises(ValueError, match=message):
         call(mesh_wp)
 
@@ -732,7 +736,10 @@ def _fixed_vertex_call(
     ("method", "k"), [("harmonic", 1), ("harmonic", 2), ("harmonic", 3), ("tutte", 1), ("lscm", 1)]
 )
 def test_fixed_vertex_solver_factors_once_for_every_call_fixing_the_same_vertices(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], method: str, k: int, monkeypatch: pytest.MonkeyPatch
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh],
+    method: str,
+    k: int,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     Ordito against ordito: a prepared factorization serves later calls with no further build.
@@ -744,7 +751,7 @@ def test_fixed_vertex_solver_factors_once_for_every_call_fixing_the_same_vertice
     ``test_lscm_matches_igl``, ``test_polyharmonic_matches_reference``); this pins that the
     prepared path solves the same system.
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = sphere_irregular_cap
     vertices, faces = mesh_wp.points, mesh_wp.indices
     function = getattr(od.parametrization, method)
     keywords = {} if method == "lscm" else {"k": k}
@@ -767,7 +774,7 @@ def test_fixed_vertex_solver_factors_once_for_every_call_fixing_the_same_vertice
 
 
 def test_fixed_vertex_solver_ignores_a_factorization_of_another_fixed_set(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Ordito against ordito: a call fixing other vertices than the kept factorization's solves anew.
@@ -777,7 +784,7 @@ def test_fixed_vertex_solver_ignores_a_factorization_of_another_fixed_set(
     builds nothing at ``k == 1`` -- and agrees with the ``vertices, faces`` form. The kept
     factorization stays and still serves its own set.
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     vertices, faces = mesh_wp.points, mesh_wp.indices
     mesh = od.Trimesh(vertices, faces)
     loop, circle = _fixed_vertex_call("harmonic", mesh_wp, 1.0)
@@ -798,7 +805,10 @@ def test_fixed_vertex_solver_ignores_a_factorization_of_another_fixed_set(
 
 @pytest.mark.parametrize(("k", "discards"), [(1, False), (3, True)])
 def test_fixed_vertex_calls_say_when_they_discard_a_factorization(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], caplog: pytest.LogCaptureFixture, k: int, discards: bool
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh],
+    caplog: pytest.LogCaptureFixture,
+    k: int,
+    discards: bool,
 ) -> None:
     """
     Not a parity assert: the ``vertices, faces`` form logs at ``INFO`` exactly when it drops one.
@@ -807,7 +817,7 @@ def test_fixed_vertex_calls_say_when_they_discard_a_factorization(
     says so; ``k == 1`` iterates on this mesh and builds none. Given a ``Trimesh``, the same
     ``k == 3`` call keeps it on the mesh and logs nothing.
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = sphere_irregular_cap
     vertices, faces = mesh_wp.points, mesh_wp.indices
     loop, circle = _fixed_vertex_call("harmonic", mesh_wp, 1.0)
     with caplog.at_level(logging.INFO, logger="ordito.parametrization"):
@@ -824,10 +834,10 @@ def test_fixed_vertex_calls_say_when_they_discard_a_factorization(
 
 @pytest.mark.parametrize(("method", "k"), [("arap", 1), ("harmonic", 0), ("lscm", 2)])
 def test_fixed_vertex_solver_rejects_an_off_menu_method_or_power(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], method: str, k: int
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], method: str, k: int
 ) -> None:
     """Not a parity assert: ``factor`` and ``solve`` raise ``ValueError`` naming the argument."""
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     solver = od.Trimesh(mesh_wp.points, mesh_wp.indices).fixed_vertex_solver()
     loop, _ = _fixed_vertex_call("harmonic", mesh_wp, 1.0)
     with pytest.raises(ValueError, match=r"method|k="):
@@ -845,7 +855,7 @@ def test_fixed_vertex_solver_rejects_an_off_menu_method_or_power(
     ("method", "k"), [("harmonic", 1), ("harmonic", 2), ("tutte", 1), ("lscm", 1)]
 )
 def test_solver_direct_factors_at_once_and_keeps_it_on_the_mesh(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
     method: str,
     k: int,
     monkeypatch: pytest.MonkeyPatch,
@@ -859,7 +869,7 @@ def test_solver_direct_factors_at_once_and_keeps_it_on_the_mesh(
     verified iteration to the solves' tolerance (the igl oracles are the tests above). The
     ``vertices, faces`` form under ``"direct"`` factors too, and says at ``INFO`` that it drops it.
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     vertices, faces = mesh_wp.points, mesh_wp.indices
     function = getattr(od.parametrization, method)
     keywords = {} if method == "lscm" else {"k": k}
@@ -881,10 +891,10 @@ def test_solver_direct_factors_at_once_and_keeps_it_on_the_mesh(
 
 @pytest.mark.parametrize("method", ["harmonic", "tutte", "lscm"])
 def test_fixed_vertex_maps_reject_an_off_menu_solver(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], method: str
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], method: str
 ) -> None:
     """Not a parity assert: ``solver`` outside the menu raises ``ValueError`` naming it."""
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     fixed, values = _fixed_vertex_call(method, mesh_wp, 1.0)
     function = getattr(od.parametrization, method)
     with pytest.raises(ValueError, match="solver"):

@@ -334,7 +334,7 @@ def fit_principal_curvature(
 @wp.kernel
 def ball_angle_defect_sum(
     vertices: wp.array[wp.vec3],
-    angle_sum: wp.array[wp.float32],
+    angle_sum: wp.array[wp.float64],
     points: wp.array[wp.vec3],
     grid_id: wp.uint64,
     radius: wp.float32,
@@ -347,15 +347,19 @@ def ball_angle_defect_sum(
     # with no defect pass, count pass, scan, readback or neighbour-sized buffers in between, and one
     # sequential sum per query where a scatter over that CSR added the same terms by atomics. The
     # defect is ``predicates.angle_defect``, the rule ``vertices.vertex_defects`` applies.
+    #
+    # In ``float64``, angle sums and ball total alike: a defect is a full turn less an angle sum
+    # close to it, so in ``float32`` each carries an absolute error of a few ulp of 2 pi, and a
+    # ball of hundreds of vertices added those up -- 7.4e-5 off trimesh at 375 vertices.
     q = wp.int32(wp.tid())
     p = points[q]
-    total = wp.float32(0.0)
+    total = wp.float64(0.0)
     v = wp.int32(0)
     query = wp.hash_grid_query(grid_id, p, radius)
     while wp.hash_grid_query_next(query, v):
         if in_ball(vertices[v] - p, radius):
             total = total + angle_defect(angle_sum[v])
-    out_curvature[q] = total
+    out_curvature[q] = wp.float32(total)
 
 
 @wp.func

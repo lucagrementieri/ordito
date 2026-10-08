@@ -690,9 +690,13 @@ def test_oriented_bounding_box_matches_igl(
     )
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize(
+    ("mesh_name", "compare_open3d"), [("sphere_irregular", True), ("saddle_graded", False)]
+)
 @pytest.mark.parity("oriented_bounding_box", "trimesh", "pyvista", "open3d")
-def test_oriented_bounding_box_volume_bands(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_oriented_bounding_box_volume_bands(
+    request: pytest.FixtureRequest, mesh_name: str, compare_open3d: bool
+) -> None:
     """
     Class C: one refined 32 768-candidate box against three other boxes, by volume.
 
@@ -747,7 +751,7 @@ def test_oriented_bounding_box_volume_bands(request: pytest.FixtureRequest, mesh
     # open3d's minimal box collapses on ``saddle_graded``: extent ``[0, 0, 0]`` (``robust=True``
     # too, and on the cloud's convex-hull vertices alone), where trimesh and pyvista both return
     # 13.439 and ordito 13.439. A reference failure, so that fixture keeps the other two.
-    if mesh_name != "saddle_graded":
+    if compare_open3d:
         cloud_o3d = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points_np))
         volume_o3d = cloud_o3d.get_minimal_oriented_bounding_box().volume()
         assert volume_o3d > 0.0, "the reference produced a box before it is compared to"
@@ -791,7 +795,7 @@ def test_oriented_bounding_box_prefilter_returns_the_identical_box(device: str) 
 
 
 def test_oriented_bounding_box_single_rotation_is_the_aabb(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     ``rotations=1`` scores only the identity, so it must reproduce ``aabb`` exactly.
@@ -801,7 +805,7 @@ def test_oriented_bounding_box_single_rotation_is_the_aabb(
     return some arbitrary orientation here. ``refine_iterations=0``, because refinement exists to
     *improve* on the sampled answer -- refined ``rotations=1`` legitimately beats the AABB.
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(
         mesh_wp.points, 1, refine_iterations=0
     )
@@ -813,7 +817,7 @@ def test_oriented_bounding_box_single_rotation_is_the_aabb(
 
 
 def test_oriented_bounding_box_never_loses_to_the_aabb(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Including the identity in the candidate set makes the result monotone in ``rotations``.
@@ -826,7 +830,7 @@ def test_oriented_bounding_box_never_loses_to_the_aabb(
     not monotone in ``rotations`` -- the refined guarantee is the separate one pinned in
     [`test_oriented_bounding_box_refinement_is_monotone`][tests.test_bounds.test_oriented_bounding_box_refinement_is_monotone].
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
     _, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
 
     volumes = [

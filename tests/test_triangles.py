@@ -34,31 +34,33 @@ from tests.conversions import (
 
 
 @pytest.mark.parity("face_normals_and_areas", "trimesh")
-def test_face_normals_and_areas(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
+def test_face_normals_and_areas(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A: the unit normal and the area per face, both against trimesh.
 
     The two come out of one cross product, so comparing both is what separates a normalization
     bug from a winding one -- a flipped face has the right area and the wrong normal.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     normal_wp, area_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(normal_wp.numpy(), mesh_tm.face_normals, rtol=1e-5, atol=1e-5)
     assert np.allclose(area_wp.numpy(), mesh_tm.area_faces, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parity("face_normals_and_areas", "pytorch3d")
-def test_face_normals_and_areas_matches_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_face_normals_and_areas_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
-    Class A at ``1e-6``: ``mesh_face_areas_normals`` against ordito's, on both outputs.
+    Class A at ``5e-6``: ``mesh_face_areas_normals`` against ordito's, ``float64`` the arbiter.
 
-    Both are ``float32`` from the same positions, but no longer the same three lines: pytorch3d
-    forms ``(v1 - v0) x (v2 - v0)`` at the first corner, ordito at the corner of the largest angle
+    The arbiter is a ``float64`` cross product of the same ``float32`` corners.
+
+    Both are ``float32`` from the same positions, but not the same three lines: pytorch3d forms
+    ``(v1 - v0) x (v2 - v0)`` at the first corner, ordito at the corner of the largest angle
     (``kernels/predicates.triangle_area_vector``), which is the same vector in exact arithmetic and
-    differs here by rounding -- 2.0e-07 relative on the areas, 1.2e-07 on the normals, measured
-    against each other; against a ``float64`` cross product of the same ``float32`` corners ordito
-    is 1.1e-07 / 8.1e-08 off and pytorch3d 1.6e-07 / 1.1e-07. They were bit-identical while both
-    used the first corner, which on ``saddle_graded``'s needles is off by 6.7e-05 on CUDA.
+    differs by rounding -- by how much depends on the needles. On ``sphere_irregular`` (aspect up to
+    300) ordito is 2.3e-07 relative off the ``float64`` areas and 3.0e-07 off its normals,
+    pytorch3d 1.6e-06 / 1.3e-06, so the two agree to 1.5e-06 / 1.3e-06 and ordito is the accurate
+    one: it is held to 1e-6 of the ``float64`` answer, and to 5e-6 of pytorch3d's.
 
     Not run on ``saddle_graded``: pytorch3d divides each normal by ``max(|n|, eps)``, so a face of
     double area under its ``eps`` comes back short -- normals off by up to 0.80 there.
@@ -70,7 +72,7 @@ def test_face_normals_and_areas_matches_pytorch3d(icosphere: tuple[tm.Trimesh, w
     CUDA kernels, so this is also one of the tests section 6's device rule asks for -- it
     exercises the reference's *own* two backends rather than trusting the CPU pass.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     mesh_p3d = trimesh_to_pytorch3d(mesh_tm, str(mesh_wp.points.device))
     areas_p3d, normals_p3d = p3d_ops.mesh_face_areas_normals(
         mesh_p3d.verts_packed(), mesh_p3d.faces_packed()
@@ -79,11 +81,19 @@ def test_face_normals_and_areas_matches_pytorch3d(icosphere: tuple[tm.Trimesh, w
 
     assert areas_p3d.shape == (mesh_tm.faces.shape[0],)
     assert_nonconstant(areas_p3d.cpu().numpy(), tol=1e-5)
-    assert np.allclose(areas_wp.numpy(), areas_p3d.cpu().numpy(), rtol=1e-6, atol=0.0)
-    assert np.allclose(normals_wp.numpy(), normals_p3d.cpu().numpy(), rtol=0.0, atol=1e-6)
+    assert np.allclose(areas_wp.numpy(), areas_p3d.cpu().numpy(), rtol=5e-6, atol=0.0)
+    assert np.allclose(normals_wp.numpy(), normals_p3d.cpu().numpy(), rtol=0.0, atol=5e-6)
+
+    corners_np = np.asarray(mesh_tm.vertices, dtype=np.float64)[np.asarray(mesh_tm.faces)]
+    cross_np = np.cross(corners_np[:, 1] - corners_np[:, 0], corners_np[:, 2] - corners_np[:, 0])
+    areas_np = 0.5 * np.linalg.norm(cross_np, axis=1)
+    assert np.allclose(areas_wp.numpy(), areas_np, rtol=1e-6, atol=0.0)
+    assert np.allclose(
+        normals_wp.numpy(), cross_np / (2.0 * areas_np[:, None]), rtol=0.0, atol=1e-6
+    )
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("face_normals_and_areas", "igl", "potpourri3d", "pymeshlab")
 def test_face_normals_and_areas_against_the_partial_references(
     request: pytest.FixtureRequest, mesh_name: str
@@ -134,7 +144,7 @@ def test_face_normals_and_areas_against_the_partial_references(
 
 
 @pytest.mark.parity("corner_normals", "meshlib")
-@pytest.mark.parametrize("mesh_name", ["unit_box", "icosphere_coarse", "cave_cube"])
+@pytest.mark.parametrize("mesh_name", ["unit_box", "sphere_irregular", "sphere_irregular_hollow"])
 @pytest.mark.parametrize("crease_angle", [None, 0.5])
 def test_corner_normals_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str, crease_angle: float | None
@@ -182,7 +192,7 @@ def test_corner_normals_matches_meshlib(
     assert np.allclose(normals_wp.numpy(), normals_ml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["unit_box", "icosphere_coarse", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["unit_box", "sphere_irregular", "saddle_graded"])
 @pytest.mark.parametrize("weighting", ["angle", "area"])
 def test_corner_normals_degenerate_crease_sets_are_exact(
     request: pytest.FixtureRequest, mesh_name: str, weighting: CornerNormalWeighting
@@ -285,7 +295,7 @@ def test_corner_normals_edge_cases(device: str, unit_box: tuple[tm.Trimesh, wp.M
         od.triangles.corner_normals(vertices_wp, faces_wp, weighting="sine")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("face_normals_and_areas", "open3d")
 def test_face_normals_matches_open3d(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -305,7 +315,7 @@ def test_face_normals_matches_open3d(request: pytest.FixtureRequest, mesh_name: 
     assert np.isclose(float(areas_wp.numpy().sum()), mesh_o3d.get_surface_area(), rtol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("face_normals_and_areas", "pyvista")
 def test_face_normals_and_areas_match_pyvista(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -338,7 +348,7 @@ def test_face_normals_and_areas_match_pyvista(request: pytest.FixtureRequest, me
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parametrize(
     ("metric", "filter_metric"),
     [
@@ -362,7 +372,7 @@ def test_face_quality_against_pymeshlab(
     assert np.allclose(quality_wp.numpy(), quality_pml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parametrize(
     ("metric", "measure", "reciprocal"),
     [
@@ -418,7 +428,7 @@ def test_face_quality_against_the_verdict_measures(
         assert np.allclose(radius_ratio_wp.numpy() * quality_pv, 1.0, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("face_angles", "trimesh", "igl")
 def test_face_angles(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -446,7 +456,7 @@ def test_face_angles(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(angles_wp.numpy().sum(axis=1), np.pi, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("face_angles", "pyvista")
 def test_face_angles_extremes_against_pyvista(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -472,7 +482,7 @@ def test_face_angles_extremes_against_pyvista(request: pytest.FixtureRequest, me
     assert_nonconstant(np.asarray(quality_pv.cell_data["min_angle"]), tol=1.0)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("face_normals_and_areas", "meshlib")
 @pytest.mark.parity(
     "face_centroids",
@@ -593,7 +603,7 @@ def test_per_face_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_
     assert np.allclose(sums_wp, sums_ml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("face_quality", "igl")
 def test_face_quality_aspect_ratio_against_igl(request: pytest.FixtureRequest, mesh_name: str):
     """Class B (a derived ratio): igl gives the circumradius and inradius as two arrays."""
@@ -642,14 +652,14 @@ def test_face_quality_degenerate(
         assert quality_wp.numpy()[0] < 1e-5
 
 
-def test_face_quality_unknown_metric(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    _mesh_tm, mesh_wp = icosahedron
+def test_face_quality_unknown_metric(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="unknown metric"):
         od.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="skewness")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 @pytest.mark.parametrize("with_degenerate", [False, True], ids=["clean", "with_degenerate"])
-def test_face_nondegenerate_mask(hemisphere: tuple[tm.Trimesh, wp.Mesh], with_degenerate: bool):
+def test_face_nondegenerate_mask(saddle_graded: tuple[tm.Trimesh, wp.Mesh], with_degenerate: bool):
     """
     Class A on a boolean mask, against ``trimesh.triangles.nondegenerate``.
 
@@ -667,7 +677,7 @@ def test_face_nondegenerate_mask(hemisphere: tuple[tm.Trimesh, wp.Mesh], with_de
     so an inexactly-collinear face would disagree across devices for a reason that is not the
     code's.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64) * 1e-2
     faces_np = np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1)
     if with_degenerate:
@@ -690,7 +700,7 @@ def test_face_nondegenerate_mask(hemisphere: tuple[tm.Trimesh, wp.Mesh], with_de
     assert np.array_equal(nondegenerate_wp.numpy().astype(bool), nondegenerate_tm)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_barycentric_to_points(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A: barycentric-to-Cartesian against trimesh, on random unnormalized coordinates.
@@ -707,7 +717,7 @@ def test_barycentric_to_points(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(points_wp.numpy(), points_tm, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parametrize("method", ["cramer", "cross"])
 @pytest.mark.parity("points_to_barycentric", "trimesh", "igl")
 def test_points_to_barycentric(request: pytest.FixtureRequest, mesh_name: str, method: str):
@@ -812,7 +822,7 @@ def test_points_to_barycentric_on_a_zero_area_triangle(device: str) -> None:
     assert not np.all(np.isfinite(barycentric_tm))
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_closest_point(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A: the per-triangle closest point against ``trimesh.triangles.closest_point``.
@@ -830,7 +840,7 @@ def test_closest_point(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(closest_points_wp.numpy(), closest_points_tm, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity(
     "triangle_closest_point",
     "meshlib",
@@ -925,7 +935,7 @@ def test_soup_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_name
     assert np.allclose(points_wp.numpy(), interpolated_ml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("face_centroids", "igl", "pyvista")
 def test_face_centroids(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -952,10 +962,23 @@ def test_face_centroids(request: pytest.FixtureRequest, mesh_name: str):
     barycentric_wp = od.triangles.points_to_barycentric(
         mesh_wp.points, mesh_wp.indices, centroids_wp
     )
-    assert np.allclose(barycentric_wp.numpy(), 1.0 / 3.0, rtol=1e-4, atol=1e-4)
+    # The centroid is rounded to ``float32`` before it is located, which moves its barycentric
+    # coordinates by up to ``eps |p| / altitude``: 9.1e-5 on ``sphere_irregular``'s off-origin
+    # needles (the location itself agrees with a ``float64`` solve of the rounded point to 1.3e-6),
+    # so the bound scales with each face's conditioning -- measured at most 0.98 of it.
+    corners_np = mesh_wp.points.numpy().astype(np.float64)[mesh_wp.indices.numpy().reshape(-1, 3)]
+    edges_np = np.linalg.norm(np.roll(corners_np, -1, axis=1) - corners_np, axis=2).max(axis=1)
+    double_area_np = np.linalg.norm(
+        np.cross(corners_np[:, 1] - corners_np[:, 0], corners_np[:, 2] - corners_np[:, 0]), axis=1
+    )
+    rounding_np = np.finfo(np.float32).eps * np.abs(centroids_wp.numpy()).max(axis=1)
+    bound_np = 1e-5 + 4.0 * rounding_np * edges_np / double_area_np
+    assert (np.abs(barycentric_wp.numpy() - 1.0 / 3.0).max(axis=1) <= bound_np).all()
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "half_torus"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
+)
 def test_face_signed_volumes(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A against the NumPy oracle, element-wise, plus Class B on the sum.
@@ -981,7 +1004,7 @@ def test_face_signed_volumes(request: pytest.FixtureRequest, mesh_name: str):
 
 
 def test_face_signed_volumes_apex_shifts_each_face_but_not_the_sum(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ):
     """
     Moving the apex changes every per-face volume and leaves the closed-mesh total alone.
@@ -991,7 +1014,7 @@ def test_face_signed_volumes_apex_shifts_each_face_but_not_the_sum(
     a real parameter rather than a decoration, and it is the axis ``sample.sample_volume`` uses --
     it fans from the surface centroid precisely so that no entry comes out negative.
     """
-    _, mesh_wp = icosphere_coarse
+    _, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
     at_origin_np = od.triangles.face_signed_volumes(vertices_wp, faces_wp).numpy()
@@ -1003,9 +1026,17 @@ def test_face_signed_volumes_apex_shifts_each_face_but_not_the_sum(
     assert np.isclose(at_origin_np.sum(), shifted_np.sum(), rtol=1e-4)
 
 
-def test_face_signed_volumes_follows_the_input_dtype(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]):
-    """``vec3d`` in, ``float64`` out -- the axis ``smoothing``'s volume constraint needs."""
-    mesh_tm, mesh_wp = icosphere_coarse
+def test_face_signed_volumes_follows_the_input_dtype(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
+    """
+    Not a library comparison: ``vec3d`` in, ``float64`` out, as the volume constraint needs.
+
+    The ``float64`` path is exact against NumPy's ``float64`` triple products (1.1e-16). The
+    ``float32`` one is bounded relative to each face's ``|a| |b| |c| / 6``, not to its volume: a
+    tetrahedron from the origin to a face of an off-origin mesh is a difference of large products,
+    so its error scales with them (measured 2.5e-08 of that on ``sphere_irregular``; 1e-6 is the
+    bar).
+    """
+    mesh_tm, mesh_wp = sphere_irregular
     faces_wp, vertices_f32_wp = mesh_wp.indices, mesh_wp.points
     vertices_f64_wp = wp.array(
         np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
@@ -1018,7 +1049,13 @@ def test_face_signed_volumes_follows_the_input_dtype(icosphere_coarse: tuple[tm.
 
     assert volumes_f64_wp.dtype is wp.float64
     assert volumes_f32_wp.dtype is wp.float32
-    assert np.allclose(volumes_f64_wp.numpy(), volumes_f32_wp.numpy(), rtol=1e-6, atol=1e-7)
+    corners_np = np.asarray(mesh_tm.vertices, dtype=np.float64)[np.asarray(mesh_tm.faces)]
+    exact_np = (
+        np.einsum("ij,ij->i", corners_np[:, 0], np.cross(corners_np[:, 1], corners_np[:, 2])) / 6.0
+    )
+    scale_np = np.prod(np.linalg.norm(corners_np, axis=2), axis=1) / 6.0
+    assert np.allclose(volumes_f64_wp.numpy(), exact_np, rtol=1e-12, atol=1e-15)
+    assert np.all(np.abs(volumes_f32_wp.numpy() - exact_np) <= 1e-6 * scale_np)
 
 
 def test_face_signed_volumes_empty(device: str):

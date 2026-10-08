@@ -49,9 +49,8 @@ def test_surface_centroid(bench_case: BenchCase) -> None:
 
     Two reductions and therefore two crossings, which is the floor for a function whose return
     type is a host-side ``wp.vec3`` -- and the baseline ``moments`` below is read against, since
-    that one pays three for ten sums. Also the row that covers *both* reduction kernels:
-    ``centroid_tiled`` on CUDA and ``centroid_sliced`` on CPU, picked by
-    ``_device.prefers_tiled_reduction``.
+    that one pays three for ten sums. One kernel on both devices, ``centroid_partials``, whose
+    per-block sums ``reduce.sum`` folds in a fixed order (reproducible on CUDA).
 
     meshlib's ``findCenterFromFaces`` is this exact quantity and nothing more -- unlike the
     pymeshlab row above, which returns five measures at once. Note it has a sibling,

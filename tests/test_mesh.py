@@ -25,7 +25,7 @@ from tests.comparisons import (
     lexsort_rows,
     trimesh_outline_loops,
 )
-from tests.conftest import CLOSED_MESHES, MESHES, OPEN_MESHES, populate_cache
+from tests.conftest import BOUNDARY_MESHES, CLOSED_MESHES, MESHES, populate_cache
 from tests.conversions import points_to_warp, points_to_warp_uv, trimesh_to_warp, warp_empty
 
 # ---------------------------------------------------------------------------
@@ -33,8 +33,8 @@ from tests.conversions import points_to_warp, points_to_warp_uv, trimesh_to_warp
 # ---------------------------------------------------------------------------
 
 
-def test_construction_flat_and_2d_faces_agree(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_construction_flat_and_2d_faces_agree(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh_flat = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     mesh_2d = od.Trimesh(mesh_wp.points, mesh_wp.indices.reshape((-1, 3)))
     assert np.array_equal(mesh_flat.faces.numpy(), mesh_2d.faces.numpy())
@@ -58,8 +58,8 @@ def test_construction_bad_faces_raises(
         od.Trimesh(vertices_wp, faces_wp)
 
 
-def test_from_warp_mesh_seeds_warp_mesh_cache(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_from_warp_mesh_seeds_warp_mesh_cache(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.warp_mesh is mesh_wp
     assert mesh.vertices is mesh_wp.points
@@ -77,7 +77,7 @@ def test_warp_mesh_raises_for_empty_mesh(device: str) -> None:
 
 
 def test_traced_mesh_traces_the_rays_warp_mesh_traces(
-    cave_cube: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: two BVHs over one mesh, which must change the cost and not the hits.
@@ -86,7 +86,7 @@ def test_traced_mesh_traces_the_rays_warp_mesh_traces(
     tree returns them bit for bit, for an any-hit bundle and a closest-hit cone alike, on a
     non-convex solid whose occlusion is not a constant.
     """
-    _mesh_tm, mesh_wp = cave_cube
+    _mesh_tm, mesh_wp = sphere_irregular_hollow
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     normals = od.vertices.vertex_normals(mesh.vertices, mesh.faces)
     occlusion_wp = od.visibility.ambient_occlusion(mesh.warp_mesh, mesh.vertices, normals=normals)
@@ -103,10 +103,10 @@ def test_traced_mesh_traces_the_rays_warp_mesh_traces(
 
 
 def test_traced_mesh_is_warp_mesh_where_cubql_cannot_help(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Not a library comparison: on the CPU the default tree is kept, so nothing builds twice."""
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     if mesh.device.is_cpu or not wp.is_cubql_available():
         assert mesh.traced_mesh is mesh.warp_mesh
@@ -115,7 +115,7 @@ def test_traced_mesh_is_warp_mesh_where_cubql_cannot_help(
 
 
 def test_mesh_for_rays_rents_then_buys(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Not a library comparison: the online choice switches once the counted rays reach the budget.
@@ -126,7 +126,7 @@ def test_mesh_for_rays_rents_then_buys(
     """
     monkeypatch.setattr("ordito.mesh._TRACED_MESH_FIXED_RAYS", 100)
     monkeypatch.setattr("ordito.mesh._TRACED_MESH_RAYS_PER_FACE", 0)
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     if mesh.device.is_cpu or not wp.is_cubql_available():
         assert mesh.mesh_for_rays(10**9) is mesh.warp_mesh
@@ -142,15 +142,19 @@ def test_mesh_for_rays_rents_then_buys(
     assert mesh.mesh_for_rays(100) is mesh.traced_mesh
 
 
-def test_mesh_for_rays_rejects_a_negative_count(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_mesh_for_rays_rejects_a_negative_count(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="non-negative"):
         od.Trimesh.from_warp_mesh(mesh_wp).mesh_for_rays(-1)
 
 
-def test_mesh_from_numpy_round_trip(icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str) -> None:
+def test_mesh_from_numpy_round_trip(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
+) -> None:
     """Class A: the numpy arrays survive the upload unchanged, positions and indices alike."""
-    mesh_tm, _mesh_wp = icosahedron
+    mesh_tm, _mesh_wp = sphere_irregular
     mesh = od.io.mesh_from_numpy(mesh_tm.vertices, mesh_tm.faces, device=device)
     assert np.allclose(mesh.vertices.numpy(), mesh_tm.vertices, rtol=1e-5, atol=1e-5)
     assert np.array_equal(mesh.faces.numpy().reshape(-1, 3), mesh_tm.faces)
@@ -234,18 +238,20 @@ def test_mass_properties_match_trimesh(request: pytest.FixtureRequest, mesh_name
     assert_nonconstant(inertia_wp, tol=1e-3)
 
 
-@pytest.mark.parametrize("mesh_name", [*MESHES, "three_spheres"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "sphere_irregular_hollow", "three_spheres"])
 def test_body_count_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: ``body_count`` against ``trimesh.Trimesh.body_count``.
 
-    Non-vacuity: the expected count is asserted too, and it is not constant -- ``cave_cube`` is two
-    bodies (the box and the cavity's inner shell), ``three_spheres`` three disjoint spheres, and
-    the other fixtures one each.
+    Non-vacuity: the expected count is asserted too, and it is not constant --
+    ``sphere_irregular_hollow`` is two bodies (the outer shell and the cavity's inner one),
+    ``three_spheres`` three disjoint spheres, and the other fixtures one each.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     assert od.Trimesh.from_warp_mesh(mesh_wp).body_count == mesh_tm.body_count
-    assert mesh_tm.body_count == {"cave_cube": 2, "three_spheres": 3}.get(mesh_name, 1)
+    assert mesh_tm.body_count == {"sphere_irregular_hollow": 2, "three_spheres": 3}.get(
+        mesh_name, 1
+    )
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -294,7 +300,7 @@ def test_face_adjacency_projections_and_convex_match_trimesh(
     )
     convex_wp = mesh.face_adjacency_convex.numpy()
     assert np.array_equal(convex_wp, mesh_tm.face_adjacency_convex)
-    if mesh_name == "cave_cube":
+    if not mesh_tm.is_convex:  # a non-convex fixture carries both kinds of pair
         assert convex_wp.any()
         assert not convex_wp.all()
 
@@ -327,9 +333,9 @@ def test_contains_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str
     assert np.array_equal(inside_wp, inside_tm)
 
 
-def test_contains_reuses_the_cached_bvh(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_contains_reuses_the_cached_bvh(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a parity assert: the query goes through the cached BVH rather than building one."""
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = mesh.contains(points_to_warp(np.zeros((1, 3)), mesh.device))
     assert mesh._cache["warp_mesh"] is mesh_wp
@@ -361,14 +367,14 @@ def test_sample_lies_on_the_surface(request: pytest.FixtureRequest, mesh_name: s
     assert np.abs(offsets_np).max() < 1e-4
 
 
-def test_sample_is_reproducible_under_a_seed(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_sample_is_reproducible_under_a_seed(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Ordito against ordito: one seed gives one answer.
 
     The oracle for the sampler's correctness is ``test_sample_lies_on_the_surface``; this pins
     only that the seed is honoured, which that test cannot see.
     """
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     first, _ = mesh.sample(64, seed=11)
     second, _ = mesh.sample(64, seed=11)
@@ -398,9 +404,9 @@ def test_submesh_matches_the_free_function(request: pytest.FixtureRequest, mesh_
     assert np.array_equal(by_mask.faces.numpy(), by_index.faces.numpy())
 
 
-def test_submesh_bad_dtype_raises(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_submesh_bad_dtype_raises(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a parity assert: the guard on a selector that is neither indices nor a mask."""
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     with pytest.raises(TypeError, match=r"wp\.int32 or wp\.bool"):
         mesh.submesh(wp.zeros(4, dtype=wp.float32, device=mesh.device))
@@ -428,9 +434,9 @@ def test_split_and_add_round_trip(three_spheres: tuple[tm.Trimesh, wp.Mesh]) -> 
     assert rejoined.body_count == 3
 
 
-def test_copy_shares_nothing(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_copy_shares_nothing(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a parity assert: ``copy`` breaks the aliasing every other method preserves."""
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = mesh.face_normals
     duplicate = mesh.copy()
@@ -536,7 +542,7 @@ def test_vertex_face_adjacency_matches_trimesh(
 
 
 def test_halfedge_properties_match_the_free_functions(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: the facade against ``ordito.halfedge``, which carries the oracle.
@@ -546,7 +552,7 @@ def test_halfedge_properties_match_the_free_functions(
     answers and that the class's ``n_vertices`` shortcut -- which replaces the inferred vertex
     count both functions would otherwise read back -- does not change them.
     """
-    _mesh_tm, mesh_wp = icosphere_coarse
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     faces_wp = mesh.faces
 
@@ -557,7 +563,7 @@ def test_halfedge_properties_match_the_free_functions(
 
 
 def test_operator_properties_match_the_free_functions(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: the operator group against the functions that assemble it.
@@ -570,7 +576,7 @@ def test_operator_properties_match_the_free_functions(
     cached by-products they are built from (``cotmatrix`` from ``cotmatrix_entries``, the mass
     diagonal from ``face_areas``).
     """
-    _mesh_tm, mesh_wp = icosphere_coarse
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     vertices_wp, faces_wp = mesh.vertices, mesh.faces
 
@@ -607,7 +613,7 @@ def test_operator_properties_match_the_free_functions(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 def test_boundary_matches_free_functions(request: pytest.FixtureRequest, mesh_name: str) -> None:
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
@@ -623,7 +629,7 @@ def test_boundary_matches_free_functions(request: pytest.FixtureRequest, mesh_na
     assert len(mesh.boundary_loops) > 0
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("mesh_boundary_loops", "trimesh")
 def test_boundary_loops_matches_trimesh_outline(
     request: pytest.FixtureRequest, mesh_name: str
@@ -649,8 +655,8 @@ def test_boundary_loops_matches_trimesh_outline(
     assert_same_loop_set([loop.numpy() for loop in mesh.boundary_loops], loops_tm)
 
 
-def test_boundary_loops_empty_for_closed_mesh(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_boundary_loops_empty_for_closed_mesh(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.boundary_loops == []
     assert mesh.boundary_vertex_indices.shape == (0,)
@@ -662,20 +668,29 @@ def test_boundary_loops_empty_for_closed_mesh(icosahedron: tuple[tm.Trimesh, wp.
 
 
 @pytest.fixture
-def half_flipped_icosahedron(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> tuple[tm.Trimesh, wp.Mesh]:
-    """Reverse every other ``icosahedron`` face: orientable, but not consistently wound."""
-    mesh_tm, mesh_wp = icosahedron
+def half_flipped_sphere(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> tuple[tm.Trimesh, wp.Mesh]:
+    """Reverse every other ``sphere_irregular`` face: orientable, but not consistently wound."""
+    mesh_tm, mesh_wp = sphere_irregular
     faces_np = np.array(mesh_tm.faces)
     faces_np[::2] = faces_np[::2, ::-1]
     flipped_tm = tm.Trimesh(mesh_tm.vertices, faces_np, process=False)
     return flipped_tm, trimesh_to_warp(flipped_tm, mesh_wp.device)
 
 
-_PREDICATE_MESHES = [*MESHES, "boy_surface", "mobius", "half_flipped_icosahedron"]
+# Each fixture with whether it is consistently wound: the open and closed defaults are, the two
+# non-orientable surfaces cannot be, and ``half_flipped_sphere`` is wound against itself.
+_PREDICATE_MESHES = [
+    *((name, True) for name in MESHES),
+    ("boy_surface", False),
+    ("mobius", False),
+    ("half_flipped_sphere", False),
+]
 
 
-@pytest.mark.parametrize("mesh_name", _PREDICATE_MESHES)
-def test_predicates_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
+@pytest.mark.parametrize(("mesh_name", "consistent"), _PREDICATE_MESHES)
+def test_predicates_match_trimesh(
+    request: pytest.FixtureRequest, mesh_name: str, consistent: bool
+) -> None:
     """
     Class A on an integer and two booleans, parametrized over inputs giving *both* answers.
 
@@ -683,7 +698,7 @@ def test_predicates_match_trimesh(request: pytest.FixtureRequest, mesh_name: str
     closed orientable meshes, 0 on ``half_torus`` and ``mobius``, 1 on ``hemisphere`` and
     ``boy_surface``. ``is_winding_consistent`` and ``is_volume`` (the conjunction trimesh calls
     ``is_volume``) answer ``True`` on the closed orientable fixtures; the open fixtures, the
-    non-orientable ones and ``half_flipped_icosahedron`` supply the ``False`` branches. Section 7.4
+    non-orientable ones and ``half_flipped_sphere`` supply the ``False`` branches. Section 7.4
     rules out asserting a predicate on one branch only, so the expected answers are asserted too.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -692,9 +707,8 @@ def test_predicates_match_trimesh(request: pytest.FixtureRequest, mesh_name: str
     assert mesh.is_winding_consistent == bool(mesh_tm.is_winding_consistent)
     assert mesh.is_volume == bool(mesh_tm.is_volume)
 
-    consistent = mesh_name not in {"boy_surface", "mobius", "half_flipped_icosahedron"}
     assert bool(mesh_tm.is_winding_consistent) == consistent
-    assert bool(mesh_tm.is_volume) == (consistent and mesh_name in CLOSED_MESHES)
+    assert bool(mesh_tm.is_volume) == (consistent and bool(mesh_tm.is_watertight))
 
 
 @pytest.mark.parametrize("mesh_name", [*MESHES, "bohemian_dome"])
@@ -769,15 +783,17 @@ def test_is_edge_and_vertex_manifold_closed_meshes(
 # ---------------------------------------------------------------------------
 
 
-def test_cached_properties_are_frozen(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_cached_properties_are_frozen(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     with pytest.raises(AttributeError):
         mesh.face_normals = mesh.face_normals
 
 
-def test_invalidate_clears_cache_and_recomputes(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_invalidate_clears_cache_and_recomputes(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     normals_before = mesh.face_normals
     mesh.invalidate()
@@ -794,9 +810,9 @@ def _translated(mesh: od.Trimesh) -> od.Trimesh:
 
 
 def test_with_vertices_keeps_topology_drops_geometry(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     edges_before = mesh.edges
     _ = mesh.face_normals
@@ -811,10 +827,10 @@ def test_with_vertices_keeps_topology_drops_geometry(
 
 @pytest.mark.parametrize("key", sorted(_TOPOLOGY_KEYS))
 def test_with_vertices_carries_every_topology_key(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], key: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], key: str
 ) -> None:
     """Each faces-only cached property survives ``with_vertices`` (the ``_TOPOLOGY_KEYS`` rule)."""
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     before = getattr(mesh, key)
     assert key in mesh._cache
@@ -825,16 +841,16 @@ def test_with_vertices_carries_every_topology_key(
     assert moved._cache[key] is before
 
 
-def test_with_vertices_wrong_count_raises(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_with_vertices_wrong_count_raises(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     too_few = points_to_warp(mesh.vertices.numpy()[:-1], mesh.device)
     with pytest.raises(ValueError, match="vertex count"):
         mesh.with_vertices(too_few)
 
 
-def test_with_faces_starts_with_empty_cache(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_with_faces_starts_with_empty_cache(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = mesh.edges
 
@@ -843,7 +859,7 @@ def test_with_faces_starts_with_empty_cache(icosahedron: tuple[tm.Trimesh, wp.Me
     assert np.array_equal(new_mesh.edges.numpy(), mesh.edges.numpy())
 
 
-def test_warp_mesh_supports_ray_queries(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_warp_mesh_supports_ray_queries(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: rays against the BVH ``warp_mesh`` builds, matching ``trimesh``'s ray queries.
 
@@ -851,7 +867,7 @@ def test_warp_mesh_supports_ray_queries(icosahedron: tuple[tm.Trimesh, wp.Mesh])
     Non-vacuity: the rays are chosen to give both answers (down through the centre hits, up from
     above and down beside the mesh miss).
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     center_np = mesh_tm.bounds.mean(axis=0)
     origins_np = center_np + np.array([[0.0, 0.0, 3.0], [0.0, 0.0, 3.0], [5.0, 5.0, 3.0]])
@@ -938,14 +954,14 @@ def test_invert_carried_cache_matches_recomputation(
             )
 
 
-def test_invert_negates_normals_and_volume(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_invert_negates_normals_and_volume(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: the flip negates normals and volume, matching trimesh on both.
 
     The normals are the carried-and-negated path rather than a recomputation, so this checks the
     shortcut `invert` takes; ``volume`` is dropped and recomputed, and must come back negated.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     mesh = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp))
     inverted = mesh.invert()
 
@@ -999,10 +1015,10 @@ _GEOMETRY_KEYS = (
 
 @pytest.mark.parametrize("key", _GEOMETRY_KEYS)
 def test_with_vertices_drops_every_position_dependent_cache(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], key: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], key: str
 ) -> None:
     """Each position-dependent cached property is dropped by ``with_vertices``, not carried."""
-    _mesh_tm, mesh_wp = icosphere_coarse
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert getattr(mesh, key) is not None
     assert key in mesh._cache
@@ -1029,7 +1045,7 @@ def test_with_vertices_drops_every_position_dependent_cache(
     ],
 )
 def test_cached_property_reuses_its_dependencies(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], name: str, dependencies: tuple[str, ...]
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], name: str, dependencies: tuple[str, ...]
 ) -> None:
     """
     A composed property is assembled *through* the cache, so its parts land in it too.
@@ -1040,7 +1056,7 @@ def test_cached_property_reuses_its_dependencies(
     does. The first five rows are by-products: one call computes both, so reading either caches
     the other. A second read returns the cached object itself, for the property and its parts.
     """
-    _mesh_tm, mesh_wp = icosphere_coarse
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     value = getattr(mesh, name)
     assert value is not None
@@ -1051,7 +1067,7 @@ def test_cached_property_reuses_its_dependencies(
 
 
 def test_vector_heat_operators_shares_its_two_sub_bundles(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     The vector bundle's second and third fields *are* the sibling properties, not equal copies.
@@ -1060,7 +1076,7 @@ def test_vector_heat_operators_shares_its_two_sub_bundles(
     they are reached, since ``log_map``'s radius is asserted to be the ``heat_geodesic`` distance
     and two bundles at two diffusion times would split that into two numbers.
     """
-    _mesh_tm, mesh_wp = icosphere_coarse
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     vector_system, scalar, frames, _preconditioner = mesh.vector_heat_operators
 
@@ -1245,7 +1261,7 @@ def _precomputed_argument_cases(
 
 @pytest.mark.parametrize("name", _PRECOMPUTED_ARGUMENT_IDS)
 def test_a_precomputed_argument_does_not_change_the_answer(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], name: str
 ) -> None:
     """
     Every keyword added for the cache returns what the wrapper would have computed itself.
@@ -1259,7 +1275,7 @@ def test_a_precomputed_argument_does_not_change_the_answer(
     by atomic scatters (the lumped mass, the vertex normals) and one runs a CG solve, so bit
     equality is not a property of the *unchanged* code either.
     """
-    _mesh_tm, mesh_wp = icosphere_coarse
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     cases = _precomputed_argument_cases(mesh)
     # The ids are a module-level tuple so a case added to the table without one (or the reverse)
@@ -1278,7 +1294,7 @@ def test_a_precomputed_argument_does_not_change_the_answer(
             assert np.array_equal(left, right), name
 
 
-def test_mesh_arguments_resolves_both_forms(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_mesh_arguments_resolves_both_forms(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: the argument shift ``mesh_arguments`` exists for.
 
@@ -1287,7 +1303,7 @@ def test_mesh_arguments_resolves_both_forms(icosahedron: tuple[tm.Trimesh, wp.Me
     through and wrapped in a new mesh. Every call below is one ``f(mesh, faces, a, b, t, *,
     vertices)`` would receive.
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     a, b = object(), object()
     resolve = od.mesh.mesh_arguments

@@ -260,19 +260,34 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 # fixture added to the set reached exactly one file. Import them as
 # ``from tests.conftest import MESHES``; keep a local list only where it is genuinely a different
 # set, and say in a comment why.
-CLOSED_MESHES = ["icosahedron", "cave_cube"]
-"""Watertight, and one convex and one not -- ``cave_cube`` is a hollow non-convex shell."""
-
-OPEN_MESHES = ["hemisphere", "half_torus", "saddle_graded"]
+CLOSED_MESHES = ["sphere_irregular"]
 """
-Curved with a boundary: one rim on ``hemisphere``, two on ``half_torus``, one on ``saddle_graded``.
+The hard closed fixture, which covers what a regular solid would: one component, genus 0.
 
-``saddle_graded`` is the ill-conditioned member: triangles of aspect ratio ~4 900 on an otherwise
-plain disk, so a comparison tuned on the two well-shaped meshes meets an extreme operator here.
+A test whose subject is the topology -- several components, another Euler characteristic, an
+inward-facing shell, flat coplanar faces -- names the fixture that has it (``cave_cube``,
+``torus``, ``boy_surface`` ...) instead of widening this set.
+"""
+
+OPEN_MESHES = ["saddle_graded"]
+"""
+The hard open fixture: one rim, a disk, triangles of aspect ratio ~4 900.
+
+A comparison tuned on well-shaped meshes meets an extreme operator here. A test about several
+rims takes ``BOUNDARY_MESHES``; one about a specific rim shape (planar, two equal rims) names it.
 """
 
 MESHES = CLOSED_MESHES + OPEN_MESHES
-"""The default four-fixture sweep: closed and open, convex and not, in that order."""
+"""The default sweep: the hard closed fixture, then the hard open one."""
+
+BOUNDARY_MESHES = ["saddle_graded", "torus_irregular_holes"]
+"""
+The open fixtures for boundary-loop tests: one long rim, then several unequal ones.
+
+``saddle_graded``'s 268-edge rim, with two corners on a single face, and ``torus_irregular_holes``'
+3-, 5- and 41-edge rims on a genus-1 surface, so loop ranking, pairing and pointer-jumping see one
+loop and several, short and long, across several 1 024-item blocks and launches.
+"""
 
 
 @pytest.fixture
@@ -404,28 +419,29 @@ def hemisphere(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     return hemisphere, trimesh_to_warp(hemisphere, device)
 
 
-SADDLE_GRADED_RESOLUTION = 68
-"""Grid side of ``saddle_graded``: 4 624 vertices, 8 978 faces."""
-
-
 @functools.cache
-def saddle_graded_arrays() -> tuple[np.ndarray, np.ndarray]:
+def saddle_graded_arrays(
+    resolution: int = 34, exponent: float = 3.4
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Return ``saddle_graded``'s ``(n_vertices, 3)`` vertices and ``(n_faces, 3)`` faces.
 
-    ``benchmarks/meshes.py``'s ``saddle_graded`` at a quarter of its vertices: a ``68 x 68`` grid
-    lifted onto the saddle ``z = 0.35 (x^2 - 0.6 y^2)``, its spacing cubed along ``x``. An even
-    side puts the two finest columns either side of ``x = 0`` (gap ``2 / 67^3``) against a ``y``
-    spacing of ``2 / 67``, so the worst triangle's aspect ratio (longest edge over its altitude)
-    is 4 858, the benchmark mesh's 4 719 at 133 x 133.
+    A ``resolution x resolution`` grid lifted onto the saddle ``z = 0.35 (x^2 - 0.6 y^2)``, its
+    spacing graded along ``x`` as ``|t| ** exponent``. An even side puts the two finest columns
+    either side of ``x = 0`` (gap ``2 / (resolution - 1) ** exponent``) against a ``y`` spacing of
+    ``2 / (resolution - 1)``, so the worst aspect ratio (longest edge over its altitude) grows as
+    ``(resolution - 1) ** (exponent - 1)``: the default ``34 x 34`` at 3.4 reaches 4 761 with
+    1 156 vertices, 2 178 faces (6 534 halfedges, several 1 024-item blocks) and a 132-edge rim
+    (several pointer-jumping launches). ``saddle_graded_large_arrays`` is the ``68 x 68`` at 3
+    (aspect 4 858, 4 624 vertices) the size-dependent regression tests need.
 
     The vertices are rounded to ``float32`` and held as ``float64``, so a reference library and
     ordito's ``float32`` buffers see the same geometry: on operators this ill-conditioned the
     rounding of the input alone is not negligible.
     """
-    k = SADDLE_GRADED_RESOLUTION
+    k = resolution
     step = np.linspace(-1.0, 1.0, k)
-    u, v = np.meshgrid(np.sign(step) * np.abs(step) ** 3, step, indexing="ij")
+    u, v = np.meshgrid(np.sign(step) * np.abs(step) ** exponent, step, indexing="ij")
     vertices = np.column_stack((u.ravel(), v.ravel(), 0.35 * (u * u - 0.6 * v * v).ravel()))
     i, j = np.meshgrid(np.arange(k - 1), np.arange(k - 1), indexing="ij")
     corner = (i * k + j).ravel()
@@ -438,20 +454,519 @@ def saddle_graded_arrays() -> tuple[np.ndarray, np.ndarray]:
     return vertices.astype(np.float32).astype(np.float64), faces.astype(np.int64)
 
 
+def saddle_graded_large_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return the ``68 x 68`` graded saddle: for the two defects that need its size, and only them.
+
+    The heat method's settle rule stopped on round-off here (before the backward-error fallback the
+    distance sat 34x and 7x over the parity test's mean and max bounds, where the default fixture's
+    pre-fix error is under them), and ``filter_implicit_fairing``'s first solve is slow enough here
+    to take the refactorization path. Everything else runs on the smaller default.
+    """
+    return saddle_graded_arrays(68, 3.0)
+
+
 @pytest.fixture
 def saddle_graded(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     """
     Graded saddle: an open disk whose triangles reach an aspect ratio of ~4 900.
 
     One rim, every vertex manifold, consistently wound, no degenerate face -- an input every
-    open-mesh function accepts -- yet its cotangent operators are ill-conditioned in places
-    (Jacobi-scaled condition number in the millions). It is the fixture that exposed two silent
-    wrong answers no other fixture reached: the heat method's settled CG iterate (4.4 % mean, 38 %
-    worst of the range off ``igl.exact_geodesic``, against the method's own 1.1 % / 6.2 %) and the
-    ``k = 2`` harmonic map (29 % of the range off a SciPy direct solve of the same system). Built
+    open-mesh function accepts -- yet its cotangent operators are ill-conditioned in places. Its
+    68 x 68 form exposed two silent wrong answers no other fixture reached: the heat method's
+    settled CG iterate (4.4 % mean, 38 % worst of the range off ``igl.exact_geodesic``) and the
+    ``k = 2`` harmonic map (29 % of the range off a SciPy direct solve); this 34 x 34 form still
+    fails the pre-fix ``k = 2`` solve and the pre-2026-10-07 needle numerics (first-corner normals,
+    law-of-cosines cotangents) by the same tests, at a quarter of the cost. Built
     without trimesh's processing, so the face buffer is the grid's own.
     """
     vertices_np, faces_np = saddle_graded_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+def _periodic_delaunay(uv: np.ndarray, period: tuple[float, float]) -> np.ndarray:
+    """Delaunay of points on a flat torus: tile 3 x 3, keep the faces whose centroid is central."""
+    from scipy.spatial import Delaunay
+
+    n = uv.shape[0]
+    shifts = [(i * period[0], j * period[1]) for i in (-1, 0, 1) for j in (-1, 0, 1)]
+    tiled = np.vstack([uv + np.array(shift) for shift in shifts])
+    faces = Delaunay(tiled).simplices
+    centroids = tiled[faces].mean(axis=1)
+    central = (
+        (centroids[:, 0] >= 0.0)
+        & (centroids[:, 0] < period[0])
+        & (centroids[:, 1] >= 0.0)
+        & (centroids[:, 1] < period[1])
+    )
+    return faces[central] % n
+
+
+def _scramble(
+    vertices: np.ndarray, faces: np.ndarray, rng: np.random.Generator, *, placed: bool = True
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Shuffle vertex and face order, rotate each face's corners, place the mesh off-axis.
+
+    ``placed=False`` skips the random placement, for a fixture that applies the round frame.
+    """
+    order = rng.permutation(vertices.shape[0])
+    rank = np.empty_like(order)
+    rank[order] = np.arange(order.size)
+    faces = rank[faces][rng.permutation(faces.shape[0])]
+    shift = rng.integers(0, 3, faces.shape[0])
+    faces = np.take_along_axis(faces, (np.arange(3)[None, :] + shift[:, None]) % 3, axis=1)
+    vertices = vertices[order]
+    if placed:
+        rotation = tm.transformations.random_rotation_matrix(rng.random(3))[:3, :3]
+        vertices = 1.7 * vertices @ rotation.T + np.array([0.3, -2.1, 1.4])
+    return vertices.astype(np.float32).astype(np.float64), faces.astype(np.int64)
+
+
+ROUND_FRAME_SCALE = 1.7
+ROUND_FRAME_ROTATION = tm.transformations.random_rotation_matrix(np.array([0.2, 0.6, 0.9]))[:3, :3]
+ROUND_FRAME_SHIFT = np.array([0.3, -2.1, 1.4])
+
+
+def round_frame_coordinates(vertices: np.ndarray) -> np.ndarray:
+    """Map ``sphere_round`` / ``torus_round`` positions back to their surface's canonical frame."""
+    return (
+        (np.asarray(vertices, dtype=np.float64) - ROUND_FRAME_SHIFT)
+        @ ROUND_FRAME_ROTATION
+        / (ROUND_FRAME_SCALE)
+    )
+
+
+def _round_frame_placed(vertices: np.ndarray) -> np.ndarray:
+    """Place canonical positions in the round frame (rotated, scaled 1.7, off-origin) as float32."""
+    placed = ROUND_FRAME_SCALE * vertices @ ROUND_FRAME_ROTATION.T + ROUND_FRAME_SHIFT
+    return placed.astype(np.float32).astype(np.float64)
+
+
+def _bumpy_sphere(
+    rng: np.random.Generator, n_points: int, *, squeeze: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return an unscrambled bumpy star-shaped sphere: the hull of ``n_points`` random directions.
+
+    Wound outward. Radius ``1 + 0.35 sin 3 theta cos 2 phi + 0.15 cos 5 theta`` (between 0.5 and
+    1.5), longitude squeezed by ``phi - squeeze sin phi``.
+    """
+    from scipy.spatial import ConvexHull
+
+    directions = rng.normal(size=(n_points, 3))
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+    faces = ConvexHull(directions).simplices
+    corners = directions[faces]
+    normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    inward = np.einsum("ij,ij->i", normals, corners.mean(axis=1)) < 0.0
+    faces[inward] = faces[inward][:, [0, 2, 1]]
+    theta = np.arccos(np.clip(directions[:, 2], -1.0, 1.0))
+    phi = np.arctan2(directions[:, 1], directions[:, 0])
+    phi = phi - squeeze * np.sin(phi)
+    radius = 1.0 + 0.35 * np.sin(3.0 * theta) * np.cos(2.0 * phi) + 0.15 * np.cos(5.0 * theta)
+    vertices = radius[:, None] * np.column_stack(
+        (np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta))
+    )
+    return vertices, faces
+
+
+@functools.cache
+def sphere_irregular_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``sphere_irregular``'s ``(n_vertices, 3)`` vertices and ``(n_faces, 3)`` faces.
+
+    The convex hull of 500 random directions -- a Delaunay triangulation of the sphere, so
+    vertex degree runs 3-12 and nothing is a subdivision pattern -- pushed out along each direction
+    to a bumpy radius ``1 + 0.35 sin 3 theta cos 2 phi + 0.15 cos 5 theta``, which is star-shaped
+    (so still embedded) but non-convex, with negative curvature at ~40 % of the vertices. The
+    longitude is squeezed by ``phi - 0.97 sin phi`` first, a 33x compression near ``phi = 0`` that
+    makes the triangles there needles (aspect ratio up to ~300); nearly three quarters of all faces
+    are obtuse. Order and placement are scrambled as in ``torus_irregular_arrays``.
+    """
+    rng = np.random.default_rng(5)
+    vertices, faces = _bumpy_sphere(rng, 500, squeeze=0.97)
+    return _scramble(vertices, faces, rng)
+
+
+@pytest.fixture
+def sphere_irregular(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Irregular sphere: the hard closed fixture -- one component, genus 0, nothing regular about it.
+
+    What a regular solid (``icosahedron``: twelve degree-5 vertices, all faces equilateral) cannot
+    reach: varying degree, negative cotangent weights, curvature of both signs, needles, ~3 000
+    halfedges (several 1 024-item blocks), and an index order with no spatial meaning.
+    """
+    vertices_np, faces_np = sphere_irregular_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+def _cut_sphere_irregular(
+    offsets: tuple[tuple[float, float], ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``sphere_irregular`` cut by planes, as ``(n_vertices, 3)`` and ``(n_faces, 3)`` arrays.
+
+    Each ``(offset, sign)`` keeps the side ``sign * (x - c) . n >= offset`` of a fixed oblique
+    plane normal ``n`` through the centroid ``c``. The cut adds rim vertices next to existing ones,
+    so the rim carries slivers of its own besides the sphere's needles. Rounded to ``float32``.
+    """
+    vertices, faces = sphere_irregular_arrays()
+    mesh = tm.Trimesh(vertices, faces, process=False)
+    centre = vertices.mean(axis=0)
+    normal = np.array([0.3, -0.5, 0.8]) / np.linalg.norm([0.3, -0.5, 0.8])
+    for offset, sign in offsets:
+        mesh = mesh.slice_plane(
+            plane_origin=centre + sign * offset * normal, plane_normal=sign * normal, cap=False
+        )
+    mesh.merge_vertices()
+    mesh.remove_unreferenced_vertices()
+    return np.asarray(mesh.vertices).astype(np.float32).astype(np.float64), np.asarray(mesh.faces)
+
+
+@functools.cache
+def sphere_irregular_cap_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """Return ``sphere_irregular_cap``'s vertices and faces: one planar 91-edge rim."""
+    return _cut_sphere_irregular(((0.1, 1.0),))
+
+
+@functools.cache
+def sphere_irregular_band_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """Return ``sphere_irregular_band``'s vertices and faces: two planar rims, 99 and 78 edges."""
+    return _cut_sphere_irregular(((-0.5, 1.0), (-0.6, -1.0)))
+
+
+@pytest.fixture
+def sphere_irregular_cap(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    ``sphere_irregular`` cut by one plane: an open disk with a planar rim, the hard ``hemisphere``.
+
+    For tests whose premise is a planar boundary (a fill that must cover one flat region).
+    """
+    vertices_np, faces_np = sphere_irregular_cap_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@pytest.fixture
+def sphere_irregular_band(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Return ``sphere_irregular`` between two parallel planes: an annulus, the hard ``half_torus``.
+
+    Its two planar rims have different lengths, 99 and 78 edges.
+    """
+    vertices_np, faces_np = sphere_irregular_band_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+def _cut_convex_irregular(
+    offsets: tuple[tuple[float, float], ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return a convex irregular ellipsoid cut by planes, as ``(n_vertices, 3)`` / ``(n_faces, 3)``.
+
+    The hull of 500 random directions, longitude-squeezed as ``sphere_irregular`` is (needles to
+    aspect ~400) but without its bumps, so the body is convex and every planar section of it is a
+    convex polygon. Cut as ``_cut_sphere_irregular`` cuts; rounded to ``float32``.
+    """
+    from scipy.spatial import ConvexHull
+
+    rng = np.random.default_rng(13)
+    directions = rng.normal(size=(500, 3))
+    directions /= np.linalg.norm(directions, axis=1)[:, None]
+    theta = np.arccos(np.clip(directions[:, 2], -1.0, 1.0))
+    phi = np.arctan2(directions[:, 1], directions[:, 0])
+    phi = phi - 0.97 * np.sin(phi)
+    points = np.column_stack(
+        (np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta))
+    ) * np.array([1.3, 1.0, 0.8])
+    mesh = tm.Trimesh(points, ConvexHull(points).simplices, process=False)
+    mesh.fix_normals()
+    normal = np.array([0.3, -0.5, 0.8]) / np.linalg.norm([0.3, -0.5, 0.8])
+    for offset, sign in offsets:
+        mesh = mesh.slice_plane(
+            plane_origin=sign * offset * normal, plane_normal=sign * normal, cap=False
+        )
+    mesh.merge_vertices()
+    mesh.remove_unreferenced_vertices()
+    return np.asarray(mesh.vertices).astype(np.float32).astype(np.float64), np.asarray(mesh.faces)
+
+
+@pytest.fixture
+def convex_irregular_cap(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Return a convex irregular body cut by one plane: one *convex* planar rim, needles intact.
+
+    Only for a premise the bumpy ``sphere_irregular_cap`` breaks: a filler that must not fold a
+    planar rim needs it convex (pymeshfix's ear clipping folds a non-convex one).
+    """
+    vertices_np, faces_np = _cut_convex_irregular(((0.1, 1.0),))
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@pytest.fixture
+def convex_irregular_band(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """Return the same body between two planes: two convex planar rims, 62 and 79 edges."""
+    vertices_np, faces_np = _cut_convex_irregular(((-0.4, 1.0), (-0.5, -1.0)))
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@functools.cache
+def sphere_well_shaped_arrays(
+    bumps: float = 1.0, *, placed: bool = True
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``sphere_well_shaped``'s ``(n_vertices, 3)`` vertices and ``(n_faces, 3)`` faces.
+
+    ``sphere_irregular``'s bumpy surface over 400 dart-thrown directions (no two closer than 0.7 of
+    the mean spacing) instead of 500 random ones, and no squeeze: irregular -- degree 4-8, a third
+    of the faces obtuse, curvature of both signs, scrambled -- but with no needle (aspect ratio at
+    most ~6), so ``float32`` edge lengths still determine every triangle. ``bumps=0`` keeps the
+    sampling and lays it on the exact unit sphere (``sphere_round``, placed in the
+    round frame).
+    """
+    from scipy.spatial import ConvexHull
+
+    rng = np.random.default_rng(5)
+    spacing = 0.7 * np.sqrt(4.0 * np.pi / 400)
+    directions: list[np.ndarray] = []
+    while len(directions) < 400:
+        candidate = rng.normal(size=3)
+        candidate /= np.linalg.norm(candidate)
+        if all(np.linalg.norm(candidate - kept) > spacing for kept in directions):
+            directions.append(candidate)
+    points = np.array(directions)
+    faces = ConvexHull(points).simplices
+    corners = points[faces]
+    normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    inward = np.einsum("ij,ij->i", normals, corners.mean(axis=1)) < 0.0
+    faces[inward] = faces[inward][:, [0, 2, 1]]
+    theta = np.arccos(np.clip(points[:, 2], -1.0, 1.0))
+    phi = np.arctan2(points[:, 1], points[:, 0])
+    radius = 1.0 + bumps * (
+        0.35 * np.sin(3.0 * theta) * np.cos(2.0 * phi) + 0.15 * np.cos(5.0 * theta)
+    )
+    vertices = radius[:, None] * np.column_stack(
+        (np.sin(theta) * np.cos(phi), np.sin(theta) * np.sin(phi), np.cos(theta))
+    )
+    return _scramble(vertices, faces, rng, placed=placed)
+
+
+@functools.cache
+def sphere_well_shaped_open_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """``sphere_well_shaped`` with the faces above an oblique plane deleted: one jagged rim."""
+    vertices, faces = sphere_well_shaped_arrays()
+    centres = vertices[faces].mean(axis=1)
+    normal = np.array([0.3, -0.5, 0.8]) / np.linalg.norm([0.3, -0.5, 0.8])
+    keep = (centres - vertices.mean(axis=0)) @ normal < 0.2
+    mesh = tm.Trimesh(vertices, faces[keep], process=False)
+    mesh.remove_unreferenced_vertices()
+    return np.asarray(mesh.vertices), np.asarray(mesh.faces)
+
+
+@functools.cache
+def torus_well_shaped_arrays(
+    minor: float = 0.45, bumps: float = 0.25, *, placed: bool = True
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``torus_well_shaped``'s ``(n_vertices, 3)`` vertices and ``(n_faces, 3)`` faces.
+
+    ``torus_irregular``'s bumpy torus over 400 points dart-thrown on its flat parameter torus (no
+    two closer than 0.7 of the mean spacing) and without the squeeze: genus 1, irregular degree,
+    scrambled, but needle-free, for the same ``float32``-length premise as ``sphere_well_shaped``.
+    ``minor=0.4, bumps=0`` lays the sampling on an exact torus of revolution (``torus_round``,
+    placed in the round frame).
+    """
+    rng = np.random.default_rng(7)
+    major = 1.0
+    period = np.array((2.0 * np.pi * major, 2.0 * np.pi * minor))
+    spacing = 0.7 * np.sqrt(period.prod() / 400)
+    points: list[np.ndarray] = []
+    while len(points) < 400:
+        candidate = rng.random(2) * period
+        if all(
+            np.linalg.norm((candidate - kept + period / 2) % period - period / 2) > spacing
+            for kept in points
+        ):
+            points.append(candidate)
+    uv = np.array(points)
+    faces = _periodic_delaunay(uv, (float(period[0]), float(period[1])))
+    u = uv[:, 0] / major
+    v = uv[:, 1] / minor
+    radius = minor * (1.0 + bumps * np.sin(3.0 * u) * np.cos(2.0 * v))
+    ring = major + radius * np.cos(v)
+    vertices = np.column_stack((ring * np.cos(u), ring * np.sin(u), radius * np.sin(v)))
+    return _scramble(vertices, faces, rng, placed=placed)
+
+
+@pytest.fixture
+def torus_well_shaped(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """Irregular, needle-free genus-1 fixture; see ``sphere_well_shaped`` for its premise."""
+    vertices_np, faces_np = torus_well_shaped_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@pytest.fixture
+def sphere_well_shaped(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Irregular but needle-free closed fixture, for a premise ``sphere_irregular``'s needles break.
+
+    Every use names the premise: a path that re-derives triangles from ``float32`` edge lengths
+    (the intrinsic Laplacians), which a needle's rounded lengths do not determine.
+    """
+    vertices_np, faces_np = sphere_well_shaped_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@pytest.fixture
+def sphere_round(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Return ``sphere_well_shaped``'s irregular sampling on the exact unit sphere.
+
+    For an analytic oracle only: every point is umbilic with curvature 1, which no bumpy fixture
+    has. Degree 4-8, scrambled, dart-thrown, so it is not an icosphere's regular lattice.
+    """
+    vertices_np, faces_np = sphere_well_shaped_arrays(bumps=0.0, placed=False)
+    mesh = tm.Trimesh(_round_frame_placed(vertices_np), faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@pytest.fixture
+def torus_round(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Return ``torus_well_shaped``'s irregular sampling on the exact torus ``R = 1``, ``r = 0.4``.
+
+    For an analytic oracle only: its lines of curvature are the meridians and parallels and its two
+    principal curvatures differ by at least 1.79 everywhere (no umbilic point).
+    """
+    vertices_np, faces_np = torus_well_shaped_arrays(minor=0.4, bumps=0.0, placed=False)
+    mesh = tm.Trimesh(_round_frame_placed(vertices_np), faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@pytest.fixture
+def sphere_well_shaped_open(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """Return the open counterpart of ``sphere_well_shaped``: same premise, one boundary loop."""
+    vertices_np, faces_np = sphere_well_shaped_open_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@functools.cache
+def sphere_irregular_hollow_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``sphere_irregular_hollow``'s ``(n_vertices, 3)`` vertices and ``(n_faces, 3)`` faces.
+
+    ``sphere_irregular``'s outer surface around a second bumpy sphere of 200 directions, scaled by
+    0.3 (radius at most 0.45 against the outer surface's at least 0.5) and wound inward: a solid
+    shell with a cavity, two components. Both shells are scrambled together.
+    """
+    rng = np.random.default_rng(5)
+    outer_vertices, outer_faces = _bumpy_sphere(rng, 500, squeeze=0.97)
+    inner_vertices, inner_faces = _bumpy_sphere(np.random.default_rng(11), 200, squeeze=0.9)
+    vertices = np.concatenate((outer_vertices, 0.3 * inner_vertices))
+    faces = np.concatenate((outer_faces, inner_faces[:, [0, 2, 1]] + outer_vertices.shape[0]))
+    return _scramble(vertices, faces, rng)
+
+
+@pytest.fixture
+def sphere_irregular_hollow(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Irregular hollow sphere: a solid with a cavity, the hard counterpart of ``cave_cube``.
+
+    A query in the cavity is outside the solid with surface all around it, and its nearest face's
+    normal points away from the outer shell's; a sign rule or a containment test that assumes one
+    outer surface fails there.
+    """
+    vertices_np, faces_np = sphere_irregular_hollow_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@functools.cache
+def torus_irregular_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``torus_irregular``'s ``(n_vertices, 3)`` vertices and ``(n_faces, 3)`` faces.
+
+    500 random points on a flat torus, Delaunay-triangulated in the periodic parameter domain, so
+    nothing is a grid: vertex degree runs 3-10. Mapped onto a bumpy torus whose angle ``u`` is
+    squeezed by ``u - 0.97 sin u``, a 33x compression near ``u = 0`` that turns the Delaunay
+    triangles there into needles (aspect ratio up to ~540) and leaves two thirds of all faces
+    obtuse, so cotangent weights go negative. Vertex order, face order and each face's starting
+    corner are shuffled, and the mesh is rotated off the axes and translated off the origin.
+    """
+    rng = np.random.default_rng(7)
+    major, minor = 1.0, 0.45
+    period = (2.0 * np.pi * major, 2.0 * np.pi * minor)
+    uv = rng.random((500, 2)) * np.array(period)
+    faces = _periodic_delaunay(uv, period)
+    u = uv[:, 0] / major
+    v = uv[:, 1] / minor
+    u = u - 0.97 * np.sin(u)
+    radius = minor * (1.0 + 0.25 * np.sin(3.0 * u) * np.cos(2.0 * v))
+    ring = major + radius * np.cos(v)
+    vertices = np.column_stack((ring * np.cos(u), ring * np.sin(u), radius * np.sin(v)))
+    return _scramble(vertices, faces, rng)
+
+
+@pytest.fixture
+def torus_irregular(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Irregular torus: closed, genus 1, no grid structure, needles and obtuse faces, shuffled order.
+
+    The hard closed fixture: what a regular solid (``icosahedron``: twelve degree-5 vertices, all
+    faces equilateral) cannot reach -- varying degree, negative cotangent weights, a curvature that
+    changes sign, ~3 000 halfedges (several 1 024-item blocks), and index order with no spatial
+    meaning.
+    """
+    vertices_np, faces_np = torus_irregular_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@functools.cache
+def torus_irregular_holes_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``torus_irregular_holes``' vertices and faces: ``torus_irregular`` with three holes.
+
+    The holes are one face (a 3-edge rim), one vertex's star (its vertex removed with it) and a
+    wide patch on the outer side, so the rims run 3, 7 and 24 edges; the surface stays edge- and
+    vertex-manifold and genus 1.
+    """
+    vertices, faces = torus_irregular_arrays()
+    centroids = vertices[faces].mean(axis=1)
+    scale = np.ptp(vertices, axis=0).max()
+    anchors = vertices[np.argsort(np.linalg.norm(vertices - vertices.mean(axis=0), axis=1))]
+    wide_centre, star_point, single_point = anchors[-1], anchors[0], anchors[vertices.shape[0] // 2]
+    wide = np.linalg.norm(centroids - wide_centre, axis=1) < 0.3 * scale
+    star_vertex = int(np.argmin(np.linalg.norm(vertices - star_point, axis=1)))
+    star = (faces == star_vertex).any(axis=1)
+    single = np.zeros(faces.shape[0], dtype=bool)
+    single[int(np.argmin(np.linalg.norm(centroids - single_point, axis=1)))] = True
+    kept = faces[~(wide | star | single)]
+    used = np.unique(kept)
+    remap = np.full(vertices.shape[0], -1, dtype=np.int64)
+    remap[used] = np.arange(used.size)
+    return vertices[used], remap[kept]
+
+
+@pytest.fixture
+def torus_irregular_holes(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    ``torus_irregular`` with three holes: the hard open fixture with several rims of unequal size.
+
+    Open but not a disk (genus 1, three boundary loops of very different lengths), on the same
+    irregular, needle-carrying, shuffled triangulation.
+    """
+    vertices_np, faces_np = torus_irregular_holes_arrays()
     mesh = tm.Trimesh(vertices_np, faces_np, process=False)
     return mesh, trimesh_to_warp(mesh, device)
 

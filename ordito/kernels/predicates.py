@@ -56,6 +56,16 @@ def orient2d(a: Any, b: Any, c: Any):
 
 
 @wp.func
+def newell_term(a: Any, b: Any, origin: Any):
+    # One edge's term of Newell's sum, ``(a - o) x (b - o)``, taken about a point ``o`` of its own
+    # ring. Around a closed ring the sum is the same for any ``o``, but only in exact arithmetic:
+    # about the coordinate origin it subtracts cross products of the size ``|p|^2`` to leave a
+    # ring area that can be orders smaller, so a 3-edge needle hole at coordinates near 4 came out
+    # 6.3e-5 off in ``float32``. About a ring point every term is of the ring's own size.
+    return wp.cross(a - origin, b - origin)
+
+
+@wp.func
 def triangle_area_vector(a: Any, b: Any, c: Any):
     # ``cross(b - a, c - a)`` -- twice the vector area of triangle ABC -- formed at the corner
     # opposite the longest edge, which is the same vector in exact arithmetic and the
@@ -820,10 +830,11 @@ def segment_segment_distance_sq(
 
 
 @wp.func
-def point_triangle_distance_sq(p: wp.vec3d, a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
-    # Squared distance from a point to a closed triangle, by the seven-region barycentric test. A
+def point_triangle_offset(p: wp.vec3d, a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.vec3d:
+    # ``p`` minus its closest point on a closed triangle, by the seven-region barycentric test. A
     # degenerate triangle falls through to its edges, which is why the vertex and edge regions are
-    # tested before the interior one rather than after.
+    # tested before the interior one rather than after. The offset rather than the point, so the
+    # distance below is formed from the same differences it always was.
     zero = wp.float64(0.0)
     ab = b - a
     ac = c - a
@@ -831,34 +842,40 @@ def point_triangle_distance_sq(p: wp.vec3d, a: wp.vec3d, b: wp.vec3d, c: wp.vec3
     d1 = wp.dot(ab, ap)
     d2 = wp.dot(ac, ap)
     if d1 <= zero and d2 <= zero:
-        return wp.length_sq(ap)
+        return ap
 
     bp = p - b
     d3 = wp.dot(ab, bp)
     d4 = wp.dot(ac, bp)
     if d3 >= zero and d4 <= d3:
-        return wp.length_sq(bp)
+        return bp
 
     cp = p - c
     d5 = wp.dot(ab, cp)
     d6 = wp.dot(ac, cp)
     if d6 >= zero and d5 <= d6:
-        return wp.length_sq(cp)
+        return cp
 
     vc = d1 * d4 - d3 * d2
     if vc <= zero and d1 >= zero and d3 <= zero:
-        return wp.length_sq(ap - ab * (d1 / (d1 - d3)))
+        return ap - ab * (d1 / (d1 - d3))
     vb = d5 * d2 - d1 * d6
     if vb <= zero and d2 >= zero and d6 <= zero:
-        return wp.length_sq(ap - ac * (d2 / (d2 - d6)))
+        return ap - ac * (d2 / (d2 - d6))
     va = d3 * d6 - d5 * d4
     if va <= zero and (d4 - d3) >= zero and (d5 - d6) >= zero:
-        return wp.length_sq(bp - (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6))))
+        return bp - (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))
 
     denominator = va + vb + vc
     if denominator <= TOLERANCE_ZERO_F64:
-        return wp.length_sq(ap)  # degenerate: the edge cases above already covered it
-    return wp.length_sq(ap - ab * (vb / denominator) - ac * (vc / denominator))
+        return ap  # degenerate: the edge cases above already covered it
+    return ap - ab * (vb / denominator) - ac * (vc / denominator)
+
+
+@wp.func
+def point_triangle_distance_sq(p: wp.vec3d, a: wp.vec3d, b: wp.vec3d, c: wp.vec3d) -> wp.float64:
+    """Squared distance from ``p`` to the closed triangle ``a, b, c``."""
+    return wp.length_sq(point_triangle_offset(p, a, b, c))
 
 
 @wp.func

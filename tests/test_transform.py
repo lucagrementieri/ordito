@@ -319,13 +319,15 @@ def test_transform_normals_singular_matrix_raises(device: str, n_normals: int) -
 
 @pytest.mark.parity("transform_mesh", "trimesh")
 @pytest.mark.parity("transform_points", "pyvista", "open3d")
-def test_transform_points_matches_pyvista_and_open3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transform_points_matches_pyvista_and_open3d(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class A against both: VTK's filter and ``open3d.geometry.PointCloud.transform``.
 
     VTK's side is ``vtkTransformFilter`` through pyvista.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     matrix_np = np.array(_ROTATION, dtype=np.float64).reshape(4, 4)
     moved_pv = trimesh_to_pyvista(mesh_tm).transform(matrix_np, inplace=False)
     cloud_o3d = cast(
@@ -337,7 +339,7 @@ def test_transform_points_matches_pyvista_and_open3d(icosphere: tuple[tm.Trimesh
 
 
 @pytest.mark.parity("transform_normals", "pyvista")
-def test_transform_normals_matches_pyvista(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transform_normals_matches_pyvista(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: the covector map against VTK's ``transform_all_input_vectors=True``.
 
@@ -346,7 +348,7 @@ def test_transform_normals_matches_pyvista(icosphere: tuple[tm.Trimesh, wp.Mesh]
     coincide, so a rotation would pass even for an implementation using the wrong one. Measured on
     this fixture, the naive map sits 0.896 from VTK's answer against this assert's 1e-5.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     matrix = od.transform.scale_matrix((3.0, 1.0, 0.4))
     matrix_np = np.array(matrix, dtype=np.float64).reshape(4, 4)
 
@@ -384,14 +386,14 @@ def test_transform_mesh_matches_trimesh_apply_transform(
     assert np.array_equal(faces_wp.numpy().reshape(-1, 3), moved_tm.faces)
 
 
-def test_transform_mesh_keeps_volume_positive(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transform_mesh_keeps_volume_positive(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: the reason the winding flip exists, stated as an invariant.
 
     A mirrored mesh whose winding was *not* reversed has inward normals and a negative volume;
     measured -4.1888 against +4.1888 here, so the assert has three orders of margin on its sign.
     """
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     before = od.measures.volume(mesh_wp.points, mesh_wp.indices)
     assert before > 0.0
     vertices_wp, faces_wp = od.transform.transform_mesh(
@@ -401,10 +403,10 @@ def test_transform_mesh_keeps_volume_positive(icosphere: tuple[tm.Trimesh, wp.Me
 
 
 def test_transform_mesh_mismatched_out_faces_length_raises(
-    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Not a parity assert: an undersized ``out_faces`` must raise, not silently overrun it."""
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="out_faces must have length"):
         od.transform.transform_mesh(
             mesh_wp.points,
@@ -495,13 +497,14 @@ def test_classify_transform_projective_matrix_is_singular() -> None:
 # ---------------------------------------------------------------------------
 
 
-# Not ``conftest.MESHES``: on ``saddle_graded`` the recomputation is not an oracle. Its finest
-# columns sit within 3e-6 of ``x = 0``, so rounding the moved vertices back to ``float32`` (at
-# coordinates near 1.5 after the translation) changes an edge length by up to 0.39 %, and the
-# mesh recomputed from them is a different mesh -- its needle faces' normals and angles move by
-# more than the 1e-4 this compares at, while the carried values are the exact transform of the
-# original's.
-_CARRY_MESHES = [mesh_name for mesh_name in MESHES if mesh_name != "saddle_graded"]
+# Not ``conftest.MESHES``: on a mesh with needles the recomputation is not an oracle. On
+# ``saddle_graded`` the finest columns sit within 3e-6 of ``x = 0``, so rounding the moved vertices
+# back to ``float32`` (at coordinates near 1.5 after the translation) changes an edge length by up
+# to 0.39 %, and the mesh recomputed from them is a different mesh -- its needle faces' normals and
+# angles move by more than the 1e-4 this compares at, while the carried values are the exact
+# transform of the original's; ``sphere_irregular``'s needles do the same. So a well-shaped closed
+# and open mesh.
+_CARRY_MESHES = ["sphere_well_shaped", "sphere_well_shaped_open"]
 
 
 @pytest.mark.parametrize("mesh_name", _CARRY_MESHES)
@@ -548,7 +551,7 @@ def test_carried_cache_matches_recomputation(
 
 
 def test_transform_carries_the_expensive_operators_through_a_rigid_motion(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: a rigid motion aliases the heavy assemblies rather than rebuilding.
@@ -558,7 +561,7 @@ def test_transform_carries_the_expensive_operators_through_a_rigid_motion(
     carried entries are the same objects, so no work was done. Aliasing does not depend on the
     mesh, so one fixture serves; an open one, where the carry sets are narrower.
     """
-    _mesh_tm, mesh_wp = half_torus
+    _mesh_tm, mesh_wp = saddle_graded
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     cotmatrix, entries, angles = mesh.cotmatrix, mesh.cotmatrix_entries, mesh.face_angles
     moved = mesh.transform(_ROTATION)
@@ -634,10 +637,14 @@ def test_adjacency_projections_and_convex_stay_consistent(
     Not a parity assert: the two adjacency quantities never contradict each other.
 
     ``face_adjacency_convex`` is exactly ``face_adjacency_projections <= TOLERANCE_MERGE``, and
-    neither is
-    carried -- the mask because a rotation's ~1e-7 flips it on a coplanar pair, the projection so
-    it cannot be left holding a value the recomputed mask disagrees with. On ``cave_cube``, whose
-    box faces are coplanar, that pairing is what a stratum holding only one of them would break.
+    neither is carried -- the mask because a rotation's ~1e-7 flips it on a coplanar pair, the
+    projection so it cannot be left holding a value the recomputed mask disagrees with. On
+    ``cave_cube``, whose box faces are coplanar, that pairing is what a stratum holding only one of
+    them would break.
+
+    Premise, and why the fixture is ``cave_cube``: exactly coplanar face pairs on a non-convex
+    mesh. The irregular fixtures have no coplanar pair (no projection inside the band), and
+    ``unit_box`` is convex everywhere, so ``not convex.all()`` cannot hold on it.
     """
     _mesh_tm, mesh_wp = cave_cube
     mesh = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp))
@@ -682,15 +689,15 @@ def test_mass_properties_are_never_carried(request: pytest.FixtureRequest, mesh_
         assert not np.allclose(before, after, rtol=1e-3, atol=1e-3), key
 
 
-def test_transform_identity_returns_self(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transform_identity_returns_self(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a parity assert: the identity short-circuit does no work at all."""
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.transform(od.transform.translation_matrix((0.0, 0.0, 0.0))) is mesh
 
 
 def test_transform_mirror_drops_the_orientation_dependent_caches(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a parity assert: the mirror case drops the caches that reverse with the winding.
@@ -698,7 +705,7 @@ def test_transform_mirror_drops_the_orientation_dependent_caches(
     On an *open* mesh, which is where three of these actually differ -- a closed fixture carries
     them wrongly and no value comparison notices.
     """
-    _mesh_tm, mesh_wp = hemisphere
+    _mesh_tm, mesh_wp = saddle_graded
     mesh = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp))
     carried_before = set(mesh._cache)
     assert _ORIENTATION_DEPENDENT_KEYS & carried_before, "fixture did not populate the keys tested"
@@ -707,14 +714,16 @@ def test_transform_mirror_drops_the_orientation_dependent_caches(
     assert not (_ORIENTATION_DEPENDENT_KEYS & set(moved._cache))
 
 
-def test_transform_singular_carries_topology_only(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transform_singular_carries_topology_only(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Not a parity assert: a flattening transform keeps connectivity and drops the predicates.
 
     ``nondegenerate_faces`` is the one that matters: a bijection preserves it, and a singular map
     makes every face degenerate, so carrying it would report a flattened mesh as sound.
     """
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp))
     assert "nondegenerate_faces" in mesh._cache
     assert mesh.nondegenerate_faces.numpy().all()
@@ -725,14 +734,16 @@ def test_transform_singular_carries_topology_only(icosphere: tuple[tm.Trimesh, w
     assert not moved.nondegenerate_faces.numpy().any()
 
 
-def test_transform_assume_skips_classification(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transform_assume_skips_classification(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Not a parity assert: ``assume=`` selects the stratum the classifier would have picked.
 
     Passing the *correct* promise must reach the same cache as inferring it, which is the only
     property that can be checked -- an incorrect promise is documented as unchecked.
     """
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     inferred = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp)).transform(_ROTATION)
     promised = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp)).transform(
         _ROTATION, assume="rigid"
@@ -740,9 +751,9 @@ def test_transform_assume_skips_classification(icosphere: tuple[tm.Trimesh, wp.M
     assert set(inferred._cache) == set(promised._cache)
 
 
-def test_transform_bad_assume_raises(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transform_bad_assume_raises(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a parity assert: the guard on an unknown promise."""
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="isometry"):
         od.Trimesh.from_warp_mesh(mesh_wp).transform(_ROTATION, assume="isometry")
 
@@ -765,14 +776,16 @@ def test_transform_agrees_with_the_free_function(
     assert np.array_equal(moved.faces.numpy(), faces_wp.numpy())
 
 
-def test_transform_round_trip_recovers_the_mesh(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transform_round_trip_recovers_the_mesh(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class A: a transform composed with its inverse returns the original mesh, via trimesh.
 
     Uses ``trimesh.transformations.inverse_matrix`` to build the inverse, so the round trip is a
     genuine composition rather than ordito checking its own arithmetic twice.
     """
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     inverse = wp.mat44(
         *tm.transformations.inverse_matrix(np.array(_ROTATION, dtype=np.float64).reshape(4, 4))
@@ -784,14 +797,14 @@ def test_transform_round_trip_recovers_the_mesh(icosphere: tuple[tm.Trimesh, wp.
     assert np.array_equal(restored.faces.numpy(), mesh.faces.numpy())
 
 
-def test_transform_matches_trimesh_end_to_end(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_transform_matches_trimesh_end_to_end(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: ``Trimesh.transform`` against ``trimesh.Trimesh.apply_transform``.
 
     The end-to-end claim -- that the cached facade and trimesh's mutating method agree on the mesh,
     its area and its volume after a similarity.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     matrix = TRANSFORMS[4][1]
     moved = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp)).transform(matrix)
 
@@ -812,7 +825,7 @@ def test_transform_matches_trimesh_end_to_end(icosphere: tuple[tm.Trimesh, wp.Me
 
 
 def test_transform_updates_the_bounding_box_under_a_translation(
-    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: the host-updated box equals the recomputed one.
@@ -820,7 +833,7 @@ def test_transform_updates_the_bounding_box_under_a_translation(
     ``bounds`` carries the oracle through ``od.bounds.aabb``; this pins the shortcut that avoids
     re-reducing the vertex buffer, which is the translation stratum's whole point.
     """
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = mesh.bounds, mesh.centroid
     moved = mesh.transform(od.transform.translation_matrix((1.5, -2.0, 0.5)))

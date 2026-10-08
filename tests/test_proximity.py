@@ -51,8 +51,8 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
     from typing_extensions import Buffer
 
-_SIGNED_DISTANCE_MESHES = ["icosahedron", "cave_cube"]
-_SIGNED_DISTANCE_MESHES_TORUS = ["icosahedron", "cave_cube", "torus"]
+_SIGNED_DISTANCE_MESHES = ["sphere_irregular", "sphere_irregular_hollow"]
+_SIGNED_DISTANCE_MESHES_TORUS = ["sphere_irregular", "sphere_irregular_hollow", "torus_irregular"]
 
 
 def _queries_in_bounds_np(mesh_tm: tm.Trimesh, n: int, seed: int) -> np.ndarray:
@@ -142,7 +142,7 @@ def test_query_mesh_aabb_with_offsets(device: str) -> None:
         assert np.array_equal(got_np, expected_np)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("closest_point_on_mesh", "meshlib", "pyvista")
 def test_closest_point_on_mesh_matches_references(
     request: pytest.FixtureRequest, mesh_name: str
@@ -191,8 +191,9 @@ def test_closest_point_on_mesh_matches_references(
     On ``saddle_graded`` the *point* is compared at 6e-4: on the CPU device ordito's closest point
     sits 1.9e-4 from the float64-exact one (trimesh and pyvista agree to 4e-16) while the distance
     agrees to 1.5e-7 -- the query lands on a needle, where Warp's ``mesh_query_point_no_sign``
-    places the point along the needle no better than that (on CUDA, 1.6e-7). The distances keep
-    their 1e-5.
+    places the point along the needle no better than that (on CUDA, 1.6e-7); on
+    ``sphere_irregular`` 2.1e-7 on both devices (5.9e-5 on its 1 500-vertex form). The distances
+    keep their 1e-5.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np = _random_queries_np()
@@ -203,7 +204,7 @@ def test_closest_point_on_mesh_matches_references(
     closest_np, distances_np, faces_np = closest_wp.numpy(), distances_wp.numpy(), faces_wp.numpy()
 
     # trimesh.
-    point_tolerance = 6e-4 if mesh_name == "saddle_graded" else 1e-5
+    point_tolerance = 6e-4  # both fixtures have needles; see the docstring
     closest_tm, distance_tm, _triangle_id_tm = tm.proximity.closest_point(mesh_tm, points_np)
     assert np.allclose(closest_np, closest_tm, rtol=point_tolerance, atol=point_tolerance)
     assert np.allclose(distances_np, distance_tm, rtol=1e-5, atol=1e-5)
@@ -1033,8 +1034,8 @@ def test_closest_point_on_edges_max_dist_and_degenerate(device: str) -> None:
         )
 
 
-def test_normals_at_closest_faces(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
+def test_normals_at_closest_faces(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = sphere_irregular
     rng = np.random.default_rng(19)
     query_np = rng.random((32, 3)).astype(np.float64)
 
@@ -1049,8 +1050,8 @@ def test_normals_at_closest_faces(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> No
     assert np.allclose(normals_wp, expected_normals_np, rtol=1e-5, atol=1e-5)
 
 
-def test_normals_at_closest_faces_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = icosahedron
+def test_normals_at_closest_faces_surface(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    mesh_tm, mesh_wp = sphere_irregular
     points_np, face_ids_np = tm.sample.sample_surface(mesh_tm, 24, seed=3)[:2]
     expected_normals_np = mesh_tm.face_normals[face_ids_np].astype(np.float32)
 
@@ -1059,8 +1060,8 @@ def test_normals_at_closest_faces_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh
     assert np.allclose(normals_wp, expected_normals_np, rtol=1e-5, atol=1e-5)
 
 
-def test_normals_at_closest_faces_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
+def test_normals_at_closest_faces_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = sphere_irregular
     points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     normals_wp = od.proximity.normals_at_closest_faces(mesh_wp, points_wp)
     assert normals_wp.shape == (0,)
@@ -1107,26 +1108,30 @@ def test_signed_distance_on_mesh_matches_trimesh(
     assert np.allclose(np.abs(parity_wp.numpy()), np.abs(winding_wp.numpy()), rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
+@pytest.mark.parametrize(
+    ("mesh_name", "compare_pymeshlab"),
+    [("sphere_irregular", False), ("sphere_irregular_hollow", False), ("torus_irregular", True)],
+)
 @pytest.mark.parity("signed_distance_on_mesh", "pymeshlab", "igl", "open3d")
 def test_signed_distance_on_mesh_matches_pymeshlab_igl_and_open3d(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, compare_pymeshlab: bool
 ) -> None:
     """
     Three more sign rules that nevertheless return the same signed number on watertight input.
 
     The fixture set is chosen to put the normal-based rules under load rather than to flatter them:
-    ``cave_cube`` is non-convex, so points inside the cavity have a nearest face whose normal faces
-    the other way from the outer shell's, and ``torus`` is genus 1, where a point in the hole is
-    outside the solid but surrounded by surface. Both are exactly where a normal-based sign is
-    supposed to be unreliable -- and where a parity rule is exactly what should *not* fail. Every
-    comparison asserts the signs equal, then the values.
+    ``sphere_irregular_hollow`` has a cavity, so points inside it have a nearest face whose normal
+    faces the other way from the outer shell's, and ``torus_irregular`` is genus 1, where a point in
+    the hole is outside the solid but surrounded by surface. Both are exactly where a normal-based
+    sign is supposed to be unreliable -- and where a parity rule is exactly what should *not* fail.
+    Every comparison asserts the signs equal, then the values.
 
     **pymeshlab, Class A**: a **third** sign convention. ordito's default mode casts perturbed
     parity rays and MeshLab signs by the dot product with the *closest point's normal*, so a priori
-    this is the pair most at risk of a systematic sign flip. It does not flip: measured on all three
-    fixtures, sign agreement is **400 / 400** and the signed values match to **3.3e-07 / 1.5e-08 /
-    1.9e-07**, so the assert is a direct ``allclose`` with no transform on the value at all. Two
+    this is the pair most at risk of a systematic sign flip. On ``torus_irregular`` it does not
+    flip: sign agreement **400 / 400** and the signed values match to **1.1e-07**, so the assert is
+    a direct ``allclose`` with no transform on the value at all (the comment below says why the two
+    spheres are not compared). Two
     named transforms on the *plumbing*, not the value: the query points go in as a second,
     face-less mesh (``measuremesh=1``, ``refmesh=0``) and the answer is read off that mesh's
     ``vertex_scalar_array()``. ``signeddist=True`` is what makes it signed rather than absolute, and
@@ -1135,7 +1140,8 @@ def test_signed_distance_on_mesh_matches_pymeshlab_igl_and_open3d(
     **igl, Class B (a named sign-rule choice)**: a direct ``allclose`` against the pseudonormal
     sign type. igl's angle-weighted pseudonormal sign is a *fourth* rule beside ordito's parity
     rays, trimesh's and MeshLab's closest-point normal, and on these three watertight fixtures it
-    agrees with ordito exactly -- so the value comparison needs no transform. The named choice is
+    agrees with ordito on every sign and to 2.5-3.2e-07 in value -- so the comparison needs no
+    transform. The named choice is
     *which* ``sign_type`` is the oracle, and it is not free: for both ``WINDING_NUMBER`` and
     ``FAST_WINDING_NUMBER`` igl returns ``(1 - 2 * w) * d`` with ``w`` the **continuous** winding
     number, not ``sign(1 - 2 * w) * d``. Its magnitude is therefore ``|d|`` only where ``w`` is
@@ -1146,8 +1152,8 @@ def test_signed_distance_on_mesh_matches_pymeshlab_igl_and_open3d(
 
     **open3d, Class A**: Embree's ``compute_signed_distance`` signs by counting ray crossings --
     the same rule as ordito's default ``"parity"`` mode -- and uses the same Warp-SDF orientation
-    (negative inside), so no transform is needed on either the sign or the value. Probed to 1.8e-7
-    agreement on an icosphere.
+    (negative inside), so no transform is needed on either the sign or the value: every sign equal
+    and the values within 3.0-4.5e-07 on the three fixtures.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np = _queries_in_box_np(mesh_tm, 400, seed=4)
@@ -1156,14 +1162,20 @@ def test_signed_distance_on_mesh_matches_pymeshlab_igl_and_open3d(
         mesh_wp.points, mesh_wp.indices, points_wp
     ).numpy()
 
-    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
-    meshset_pml.add_mesh(ml.Mesh(vertex_matrix=np.ascontiguousarray(points_np)))
-    meshset_pml.compute_scalar_by_distance_from_another_mesh_per_vertex(
-        measuremesh=1, refmesh=0, signeddist=True
-    )
-    signed_pml = np.asarray(meshset_pml.current_mesh().vertex_scalar_array())
-    assert np.array_equal(np.sign(signed_np), np.sign(signed_pml))
-    assert np.allclose(signed_np, signed_pml, rtol=1e-5, atol=1e-5)
+    # pymeshlab is the inaccurate side on both irregular spheres, where igl, open3d and ordito
+    # agree to 3e-7: 7.0e-4 off igl's exact pseudonormal distance on ``sphere_irregular``'s
+    # needles, and on ``sphere_irregular_hollow`` one query of 400 signed wrongly (+0.249 against
+    # -0.249): its sign is the closest face's normal, which a concave edge or vertex as the closest
+    # feature defeats. On ``torus_irregular`` it agrees to 1.1e-7, so that is where it is compared.
+    if compare_pymeshlab:
+        meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+        meshset_pml.add_mesh(ml.Mesh(vertex_matrix=np.ascontiguousarray(points_np)))
+        meshset_pml.compute_scalar_by_distance_from_another_mesh_per_vertex(
+            measuremesh=1, refmesh=0, signeddist=True
+        )
+        signed_pml = np.asarray(meshset_pml.current_mesh().vertex_scalar_array())
+        assert np.array_equal(np.sign(signed_np), np.sign(signed_pml))
+        assert np.allclose(signed_np, signed_pml, rtol=1e-5, atol=1e-5)
 
     signed_igl, _, _, _ = igl.signed_distance(
         np.ascontiguousarray(points_np), *mesh_igl(mesh_tm), igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL
@@ -1198,10 +1210,11 @@ def test_signed_distance_on_mesh_matches_meshlib(
     ``nullOutsideMinMax`` is ``True``, so a query outside the band comes back as a null rather than
     a distance; and ``signMode`` defaults to ``ProjectionNormal``, which is neither of ordito's two
     modes by construction. Measured on ``cave_cube``, all three of ``ProjectionNormal``,
-    ``WindingRule`` and ``HoleWindingRule`` agree with ordito's parity mode to **0.0** on 300
-    queries spanning the cavity, so the default is used and the equality is asserted at full
-    precision; the fixture is what makes that non-trivial, since a convex mesh cannot separate a
-    projection-normal sign from a parity one.
+    ``WindingRule`` and ``HoleWindingRule`` agreed with ordito's parity mode to **0.0** on 300
+    queries spanning the cavity, so the default is used; on the irregular fixtures it agrees on
+    every sign and to 3.1e-07 / 3.6e-07 (``sphere_irregular`` / ``_hollow``). A cavity is what
+    makes that non-trivial, since a convex mesh cannot separate a projection-normal sign from a
+    parity one.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np = _queries_in_bounds_np(mesh_tm, 200, seed=42)
@@ -1232,7 +1245,7 @@ def test_signed_distance_on_mesh_matches_pyvista(
 
     This is the strongest pyvista row in the suite and the reason the registration was worth having:
     negative inside on both sides with no negation, correlation 1.0000000, **max absolute difference
-    1.5e-07** and identical signs on 2 000 queries against ``icosphere(3)``. It comes back float64,
+    4.1e-07 to 4.6e-07** and identical signs on 400 queries on each fixture. It comes back float64,
     so the residual is ordito's ``float32`` vertex buffer.
 
     Not to be confused with vedo's ``Mesh.signed_distance``, which is ``vtkSignedDistance`` -- a
@@ -1240,7 +1253,7 @@ def test_signed_distance_on_mesh_matches_pyvista(
     0.375 on the same input, and is a class-D row rather than this one.
 
     The three fixtures are the ones a parity sign rule must not fail on, as in the open3d
-    comparison above; ``cave_cube``'s interior cavity is signed *outside* by both libraries.
+    comparison above; ``sphere_irregular_hollow``'s cavity is signed *outside* by both libraries.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rng = np.random.default_rng(5)
@@ -1265,7 +1278,7 @@ def test_signed_distance_on_mesh_matches_pyvista(
 
 
 @pytest.mark.parametrize(
-    "mesh_name", ["icosahedron", "cave_cube", "hemisphere", "half_torus", "saddle_graded"]
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
 )
 def test_signed_distance_on_mesh_winding_sign_matches_exact_winding_number(
     request: pytest.FixtureRequest, mesh_name: str
@@ -1274,7 +1287,7 @@ def test_signed_distance_on_mesh_winding_sign_matches_exact_winding_number(
     The builtin's Barnes-Hut sign must match thresholding the exact solid-angle sum.
 
     This is the property that makes ``sign_mode="winding"`` worth having: it holds on the open
-    fixtures (``hemisphere``, ``half_torus``) too, where ray parity has no principled answer.
+    fixture (``saddle_graded``) too, where ray parity has no principled answer.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rng = np.random.default_rng(7)
@@ -1295,9 +1308,9 @@ def test_signed_distance_on_mesh_winding_sign_matches_exact_winding_number(
 
 
 def test_signed_distance_on_mesh_rejects_unknown_sign_mode(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     points_wp = warp_empty(4, wp.vec3, mesh_wp.device)
     with pytest.raises(ValueError, match="sign_mode"):
         od.proximity.signed_distance_on_mesh(
@@ -1340,7 +1353,7 @@ def test_supplied_mesh_gives_the_same_answer(
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_signed_distance_on_mesh_winding_accepts_only_a_flagged_mesh(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1376,7 +1389,7 @@ def test_signed_distance_on_mesh_winding_accepts_only_a_flagged_mesh(
         mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding", mesh=flagged_wp
     ).numpy()
     assert np.array_equal(self_built, supplied)
-    if mesh_name == "hemisphere":
+    if not mesh_tm.is_watertight:  # only an open surface signs differently by parity
         parity = od.proximity.signed_distance_on_mesh(
             mesh_wp.points, mesh_wp.indices, points_wp, mesh=flagged_wp
         ).numpy()
@@ -1394,8 +1407,8 @@ def test_signed_distance_on_mesh_coplanar(request: pytest.FixtureRequest, mesh_n
     assert (outside_signed_wp.numpy() > 0.0).all()
 
 
-def test_signed_distance_on_mesh_on_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = icosahedron
+def test_signed_distance_on_mesh_on_surface(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    mesh_tm, mesh_wp = sphere_irregular
     surface_np, _face_idx = tm.sample.sample_surface(mesh_tm, 50)[:2]
     surface_wp = points_to_warp(surface_np, mesh_wp.device)
     signed_wp = od.proximity.signed_distance_on_mesh(mesh_wp.points, mesh_wp.indices, surface_wp)
@@ -1404,9 +1417,9 @@ def test_signed_distance_on_mesh_on_surface(icosahedron: tuple[tm.Trimesh, wp.Me
 
 
 def test_signed_distance_contains_points_consistency(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     rng = np.random.default_rng(9)
     inside_np = mesh_tm.center_mass + rng.normal(scale=0.05, size=(50, 3))
     points_wp = points_to_warp(inside_np, mesh_wp.device)
@@ -1420,7 +1433,7 @@ def test_signed_distance_contains_points_consistency(
 
 @pytest.mark.parity("signed_distance_grid", "open3d")
 def test_signed_distance_grid_matches_open3d(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class A: the sampled lattice equals open3d's ``compute_signed_distance`` at the same points.
@@ -1437,7 +1450,7 @@ def test_signed_distance_grid_matches_open3d(
     """
     voxel_size = 0.1
     pad = 3
-    mesh_tm, _ = icosphere
+    mesh_tm, _ = sphere_irregular
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
     )
@@ -1467,7 +1480,7 @@ def test_signed_distance_grid_matches_open3d(
 
 
 def test_signed_distance_grid_guards_and_conventions(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Not a library comparison: the two guards, and that ``bounds`` overrides the mesh's own box.
@@ -1477,7 +1490,7 @@ def test_signed_distance_grid_guards_and_conventions(
     ``support_winding_number``) applies here unchanged -- that is asserted, because a wrapper that
     quietly built its own mesh would hide an unflagged one.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
     )
@@ -1491,16 +1504,18 @@ def test_signed_distance_grid_guards_and_conventions(
             vertices_wp, faces_wp, 0.1, sign_mode="winding", mesh=mesh_wp
         )
 
-    # An explicit box is used as given (before padding), whatever the mesh's own extent.
+    # An explicit box is used as given (before padding), whatever the mesh's own extent: a cube of
+    # half-width 0.25 about the centre of mass, inside a body whose radius is at least 0.85.
+    centre_np = mesh_tm.center_mass
     tight_field_wp, (tight_lower, _tight_upper) = od.proximity.signed_distance_grid(
         vertices_wp,
         faces_wp,
-        0.2,
-        bounds=(wp.vec3(-0.5, -0.5, -0.5), wp.vec3(0.5, 0.5, 0.5)),
+        0.1,
+        bounds=(wp.vec3(*(centre_np - 0.25).tolist()), wp.vec3(*(centre_np + 0.25).tolist())),
         pad=0,
     )
-    assert np.allclose(odt.vec3_floats(tight_lower), [-0.5, -0.5, -0.5])
-    # Entirely inside a unit sphere, so every sample of that box is inside it.
+    assert np.allclose(odt.vec3_floats(tight_lower), centre_np - 0.25, atol=1e-6)
+    # Entirely inside the body, so every sample of that box is inside it.
     assert tight_field_wp.numpy().max() < 0.0
 
 
@@ -1516,7 +1531,9 @@ def _force_winding_tree(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> No
         monkeypatch.setattr(kernel_proximity, name, threshold)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
+)
 @pytest.mark.parametrize("path", ["serial", "tiled", "tree"])
 @pytest.mark.parity("winding_number", "igl")
 @pytest.mark.parity(
@@ -1596,8 +1613,8 @@ def test_winding_number_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     assert np.allclose(winding_wp, winding_ml, rtol=1e-3, atol=1e-3)
 
 
-def test_winding_number_tiled_matches_exact(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_winding_number_tiled_matches_exact(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     rng = np.random.default_rng(17)
     query_np = rng.random((100, 3), dtype=np.float32) * 2.0 - 1.0
     query_wp = points_to_warp(query_np, mesh_wp.device)
@@ -1653,7 +1670,8 @@ def _winding_soup(mesh_tm: tm.Trimesh, seed: int) -> tuple[np.ndarray, np.ndarra
 
 
 @pytest.mark.parametrize(
-    "mesh_name", ["icosphere", "cave_cube", "hemisphere", "saddle_graded", "mobius", "boy_surface"]
+    "mesh_name",
+    ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded", "mobius", "boy_surface"],
 )
 @pytest.mark.parametrize("soup", [False, True], ids=["mesh", "soup"])
 def test_winding_number_tree_matches_the_direct_sum(
@@ -1751,12 +1769,28 @@ def test_winding_number_tree_matches_igl_on_the_cpu(monkeypatch: pytest.MonkeyPa
     assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
 
 
-def test_winding_number_cave_cube_origin(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = cave_cube
-    origin_np = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
-    origin_wp = points_to_warp(origin_np, mesh_wp.device)
-    winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, origin_wp)
-    assert np.allclose(winding_wp.numpy(), 0.0, atol=1e-3)
+def test_winding_number_in_the_cavity_and_the_shell(
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: winding 0 in the hollow, 1 in the solid between the shells.
+
+    The cavity's centre is the inner shell's vertex mean (the inward-wound inner shell cancels the
+    outer one there); 0.9 of the way to the outer shell's farthest vertex the point is inside the
+    outer shell only.
+    """
+    mesh_tm, mesh_wp = sphere_irregular_hollow
+    shells = mesh_tm.split(only_watertight=False)
+    inner_tm = min(shells, key=lambda shell: len(shell.vertices))
+    outer_tm = max(shells, key=lambda shell: len(shell.vertices))
+    centre_np = inner_tm.vertices.mean(axis=0)
+    farthest_np = outer_tm.vertices[
+        np.argmax(np.linalg.norm(outer_tm.vertices - centre_np, axis=1))
+    ]
+    points_np = np.array([centre_np, centre_np + 0.9 * (farthest_np - centre_np)], dtype=np.float32)
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, points_wp)
+    assert np.allclose(winding_wp.numpy(), [0.0, 1.0], atol=1e-3)
 
 
 # (name, callable) pairs; each callable takes (vertices, faces, points) and returns the tuple of

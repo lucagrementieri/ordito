@@ -19,6 +19,7 @@ from scipy.spatial import KDTree
 import ordito as od
 import ordito.typing as odt
 from tests.comparisons import lexsort_rows, undirected_edges
+from tests.conftest import MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     numpy_to_meshlib,
@@ -205,7 +206,7 @@ def _upper_half_contour(mesh_wp: wp.Mesh) -> tuple[np.ndarray, odt.Array2dInt32]
     return region_np, od.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "unit_box", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "unit_box", "saddle_graded"])
 def test_region_boundary_edges_oriented_round_trips_through_the_fill(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -242,7 +243,7 @@ def test_region_boundary_edges_oriented_round_trips_through_the_fill(
 
 @pytest.mark.parametrize("oriented", [False, True])
 def test_region_boundary_edges_bucketed_match_the_key_sort(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], oriented: bool, request: pytest.FixtureRequest
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], oriented: bool, request: pytest.FixtureRequest
 ) -> None:
     """
     Ordito against ordito: the bucketed mates give the key sort's seam, row for row.
@@ -251,7 +252,7 @@ def test_region_boundary_edges_bucketed_match_the_key_sort(
     comparison); on the bucket path only the seam's halfedges are sorted, so the rows are pinned to
     strictly ascending ``(max, min)`` keys and to the sort path's rows.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     mask_np = mesh_tm.triangles_center[:, 0] < 0.2
     face_mask = wp.array(mask_np, dtype=wp.bool, device=mesh_wp.indices.device)
     n_vertices = len(mesh_tm.vertices)
@@ -314,7 +315,7 @@ def _meshlib_contour(
 
 
 @pytest.mark.parity("faces_left_of_contour", "meshlib")
-@pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "torus", "unit_box"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular", "unit_box"])
 def test_faces_left_of_contour_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -362,7 +363,7 @@ def test_faces_left_of_contour_matches_meshlib(
     assert np.all(left_wp.numpy() | right_wp.numpy())
 
 
-def test_faces_left_of_contour_edge_cases(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_faces_left_of_contour_edge_cases(torus_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: the three degenerate contours, each with a different right answer.
 
@@ -373,7 +374,7 @@ def test_faces_left_of_contour_edge_cases(torus: tuple[tm.Trimesh, wp.Mesh]) -> 
     bound -- returns the *whole* mesh, because the flood fill genuinely reaches everywhere. That
     is the honest answer, and the docstring says to check the count when a contour means to close.
     """
-    _, mesh_wp = torus
+    _, mesh_wp = torus_irregular
     faces_wp = mesh_wp.indices
     device = faces_wp.device
     n_faces = faces_wp.size // 3
@@ -407,7 +408,7 @@ def test_faces_left_of_contour_edge_cases(torus: tuple[tm.Trimesh, wp.Mesh]) -> 
 
 
 def test_faces_left_of_contour_compressed_forest(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Ordito against ordito: compressing the dual-graph forest changes no face.
@@ -418,7 +419,7 @@ def test_faces_left_of_contour_compressed_forest(
     """
     from ordito.kernels.algorithms import connected_components as kernel_cc
 
-    _, mesh_wp = icosphere
+    _, mesh_wp = sphere_irregular
     faces_wp = mesh_wp.indices
     _region_np, contour_wp = _upper_half_contour(mesh_wp)
     plain = od.selection.faces_left_of_contour(faces_wp, contour_wp).numpy()
@@ -582,22 +583,21 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     """
     Class B: the same triangles, once all three answers are lifted into the input's numbering.
 
-    All three libraries compact the vertex buffer -- measured on ``icosphere(2)``'s upper half,
-    152 of 320 faces referencing **89** of 162 vertices, and all three return 89. What differs is
-    how each one tells you the mapping back:
+    All three libraries compact the vertex buffer -- measured on ``sphere_irregular``'s faces above
+    ``z = 0``, 875 of 996 faces referencing **461** of 500 vertices, and all three return 461. What
+    differs is how each one tells you the mapping back:
 
     | | vertices returned | how the input's numbering is recovered |
     |---|---|---|
-    | ordito | 89 | ``return_index=True`` returns the map |
-    | pyvista ``extract_cells`` | 89 | ``vtkOriginalPointIds`` on the result's point data |
-    | open3d ``select_faces_by_mask`` | 89 | **no map at all** -- matched by position |
+    | ordito | 461 | ``return_index=True`` returns the map |
+    | pyvista ``extract_cells`` | 461 | ``vtkOriginalPointIds`` on the result's point data |
+    | open3d ``select_faces_by_mask`` | 461 | **no map at all** -- matched by position |
 
     open3d's row is the one that needs care. With no map returned, its positions are matched against
     the input's vertex table by nearest neighbour, which is sound only because every kept position
     is a *copy* of an input position rather than a recomputation -- asserted as a residual below
-    1e-06
-    plus a bijection check. An exact key lookup would raise, since its tensor API stores ``float32``
-    where the input is ``float64``.
+    1e-06 plus a bijection check. An exact key lookup would raise, since its tensor API stores
+    ``float32`` where the input is ``float64``.
 
     **The plan this came from recorded that open3d and pyvista "keep every vertex", and both
     halves were wrong** -- measured on a selection that happened to reference all of them. An
@@ -611,10 +611,10 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     express a contiguous range (``fi<80``) and not an arbitrary index set. Asserted on the range
     form, so the limitation is pinned and the filter is exercised on the one shape it accepts.
 
-    Non-vacuous: a strict face subset that leaves 73 vertices unreferenced, so neither an empty nor
+    Non-vacuous: a strict face subset that leaves 39 vertices unreferenced, so neither an empty nor
     a whole-mesh answer would pass and every compaction is real.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue("icosphere_coarse")
+    mesh_tm, mesh_wp = request.getfixturevalue("sphere_irregular")
     n_faces = mesh_tm.faces.shape[0]
     # A spatial half rather than every other face: an interleaved set still references every
     # vertex, so ordito's compaction would be a no-op and the transform would go untested.
@@ -685,7 +685,7 @@ def test_submesh_from_face_indices_matches_trimesh_on_short_lists(
     appear three times -- the output length is asserted exactly -- while its vertices are shared, so
     the vertex count is bounded by the distinct faces' corners rather than fixed.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
+    mesh_tm, mesh_wp = request.getfixturevalue("sphere_irregular")
     face_indices_np = np.array(face_indices_list, dtype=np.int32)
     face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
@@ -700,7 +700,7 @@ def test_submesh_from_face_indices_matches_trimesh_on_short_lists(
 
 
 @pytest.mark.parametrize("selection", ["random_third", "all_faces"])
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_submesh_from_face_indices_matches_trimesh(
     request: pytest.FixtureRequest, mesh_name: str, selection: str
 ) -> None:
@@ -732,7 +732,7 @@ def test_submesh_from_face_indices_matches_trimesh(
     assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_submeshes_from_face_groups_matches_single(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -829,7 +829,7 @@ def test_submeshes_from_face_groups_unreferenced_vertices(device: str) -> None:
     assert np.array_equal(faces_all_wp.numpy(), [0, 1, 2])
 
 
-@pytest.mark.parametrize("mesh_name", ["icosphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_submesh_return_index_carries_an_attribute(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -871,7 +871,7 @@ def test_submesh_return_index_carries_an_attribute(
     assert sub_faces_wp.size > 0
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_submesh_from_face_mask(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A against trimesh *and* against the index form, which are different claims.
@@ -904,7 +904,9 @@ def test_submesh_from_face_mask(request: pytest.FixtureRequest, mesh_name: str) 
 
 
 @pytest.mark.parity("delete_region_keep_boundary", "meshlib")
-def test_delete_region_keep_boundary_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_delete_region_keep_boundary_matches_meshlib(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class B: the same survivors and the same opened rim as ``delRegionKeepBd``.
 
@@ -919,7 +921,7 @@ def test_delete_region_keep_boundary_matches_meshlib(icosphere: tuple[tm.Trimesh
     one, and ``keepLoneHoles=False`` is passed explicitly since it is the parameter that decides
     whether a rim bounding nothing is reported.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     n_faces = mesh_tm.faces.shape[0]
     region_np = np.asarray(mesh_tm.triangles_center)[:, 2] > 0.8
     assert 0 < int(region_np.sum()) < n_faces  # the region is neither empty nor everything
@@ -943,7 +945,7 @@ def test_delete_region_keep_boundary_matches_meshlib(icosphere: tuple[tm.Trimesh
 
 
 def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: an empty deletion opens no rim, whatever rims the input has.
@@ -951,7 +953,7 @@ def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
     The hemisphere arrives with one, which is what makes the empty answer a claim rather than a
     tautology -- its rim is a loop of the survivor, and it must not be reported as new.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     device = mesh_wp.points.device
     assert od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).size > 0
     nothing = wp.zeros(mesh_tm.faces.shape[0], dtype=wp.bool, device=device)
@@ -964,7 +966,7 @@ def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
 
 
 def test_delete_region_keep_boundary_reports_only_new_rims(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: an input that already has a rim, which is where "new" earns its name.
@@ -981,7 +983,7 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
     order, which were not contiguous: the interior region's rim was pinched, and the test passed on
     a loop the vertex walk had left full of ``(0, 0)`` edges. The pinched case is the next test.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     n_faces = mesh_tm.faces.shape[0]
     device = mesh_wp.points.device
     rim_vertices_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
@@ -1015,7 +1017,7 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
 
 
 def test_delete_region_keep_boundary_reports_a_pinched_rim(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: two deleted faces that share only a corner open a rim that is new.
@@ -1025,7 +1027,7 @@ def test_delete_region_keep_boundary_reports_a_pinched_rim(
     them are new: nothing reported may be an input rim edge, and every edge of both deleted faces
     must be reported. This is the case the vertex walk used to answer with fake ``(0, 0)`` edges.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     n_faces = mesh_tm.faces.shape[0]
     device = mesh_wp.points.device
     rim_vertices_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
@@ -1061,7 +1063,7 @@ def test_delete_region_keep_boundary_reports_a_pinched_rim(
 
 @pytest.mark.parametrize("region", ["nothing", "interior", "two_interior", "on_rim", "pinched"])
 def test_delete_region_keep_boundary_is_its_packed_form_split(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], region: str
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], region: str
 ) -> None:
     """
     Ordito against ordito: the list form is the packed form, loop by loop.
@@ -1070,7 +1072,7 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
     ``delete_region_keep_boundary_with_offsets`` to it over every shape of answer: no rim, one,
     two, the input's rim grown (so a loop is classified *and* kept), and a pinched rim.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     n_faces = mesh_tm.faces.shape[0]
     device = mesh_wp.points.device
     rim_vertices_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
@@ -1186,7 +1188,7 @@ def test_submesh_from_vertex_indices(
     set is derived here by ``_face_indices_from_vertex_indices_np`` and handed to it. That helper
     is itself the oracle in [`test_face_indices_from_vertex_indices`], so it is not assumed correct.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue("half_torus")
+    mesh_tm, mesh_wp = request.getfixturevalue("saddle_graded")
     rng = np.random.default_rng(13)
     n_vertices = mesh_tm.vertices.shape[0]
     vertex_indices_np = rng.choice(n_vertices, size=max(3, n_vertices // 5), replace=False).astype(
@@ -1197,7 +1199,7 @@ def test_submesh_from_vertex_indices(
     face_indices_np = _face_indices_from_vertex_indices_np(
         mesh_tm.faces, vertex_indices_np, face_mode=face_mode
     )
-    # half_torus is dense enough that "all" selects 8 faces here; keep it that way.
+    # "all" selects 28 faces of saddle_graded here; keep it non-empty.
     assert face_indices_np.size > 0
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
     got_vertices_wp, got_faces_wp = od.selection.submesh_from_vertex_indices(
@@ -1217,7 +1219,7 @@ def test_submesh_from_vertex_mask(
     Not a reference comparison -- it pins the two entry points to each other, so the oracle for the
     selection rule itself is [`test_face_indices_from_vertex_indices`].
     """
-    mesh_tm, mesh_wp = request.getfixturevalue("hemisphere")
+    mesh_tm, mesh_wp = request.getfixturevalue("saddle_graded")
     selected = _vertex_selection(mesh_tm, seed=17, fraction=5)
     vertex_mask_np = np.zeros(mesh_tm.vertices.shape[0], dtype=bool)
     vertex_mask_np[selected] = True
@@ -1384,7 +1386,7 @@ def test_face_indices_from_vertex_indices(
     request: pytest.FixtureRequest, face_mode: Literal["all", "any"]
 ) -> None:
     """Class A: both ``face_mode`` branches equal the numpy predicate, face index for face index."""
-    mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
+    mesh_tm, mesh_wp = request.getfixturevalue("sphere_irregular")
     vertex_indices_np = _vertex_selection(mesh_tm, seed=11, fraction=4)
     vertex_indices = wp.array(vertex_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
 

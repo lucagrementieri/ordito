@@ -109,7 +109,7 @@ def batched_engine(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.parity("min_quad_with_fixed", "pymeshlab", "igl")
 def test_min_quad_with_fixed_matches_pymeshlab_harmonic_field(
-    device: str, icosahedron: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class A twice: MeshLab's harmonic field, and the libigl function this one is named after.
@@ -131,7 +131,7 @@ def test_min_quad_with_fixed_matches_pymeshlab_harmonic_field(
     directly, so pinning the same two to 0 and 1 makes the two answers the same field -- measured to
     1.4e-8. igl is given the identical two pins, so all three agree on one field.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
     n_vertices = vertices_np.shape[0]
 

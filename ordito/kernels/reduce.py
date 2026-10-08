@@ -1011,6 +1011,10 @@ sum_vec3_1d_partials = _reduce_1d_tiled(
     _tile_sum, None, wp.add, "sum_vec3_1d_partials", dtype=wp.vec3, partials=True
 )
 
+sum_vec4_1d_partials = _reduce_1d_tiled(
+    _tile_sum, None, wp.add, "sum_vec4_1d_partials", dtype=wp.vec4, partials=True
+)
+
 weighted_sum1d_partials = _weighted_sum_1d_tiled("weighted_sum1d_partials", wp.float32, True)
 weighted_sum_vec3_1d_partials = _weighted_sum_1d_tiled(
     "weighted_sum_vec3_1d_partials", wp.vec3, True

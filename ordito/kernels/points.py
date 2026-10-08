@@ -87,8 +87,8 @@ def centered_covariance(
     #
     # No ``prefers_tiled_reduction`` branch, for the reason in ``.claude/CLAUDE.md`` section 2.2:
     # the lanes partition a chunk the block already owns and stride by ``wp.block_dim()``, which
-    # reads 1 on CPU. ``measures.centroid_tiled`` needs a device pair because *its* lanes partition
-    # the outer work at a constant stride; this is the other form.
+    # reads 1 on CPU. ``metrics.chamfer_nn_term_tiled`` needs a device pair because *its* lanes
+    # partition the outer work at a constant stride; this is the other form.
     chunk, lane = wp.tid()
     offset, remaining = block_chunk_1d(points.shape[0], chunk)
     if remaining <= 0:

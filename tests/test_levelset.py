@@ -34,8 +34,10 @@ from tests.comparisons import (
     hausdorff_surface_two_sided,
     hausdorff_two_sided,
     open_edge_count,
+    symmetric_surface_distance,
 )
 from tests.conversions import (
+    mesh_igl,
     meshlib_to_trimesh,
     numpy_to_warp,
     points_to_warp,
@@ -394,7 +396,7 @@ def _signed_distance_to(
 @pytest.mark.parametrize("distance", [0.2, -0.2])
 @pytest.mark.parity("offset_mesh", "meshlib")
 def test_offset_mesh_lands_at_the_distance_and_matches_meshlib(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], distance: float
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], distance: float
 ) -> None:
     """
     The defining property, then Class C against MeshLib's ``offsetMesh`` at a matched voxel size.
@@ -406,30 +408,30 @@ def test_offset_mesh_lands_at_the_distance_and_matches_meshlib(
     ``signed_distance_on_mesh``, which is not the code under test's own field sampler applied twice:
     the offset marches a **lattice** and this queries the **vertices** it produced. The tolerance is
     the lattice's: a marching-cubes vertex is linearly interpolated inside a cell, so it lands
-    within a fraction of ``_VOXEL`` of the true level set rather than within a whole cell. Measured
-    max deviation **0.0019** at a 0.05 spacing, i.e. 3.8 % of one cell. The sign of the volume
+    within a fraction of ``_VOXEL`` of the true level set rather than within a whole cell. On
+    ``sphere_irregular`` the median vertex is on the level set to under 1e-5; the worst are where
+    the offset surface creases (over concave bumps outward, at the medial axis inward), which no
+    linear interpolation in a cell follows: 0.0150 / 0.0144 at a 0.05 spacing (MeshLib's own
+    offset of the same mesh: 0.0211 / 0.0345). So the median is held to 0.01 of a cell, which an
+    offset 10 % off (0.02) fails by 40x, and the maximum to half a cell. The sign of the volume
     change is asserted too, which no distance check would catch: an outward offset must enclose
     more and an inward one less.
 
     Class C against MeshLib: no correspondence exists between the two triangulations -- both march
-    their own field on their own lattice -- so the comparison is the two-sided Hausdorff distance
-    between the *surfaces*, plus the vertex counts as a sanity check on the resolution actually
-    used. They agree closely enough that the counts are worth asserting: measured **10 746 against
-    10 736** vertices at ``distance = 0.2`` and 4 758 against 4 760 at ``-0.2``, i.e. within 0.1 %,
-    because at a matched spacing the two lattices differ only in where their origin falls.
+    their own field on their own lattice -- so the comparison is the symmetric surface distance,
+    plus the vertex counts as a sanity check on the resolution actually used (within 5 %).
     ``OffsetParameters.voxelSize`` is set explicitly rather than left at its default, which is the
-    parameter that would otherwise decide the comparison.
+    parameter that would otherwise decide the comparison. The *mean* carries the claim, not the
+    maximum: both extractions err most at the offset's creases (MeshLib by up to 0.035), so a
+    maximum cannot separate a right offset from a wrong one there.
 
-    **Mutation probe**, and it retightened the threshold. The bug class the deviation bar has to
-    exclude is an offset applied at the wrong *distance*, so the probe re-runs MeshLib at a wrong
-    one: against a measured agreement of **0.00263**, 0.15 and 0.25 (25 % out) give 0.0528 and
-    0.0515 and both **fail**, but **0.22 -- 10 % out -- gives 0.0210**, which the original
-    ``0.5 * _VOXEL`` bar (0.025, a 9.5x headroom) let through. It is now ``0.25 * _VOXEL``: 0.0125,
-    still **4.8x** the agreement, and the same bar
-    [`test_offset_mesh_matches_pymeshlab`][] carries, so the two references are held to one
-    standard.
+    **Mutation probe**: the bug class is an offset applied at the wrong *distance*, so the probe
+    re-runs MeshLib at a wrong one. Measured mean distance 0.00076 / 0.00115 at ``distance =
+    +-0.2``; MeshLib 5 % out gives 0.0100 / 0.0099 and 10 % out 0.0201 / 0.0200. The bound is
+    ``0.1 * _VOXEL`` (0.005): 4.3x the agreement, and half the 5 % error. The worst point is held
+    to one cell (measured 0.0140 / 0.0198).
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
         vertices_wp, faces_wp, distance, _VOXEL
@@ -437,7 +439,9 @@ def test_offset_mesh_lands_at_the_distance_and_matches_meshlib(
     assert offset_faces_wp.size > 0
 
     signed_np = _signed_distance_to((vertices_wp, faces_wp), offset_vertices_wp.numpy())
-    assert np.abs(signed_np - distance).max() < 0.1 * _VOXEL
+    deviation_np = np.abs(signed_np - distance)
+    assert np.median(deviation_np) < 0.01 * _VOXEL
+    assert deviation_np.max() < 0.5 * _VOXEL
 
     volume_before = float(od.measures.volume(vertices_wp, faces_wp))
     volume_after = float(od.measures.volume(offset_vertices_wp, offset_faces_wp))
@@ -455,18 +459,15 @@ def test_offset_mesh_lands_at_the_distance_and_matches_meshlib(
     count_ml = offset_ml.vertices.shape[0]
     assert abs(count_wp - count_ml) < 0.05 * count_ml
 
-    offset_tm = warp_to_trimesh(offset_vertices_wp, offset_faces_wp)
-    deviation = hausdorff_surface_two_sided(
-        np.asarray(offset_tm.vertices, dtype=np.float64),
-        np.asarray(offset_tm.faces),
-        np.asarray(offset_ml.vertices, dtype=np.float64),
-        np.asarray(offset_ml.faces),
+    mean, worst = symmetric_surface_distance(
+        warp_to_trimesh(offset_vertices_wp, offset_faces_wp), offset_ml
     )
-    assert deviation < 0.25 * _VOXEL
+    assert mean < 0.1 * _VOXEL
+    assert worst < _VOXEL
 
 
 @pytest.mark.parity("offset_mesh", "pymeshlab")
-def test_offset_mesh_matches_pymeshlab(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_offset_mesh_matches_pymeshlab(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class C: MeshLab's uniform resampler at a matched cell size and the same absolute offset.
 
@@ -487,7 +488,7 @@ def test_offset_mesh_matches_pymeshlab(icosphere: tuple[tm.Trimesh, wp.Mesh]) ->
     ``0.25 * _VOXEL``: 0.0125, still **7.0x** the measured agreement.
     """
     distance = 0.2
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
         vertices_wp, faces_wp, distance, _VOXEL
@@ -515,45 +516,65 @@ def test_offset_mesh_matches_pymeshlab(icosphere: tuple[tm.Trimesh, wp.Mesh]) ->
 
 
 def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
-    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: the automatic ``voxel_size``'s resolution **floor**, and its absence.
 
     Tying the spacing to the offset distance alone -- the obvious rule, and the first one written
     -- resolves the band the level set sits in and not what is left of the object. An inward offset
-    of 0.9 on a unit sphere leaves a sphere of radius ~0.1, which at a spacing of ``0.9 / 3`` is
-    smaller than a single cell: the call returned **empty** for a level set that plainly exists. A
-    floor of 64 samples across the mesh fixes it, and this is the case that would fail without it.
+    of 0.9 of the mesh's inradius leaves a thin region around its deepest points, which at a spacing
+    of a third of the distance is thinner than a cell: the call returned **empty** for a level set
+    that plainly exists. A floor of 64 samples across the mesh fixes it, and this is the case that
+    would fail without it. The inradius (1.007 on ``sphere_irregular``) is the deepest lattice node
+    of igl's signed distance; the survivors sit at the offset distance (median -0.906).
 
     The genuinely empty case is asserted beside it, since the two must stay distinguishable: at
-    ``-1.5`` there is no point at that distance inside a unit sphere and an empty answer is correct.
+    1.5 inradii there is no point at that distance inside the mesh and an empty answer is correct.
     """
-    _mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    axes = [np.linspace(vertices_np[:, i].min(), vertices_np[:, i].max(), 48) for i in range(3)]
+    lattice = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    inradius = -float(
+        np.asarray(
+            igl.signed_distance(lattice, *mesh_igl(mesh_tm), igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL)[
+                0
+            ]
+        ).min()
+    )
+    assert inradius > 0.5
 
-    survivor_vertices_wp, survivor_faces_wp = od.levelset.offset_mesh(vertices_wp, faces_wp, -0.9)
+    survivor_vertices_wp, survivor_faces_wp = od.levelset.offset_mesh(
+        vertices_wp, faces_wp, -0.9 * inradius
+    )
     assert survivor_faces_wp.size > 0
-    radius_np = np.linalg.norm(survivor_vertices_wp.numpy(), axis=1)
-    assert 0.05 < radius_np.max() < 0.15  # the sphere that is left, not a stray cell
+    survivors_np = survivor_vertices_wp.numpy().astype(np.float64)
+    depth = np.asarray(
+        igl.signed_distance(
+            survivors_np, *mesh_igl(mesh_tm), igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL
+        )[0]
+    )
+    assert abs(float(np.median(depth)) + 0.9 * inradius) < 0.02 * inradius  # not a stray cell
 
-    _empty_vertices_wp, empty_faces_wp = od.levelset.offset_mesh(vertices_wp, faces_wp, -1.5)
+    _empty_vertices_wp, empty_faces_wp = od.levelset.offset_mesh(
+        vertices_wp, faces_wp, -1.5 * inradius
+    )
     assert empty_faces_wp.size == 0
 
 
 @pytest.mark.parametrize(
-    ("mesh_name", "sparse_expected", "distance"),
+    ("mesh_name", "sparse_expected", "distance", "rotate"),
     [
+        # ``cave_cube`` is rotated off the lattice planes its faces would otherwise lie on.
         *(
-            (name, True, distance)
-            for name in ("icosphere", "cave_cube")
+            (name, True, distance, rotate)
+            for name, rotate in (("sphere_irregular", False), ("sphere_irregular_hollow", True))
             for distance in (0.08, -0.04)
         ),
         # The open arms pin only that the gate keeps the dense lattice, which one distance shows.
-        *(
-            (name, False, 0.08)
-            for name in ("boy_surface", "hemisphere", "half_torus", "saddle_graded")
-        ),
+        *((name, False, 0.08, False) for name in ("boy_surface", "saddle_graded")),
     ],
 )
 def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
@@ -562,6 +583,7 @@ def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
     mesh_name: str,
     sparse_expected: bool,
     distance: float,
+    rotate: bool,
 ) -> None:
     """
     Ordito against ordito: the sparse extraction is the dense lattice's surface, and only it runs.
@@ -583,7 +605,7 @@ def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    if mesh_name == "cave_cube":
+    if rotate:
         rotation_np = np.asarray(tm.transformations.rotation_matrix(0.3, [1.0, 2.0, 3.0]))[:3, :3]
         vertices_wp = points_to_warp(np.asarray(mesh_tm.vertices) @ rotation_np.T, mesh_wp.device)
     # A spacing of its own, coarser than the derived one: the open arms run the dense lattice twice.
@@ -620,9 +642,9 @@ def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
     )
 
 
-def test_offset_mesh_guards(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_offset_mesh_guards(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: the three documented value guards."""
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     with pytest.raises(ValueError, match="non-zero"):
         od.levelset.offset_mesh(vertices_wp, faces_wp, 0.0)
@@ -634,7 +656,7 @@ def test_offset_mesh_guards(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
 
 @pytest.mark.parametrize("iso", [0.0, 0.05, -0.05])
 def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch, iso: float
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch, iso: float
 ) -> None:
     """
     Ordito against ordito: both extractions equal ``marching_cubes`` of the sampled field.
@@ -646,7 +668,7 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     per axis, the shape ``reconstruction.resample_uniform`` builds. Vertices are matched by nearest
     neighbour with a bijection check and faces compared with their winding.
     """
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     shape = (41, 29, 53)
     bounds = (wp.vec3(-1.3, -1.25, -1.35), wp.vec3(1.3, 1.25, 1.35))
@@ -682,9 +704,9 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     )
 
 
-def test_signed_distance_level_set_guards(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_signed_distance_level_set_guards(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: the two documented value guards."""
-    _mesh_tm, mesh_wp = icosphere
+    _mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     bounds = (wp.vec3(-1.5, -1.5, -1.5), wp.vec3(1.5, 1.5, 1.5))
     with pytest.raises(ValueError, match="at least one face"):
@@ -695,17 +717,18 @@ def test_signed_distance_level_set_guards(icosphere: tuple[tm.Trimesh, wp.Mesh])
         od.levelset.signed_distance_level_set(vertices_wp, faces_wp, 0.0, (8, 1, 8), bounds=bounds)
 
 
-# Every topology the winding lattice treats differently: closed and convex, closed with flat faces
-# lying on lattice planes (``unit_box``: the lattice starts ``pad`` cells below its box), a hollow
-# shell, open with one rim and with two (``half_torus`` is cut on a lattice plane), non-orientable
-# closed and with a boundary, and closed but self-intersecting.
+# Every topology the winding lattice treats differently: closed and curved (``sphere_irregular``),
+# closed with flat faces lying on lattice planes (``unit_box``: the lattice starts ``pad`` cells
+# below its box), a hollow shell, open with one rim and with two (``half_torus`` is cut on a lattice
+# plane), non-orientable closed and with a boundary, and closed but self-intersecting. The one-rim
+# arm is ``hemisphere``, a cap: ``saddle_graded`` is a nearly flat sheet whose levels below this
+# test's two cells hold no surface, so it would compare one level.
 _WINDING_LATTICE_MESHES = [
-    "icosahedron",
-    "icosphere_coarse",
+    "sphere_irregular",
     "unit_box",
-    "cave_cube",
-    "hemisphere",
-    "half_torus",
+    "sphere_irregular_hollow",
+    "sphere_irregular_cap",
+    "sphere_irregular_band",
     "boy_surface",
     "mobius",
     "bohemian_dome",
@@ -729,19 +752,32 @@ def _sampled_level_set(
         )
 
 
+_WINDING_LATTICE_SETTLES = [
+    ("shipped", None, None),
+    # Every node in doubt goes straight to Warp's own sign, building its solid-angle BVH.
+    ("warp_sign", "_EXACT_WINDING_CAPACITY", 0),
+    # A margin of nearly 1/2 puts most of the lattice in doubt, through both settling stages.
+    ("wide_margin", "_WINDING_UNDECIDED_DELTA", 0.45),
+]
+# No room for any cone: the input falls back to sampling every node, so this arm compares the
+# sampled lattice with itself and only proves the fallback runs -- on the inputs with a boundary.
+_WINDING_LATTICE_NO_CONES = ("no_cones", "_MAX_CONE_EDGES", -1)
+
+
 @pytest.mark.parametrize(
-    ("settle", "constant", "value"),
+    ("mesh_name", "settle", "constant", "value"),
     [
-        pytest.param("shipped", None, None, id="shipped"),
-        # Every node in doubt goes straight to Warp's own sign, building its solid-angle BVH.
-        pytest.param("warp_sign", "_EXACT_WINDING_CAPACITY", 0, id="warp_sign"),
-        # A margin of nearly 1/2 puts most of the lattice in doubt, through both settling stages.
-        pytest.param("wide_margin", "_WINDING_UNDECIDED_DELTA", 0.45, id="wide_margin"),
-        # No room for any cone: an open input falls back to sampling every node.
-        pytest.param("no_cones", "_MAX_CONE_EDGES", -1, id="no_cones"),
+        *(
+            pytest.param(mesh_name, *settle, id=f"{mesh_name}-{settle[0]}")
+            for mesh_name in _WINDING_LATTICE_MESHES
+            for settle in _WINDING_LATTICE_SETTLES
+        ),
+        *(
+            pytest.param(mesh_name, *_WINDING_LATTICE_NO_CONES, id=f"{mesh_name}-no_cones")
+            for mesh_name in ("sphere_irregular_cap", "sphere_irregular_band", "mobius")
+        ),
     ],
 )
-@pytest.mark.parametrize("mesh_name", _WINDING_LATTICE_MESHES)
 def test_signed_distance_level_set_winding_lattice_is_the_sampled_lattice(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
@@ -832,19 +868,19 @@ def test_signed_distance_level_set_winding_lattice_with_a_rim_on_a_lattice_plane
 
 
 def test_signed_distance_level_set_re_queries_capped_crossing_endpoints(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: a capped node that ends a crossing edge gets its exact distance back.
 
     On an open surface the winding-signed field changes sign away from the surface (across the
-    hemisphere's opening), so an edge marching cubes interpolates across can end at a node farther
+    cap's opening), so an edge marching cubes interpolates across can end at a node farther
     than the band the closest-point search is capped at. The sampled field
     (``signed_distance_on_mesh``) carries the oracle: at every endpoint of every crossing edge the
     winding lattice's field must equal it bit for bit, and some of those endpoints must lie past
     the cap, so the re-query is what this exercises.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = sphere_irregular_cap
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     spacing = float(mesh_tm.scale) / 40.0
     shape, bounds = od.proximity.signed_distance_lattice(
@@ -875,23 +911,33 @@ def test_signed_distance_level_set_re_queries_capped_crossing_endpoints(
     assert (np.abs(sampled_np[endpoints_np]) > 1.5 * diagonal).sum() > 0, "a capped endpoint"
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "mobius"])
-def test_boundary_chain_is_the_net_boundary(request: pytest.FixtureRequest, mesh_name: str) -> None:
+@pytest.mark.parametrize(
+    ("mesh_name", "corruption"),
+    [
+        ("sphere_irregular", "flipped_face"),
+        ("saddle_graded", "third_face_on_an_edge"),
+        ("saddle_graded", None),
+        ("mobius", None),
+    ],
+)
+def test_boundary_chain_is_the_net_boundary(
+    request: pytest.FixtureRequest, mesh_name: str, corruption: str | None
+) -> None:
     """
     Not a library comparison: no reference returns a mesh's boundary as a 1-chain with multiplicity.
 
     The chain is checked against its definition, summed on the host: per undirected edge, the net
     number of its halfedges running from the lower vertex to the higher, emitted that many times in
     that direction. ``mobius`` is the non-orientable case whose seam halfedges run the same way and
-    count twice; a flipped face on the closed ``icosahedron`` adds three such edges where there
-    were none; a third face on one edge of ``hemisphere`` makes a run of three halfedges.
+    count twice; a flipped face on the closed ``sphere_irregular`` adds three such edges where
+    there were none; a third face on one edge of ``saddle_graded`` makes a run of three halfedges.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_np = mesh_wp.indices.numpy().reshape(-1, 3)
-    if mesh_name == "icosahedron":
+    if corruption == "flipped_face":
         faces_np = faces_np.copy()
         faces_np[0] = faces_np[0, ::-1]
-    if mesh_name == "hemisphere":
+    if corruption == "third_face_on_an_edge":
         faces_np = np.vstack([faces_np, [[faces_np[0, 1], faces_np[0, 0], faces_np[1, 2]]]])
     faces_wp = wp.array(faces_np.ravel(), dtype=wp.int32, device=mesh_wp.device)
     n_vertices = int(mesh_wp.points.size)
@@ -917,7 +963,9 @@ def test_boundary_chain_is_the_net_boundary(request: pytest.FixtureRequest, mesh
     assert_unordered_rows_equal(chain_np, expected_np)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "icosphere_coarse", "unit_box"])
+@pytest.mark.parametrize(
+    "mesh_name", ["saddle_graded", "sphere_well_shaped_open", "sphere_well_shaped", "unit_box"]
+)
 def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Not a library comparison: the shell is a valid solid, on open and closed inputs alike.
@@ -925,14 +973,21 @@ def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_n
     Four claims, and the first two are what a thickening is *for*: the result is **watertight** and
     **consistently wound**, so it can be measured, printed or booleaned. On an open input that
     depends entirely on the band -- the two layers alone leave two rims -- and the band's winding is
-    inherited from ``oriented_boundary_edges`` rather than guessed, which is why it comes out right
-    on ``half_torus``'s *two* loops as well as ``hemisphere``'s one.
+    inherited from ``oriented_boundary_edges`` rather than guessed.
 
     The counts are exact and asserted: ``2 * n_vertices`` positions and
     ``2 * n_faces + 2 * n_boundary_edges`` triangles. And the volume is positive and close to
-    ``area * thickness`` -- 0.289 against 0.308 on ``hemisphere``, the 6 % being the inward layer's
-    smaller area -- which is the check that catches a shell built inside out, where every other
-    assertion here still passes.
+    ``area * thickness`` -- 0.922 of it on ``sphere_well_shaped``, the inward layer's smaller area;
+    1.003 on ``saddle_graded``, whose mean curvature changes sign; 0.545 on ``unit_box``, whose
+    corner normals pull the inward layer across the faces -- which is the check that catches a shell
+    built inside out, where every other assertion here still passes.
+
+    Premise: a surface whose curvature radius exceeds the thickness everywhere, since vertex-normal
+    displacement folds wherever it does not (the next test). ``sphere_irregular`` has none: 21 of
+    its vertices have an incident face more than 90 degrees from their normal (angle defects up to
+    130 degrees), a zero radius, and its shell self-intersects at 59 faces at a thickness of 0.005
+    on a mesh of extent 4. The well-shaped sphere has the irregular numbering and degree without the
+    cones.
     """
     thickness = 0.05
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -949,13 +1004,15 @@ def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_n
     assert od.validation.is_winding_consistent(shell_faces_wp)
     assert od.validation.is_edge_manifold(shell_faces_wp, False)
 
+    # Steiner: a thin shell holds ``area * thickness`` less the integrated mean curvature times
+    # ``thickness ** 2`` (half of each layer's), so it is below that product on a convex input and
+    # may exceed it on a saddle -- 1.003 of it on ``saddle_graded``. Inside out it is negative.
     volume = float(od.measures.volume(shell_vertices_wp, shell_faces_wp))
     assert volume > 0.0
-    assert volume < mesh_tm.area * thickness  # the inward layer has the smaller area
-    assert volume > 0.5 * mesh_tm.area * thickness
+    assert 0.5 < volume / (mesh_tm.area * thickness) < 1.5
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("thicken_mesh", "meshlib")
 def test_thicken_mesh_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -1015,7 +1072,7 @@ def test_thicken_mesh_matches_meshlib(request: pytest.FixtureRequest, mesh_name:
 
 
 def test_thicken_mesh_self_intersects_past_the_curvature_radius(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    torus_well_shaped: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: the documented failure mode, asserted rather than left as prose.
@@ -1023,23 +1080,22 @@ def test_thicken_mesh_self_intersects_past_the_curvature_radius(
     Displacing along vertex normals folds the surface wherever the thickness exceeds the local
     radius of curvature, and this function deliberately does not guard against it: the guard would
     be a whole-mesh intersection test on every call. So the contract is that the condition is
-    *detectable*, and that is what is checked: ``half_torus``'s tube has minor radius 0.5 before
-    its graded scaling, and thickening it by 0.6 makes the inward layer pass through the tube's own
-    axis and out the other side. ``face_self_intersecting_mask`` flags **130** faces there and
-    ``is_watertight`` -- which includes a self-intersection test, as open3d's does -- turns
-    ``False``, where at 0.05 both are clean. It scales as the geometry says it should: 273 faces at
-    a thickness of 1.0 and 467 at 1.5.
+    *detectable*, and that is what is checked: ``torus_well_shaped``'s tube has radius 0.45 times
+    ``1 +- 0.25``, and thickening it by 0.6 makes the inward layer pass through the tube's own axis.
+    ``face_self_intersecting_mask`` flags **453** faces there and ``is_watertight`` -- which
+    includes a self-intersection test, as open3d's does -- turns ``False``, where at 0.05 both are
+    clean (and still at 0.4, under the thinnest tube radius).
 
-    A *closed* input does not fold this way, and that is worth recording because it is the obvious
-    thing to test and it does not work: a unit sphere thickened by 1.5 puts its inward layer at
-    radius 0.5 with the orientation inverted, which is two nested spheres -- wrong volume, no
-    intersection. The tube is the shape whose normals actually converge.
+    The tube is the shape whose normals actually converge: a sphere thickened past its radius puts
+    its inward layer on the other side of the centre with the orientation inverted, two nested
+    spheres -- wrong volume, but no intersection to detect. ``saddle_graded`` does not fold at any
+    thickness up to 1.0 either (its normals diverge on one side and nearly so on the other).
 
     The alternative for such a thickness is named in the docstring and exercised here: a level-set
     ``offset_mesh`` cannot self-intersect by construction, and does not.
     """
     thickness = 0.6
-    _, mesh_wp = half_torus
+    _, mesh_wp = torus_well_shaped
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
     thin_vertices_wp, thin_faces_wp = od.levelset.thicken_mesh(vertices_wp, faces_wp, 0.05)
@@ -1067,9 +1123,9 @@ def test_thicken_mesh_self_intersects_past_the_curvature_radius(
         )
 
 
-def test_thicken_mesh_guards(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_thicken_mesh_guards(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: the three documented value guards."""
-    _, mesh_wp = icosphere_coarse
+    _, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="thickness must be positive"):
         od.levelset.thicken_mesh(mesh_wp.points, mesh_wp.indices, 0.0)
     with pytest.raises(ValueError, match="outside must be non-negative"):

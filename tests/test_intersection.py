@@ -15,14 +15,14 @@ import trimesh as tm
 import trimesh.intersections as tm_intersections
 import warp as wp
 from meshlib import mrmeshpy as mm
-from scipy.spatial import KDTree
+from scipy.spatial import KDTree, cKDTree
 from vtkmodules.vtkCommonDataModel import vtkPlane, vtkPlaneCollection
 from vtkmodules.vtkFiltersGeneral import vtkClipClosedSurface
 
 import ordito as od
 from ordito.constants import TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
-from tests.comparisons import hausdorff_two_sided
+from tests.comparisons import hausdorff_two_sided, lexsort_rows
 from tests.conftest import MESHES, OPEN_MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -39,7 +39,7 @@ from tests.conversions import (
     warp_to_trimesh,
 )
 
-_SPLIT_MESHES = ["icosphere", "unit_box", "torus"]
+_SPLIT_MESHES = ["sphere_irregular", "unit_box", "torus_irregular"]
 
 
 def _plane_wp(normal_np: np.ndarray, origin_np: np.ndarray) -> tuple[wp.vec3, wp.vec3]:
@@ -107,13 +107,19 @@ def _canonical_segments(lines_np: np.ndarray) -> np.ndarray:
 def _segments_equal(
     got_np: np.ndarray, exp_np: np.ndarray, *, rtol: float = 1e-5, atol: float = 1e-5
 ) -> bool:
-    got_segments = _canonical_segments(got_np.reshape(-1, 2, 3))
-    expected_segments = _canonical_segments(exp_np.reshape(-1, 2, 3))
+    # Matched by nearest neighbour in the 6-D canonical form, not by a sort: float rows with ties
+    # (a plane through a row of vertices) lexsort differently on the two sides.
+    got_segments = _canonical_segments(got_np.reshape(-1, 2, 3)).reshape(-1, 6)
+    expected_segments = _canonical_segments(exp_np.reshape(-1, 2, 3)).reshape(-1, 6)
     if got_segments.shape != expected_segments.shape:
         return False
     if got_segments.shape[0] == 0:
         return True
-    return bool(np.allclose(got_segments, expected_segments, rtol=rtol, atol=atol))
+    _distance, match_np = cKDTree(expected_segments).query(got_segments)
+    match_np = np.asarray(match_np)
+    if np.unique(match_np).size != match_np.size:
+        return False
+    return bool(np.allclose(got_segments, expected_segments[match_np], rtol=rtol, atol=atol))
 
 
 @pytest.mark.parity("segments_with_plane", "trimesh")
@@ -190,13 +196,13 @@ def _miss_plane(mesh_tm: tm.Trimesh) -> list[tuple[np.ndarray, np.ndarray]]:
 _MESH_WITH_PLANE_CASES = [
     *[
         pytest.param(mesh_name, _axis_planes, id=f"axis_planes-{mesh_name}")
-        for mesh_name in ("icosahedron", "half_torus", "hemisphere")
+        for mesh_name in ("sphere_irregular", "saddle_graded")
     ],
     *[
         pytest.param(mesh_name, _tilted_plane, id=f"tilted_plane-{mesh_name}")
-        for mesh_name in ("icosahedron", "hemisphere")
+        for mesh_name in ("sphere_irregular", "saddle_graded")
     ],
-    pytest.param("icosahedron", _miss_plane, id="miss_plane"),
+    pytest.param("sphere_irregular", _miss_plane, id="miss_plane"),
 ]
 
 
@@ -246,7 +252,9 @@ def test_mesh_with_plane_matches_trimesh(
 
 @pytest.mark.parity("mesh_with_plane", "meshlib")
 @pytest.mark.parity("mesh_with_mesh", "meshlib")
-def test_plane_and_mesh_sections_match_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_plane_and_mesh_sections_match_meshlib(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class B on the *curve*: both references order the contour where ordito returns segments.
 
@@ -256,16 +264,20 @@ def test_plane_and_mesh_sections_match_meshlib(icosphere: tuple[tm.Trimesh, wp.M
     segment soup. So the comparable quantities are the curve's **total length** and the point set it
     passes through, which is what a caller of either actually consumes.
 
-    Measured on ``icosphere(3)`` cut at ``z = 0.13``: MeshLib returns **one** closed section of 95
-    points against ordito's 94 segments -- the same 94, with the first point repeated to close --
-    and the perimeters are **6.217219 against 6.217220**. Every decoded point sits at exactly the
-    plane's ``z``, which is the assert that catches a plane built from the wrong ``d``.
+    Measured on ``sphere_irregular`` cut 0.13 above its vertex mean: MeshLib returns **one**
+    closed section of 92 points against ordito's 91 segments -- the same 91, with the first point
+    repeated to close -- and the perimeters are **12.133768 against 12.133770**. Every decoded
+    point sits at exactly the plane's ``z``, which is the assert that catches a plane built from the
+    wrong ``d``.
 
-    For the mesh-mesh half, two overlapping spheres give one contour of 153 points against 201
-    segments -- different counts, since neither library promises a particular sampling of the same
-    curve -- with total lengths **5.008801 against 5.008798**.
+    For the mesh-mesh half, the fixture against a copy shifted by 1.2 meets in **four** closed
+    contours (169, 12, 5 and 7 points) of total length **15.580139**, which is also what a
+    ``float64`` brute force over every box-overlapping face pair gives (189 segments). ordito
+    returned 141 segments and 12.874939 before its broad phase stopped dropping candidates past
+    ``max_triangle_collisions`` (a needle's box overlaps up to 81 faces of the other shell); this
+    half is what found it.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     normal_np = np.array([0.0, 0.0, 1.0])
     origin_np = mesh_tm.vertices.mean(axis=0) + np.array([0.0, 0.0, 0.13])
     mesh_ml = trimesh_to_meshlib(mesh_tm)
@@ -293,12 +305,13 @@ def test_plane_and_mesh_sections_match_meshlib(icosphere: tuple[tm.Trimesh, wp.M
     ).numpy()
     contours_ml = mm.findIntersectionContours(mesh_ml, trimesh_to_meshlib(other_tm))
 
-    assert len(contours_ml) == 1
-    contour_np = np.array([[point.x, point.y, point.z] for point in contours_ml[0]])
-    assert contour_np.shape[0] > 10  # non-vacuity: the two spheres really do intersect
+    # Several closed contours (each repeats its first point): bumpy shells meet in more than one
+    # loop, so the comparison is over their total length.
+    contours_np = [np.array([[point.x, point.y, point.z] for point in c]) for c in contours_ml]
+    assert sum(c.shape[0] for c in contours_np) > 10  # non-vacuity: the shells really intersect
     assert np.isclose(
         float(np.linalg.norm(crossing_wp[:, 1] - crossing_wp[:, 0], axis=1).sum()),
-        float(np.linalg.norm(np.diff(contour_np, axis=0), axis=1).sum()),
+        sum(float(np.linalg.norm(np.diff(c, axis=0), axis=1).sum()) for c in contours_np),
         rtol=1e-4,
     )
 
@@ -348,7 +361,7 @@ def _total_length(curves: list[np.ndarray], closed: list[bool]) -> float:
 
 @pytest.mark.parity("marching_triangles", "meshlib")
 @pytest.mark.parity("marching_triangles_curves", "meshlib")
-def test_marching_triangles_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_marching_triangles_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B: ``extractIsolines`` returns the same level set, closed by a repeated point.
 
@@ -358,8 +371,8 @@ def test_marching_triangles_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh
     Its closed contours repeat their first point where ordito returns the cycle once and flags it
     ``closed``, which is the same convention potpourri3d's ``marching_triangles`` uses.
 
-    Measured on the ``z`` field of ``icosphere(3)`` at 0.13: one closed curve, 94 points against 95,
-    lengths **6.217219 against 6.217220**. That is the same curve
+    Measured on the ``z`` field of ``sphere_irregular`` 0.13 above its mean: one closed curve, 91
+    points against 92, lengths **12.133768 against 12.133770**. That is the same curve
     [`test_plane_and_mesh_sections_match_meshlib`] gets from the plane section, which is the
     consistency worth having -- the level set of a coordinate *is* a plane section, and the two
     entry points reach it by different code.
@@ -370,7 +383,7 @@ def test_marching_triangles_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh
     52.3072 -- agreeing to **1.0e-08** -- so the curve *count* is asserted as well as the length,
     which is what would break if either side split or merged a loop.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     isovalue = float(mesh_tm.vertices[:, 2].mean() + 0.13)
     field_np = np.ascontiguousarray(mesh_tm.vertices[:, 2], dtype=np.float32)
     field_wp = wp.array(field_np, dtype=wp.float32, device=mesh_wp.points.device)
@@ -556,9 +569,9 @@ def test_marching_triangles_many_components_matches_potpourri3d(device: str) -> 
 
 
 def test_marching_triangles_open_curve_ends_on_the_boundary(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     # The hemisphere's rim is a single loop, so a level set of x has to run into it.
     values_np = np.ascontiguousarray(vertices_np[:, 0])
@@ -613,9 +626,9 @@ def test_marching_triangles_exact_vertex_hit_is_reported_once(device: str) -> No
 
 
 def test_marching_triangles_level_set_is_the_piecewise_linear_one(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.asarray(mesh_tm.faces)
     values_np = np.ascontiguousarray(vertices_np[:, 2])
@@ -633,9 +646,9 @@ def test_marching_triangles_level_set_is_the_piecewise_linear_one(
     assert sum(curve.size for curve in curves_wp) == cut_faces
 
 
-def test_marching_triangles_no_crossing(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_marching_triangles_no_crossing(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """An isovalue above the field is no curves, or in packed form no points, ``[0]`` offsets."""
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     values_wp = wp.array(
         np.ascontiguousarray(np.asarray(mesh_tm.vertices)[:, 2]),
         dtype=wp.float64,
@@ -662,7 +675,7 @@ def test_marching_triangles_empty(device: str) -> None:
 
 @pytest.mark.parametrize("field", ["plane", "wave"])
 def test_marching_triangles_is_its_packed_form_split(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], field: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], field: str
 ) -> None:
     """
     Ordito against ordito: the list form is the packed form, curve by curve.
@@ -672,7 +685,7 @@ def test_marching_triangles_is_its_packed_form_split(
     offsets bounding each curve, and the same closed flags. ``wave`` gives many curves, ``plane``
     one.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
     if field == "plane":
         values_np = vertices_np[:, 2]
@@ -721,7 +734,7 @@ def _marching_triangles_both_links(
 
 @pytest.mark.parametrize("hops", [2, 3, 16])
 @pytest.mark.parametrize("field", ["random", "wave"])
-@pytest.mark.parametrize("mesh_name", [*MESHES, "icosphere"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "sphere_irregular"])
 def test_marching_triangles_device_link_matches_host_link(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
@@ -827,21 +840,23 @@ def _intersection_curves_match(
     return bool(np.all(np.isfinite(ref_distances_np)) and np.all(np.isfinite(got_distances_np)))
 
 
-def test_mesh_with_mesh_empty(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], cave_cube: tuple[tm.Trimesh, wp.Mesh]
-) -> None:
-    _, ico_wp = icosahedron
-    _, cave_wp = cave_cube
+def test_mesh_with_mesh_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """Not a library comparison: two disjoint meshes cross nowhere."""
+    mesh_tm, mesh_wp = sphere_irregular
+    far_tm = mesh_tm.copy()
+    far_tm.apply_translation([10.0, 0.0, 0.0])
+    far_wp = trimesh_to_warp(far_tm, str(mesh_wp.points.device))
 
     lines_wp = od.intersection.mesh_with_mesh(
-        ico_wp.points, ico_wp.indices, cave_wp.points, cave_wp.indices
+        mesh_wp.points, mesh_wp.indices, far_wp.points, far_wp.indices
     )
     assert lines_wp.shape == (0, 2)
 
 
 @pytest.mark.parity("mesh_with_mesh", "pyvista")
-def test_mesh_with_mesh_icosahedron_cave_cube(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], cave_cube: tuple[tm.Trimesh, wp.Mesh]
+def test_mesh_with_mesh_matches_pyvista_on_nested_shells(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class B: the same crossing curve as ``vtkIntersectionPolyDataFilter``, as an unordered set.
@@ -849,16 +864,16 @@ def test_mesh_with_mesh_icosahedron_cave_cube(
     Both sides emit a segment soup over the same crossing, so the transform is only that neither
     ordering is meaningful -- matched by two-sided nearest-neighbour containment plus the two
     quantities an ordering cannot affect: the segment **count** and the **total curve length**.
-    Measured on this pairing: 36 = 36 segments, length 4.195738316 against 4.195736885 (relative
-    3.4e-07) and a segment-midpoint Hausdorff of 5.96e-08 both ways. On two ``icosphere(3)``s offset
-    by 0.6 the same three numbers read 170 = 170, a **bit-identical** 5.984692574 and 2.77e-07.
+    Measured on this pairing (``sphere_irregular`` against the hollow shell moved onto its
+    centroid): 174 = 174 segments, a **bit-identical** length of 12.604246140 and a segment-midpoint
+    Hausdorff of 4.85e-07 both ways.
 
     MeshLib's ``findIntersectionContours`` covers the same group and does strictly more (it links
     the crossing into ordered contours); VTK's filter returns the soup ordito returns, which is why
     this is Class B where that pairing is Class C.
     """
-    ico_tm, ico_wp = icosahedron
-    cave_tm, _ = cave_cube
+    ico_tm, ico_wp = sphere_irregular
+    cave_tm, _ = sphere_irregular_hollow
     cave_at_ico_tm = cave_tm.copy()
     cave_at_ico_tm.apply_translation(ico_tm.centroid)
     cave_wp = trimesh_to_warp(cave_at_ico_tm, ico_wp.device)
@@ -931,16 +946,19 @@ SphereAndBox = tuple[tm.Trimesh, wp.Mesh, tm.Trimesh, wp.Mesh]
 
 
 @pytest.fixture
-def sphere_and_box(icosphere: tuple[tm.Trimesh, wp.Mesh], device: str) -> SphereAndBox:
+def sphere_and_box(sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str) -> SphereAndBox:
     """
-    Return the unit ``icosphere`` and a 0.5-wide box pushed into its side, ``(sphere, box)``.
+    Return ``sphere_irregular`` and a 0.5-wide box pushed into its side, ``(sphere, box)``.
 
-    They collide on (26, 8) faces, with the box the side with fewer faces -- the one whose BVH the
-    broad phase builds.
+    The box is centred on the sphere's ``+x`` extreme, level with its centroid. They collide on
+    (44, 10) faces, with the box the side with fewer faces -- the one whose BVH the broad phase
+    builds.
     """
-    sphere_tm, sphere_wp = icosphere
+    sphere_tm, sphere_wp = sphere_irregular
     box_tm = tm.creation.box(extents=[0.5, 0.5, 0.5])
-    box_tm.apply_translation([0.9, 0.0, 0.0])
+    centre_np = sphere_tm.centroid.copy()
+    centre_np[0] = sphere_tm.bounds[1, 0]
+    box_tm.apply_translation(centre_np)
     return sphere_tm, sphere_wp, box_tm, trimesh_to_warp(box_tm, device)
 
 
@@ -952,8 +970,8 @@ def test_mesh_collision_pairs_matches_meshlib(sphere_and_box: SphereAndBox) -> N
     A sphere against a small box pushed into its side, which is also the configuration that
     exercises the **query/target swap**: the broad phase queries the larger mesh's faces against
     the smaller one's BVH, so the pair columns come out in face-count order and have to be put back
-    into the caller's. Both argument orders are tested for that reason -- measured (26, 8) faces
-    one way and (8, 26) the other, matching MeshLib element for element in both.
+    into the caller's. Both argument orders are tested for that reason -- measured (44, 10) faces
+    one way and (10, 44) the other, matching MeshLib element for element in both.
 
     A pair list is also checked against the masks it reduces to, since the two entry points share a
     helper and could disagree only by the reduction.
@@ -1174,6 +1192,89 @@ def test_mesh_collision_pairs_degenerate(device: str) -> None:
         )
 
 
+@pytest.mark.parametrize("capacity", [1, 256])
+def test_face_box_candidates_finds_every_overlapping_box(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], capacity: int
+) -> None:
+    """
+    Class A against NumPy: each query face's candidates are every target face whose box meets its.
+
+    The query is ``sphere_irregular`` against a copy shifted by 1.2, whose needle faces' boxes
+    overlap up to 81 target faces. At ``capacity=1`` every face with a candidate overflows the first
+    stride and the table is re-collected at the largest count; at 256 none does. Both must give the
+    exact overlap sets (the BVH tests every primitive's own box). A broad phase that stops at its
+    capacity keeps one candidate a face at 1, which the set comparison sees.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    other_tm = mesh_tm.copy()
+    other_tm.apply_translation([1.2, 0.0, 0.0])
+    other_wp = trimesh_to_warp(other_tm, str(mesh_wp.points.device))
+
+    targets_wp, counts_wp, stride = od.intersection.face_box_candidates(
+        mesh_wp.points, mesh_wp.indices, other_wp, capacity=capacity
+    )
+    counts_np = counts_wp.numpy()
+    targets_np = targets_wp.numpy().reshape(-1, stride)
+
+    query_np, target_np = mesh_tm.triangles, other_tm.triangles
+    target_lower_np, target_upper_np = target_np.min(axis=1), target_np.max(axis=1)
+    overlapping = 0
+    for face, triangle_np in enumerate(query_np):
+        expected_np = np.flatnonzero(
+            np.all(
+                (target_lower_np <= triangle_np.max(axis=0))
+                & (target_upper_np >= triangle_np.min(axis=0)),
+                axis=1,
+            )
+        )
+        overlapping = max(overlapping, expected_np.size)
+        assert counts_np[face] == expected_np.size
+        assert np.array_equal(np.sort(targets_np[face, : counts_np[face]]), expected_np)
+    assert stride >= overlapping > 16  # non-vacuity: the old default capacity would have overflowed
+
+
+def test_triangle_pair_answers_do_not_depend_on_the_capacity(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], bohemian_dome: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Ordito against ordito: ``max_triangle_collisions`` reserves slots, it does not cap the answer.
+
+    The oracle for the curve is ``test_plane_and_mesh_sections_match_meshlib``; this pins that the
+    capacity cannot change any of the triangle-pair answers built on the shared broad phase: the
+    two-mesh pairs and curve on overlapping ``sphere_irregular`` copies, and the self-intersection
+    mask on ``bohemian_dome`` (which self-intersects). At a capacity of 1 the broad phase used to
+    keep one candidate a face, and on the copies 141 of 189 crossing segments at the default 16.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    other_tm = mesh_tm.copy()
+    other_tm.apply_translation([1.2, 0.0, 0.0])
+    other_wp = trimesh_to_warp(other_tm, str(mesh_wp.points.device))
+    inputs = (mesh_wp.points, mesh_wp.indices, other_wp.points, other_wp.indices)
+
+    pairs = [
+        lexsort_rows(
+            od.intersection.mesh_collision_pairs(*inputs, max_triangle_collisions=c).numpy()
+        )
+        for c in (1, 256)
+    ]
+    assert pairs[0].shape[0] > 0
+    assert np.array_equal(pairs[0], pairs[1])
+    curves = [
+        od.intersection.mesh_with_mesh(*inputs, max_triangle_collisions=c).numpy() for c in (1, 256)
+    ]
+    assert curves[0].shape == curves[1].shape
+
+    _, dome_wp = bohemian_dome
+    masks = [
+        od.validation.face_self_intersecting_mask(
+            dome_wp.points, dome_wp.indices, max_triangle_collisions=c
+        ).numpy()
+        for c in (1, 256)
+    ]
+    assert masks[0].any()
+    assert np.array_equal(masks[0], masks[1])
+
+
 def _sliced_meshes_equivalent(
     vertices_a_np: np.ndarray,
     faces_a_np: np.ndarray,
@@ -1222,10 +1323,10 @@ _SLICE_MESH_WITH_PLANE_CASES = [
     pytest.param("unit_box", _box_top_plane, 14, id="box_top"),
     *[
         pytest.param(mesh_name, _axis_planes, None, id=f"axis_planes-{mesh_name}")
-        for mesh_name in ("icosahedron", "hemisphere")
+        for mesh_name in ("sphere_irregular", "saddle_graded")
     ],
-    pytest.param("icosahedron", _tilted_plane, None, id="tilted_plane"),
-    pytest.param("icosahedron", _on_plane, None, id="on_plane"),
+    pytest.param("sphere_irregular", _tilted_plane, None, id="tilted_plane"),
+    pytest.param("sphere_irregular", _on_plane, None, id="on_plane"),
 ]
 
 
@@ -1277,7 +1378,9 @@ def test_slice_mesh_with_plane_matches_trimesh(
 
 @pytest.mark.parity("slice_mesh_with_plane", "meshlib")
 @pytest.mark.parity("split_mesh_with_plane", "meshlib")
-def test_slice_and_split_with_plane_match_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_slice_and_split_with_plane_match_meshlib(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class B on the retriangulation: the same face counts and the same area, from two mutating calls.
 
@@ -1286,17 +1389,18 @@ def test_slice_and_split_with_plane_match_meshlib(icosphere: tuple[tm.Trimesh, w
     side -- exactly the ``(vertices, faces, side_mask)`` triple ``split_mesh_with_plane`` returns.
     Both mutate the mesh they are given and return something else, so each gets its own.
 
-    Measured on ``icosphere(3)`` at ``z = 0.13``, and the agreement is stronger than the class
-    suggests: the slice is **670 faces** on both sides with an area of **5.438285** on both, and the
-    split is **1 468 faces, 736 vertices and 670 positive faces** on both, with an area of
-    **12.506493**. What is *not* shared is the vertex count of the slice -- 477 against 383 -- since
+    Measured on ``sphere_irregular`` 0.13 above its vertex mean, and the agreement is stronger than
+    the class suggests: the slice is **493 faces** on both sides with an area of **25.178629**
+    against 25.178628, and the split is **1 178 faces, 591 vertices and 493 positive faces** on
+    both, with an area of **49.355791**. What is *not* shared is the vertex count of the slice --
+    384 against 293 -- since
     ordito emits a cut vertex per crossing edge where MeshLib reuses its half-edge topology, which
     is why this is a count-and-area comparison rather than a buffer one.
 
     The plane's ``d`` is the transform, and the assert that catches it getting lost is the z-range:
     both results start exactly at the cut.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     normal_np = np.array([0.0, 0.0, 1.0])
     origin_np = mesh_tm.vertices.mean(axis=0) + np.array([0.0, 0.0, 0.13])
     plane_ml = _plane_ml(normal_np, origin_np)
@@ -1337,7 +1441,9 @@ def test_slice_and_split_with_plane_match_meshlib(icosphere: tuple[tm.Trimesh, w
 
 
 @pytest.mark.parity("split_mesh_with_plane", "pyvista")
-def test_split_mesh_with_plane_matches_pyvista(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_split_mesh_with_plane_matches_pyvista(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class B against ``PolyData.clip(return_clipped=True)``, VTK's both-sides plane clip.
 
@@ -1356,7 +1462,7 @@ def test_split_mesh_with_plane_matches_pyvista(icosphere: tuple[tm.Trimesh, wp.M
     clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and ordito emit two
     triangles, so the reference is ``triangulate()``-d before any count is compared.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     height = 0.1
 
     vertices_wp, faces_wp, above_wp = od.intersection.split_mesh_with_plane(
@@ -1390,7 +1496,9 @@ def test_split_mesh_with_plane_matches_pyvista(icosphere: tuple[tm.Trimesh, wp.M
     assert np.max(KDTree(points_np).query(union_pv)[0]) < 1e-5
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "half_torus"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
+)
 def test_split_mesh_with_plane_refines_without_cracking(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1440,7 +1548,7 @@ def test_split_mesh_with_plane_refines_without_cracking(
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_split_mesh_with_plane_above_block_is_the_slice(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1473,7 +1581,7 @@ def test_split_mesh_with_plane_above_block_is_the_slice(
 
 
 def test_split_mesh_with_plane_through_a_vertex_inserts_nothing_there(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     A vertex already on the plane is used as the crossing rather than duplicated beside it.
@@ -1483,7 +1591,7 @@ def test_split_mesh_with_plane_through_a_vertex_inserts_nothing_there(
     "crossed" at a point coinciding with it, giving a fan of zero-length edges and degenerate
     faces. Checked by the count of inserted vertices and by the absence of a degenerate face.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     apex = int(np.argmax(mesh_tm.vertices[:, 2]))
     normal_np = np.array([0.0, 0.0, 1.0])
     origin_np = mesh_tm.vertices[apex]
@@ -1504,9 +1612,11 @@ def test_split_mesh_with_plane_through_a_vertex_inserts_nothing_there(
     )
 
 
-def test_split_mesh_with_plane_misses_the_mesh(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_split_mesh_with_plane_misses_the_mesh(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """A plane clear of the mesh returns it unchanged with a constant label."""
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp, above_wp = od.intersection.split_mesh_with_plane(
         mesh_wp.points,
         mesh_wp.indices,
@@ -1534,18 +1644,18 @@ def _height_field(mesh_tm: tm.Trimesh, device: str) -> wp.array[wp.float32]:
 
 @pytest.mark.parity("clip_mesh_with_field", "pyvista")
 def test_clip_mesh_with_field_matches_pyvista_clip_scalar(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class A on the kept surface, against ``PolyData.clip_scalar`` over the identical field.
 
     VTK cuts the same triangles at the same crossings, so the face counts are equal and the
-    positions agree as point sets — measured 5.4e-08 on ``icosphere(3)``. The vertex *order* differs
-    because each side appends its crossing points in its own traversal order, hence the
-    nearest-neighbour comparison rather than an element-wise one.
+    positions agree as point sets — measured 1.4e-07 on ``sphere_irregular`` (947 faces each). The
+    vertex *order* differs because each side appends its crossing points in its own traversal order,
+    hence the nearest-neighbour comparison rather than an element-wise one.
 
     ``invert=False`` is not optional and is the trap in this row: ``clip_scalar``'s **default keeps
-    the low side** (measured 798 faces below ``z = 0.1`` against 670 above), where ordito keeps
+    the low side** (measured 219 faces below ``z = 0.1`` against 947 above), where ordito keeps
     ``values >= isovalue``. Take the default and the two answers are different regions of the same
     mesh, which the face-count assert catches only because they happen to differ in size.
 
@@ -1553,7 +1663,7 @@ def test_clip_mesh_with_field_matches_pyvista_clip_scalar(
     clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and ordito emit two
     triangles, so the reference is ``triangulate()``-d before any count is compared.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     isovalue = 0.1
 
     clipped_v, clipped_f = od.intersection.clip_mesh_with_field(
@@ -1728,7 +1838,7 @@ def _vtk_clip_closed_surface(
     return pv.wrap(clipper.GetOutput()).triangulate()
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("clip_mesh_with_field", "pyvista")
 def test_clip_mesh_with_field_capped_leaves_an_input_boundary_open(
     request: pytest.FixtureRequest, mesh_name: str
@@ -1811,7 +1921,7 @@ def test_clip_mesh_with_field_capped_keeps_coincident_input_vertices(device: str
     assert len(capped_tm.split(only_watertight=False)) == 2
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_clip_mesh_with_field_reproduces_slice_mesh_with_plane(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1882,7 +1992,7 @@ def test_clip_mesh_with_field_through_a_saddle_vertex_reuses_it(device: str) -> 
 
 
 def test_clip_mesh_with_field_section_is_the_marching_triangles_curve(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Round trip for the region/level-set pair: the clip's rim is the contour, edge for edge.
@@ -1897,7 +2007,7 @@ def test_clip_mesh_with_field_section_is_the_marching_triangles_curve(
     legitimately differ: the contour reports a zero-length segment there (documented) while the clip
     has a single rim vertex, so the counts stop matching for a reason that is not a bug.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     isovalue = float(mesh_tm.centroid[2]) + 0.17
     field_np = mesh_tm.vertices[:, 2]
     assert np.abs(field_np - isovalue).min() > 1e-3, "the isovalue must miss every vertex"
@@ -1930,10 +2040,10 @@ def test_clip_mesh_with_field_section_is_the_marching_triangles_curve(
 
 
 def test_clip_mesh_with_field_accepts_a_float64_field(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """A ``float64`` field — what ``heat_geodesic`` returns — clips the same region as its cast."""
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     field_np = mesh_tm.vertices[:, 2] - mesh_tm.centroid[2]
     isovalue = 0.05
     clipped_64 = od.intersection.clip_mesh_with_field(
@@ -2131,7 +2241,7 @@ def test_split_faces_along_field_matches_pyvista_clip_scalar_both(
 
 
 def test_split_faces_along_field_positive_side_is_the_clip(
-    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a parity assert: this pins the split to ``clip_mesh_with_field``, which carries the oracle.
@@ -2141,7 +2251,7 @@ def test_split_faces_along_field_positive_side_is_the_clip(
     clip's answer **exactly** -- same face count, same area -- and any divergence is the split's,
     since the clip's is the tested one.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     isovalue = 0.1
     field_wp = _height_field(mesh_tm, str(mesh_wp.device))
     *_, positive_tm, _negative_tm = _split_sides(mesh_wp, field_wp, isovalue)
@@ -2154,21 +2264,29 @@ def test_split_faces_along_field_positive_side_is_the_clip(
 
 
 def test_split_faces_along_field_degenerate_level_sets(
-    torus: tuple[tm.Trimesh, wp.Mesh], icosphere: tuple[tm.Trimesh, wp.Mesh]
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh], sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Not a library comparison: the three level sets that cut nothing, each for a different reason.
 
-    A level set that already **lies on mesh edges** cuts no face -- the ``torus`` fixture's vertex
-    rings sit at exactly ``z = 0``, so the surface comes back byte-identical and only the labels are
-    new. An isovalue **outside the field's range** puts every face on one side. And a field with a
-    vertex *exactly* at the isovalue exercises the two-triangle class: a face with one corner on the
-    level set splits along the segment from that corner to the single opposite crossing, so it emits
-    two triangles rather than three, and emitting three would leave a zero-area sliver.
+    A level set that already **lies on mesh edges** cuts no face: on ``torus_irregular`` the field
+    is ``0`` on the vertices separating those above the median height from the rest, ``+1`` above
+    and ``-1`` below, so every face meets the level set at a vertex or along an edge, the surface
+    comes back byte-identical and only the labels are new. An isovalue **outside the field's range**
+    puts every face on one side. And a field with a vertex *exactly* at the isovalue exercises the
+    two-triangle class: a face with one corner on the level set splits along the segment from that
+    corner to the single opposite crossing, so it emits two triangles rather than three, and
+    emitting three would leave a zero-area sliver.
     """
-    torus_tm, torus_wp = torus
-    field_wp = _height_field(torus_tm, str(torus_wp.device))
-    assert np.count_nonzero(np.abs(torus_tm.vertices[:, 2]) < 1e-9) > 0  # the rings really are at 0
+    torus_tm, torus_wp = torus_irregular
+    above_np = torus_tm.vertices[:, 2] > np.median(torus_tm.vertices[:, 2])
+    edges_np = torus_tm.edges_unique
+    separating_np = np.zeros(above_np.shape[0], dtype=bool)
+    crossing_np = above_np[edges_np[:, 0]] != above_np[edges_np[:, 1]]
+    separating_np[edges_np[crossing_np][above_np[edges_np[crossing_np]]]] = True
+    field_np = np.where(separating_np, 0.0, np.where(above_np, 1.0, -1.0)).astype(np.float32)
+    assert separating_np.sum() > 0  # the level set really runs along edges
+    field_wp = wp.array(field_np, dtype=wp.float32, device=torus_wp.device)
     vertices_wp, faces_wp, positive_wp = od.intersection.split_faces_along_field(
         torus_wp.points, torus_wp.indices, field_wp, 0.0
     )
@@ -2176,7 +2294,7 @@ def test_split_faces_along_field_degenerate_level_sets(
     assert np.array_equal(vertices_wp.numpy(), torus_wp.points.numpy())
     assert 0 < int(positive_wp.numpy().sum()) < faces_wp.size // 3
 
-    sphere_tm, sphere_wp = icosphere
+    sphere_tm, sphere_wp = sphere_irregular
     sphere_field_wp = _height_field(sphere_tm, str(sphere_wp.device))
     for isovalue in (float(sphere_tm.vertices[:, 2].max()) + 1.0, -10.0):
         _v, out_faces_wp, out_positive_wp = od.intersection.split_faces_along_field(

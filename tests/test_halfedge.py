@@ -11,7 +11,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
-from tests.conftest import MESHES, OPEN_MESHES
+from tests.conftest import MESHES
 
 # ---------------------------------------------------------------------------
 # halfedge_twins
@@ -86,7 +86,7 @@ def test_halfedge_twins_boundary_matches_oriented_boundary_edges(
     boundary_from_twins = np.asarray(halfedge_endpoints_tm)[twins < 0]
     boundary_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
 
-    assert (len(boundary_from_twins) > 0) == (mesh_name in OPEN_MESHES)
+    assert (len(boundary_from_twins) > 0) == (not mesh_tm.is_watertight)
     assert {tuple(edge) for edge in boundary_from_twins} == {
         tuple(edge) for edge in boundary_wp.numpy()
     }
@@ -273,7 +273,8 @@ def test_bucketed_twins_match_the_sorted_twins_on_fixtures(
     )
     assert np.array_equal(bucketed_twins, sorted_twins)
     assert np.array_equal(bucketed_defects, sorted_defects)
-    if mesh_name in ("boy_surface", "mobius"):
+    # A non-orientable surface pairs some halfedges running the same way: a direction defect.
+    if not mesh_tm.is_winding_consistent:
         assert sorted_defects[1] > 0
 
 
@@ -475,8 +476,8 @@ def test_require_matching_twins_rejects_a_table_from_another_mesh(
     The accepting arm is asserted too: the matching table must go through, or the guard would pass
     by rejecting everything.
     """
-    _, coarse_wp = request.getfixturevalue("icosahedron")
-    _, fine_wp = request.getfixturevalue("icosphere_coarse")
+    _, coarse_wp = request.getfixturevalue("sphere_well_shaped")
+    _, fine_wp = request.getfixturevalue("sphere_irregular")
     coarse_twins_wp = od.halfedge.halfedge_twins(coarse_wp.indices)
     fine_twins_wp = od.halfedge.halfedge_twins(fine_wp.indices)
     assert coarse_twins_wp.size < fine_twins_wp.size
@@ -521,7 +522,7 @@ def test_require_matching_twins_rejects_a_table_that_is_not_the_opposite_halfedg
     complete. This arm asserts *that* message rather than the validator's, so a future change that
     quietly drops the downstream backstop fails here.
     """
-    _, mesh_wp = request.getfixturevalue("icosphere_coarse")
+    _, mesh_wp = request.getfixturevalue("sphere_irregular")
     faces_wp = mesh_wp.indices
     twins_np = od.halfedge.halfedge_twins(faces_wp).numpy()
     # Non-vacuity: an all-boundary table has to differ from the real one, i.e. the mesh is closed.
@@ -661,7 +662,7 @@ def test_halfedge_mates_on_defects(
     assert np.array_equal(mates, _expected_mates(faces_np))
 
 
-@pytest.mark.parametrize("mesh_name", ["icosphere", "hemisphere", "mobius"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded", "mobius"])
 def test_halfedge_mates_key_order_is_the_edge_key_sort(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -694,7 +695,7 @@ def test_halfedge_mates_key_order_is_the_edge_key_sort(
 @pytest.mark.parametrize("n_classes", [1, 2])
 @pytest.mark.parametrize("given_order", [True, False], ids=["key-order", "sorted"])
 def test_key_ordered_halfedges_match_numpy(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], n_classes: int, given_order: bool
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], n_classes: int, given_order: bool
 ) -> None:
     """
     Not a library comparison: the order is ordito's edge-key convention, recomputed by NumPy.
@@ -704,7 +705,7 @@ def test_key_ordered_halfedges_match_numpy(
     order, class 0 first -- from the sort's permutation when it is given (nothing sorted), and by
     sorting only the flagged halfedges when not.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
     faces_np = np.asarray(mesh_tm.faces)
     n_vertices = len(mesh_tm.vertices)
@@ -731,8 +732,8 @@ def test_key_ordered_halfedges_match_numpy(
     assert np.array_equal(halfedges, expected)
 
 
-def test_key_ordered_halfedges_validates(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_key_ordered_halfedges_validates(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
     n = mesh_wp.indices.size
     with pytest.raises(ValueError, match="whole number"):

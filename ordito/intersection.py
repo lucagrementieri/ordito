@@ -752,7 +752,8 @@ def mesh_with_mesh(
     vertices_b, faces_b
         ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` second indexed triangle mesh.
     max_triangle_collisions
-        Maximum broad-phase candidate pairs recorded per query triangle.
+        Broad-phase slots reserved per query triangle at first. Not a cap: a triangle with more
+        candidates grows the table, so the answer does not depend on it.
 
     Returns
     -------
@@ -808,9 +809,8 @@ def mesh_collision_pairs(
     vertices_b, faces_b
         ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` second mesh, in the same form.
     max_triangle_collisions
-        Broad-phase candidate cap per query triangle. A pair beyond the cap is **dropped**, so raise
-        it on meshes whose triangles pile into overlapping boxes; the answer is a subset, never a
-        superset.
+        Broad-phase slots reserved per query triangle at first. Not a cap: a triangle with more
+        candidates grows the table, so the answer does not depend on it.
     mesh_a, mesh_b
         A ``wp.Mesh`` already built over ``vertices_a`` / ``faces_a`` (respectively ``vertices_b``
         / ``faces_b``), to spare the BVH build this otherwise pays on every call. Only the mesh with
@@ -993,7 +993,8 @@ def collision_masks(
     vertices_a, faces_a, vertices_b, faces_b
         The two meshes, as in [`mesh_collision_pairs`][ordito.intersection.mesh_collision_pairs].
     max_triangle_collisions
-        Broad-phase candidate cap per query triangle.
+        Broad-phase slots reserved per query triangle at first. Not a cap: a triangle with more
+        candidates grows the table, so the answer does not depend on it.
 
     Returns
     -------
@@ -1099,7 +1100,6 @@ def _candidate_face_pairs(
     # mesh plus an invalid cap must not silently return `None` instead.
     if max_triangle_collisions < 1:
         raise ValueError("max_triangle_collisions must be >= 1")
-    device = vertices_a.device
     n_faces_a = faces_a.size // 3
     n_faces_b = faces_b.size // 3
     if n_faces_a == 0 or n_faces_b == 0:
@@ -1114,13 +1114,76 @@ def _candidate_face_pairs(
         target_vertices, target_faces, target_mesh = vertices_b, faces_b, mesh_b
         query_vertices, query_faces = vertices_a, faces_a
 
-    n_query = query_faces.size // 3
     if target_mesh is None:
         require_nonempty_mesh(target_faces, caller)
         target_mesh = wp.Mesh(points=target_vertices, indices=target_faces)
 
-    # One BVH walk per query face over its stored box, the walk ``validation``'s self-intersection
-    # broad phase runs over one mesh.
+    targets, counts, stride = face_box_candidates(
+        query_vertices, query_faces, target_mesh, capacity=max_triangle_collisions
+    )
+    return _Candidates(
+        targets, counts, stride, query_vertices, query_faces, target_vertices, target_faces, swapped
+    )
+
+
+def face_box_candidates(
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_mesh: wp.Mesh,
+    *,
+    capacity: int = 16,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int]:
+    """
+    Every target face whose bounding box overlaps each query face's, as a fixed-stride table.
+
+    The broad phase of every triangle-pair test in the package (two-mesh intersection and
+    collision, self-intersection): one walk of ``target_mesh``'s BVH per query face over that
+    face's bounding box. Query face ``q`` owns slots ``[q * stride, (q + 1) * stride)`` of
+    ``targets``, the first ``counts[q]`` of them live, in BVH traversal order. A fixed stride
+    spares the scan and second walk a packed list needs.
+
+    The answer is complete whatever ``capacity`` is: when any face has more candidates than
+    ``capacity``, the walk is repeated at a stride equal to the largest count, so ``capacity`` is
+    only the first guess at the stride. Costs one host read of the largest count.
+
+    Parameters
+    ----------
+    query_vertices, query_faces
+        ``(n_query_vertices,)`` positions and ``(3 * n_query,)`` index buffer of the query faces.
+    target_mesh
+        BVH over the target faces.
+    capacity
+        First stride tried, in slots per query face.
+
+    Returns
+    -------
+    targets
+        ``(n_query * stride,)`` candidate target face indices; slots past a face's count are
+        unwritten.
+    counts
+        ``(n_query,)`` candidates per query face, each at most ``stride``.
+    stride
+        Slots per query face.
+
+    Raises
+    ------
+    ValueError
+        If ``capacity`` is less than 1.
+    RuntimeError
+        If ``query_vertices``, ``query_faces`` and ``target_mesh`` are not all on one device.
+
+    See Also
+    --------
+    [`mesh_collision_pairs`][ordito.intersection.mesh_collision_pairs]
+    [`ordito.validation.face_self_intersecting_mask`][ordito.validation.face_self_intersecting_mask]
+    """
+    require_same_device(
+        query_vertices=query_vertices, query_faces=query_faces, target_mesh=target_mesh
+    )
+    if capacity < 1:
+        raise ValueError(f"capacity must be >= 1, got {capacity}")
+    device = query_vertices.device
+    n_query = query_faces.size // 3
     lower = _launch.empty(n_query, dtype=wp.vec3, device=device)
     upper = _launch.empty(n_query, dtype=wp.vec3, device=device)
     _launch.launch(
@@ -1129,25 +1192,23 @@ def _candidate_face_pairs(
         inputs=[query_vertices, query_faces, lower, upper],
         device=device,
     )
-    targets = _launch.empty(n_query * max_triangle_collisions, dtype=wp.int32, device=device)
     counts = _launch.empty(n_query, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_intersections.collect_face_box_candidates,
-        dim=n_query,
-        inputs=[target_mesh.id, lower, upper, max_triangle_collisions],
-        outputs=[targets, counts],
-        device=device,
-    )
-    return _Candidates(
-        targets,
-        counts,
-        max_triangle_collisions,
-        query_vertices,
-        query_faces,
-        target_vertices,
-        target_faces,
-        swapped,
-    )
+    overflow = _launch.zeros(1, dtype=wp.int32, device=device)
+    stride = capacity
+    while True:
+        targets = _launch.empty(n_query * stride, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_intersections.collect_face_box_candidates,
+            dim=n_query,
+            inputs=[target_mesh.id, lower, upper, stride],
+            outputs=[targets, counts, overflow],
+            device=device,
+        )
+        # The one read: the largest count of a face the stride could not hold, or 0.
+        peak = int(read_scalar(overflow))
+        if peak <= stride:
+            return targets, counts, stride
+        stride = peak
 
 
 def slice_mesh_with_plane(

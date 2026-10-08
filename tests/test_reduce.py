@@ -376,7 +376,7 @@ def test_weighted_sum_1d(device: str) -> None:
     assert np.allclose(got_wp, exp_np, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("weighted_sum", "pyvista")
 def test_weighted_sum_integrates_a_surface_field(
     request: pytest.FixtureRequest, mesh_name: str

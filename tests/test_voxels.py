@@ -70,15 +70,15 @@ _IGL_CORNER_ORDER = [1, 0, 2, 3, 5, 4, 6, 7]
 
 @pytest.fixture
 def sphere(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    Move the shared ``icosphere`` to a non-round offset, as trimesh plus its Warp buffers.
+    Move the shared ``sphere_irregular`` to a non-round offset, as trimesh plus its Warp buffers.
 
     The translation is the point of the local fixture: a voxel grid built around a sphere centred
     on the origin can pass while every index is off by half a cell, because the offsets cancel.
     """
-    mesh_tm, _mesh_wp = icosphere
+    mesh_tm, _mesh_wp = sphere_irregular
     mesh_tm.apply_translation(_OFFSET)
     return (mesh_tm, *numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device))
 
@@ -214,18 +214,28 @@ def test_voxelize_mesh_solid_contains_the_pyvista_mask(
     cells. But it is not the same set even then: VTK writes a **point** mask, testing each lattice
     *point* against the closed surface, while ordito accepts a **cell** the closed triangle meets.
     So VTK's set is contained in ordito's and the difference is exactly the boundary shell, which
-    is what the asserts below state: **0** cells are pyvista-only, 2 480 are ordito-only, and every
-    one of those 2 480 is in ordito's own surface voxelization (of 4 760 surface cells).
+    is what the asserts below state: on ``sphere_irregular`` at a 32nd of its extent **0** cells
+    are pyvista-only, 2 109 are ordito-only, and every one of those is in ordito's own surface
+    voxelization (of 4 050 surface cells).
 
     Reading that containment as a disagreement is the trap; a comparison that expected equality
-    would fail by 12.7% of the cells on a correct implementation. The grid is also cell-centred on
-    VTK's side -- origin ``-0.96875`` at spacing ``0.0625`` for a unit sphere -- so ordito's origin
-    is shifted by half a voxel to put the two lattices in register.
+    would fail by a fifth of the cells on a correct implementation. The grid is also cell-centred on
+    VTK's side, so ordito's origin is shifted by half a voxel to put the two lattices in register.
+    And VTK is handed the lattice (``reference_volume``) rather than ``dimensions``: from a fixed
+    cell count it fits a *different* spacing per axis to a non-cubic box (0.134 / 0.125 / 0.127
+    here), which no cubic voxel grid can match.
     """
     mesh_tm, vertices_wp, faces_wp = sphere
-    dimensions = (32, 32, 32)
+    spacing = float(np.ptp(mesh_tm.vertices, axis=0).max() / 32)
+    lower_np = mesh_tm.bounds[0] - spacing
+    dimensions = tuple(
+        int(n) for n in np.ceil((mesh_tm.bounds[1] + spacing - lower_np) / spacing) + 1
+    )
+    lattice_pv = pv.ImageData(
+        dimensions=dimensions, spacing=(spacing, spacing, spacing), origin=tuple(lower_np)
+    )
 
-    mask_pv = trimesh_to_pyvista(mesh_tm).voxelize_binary_mask(dimensions=dimensions)
+    mask_pv = trimesh_to_pyvista(mesh_tm).voxelize_binary_mask(reference_volume=lattice_pv)
     spacing_np = np.asarray(mask_pv.spacing)
     origin_np = np.asarray(mask_pv.origin)
     mask_np = np.asarray(mask_pv.point_data["mask"]).astype(bool).reshape(dimensions, order="F")
@@ -255,8 +265,8 @@ def test_voxelize_mesh_solid_contains_the_pyvista_mask(
 def test_voxelize_mesh_solid_is_sealed(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
 ):
-    """``mode="solid"`` fills the interior, and no 6-connected path leaves it."""
-    _mesh_tm, vertices_wp, faces_wp = sphere
+    """Not a library comparison: ``mode="solid"`` fills the interior, and nothing leaves it."""
+    mesh_tm, vertices_wp, faces_wp = sphere
     surface = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.12)
     solid = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.12, mode="solid")
     assert int(od.voxels.cells(solid).shape[0]) > int(od.voxels.cells(surface).shape[0])
@@ -267,7 +277,7 @@ def test_voxelize_mesh_solid_is_sealed(
     lower, extent = _bounds_of(solid)
     assert np.array_equal(_dense(solid, lower, extent), _dense(refilled, lower, extent))
     assert od.voxels.occupancy_at_points(
-        solid, wp.array([wp.vec3(*_OFFSET.tolist())], dtype=wp.vec3, device=device)
+        solid, wp.array([wp.vec3(*mesh_tm.center_mass.tolist())], dtype=wp.vec3, device=device)
     ).numpy()[0]
 
 
@@ -1226,14 +1236,14 @@ def test_surface_voxels_is_the_erosion_complement(
 
 
 @pytest.mark.parity("fill_cavities", "trimesh")
-def test_fill_cavities_matches_scipy(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
+def test_fill_cavities_matches_scipy(sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A: dense occupancy against ``scipy.ndimage.binary_fill_holes``.
 
-    Run on ``cave_cube``, a box with a box-shaped void, so the fill is emphatically not a no-op --
-    a fixture with nothing to fill would pass while testing nothing.
+    Run on ``sphere_irregular_hollow``, a shell around an enclosed void, so the fill is not a
+    no-op -- a fixture with nothing to fill would pass while testing nothing.
     """
-    mesh_tm, mesh_wp = cave_cube
+    mesh_tm, mesh_wp = sphere_irregular_hollow
     grid = od.voxels.voxelize_mesh(mesh_wp.points, mesh_wp.indices, 0.02)
     lower, extent = _bounds_of(grid)
     occupancy_np = _dense(grid, lower, extent)
@@ -1459,7 +1469,7 @@ def test_dense_round_trip_with_negative_cells(device: str):
 
 def test_to_field_round_trips_through_marching_cubes(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
-    cave_cube: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
 ):
     """
     The ``bounds`` handoff, end to end and on two topologies.
@@ -1469,9 +1479,9 @@ def test_to_field_round_trips_through_marching_cubes(
     Either one moves the surface bodily, which the two-way surface-distance bound catches; the
     volume check pins the scale.
 
-    ``cave_cube`` is voxelized in ``"surface"`` mode rather than ``"solid"``, because it is
-    precisely a mesh with an enclosed cavity and ``"solid"`` fills that cavity by definition — its
-    inner shell is what makes it worth testing here, so it has to survive.
+    ``sphere_irregular_hollow`` is voxelized in ``"surface"`` mode rather than ``"solid"``,
+    because it is precisely a mesh with an enclosed cavity and ``"solid"`` fills that cavity by
+    definition -- its inner shell is what makes it worth testing here, so it has to survive.
     """
     mesh_tm, vertices_wp, faces_wp = sphere
     voxel_size = 0.1
@@ -1491,7 +1501,7 @@ def test_to_field_round_trips_through_marching_cubes(
     _assert_surfaces_within(surface, mesh_tm, 2.0 * voxel_size)
 
     # The cavity fixture, surface mode, both shells present.
-    mesh_tm, mesh_wp = cave_cube
+    mesh_tm, mesh_wp = sphere_irregular_hollow
     voxel_size = 0.03
     shell = od.voxels.voxelize_mesh(mesh_wp.points, mesh_wp.indices, voxel_size)
     field, bounds = od.voxels.to_field(shell)
@@ -1502,10 +1512,10 @@ def test_to_field_round_trips_through_marching_cubes(
 
 
 def test_grid_points_round_trips_through_marching_cubes(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
 ):
     """Not a library comparison: the ``bounds`` handoff, sampling an SDF and re-extracting."""
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     lower, upper = od.bounds.aabb(mesh_wp.points)
     pad = 0.1 * float(wp.length(upper - lower))
     lower_floats, upper_floats = odt.vec3_floats(lower), odt.vec3_floats(upper)

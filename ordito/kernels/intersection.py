@@ -13,7 +13,6 @@ from ordito.kernels.array import (
     map_probe_single,
 )
 from ordito.kernels.predicates import point_plane_dot, triangles_intersect
-from ordito.kernels.proximity import mesh_aabb_collect
 from ordito.kernels.remesh import write_split_children
 
 wp.set_module_options({"enable_backward": False})
@@ -392,26 +391,41 @@ def collect_face_box_candidates(
     max_hits: wp.int32,
     out_targets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
+    out_overflow: wp.array[wp.int32],
 ) -> None:
     """
     Face-box broad phase against a mesh: query face ``f``'s candidates at ``f * max_hits``.
 
     Shared by ``validation``'s self-intersection test (the query faces are the mesh's own) and the
-    two-mesh tests here. One traversal per query face over its bounding box, taking at most
-    ``max_hits`` candidates in traversal order (``proximity.mesh_aabb_collect``, the same walk and
-    the same cap as ``proximity.query_mesh_aabb_count`` / ``query_mesh_aabb_neighbors``), written
-    into a fixed-stride slot block. The fixed stride is what spares the count pass, the scan and the
-    host read of the total that a packed candidate list needs, and the second traversal that
-    fills it; the unused tail of each block is simply never read.
+    two-mesh tests here. One traversal per query face over its bounding box, writing its first
+    ``max_hits`` candidates in traversal order into a fixed-stride slot block. The fixed stride
+    spares the scan a packed candidate list needs and, when the block holds every candidate, the
+    second traversal that fills it; the unused tail of each block is simply never read.
 
     The boxes are ``triangles.face_aabb_bounds``' stored buffers, not formed here from the
     corners: the identical walk over the identical candidates measured several times slower with
     the box formed in the kernel.
+
+    The walk does **not** stop at ``max_hits``: it writes the first ``max_hits`` candidates and
+    counts the rest, so ``out_counts[f]`` is the face's true candidate count and may exceed the
+    block, and a face that overflows raises ``out_overflow[0]`` to its count (a conditional atomic:
+    only overflowing faces contend). A wrapper reads that one value and re-collects at that stride
+    when any face overflowed (``intersection.face_box_candidates``); stopping at the cap returned a
+    silent subset (48 of 189 crossing pairs lost between two ``sphere_irregular`` copies at a cap of
+    16, whose needle triangles' boxes overlap up to 81 faces). Consumers read a slot as live through
+    ``candidate_slot_query``, which is already bounded by the block, so a count past it is safe.
     """
     f = wp.int32(wp.tid())
-    out_counts[f] = mesh_aabb_collect(
-        mesh_id, face_lower[f], face_upper[f], max_hits, wp.bool(True), f * max_hits, out_targets
-    )
+    query = wp.mesh_query_aabb(mesh_id, face_lower[f], face_upper[f])
+    face_idx = wp.int32(0)
+    c = wp.int32(0)
+    while wp.mesh_query_next(query, face_idx):
+        if c < max_hits:
+            out_targets[f * max_hits + c] = face_idx
+        c = c + 1
+    out_counts[f] = c
+    if c > max_hits:
+        wp.atomic_max(out_overflow, 0, c)
 
 
 @wp.func

@@ -14,6 +14,7 @@ from ordito.kernels.halfedge import (
     key_ordered_halfedge,
     next_boundary_halfedge,
 )
+from ordito.kernels.predicates import newell_term
 
 wp.set_module_options({"enable_backward": False})
 
@@ -428,13 +429,14 @@ def loop_directed_areas(
     vertices: wp.array[wp.vec3],
     out_directed_area: wp.array[wp.vec3],
 ) -> None:
-    # Half the sum of ``p_i x p_{i+1}`` around the loop: the directed area vector, whose norm is the
-    # area of the planar polygon spanning the loop and whose direction is that polygon's normal.
-    # Origin-independent because the cross products of a *closed* ring cancel the shift, so no
-    # centroid pass is needed -- and accumulated per segment in one launch, like the perimeter.
+    # Half the sum of ``(p_i - p_0) x (p_{i+1} - p_0)`` around the loop: the directed area vector,
+    # whose norm is the area of the planar polygon spanning the loop and whose direction is that
+    # polygon's normal. Taken about the loop's first vertex (``newell_term``), which every thread
+    # reads without a centroid pass -- accumulated per segment in one launch, like the perimeter.
     t = wp.int32(wp.tid())
     ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, t)
-    wp.atomic_add(out_directed_area, ell, wp.float32(0.5) * wp.cross(a, c))
+    origin = vertices[flat_loops[loop_offsets[ell]]]
+    wp.atomic_add(out_directed_area, ell, wp.float32(0.5) * newell_term(a, c, origin))
 
 
 @wp.kernel

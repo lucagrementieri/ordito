@@ -32,10 +32,10 @@ MeshPair = tuple[tm.Trimesh, wp.Mesh]
 
 @pytest.fixture
 def three_parts(
-    icosahedron: MeshPair, hemisphere: MeshPair, half_torus: MeshPair
+    sphere_irregular: MeshPair, saddle_graded: MeshPair, torus_irregular: MeshPair
 ) -> list[MeshPair]:
-    """Return the three disjoint fixtures (20, 168 and 1 024 faces) the multi-part tests combine."""
-    return [icosahedron, hemisphere, half_torus]
+    """Return the three disjoint fixtures the multi-part tests combine."""
+    return [sphere_irregular, saddle_graded, torus_irregular]
 
 
 def _concatenate_parts(parts: Sequence[MeshPair]) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
@@ -73,15 +73,15 @@ def test_concatenate_matches_meshlib(request: pytest.FixtureRequest) -> None:
 
     The comparison is element-wise rather than set-wise for the reason the trimesh pairing above
     gives: the index *offsetting* is the whole operation, and a wrong offset still yields a
-    valid-looking mesh with the right counts. Both sides land on 50 vertices and 92 faces from an
-    icosphere and a box here, with identical positions and identical faces.
+    valid-looking mesh with the right counts. Both sides land on 1 656 vertices and 3 174 faces from
+    ``sphere_irregular`` and ``saddle_graded`` here, with identical positions and identical faces.
 
     The fixtures are disjoint on purpose -- ``mergeMeshes`` does not weld, and neither does
     ``concatenate``; overlapping inputs would compare two different de-duplication policies rather
     than two concatenations.
     """
-    mesh_a_tm, mesh_a_wp = request.getfixturevalue("icosahedron")
-    mesh_b_tm, mesh_b_wp = request.getfixturevalue("half_torus")
+    mesh_a_tm, mesh_a_wp = request.getfixturevalue("sphere_irregular")
+    mesh_b_tm, mesh_b_wp = request.getfixturevalue("saddle_graded")
 
     concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
         [(mesh_a_wp.points, mesh_a_wp.indices), (mesh_b_wp.points, mesh_b_wp.indices)]
@@ -324,7 +324,7 @@ def test_split_copies_many_components(device: str) -> None:
 
 def test_split_single_component(request: pytest.FixtureRequest) -> None:
     """Ordito against ordito: the ``k == 1`` fast path equals the batched key packing."""
-    mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
+    mesh_tm, mesh_wp = request.getfixturevalue("sphere_irregular")
     split_wp = od.combine.split(mesh_wp.points, mesh_wp.indices)
     assert len(split_wp) == 1
     assert np.allclose(split_wp[0][0].numpy(), mesh_tm.vertices, rtol=1e-5, atol=1e-5)

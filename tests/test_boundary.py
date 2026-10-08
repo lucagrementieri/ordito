@@ -20,7 +20,7 @@ from tests.comparisons import (
     lexsort_rows,
     trimesh_outline_loops,
 )
-from tests.conftest import OPEN_MESHES
+from tests.conftest import BOUNDARY_MESHES
 from tests.conversions import (
     numpy_to_warp,
     points_to_warp,
@@ -34,7 +34,7 @@ from tests.conversions import (
 
 
 # Open-surface fixtures that actually have a boundary (watertight solids do not).
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("boundary_edges", "trimesh", "pyvista", "igl")
 def test_boundary_edges_match_trimesh_pyvista_and_igl(
     request: pytest.FixtureRequest, mesh_name: str
@@ -89,7 +89,7 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
     assert np.array_equal(lexsort_rows(oriented_wp.numpy()), lexsort_rows(np.asarray(edges_igl)))
 
 
-@pytest.mark.parametrize("mesh_name", [*OPEN_MESHES, "mobius"])
+@pytest.mark.parametrize("mesh_name", [*BOUNDARY_MESHES, "mobius"])
 def test_boundary_queries_bucketed_match_the_key_sort(
     request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -125,7 +125,7 @@ def test_boundary_queries_bucketed_match_the_key_sort(
         assert np.array_equal(sorted_np, bucketed_np)
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("boundary_edges", "pymeshlab", "meshlib")
 def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -177,7 +177,7 @@ def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str)
     )
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("boundary_loops", "igl")
 def test_boundary_loops(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -199,7 +199,7 @@ def test_boundary_loops(request: pytest.FixtureRequest, mesh_name: str) -> None:
         assert np.array_equal(loop_wp.numpy(), np.asarray(loop_igl))
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("boundary_loops", "trimesh")
 def test_boundary_loops_matches_trimesh_outline(
     request: pytest.FixtureRequest, mesh_name: str
@@ -234,7 +234,12 @@ def test_boundary_loops_matches_trimesh_outline(
 )
 @pytest.mark.parametrize(
     ("mesh_name", "n_loops"),
-    [("icosahedron", 0), ("hemisphere", 1), ("half_torus", 2), ("saddle_graded", 1)],
+    [
+        ("sphere_irregular_hollow", 0),
+        ("saddle_graded", 1),
+        ("sphere_irregular_band", 2),
+        ("torus_irregular_holes", 3),
+    ],
 )
 def test_boundary_loops_count_matches_pymeshfix(
     request: pytest.FixtureRequest, mesh_name: str, n_loops: int
@@ -286,7 +291,7 @@ def _meshlib_hole_rings(mesh_ml: mm.Mesh) -> list[list[tuple[int, int]]]:
     return rings_ml
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("boundary_loops", "meshlib")
 def test_boundary_loops_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -425,7 +430,9 @@ def test_boundary_loops_two_mobius_bands_keep_one_direction_each(
     assert np.array_equal(loops_wp[1].numpy(), single_np + n)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "icosahedron"])
+@pytest.mark.parametrize(
+    "mesh_name", ["saddle_graded", "sphere_irregular_band", "sphere_irregular"]
+)
 def test_boundary_loop_sizes_helper_agrees_with_boundary_loops(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -462,7 +469,7 @@ def test_boundary_loop_sizes_refuses_a_pinched_rim() -> None:
         boundary_loop_sizes(faces_np)
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 def test_boundary_loops_with_offsets_matches_boundary_loops(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -634,7 +641,7 @@ def test_boundary_loops_never_invent_an_edge(device: str, extra_faces: list[list
     assert len(pairs) == len(set(pairs))
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 def test_boundary_loop(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: the singular form against ``igl.boundary_loop``, which is igl's *longest* loop.
@@ -719,16 +726,17 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
             assert tuple(directed_edges[3 * f + local_edge]) in boundary_set
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular_cap", "sphere_irregular_band"])
 def test_ears_none_on_smooth_boundary(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class D exemption in test form: neither library finds an ear on either subdivided rim.
+    Class D exemption in test form: neither library finds an ear on the planar cut rims.
 
-    A rim built by subdivision never leaves a triangle with two boundary edges, so this is the
-    negative half of ``test_ears_match_igl`` and is kept separate from it rather than standing in
-    for a comparison. Not ``conftest.OPEN_MESHES``: ``saddle_graded`` is a split quad grid, two of
-    whose corners are single triangles -- ears, which both libraries find -- and ears are pure
-    connectivity, so its grading adds nothing ``test_ears_match_igl`` does not already cover.
+    A plane cut of a triangulated surface leaves no triangle with two boundary edges on these rims
+    (``sphere_irregular_cap``'s one, ``_band``'s two), so this is the negative half of
+    ``test_ears_match_igl`` and is kept separate from it rather than standing in for a comparison.
+    Not ``conftest.OPEN_MESHES``: ``saddle_graded`` is a split quad grid, two of whose corners are
+    single triangles -- ears, which both libraries find -- and ears are pure connectivity, so its
+    grading adds nothing ``test_ears_match_igl`` does not already cover.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_np = mesh_tm.faces.astype(np.int64)
@@ -741,9 +749,9 @@ def test_ears_none_on_smooth_boundary(request: pytest.FixtureRequest, mesh_name:
     assert ear_opp_wp.shape == (0,)
 
 
-def test_boundary_queries_watertight(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_boundary_queries_watertight(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: a closed mesh has no boundary edges, vertices, loops or ears."""
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     _assert_no_boundary(mesh_wp.points, mesh_wp.indices)
 
 
@@ -756,7 +764,7 @@ def test_boundary_queries_empty(device: str) -> None:
 
 @pytest.mark.parity("loop_perimeters", "meshlib")
 @pytest.mark.parity("loop_directed_areas", "meshlib")
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 def test_loop_perimeters_and_directed_areas_match_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -770,14 +778,15 @@ def test_loop_perimeters_and_directed_areas_match_meshlib(
     The directed area comes back **negated**, and that is a convention rather than an error: the two
     libraries walk a rim in opposite directions, so the same loop's winding -- and so the sign of
     every cross product summed around it -- is opposite. Measured on the sliced hemisphere,
-    ``[0, 0, -2.9461]`` against ``[0, 0, +2.9461]``. The **norms** are compared without any
-    transform, which is the part that carries the magnitude, and the negation is asserted separately
-    so a genuine direction disagreement could not hide inside it.
+    ``[0, 0, -2.9461]`` against ``[0, 0, +2.9461]``; ``saddle_graded`` is the single-rim arm now.
+    The **norms** are compared without any transform, which is the part that carries the
+    magnitude, and the negation is asserted separately so a genuine direction disagreement could
+    not hide inside it.
 
     The two libraries enumerate holes in their own orders, so the scalar comparisons go through
-    **sorted** lists -- the second named transform, and the reason ``half_torus`` (two rims) is
-    usable here at all. The signed vector needs an actual pairing, so it is asserted only where
-    there is a single rim, and the branch is asserted to be reached.
+    **sorted** lists -- the second named transform. The signed vector needs an actual pairing of
+    the holes: by perimeter, which is asserted distinct, so a multi-rim fixture
+    (``torus_irregular_holes``: 3, 7 and 24 edges) compares every rim's signed vector too.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -806,19 +815,24 @@ def test_loop_perimeters_and_directed_areas_match_meshlib(
         ]
     )
 
-    assert np.allclose(np.sort(perimeters_np), np.sort(perimeters_ml), rtol=1e-5)
+    # Relative, with no absolute floor: the directed area of ``torus_irregular_holes``' 3-edge hole
+    # is 4.1e-4 at coordinates near 4, which a Newell sum about the coordinate origin got 6.3e-5
+    # wrong in ``float32``; summed about a loop vertex (``predicates.newell_term``) it is 2.6e-8.
+    assert np.allclose(np.sort(perimeters_np), np.sort(perimeters_ml), rtol=1e-5, atol=0.0)
     assert np.allclose(
         np.sort(np.linalg.norm(areas_np, axis=1)),
         np.sort(np.linalg.norm(areas_ml, axis=1)),
         rtol=1e-5,
+        atol=0.0,
     )
-    if len(loops_wp) == 1:
-        assert np.allclose(areas_np[0], -areas_ml[0], rtol=1e-5, atol=1e-5)
-    else:
-        assert mesh_name == "half_torus"  # the only multi-rim fixture here, and it stays that way
+    # The signed vectors need a pairing of the two libraries' holes: by perimeter, where those are
+    # distinct (``torus_irregular_holes``' rims are 3, 7 and 24 edges long).
+    order_np, order_ml = np.argsort(perimeters_np), np.argsort(perimeters_ml)
+    assert np.diff(np.sort(perimeters_np)).min(initial=np.inf) > 1e-3
+    assert np.allclose(areas_np[order_np], -areas_ml[order_ml], rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 def test_loop_measures_agree_with_the_single_loop_forms(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -861,7 +875,7 @@ def test_loop_measures_agree_with_the_single_loop_forms(
     )
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 def test_batched_loop_measures_agree_with_the_list_forms(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:

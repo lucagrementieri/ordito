@@ -188,10 +188,9 @@ def chamfer_nn_term_tiled(
     ``wp.launch_tiled`` runs exactly one lane per block there, so this block reduction would see
     one point per tile and the loss would come out a whole tile-width too small.
 
-    The lane-strided ``ITEMS_PER_BLOCK_1D`` fold that would make this portable is declined for the
-    reason measured on its sibling [`centroid_tiled`][ordito.kernels.measures.centroid_tiled]: it
-    is flat, because one accumulator slot at ``n / TILE_1D`` blocks is nowhere near the contention
-    where the fold starts paying.
+    The lane-strided ``ITEMS_PER_BLOCK_1D`` fold that would make this portable is declined: it
+    measured flat on the centroid reduction this kernel was modelled on, because one accumulator
+    slot at ``n / TILE_1D`` blocks is nowhere near the contention where the fold starts paying.
     """
     i, t = wp.tid()
     idx = i * TILE_1D + t

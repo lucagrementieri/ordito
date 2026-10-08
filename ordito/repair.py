@@ -1993,10 +1993,13 @@ def remove_folded_faces(
     """
     Drop faces that fold back over their own ring, and reindex.
 
-    A folded face is one whose dihedral angle to a neighbour is near ``pi``: the two triangles lie
-    almost on top of each other with opposite normals, which is what a badly reconstructed or
-    self-intersecting patch looks like locally. Such a face contributes no surface and breaks every
-    normal-based computation downstream, so removing it is a repair rather than a simplification.
+    A fold is a pair of neighbouring faces whose dihedral angle is near ``pi``: the two triangles
+    lie almost on top of each other with opposite normals, which is what a badly reconstructed or
+    self-intersecting patch looks like locally. Of the two, the face dropped is the one whose
+    normal points against its neighbours' summed normals -- the one turned back over its ring; the
+    other agrees with its surroundings and is kept. Such a face contributes no surface and breaks
+    every normal-based computation downstream, so removing it is a repair rather than a
+    simplification.
 
     Parameters
     ----------
@@ -2005,7 +2008,8 @@ def remove_folded_faces(
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
     angle
-        Dihedral threshold in **degrees**; a face with a neighbour above it is dropped. MeshLab's
+        Dihedral threshold in **degrees**; a face with a neighbour above it is dropped when it also
+        faces against its neighbours (see above). MeshLab's
         ``folded_faces_angle_threshold``, whose default of ``160`` is this one. Must be in
         ``(0, 180]``.
 

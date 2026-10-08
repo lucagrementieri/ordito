@@ -30,6 +30,7 @@ The classes of comparison, and the bar each has to clear (see CLAUDE.md section 
 from __future__ import annotations
 
 import numpy as np
+import scipy.sparse as sp
 import trimesh as tm
 import warp as wp
 from scipy.spatial import cKDTree
@@ -625,6 +626,31 @@ def bsr_arrays(matrix: odt.SparseMatrix) -> list[np.ndarray]:
         matrix.columns.numpy()[:n_entries],
         matrix.values.numpy()[:n_entries],
     ]
+
+
+def sparse_allclose(
+    actual: sp.csr_matrix | sp.csc_matrix | sp.coo_matrix,
+    expected: sp.csr_matrix | sp.csc_matrix | sp.coo_matrix,
+    *,
+    rtol: float = 1e-5,
+    atol: float = 1e-5,
+) -> bool:
+    """
+    Return ``np.allclose(actual.toarray(), expected.toarray(), rtol, atol)`` without densifying.
+
+    The elementwise rule ``|a - e| <= atol + rtol * |e|`` holds trivially wherever both matrices
+    store nothing, so it is checked over the union of their patterns only. Densifying a
+    ``(2 n, 2 n)`` operator on the 68 x 68 ``saddle_graded`` (``n = 4 624``) was most of those
+    tests' cost. Shapes must match and a ``NaN`` anywhere fails, as in ``np.allclose``.
+    """
+    if actual.shape != expected.shape:
+        return False
+    actual_csr = actual.tocsr().astype(np.float64)
+    expected_csr = expected.tocsr().astype(np.float64)
+    if np.isnan(actual_csr.data).any() or np.isnan(expected_csr.data).any():
+        return False
+    excess = abs(actual_csr - expected_csr) - rtol * abs(expected_csr)
+    return excess.nnz == 0 or float(excess.max()) <= atol
 
 
 def comparable_arrays(value: object) -> list[np.ndarray]:

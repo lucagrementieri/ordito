@@ -9,6 +9,12 @@ from ordito.kernels.triangles import face_normal, local_corner
 
 wp.set_module_options({"enable_backward": False})
 
+# How far past either end of an edge, as a fraction of the edge, a crossing still counts as on it.
+CORNER_SLACK = wp.float32(1e-5)
+
+# Bound on the faces a walk circles while passing through one vertex.
+MAX_FAN_FACES = wp.constant(256)
+
 
 @wp.func
 def exit_edge(
@@ -46,7 +52,11 @@ def exit_edge(
             continue
         t = -wp.dot(normal, wp.cross(point - a, edge)) / denom
         s = wp.dot(normal, wp.cross(point - a, direction)) / -denom
-        if t <= length_epsilon or s < wp.float32(0.0) or s > wp.float32(1.0):
+        # A ray through a corner -- one aimed along an edge reaches the edge's far vertex -- meets
+        # the opposite edge exactly at an end, where rounding puts ``s`` a hair outside [0, 1]; an
+        # exact test then finds no exit and the walk stopped dead. Within ``CORNER_SLACK`` of an
+        # end the crossing is accepted, so the ray passes through the vertex.
+        if t <= length_epsilon or s < -CORNER_SLACK or s > wp.float32(1.0) + CORNER_SLACK:
             continue
         if best_edge == wp.int32(-1) or t < best_t:
             best_edge = k
@@ -91,6 +101,131 @@ def emit_walk_point(
     if write_begin >= wp.int32(0):
         out_points[write_begin + count] = point
     return count + wp.int32(1)
+
+
+@wp.func
+def leave_through_wedge(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex: wp.int32,
+    chosen: wp.int32,
+    offset_in_wedge: wp.float32,
+) -> tuple[wp.int32, wp.vec3]:
+    # The face of halfedge ``chosen`` (which leaves ``vertex``) and the 3D direction that turns
+    # ``offset_in_wedge`` radians from that halfedge's edge toward the face's other edge at the
+    # vertex, in the face's plane.
+    f = chosen // wp.int32(3)
+    normal = face_normal(vertices, faces, f)
+    edge = vertices[halfedge_destination(faces, chosen)] - vertices[vertex]
+    tangential, length = unit_tangent(edge, normal, TOLERANCE_ZERO_CONSTANT)
+    if length <= TOLERANCE_ZERO_CONSTANT:
+        return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
+    rotation = wp.quat_from_axis_angle(normal, offset_in_wedge)
+    return f, wp.quat_rotate(rotation, tangential)
+
+
+@wp.func
+def corner_at(faces: wp.array[wp.int32], f: wp.int32, vertex: wp.int32) -> wp.int32:
+    # Which corner (0, 1, 2) of face ``f`` is ``vertex``.
+    corner = wp.int32(0)
+    if faces[f * 3 + 1] == vertex:
+        corner = wp.int32(1)
+    if faces[f * 3 + 2] == vertex:
+        corner = wp.int32(2)
+    return corner
+
+
+@wp.func
+def corner_angle_at(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32, c: wp.int32
+):
+    # The interior angle of face ``f`` at its corner ``c``, from the positions.
+    apex = vertices[faces[f * 3 + c]]
+    near = vertices[faces[f * 3 + (c + 1) % 3]] - apex
+    far = vertices[faces[f * 3 + (c + 2) % 3]] - apex
+    return wp.atan2(wp.length(wp.cross(near, far)), wp.dot(near, far))
+
+
+@wp.func
+def next_face_around(
+    faces: wp.array[wp.int32], twins: wp.array[wp.int32], f: wp.int32, c: wp.int32
+) -> wp.int32:
+    # The face after ``f`` in the fan of its corner ``c``, turning from the corner's near edge
+    # toward its far one: across the edge from the far vertex back to the corner, ``-1`` at the
+    # boundary.
+    twin = twins[f * 3 + (c + 2) % 3]
+    if twin == wp.int32(-1):
+        return wp.int32(-1)
+    return twin // wp.int32(3)
+
+
+@wp.func
+def continue_through_vertex(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    f: wp.int32,
+    vertex: wp.int32,
+    direction: wp.vec3,
+) -> tuple[wp.int32, wp.vec3]:
+    # A straightest geodesic that runs into a vertex leaves it with half the vertex's total angle on
+    # either side (Polthier and Schmies): the arriving direction, reversed, is placed in the fan of
+    # face ``f`` (the face the walk is in), and the walk leaves half a turn of the fan further on.
+    # The fan is walked through the twins, so no ring table is needed. ``-1`` when the fan reaches
+    # the boundary, where the walk stops as it does at the rim.
+    c = corner_at(faces, f, vertex)
+    apex = vertices[vertex]
+    normal = face_normal(vertices, faces, f)
+    near = vertices[faces[f * 3 + (c + 1) % 3]] - apex
+    back = -direction
+    arrival = wp.atan2(wp.dot(normal, wp.cross(near, back)), wp.dot(near, back))
+    arrival = wp.clamp(arrival, wp.float32(0.0), corner_angle_at(vertices, faces, f, c))
+
+    total = wp.float32(0.0)
+    g = f
+    for _step in range(MAX_FAN_FACES):
+        total += corner_angle_at(vertices, faces, g, corner_at(faces, g, vertex))
+        g = next_face_around(faces, twins, g, corner_at(faces, g, vertex))
+        if g == wp.int32(-1):
+            return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
+        if g == f:
+            break
+    if g != f:
+        return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
+
+    target = arrival + wp.float32(0.5) * total
+    if target >= total:
+        target -= total
+    accumulated = wp.float32(0.0)
+    g = f
+    for _step in range(MAX_FAN_FACES):
+        gc = corner_at(faces, g, vertex)
+        wedge = corner_angle_at(vertices, faces, g, gc)
+        if target <= accumulated + wedge:
+            return leave_through_wedge(vertices, faces, vertex, g * 3 + gc, target - accumulated)
+        accumulated += wedge
+        g = next_face_around(faces, twins, g, gc)
+    return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
+
+
+@wp.func
+def corner_hit(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    edge: wp.int32,
+    point: wp.vec3,
+) -> wp.int32:
+    # The vertex a crossing of edge ``edge`` of face ``f`` at ``point`` lands on, or ``-1``: within
+    # ``CORNER_SLACK`` of the edge's length of either end.
+    a = vertices[faces[f * 3 + edge]]
+    b = vertices[faces[f * 3 + (edge + 1) % 3]]
+    reach = CORNER_SLACK * wp.length(b - a)
+    if wp.length(point - a) <= reach:
+        return faces[f * 3 + edge]
+    if wp.length(point - b) <= reach:
+        return faces[f * 3 + (edge + 1) % 3]
+    return wp.int32(-1)
 
 
 @wp.func
@@ -142,6 +277,21 @@ def trace_walk(
         remaining -= distance
         count = emit_walk_point(out_points, write_begin, count, point)
 
+        hit = corner_hit(vertices, faces, face, edge, point)
+        if hit != wp.int32(-1):
+            # Through a vertex: unfolding across one edge has no meaning there.
+            next_face, next_direction = continue_through_vertex(
+                vertices, faces, twins, face, hit, direction
+            )
+            if next_face == wp.int32(-1):
+                break  # a boundary vertex
+            point = vertices[hit]
+            face = next_face
+            normal = face_normal(vertices, faces, face)
+            direction = next_direction
+            entry_edge = wp.int32(-1)
+            continue
+
         twin = twins[face * 3 + edge]
         if twin == wp.int32(-1):
             break  # the path ran into the mesh boundary
@@ -171,22 +321,22 @@ def start_direction_at_vertex(
 ) -> tuple[wp.int32, wp.vec3]:
     # Which incident face a direction leaves the vertex through, and the 3D direction to use.
     #
-    # The naive test -- project into each face's plane and ask which wedge contains the result --
-    # has no answer for a direction pointing away from the surface, and picks the wrong face near
-    # the normal. The intrinsic flattening does have one: rescaling the incident corner angles to a
-    # full turn makes the fan a disk, so *every* tangent direction lands in exactly one wedge. Same
-    # construction as ``tangent.halfedge_tangent_angles``, same convention geometry-central uses.
+    # The vertex's tangent space is its fan with every corner angle rescaled so the fan spans a full
+    # turn (half a turn at a boundary vertex): the normalized polar angle of Polthier and Schmies,
+    # the flattening of ``tangent.halfedge_tangent_angles``. A 3D direction is read as such an angle
+    # through a frame fitted to the fan: each incident edge, projected into the tangent plane, is
+    # rotated back by its normalized angle, and the sum of those vectors is where normalized angle 0
+    # lies in the plane. The fit uses every edge, so the result depends on neither the ring's first
+    # halfedge nor ``basis_x`` (any frame of the plane gives the same answer), and it is defined for
+    # every fan, including a saddle's, whose edges fold over one another in projection. It is
+    # geometry-central's vertex tangent basis, so ``potpourri3d.GeodesicTracer`` starts the same
+    # walk. A direction along an edge leaves along it only where the fan is flat; placing directions
+    # between the projected edges that bracket them instead gives every edge exactly, but has no
+    # answer for a folded fan and depended on the frame there.
     begin = ring_offsets[vertex]
     end = ring_offsets[vertex + 1]
     if end <= begin:
         return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
-
-    # Polar angle of the direction in the vertex's tangent frame, in [0, 2*pi).
-    tangent = world_to_tangent(direction, basis_x[vertex], basis_y[vertex])
-    angle = wp.atan2(tangent[1], tangent[0])
-    if angle < wp.float32(0.0):
-        angle += TWO_PI
-
     total = wp.float32(0.0)
     for j in range(begin, end):
         total += corner_angle(face_angles, ring_halfedges[j])
@@ -196,11 +346,48 @@ def start_direction_at_vertex(
     if is_boundary[vertex]:
         full_turn = PI
     scale = full_turn / total
+
+    origin = vertices[vertex]
+    anchor_x = wp.float32(0.0)
+    anchor_y = wp.float32(0.0)
+    accumulated = wp.float32(0.0)
+    for j in range(begin, end):
+        h = ring_halfedges[j]
+        f_j = h // wp.int32(3)
+        k = h % wp.int32(3)
+        edge = world_to_tangent(
+            vertices[faces[3 * f_j + (k + 1) % 3]] - origin, basis_x[vertex], basis_y[vertex]
+        )
+        theta = scale * accumulated
+        cos_theta = wp.cos(theta)
+        sin_theta = wp.sin(theta)
+        anchor_x += edge[0] * cos_theta + edge[1] * sin_theta
+        anchor_y += edge[1] * cos_theta - edge[0] * sin_theta
+        accumulated += corner_angle(face_angles, h)
+    if is_boundary[vertex]:
+        # An open fan has one edge more than wedges: the last wedge's far edge, at half a turn.
+        h = ring_halfedges[end - 1]
+        f_j = h // wp.int32(3)
+        k = h % wp.int32(3)
+        edge = world_to_tangent(
+            vertices[faces[3 * f_j + (k + 2) % 3]] - origin, basis_x[vertex], basis_y[vertex]
+        )
+        anchor_x -= edge[0]
+        anchor_y -= edge[1]
+
+    tangent = world_to_tangent(direction, basis_x[vertex], basis_y[vertex])
+    angle = wp.atan2(tangent[1], tangent[0]) - wp.atan2(anchor_y, anchor_x)
+    if angle < wp.float32(0.0):
+        angle += TWO_PI
+    if angle < wp.float32(0.0):
+        angle += TWO_PI
+    if angle >= TWO_PI:
+        angle -= TWO_PI
     if angle > full_turn:
-        # A boundary vertex's fan spans half a disk; a direction outside it points off the surface.
+        # A boundary vertex's fan spans half a turn; a direction outside it points off the surface.
         return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
 
-    # Walk the ring until the accumulated (rescaled) angle passes the target.
+    # Walk the ring until the accumulated normalized angle passes the target.
     accumulated = wp.float32(0.0)
     chosen = ring_halfedges[end - 1]
     offset_in_wedge = wp.float32(0.0)
@@ -214,14 +401,7 @@ def start_direction_at_vertex(
         accumulated += wedge
 
     # Undo the rescale: rotate the chosen halfedge's direction by the true in-face angle.
-    f = chosen // wp.int32(3)
-    normal = face_normal(vertices, faces, f)
-    edge = vertices[halfedge_destination(faces, chosen)] - vertices[vertex]
-    tangential, length = unit_tangent(edge, normal, TOLERANCE_ZERO_CONSTANT)
-    if length <= TOLERANCE_ZERO_CONSTANT:
-        return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
-    rotation = wp.quat_from_axis_angle(normal, offset_in_wedge)
-    return f, wp.quat_rotate(rotation, tangential)
+    return leave_through_wedge(vertices, faces, vertex, chosen, offset_in_wedge)
 
 
 @wp.kernel

@@ -317,8 +317,10 @@ def heat_geodesic(
     use_robust
         Forwarded to [`heat_operators`][ordito.heat.heat_operators]: build the Laplacian
         from mollified edge lengths, which is what makes the solves survive degenerate triangles.
-        ``potpourri3d.MeshHeatMethodDistanceSolver`` has the same flag and defaults it to ``True``;
-        this defaults to ``False`` so the plain call stays exactly ``igl::heat_geodesics``.
+        On a mesh with none it changes nothing. ``potpourri3d.MeshHeatMethodDistanceSolver``'s
+        flag of the same name does more -- it also solves on an intrinsic Delaunay triangulation
+        -- and defaults to ``True``; this defaults to ``False`` so the plain call stays exactly
+        ``igl::heat_geodesics``.
 
     Returns
     -------

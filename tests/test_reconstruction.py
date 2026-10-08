@@ -40,7 +40,7 @@ from tests.comparisons import (
     symmetric_surface_distance,
     undirected_edges,
 )
-from tests.conftest import CLOSED_MESHES
+from tests.conftest import CLOSED_MESHES, ROUND_FRAME_SCALE, ROUND_FRAME_SHIFT
 from tests.conversions import (
     meshlib_to_trimesh,
     numpy_to_meshlib,
@@ -943,8 +943,8 @@ def test_poisson_cpu_matches_cuda():
 _POISSON_WATERTIGHT_CASES = [
     pytest.param("sphere", "dense", marks=pytest.mark.slow_cpu(71.9), id="sphere-dense"),
     pytest.param("sphere", "adaptive", id="sphere-adaptive"),
-    pytest.param("torus", "dense", id="torus-dense"),
-    pytest.param("torus", "adaptive", id="torus-adaptive"),
+    pytest.param("torus_irregular", "dense", id="torus-dense"),
+    pytest.param("torus_irregular", "adaptive", id="torus-adaptive"),
 ]
 
 
@@ -1118,25 +1118,35 @@ def test_poisson_adaptive_confidence_runs(device: str):
 
 @pytest.mark.parametrize("offset", [0.0, 0.2, -0.2])
 def test_resample_uniform_offsets_a_sphere(
-    offset: float, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    offset: float, sphere_round: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class C (a radius bound): a sphere is the one shape whose offset surface is known exactly.
 
-    Both signs are covered because they are different code paths in spirit — a positive offset needs
-    the lattice padded beyond the bounding box (or it clips) and a negative one does not.
+    Both signs are covered because they are different code paths in spirit -- a positive offset
+    needs the lattice padded beyond the bounding box (or it clips) and a negative one does not.
+
+    The input is a polyhedron inscribed in a sphere of radius ``R = 1.7`` (``sphere_round``), so its
+    own surface sits between ``R - sag`` and ``R``, ``sag`` its deepest face-plane distance below
+    the sphere (0.028 here); the offset shifts that band without widening it. Measured: every
+    output vertex inside ``[R + offset - 0.0284, R + offset]`` at all three offsets. The bound
+    allows a fifth of a voxel either side of that band; a 5 % scale error (0.085) fails it.
     """
-    _sphere_tm, sphere_wp = icosphere
+    sphere_tm, sphere_wp = sphere_round
     vertices_wp, faces_wp = sphere_wp.points, sphere_wp.indices
     voxel_size = 0.05
+    radius = ROUND_FRAME_SCALE
+    corners_np = np.asarray(sphere_tm.triangles, dtype=np.float64) - ROUND_FRAME_SHIFT
+    normals_np = np.cross(corners_np[:, 1] - corners_np[:, 0], corners_np[:, 2] - corners_np[:, 0])
+    normals_np /= np.linalg.norm(normals_np, axis=1, keepdims=True)
+    sag = radius - float(np.abs(np.einsum("ij,ij->i", normals_np, corners_np[:, 0])).min())
 
     out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
         vertices_wp, faces_wp, voxel_size=voxel_size, offset=offset
     )
-    radii_np = np.linalg.norm(out_vertices_wp.numpy(), axis=1)
-    # The icosphere is *inscribed*, so its own surface sits between ``cos`` of half the face angle
-    # and 1; the offset shifts that band without widening it much.
-    assert np.abs(radii_np - (1.0 + offset)).max() < 2.0 * voxel_size
+    radii_np = np.linalg.norm(out_vertices_wp.numpy() - ROUND_FRAME_SHIFT, axis=1)
+    assert radii_np.min() > radius + offset - sag - 0.2 * voxel_size
+    assert radii_np.max() < radius + offset + 0.2 * voxel_size
 
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
     assert out_tm.is_watertight
@@ -1144,16 +1154,17 @@ def test_resample_uniform_offsets_a_sphere(
 
 
 def test_resample_uniform_repairs_a_broken_mesh(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Not a library comparison: the topology comes from the grid, so the input's cannot leak.
 
     The input here has duplicated faces, an inverted one and a non-manifold edge — three defects
     that each need their own function in [`ordito.repair`][ordito.repair] — and the resampled
-    result is a clean watertight sphere regardless.
+    result is a clean watertight sphere regardless, enclosing the input's volume (measured 0.09 %
+    off it at this voxel).
     """
-    sphere_tm, _sphere_tm_wp = icosphere
+    sphere_tm, _sphere_tm_wp = sphere_irregular
     faces_np = np.asarray(sphere_tm.faces)
     broken_np = np.vstack([faces_np, faces_np[:20], faces_np[30:40][:, ::-1]])
     vertices_wp = points_to_warp(sphere_tm.vertices, device)
@@ -1168,31 +1179,34 @@ def test_resample_uniform_repairs_a_broken_mesh(
     assert od.validation.is_edge_manifold(out_faces_wp, allow_boundary_edges=False)
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
     assert out_tm.is_watertight
-    assert np.isclose(np.abs(out_tm.volume), 4.0 / 3.0 * np.pi, rtol=0.1)
+    assert np.isclose(np.abs(out_tm.volume), sphere_tm.volume, rtol=0.01)
 
 
 @pytest.mark.parity("resample_uniform", "pymeshlab")
-def test_resample_uniform_matches_pymeshlab(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_resample_uniform_matches_pymeshlab(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class C (a surface distance): the same algorithm at the same absolute cell size.
 
     One parameter hazard, found by probing: its ``offset`` as a ``PercentageValue`` runs from full
-    erosion at ``0%`` to full dilation at ``100%``, so **``PercentageValue(50)`` — its default — is
-    the *zero* offset** and ``PercentageValue(0)`` erodes a unit sphere down to radius 0.30. Passing
-    ``PureValue(0.0)`` instead means an absolute offset of zero, which is what ``offset=0.0`` is
-    here.
+    erosion at ``0%`` to full dilation at ``100%``, so **``PercentageValue(50)`` -- its default --
+    is the *zero* offset** and ``PercentageValue(0)`` erodes a unit sphere down to radius 0.30.
+    Passing ``PureValue(0.0)`` instead means an absolute offset of zero, which is what
+    ``offset=0.0`` is here.
 
-    What must agree is the surface: both watertight, both enclosing the sphere's volume, and a
-    two-sided Hausdorff distance between them of well under a cell.
+    **The fixture sets the bars.** Every resampler rounds ``sphere_irregular``'s cone vertices
+    (angle defects up to 130 degrees) by most of a voxel, so the *worst* sample of each sits far
+    from the input -- at 0.06: ordito 0.48 voxels, MeshLib 0.55, igl 0.73, pymeshlab 1.69 -- and
+    two resamplers anchored a fraction of a cell apart differ there by as much. (On ``icosphere(3)``
+    everything agreed to 0.06 voxels; that was the smooth input, not a tighter agreement.) What a
+    lattice anchoring, isolevel or sign error moves is the *mean* distance, so that is the claim:
+    ordito against MeshLab **0.017** voxels, ordito against the input 0.021 (MeshLab 0.021), both
+    under a 0.1-voxel bar. Volumes agree to 1e-4 relative (bar 1 %).
 
-    **Mutation probe**, and it retightened the threshold. The measured agreement is **0.00313**,
-    identical on both devices; the bug class is resampling a *differently scaled* surface, so the
-    probe re-runs the reference on a scaled sphere and reads the distance: 1.05x gives 0.0514, 1.10x
-    gives 0.1020, 1.15x gives 0.1521. The original ``2.0 * voxel_size`` bar (0.12, a 38x headroom)
-    admitted every scale error up to 10 %, so it is now ``0.5 * voxel_size``: 0.03, still **9.6x**
-    the measured agreement, and it now separates a 5 % scale error.
+    **Mutation probes.** Asking ordito for ``offset`` of a quarter voxel moves its mean distance to
+    the input to 0.247 voxels; resampling a 1.05x scaled input to 1.26. The worst case is still
+    bounded, at a voxel (measured 0.48), against a local defect.
     """
-    sphere_tm, sphere_wp = icosphere
+    sphere_tm, sphere_wp = sphere_irregular
     voxel_size = 0.06
     meshset_pml = ml.MeshSet()
     meshset_pml.add_mesh(
@@ -1213,41 +1227,42 @@ def test_resample_uniform_matches_pymeshlab(icosphere: tuple[tm.Trimesh, wp.Mesh
     )
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
     assert out_tm.is_watertight
-    assert np.isclose(np.abs(out_tm.volume), np.abs(pml_tm.volume), rtol=0.05)
-
-    # Two-sided Hausdorff between the surfaces, within a cell.
-    sample_wp, _face = tm.sample.sample_surface(out_tm, 4000, seed=0)[:2]
-    sample_pml, _face_pml = tm.sample.sample_surface(pml_tm, 4000, seed=1)[:2]
-    assert np.abs(tm.proximity.signed_distance(pml_tm, sample_wp)).max() < 0.5 * voxel_size
-    assert np.abs(tm.proximity.signed_distance(out_tm, sample_pml)).max() < 0.5 * voxel_size
+    assert pml_tm.is_watertight
+    assert np.isclose(np.abs(out_tm.volume), np.abs(pml_tm.volume), rtol=0.01)
+    assert symmetric_surface_distance(out_tm, pml_tm)[0] < 0.1 * voxel_size
+    mean_to_input, max_to_input = symmetric_surface_distance(out_tm, sphere_tm)
+    assert mean_to_input < 0.1 * voxel_size
+    assert max_to_input < voxel_size
 
 
 @pytest.mark.parity("resample_uniform", "igl")
-def test_resample_uniform_matches_igl(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_resample_uniform_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class C (no vertex correspondence): the two isosurfaces coincide to **0.06 of a voxel**.
+    Class C (no vertex correspondence): the two isosurfaces coincide to **0.014 of a voxel** (mean).
 
     ``igl.offset_surface(V, F, isolevel, s, sign_type)`` samples the same signed distance field on a
     grid and marches it. Two named parameter transforms put the two on one lattice: ``isolevel=0``
     is ordito's zero offset, and ``s`` is a *cell count along the longest axis* rather than a
     length, so it gets ``round(longest_extent / voxel_size)``. The sign mode is ``PSEUDONORMAL``,
     which ``tests/test_proximity.py::test_signed_distance_on_mesh_matches_pymeshlab_igl_and_open3d``
-    establishes agrees with ordito's default to 8e-8 -- the winding modes would scale the field by
+    establishes agrees with ordito's default -- the winding modes would scale the field by
     ``1 - 2w`` and move the isosurface.
 
-    No correspondence exists between the outputs (4 186 vertices against ordito's 5 310 on this
-    fixture, since the two march the lattice into different triangle sets), so the comparison is the
-    surface: both watertight, enclosed volumes within 5%, and a two-sided Hausdorff distance under a
-    quarter of a voxel.
+    **The fixture sets the bars.** Every resampler rounds ``sphere_irregular``'s cone vertices
+    (angle defects up to 130 degrees) by most of a voxel, so the *worst* sample of each sits far
+    from the input -- at 0.06: ordito 0.48 voxels, MeshLib 0.55, igl 0.73, pymeshlab 1.69 -- and
+    two resamplers anchored a fraction of a cell apart differ there by as much. (On ``icosphere(3)``
+    everything agreed to 0.06 voxels; that was the smooth input, not a tighter agreement.) What a
+    lattice anchoring, isolevel or sign error moves is the *mean* distance, so that is the claim:
+    ordito against igl **0.014** voxels, ordito against the input 0.021 (igl 0.023), under a
+    0.1-voxel bar; volumes within 1e-4 relative (bar 1 %).
 
     **Bug class excluded:** a grid anchored differently, or an isolevel or sign convention that
-    shifts the surface -- exactly what the plan flagged as the risk for this pair. **Mutation probe,
-    measured:** re-running igl at ``isolevel=0.02`` and ``0.05`` moves the one-sided Hausdorff to
-    **0.36 and 0.86 voxels** against 0.06 at zero, so the ``0.25``-voxel bound sits 4.2x above the
-    measured agreement and fails on a shift of a third of a voxel. That is what makes it a test of
-    the anchoring rather than of "both are roughly a sphere".
+    shifts the surface. **Mutation probe, measured:** re-running igl at ``isolevel`` a quarter
+    voxel moves the mean distance to **0.253 voxels**, 18x the agreement, so the bar fails on a
+    shift of a tenth of a voxel.
     """
-    sphere_tm, sphere_wp = icosphere
+    sphere_tm, sphere_wp = sphere_irregular
     voxel_size = 0.06
     vertices_np = np.ascontiguousarray(sphere_tm.vertices, dtype=np.float64)
     faces_np = np.ascontiguousarray(sphere_tm.faces, dtype=np.int64)
@@ -1270,35 +1285,37 @@ def test_resample_uniform_matches_igl(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> 
 
     assert mesh_igl.is_watertight
     assert out_tm.is_watertight
-    assert np.isclose(np.abs(out_tm.volume), np.abs(mesh_igl.volume), rtol=0.05)
-
-    sample_wp, _face_wp = tm.sample.sample_surface(out_tm, 4000, seed=0)[:2]
-    sample_igl, _face_igl = tm.sample.sample_surface(mesh_igl, 4000, seed=1)[:2]
-    assert np.abs(tm.proximity.signed_distance(mesh_igl, sample_wp)).max() < 0.25 * voxel_size
-    assert np.abs(tm.proximity.signed_distance(out_tm, sample_igl)).max() < 0.25 * voxel_size
+    assert np.isclose(np.abs(out_tm.volume), np.abs(mesh_igl.volume), rtol=0.01)
+    assert symmetric_surface_distance(out_tm, mesh_igl)[0] < 0.1 * voxel_size
+    assert symmetric_surface_distance(out_tm, sphere_tm)[0] < 0.1 * voxel_size
 
 
 @pytest.mark.parity("resample_uniform", "meshlib")
-def test_resample_uniform_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_resample_uniform_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class C (no correspondence, and a different amount of work): both land on the same surface.
 
     ``rebuildMesh`` samples the same signed distance field on a grid of the same ``voxelSize`` and
     marches it, then -- unlike ordito, igl and MeshLab -- **decimates** the result at its own
     defaults (``decimate`` and ``preSubdivide`` are both on). So the face counts are not comparable
-    at all: measured 1 332 faces against ordito's 7 772 at a 2 % voxel on ``icosphere(3)``. What is
-    comparable is the surface, and the two agree to a two-sided Hausdorff distance of **0.084 of a
-    voxel**, each sitting within 0.11 voxels of the input.
+    at all. What is comparable is the surface.
+
+    **The fixture sets the bars.** Every resampler rounds ``sphere_irregular``'s cone vertices
+    (angle defects up to 130 degrees) by most of a voxel, so the *worst* sample of each sits far
+    from the input -- at 0.06: ordito 0.48 voxels, MeshLib 0.55, igl 0.73, pymeshlab 1.69 -- and
+    two resamplers anchored a fraction of a cell apart differ there by as much. (On ``icosphere(3)``
+    everything agreed to 0.06 voxels; that was the smooth input, not a tighter agreement.) What a
+    lattice anchoring, isolevel or sign error moves is the *mean* distance, so that is the claim:
+    at a 2 % voxel, ordito against the rebuilt mesh **0.032** voxels, and each against the input
+    0.038 (ordito) and 0.043 (rebuilt), all under a 0.1-voxel bar; volumes within 1e-3 relative.
 
     **Bug class excluded:** a grid anchored differently, or a sign or isolevel convention that moves
-    the isosurface -- the same risk the igl pair above is written against, checked here against an
-    independent implementation of the whole pipeline rather than of the field alone. **Mutation
-    probe, measured:** running MeshLib at 4x the voxel size moves the distance to **0.43 voxels**
-    and asking ordito for ``offset=0.1`` moves it to **1.53 voxels**, against 0.084 when the two
-    agree -- so the 0.25-voxel bound is 3x above the measured agreement and fails on either
-    mismatch.
+    the isosurface -- checked here against an independent implementation of the whole pipeline
+    rather than of the field alone. **Mutation probe, measured:** running MeshLib at 4x the voxel
+    size moves the ordito-to-MeshLib mean to **0.39 voxels**; asking ordito for an offset of a
+    quarter voxel moves its mean to the input to 0.24.
     """
-    sphere_tm, sphere_wp = icosphere
+    sphere_tm, sphere_wp = sphere_irregular
     diagonal = float(
         np.linalg.norm(sphere_tm.vertices.max(axis=0) - sphere_tm.vertices.min(axis=0))
     )
@@ -1318,26 +1335,16 @@ def test_resample_uniform_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh])
     assert rebuilt_tm.faces.shape[0] > 0  # non-vacuity: the reference rebuilt something
     assert rebuilt_tm.is_watertight
     assert out_tm.is_watertight
-    assert np.isclose(np.abs(out_tm.volume), np.abs(rebuilt_tm.volume), rtol=0.05)
-    assert (
-        hausdorff_surface_two_sided(
-            out_tm.vertices, out_tm.faces, rebuilt_tm.vertices, rebuilt_tm.faces
-        )
-        < 0.25 * voxel_size
-    )
+    assert np.isclose(np.abs(out_tm.volume), np.abs(rebuilt_tm.volume), rtol=0.01)
+    assert symmetric_surface_distance(out_tm, rebuilt_tm)[0] < 0.1 * voxel_size
     # Both are a resampling *of the input*, not merely of each other.
     for resampled_tm in (out_tm, rebuilt_tm):
-        assert (
-            hausdorff_surface_two_sided(
-                resampled_tm.vertices, resampled_tm.faces, sphere_tm.vertices, sphere_tm.faces
-            )
-            < 0.25 * voxel_size
-        )
+        assert symmetric_surface_distance(resampled_tm, sphere_tm)[0] < 0.1 * voxel_size
 
 
-def test_resample_uniform_coarser_is_smaller(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_resample_uniform_coarser_is_smaller(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: a wider voxel gives fewer triangles, and still a closed surface."""
-    _sphere_tm, sphere_wp = icosphere
+    _sphere_tm, sphere_wp = sphere_irregular
     vertices_wp, faces_wp = sphere_wp.points, sphere_wp.indices
     counts = []
     for voxel_size in (0.05, 0.1, 0.2):

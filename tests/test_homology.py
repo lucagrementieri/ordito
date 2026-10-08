@@ -37,7 +37,7 @@ def _is_simple_edge_cycle(loop: np.ndarray, edges_tm: Container[tuple[int, ...]]
     ("mesh_name", "genus"),
     # ``bohemian_dome`` is genus 1 like the torus but *self-intersecting*, so the generators are
     # found on a surface whose embedding gives no hint of where they run.
-    [("icosahedron", 0), ("torus", 1), ("bohemian_dome", 1), ("genus_two", 2)],
+    [("sphere_irregular", 0), ("torus_irregular", 1), ("bohemian_dome", 1), ("genus_two", 2)],
 )
 def test_homology_generator_count_is_twice_the_genus(
     request: pytest.FixtureRequest, mesh_name: str, genus: int
@@ -63,7 +63,7 @@ def test_homology_generator_count_is_twice_the_genus(
         assert _is_simple_edge_cycle(loop.numpy(), edges_tm)
 
 
-@pytest.mark.parametrize(("mesh_name", "genus"), [("torus", 1), ("genus_two", 2)])
+@pytest.mark.parametrize(("mesh_name", "genus"), [("torus_irregular", 1), ("genus_two", 2)])
 @pytest.mark.parity("homology_generators", "meshlib")
 def test_homology_generator_count_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str, genus: int
@@ -100,8 +100,10 @@ def test_homology_generator_count_matches_meshlib(
         assert int(mesh_ml.topology.dest(tunnel_ml[-1])) == walk_np[0]  # and closed
 
 
-def test_homology_generators_are_not_contractible(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = torus
+def test_homology_generators_are_not_contractible(
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    mesh_tm, mesh_wp = torus_irregular
     loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
     # A contractible loop bounds a disk, so cutting the *faces* along it would split the mesh in
@@ -155,14 +157,14 @@ def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Me
         assert run == runs[0]
 
 
-def test_homology_generators_reject_a_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = hemisphere
+def test_homology_generators_reject_a_boundary(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = saddle_graded
     with pytest.raises(ValueError, match="closed surface"):
         od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
 
 def test_homology_generators_ignore_an_unreferenced_vertex(
-    torus: tuple[tm.Trimesh, wp.Mesh], device: str
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
     """
     Not a library comparison: an unreferenced vertex must not change the basis it plays no part in.
@@ -173,7 +175,7 @@ def test_homology_generators_ignore_an_unreferenced_vertex(
     vertex is exactly the input that reaches it; measured before the fix, this returned 129
     generators instead of 2.
     """
-    mesh_tm, _ = torus
+    mesh_tm, _ = torus_irregular
     vertices_np = np.vstack([[[10.0, 10.0, 10.0]], np.asarray(mesh_tm.vertices)])
     faces_np = np.asarray(mesh_tm.faces) + 1
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
@@ -191,7 +193,7 @@ def test_homology_generators_ignore_an_unreferenced_vertex(
 
 
 def test_homology_generators_reject_a_disconnected_surface(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
     """
     Not a library comparison: the connectivity precondition, which the counting argument needs.
@@ -201,7 +203,7 @@ def test_homology_generators_reject_a_disconnected_surface(
     ``V - 1`` edges over as generators (measured: 41 of them). Both components are closed, so the
     boundary guard cannot see this.
     """
-    mesh_tm, _ = icosahedron
+    mesh_tm, _ = sphere_irregular
     other = mesh_tm.copy()
     other.apply_translation([5.0, 0.0, 0.0])
     both = tm.util.concatenate([mesh_tm, other])
@@ -230,7 +232,7 @@ def test_homology_generators_without_edges(device: str, n_vertices: int) -> None
     assert od.homology.homology_generators(vertices_wp, faces_wp) == []
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "torus", "genus_two"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular", "genus_two"])
 def test_homology_generators_is_its_packed_form_split(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:

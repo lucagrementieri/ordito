@@ -297,9 +297,12 @@ def sample_surface_poisson_disk(
     Uses Weighted Sample Elimination (Öztireli & Gross 2012): generates
     ``init_factor * count`` uniform surface samples, then iteratively removes
     the most "crowded" points in parallel rounds until ``count`` remain.
-    Each round deletes all alive local weight-maxima simultaneously. Maximality is decided on
-    ``(weight, -index)``, so no two of them are ever within ``r_max`` of each other and deleting
-    the whole set at once cannot remove a point that a sequential elimination would have kept.
+    Each round deletes, simultaneously, every alive point that is heavier than all of its alive
+    neighbours and at least as heavy as the alive point ranked ``excess``-th by weight (``excess``
+    being how many deletions remain). Maximality is decided on ``(weight, -index)``, so no two of
+    them are within ``r_max`` of each other, and the weight floor keeps the deletions in the global
+    weight order that sequential elimination follows: the rounds keep the samples the sequential
+    algorithm would keep.
 
     Parameters
     ----------
@@ -388,19 +391,26 @@ def sample_surface_poisson_disk(
     is_max = _launch.zeros(init_count, dtype=wp.int32, device=device)
     # The round's maxima count, accumulated by the flagging pass itself and re-zeroed once read.
     max_count = _launch.zeros(1, dtype=wp.int32, device=device)
+    negated = _launch.empty(init_count, dtype=wp.float32, device=device)
 
     while alive_count > count:
+        # Only a point at least as heavy as the ``excess``-th heaviest alive one may go this round,
+        # so the deletions follow the global weight order the elimination is defined by; the
+        # floor stays on the device as a one-element view of the sorted keys.
+        _launch.map(kernel_sample.alive_negated_weight, weights, alive, out=negated)
+        sorted_negated, _order = od.array.sort_and_argsort(negated)
+        excess = alive_count - count
+        weight_floor = sorted_negated[excess - 1 : excess]
         _launch.launch(
             kernel_sample.find_local_maxima,
             dim=init_count,
-            inputs=[weights, alive, nbr_idx, offsets, is_max, max_count],
+            inputs=[weights, alive, nbr_idx, offsets, weight_floor, is_max, max_count],
             device=device,
         )
 
         # The one readback per round: every branch below depends on the count.
         n_max = int(read_scalar(max_count, 0))
         _launch.zero_(max_count)
-        excess = alive_count - count
         if n_max == 0:
             # Nothing is flagged only when no alive point has an alive neighbour inside ``r_max``
             # -- otherwise the heaviest alive point with a neighbour is flagged, the test being a

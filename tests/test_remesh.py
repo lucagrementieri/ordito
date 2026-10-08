@@ -91,9 +91,9 @@ def _signed_volume(vertices_np: np.ndarray, faces_np: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _filled_hemisphere(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    """Fill the hemisphere's boundary and return (vertices_wp, faces_wp, region_mask_wp)."""
-    _, mesh_wp = hemisphere
+def _filled_rim(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    """Fill ``saddle_graded``'s rim and return (vertices_wp, faces_wp, region_mask_wp)."""
+    _, mesh_wp = saddle_graded
     faces_filled = od.holes.fill_min_weight(mesh_wp.points, mesh_wp.indices)
     n0 = mesh_wp.indices.size // 3
     n1 = faces_filled.size // 3
@@ -518,14 +518,14 @@ def test_remesh_valence_variance_decreases(device: str) -> None:
     assert np.var(valence_after - 6) <= np.var(valence_before - 6) + 0.5
 
 
-def test_remesh_cave_cube_manifold(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_remesh_hollow_shell_manifold(sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: remeshing a non-convex shell must not tear or self-weld it.
 
     trimesh supplies the manifoldness and genus checks. The fixture is the point: a cavity
     gives the collapse pass two surfaces close enough to merge if it ignores connectivity.
     """
-    mesh_tm, mesh_wp = cave_cube
+    mesh_tm, mesh_wp = sphere_irregular_hollow
     vertices_wp = wp.clone(mesh_wp.points)
     faces_wp = wp.clone(mesh_wp.indices)
     target = 0.5 * od.edges.mean_edge_length(vertices_wp, faces_wp)
@@ -535,11 +535,17 @@ def test_remesh_cave_cube_manifold(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> Non
     )
     mesh_out = warp_to_trimesh(out_vertices, out_faces)
     assert od.validation.is_watertight(out_vertices, out_faces)
-    # Two nested cubes: Euler characteristic 4 (two genus-0 shells) is preserved.
+    # Two nested shells: Euler characteristic 4 (two genus-0 shells) is preserved.
     assert mesh_out.euler_number == mesh_tm.euler_number
 
 
 def test_remesh_feature_preservation(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: corners where three creases meet are frozen in place.
+
+    Premise, and why the fixture is ``cave_cube``: exact creases meeting at known corners. The
+    irregular fixtures have no exact crease to preserve.
+    """
     _mesh_tm, mesh_wp = cave_cube
     vertices_wp = wp.clone(mesh_wp.points)
     faces_wp = wp.clone(mesh_wp.indices)
@@ -557,8 +563,8 @@ def test_remesh_feature_preservation(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> N
         assert np.min(np.linalg.norm(vertices_np - corner, axis=1)) < 1e-6
 
 
-def test_remesh_boundary_preservation(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = hemisphere
+def test_remesh_boundary_preservation(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = saddle_graded
     vertices_wp = wp.clone(mesh_wp.points)
     faces_wp = wp.clone(mesh_wp.indices)
     n_loops_before = len(warp_to_trimesh(mesh_wp.points, mesh_wp.indices).outline().entities)
@@ -1694,7 +1700,7 @@ def _closed_rings(faces_np: np.ndarray, n_vertices: int) -> list[set[int]]:
     return rings
 
 
-@pytest.mark.parametrize("mesh_name", ["icosphere", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_quadric_decimate_commits_no_conflicting_collapses(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1794,7 +1800,7 @@ def test_quadric_decimate_invalid(device: str) -> None:
 
 
 def test_quadric_decimate_captures_its_pass(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     The decimation pass is replayed as a CUDA graph rather than reissued.
@@ -1807,7 +1813,7 @@ def test_quadric_decimate_captures_its_pass(
     """
     if not wp.get_device(device).is_cuda or not wp.is_conditional_graph_supported():
         pytest.skip("conditional CUDA graphs unavailable")
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
     buffers = od.remesh._DecimationBuffers(
@@ -1820,7 +1826,7 @@ def test_quadric_decimate_captures_its_pass(
 
 
 def test_quadric_decimate_padding_never_reaches_the_output(
-    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: the fixed-width pass keeps its padding out of the output.
@@ -1831,10 +1837,12 @@ def test_quadric_decimate_padding_never_reaches_the_output(
     vertex rather than as a wrong number -- which is exactly what this asserts, after each pass
     rather than only on the result.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    # The public default feature angle: at 30 degrees ``sphere_irregular``'s creases freeze the
+    # coarsening at 708 of its 996 faces, short of the target.
     buffers = od.remesh._DecimationBuffers(
-        vertices_wp, faces_wp, len(mesh_tm.faces) // 8, wp.float32(np.radians(30.0))
+        vertices_wp, faces_wp, len(mesh_tm.faces) // 8, wp.float32(np.radians(180.0))
     )
     passes = 0
     while buffers.run_pass() and passes < 50:
@@ -1926,7 +1934,7 @@ def test_winner_faces_before_counts_the_cheaper_winners_faces(device: str) -> No
 
 @pytest.mark.parametrize("target_ratio", [0.5, 0.1])
 def test_quadric_decimate_provenance_maps_are_consistent(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh], target_ratio: float
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], target_ratio: float
 ) -> None:
     """
     Not a library comparison: no reference returns a decimation's provenance, so this is invariants.
@@ -1947,7 +1955,7 @@ def test_quadric_decimate_provenance_maps_are_consistent(
     The lower ratio matters: it takes several passes, so it exercises the composition across the
     captured graph replay rather than just the first issued pass.
     """
-    mesh_tm, _ = icosphere
+    mesh_tm, _ = sphere_irregular
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
     )
@@ -2076,8 +2084,8 @@ def _delone_violations(vertices_np: np.ndarray, faces_np: np.ndarray, region_np:
     return violations
 
 
-def test_flip_to_delaunay_reduces_violations(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    v, f, region = _filled_hemisphere(hemisphere)
+def test_flip_to_delaunay_reduces_violations(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    v, f, region = _filled_rim(saddle_graded)
     max_edge = 0.3 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
     nv, nf, nr = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
 
@@ -2153,8 +2161,8 @@ def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
     assert violations_after == 0
 
 
-def test_flip_to_delaunay_region_gated(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    v, f, region = _filled_hemisphere(hemisphere)
+def test_flip_to_delaunay_region_gated(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    v, f, region = _filled_rim(saddle_graded)
     nv, nf, nr = od.remesh.subdivide_region_to_size(
         v, f, region, max_edge=1e9, delaunay=False
     )  # no splits; just exercise gating on the raw fill patch
@@ -2166,7 +2174,9 @@ def test_flip_to_delaunay_region_gated(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.array_equal(faces_before[~region_np], faces_after[~region_np])
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded", "cave_cube"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "saddle_graded", "sphere_irregular_hollow"]
+)
 def test_flip_topology_matches_the_composed_adjacency(
     mesh_name: str, request: pytest.FixtureRequest
 ) -> None:
@@ -2206,7 +2216,7 @@ def test_flip_topology_matches_the_composed_adjacency(
 
 @pytest.mark.parametrize("flip_budget", [None, 7])
 def test_flip_topology_incremental_state_matches_a_fresh_build(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], flip_budget: int | None
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], flip_budget: int | None
 ) -> None:
     """
     Ordito against ordito: the flip loop's maintained topology against a rebuild of its output.
@@ -2218,11 +2228,11 @@ def test_flip_topology_incremental_state_matches_a_fresh_build(
     own two faces, every halfedge mapped to the row of its edge, and the key set holding exactly
     the current edges. ``flip_budget=7`` forces the tombstone rebuild mid-loop.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.device
     rng = np.random.default_rng(11)
-    # Large enough that flips continue for several rounds past the plain first one (79, 28, 9 and
-    # 1 flips on ``icosphere``), which is where the incremental state is exercised at all.
+    # Large enough that flips continue for several rounds past the plain first one (821 flips in
+    # all here), which is where the incremental state is exercised at all.
     jitter = rng.normal(scale=0.3 * mesh_tm.edges_unique_length.mean(), size=mesh_tm.vertices.shape)
     vertices, faces = numpy_to_warp(mesh_tm.vertices + jitter, mesh_tm.faces, device)
     n_vertices = len(mesh_tm.vertices)
@@ -2505,7 +2515,7 @@ def test_flip_by_objective_invalid(device: str) -> None:
 
 
 # --- intrinsic_delaunay ---------------------------------------------------------------
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "torus"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded", "torus_irregular"])
 def test_intrinsic_delaunay_removes_negative_cotangent_weights(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -2516,20 +2526,27 @@ def test_intrinsic_delaunay_removes_negative_cotangent_weights(
     )
 
     # A non-negative off-diagonal (in this sign convention, where the diagonal is negative) is what
-    # "Delaunay" buys: it is the condition for the Laplacian to satisfy a maximum principle.
+    # "Delaunay" buys: it is the condition for the Laplacian to satisfy a maximum principle. Bounded
+    # relative to each row, since a weight that should be zero rounds by the row's own scale: on the
+    # 68 x 68 ``saddle_graded`` (weights in the thousands) 8 interior weights landed at -2.1e-5,
+    # which is -2.3e-8 of their row's absolute sum.
     off_diagonal = flipped - np.diag(np.diag(flipped))
-    assert off_diagonal.min() > -1e-6
+    row_scale = np.abs(flipped).sum(axis=1, keepdims=True)
+    assert (off_diagonal / row_scale).min() > -1e-6
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+# Premise: an already-Delaunay mesh. ``sphere_round`` is the convex hull of points on a sphere (a
+# Delaunay triangulation of it) with irregular spacing; ``hemisphere`` is the open one. The bumpy
+# fixtures are not Delaunay (``sphere_well_shaped`` needs 85 flips, ``sphere_irregular`` more).
+@pytest.mark.parametrize("mesh_name", ["sphere_round", "hemisphere"])
 def test_intrinsic_delaunay_leaves_a_delaunay_mesh_alone(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
+    """Not a library comparison: a mesh that is already intrinsically Delaunay comes back as is."""
     _, mesh_wp = request.getfixturevalue(mesh_name)
     original_lengths = od.edges.face_edge_lengths(mesh_wp.points, mesh_wp.indices).numpy()
     faces, lengths, n_flips = od.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
 
-    # These fixtures come from an icosphere, whose triangulation is already intrinsically Delaunay.
     assert n_flips == 0
     assert np.array_equal(faces.numpy(), mesh_wp.indices.numpy())
     assert np.allclose(lengths.numpy(), original_lengths, rtol=1e-6, atol=1e-6)
@@ -2602,7 +2619,7 @@ def test_intrinsic_delaunay_resolves_interior_violations_via_multi_edges(device:
     assert min(weight[e] for e in boundary) < -1e-6
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded", "torus"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular"])
 @pytest.mark.parity("intrinsic_delaunay", "igl")
 def test_intrinsic_delaunay_metric_matches_igl(
     request: pytest.FixtureRequest, mesh_name: str
@@ -2671,7 +2688,7 @@ def _undirected_intrinsic_lengths(faces_np: np.ndarray, lengths_np: np.ndarray) 
     return np.sort(lengths[first].astype(np.float64))
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded", "torus"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular"])
 @pytest.mark.parity(
     "intrinsic_delaunay",
     "meshlib",
@@ -2731,7 +2748,7 @@ def test_intrinsic_delaunay_metric_matches_meshlib(
 
 
 @pytest.mark.parity("subdivide", "trimesh")
-def test_subdivide(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_subdivide(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B (face order): one uniform 1-to-4 pass against ``trimesh.remesh.subdivide``.
 
@@ -2741,7 +2758,7 @@ def test_subdivide(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     child face exists once. A coordinate lexsort is not usable: the icosahedron's centroids tie, and
     a tie broken by rounding noise orders the two sides differently.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
 
     vertices_np = mesh_tm.vertices.astype(np.float32)
     faces_np = mesh_tm.faces.astype(np.int32)
@@ -2768,7 +2785,7 @@ def test_subdivide(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
 
 
 @pytest.mark.parity("subdivide", "open3d")
-def test_subdivide_matches_open3d(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_subdivide_matches_open3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B: Open3D's ``subdivide_midpoint`` is the same 1:4 split under a different vertex order.
 
@@ -2778,7 +2795,7 @@ def test_subdivide_matches_open3d(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> No
     centroids carry coordinate ties that ordito resolves in ``float32`` and Open3D in ``float64``,
     so the row order is decided by rounding noise (measured: a 1.59 spurious mismatch).
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
 
     mesh_o3d = trimesh_to_open3d(mesh_tm).subdivide_midpoint(number_of_iterations=1)
     mesh_ref = open3d_to_trimesh(mesh_o3d)
@@ -2800,7 +2817,7 @@ def test_subdivide_matches_open3d(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> No
 # six processes are clean -- so the comparison itself is worth keeping, and the parity gate only
 # asks that every *benchmarked* pair be tested, not the reverse.
 @pytest.mark.parity("subdivide", "pytorch3d")
-def test_subdivide_matches_pytorch3d(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_subdivide_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B: ``ops.SubdivideMeshes`` is the same 1:4 split, matched by nearest neighbour.
 
@@ -2820,7 +2837,7 @@ def test_subdivide_matches_pytorch3d(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh
     no ``meshes=`` argument is what makes it recompute the subdivision topology per call -- passing
     a mesh there caches it, which would be timing a different thing in the benchmark.
     """
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = sphere_irregular
     subdivided_p3d = p3d_ops.SubdivideMeshes()(trimesh_to_pytorch3d(mesh_tm))
     vertices_p3d, faces_p3d = pytorch3d_to_numpy(subdivided_p3d)
     vertices_wp, faces_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
@@ -2832,7 +2849,7 @@ def test_subdivide_matches_pytorch3d(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh
     assert_nearest_bijection(vertices_wp.numpy(), vertices_p3d.astype(np.float32), 0.0)
 
 
-def test_subdivide_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_subdivide_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B: ``igl.upsample`` is the same 1:4 midpoint split under a different vertex order.
 
@@ -2843,7 +2860,7 @@ def test_subdivide_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     bijective centroid match the Open3D test uses, and for the same reason: a lexsort over
     coordinates is decided by rounding noise where the icosahedron's centroids tie.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
 
     vertices_upsampled_igl, faces_upsampled_igl = map(
         np.asarray,
@@ -2866,9 +2883,9 @@ def test_subdivide_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     assert_nearest_bijection(centroids_wp, centroids_igl, 1e-5)
 
 
-def test_subdivide_edge_lengths(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_subdivide_edge_lengths(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """All edges in the subdivided mesh are at most half the longest original edge."""
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
 
     vertices_np = mesh_tm.vertices.astype(np.float32)
     faces_np = mesh_tm.faces.astype(np.int32)
@@ -2995,7 +3012,7 @@ def test_subdivide_loop_matches_open3d(mesh_name: str, request: pytest.FixtureRe
     assert_nearest_bijection(centroids_wp, centroids_o3d, 1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_subdivide_loop_keeps_the_boundary_in_the_boundary(
     mesh_name: str, request: pytest.FixtureRequest
 ) -> None:
@@ -3024,7 +3041,7 @@ def test_subdivide_loop_keeps_the_boundary_in_the_boundary(
 
 
 def test_subdivide_loop_shrinks_a_convex_solid_towards_its_limit(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Loop approximates where ``subdivide`` interpolates, so it must move the surface and shrink it.
@@ -3035,7 +3052,7 @@ def test_subdivide_loop_shrinks_a_convex_solid_towards_its_limit(
     times also checks the passes compose -- each one is a fresh call, which is how ``igl.loop``'s
     ``number_of_subdivs`` is meant to be reproduced.
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     volume_before = od.measures.volume(mesh_wp.points, mesh_wp.indices)
 
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -3129,7 +3146,7 @@ def test_subdivide_loop_operator_reproduces_its_own_positions(
 
 
 def test_subdivide_loop_operator_carries_a_field(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: what the operator is *for* -- a field surviving the subdivision.
@@ -3143,7 +3160,7 @@ def test_subdivide_loop_operator_carries_a_field(
     Covers the three dtypes the transfer registers, since each is a separately compiled overload:
     ``wp.float32``, ``wp.vec2`` (a UV) and ``wp.vec3`` (a colour or a normal).
     """
-    _, mesh_wp = icosphere_coarse
+    _, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     n_vertices = vertices_wp.size
     device = vertices_wp.device
@@ -3221,9 +3238,9 @@ def test_transfer_through_operator_guards_and_empty_inputs(device: str) -> None:
 
 
 @pytest.mark.parity("subdivide_to_size", "trimesh")
-def test_subdivide_to_size_reference_regular(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_subdivide_to_size_reference_regular(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Class A: a single pass on a regular mesh, where every face splits 1-to-4, matches trimesh."""
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     faces_np = mesh_tm.faces.astype(np.int32)
     max_edge = 0.6 * _max_edge_length(mesh_tm.vertices.astype(np.float32), faces_np)
     _assert_matches_trimesh_subdivide_to_size(mesh_tm, mesh_wp, max_edge)
@@ -3232,7 +3249,7 @@ def test_subdivide_to_size_reference_regular(icosahedron: tuple[tm.Trimesh, wp.M
 @pytest.mark.parametrize("split_fraction", [0.7, 0.35])
 @pytest.mark.parity("subdivide_to_size", "pymeshlab")
 def test_subdivide_to_size_matches_pymeshlab(
-    split_fraction: float, icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]
+    split_fraction: float, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class A: MeshLab's midpoint refinement produces the *identical* mesh, vertex for vertex.
@@ -3240,7 +3257,7 @@ def test_subdivide_to_size_matches_pymeshlab(
     ``meshing_surface_subdivision_midpoint`` splits every edge over ``threshold`` at its midpoint
     and repeats, which is exactly what this function does, and at both split fractions the two agree
     on the vertex count, the face count, the resulting longest edge and every vertex *position* --
-    worst nearest-neighbour distance **6.5e-08**. So no transform on the geometry is needed at all.
+    worst nearest-neighbour distance **3.4e-07**. So no transform on the geometry is needed at all.
 
     Two on the plumbing, both matching what the benchmark passes. ``threshold`` takes a wrapper type
     and gets ``ml.PureValue`` fed from the same absolute length ordito receives, not a
@@ -3249,10 +3266,10 @@ def test_subdivide_to_size_matches_pymeshlab(
     the surplus passes find nothing left to refine; this is why the two converge to the same fixed
     point despite counting passes differently.
 
-    Measured on ``icosphere(2)``: 642 vertices / 1 280 faces at 0.7x the mean edge, 2 562 / 5 120 at
-    0.35x, identical on both sides.
+    Measured on ``sphere_irregular``: 2 886 vertices / 5 768 faces at 0.7x the mean edge (worst
+    distance 2.6e-07), 10 963 / 21 922 at 0.35x (3.4e-07), identical counts on both sides.
     """
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = sphere_irregular
     edges_np = mesh_tm.edges_unique
     mean_edge = float(
         np.linalg.norm(
@@ -3452,8 +3469,8 @@ def test_subdivide_to_size_single_triangle(device: str) -> None:
     assert np.isclose(new_v_np, np.array([1.0, 0.0, 0.0])).all(axis=1).any()
 
 
-def test_subdivide_to_size_max_iter_exceeded(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
+def test_subdivide_to_size_max_iter_exceeded(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = sphere_irregular
     small_edge = 0.1 * od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
     with pytest.raises(ValueError, match="max_iter exceeded"):
         od.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, small_edge, max_iter=0)
@@ -3503,27 +3520,27 @@ def test_subdivide_to_size_sizing_field(device: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_subdivide_region_max_edge(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    v, f, region = _filled_hemisphere(hemisphere)
+def test_subdivide_region_max_edge(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    v, f, region = _filled_rim(saddle_graded)
     max_edge = 0.2 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
     nv, nf, nr = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
     max_edge_np = _region_max_edge(nv.numpy(), nf.numpy().reshape(-1, 3), nr.numpy())
     assert max_edge_np <= max_edge + 1e-4
 
 
-def test_subdivide_region_crack_free(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    v, f, region = _filled_hemisphere(hemisphere)
+def test_subdivide_region_crack_free(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    v, f, region = _filled_rim(saddle_graded)
     max_edge = 0.3 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
     _, nf, _ = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge)
     faces_np = nf.numpy().reshape(-1, 3)
     edges = undirected_edges(faces_np)
     _, counts = np.unique(edges, axis=0, return_counts=True)
-    # Filled hemisphere is closed: every undirected edge is shared by exactly two faces.
+    # The filled saddle is closed: every undirected edge is shared by exactly two faces.
     assert np.array_equal(np.unique(counts), np.array([2]))
 
 
 def test_subdivide_region_appends_and_leaves_the_outside_untouched(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ):
     """
     Not a library comparison: refinement only appends vertices and only rewrites the rim.
@@ -3531,7 +3548,7 @@ def test_subdivide_region_appends_and_leaves_the_outside_untouched(
     The originals stay a verbatim prefix of the vertex buffer, and a face outside the region is
     either unchanged or retriangulated because it shared a split rim edge.
     """
-    v, f, region = _filled_hemisphere(hemisphere)
+    v, f, region = _filled_rim(saddle_graded)
     n_vertices_before = v.size
     max_edge = 0.3 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
     nv, nf, nr = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
@@ -3549,7 +3566,7 @@ def test_subdivide_region_appends_and_leaves_the_outside_untouched(
 
 
 def test_subdivide_region_max_splits_takes_the_longest_edges(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ):
     """
     Class A: a bound budget spends itself on the longest eligible edges, not on an arbitrary five.
@@ -3559,7 +3576,7 @@ def test_subdivide_region_max_splits_takes_the_longest_edges(
     device spelling defines. Non-vacuous by construction: the budget is a twentieth of the eligible
     count, so the branch is reached and has to discard most of what it was given.
     """
-    v, f, region = _filled_hemisphere(hemisphere)
+    v, f, region = _filled_rim(saddle_graded)
     vertices_np, faces_np, region_np = v.numpy(), f.numpy().reshape(-1, 3), region.numpy()
     max_edge = 0.2 * _region_max_edge(vertices_np, faces_np, region_np)
 
@@ -3734,7 +3751,7 @@ def test_refine_region_to_density_matches_the_surroundings_better_than_a_target_
 
 
 def test_refine_region_to_density_leaves_the_mesh_closed_and_the_outside_alone(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: the invariants a 1-to-3 centroid split gives for free.
@@ -3745,7 +3762,7 @@ def test_refine_region_to_density_leaves_the_mesh_closed_and_the_outside_alone(
     grows by exactly twice the number of inserted vertices. Asserting all three is what says the
     split really is independent rather than accidentally consistent on this input.
     """
-    vertices_wp, faces_wp, region_wp = _filled_hemisphere(hemisphere)
+    vertices_wp, faces_wp, region_wp = _filled_rim(saddle_graded)
     n_vertices = vertices_wp.size
     outside_np = {
         tuple(sorted(row)) for row in faces_wp.numpy().reshape(-1, 3)[~region_wp.numpy()].tolist()
@@ -3765,16 +3782,16 @@ def test_refine_region_to_density_leaves_the_mesh_closed_and_the_outside_alone(
     assert np.array_equal(new_v.numpy()[:n_vertices], vertices_wp.numpy())
 
 
-def test_refine_region_to_density_alpha_monotone(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_refine_region_to_density_alpha_monotone(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: ``alpha`` is the criterion's one knob and it has to act like one.
 
     Raising it loosens both clauses of the test, so the patch can only get finer -- measured on the
-    filled hemisphere: 0 vertices inserted at ``alpha = 1``, 58 at ``sqrt(2)`` (the paper's value)
-    and 97 at 2. The assert is the ordering rather than the numbers, since the counts depend on the
-    patch the minimum-weight fill happened to choose.
+    filled saddle rim: 0 vertices inserted at ``alpha = 1``, 1 559 at ``sqrt(2)`` (the paper's
+    value) and 2 320 at 2. The assert is the ordering rather than the numbers, since the counts
+    depend on the patch the minimum-weight fill happened to choose.
     """
-    vertices_wp, faces_wp, region_wp = _filled_hemisphere(hemisphere)
+    vertices_wp, faces_wp, region_wp = _filled_rim(saddle_graded)
     n_vertices = vertices_wp.size
     inserted = [
         od.remesh.refine_region_to_density(vertices_wp, faces_wp, region_wp, alpha=alpha)[0].size
@@ -3786,7 +3803,7 @@ def test_refine_region_to_density_alpha_monotone(hemisphere: tuple[tm.Trimesh, w
 
 
 def test_refine_region_to_density_whole_mesh_region_terminates(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: the whole mesh as the region still terminates.
@@ -3794,7 +3811,7 @@ def test_refine_region_to_density_whole_mesh_region_terminates(
     The empty region, the identity, is pinned by
     [`test_refiners_return_buffers_independent_of_their_input`].
     """
-    vertices_wp, faces_wp, region_wp = _filled_hemisphere(hemisphere)
+    vertices_wp, faces_wp, region_wp = _filled_rim(saddle_graded)
 
     # No surrounding mesh at all: the scale attribute falls back to the whole mesh's edges, which
     # must still converge rather than divide by a zero scale for ever.
@@ -3879,7 +3896,7 @@ def test_remesh_rejects_a_mismatched_region(
     "entry_point", ["subdivide_to_size", "subdivide_region_to_size", "refine_region_to_density"]
 )
 def test_refiners_return_buffers_independent_of_their_input(
-    entry_point: str, hemisphere: tuple[tm.Trimesh, wp.Mesh]
+    entry_point: str, saddle_graded: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Not a library comparison: no reference exposes a buffer-aliasing contract.
@@ -3892,9 +3909,9 @@ def test_refiners_return_buffers_independent_of_their_input(
     comparing values cannot make: an alias compares equal. The value comparison is asserted first,
     so this is also where each refiner's no-op result is pinned.
     """
-    vertices_src, faces_src, region_wp = _filled_hemisphere(hemisphere)
+    vertices_src, faces_src, region_wp = _filled_rim(saddle_graded)
     # Clone off the session fixture first, so a regression corrupts this test's own buffers rather
-    # than every later test that shares the hemisphere.
+    # than every later test that shares the fixture.
     vertices_wp = wp.clone(vertices_src)
     faces_wp = wp.clone(faces_src)
     empty_wp = wp.zeros(region_wp.size, dtype=wp.bool, device=region_wp.device)
@@ -3947,7 +3964,9 @@ def test_refiners_return_buffers_independent_of_their_input(
     "benchmarks/ outright because it corrupts the process heap on the scan meshes -- the reason it "
     "is pinned to icosahedron here, the one fixture it is measured clean on.",
 )
-def test_split_edges_all_matches_igl_and_open3d(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_split_edges_all_matches_igl_and_open3d(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class B (vertex order): splitting every edge is the regular 1-to-4 subdivision.
 
@@ -3970,7 +3989,7 @@ def test_split_edges_all_matches_igl_and_open3d(icosahedron: tuple[tm.Trimesh, w
     SIGSEGVs on ``bunny``, and ``icosahedron`` is the fixture it is measured clean on over 1 200
     calls.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     n_faces = mesh_wp.indices.size // 3
     split_vertices_wp, split_faces_wp = _split_every_edge(mesh_wp)
     split_np = split_vertices_wp.numpy().astype(np.float64)
@@ -3994,7 +4013,7 @@ def test_split_edges_all_matches_igl_and_open3d(icosahedron: tuple[tm.Trimesh, w
 
 
 def test_split_edges_every_edge_is_the_regular_subdivision(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: splitting every edge must equal ``subdivide``.
@@ -4011,7 +4030,7 @@ def test_split_edges_every_edge_is_the_regular_subdivision(
     does not make. A *direct* one is available -- ``igl.upsample`` and open3d's
     ``subdivide_midpoint`` both bind the regular subdivision -- and would upgrade this to Class B.
     """
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     split_v, split_f = _split_every_edge(mesh_wp)
     fine_v, fine_f = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
@@ -4021,7 +4040,7 @@ def test_split_edges_every_edge_is_the_regular_subdivision(
 
 
 def test_split_edges_honours_caller_supplied_positions(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     ``split_positions`` puts the new vertex where the caller asks, not at the midpoint.
@@ -4030,7 +4049,7 @@ def test_split_edges_honours_caller_supplied_positions(
     contract too: positions are ordered by the exclusive scan of the mask, i.e. ascending
     unique-edge index among the flagged edges.
     """
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
     unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     edges_np = unique_edges.numpy()
@@ -4062,10 +4081,10 @@ def test_split_edges_honours_caller_supplied_positions(
 
 
 def test_split_edges_is_crack_free_for_an_arbitrary_mask(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Not a library comparison: an arbitrary edge subset still leaves a closed, manifold mesh."""
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
     unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     rng = np.random.default_rng(20260811)
@@ -4081,9 +4100,9 @@ def test_split_edges_is_crack_free_for_an_arbitrary_mask(
     assert np.isclose(warp_to_trimesh(split_v, split_f).area, mesh_tm.area, rtol=1e-5)
 
 
-def test_split_edges_carries_a_per_face_index(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_split_edges_carries_a_per_face_index(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """``index`` rides through the split, and ``None`` reports provenance into the input faces."""
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
     n_faces = mesh_wp.indices.size // 3
 
@@ -4104,8 +4123,8 @@ def test_split_edges_carries_a_per_face_index(icosahedron: tuple[tm.Trimesh, wp.
     assert np.array_equal(carried.numpy(), labels_np[provenance_np])
 
 
-def test_split_edges_empty_mask_is_a_copy(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_split_edges_empty_mask_is_a_copy(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     nothing = wp.zeros(int(unique_edges.shape[0]), dtype=wp.bool, device=mesh_wp.indices.device)
 
@@ -4123,7 +4142,7 @@ def test_split_edges_empty_mask_is_a_copy(icosahedron: tuple[tm.Trimesh, wp.Mesh
 
 
 def test_split_edges_empty_mask_does_not_alias_the_caller_index(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: buffer ownership is ordito's contract, not a reference's.
@@ -4136,7 +4155,7 @@ def test_split_edges_empty_mask_does_not_alias_the_caller_index(
     **Mutation probe, measured against a detached pre-fix worktree:** returning ``carried``
     unchanged makes the write below land in ``carry`` as well, failing the last assert.
     """
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
     unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     nothing = wp.zeros(int(unique_edges.shape[0]), dtype=wp.bool, device=device)
@@ -4158,8 +4177,8 @@ def test_split_edges_empty_mask_does_not_alias_the_caller_index(
     assert np.array_equal(carry.numpy(), np.arange(n_faces))
 
 
-def test_split_edges_validation(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_split_edges_validation(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
     unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     n_edges = int(unique_edges.shape[0])

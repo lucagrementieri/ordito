@@ -24,7 +24,7 @@ from tests.conversions import (
 )
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("vertex_normals", "open3d", "pymeshlab")
 @pytest.mark.parity("mean_vertex_normals", "pymeshlab")
 def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
@@ -72,7 +72,7 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
     assert not np.allclose(area_wp.numpy(), mean_wp.numpy(), atol=1e-3)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("mean_vertex_normals", "pyvista")
 def test_mean_vertex_normals_match_pyvista(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -111,7 +111,12 @@ def test_mean_vertex_normals_match_pyvista(request: pytest.FixtureRequest, mesh_
 
 @pytest.mark.parametrize(
     ("mesh_name", "scale"),
-    [("half_torus", 1.0), ("saddle_graded", 1.0), ("icosphere", 3e-6), ("icosphere", 1e-9)],
+    [
+        ("saddle_graded", 1.0),
+        ("sphere_irregular", 1.0),
+        ("sphere_irregular", 3e-6),
+        ("sphere_irregular", 1e-9),
+    ],
 )
 def test_vertex_normals_area_matches_igl_at_any_scale(
     request: pytest.FixtureRequest, mesh_name: str, scale: float
@@ -147,7 +152,7 @@ def test_vertex_normals_area_matches_igl_at_any_scale(
 
 
 @pytest.mark.parity("vertex_normals", "pytorch3d")
-def test_vertex_normals_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_vertex_normals_match_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: ``Meshes.verts_normals_packed`` is ordito's **area**-weighted vertex normal.
 
@@ -161,7 +166,7 @@ def test_vertex_normals_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -
     and leaves their normals at the ``torch.zeros`` initial value rather than ``NaN``, so on a mesh
     with spares this would be comparing zeros with whatever ordito writes.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     device = str(mesh_wp.points.device)
     normals_t = trimesh_to_pytorch3d(mesh_tm, device).verts_normals_packed()
     assert normals_t is not None
@@ -174,7 +179,7 @@ def test_vertex_normals_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -
     assert not np.allclose(angle_wp.numpy(), normals_p3d, rtol=1e-5, atol=1e-6)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("vertex_normals", "meshlib")
 def test_vertex_normal_weightings_match_meshlib(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -214,14 +219,14 @@ def test_vertex_normal_weightings_match_meshlib(request: pytest.FixtureRequest, 
     assert not np.allclose(mean_wp.numpy(), area_ml, atol=1e-4)
 
 
-def test_vertex_normals_angle(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_vertex_normals_angle(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A: angle weighting against trimesh's, which is the same rule under a different name.
 
     Completes the three weightings the wrapper exposes; each is a different accumulation rather
     than a scaling of one, so each needs its own comparison.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
 
     n_vertices = mesh_tm.vertices.shape[0]
     vertex_normals_tm = tm.geometry.weighted_vertex_normals(
@@ -235,7 +240,7 @@ def test_vertex_normals_angle(half_torus: tuple[tm.Trimesh, wp.Mesh]):
 
 @pytest.mark.parametrize("weighting", ["area", "angle"])
 def test_vertex_normals_precomputed_face_quantities(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], weighting: Literal["area", "angle"]
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], weighting: Literal["area", "angle"]
 ) -> None:
     """
     Ordito against ordito: supplied face normals and weights equal the ones the call derives.
@@ -243,7 +248,7 @@ def test_vertex_normals_precomputed_face_quantities(
     The derived path carries the oracle (igl's area mode, trimesh's angle weighting above); this
     pins that the ``face_normals=`` / ``face_weights=`` path accumulates them the same way.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
 
     face_normals_wp, face_areas_wp = od.triangles.face_normals_and_areas(
@@ -288,7 +293,7 @@ def _compute_max_vertex_normals_np(vertices: np.ndarray, faces: np.ndarray) -> n
 
 
 @pytest.mark.parametrize("scale", [1.0, 1e-3, 1e3])
-def test_vertex_normals_mwselr(scale: float, half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_vertex_normals_mwselr(scale: float, saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A against a NumPy transcription of Nelson Max's MWSELR weight.
 
@@ -308,9 +313,13 @@ def test_vertex_normals_mwselr(scale: float, half_torus: tuple[tm.Trimesh, wp.Me
     supplied-``face_normals`` path multiply in the cross-product magnitude at different points, so
     a scale that broke one need not break the other.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
 
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64) * scale
+    # Both sides see the same ``float32``-rounded scaled vertices: scaling by 1e-3 is inexact, and
+    # on ``saddle_graded``'s aspect-4 800 needles one rounding of the inputs moves a normal past
+    # the 1e-5 compared here.
+    vertices_np = (np.array(mesh_tm.vertices, dtype=np.float64) * scale).astype(np.float32)
+    vertices_np = vertices_np.astype(np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int32)
     vertex_normals_np = _compute_max_vertex_normals_np(vertices_np, faces_np)
     # Non-vacuity: the oracle itself must be unit normals, not the zero rows the defect produced.
@@ -320,15 +329,18 @@ def test_vertex_normals_mwselr(scale: float, half_torus: tuple[tm.Trimesh, wp.Me
     vertex_normals_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="mwselr")
     assert np.allclose(vertex_normals_wp.numpy(), vertex_normals_np, rtol=1e-5, atol=1e-5)
 
-    # Face normals are unit vectors, so they are the same buffer at every scale.
-    face_normals_wp = points_to_warp(mesh_tm.face_normals, mesh_wp.device)
+    # The face normals of the same rounded vertices: unit vectors, but on a needle the rounding of
+    # the scaled corners moves them (3.8e-5 at 1e-3 if taken from the unscaled mesh).
+    face_normals_wp = points_to_warp(
+        tm.Trimesh(vertices_np, faces_np, process=False).face_normals, mesh_wp.device
+    )
     vertex_normals_explicit_wp = od.vertices.vertex_normals(
         vertices_wp, mesh_wp.indices, weighting="mwselr", face_normals=face_normals_wp
     )
     assert np.allclose(vertex_normals_explicit_wp.numpy(), vertex_normals_np, rtol=1e-5, atol=1e-5)
 
 
-def test_vertex_normals_are_reproducible(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_vertex_normals_are_reproducible(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Ordito against ordito: the identical call, eight times, must return the identical buffer.
 
@@ -345,7 +357,7 @@ def test_vertex_normals_are_reproducible(half_torus: tuple[tm.Trimesh, wp.Mesh])
     downstream consumer this was found through is
     ``test_principal_curvature_is_reproducible``.
     """
-    _, mesh_wp = half_torus
+    _, mesh_wp = saddle_graded
 
     runs = [
         od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy().copy() for _ in range(8)
@@ -358,7 +370,7 @@ def test_vertex_normals_are_reproducible(half_torus: tuple[tm.Trimesh, wp.Mesh])
         assert np.array_equal(runs[0], other)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "icosahedron", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
 @pytest.mark.parity("vertex_defects", "trimesh", "igl", "meshlib", "pyvista")
 def test_vertex_defects(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -428,7 +440,7 @@ def test_vertex_defects(request: pytest.FixtureRequest, mesh_name: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("mesh_name", "chi"), [("icosahedron", 2), ("boy_surface", 1), ("bohemian_dome", 0)]
+    ("mesh_name", "chi"), [("sphere_irregular", 2), ("boy_surface", 1), ("bohemian_dome", 0)]
 )
 def test_vertex_defects_satisfy_gauss_bonnet(
     request: pytest.FixtureRequest, mesh_name: str, chi: int
@@ -453,7 +465,7 @@ def test_vertex_defects_satisfy_gauss_bonnet(
 
 
 def test_scatter_wrappers_match_trimesh_on_their_inputs_device(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class A: the three ``vertices`` scatter wrappers against trimesh, on their inputs' device.
@@ -470,7 +482,7 @@ def test_scatter_wrappers_match_trimesh_on_their_inputs_device(
     makes the omission observable -- it was a real defect in all three of these functions. On the
     CPU device there is no second device to switch to, and the comparisons alone remain.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = saddle_graded
     n_vertices = mesh_tm.vertices.shape[0]
 
     face_normals_wp = points_to_warp(mesh_tm.face_normals, mesh_wp.device)

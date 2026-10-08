@@ -47,7 +47,7 @@ from tests.conversions import (
 # optimality claim against Open3D: its fill of that rim reuses the two mesh edges that close the
 # grid's ear corners, a non-manifold fill ``resolve_multiple_edges`` forbids, so it scores below
 # ordito's (759 617 against 769 927); without that rule ordito's DP reaches 759 151.
-_PLANAR_RIM_MESHES = ["hemisphere", "half_torus"]
+_PLANAR_RIM_MESHES = ["sphere_irregular_cap", "sphere_irregular_band"]
 
 if TYPE_CHECKING:
     from typing_extensions import Buffer
@@ -88,42 +88,39 @@ def test_fill_fan_covers_the_same_rim_as_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class C (two derived scalars): the same rim triangulated two ways covers the same surface.
+    Class C (two derived quantities): the same rims triangulated two ways span the same surface.
 
     MeshLib has no fan: ``fillHoleTrivially`` puts a new vertex at the rim's centroid and fans from
     *that*, which is [`fill_cone`][ordito.holes.fill_cone]'s operation and is compared to it
-    element-wise one test below. So the claim available for the fan is the one property two
-    different triangulations of one **planar** rim must share -- they cover the same region -- and
-    the comparable quantities are the added area and the enclosed volume.
+    element-wise one test below. So the claim available for the fan is what every triangulation of
+    one rim shares: the caps' **vector area** (half the loop integral of ``x x dx``, the same for
+    any triangulation, overlapping or not) and, the rims being planar, the enclosed **volume**. Not
+    the unsigned area: a fan from one vertex of a non-convex rim overlaps itself, which
+    ``fill_fan`` documents, so on ``sphere_irregular_cap``'s star-shaped rim it covers 9.10 where
+    the polygon is 8.09 (MeshLib's centroid cone, the rim being star-shaped about it, covers exactly
+    8.09); for the same reason the fan is sealed (closed and edge-manifold) but self-intersecting,
+    so not ``is_watertight`` in Open3D's sense.
 
-    That makes it a sharper test than it sounds, because the agreement is at the float32 floor and
-    nowhere near the tolerance: measured on a 97-vertex rim, the areas agree to better than
-    **1e-9 relative** and the volumes to **5.9e-09 relative** -- the residual being the converter's
-    float32 storage on MeshLib's side, since with both fed one identical float32 buffer the two
-    areas land 2e-15 apart -- while the face counts differ by exactly 2 per loop (``B - 2`` fan
-    triangles against ``B``) and the vertex counts by exactly 1. The mutation probe: dropping a
-    single fan triangle changes the area by 0.0104, **1.1e-03 relative**, which is 2e5 x the bound
-    asserted below.
-
-    What it excludes is a fan that skips a rim vertex, emits a triangle twice, or walks the loop in
-    an order that makes the cap self-overlap -- every one of which changes the covered area while
-    leaving the triangle count right. What it cannot see is *which* triangulation was chosen, which
-    is what the count assertions are for.
+    Measured, the cap vector areas agree to 1.6e-16 relative and the volumes to 1.7e-08 (the
+    residual is MeshLib's float32 storage); dropping one cap triangle moves the vector area by at
+    least 2.6e-07 relative, 260x the bound asserted below. What it excludes is a fan that skips a
+    rim vertex, emits a triangle twice, winds one backwards or walks the loop out of order. What it
+    cannot see is *which* triangulation was chosen, which is what the count assertions are for.
 
     Not a library comparison, the count half: a fan over a ``B``-vertex loop is ``B - 2`` triangles
     and adds no vertices -- arithmetic, not another implementation -- cross-checked against the
-    count ``trimesh.repair.fill_holes(use_fan=True)`` adds. The input is asserted *not* watertight
-    first, so the sealing claim cannot pass on a mesh that was already closed.
+    count ``trimesh.repair.fill_holes(use_fan=True)`` adds. The input is asserted to have open
+    edges first, so the sealing claim cannot pass on a mesh that was already closed.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
     loop_sizes = _loop_sizes(mesh_wp)
 
-    assert not od.validation.is_watertight(mesh_wp.points, mesh_wp.indices)
+    assert not od.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False)
     fan_faces_wp = od.holes.fill_fan(mesh_wp.points, mesh_wp.indices)
     fan_tm = warp_to_trimesh(mesh_wp.points, fan_faces_wp)
 
-    assert od.validation.is_watertight(mesh_wp.points, fan_faces_wp)
+    assert od.validation.is_edge_manifold(fan_faces_wp, allow_boundary_edges=False)
     assert od.validation.is_winding_consistent(fan_faces_wp)
     n_new_faces = (fan_faces_wp.size - mesh_wp.indices.size) // 3
     assert n_new_faces == sum(size - 2 for size in loop_sizes)
@@ -151,12 +148,24 @@ def test_fill_fan_covers_the_same_rim_as_meshlib(
     assert len(cone_ref_tm.vertices) == n_vertices + len(loop_sizes)
     assert len(cone_ref_tm.faces) == len(fan_tm.faces) + 2 * len(loop_sizes)
 
-    # And with the rims planar, the two caps cover the same region.
-    assert np.isclose(fan_tm.area, cone_ref_tm.area, rtol=1e-7, atol=1e-9)
+    # The fan appends its caps after the input faces; MeshLib's caps are the faces at its apexes.
+    assert np.array_equal(fan_tm.faces[: len(mesh_tm.faces)], mesh_tm.faces)
+    cap_area = _vector_area(fan_tm.vertices, fan_tm.faces[len(mesh_tm.faces) :])
+    cap_area_ml = _vector_area(
+        cone_ref_tm.vertices, cone_ref_tm.faces[(cone_ref_tm.faces >= n_vertices).any(axis=1)]
+    )
+    assert np.linalg.norm(cap_area_ml) > 0.1
+    assert np.linalg.norm(cap_area - cap_area_ml) < 1e-9 * np.linalg.norm(cap_area_ml)
     assert np.isclose(fan_tm.volume, cone_ref_tm.volume, rtol=1e-7, atol=1e-9)
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+def _vector_area(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Sum of the faces' area vectors: half the loop integral of ``x x dx`` round their boundary."""
+    corners = np.asarray(vertices, dtype=np.float64)[faces]
+    return 0.5 * np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]).sum(axis=0)
+
+
+@pytest.mark.parametrize("mesh_name", [*OPEN_MESHES, "sphere_irregular_band"])
 @pytest.mark.parity("fill_cone", "meshlib")
 def test_fill_cone_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -174,8 +183,9 @@ def test_fill_cone_matches_meshlib(request: pytest.FixtureRequest, mesh_name: st
     the two libraries pick different *starting corners* but the same orientation, and rotation
     cannot hide a flip, so the winding stays under test.
 
-    MeshLib fills one hole per call, so a multi-rim fixture is looped on that side; ``half_torus``
-    exercises that with two rims, which is what makes the loop non-vacuous.
+    MeshLib fills one hole per call, so a multi-rim fixture is looped on that side;
+    ``sphere_irregular_band`` exercises that with two rims, which is what makes the loop
+    non-vacuous.
 
     Not a library comparison, the structural half: the result is closed and consistently wound,
     adds one apex and ``B`` triangles per loop, references only valid vertices, and puts each apex
@@ -236,7 +246,9 @@ def test_fill_cone_matches_meshlib(request: pytest.FixtureRequest, mesh_name: st
 
 
 @pytest.mark.parametrize("method", ["fill_fan", "fill_cone", "fill_min_weight"])
-def test_fill_preserve_largest(half_torus: tuple[tm.Trimesh, wp.Mesh], method: str) -> None:
+def test_fill_preserve_largest(
+    sphere_irregular_band: tuple[tm.Trimesh, wp.Mesh], method: str
+) -> None:
     """
     Not a library comparison: ``preserve_largest_hole`` leaves exactly the longest rim open.
 
@@ -245,7 +257,7 @@ def test_fill_preserve_largest(half_torus: tuple[tm.Trimesh, wp.Mesh], method: s
     DP, ``B`` triangles and one apex for a cone), and the one remaining rim has the preserved
     loop's perimeter.
     """
-    _, mesh_wp = half_torus
+    _, mesh_wp = sphere_irregular_band
     loop_sizes = _loop_sizes(mesh_wp)
     perimeters = _loop_perimeters_of(mesh_wp.points, mesh_wp.indices)
     # The fixture must have several holes for "preserve the largest" to be meaningful.
@@ -274,9 +286,9 @@ def test_fill_preserve_largest(half_torus: tuple[tm.Trimesh, wp.Mesh], method: s
 
 
 def test_fill_holes_preserve_largest_single_hole_unchanged(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
 
     # With one hole, preserving the largest leaves nothing to fill.
     assert len(_loop_sizes(mesh_wp)) == 1
@@ -656,17 +668,27 @@ def test_fillable_loop_mask_shared_vertex_disqualifies_both_loops(device: str) -
     assert np.array_equal(control_np, np.array([False, True]))
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "icosphere_coarse"])
-def test_fillable_loop_mask_on_the_fixtures(request: pytest.FixtureRequest, mesh_name: str) -> None:
+@pytest.mark.parametrize(
+    ("mesh_name", "fillable"),
+    [
+        ("saddle_graded", False),
+        ("sphere_irregular_cap", True),
+        ("sphere_irregular_band", True),
+        ("sphere_irregular", True),
+    ],
+)
+def test_fillable_loop_mask_on_the_fixtures(
+    request: pytest.FixtureRequest, mesh_name: str, fillable: bool
+) -> None:
     """
-    Not a library comparison: the mask must agree with what the fill actually does.
+    Not a library comparison: the mask must agree with what the unprotected fill actually does.
 
-    Every rim of these fixtures is simple and chord-free, so the mask is all-``True`` -- and the
-    claim that ``True`` carries is checkable: ``fill_min_weight(resolve_multiple_edges=False)``,
-    which is the unprotected path, must leave an edge-manifold mesh. That is the guarantee, and
-    running the fill with the protection *off* is the only way to test it.
-
-    ``icosphere_coarse`` is the closed case, where there are no loops and the mask is empty.
+    ``fill_min_weight(resolve_multiple_edges=False)`` is the unprotected path, and the mask is its
+    precondition: ``True`` claims it leaves an edge-manifold mesh, ``False`` that it may not. Both
+    answers are reached. The planar rims of ``sphere_irregular_cap`` / ``_band`` are chord-free;
+    ``saddle_graded``'s rim is not -- two grid corners are ears, whose two rim neighbours an
+    interior edge already joins -- and the unprotected fill duplicates that edge, while the default
+    protected fill stays edge-manifold. ``sphere_irregular`` is the closed case, with no loops.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -675,10 +697,11 @@ def test_fillable_loop_mask_on_the_fixtures(request: pytest.FixtureRequest, mesh
     assert fillable_np.shape == (len(loops_wp),)
     if not len(loops_wp):
         return  # the closed fixture: nothing to fill, and nothing to claim
-    assert fillable_np.all()
+    assert bool(fillable_np.all()) == fillable
     filled_wp = od.holes.fill_min_weight(vertices_wp, faces_wp, resolve_multiple_edges=False)
     assert filled_wp.size > faces_wp.size
-    assert od.validation.is_edge_manifold(filled_wp)
+    assert od.validation.is_edge_manifold(filled_wp) == fillable
+    assert od.validation.is_edge_manifold(od.holes.fill_min_weight(vertices_wp, faces_wp))
 
 
 @pytest.mark.parity(
@@ -767,7 +790,9 @@ def test_fill_min_weight_matches_meshlib(
         assert np.isclose(total_wp, total_ml, rtol=2e-3, atol=1e-3)
 
 
-def test_fill_metric_scorer_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_fill_metric_scorer_matches_meshlib(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Anchor ``_total_fill_metric`` to MeshLib's own ``calcCombinedFillMetric`` (single-hole mesh).
 
@@ -775,8 +800,13 @@ def test_fill_metric_scorer_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mes
     computes each MeshLib metric, for the metrics that expose a triangle term
     (``calcCombinedFillMetric`` cannot score the edge-only metrics — it always calls
     ``triangleMetric``, which is empty for them).
+
+    On ``sphere_irregular_cap``, not ``saddle_graded``: MeshLib forms ``complex_fill``'s aspect
+    ratio in ``float32``, which cancels on the graded saddle's needles (aspect ~4 800) and puts its
+    own total 0.54 % off the ``float64`` transcription there -- the reference's arithmetic, not the
+    scorer, which is what this test anchors.
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = sphere_irregular_cap
     faces_np = np.ascontiguousarray(mesh_wp.indices.numpy().reshape(-1, 3), dtype=np.int32)
     verts_np = np.ascontiguousarray(mesh_wp.points.numpy(), dtype=np.float32)
     # The edge-only metrics have no triangle term for ``calcCombinedFillMetric`` to score.
@@ -808,17 +838,23 @@ def _sealed_volume(vertices_np: np.ndarray, faces_np: np.ndarray) -> float:
     Enclosed volume of a sealed mesh, after canonicalising the winding.
 
     The ``fix_winding`` pass is load-bearing for Open3D: ``fill_holes`` emits its cap triangles
-    wound
-    *against* the rest of the mesh, so a raw signed-volume read of its output is meaningless (-1.06
-    on ``hemisphere``, where the true volume is 2.02). Repairing the winding first is the named
-    transform that makes the three libraries' volumes comparable.
+    wound *against* the rest of the mesh, so a raw signed-volume read of its output is meaningless
+    (-1.06 on an icosphere hemisphere, where the true volume is 2.02). Repairing the winding first
+    is the named transform that makes the three libraries' volumes comparable.
     """
     mesh_tm = tm.Trimesh(vertices_np, np.asarray(faces_np).reshape(-1, 3), process=False)
     tm_repair.fix_winding(mesh_tm)
     return float(mesh_tm.volume)
 
 
-@pytest.mark.parametrize("mesh_name", _PLANAR_RIM_MESHES)
+@pytest.mark.parametrize(
+    ("mesh_name", "reference"),
+    [
+        ("sphere_irregular_cap", "open3d"),
+        ("sphere_irregular_band", "open3d"),
+        ("torus_irregular_holes", "pymeshlab"),
+    ],
+)
 @pytest.mark.parity(
     "fill_min_weight_chords",
     "open3d",
@@ -831,10 +867,10 @@ def _sealed_volume(vertices_np: np.ndarray, faces_np: np.ndarray) -> float:
 )
 @pytest.mark.parity("fill_min_weight", "open3d", "pymeshlab")
 def test_fill_min_weight_matches_open3d_and_pymeshlab(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, reference: str
 ) -> None:
     """
-    Class C: three hole fillers pick three different triangulations of the same loop.
+    Class C: three hole fillers pick three different triangulations of the same loops.
 
     All three seal the identical boundary with the identical budget -- ``B - 2`` triangles over the
     existing vertices only -- but no two agree triangle for triangle, so there is no correspondence
@@ -843,24 +879,28 @@ def test_fill_min_weight_matches_open3d_and_pymeshlab(
     ``meshing_close_holes``, whose default ``maxholesize=30`` would close nothing on these rims, so
     the cap is lifted exactly as the benchmark lifts it.
 
+    Each reference is compared where it seals every rim, which is not the same fixture: MeshLab
+    reports both planar fixtures' holes closed and leaves 9 / 13 edges open
+    (``sphere_irregular_cap`` / ``_band``, non-convex rims), and Open3D leaves 9 open on
+    ``torus_irregular_holes`` (non-planar rims), where MeshLab's fill is complete.
+
     Three asserts. The counts are Class A: same vertex count, same face count, and every added
     triangle drawn only from the boundary loops. The **volume** is Class B under the named
-    [`_sealed_volume`][tests.test_holes._sealed_volume] transform -- these rims are planar,
-    so the enclosed volume is triangulation-invariant and all three must agree exactly. And the
-    **cost** is the optimality claim: ordito runs the exact minimum-weight DP, so its
-    ``plane_normalized`` cost must be no worse than either reference's triangulation of the same
-    loop.
+    [`_sealed_volume`][tests.test_holes._sealed_volume] transform, on the planar rims only, where
+    the enclosed volume is triangulation-invariant. And the **cost** is the optimality claim:
+    ordito runs the exact minimum-weight DP, so its ``plane_normalized`` cost must be no worse than
+    the reference's triangulation of the same loops.
 
     **Bug class excluded:** a DP that finds a valid but *suboptimal* triangulation -- the failure
     the volume and count asserts are both blind to, since every triangulation of a planar rim has
     the same volume and the same triangle count.
 
-    **Mutation probe, measured:** on ``hemisphere`` the costs are ordito **290.7**, MeshLab 1 821.1
-    (6.3x) and Open3D 827.3 (2.8x); on ``half_torus`` **686.0** against 2 740.6 (4.0x) and 1 127.9
-    (1.6x). The bound is not one any answer passes: this module's own
-    [`fill_fan`][ordito.holes.fill_fan] emits the same ``B - 2`` triangles over
-    the same vertices and scores 860.1 and 3 509.5 -- it *fails* against Open3D on both fixtures.
-    ``zeros_like`` and "return the input faces" fail at the face-count assert.
+    **Mutation probe, measured:** costs ordito **1 884** against Open3D 29 231 (15.5x) on the cap
+    and **2 637** against 159 412 (60.5x) on the band; this module's own
+    [`fill_fan`][ordito.holes.fill_fan], the same ``B - 2`` triangles over the same vertices,
+    scores 1.1e7 and 6.6e5 and *fails*. On the torus the costs are dominated by triangles the
+    metric rejects (9 for ordito, 12 for MeshLab, 10 for the fan), so the planar arms carry the
+    probe. ``zeros_like`` and "return the input faces" fail at the face-count assert.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh_tm = warp_to_trimesh(mesh_wp.points, mesh_wp.indices)
@@ -869,19 +909,20 @@ def test_fill_min_weight_matches_open3d_and_pymeshlab(
 
     filled_wp = od.holes.fill_min_weight(mesh_wp.points, mesh_wp.indices).numpy()
 
-    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
-    statistics_pml = meshset_pml.meshing_close_holes(maxholesize=1_000_000)
-    assert statistics_pml["closed_holes"] > 0
-    faces_pml = np.asarray(meshset_pml.current_mesh().face_matrix())
-    assert np.allclose(meshset_pml.current_mesh().vertex_matrix(), vertices_np, atol=1e-6)
-
-    # The tensor mesh must be held in a name: chaining ``from_legacy(...).fill_holes()`` lets the
-    # temporary be collected and the result's ``positions`` then read freed memory (observed as
-    # 2052.1 and 4.4e-41 in the first rows) rather than raising.
-    tensor_o3d = o3d.t.geometry.TriangleMesh.from_legacy(trimesh_to_open3d(mesh_tm))
-    mesh_o3d = tensor_o3d.fill_holes()
-    faces_o3d = mesh_o3d.triangle["indices"].numpy()
-    assert np.allclose(mesh_o3d.vertex["positions"].numpy(), vertices_np, atol=1e-6)
+    if reference == "pymeshlab":
+        meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+        statistics_pml = meshset_pml.meshing_close_holes(maxholesize=1_000_000)
+        assert statistics_pml["closed_holes"] > 0
+        faces_ref = np.asarray(meshset_pml.current_mesh().face_matrix())
+        assert np.allclose(meshset_pml.current_mesh().vertex_matrix(), vertices_np, atol=1e-6)
+    else:
+        # The tensor mesh must be held in a name: chaining ``from_legacy(...).fill_holes()`` lets
+        # the temporary be collected and the result's ``positions`` then read freed memory
+        # (observed as 2052.1 and 4.4e-41 in the first rows) rather than raising.
+        tensor_o3d = o3d.t.geometry.TriangleMesh.from_legacy(trimesh_to_open3d(mesh_tm))
+        mesh_o3d = tensor_o3d.fill_holes()
+        faces_ref = mesh_o3d.triangle["indices"].numpy()
+        assert np.allclose(mesh_o3d.vertex["positions"].numpy(), vertices_np, atol=1e-6)
 
     loop_vertices = {
         int(vertex)
@@ -891,19 +932,17 @@ def test_fill_min_weight_matches_open3d_and_pymeshlab(
     cost_wp = _total_fill_metric(
         mesh_wp.points, mesh_wp.indices, filled_wp[n_original:], "plane_normalized"
     )
-    for faces_ref in (faces_pml, faces_o3d):
-        assert faces_ref.shape[0] == filled_wp.size // 3
-        added_ref = np.asarray(faces_ref).reshape(-1)[n_original:].astype(np.int32)
-        assert set(np.unique(added_ref).tolist()) <= loop_vertices
+    assert faces_ref.shape[0] == filled_wp.size // 3
+    added_ref = np.asarray(faces_ref).reshape(-1)[n_original:].astype(np.int32)
+    assert set(np.unique(added_ref).tolist()) <= loop_vertices
+    if mesh_name in _PLANAR_RIM_MESHES:
         assert np.isclose(
             _sealed_volume(vertices_np, filled_wp),
             _sealed_volume(vertices_np, faces_ref),
             rtol=1e-5,
         )
-        cost_ref = _total_fill_metric(
-            mesh_wp.points, mesh_wp.indices, added_ref, "plane_normalized"
-        )
-        assert cost_wp <= cost_ref, f"the minimum-weight DP scored worse: {cost_wp} > {cost_ref}"
+    cost_ref = _total_fill_metric(mesh_wp.points, mesh_wp.indices, added_ref, "plane_normalized")
+    assert cost_wp <= cost_ref, f"the minimum-weight DP scored worse: {cost_wp} > {cost_ref}"
 
 
 def _punched_sphere(n_holes: int, seed: int = 5) -> tuple[np.ndarray, np.ndarray]:
@@ -1089,8 +1128,8 @@ def test_hole_dp_captures_is_bounded_at_both_ends(device: str) -> None:
     assert not kernel_holes.hole_dp_captures(light, kernel_holes.HOLE_DP_CAPTURE_MAX_WORK)
 
 
-def test_fill_min_weight_optimal_vs_fan(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = hemisphere
+def test_fill_min_weight_optimal_vs_fan(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = saddle_graded
     # Single-loop fixture: the DP minimizes the plane-normalized objective over all triangulations,
     # and the fan is one such triangulation, so the min-weight total must not exceed the fan's.
     n_orig = mesh_wp.indices.size
@@ -1205,7 +1244,7 @@ def test_fill_min_weight_compacts_around_a_blocked_hole(device: str, metric: str
     assert [sorted(loop.numpy().tolist()) for loop in remaining] == [[0, 1, 2, 3]]
 
 
-def test_fill_min_weight_rejects_unknown_metric(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_fill_min_weight_rejects_unknown_metric(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: the documented ``ValueError`` at all four metric-taking entry points.
 
@@ -1214,7 +1253,7 @@ def test_fill_min_weight_rejects_unknown_metric(hemisphere: tuple[tm.Trimesh, wp
     here beside the three that did, through the one shared validator they now all call. The
     exception type is the claim: a ``pytest.raises(ValueError)`` fails on a ``KeyError``.
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
     assert loops_wp  # non-vacuity: the loop-taking form gets a real loop, not an empty list
     face_mask_wp = wp.zeros(mesh_wp.indices.size // 3, dtype=wp.bool, device=mesh_wp.device)
@@ -1297,9 +1336,11 @@ def test_fill_small_fills_exactly_the_loops_under_the_threshold(device: str) -> 
     assert np.array_equal(above_both_wp.numpy()[: faces_wp.size], faces_wp.numpy())
 
 
-def test_fill_small_leaves_a_watertight_mesh_alone(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_fill_small_leaves_a_watertight_mesh_alone(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """With no boundary loop at all the result is a copy of the input, not the input itself."""
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
 
     filled_wp = od.holes.fill_small(mesh_wp.points, mesh_wp.indices, 1e9)
 
@@ -1430,10 +1471,10 @@ class _FillSmallThresholds(TypedDict, total=False):
     "kwargs", [{}, {"max_perimeter": 1.0, "max_edges": 8}], ids=["neither", "both"]
 )
 def test_fill_small_requires_exactly_one_threshold(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], kwargs: _FillSmallThresholds
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], kwargs: _FillSmallThresholds
 ) -> None:
     """The documented ``ValueError``, in both directions: no threshold and two."""
-    _mesh_tm, mesh_wp = hemisphere
+    _mesh_tm, mesh_wp = saddle_graded
     with pytest.raises(ValueError, match="exactly one"):
         od.holes.fill_small(mesh_wp.points, mesh_wp.indices, **kwargs)
 
@@ -1447,10 +1488,14 @@ def test_fill_small_requires_exactly_one_threshold(
     "load_array, so the build cannot leave the timed callable. A row would report a 90 % load as a "
     "hole fill, which is the failure mode the stitch/meshlib exemption already describes.",
 )
-# Not ``saddle_graded``: its one rim is a 268-vertex saddle curve, deep enough that any two
-# triangulations of it span different surfaces -- the DP's fill is 0.350 from pymeshfix's, and
-# ``fill_fan``'s 0.344 -- so the surface distance cannot tell a right filler from a wrong one there.
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "two_rims"])
+# Only ``two_rims``. Not ``saddle_graded``: its one rim is a 132-vertex saddle curve, deep enough
+# that any two triangulations of it span different surfaces -- the DP's fill is 0.350 from
+# pymeshfix's, and ``fill_fan``'s 0.344 -- so the distance cannot tell a right filler from a wrong
+# one; nor ``torus_irregular_holes`` (DP 1.50 mean edges, fan 1.52, cone 1.31). Not the planar
+# ``sphere_irregular_cap`` / ``_band`` either: pymeshfix's ear clipping folds 6 of 89 triangles
+# back over the cap's non-convex rim (unsigned area 8.61 against the polygon's 8.09), so there it is
+# the wrong side -- the DP's fold-free cap is the next test.
+@pytest.mark.parametrize("mesh_name", ["two_rims"])
 def test_fill_min_weight_matches_pymeshfix(
     request: pytest.FixtureRequest, device: str, mesh_name: str
 ) -> None:
@@ -1470,14 +1515,12 @@ def test_fill_min_weight_matches_pymeshfix(
       or non-manifold patch;
     - the two surfaces agree to under 5 % of the mean edge length.
 
-    That last bound is where the numbers matter. On ``hemisphere`` and ``half_torus`` the rim is a
-    planar section, so *every* new-vertex-free triangulation of it spans the identical surface and
-    the measurement is float noise (3.1e-08 and 4.3e-08) -- true, and weak. The ``two_rims`` case is
-    the live one: its rims are non-planar, the two triangulations genuinely differ in space, and the
-    distance reads **0.00165**, 1.1 % of the 0.1508 mean edge. Mutation probes on that same input,
-    replacing the DP with a different filler: [`fill_fan`][ordito.holes.fill_fan] measures 0.0309
-    (20.5 % of the mean edge) and [`fill_cone`][ordito.holes.fill_cone] 0.0257 (17.1 %), so the 5 %
-    threshold sits 4.5x above the agreement and 4x below the nearest wrong answer.
+    That last bound is where the numbers matter. On the ``two_rims`` case the rims are non-planar,
+    the two triangulations genuinely differ in space, and the distance reads **0.00165**, 1.1 % of
+    the 0.1508 mean edge. Mutation probes on that same input, replacing the DP with a different
+    filler: [`fill_fan`][ordito.holes.fill_fan] measures 0.0309 (20.5 % of the mean edge) and
+    [`fill_cone`][ordito.holes.fill_cone] 0.0257 (17.1 %), so the 5 % threshold sits 4.5x above the
+    agreement and 4x below the nearest wrong answer.
     """
     if mesh_name == "two_rims":
         mesh_tm, vertices_wp, faces_wp, _sizes = _two_rims_of_different_edge_count(device)
@@ -1519,6 +1562,36 @@ def test_fill_min_weight_matches_pymeshfix(
     assert distance < 0.05 * mean_edge
 
 
+@pytest.mark.parametrize("mesh_name", _PLANAR_RIM_MESHES)
+def test_fill_min_weight_does_not_fold_a_planar_rim(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Not a library comparison: the DP's cap of a planar rim covers the polygon exactly once.
+
+    A triangulation of a planar loop over its own vertices covers the polygon once exactly when its
+    unsigned area equals the polygon's area (the length of the loop's vector area); a triangle
+    folded back over the cap adds area twice. Measured on the non-convex rims of
+    ``sphere_irregular_cap`` / ``_band``: equal to 2.4e-13 / 3.4e-13 relative. Mutation probe: the
+    fan of the same rims, ``B - 2`` triangles over the same vertices, overlaps itself and is 12 % /
+    26 % over; pymeshfix's ear clipping folds 6 of the cap's 89 triangles (6.4 % over).
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = mesh_wp.points.numpy().astype(np.float64)
+    n_faces = mesh_wp.indices.size // 3
+    polygon_area = 0.0
+    for loop_wp in od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices):
+        loop = vertices_np[loop_wp.numpy()]
+        polygon_area += float(
+            np.linalg.norm(0.5 * np.cross(loop, np.roll(loop, -1, axis=0)).sum(0))
+        )
+    assert polygon_area > 1.0
+    cap = od.holes.fill_min_weight(mesh_wp.points, mesh_wp.indices).numpy().reshape(-1, 3)[n_faces:]
+    corners = vertices_np[cap]
+    cross = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    assert np.isclose(0.5 * np.linalg.norm(cross, axis=1).sum(), polygon_area, rtol=1e-9, atol=0.0)
+
+
 @pytest.mark.parity(
     "fill_smooth_target_edge",
     "pymeshfix",
@@ -1546,11 +1619,13 @@ def test_fill_min_weight_matches_pymeshfix(
     "price the load. The criterion is what is comparable and the refine='density' arm below is "
     "where it lands -- fill_smooth dispatches that arm straight to refine_region_to_density.",
 )
-# Not ``saddle_graded``: the surface claim below needs a planar rim (``_PLANAR_RIM_MESHES``). And
-# the density rule refines whatever fill it starts from, and the two unrefined fills of that
-# 268-vertex saddle rim are different surfaces (0.350 apart, see the comparison above), so the
-# counts there -- 5 555 inserted against pymeshfix's 1 652 -- do not compare one criterion.
-@pytest.mark.parametrize("mesh_name", _PLANAR_RIM_MESHES)
+# A *convex* planar rim: the surface claim needs a planar one, and the density rule refines
+# whatever fill it starts from, so both starting fills must cover the same polygon -- which
+# pymeshfix's ear clipping does not on a non-convex rim (6 of 89 triangles folded on
+# ``sphere_irregular_cap``; refined surfaces 0.24 / 0.33 apart on the cap / band). Not
+# ``saddle_graded``: its two unrefined fills are different surfaces (0.350 apart), so the counts
+# there -- 5 555 inserted against pymeshfix's 1 652 -- do not compare one criterion.
+@pytest.mark.parametrize("mesh_name", ["convex_irregular_cap", "convex_irregular_band"])
 def test_fill_smooth_refinement_matches_pymeshfix(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1564,32 +1639,31 @@ def test_fill_smooth_refinement_matches_pymeshfix(
     same reason potpourri3d's solvers are constructed with ``use_robust=False``: both sides have to
     be discretizing the same thing.
 
-    With it off the two surfaces are **identical to float noise** -- 3.1e-08 on ``hemisphere`` and
-    4.3e-08 on ``half_torus`` -- both watertight with Euler characteristic 2. That the numbers are
-    that small rather than merely small is itself the finding: these rims are planar sections, so
-    every unmoved refinement of the patch stays in the rim plane. The surface assert therefore
-    excludes a refinement that leaves the plane, folds, or breaks watertightness, and says nothing
-    about the sampling.
+    With it off the two surfaces are **identical to float noise** -- 5.7e-08 on
+    ``convex_irregular_cap`` and 7.1e-08 on ``convex_irregular_band`` -- both watertight with Euler
+    characteristic 2. That the numbers are that small rather than merely small is itself the
+    finding: these rims are planar sections, so every unmoved refinement of the patch stays in the
+    rim plane. The surface assert therefore excludes a refinement that leaves the plane, folds, or
+    breaks watertightness, and says nothing about the sampling.
 
     The sampling is what ``refine`` selects, and it is the reason the density criterion exists.
-    Measured as inserted vertices against pymeshfix's (47 on ``hemisphere``, 16 on ``half_torus``):
+    Measured as inserted vertices against pymeshfix's (160 on the cap, 266 on the band):
 
-    | ``refine`` | hemisphere | half_torus |
+    | ``refine`` | cap | band |
     |---|---|---|
-    | ``"max_edge"`` (default) | 201, **4.28x** | 192, **12.0x** |
-    | ``"density"`` | 58, **1.23x** | 24, **1.50x** |
+    | ``"max_edge"`` (default) | 1 000, **6.25x** | 1 000, **3.76x** |
+    | ``"density"`` | 205, **1.28x** | 234, **0.88x** |
 
-    ``"max_edge"`` bisects against one global target length and over-refines by an order of
-    magnitude on the torus, where the rim is much finer than the mesh's mean edge; ``"density"``
-    splits each patch triangle at its centroid only while its own sampling is coarser than the
-    surrounding mesh's, which is MeshFix's criterion and lands within 1.5x of its count. The bound
-    asserted here is 2x for ``"density"`` and only 20x for ``"max_edge"``, which is what makes the
-    pair a comparison rather than two independent tolerances -- the default's row is recorded, not
+    ``"max_edge"`` bisects against one global target length and over-refines; ``"density"`` splits
+    each patch triangle at its centroid only while its own sampling is coarser than the surrounding
+    mesh's, which is MeshFix's criterion and lands within 1.3x of its count. The bound asserted here
+    is 2x for ``"density"`` and only 20x for ``"max_edge"``, which is what makes the pair a
+    comparison rather than two independent tolerances -- the default's row is recorded, not
     endorsed.
 
     Mutation probe for the surface bound, and it is a large one: ordito's own curvature smoothing
-    moves the patch to **123 %** of the mean edge on ``hemisphere`` and 60 % on ``half_torus``,
-    seven orders of magnitude past the 1e-6 threshold. So the assert is not something any patch of
+    moves the patch to **161 %** of the mean edge on the cap and 100 % on the band,
+    orders of magnitude past the 1e-6 threshold. So the assert is not something any patch of
     roughly the right shape would pass.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -1652,7 +1726,7 @@ def _meshlib_fill_nicely_volume(
     return float(tm.Trimesh(verts, faces, process=False).volume)
 
 
-def test_fill_smooth_invariants(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_fill_smooth_invariants(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     """
     Not a library comparison: what ``fill_smooth`` must hold whatever it chooses to add.
 
@@ -1661,7 +1735,7 @@ def test_fill_smooth_invariants(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     volume comparison in [`test_fill_smooth_statistics_vs_meshlib`]; it cannot supply these,
     because it closes nothing at its own default (section 6).
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     n_v0 = mesh_wp.points.size
 
     new_vertices, new_faces, patch = od.holes.fill_smooth(
@@ -1679,8 +1753,8 @@ def test_fill_smooth_invariants(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(verts_np[:n_v0], mesh_wp.points.numpy(), atol=1e-6)
 
 
-def test_fill_smooth_triangulate_only(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = hemisphere
+def test_fill_smooth_triangulate_only(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    _, mesh_wp = saddle_graded
     new_vertices, new_faces = od.holes.fill_smooth(
         mesh_wp.points, mesh_wp.indices, triangulate_only=True
     )
@@ -1693,7 +1767,12 @@ def test_fill_smooth_triangulate_only(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
 # enclosed signed volume is a difference of lobes -- ordito's cap encloses 0.186, MeshLib's
 # ``fillHoleNicely`` -0.124, with the two caps 0.31 apart (Hausdorff) -- not a scale for a
 # relative tolerance.
-@pytest.mark.parametrize("mesh_name", ["hemisphere"])
+# ``sphere_irregular_cap``: a volume claim needs a rim whose cap encloses something. Closing
+# ``saddle_graded``'s nearly flat saddle rim encloses almost nothing (0.238 against MeshLib's
+# -0.086), and on ``sphere_irregular_band`` the two smoothers move apart under refinement
+# (5.2 % at ``max_edge=0.3``, 8.5 % at 0.15, against a flat fill 17 % away), so its volume cannot
+# tell a right fill from a wrong one.
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular_cap"])
 @pytest.mark.parity(
     "fill_smooth_target_edge",
     "meshlib",
@@ -1710,7 +1789,8 @@ def test_fill_smooth_statistics_vs_meshlib(request: pytest.FixtureRequest, mesh_
     MeshLab's ``fillHoleNicely`` subdivides and smooths on its own schedule, so no
     correspondence exists between the two caps -- the enclosed volume is the strongest
     comparable quantity, and it excludes a cap that bulges or collapses while still being
-    watertight.
+    watertight. Measured: 10.533 against MeshLib's 10.346 (1.8 %); the flat minimum-weight fill
+    encloses 9.281 (10.3 % off), so the 6 % bound is 3.3x the agreement and fails the flat cap.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = mesh_wp.points.numpy().astype(np.float64)
@@ -1722,36 +1802,45 @@ def test_fill_smooth_statistics_vs_meshlib(request: pytest.FixtureRequest, mesh_
     )
     volume_od, _ = _mesh_volume_area(new_vertices.numpy(), new_faces.numpy().reshape(-1, 3))
     volume_ml = _meshlib_fill_nicely_volume(vertices_np, faces_np, max_edge)
-    assert np.isclose(volume_od, volume_ml, rtol=0.05)
+    assert np.isclose(volume_od, volume_ml, rtol=0.06)
 
 
 @pytest.mark.parity("refill_region", "meshlib")
-def test_refill_region_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_refill_region_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A on the triangulation, Class C on the refinement: the same patch as ``patchMesh``.
 
     MeshLib's ``patchMesh`` is this operation -- delete a face region, fill the hole nicely -- and
-    in ``triangulateOnly`` mode the two agree **exactly**: measured 593 vertices, 1 182 faces and an
-    enclosed volume of 4.0771 against 4.0770 on a subdivision-3 icosphere with a cap of 132 faces
-    removed. That is as strong as this comparison can be, because the minimum-weight DP has one
-    answer and both implementations find it.
+    it triangulates with ``fillHole``'s default, the circumscribed-circle metric, so ordito is asked
+    for ``metric="circumscribed"``. In ``triangulateOnly`` mode the two then return the identical
+    triangles, compared as sets of corner positions: the minimum-weight DP has one answer and both
+    find it. Under ordito's default ``plane_normalized`` 18 of the 930 faces differ (a different
+    objective, which a regular icosphere happened to hide).
 
-    With refinement on, the two diverge by *density* rather than by shape -- each subdivides on its
-    own schedule (766 vertices here against MeshLib's 644) -- so that half is the enclosed volume,
-    which both bring back close to the original 4.1527: 4.1539 and 4.1372. The refined patch being
-    *nearer* the original than the flat one (4.0771) is what matters, and is asserted.
+    The region is the 94 faces within 1.6 of ``sphere_irregular``'s highest face centre, one
+    30-edge rim. With refinement on, the two diverge by *density* rather than by shape -- each
+    subdivides on its own schedule -- so that half is the enclosed volume, which both bring back
+    towards the original (measured 21.572: refined 19.845 against MeshLib's 19.740, 0.5 % apart,
+    flat 18.939). The refined patch being *nearer* the original than the flat one is what matters,
+    and is asserted.
+
+    Sealed means closed and edge-manifold, not free of self-intersections: on a bumpy surface a cap
+    can pass through a neighbouring bump, and both libraries' caps do at some radii (ordito's
+    refined one at 1.2, where a patch triangle over three rim vertices crosses a kept face;
+    MeshLib's at 1.4; both flat ones at 1.4 and 1.6). Nothing folds inside a patch.
 
     ``patchMesh`` mutates its mesh, so each mode gets a fresh one.
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = sphere_irregular
     n_faces = mesh_tm.faces.shape[0]
-    region_np = np.asarray(mesh_tm.triangles_center)[:, 2] > 0.8
+    centres = np.asarray(mesh_tm.triangles_center)
+    region_np = np.linalg.norm(centres - centres[np.argmax(centres[:, 2])], axis=1) < 1.6
     assert 0 < int(region_np.sum()) < n_faces
     region_wp = wp.array(region_np, dtype=wp.bool, device=mesh_wp.points.device)
     volume_before = float(od.measures.volume(mesh_wp.points, mesh_wp.indices))
 
     flat_vertices_wp, flat_faces_wp = od.holes.refill_region(
-        mesh_wp.points, mesh_wp.indices, region_wp, triangulate_only=True
+        mesh_wp.points, mesh_wp.indices, region_wp, triangulate_only=True, metric="circumscribed"
     )
     mesh_flat_ml = trimesh_to_meshlib(mesh_tm)
     region_flat_ml = mm.FaceBitSet(numpy_to_meshlib_bitset(region_np))
@@ -1764,16 +1853,12 @@ def test_refill_region_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh]) ->
     assert patch_flat_ml.count() > 0  # non-vacuity: the reference filled something
     assert flat_vertices_wp.size == flat_ml.vertices.shape[0]
     assert flat_faces_wp.size // 3 == flat_ml.faces.shape[0]
-    assert np.isclose(
-        float(od.measures.volume(flat_vertices_wp, flat_faces_wp)),
-        flat_ml.volume,
-        rtol=1e-4,
-        atol=1e-6,
-    )
-    assert od.validation.is_watertight(flat_vertices_wp, flat_faces_wp)
+    flat_corners = flat_vertices_wp.numpy().astype(np.float64)[flat_faces_wp.numpy().reshape(-1, 3)]
+    assert _triangle_set(flat_corners) == _triangle_set(np.asarray(flat_ml.triangles))
+    assert od.validation.is_edge_manifold(flat_faces_wp, allow_boundary_edges=False)
 
     refined_vertices_wp, refined_faces_wp = od.holes.refill_region(
-        mesh_wp.points, mesh_wp.indices, region_wp
+        mesh_wp.points, mesh_wp.indices, region_wp, metric="circumscribed"
     )
     mesh_refined_ml = trimesh_to_meshlib(mesh_tm)
     region_refined_ml = mm.FaceBitSet(numpy_to_meshlib_bitset(region_np))
@@ -1786,22 +1871,30 @@ def test_refill_region_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh]) ->
     assert np.isclose(volume_refined, refined_ml.volume, rtol=0.02)
     # The refinement is worth having: it recovers curvature the flat cap loses.
     assert abs(volume_refined - volume_before) < abs(volume_flat - volume_before)
-    assert od.validation.is_watertight(refined_vertices_wp, refined_faces_wp)
+    assert od.validation.is_edge_manifold(refined_faces_wp, allow_boundary_edges=False)
+
+
+def _triangle_set(corners: np.ndarray) -> set[tuple[tuple[float, ...], ...]]:
+    """Triangles as order-free sets of corner positions, rounded to ``float32``'s precision."""
+    return {
+        tuple(sorted(tuple(np.round(corner, 5).tolist()) for corner in triangle))
+        for triangle in corners
+    }
 
 
 def test_refill_region_leaves_an_untouched_mesh_alone(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: an empty region, and one whose removal opens no *new* rim.
 
     Both must return the surviving mesh with an all-``False`` patch rather than filling something.
-    The second case is the one worth pinning: deleting a face that lies on the hemisphere's existing
+    The second case is the one worth pinning: deleting a face that lies on the saddle's existing
     rim extends that rim, and the extension *is* reported as a loop -- so this asserts the opposite
     case, an empty mask, where nothing is deleted and nothing may be filled. A version that filled
     the input's own rim here would look like a working hole-filler and be the wrong function.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     n_faces = mesh_tm.faces.shape[0]
     empty_wp = wp.zeros(n_faces, dtype=wp.bool, device=mesh_wp.points.device)
 
@@ -1824,7 +1917,7 @@ def test_refill_region_leaves_an_untouched_mesh_alone(
         )
 
 
-def test_fill_smooth_natural_smooth(device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_fill_smooth_natural_smooth(device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
     Not a library comparison: ``natural_smooth`` must blend the patch into the rim it meets.
 
@@ -1832,7 +1925,7 @@ def test_fill_smooth_natural_smooth(device: str, icosphere: tuple[tm.Trimesh, wp
     curvature continues across the boundary instead of creasing there. trimesh supplies only
     the surface geometry the assertion is computed from.
     """
-    sphere, _sphere_wp = icosphere
+    sphere, _sphere_wp = sphere_irregular
     hemi = sphere.slice_plane(
         plane_origin=np.zeros(3), plane_normal=np.array([0.0, 0.0, 1.0]), cap=False
     )
@@ -1888,10 +1981,10 @@ _HOLE_FILL_WATERTIGHT_CASES = [
 def test_holes_watertight_mesh_is_unchanged(
     hole_fill_fn: Callable[[wp.array[wp.vec3], wp.array[wp.int32]], tuple[wp.array[Any], ...]],
     reference_fn: Callable[[wp.array[wp.vec3], wp.array[wp.int32]], tuple[wp.array[Any], ...]],
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Not a library comparison: an already-closed mesh has no hole for any of these to fill."""
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     result = hole_fill_fn(mesh_wp.points, mesh_wp.indices)
     expected = reference_fn(mesh_wp.points, mesh_wp.indices)
     for got_wp, expected_wp in zip(result, expected, strict=True):
@@ -2563,7 +2656,7 @@ def test_non_increasing_indices() -> None:
 
 
 @pytest.mark.parity("extend_hole", "meshlib")
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_extend_hole_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A on the counts and on where the new rim lands, against ``extendAllHoles``.
@@ -2605,7 +2698,7 @@ def test_extend_hole_matches_meshlib(request: pytest.FixtureRequest, mesh_name: 
     assert len(extended_ml.vertices) == extended_vertices_wp.size
 
 
-def test_extend_hole_then_fill_is_watertight(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_extend_hole_then_fill_is_watertight(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: the composition this exists for, and the empty case.
 
@@ -2620,7 +2713,7 @@ def test_extend_hole_then_fill_is_watertight(hemisphere: tuple[tm.Trimesh, wp.Me
     A closed input has no rim, so the call is the identity; and an explicit empty loop list is the
     same case reached differently.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     height = float(np.asarray(mesh_tm.vertices)[:, 2].max()) + 0.5
     extended_vertices_wp, extended_faces_wp = od.holes.extend_hole(
@@ -2667,7 +2760,7 @@ def _meshlib_hole_edge(mesh_ml: mm.Mesh, edge: tuple[int, int]) -> mm.EdgeId:
     return edge_ml
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("build_bottom", "meshlib")
 @pytest.mark.parametrize("hole_extension", [0.0, 0.3])
 def test_build_bottom_matches_meshlib(
@@ -2719,20 +2812,22 @@ def test_build_bottom_matches_meshlib(
     assert np.allclose(appended_ml[:, 2], expected_height, atol=1e-5)
 
 
-def test_build_bottom_fits_each_rim_separately(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_build_bottom_fits_each_rim_separately(
+    sphere_irregular_band: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Not a library comparison: meshlib's ``buildBottom`` takes one hole, so it cannot show this.
 
-    The invariant that distinguishes this function from
-    [`extend_hole`][ordito.holes.extend_hole] is that each rim gets its *own* plane. ``half_torus``
-    has two rims at different heights, so a shared plane would put both rings at one height and a
-    per-rim plane puts them at two -- the assert is that the appended ring heights form exactly two
-    groups, one per rim, each at that rim's own minimum.
+    The invariant that distinguishes this function from [`extend_hole`][ordito.holes.extend_hole] is
+    that each rim gets its *own* plane. ``sphere_irregular_band`` has two rims at different heights,
+    so a shared plane would put both rings at one height and a per-rim plane puts them at two -- the
+    assert is that the appended ring heights form exactly two groups, one per rim, each at that
+    rim's own minimum.
 
     The closed case and the empty-loop-list case are the identity, and are checked here for the
     same reason ``extend_hole``'s are.
     """
-    _, mesh_wp = half_torus
+    _, mesh_wp = sphere_irregular_band
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
     assert len(loops_wp) == 2  # non-vacuity: two rims is what makes the per-rim plane visible
@@ -2762,7 +2857,7 @@ def _rim_successors(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
     }
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("bridge_edges", "meshlib")
 @pytest.mark.parametrize("step", [6, 12, 5])
 def test_bridge_edges_matches_meshlib(
@@ -2811,7 +2906,7 @@ def test_bridge_edges_matches_meshlib(
 @pytest.mark.parity("bridge_edges", "meshlib")
 @pytest.mark.parametrize("side", ["successor", "predecessor"])
 def test_bridge_edges_shared_vertex_is_one_triangle(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], side: str
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], side: str
 ) -> None:
     """
     Class A on meshlib's other branch: two rim-consecutive edges give **one** triangle, not two.
@@ -2821,7 +2916,7 @@ def test_bridge_edges_shared_vertex_is_one_triangle(
     handled only one would still pass the general-case test. The rim also stays a *single* loop
     here, where a general bridge splits it in two, so that count is asserted as well.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = saddle_graded
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     rim_np = od.boundary.oriented_boundary_edges(vertices_wp, faces_wp).numpy()
     successors = _rim_successors(vertices_wp, faces_wp)
@@ -2900,7 +2995,7 @@ def test_bridge_edges_shared_endpoint_on_the_split_diagonal(
 
 
 def test_bridge_edges_rim_check_agrees_with_the_rim_table(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: the validation's one scan of the faces is the rim table's membership.
@@ -2917,7 +3012,7 @@ def test_bridge_edges_rim_check_agrees_with_the_rim_table(
     edge twice is refused too, and ``validate=False`` is shown to skip every one of these checks,
     which is what the switch is for.
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     rim_np = od.boundary.oriented_boundary_edges(vertices_wp, faces_wp).numpy()
     rim = {(int(u), int(v)) for u, v in rim_np}
@@ -3015,7 +3110,7 @@ def test_bridge_edges_smooth_opposed_edges_stay_finite(device: str) -> None:
 # Not ``saddle_graded``: its rim edges 0 and 12 lie along one side of the grid, where the smooth
 # strip and the chord nearly coincide -- ordito's strip is 0.066 from MeshLib's but the flat patch
 # only 0.126, under the 0.227 bound, so the comparison could not fail a chord-spanning strip there.
-@pytest.mark.parametrize("mesh_name", ["hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("bridge_edges_smooth", "meshlib")
 def test_bridge_edges_smooth_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
@@ -3104,10 +3199,10 @@ def test_bridge_edges_smooth_matches_meshlib(
 
 
 def _open_shells_tm(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], count: int, gap: float = 3.0
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], count: int, gap: float = 3.0
 ) -> tm.Trimesh:
-    """``count`` copies of the hemisphere fixture in a row, each ``gap`` apart along ``x``."""
-    mesh_tm, _mesh_wp = hemisphere
+    """``count`` copies of ``saddle_graded`` in a row, each ``gap`` apart along ``x``."""
+    mesh_tm, _mesh_wp = saddle_graded
     shells_tm = []
     for index in range(count):
         shell_tm = mesh_tm.copy()
@@ -3119,7 +3214,7 @@ def _open_shells_tm(
 @pytest.mark.parity("join_closest_components", "pymeshfix")
 @pytest.mark.parametrize("count", [2, 3, 5])
 def test_join_closest_components_matches_pymeshfix(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], device: str, count: int
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str, count: int
 ) -> None:
     """
     Class B: the same joins, compared through the counts because the chosen seam is not shared.
@@ -3140,7 +3235,7 @@ def test_join_closest_components_matches_pymeshfix(
     [`fill_min_weight`][ordito.holes.fill_min_weight]'s job, and asserting that is what pins the
     division of labour between the two.
     """
-    mesh_tm = _open_shells_tm(hemisphere, count)
+    mesh_tm = _open_shells_tm(saddle_graded, count)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
     n_faces = faces_wp.size // 3
     assert len(od.boundary.boundary_loops(vertices_wp, faces_wp)) == count
@@ -3168,7 +3263,7 @@ def test_join_closest_components_matches_pymeshfix(
 
 @pytest.mark.parametrize("count", [3, 6])
 def test_join_closest_components_rim_tracks_the_regrouped_boundary(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], device: str, count: int
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str, count: int
 ) -> None:
     """
     Ordito against ordito: the rim edited join by join is the rim a regroup would find.
@@ -3181,7 +3276,7 @@ def test_join_closest_components_rim_tracks_the_regrouped_boundary(
     ``face_connected_component_labels`` does. The shells are a regular row, so the distances
     carry exact ties and the row order is live.
     """
-    mesh_tm = _open_shells_tm(hemisphere, count, gap=2.2)
+    mesh_tm = _open_shells_tm(saddle_graded, count, gap=2.2)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
     rim = od.holes._JoinRim.of(vertices_wp, faces_wp)  # pyright: ignore[reportPrivateUsage]
     assert rim is not None
@@ -3210,7 +3305,7 @@ def test_join_closest_components_rim_tracks_the_regrouped_boundary(
 
 
 def test_join_closest_components_joins_the_nearest_pair(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], device: str
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
     """
     Not a library comparison: *which* shells get joined, which the count identity cannot see.
@@ -3221,7 +3316,7 @@ def test_join_closest_components_joins_the_nearest_pair(
     the answer is visible directly: exactly the two close shells become one component and the far
     one is still on its own.
     """
-    mesh_tm, _mesh_wp = hemisphere
+    mesh_tm, _mesh_wp = saddle_graded
     near_tm = mesh_tm.copy()
     near_tm.apply_translation([2.5, 0.0, 0.0])
     far_tm = mesh_tm.copy()
@@ -3257,7 +3352,7 @@ class _JoinBounds(TypedDict, total=False):
     ],
 )
 def test_join_closest_components_respects_its_bounds(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], device: str, kwargs: _JoinBounds, expected_joins: int
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str, kwargs: _JoinBounds, expected_joins: int
 ) -> None:
     """
     Not a library comparison: ``max_distance`` and ``max_joins`` have no pymeshfix counterpart.
@@ -3268,7 +3363,7 @@ def test_join_closest_components_respects_its_bounds(
     apart, so a 0.1 bound admits nothing and a 10.0 bound admits everything -- straddling the gap
     rather than testing one side of it.
     """
-    mesh_tm = _open_shells_tm(hemisphere, 3)
+    mesh_tm = _open_shells_tm(saddle_graded, 3)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
     n_faces = faces_wp.size // 3
 
@@ -3278,7 +3373,9 @@ def test_join_closest_components_respects_its_bounds(
 
 
 def test_join_closest_components_leaves_closed_and_single_meshes_alone(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], hemisphere: tuple[tm.Trimesh, wp.Mesh], device: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+    device: str,
 ) -> None:
     """
     Not a library comparison: the three inputs with nothing to join, each for a different reason.
@@ -3288,10 +3385,10 @@ def test_join_closest_components_leaves_closed_and_single_meshes_alone(
     welding something -- which is what makes the function safe to put at a fixed point in a
     pipeline.
     """
-    mesh_tm, _mesh_wp = icosahedron
+    mesh_tm, _mesh_wp = sphere_irregular
     second_tm = mesh_tm.copy()
     second_tm.apply_translation([5.0, 0.0, 0.0])
-    for source_tm in (tm.util.concatenate([mesh_tm, second_tm]), _open_shells_tm(hemisphere, 1)):
+    for source_tm in (tm.util.concatenate([mesh_tm, second_tm]), _open_shells_tm(saddle_graded, 1)):
         assert isinstance(source_tm, tm.Trimesh)
         vertices_wp, faces_wp = numpy_to_warp(source_tm.vertices, source_tm.faces, device)
         joined_wp = od.holes.join_closest_components(vertices_wp, faces_wp)
@@ -3317,17 +3414,17 @@ def test_invalid_arguments_raise(request: pytest.FixtureRequest, device: str, ca
     Not a library comparison: the documented ``ValueError`` of each guard, by its message.
 
     The stitchers need exactly one boundary loop per side, so a watertight mesh (no loop) and
-    ``half_torus`` (two) are both refused; the loop-level engine needs loops of at least three
-    vertices; ``fill_smooth`` names its ``edge_weights`` options and ``stitch_min_weight`` its
-    metrics; and ``join_closest_components`` refuses a negative join budget.
+    ``sphere_irregular_band`` (two) are both refused; the loop-level engine needs loops of at least
+    three vertices; ``fill_smooth`` names its ``edge_weights`` options and ``stitch_min_weight``
+    its metrics; and ``join_closest_components`` refuses a negative join budget.
     """
     if case == "fill_smooth_edge_weights":
-        _, mesh_wp = request.getfixturevalue("hemisphere")
+        _, mesh_wp = request.getfixturevalue("saddle_graded")
         with pytest.raises(ValueError, match="edge_weights must be"):
             od.holes.fill_smooth(mesh_wp.points, mesh_wp.indices, edge_weights="nope")
     elif case in {"stitch_watertight", "stitch_two_rims"}:
         _, mesh_wp = request.getfixturevalue(
-            "icosahedron" if case == "stitch_watertight" else "half_torus"
+            "sphere_irregular" if case == "stitch_watertight" else "sphere_irregular_band"
         )
         if case == "stitch_two_rims":
             assert len(boundary_loop_sizes(mesh_wp.indices.numpy().reshape(-1, 3))) >= 2
@@ -3335,7 +3432,7 @@ def test_invalid_arguments_raise(request: pytest.FixtureRequest, device: str, ca
         with pytest.raises(ValueError, match="exactly one boundary loop"):
             od.holes.stitch(mesh_wp.points, mesh_wp.indices, va, fa)
     elif case == "stitch_min_weight_watertight":
-        _, mesh_wp = request.getfixturevalue("icosahedron")
+        _, mesh_wp = request.getfixturevalue("sphere_irregular")
         _, _, vb, fb = _cone_wp(device=device, n=8, apex_z=1.0, rim_z=0.5)
         with pytest.raises(ValueError, match="exactly one boundary loop"):
             od.holes.stitch_min_weight(mesh_wp.points, mesh_wp.indices, vb, fb)
@@ -3344,7 +3441,7 @@ def test_invalid_arguments_raise(request: pytest.FixtureRequest, device: str, ca
         with pytest.raises(ValueError, match="metric must be one of"):
             od.holes.stitch_min_weight(va, fa, vb, fb, metric="bogus")
     elif case == "stitch_smooth_watertight":
-        _, mesh_wp = request.getfixturevalue("icosahedron")
+        _, mesh_wp = request.getfixturevalue("sphere_irregular")
         with pytest.raises(ValueError, match="exactly one boundary loop"):
             od.holes.stitch_smooth(mesh_wp.points, mesh_wp.indices, mesh_wp.points, mesh_wp.indices)
     elif case == "stitch_loops_two_vertex_loop":
@@ -3355,7 +3452,7 @@ def test_invalid_arguments_raise(request: pytest.FixtureRequest, device: str, ca
         with pytest.raises(ValueError, match="at least 3 vertices"):
             od.holes.stitch_loops(va, fa, loop_a, vb, fb, tiny_loop)
     else:
-        mesh_tm = _open_shells_tm(request.getfixturevalue("hemisphere"), 2)
+        mesh_tm = _open_shells_tm(request.getfixturevalue("saddle_graded"), 2)
         vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
         with pytest.raises(ValueError, match="max_joins"):
             od.holes.join_closest_components(vertices_wp, faces_wp, max_joins=-1)

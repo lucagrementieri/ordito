@@ -370,13 +370,14 @@ def test_is_edge_manifold_radix_is_invariant_to_an_oversized_base(
     Class A: the verdict is unchanged by any hash base above ``max(faces)``.
 
     Parametrized over both meshes and both switch positions so each answer appears: the closed
-    icosahedron is edge-manifold either way, the open hemisphere only with boundary edges allowed.
+    ``sphere_irregular`` is edge-manifold either way, the open ``saddle_graded`` only with boundary
+    edges allowed.
     Callers holding ``vertices`` pass ``vertices.shape[0]``, which exceeds ``max(faces) + 1``
     whenever the mesh carries unreferenced vertices; the tight bound itself must answer as the
     call that infers it does.
     """
     answers = set()
-    for mesh_name in ("icosahedron", "hemisphere"):
+    for mesh_name in ("sphere_irregular", "saddle_graded"):
         _, mesh_wp = request.getfixturevalue(mesh_name)
         tight = od.array.index_bound(mesh_wp.indices)
         baseline = od.validation.is_edge_manifold(
@@ -396,7 +397,7 @@ def test_is_edge_manifold_radix_is_invariant_to_an_oversized_base(
 
 @pytest.mark.parametrize(("offset", "n_vertices"), [(-100, None), (0, "tight")])
 def test_is_edge_manifold_rejects_out_of_range_indices(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], offset: int, n_vertices: str | None
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], offset: int, n_vertices: str | None
 ) -> None:
     """
     Not a library comparison: the documented ``ValueError`` from the folded range check.
@@ -404,7 +405,7 @@ def test_is_edge_manifold_rejects_out_of_range_indices(
     The check rides on the key pass: a negative index with no bound given, and an index reaching a
     given bound, both raise, while ``validate=False`` skips it and a valid buffer passes it.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     faces_np = mesh_tm.faces.astype(np.int32).ravel()
     bad_np = faces_np.copy()
     bad_np[4] = offset if offset < 0 else len(mesh_tm.vertices)
@@ -418,8 +419,10 @@ def test_is_edge_manifold_rejects_out_of_range_indices(
     assert od.validation.is_edge_manifold(mesh_wp.indices, n_vertices=bound)
 
 
-def test_is_vertex_manifold_precomputed_shortcut(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
+def test_is_vertex_manifold_precomputed_shortcut(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    _, mesh_wp = sphere_irregular
     adjacency, adjacency_edges = od.adjacency.face_adjacency(mesh_wp.indices, return_edges=True)
     assert od.validation.is_vertex_manifold(
         mesh_wp.indices, face_adjacency=adjacency, face_adjacency_edges=adjacency_edges
@@ -430,8 +433,8 @@ def test_is_vertex_manifold_precomputed_shortcut(icosahedron: tuple[tm.Trimesh, 
         od.validation.is_vertex_manifold(mesh_wp.indices, face_adjacency=adjacency)
 
 
-def test_is_volume_precomputed_edges(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
+def test_is_volume_precomputed_edges(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = sphere_irregular
     edges = od.edges.faces_to_edges(mesh_wp.indices)
     assert od.validation.is_volume(
         mesh_wp.points, mesh_wp.indices, edges=edges
@@ -494,7 +497,7 @@ def test_vertex_manifold_compressed_forest(device: str, monkeypatch: pytest.Monk
 @pytest.mark.parametrize(("spare", "expected"), [(None, True), ("interior", False)])
 @pytest.mark.parity("is_vertex_manifold", "igl")
 def test_is_vertex_manifold_unreferenced_vertices(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], spare: str | None, expected: bool
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], spare: str | None, expected: bool
 ) -> None:
     """
     Class B (reduce igl's per-vertex mask): an unreferenced vertex counts only below ``max(faces)``.
@@ -505,7 +508,7 @@ def test_is_vertex_manifold_unreferenced_vertices(
     again with ``n_vertices`` at the exact bound and past it, where the extra vertices are trailing
     spares and must not move the answer.
     """
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = sphere_irregular
     faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
     n = int(mesh_tm.vertices.shape[0])
     if spare == "interior":
@@ -637,10 +640,13 @@ def test_face_self_intersecting_mask_matches_predicate(
     assert bool(od.reduce.any(mask_wp)) == predicate
 
 
-@pytest.mark.parametrize("mesh_name", ["boy_surface", "icosahedron", "cave_cube"])
+@pytest.mark.parametrize(
+    ("mesh_name", "self_intersecting"),
+    [("boy_surface", True), ("sphere_irregular", False), ("sphere_irregular_hollow", False)],
+)
 @pytest.mark.parity("face_self_intersecting_mask", "meshlib")
 def test_face_self_intersecting_mask_matches_meshlib(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, self_intersecting: bool
 ) -> None:
     """
     Class B, face for face: MeshLib's ``findSelfCollidingTrianglesBS`` with the bitset padded.
@@ -668,7 +674,7 @@ def test_face_self_intersecting_mask_matches_meshlib(
     colliding_ml = mm.findSelfCollidingTrianglesBS(mm.MeshPart(mesh_ml), touchIsIntersection=False)
     mask_ml = meshlib_bitset_to_numpy(colliding_ml, n_faces)
 
-    assert mask_ml.sum() > 0 if mesh_name == "boy_surface" else mask_ml.sum() == 0
+    assert bool(mask_ml.any()) is self_intersecting
     assert np.array_equal(mask_wp.numpy(), mask_ml)
     assert od.validation.is_self_intersecting(mesh_wp) is bool(mask_ml.any())
 
@@ -925,7 +931,7 @@ def test_orientation_predicates_on_consistent_meshes(
     assert bool(od.reduce.any(flip_mask_wp)) is False
 
 
-def test_is_winding_consistent_flipped(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_is_winding_consistent_flipped(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: the ``False`` branch, half the faces reversed so the winding genuinely conflicts.
 
@@ -933,7 +939,7 @@ def test_is_winding_consistent_flipped(icosahedron: tuple[tm.Trimesh, wp.Mesh]) 
     this avoids by flipping alternate faces -- and is what [`test_is_volume_inward_normals`]
     tests instead. The per-edge mask must flag the conflict too (some edge ``False``).
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     faces_flipped = _flip_half(mesh_tm.faces)
     _, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_flipped, mesh_wp.device)
     mesh_flipped_tm = tm.Trimesh(vertices=mesh_tm.vertices, faces=faces_flipped, process=False)
@@ -973,10 +979,13 @@ def test_is_orientable_closed_non_orientable(boy_surface: tuple[tm.Trimesh, wp.M
     assert od.validation.is_winding_consistent(mesh_wp.indices) is False
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "mobius", "boy_surface"])
+@pytest.mark.parametrize(
+    ("mesh_name", "orientable"),
+    [("sphere_irregular", True), ("mobius", False), ("boy_surface", False)],
+)
 @pytest.mark.parametrize("flip_half", [False, True])
 def test_orientation_predicates_with_vertex_bound_match_without(
-    request: pytest.FixtureRequest, mesh_name: str, flip_half: bool
+    request: pytest.FixtureRequest, mesh_name: str, orientable: bool, flip_half: bool
 ) -> None:
     """
     Ordito against ordito: ``n_vertices=`` only narrows the key sort; no answer moves.
@@ -996,10 +1005,10 @@ def test_orientation_predicates_with_vertex_bound_match_without(
 
     winding = od.validation.is_winding_consistent(faces_wp)
     assert od.validation.is_winding_consistent(faces_wp, n_vertices=n_vertices) == winding
-    assert winding is (not flip_half and mesh_name == "icosahedron")
-    orientable = od.validation.is_orientable(faces_wp)
-    assert od.validation.is_orientable(faces_wp, n_vertices=n_vertices) == orientable
-    assert orientable is (mesh_name == "icosahedron")
+    assert winding is (not flip_half and orientable)
+    orientable_wp = od.validation.is_orientable(faces_wp)
+    assert od.validation.is_orientable(faces_wp, n_vertices=n_vertices) == orientable_wp
+    assert orientable_wp is orientable
     if not orientable:
         # On a non-orientable mesh the parity hooks race on CUDA, so the best-effort flip mask
         # differs between two runs of the unbounded path alone; only the verdicts compare there.
@@ -1121,7 +1130,12 @@ def test_face_flip_mask_long_path(device: str) -> None:
 
 @pytest.mark.parametrize(
     ("mesh_name", "orientable"),
-    [("icosahedron", True), ("hemisphere", True), ("mobius", False), ("boy_surface", False)],
+    [
+        ("sphere_irregular", True),
+        ("saddle_graded", True),
+        ("mobius", False),
+        ("boy_surface", False),
+    ],
 )
 def test_face_orientation_bits_leave_edges_unsatisfied_only_when_non_orientable(
     request: pytest.FixtureRequest, mesh_name: str, orientable: bool
@@ -1349,14 +1363,14 @@ def test_is_volume(request: pytest.FixtureRequest, mesh_name: str) -> None:
     assert volume_wp == (mesh_name in CLOSED_MESHES)
 
 
-def test_is_volume_inward_normals(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_is_volume_inward_normals(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: reversing every face keeps it watertight and consistent, but flips the volume's sign.
 
     This is the clause that distinguishes ``is_volume`` from ``is_watertight``, and the only
     fixture state that isolates it -- the mesh passes every other check in the module.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     faces_inward = mesh_tm.faces[:, ::-1].copy()  # reverse every face -> inward-facing normals
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_inward, mesh_wp.device)
     mesh_inward_tm = tm.Trimesh(vertices=mesh_tm.vertices, faces=faces_inward, process=False)
@@ -1459,16 +1473,18 @@ def test_face_defective_mask_flags_the_misoriented_face(device: str) -> None:
     assert np.array_equal(np.flatnonzero(bad_np), np.array([target]))
 
 
-def test_face_defective_mask_all_criteria_disabled(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_face_defective_mask_all_criteria_disabled(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     bad_np = od.validation.face_defective_mask(
         mesh_wp.points, mesh_wp.indices, min_quality=None, max_normal_angle=None
     ).numpy()
     assert not bad_np.any()
 
 
-def test_face_defective_mask_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_face_defective_mask_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="max_fold_angle must be in"):
         od.validation.face_defective_mask(mesh_wp.points, mesh_wp.indices, max_fold_angle=200.0)
     with pytest.raises(ValueError, match="max_normal_angle must be in"):

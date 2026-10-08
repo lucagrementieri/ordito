@@ -15,6 +15,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.predicates import (
     closest_point_on_segment,
+    newell_term,
     orient2d,
     plane_basis,
     point_to_segment_distance,
@@ -994,7 +995,7 @@ def accumulate_radius_frame(
             weighted += midpoint * length
             total += length
         if i < n_pairs:
-            normal += wp.cross(start, polyline[loop_point(i + 1, n)])
+            normal += newell_term(start, polyline[loop_point(i + 1, n)], polyline[0])
     commit_block_sum(
         lane,
         wp.vector(weighted[0], weighted[1], weighted[2], total, normal[0], normal[1], normal[2]),

@@ -392,6 +392,29 @@ def test_polyline_normal_matches_reference(device: str) -> None:
     assert np.allclose(list(normal_wp), _closed_normal_np(pts_np), rtol=1e-4, atol=1e-4)
 
 
+def test_polyline_normal_far_from_the_origin(device: str) -> None:
+    """
+    Not a library comparison: a 1e-2 loop at coordinates near 700 against its exact normal.
+
+    Newell's sum is the same about any point of a closed ring only in exact arithmetic. Taken about
+    the coordinate origin, in ``float32``, it subtracts cross products of size ``|p|^2 ~ 5e5`` to
+    leave a loop area of ~3e-5, and the normal came out 118.8 degrees wrong; about the loop's first
+    point (``predicates.newell_term``) it agrees with the float64 sum of the same float32 points
+    to within a 1e-3 rad bound. The exact reference is that float64 sum about the same point.
+    """
+    rng = np.random.default_rng(1)
+    angles = np.sort(rng.random(9)) * 2.0 * np.pi
+    loop_np = np.column_stack(
+        (np.cos(angles), 0.3 * np.sin(angles), 0.05 * np.sin(2.0 * angles))
+    ) * 1e-2 + np.array([700.0, -400.0, 250.0])
+    loop_np = loop_np.astype(np.float32).astype(np.float64)
+    exact_np = np.cross(loop_np - loop_np[0], np.roll(loop_np, -1, axis=0) - loop_np[0]).sum(axis=0)
+    exact_np /= np.linalg.norm(exact_np)
+
+    normal_np = np.array(list(od.polyline.polyline_normal(points_to_warp(loop_np, device))))
+    assert np.arccos(np.clip(normal_np @ exact_np, -1.0, 1.0)) < 1e-3
+
+
 # --- angles (NumPy reference; trimesh vector_angle cross-check) ---
 
 

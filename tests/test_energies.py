@@ -25,6 +25,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
+from tests.comparisons import sparse_allclose
 from tests.conversions import (
     bsr_to_csr,
     mesh_igl,
@@ -37,7 +38,7 @@ from tests.conversions import (
 @pytest.mark.parametrize("target_length", [0.0, 0.3])
 @pytest.mark.parity("edge_length_loss", "pytorch3d")
 def test_edge_length_loss_matches_pytorch3d(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], target_length: float
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], target_length: float
 ) -> None:
     """
     Class A: ``mesh_edge_loss`` at two resting lengths, one of them non-zero.
@@ -50,7 +51,7 @@ def test_edge_length_loss_matches_pytorch3d(
     pytorch3d's per-mesh ``1 / E`` weighting collapses to a plain mean for a single mesh, which is
     ordito's only case -- so this is a direct comparison rather than a class-B one.
     """
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = sphere_irregular
     loss_p3d = float(
         p3d_loss.mesh_edge_loss(trimesh_to_pytorch3d(mesh_tm), target_length=target_length)
     )
@@ -64,7 +65,7 @@ def test_edge_length_loss_matches_pytorch3d(
 
 @pytest.mark.parity("normal_consistency_loss", "pytorch3d")
 def test_normal_consistency_loss_matches_pytorch3d(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], device: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
     """
     Class A on edge-manifold input, with the non-manifold divergence **pinned** rather than avoided.
@@ -74,7 +75,7 @@ def test_normal_consistency_loss_matches_pytorch3d(
     ``_C.mesh_normal_consistency_find_verts`` -- where
     [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles] reports one pair per
     adjacency. The two coincide exactly wherever every edge has at most two faces, which is what
-    the first half measures: 0.0155947 against 0.0155947 over ``icosphere(2)``'s 480 pairs.
+    the first half measures: 0.1660283 against 0.1660283 over ``sphere_irregular``'s 1 494 pairs.
 
     The second half is the divergence itself, on three faces sharing one edge, and it is sharper
     than a factor: pytorch3d sees ``C(3, 2) = 3`` pairs there and reports **0.777**, while
@@ -83,7 +84,7 @@ def test_normal_consistency_loss_matches_pytorch3d(
     numbers rather than papering over them with a tolerance; without that half the class-A label
     would read as a claim about all input.
     """
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = sphere_irregular
     loss_p3d = float(p3d_loss.mesh_normal_consistency(trimesh_to_pytorch3d(mesh_tm)))
     loss_wp = od.energies.normal_consistency_loss(mesh_wp.points, mesh_wp.indices)
 
@@ -106,25 +107,35 @@ def test_normal_consistency_loss_matches_pytorch3d(
     assert fan_wp == 0.0
 
 
-@pytest.mark.parametrize("method", ["uniform", "cot", "cotcurv"])
+@pytest.mark.parametrize(
+    ("method", "mesh_name"),
+    [
+        ("uniform", "sphere_irregular"),
+        ("cot", "sphere_irregular"),
+        ("cotcurv", "sphere_well_shaped"),
+    ],
+)
 @pytest.mark.parity("laplacian_smoothing_loss", "pytorch3d")
 def test_laplacian_smoothing_loss_matches_pytorch3d(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], method: Literal["uniform", "cot", "cotcurv"]
+    request: pytest.FixtureRequest, method: Literal["uniform", "cot", "cotcurv"], mesh_name: str
 ) -> None:
     """
     Class B: all three of ``mesh_laplacian_smoothing``'s methods, each under its own rescaling.
 
     The three are three different quantities and not a tuning knob, which is what makes the
-    parametrize worth having: measured **0.04838 / 0.04401 / 0.33407** on this fixture, so a
-    branch answering with the wrong normalization cannot pass. Agreement 2.07e-07 / 3.12e-07 /
-    5.27e-07 relative.
+    parametrize worth having: measured **0.14793 / 0.02894** on ``sphere_irregular`` and
+    **0.27200** on ``sphere_well_shaped``, so a branch answering with the wrong normalization
+    cannot pass. Agreement 1.6e-07 / 4.0e-07 / 7.0e-08 relative. ``cotcurv`` divides by
+    pytorch3d's vertex areas, which it forms by Heron's formula in ``float32``: on
+    ``sphere_irregular``'s needles those are 3.9e-05 off (the loss 2.0e-05), so that method runs
+    on the needle-free fixture; ``cot`` normalizes by the row sum, where the area cancels.
 
     Class B rather than A because the reference reads a cotangent Laplacian whose off-diagonal is
     twice ordito's half-cotangent table and whose diagonal is identically zero; the two ratios
     ``(L v) / rowsum`` and ``(L v) / (6 M)`` are invariant to that factor, which is the named
     transform and is why the wrapper can assemble from ordito's own ``cotmatrix``.
     """
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     loss_p3d = float(
         p3d_loss.mesh_laplacian_smoothing(trimesh_to_pytorch3d(mesh_tm), method=method)
     )
@@ -135,7 +146,7 @@ def test_laplacian_smoothing_loss_matches_pytorch3d(
 
 
 def test_laplacian_smoothing_loss_methods_are_three_quantities(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: the three methods are far apart, and an empty mesh is 0.0.
@@ -146,7 +157,7 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
     ``cotcurv`` variant's per-vertex sibling and is the reason it is an order of magnitude larger:
     it carries units of one over length where the other two are lengths.
     """
-    mesh_tm, mesh_wp = icosphere_coarse
+    mesh_tm, mesh_wp = sphere_irregular
     del mesh_tm
     losses = [
         od.energies.laplacian_smoothing_loss(mesh_wp.points, mesh_wp.indices, method)
@@ -170,7 +181,7 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
 
 
 @pytest.mark.parametrize("k", [1, 2, 3])
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("k_harmonic", "igl")
 def test_k_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str, k: int) -> None:
     """
@@ -187,18 +198,17 @@ def test_k_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str, 
 
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np)
     mass_igl = igl.massmatrix(vertices_np, faces_np, igl.MASSMATRIX_TYPE_BARYCENTRIC)
-    q_igl = igl.harmonic_integrated_from_laplacian_and_mass(laplacian_igl, mass_igl, k).toarray()
+    q_igl = igl.harmonic_integrated_from_laplacian_and_mass(laplacian_igl, mass_igl, k)
 
     laplacian_wp = scipy_to_bsr(laplacian_igl, mesh_wp.device)
     mass_wp = wp.array(mass_igl.diagonal(), dtype=wp.float64, device=mesh_wp.device)
-    q_wp = bsr_to_csr(od.energies.k_harmonic(laplacian_wp, mass_wp, k=k)).toarray()
+    q_wp = bsr_to_csr(od.energies.k_harmonic(laplacian_wp, mass_wp, k=k))
 
-    assert q_wp.shape == q_igl.shape
-    scale = np.abs(q_igl).max()
-    assert np.allclose(q_wp, q_igl, rtol=1e-9, atol=1e-9 * scale)
+    scale = abs(q_igl).max()
+    assert sparse_allclose(q_wp, q_igl, rtol=1e-9, atol=1e-9 * scale)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_k_harmonic_identity_mass_and_power_guard(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -213,9 +223,9 @@ def test_k_harmonic_identity_mass_and_power_guard(
 
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np).tocsr()
     laplacian_wp = scipy_to_bsr(laplacian_igl, mesh_wp.device)
-    q_wp = bsr_to_csr(od.energies.k_harmonic(laplacian_wp, k=2)).toarray()
-    q_sp = (laplacian_igl @ laplacian_igl).toarray()
-    assert np.allclose(q_wp, q_sp, rtol=1e-9, atol=1e-9 * np.abs(q_sp).max())
+    q_wp = bsr_to_csr(od.energies.k_harmonic(laplacian_wp, k=2))
+    q_sp = laplacian_igl @ laplacian_igl
+    assert sparse_allclose(q_wp, q_sp, rtol=1e-9, atol=1e-9 * abs(q_sp).max())
 
     with pytest.raises(ValueError, match="k must be >= 1"):
         od.energies.k_harmonic(laplacian_wp, k=0)
@@ -230,13 +240,10 @@ _HESSIAN_ENERGIES = {
 @pytest.mark.parametrize(
     ("energy", "mesh_name"),
     [
-        *(
-            ("hessian_energy", name)
-            for name in ("icosahedron", "hemisphere", "half_torus", "saddle_graded")
-        ),
+        *(("hessian_energy", name) for name in ("sphere_irregular", "saddle_graded")),
         *(
             ("curved_hessian_energy", name)
-            for name in ("icosahedron", "hemisphere", "half_torus", "torus")
+            for name in ("sphere_irregular", "saddle_graded", "torus_irregular")
         ),
     ],
 )
@@ -262,20 +269,19 @@ def test_hessian_energies_match_igl(
     also check, as an invariant rather than a comparison, that constants have zero curved energy:
     every Crouzeix-Raviart gradient row sums to zero by construction.
     """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.ascontiguousarray(mesh_wp.points.numpy(), dtype=np.float64)
     faces_np = np.ascontiguousarray(mesh_wp.indices.numpy().reshape(-1, 3), dtype=np.int64)
     energy_od, energy_igl = _HESSIAN_ENERGIES[energy]
 
-    q_igl = energy_igl(vertices_np, faces_np).toarray()
-    q_wp = bsr_to_csr(energy_od(mesh_wp.points, mesh_wp.indices)).toarray()
+    q_igl = energy_igl(vertices_np, faces_np)
+    q_wp = bsr_to_csr(energy_od(mesh_wp.points, mesh_wp.indices))
 
-    assert q_wp.shape == q_igl.shape
-    assert np.abs(q_igl).max() > 0.0
-    scale = np.abs(q_igl).max()
-    assert np.allclose(q_wp, q_igl, rtol=1e-7, atol=1e-7 * scale)
-    if energy == "curved_hessian_energy" and mesh_name in ("icosahedron", "torus"):
-        assert np.abs(q_wp @ np.ones(q_wp.shape[0])).max() < 1e-9 * np.abs(q_wp).max()
+    scale = abs(q_igl).max()
+    assert scale > 0.0
+    assert sparse_allclose(q_wp, q_igl, rtol=1e-7, atol=1e-7 * scale)
+    if energy == "curved_hessian_energy" and mesh_tm.is_watertight:
+        assert np.abs(q_wp @ np.ones(q_wp.shape[0])).max() < 1e-9 * abs(q_wp).max()
 
 
 def test_hessian_energy_annihilates_linear_fields_where_biharmonic_does_not(device: str) -> None:
@@ -330,7 +336,7 @@ _CROUZEIX_RAVIART = {
 }
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parametrize("operator", list(_CROUZEIX_RAVIART))
 @pytest.mark.parity("crouzeix_raviart_cotmatrix", "igl")
 @pytest.mark.parity("crouzeix_raviart_massmatrix", "igl")
@@ -364,9 +370,9 @@ def test_crouzeix_raviart_operators_match_igl(
     assert np.all(np.abs(difference.data) <= 1e-5 + 1e-5 * np.abs(reference))
 
 
-def test_crouzeix_raviart_shared_edge_numbering(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_crouzeix_raviart_shared_edge_numbering(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Precomputed ``(unique_edges, edge_map)`` must not change the answer; half a pair raises."""
-    _mesh_tm, mesh_wp = half_torus
+    _mesh_tm, mesh_wp = saddle_graded
     unique_edges, edge_map = od.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
     derived = bsr_to_csr(
         od.energies.crouzeix_raviart_cotmatrix(mesh_wp.points, mesh_wp.indices)
@@ -434,22 +440,22 @@ def _lscm_q_igl(mesh_tm: tm.Trimesh) -> sp.csr_matrix:
     return hessian_igl.tocsr()
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: igl exposes the Hessian only as ``igl.lscm``'s second return, so it comes from there.
 
     The named transform is the extraction, not a value change: igl's ``Q`` is exactly
-    ``-repdiag(L, 2) - 2A``, the same matrix ordito assembles, and both are densified before
-    comparing because the two builds order their CSR entries differently. This builds the Hessian
-    only, no conjugate-gradient solve.
+    ``-repdiag(L, 2) - 2A``, the same matrix ordito assembles, compared over the union of the two
+    sparsity patterns because the two builds order their CSR entries differently. This builds the
+    Hessian only, no conjugate-gradient solve.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    hessian_wp = bsr_to_csr(od.energies.lscm_hessian(mesh_wp.points, mesh_wp.indices)).toarray()
-    assert np.allclose(hessian_wp, _lscm_q_igl(mesh_tm).toarray(), rtol=1e-5, atol=1e-5)
+    hessian_wp = bsr_to_csr(od.energies.lscm_hessian(mesh_wp.points, mesh_wp.indices))
+    assert sparse_allclose(hessian_wp, _lscm_q_igl(mesh_tm), rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_vector_area_matrix_matches_igl_derived(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -464,10 +470,9 @@ def test_vector_area_matrix_matches_igl_derived(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np)
-    area_igl = (
-        cast(sp.csr_matrix, -sp.block_diag([laplacian_igl, laplacian_igl]) - _lscm_q_igl(mesh_tm))
-        / 2.0
+    area_igl = cast(
+        sp.csr_matrix, (-sp.block_diag([laplacian_igl, laplacian_igl]) - _lscm_q_igl(mesh_tm)) / 2.0
     )
 
-    area_wp = bsr_to_csr(od.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices)).toarray()
-    assert np.allclose(area_wp, area_igl.toarray(), rtol=1e-5, atol=1e-5)
+    area_wp = bsr_to_csr(od.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices))
+    assert sparse_allclose(area_wp, area_igl, rtol=1e-5, atol=1e-5)

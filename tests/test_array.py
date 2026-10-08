@@ -18,6 +18,7 @@ import warp.sparse as wps
 import ordito as od
 import ordito.typing as odt
 from ordito import _device
+from tests.conftest import MESHES
 from tests.conversions import points_to_warp, warp_empty
 
 DType = TypeVar("DType")
@@ -222,7 +223,7 @@ def test_pack_1d_arrays_reuses_what_split_produced(device: str) -> None:
 
 
 def test_pack_1d_arrays_copy_false_aliases_a_boundary_loop_pack(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    torus_irregular_holes: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: the round trip the flag exists for, on a real mesh.
@@ -234,7 +235,7 @@ def test_pack_1d_arrays_copy_false_aliases_a_boundary_loop_pack(
     show. That the measures themselves are unaffected is
     [`test_loop_measures_agree_with_the_single_loop_forms`]'s job.
     """
-    _mesh_tm, mesh_wp = half_torus
+    _mesh_tm, mesh_wp = torus_irregular_holes
     loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
     assert len(loops_wp) > 1
 
@@ -1372,7 +1373,7 @@ def test_isin_max_index_rejects_a_value_that_would_wrap_int32(device: str, wide_
     assert np.array_equal(od.array.isin(elements_wp, test_wp).numpy(), expected_np)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("index_bound", "trimesh")
 def test_index_bound_matches_the_index_maximum(
     request: pytest.FixtureRequest, mesh_name: str

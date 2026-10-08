@@ -221,6 +221,8 @@ def any(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.ar
 @overload
 def sum(array: wp.array[wp.vec3], *, axis: None = ...) -> wp.vec3: ...
 @overload
+def sum(array: wp.array[wp.vec4], *, axis: None = ...) -> wp.vec4: ...
+@overload
 def sum(array: odt.ArrayNdInt, *, axis: None = ...) -> int: ...
 @overload
 def sum(array: odt.ArrayNdFloat, *, axis: None = ...) -> float: ...
@@ -231,10 +233,10 @@ def sum(array: wp.array[wp.bool], *, axis: None = ...) -> int: ...
 @overload
 def sum(array: wp.array[wp.bool], *, axis: Literal[0, 1]) -> odt.Array1dInt32: ...
 def sum(
-    array: odt.ArrayNdScalar | wp.array[wp.bool] | wp.array[wp.vec3],
+    array: odt.ArrayNdScalar | wp.array[wp.bool] | wp.array[wp.vec3] | wp.array[wp.vec4],
     *,
     axis: Literal[0, 1] | None = None,
-) -> float | int | odt.Array1dScalar | odt.Array1dInt32 | wp.vec3:
+) -> float | int | odt.Array1dScalar | odt.Array1dInt32 | wp.vec3 | wp.vec4:
     """
     Sum of ``array``.
 
@@ -246,21 +248,23 @@ def sum(
     reduced extent is narrower than a tile, a tiled block reduction per output otherwise.
 
     For ``wp.bool`` input, counts ``True`` values and returns ``int`` (global) or
-    ``wp.int32`` (per-axis).
+    ``wp.int32`` (per-axis). A rank-1 ``wp.vec3`` or ``wp.vec4`` array sums componentwise to one
+    vector of its dtype (``axis=None`` only).
 
     Parameters
     ----------
     array
-        ``(n,)`` or ``(n, m)`` scalar or ``wp.bool`` array. Must be non-empty.
+        ``(n,)`` or ``(n, m)`` scalar or ``wp.bool`` array, or ``(n,)`` ``wp.vec3`` / ``wp.vec4``
+        array. Must be non-empty.
     axis
         ``None`` for a global scalar result. ``0`` or ``1`` for a per-axis 1D
         result (rank-2 input only).
 
     Returns
     -------
-    float | int | wp.array
-        Global scalar when ``axis=None``; ``(n,)`` (``axis=1``) or ``(m,)`` (``axis=0``) array
-        otherwise.
+    float | int | wp.array | wp.vec3 | wp.vec4
+        Global scalar (vector, for a vector array) when ``axis=None``; ``(n,)`` (``axis=1``) or
+        ``(m,)`` (``axis=0``) array otherwise.
 
     Raises
     ------
@@ -268,16 +272,18 @@ def sum(
         If ``array`` is empty, its rank is not 1 or 2, ``axis`` is not ``None`` for a
         rank-1 input, or ``axis`` is not ``0``, ``1``, or ``None`` for a rank-2 input.
     """
-    if array.dtype == wp.vec3:
+    if array.dtype in _VECTOR_SUM_PARTIALS:
+        name = array.dtype.__name__
         if axis is not None:
-            raise ValueError("sum over a vec3 array supports only axis=None.")
+            raise ValueError(f"sum over a {name} array supports only axis=None.")
         if array.ndim != 1:
-            raise ValueError("sum over a vec3 array requires a 1D array.")
+            raise ValueError(f"sum over a {name} array requires a 1D array.")
         n = int(array.shape[0])
         if n == 0:
             raise ValueError("sum requires a non-empty array.")
-        total = _sum_in_fixed_order(kernel_reduce.sum_vec3_1d_partials, [array], n, wp.vec3)
-        return cast(wp.vec3, total.list()[0])
+        dtype = array.dtype
+        total = _sum_in_fixed_order(_VECTOR_SUM_PARTIALS[dtype], [array], n, dtype)
+        return cast(wp.vec3 | wp.vec4, total.list()[0])
     if array.dtype == wp.bool:
         mask = cast(wp.array[wp.bool], array)
         if axis is None:
@@ -524,6 +530,12 @@ class _BoolReduceSpec(NamedTuple):
     init_global: int
 
 
+# The vector dtypes ``sum`` folds componentwise, each with its fixed-order partials kernel.
+_VECTOR_SUM_PARTIALS: dict[type, odt.Kernel] = {
+    wp.vec3: kernel_reduce.sum_vec3_1d_partials,
+    wp.vec4: kernel_reduce.sum_vec4_1d_partials,
+}
+
 _SCALAR_REDUCE: dict[str, _ScalarReduceSpec] = {
     "min": _ScalarReduceSpec(
         name="min",
@@ -622,11 +634,7 @@ def _sum_in_fixed_order(
     ``inputs`` holds the arrays ``first`` takes before its output.
     """
     device = inputs[0].device
-    fold = (
-        kernel_reduce.sum_vec3_1d_partials
-        if dtype == wp.vec3
-        else kernel_reduce.SUM1D_PARTIALS[dtype]
-    )
+    fold = _VECTOR_SUM_PARTIALS.get(dtype) or kernel_reduce.SUM1D_PARTIALS[dtype]
     kernel = first
     blocks = kernel_reduce.blocks_1d(n)
     while True:

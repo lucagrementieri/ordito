@@ -10,6 +10,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito.kernels.grouping import VEC3_PACK_PRECISION, VEC3_PACK_SHIFT
 from tests.comparisons import lexsort_rows, same_partition
+from tests.conftest import MESHES
 from tests.conversions import points_to_warp, warp_empty
 
 # Host data, uploaded per test onto the fixture's device -- not ``wp.array`` at module scope. A
@@ -53,7 +54,7 @@ def test_group(
 
 
 @pytest.mark.parity("group", "trimesh")
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_group_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B (row and group order): ``trimesh.grouping.group`` over the same edge inverse.
@@ -208,7 +209,7 @@ def test_unique_rows_inverse_counts(device: str):
 @pytest.mark.parametrize("unique_fraction", [1.0, 0.1], ids=["allunique", "tenth"])
 @pytest.mark.parity("unique_rows", "trimesh")
 def test_unique_rows_matches_trimesh(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str, unique_fraction: float
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str, unique_fraction: float
 ) -> None:
     """
     Class B: ``trimesh.grouping.unique_rows`` returns row *indices*, ordito returns the rows.
@@ -222,7 +223,7 @@ def test_unique_rows_matches_trimesh(
     Parametrized over the same two duplicate densities the benchmark sweeps: every row distinct, and
     a tenth as many distinct rows repeated ten times.
     """
-    mesh_tm, _mesh_wp = icosahedron
+    mesh_tm, _mesh_wp = sphere_irregular
     faces_np = mesh_tm.faces.astype(np.int32)
     n_unique = max(1, int(faces_np.shape[0] * unique_fraction))
     rows_np = np.ascontiguousarray(faces_np[np.arange(faces_np.shape[0]) % n_unique])

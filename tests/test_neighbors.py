@@ -1710,7 +1710,7 @@ def _geodesic_ball_neighborhoods_oracle(
     return per_vertex, reference
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_geodesic_ball_neighborhoods(mesh_name: str, request: pytest.FixtureRequest) -> None:
     """On-device geodesic balls match the NumPy/libigl oracle (per-row set equality)."""
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)

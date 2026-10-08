@@ -29,7 +29,9 @@ from tests.conversions import (
 )
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "torus"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "torus_irregular"]
+)
 @pytest.mark.parity("moments", "meshlib", "pyvista")
 def test_volume(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -63,14 +65,14 @@ def test_volume(request: pytest.FixtureRequest, mesh_name: str):
     assert np.isclose(volume_pv, mesh_tm.volume, rtol=1e-5)
 
 
-def test_volume_inward_normals_negative(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
+def test_volume_inward_normals_negative(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A: reversing every face negates the volume, and trimesh agrees on the sign.
 
     The *signed* result is the claim -- an implementation taking the absolute value would pass
     [`test_volume`] and fail this, and ``validation.is_volume`` depends on the sign.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     faces_np = mesh_tm.faces[:, ::-1].reshape(-1).astype(np.int32)
     faces_flipped_wp = wp.array(
         np.ascontiguousarray(faces_np), dtype=wp.int32, device=mesh_wp.device
@@ -79,7 +81,7 @@ def test_volume_inward_normals_negative(icosahedron: tuple[tm.Trimesh, wp.Mesh])
     assert np.isclose(volume_wp, -mesh_tm.volume, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("surface_centroid", "trimesh", "meshlib", "pymeshlab")
 def test_surface_centroid(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -138,9 +140,9 @@ def test_surface_centroid_matches_trimesh_on_a_skewed_mesh_on_both_devices(kerne
     per 64-face tile there. A *symmetric* mesh hides that completely -- the centroid of every 64th
     face of a sphere is still the sphere's centre -- which is why the mesh is stretched and sheared
     first. Measured: the sub-sampled sum was off by 1.1e-2 on this shape and by 4e-8 on the
-    unmodified sphere. And the reduction now has two implementations (``centroid_tiled`` on CUDA,
-    ``centroid_sliced`` on CPU), so the parametrization is what covers both of them -- running this
-    on one device only would leave a whole kernel untested.
+    unmodified sphere. The reduction is one kernel on both devices now (``centroid_partials``, lanes
+    striding by ``wp.block_dim()``), and the parametrization covers both, the single-lane CPU block
+    being the case the old bug lived in.
     """
     if kernel_device.startswith("cuda") and not wp.is_cuda_available():
         pytest.skip("no CUDA device")
@@ -154,6 +156,24 @@ def test_surface_centroid_matches_trimesh_on_a_skewed_mesh_on_both_devices(kerne
     assert np.allclose(
         np.array(odt.vec3_floats(centroid_wp)), mesh_tm.centroid, rtol=1e-4, atol=1e-4
     )
+
+
+def test_surface_centroid_is_reproducible(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
+    """
+    Ordito against ordito: the same mesh gives the same centroid bits on every call.
+
+    The oracle for the value is ``test_surface_centroid``; this pins repeatability, which
+    ``sample.sample_volume`` inherits (it fans every sample from this point). One float atomic per
+    block summed the blocks in arrival order, and on CUDA the result moved in its last bits on
+    every call: 10 distinct centroids in 10 calls on every scan mesh. The per-block partials are
+    folded in a fixed order now.
+    """
+    _, mesh_wp = sphere_irregular
+    centroids = {
+        tuple(odt.vec3_floats(od.measures.surface_centroid(mesh_wp.points, mesh_wp.indices)))
+        for _ in range(10)
+    }
+    assert len(centroids) == 1
 
 
 def test_surface_centroid_all_degenerate(device: str):
@@ -178,7 +198,7 @@ def test_surface_centroid_all_degenerate(device: str):
     assert np.isnan(odt.vec3_floats(centroid_wp)).all()
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_irregular_hollow"])
 @pytest.mark.parity("moments", "igl", "trimesh")
 def test_moments(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -220,7 +240,7 @@ def test_moments(request: pytest.FixtureRequest, mesh_name: str):
 
 
 def test_moments_center_of_mass_differs_from_the_surface_centroid(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ):
     """
     The two centres are different quantities, which is why both functions exist.
@@ -230,7 +250,7 @@ def test_moments_center_of_mass_differs_from_the_surface_centroid(
     not, and
     asserting they differ is what keeps ``moments`` from being a synonym.
     """
-    _mesh_tm, mesh_wp = half_torus
+    _mesh_tm, mesh_wp = saddle_graded
     surface_centroid = od.measures.surface_centroid(mesh_wp.points, mesh_wp.indices)
     _volume, center_of_mass, _inertia = od.measures.moments(mesh_wp.points, mesh_wp.indices)
     assert not np.allclose(

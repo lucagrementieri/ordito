@@ -30,9 +30,11 @@ def _poisson_system(mesh_wp: wp.Mesh) -> odt.BsrMatrix[wp.float64]:
 
 
 @pytest.mark.parametrize("ordering", ["geometric", "pattern"])
-@pytest.mark.parametrize("mesh_name", ["icosphere", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize(
+    ("mesh_name", "rtol"), [("sphere_irregular", 1e-12), ("saddle_graded", 1e-11)]
+)
 def test_sparse_cholesky_matches_spsolve(
-    request: pytest.FixtureRequest, mesh_name: str, ordering: str
+    request: pytest.FixtureRequest, mesh_name: str, rtol: float, ordering: str
 ) -> None:
     """
     Class A at 1e-12 componentwise: the heat system ``M - tL`` against SciPy's direct solve.
@@ -58,8 +60,9 @@ def test_sparse_cholesky_matches_spsolve(
     factor.solve(
         wp.array(rhs_np, dtype=wp.float64, device=mesh_wp.device), solution, componentwise=True
     )
-    assert np.ptp(np.log10(expected)) > 3.0
-    rtol = 1e-11 if mesh_name == "saddle_graded" else 1e-12
+    # Magnitudes: on ``sphere_irregular``'s obtuse faces the system is not an M-matrix, so some
+    # entries of the decaying solution are negative.
+    assert np.ptp(np.log10(np.abs(expected[expected != 0.0]))) > 3.0
     assert np.allclose(solution.numpy(), expected, rtol=rtol, atol=0.0)
     system_sp = bsr_to_csr(system)
     abs_sp = abs(system_sp)
@@ -67,14 +70,26 @@ def test_sparse_cholesky_matches_spsolve(
     def backward_error(x: np.ndarray) -> float:
         return float((np.abs(rhs_np - system_sp @ x) / (abs_sp @ np.abs(x) + np.abs(rhs_np))).max())
 
-    assert backward_error(solution.numpy()) <= 2.0 * backward_error(expected) + 1e-16
+    # The default ``tol=1e-12`` stops once no entry moves by 1e-12 of itself, which is not SciPy's
+    # backward error (``sphere_irregular``: 2.2e-15 against 3.7e-16). ``tol`` is a change test, so
+    # 1e-15 is not enough either: the pattern ordering stops there at 8.2e-16 / 9.5e-16 (CUDA /
+    # CPU). Refined until no entry moves by 1e-16 of itself, every ordering on both fixtures and
+    # devices reaches 1.9e-16 to 2.8e-16, below SciPy's 3.7e-16 to 5.4e-16.
+    tight = wp.zeros(n, dtype=wp.float64, device=mesh_wp.device)
+    factor.solve(
+        wp.array(rhs_np, dtype=wp.float64, device=mesh_wp.device),
+        tight,
+        tol=1e-16,
+        componentwise=True,
+    )
+    assert backward_error(tight.numpy()) <= 2.0 * backward_error(expected) + 1e-16
 
 
 def test_sparse_cholesky_solves_columns_together(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """Ordito against ordito: three columns solved together equal three solved one at a time."""
-    _, mesh_wp = icosphere
+    _, mesh_wp = sphere_irregular
     system = _heat_system(mesh_wp)
     n = int(system.nrow)
     rhs_np = np.random.default_rng(3).standard_normal((3, n))
@@ -88,10 +103,10 @@ def test_sparse_cholesky_solves_columns_together(
 
 
 def test_sparse_cholesky_is_reproducible(
-    device: str, hemisphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, saddle_graded: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """Ordito against ordito: sums are reduced in a fixed order, so solves repeat bit for bit."""
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     system = _heat_system(mesh_wp)
     n = int(system.nrow)
     rhs = wp.array(np.random.default_rng(5).standard_normal(n), dtype=wp.float64, device=device)
@@ -106,7 +121,7 @@ def test_sparse_cholesky_is_reproducible(
 
 @pytest.mark.parametrize("offset", [0.0, 2.5])
 def test_singular_component_takes_the_initial_guess_mean(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh], offset: float
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], offset: float
 ) -> None:
     """
     Class B at 1e-10: the pure-Neumann Poisson system against SciPy's solve of its regularized form.
@@ -116,7 +131,7 @@ def test_singular_component_takes_the_initial_guess_mean(
     restores that constant. The reference solves ``-L + 1 1^T / n``, whose solution is the
     zero-mean one, shifted by the initial guess's mean (the named transform).
     """
-    _, mesh_wp = icosphere
+    _, mesh_wp = sphere_irregular
     system = _poisson_system(mesh_wp)
     n = int(system.nrow)
     rhs_np = np.random.default_rng(7).standard_normal(n)
@@ -130,10 +145,10 @@ def test_singular_component_takes_the_initial_guess_mean(
 
 
 def test_refactor_takes_new_values_of_the_same_pattern(
-    device: str, hemisphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, saddle_graded: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """Class A at 1e-12: after ``refactor`` with the operator doubled, the solution halves."""
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     system_np = bsr_to_csr(_heat_system(mesh_wp))
     n = system_np.shape[0]
     rhs_np = np.random.default_rng(9).standard_normal(n)
@@ -157,27 +172,27 @@ def test_an_empty_row_keeps_its_initial_value(device: str) -> None:
 
 
 def test_sparse_cholesky_rejects_an_indefinite_operator(
-    device: str, icosahedron: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     negated = scipy_to_bsr(-bsr_to_csr(_heat_system(mesh_wp)), device)
     with pytest.raises(od.cholesky.NotPositiveDefiniteError, match="not positive definite"):
         od.cholesky.sparse_cholesky(negated, mesh_wp.points)
 
 
 def test_sparse_cholesky_honours_its_memory_budget(
-    monkeypatch: pytest.MonkeyPatch, icosahedron: tuple[tm.Trimesh, wp.Mesh]
+    monkeypatch: pytest.MonkeyPatch, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
     with pytest.raises(ValueError, match="CHOLESKY_MEMORY_BUDGET"):
         od.cholesky.sparse_cholesky(_heat_system(mesh_wp), mesh_wp.points)
 
 
 def test_sparse_cholesky_rejects_mismatched_inputs(
-    device: str, icosahedron: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     system = _heat_system(mesh_wp)
     with pytest.raises(ValueError, match="coordinates"):
         od.cholesky.sparse_cholesky(system, odt.as_dense(mesh_wp.points[:3]))
@@ -196,10 +211,10 @@ def test_sparse_cholesky_rejects_mismatched_inputs(
 
 
 def test_negated_factorization_solves_a_negative_definite_operator(
-    device: str, hemisphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, saddle_graded: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """Class A at 1e-12: ``negated=True`` factors ``-A`` and still answers ``A x = b``."""
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     system_np = -bsr_to_csr(_heat_system(mesh_wp))
     n = system_np.shape[0]
     rhs_np = np.random.default_rng(13).standard_normal(n)
@@ -244,7 +259,9 @@ def test_sparse_cholesky_orders_two_components(device: str, ordering: str) -> No
     factor = od.cholesky.sparse_cholesky(scipy_to_bsr(system_np, device), coordinates)
     solution = wp.zeros(n, dtype=wp.float64, device=device)
     factor.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution, componentwise=True)
-    assert np.ptp(np.log10(expected)) > 3.0
+    # Magnitudes: on ``sphere_irregular``'s obtuse faces the system is not an M-matrix, so some
+    # entries of the decaying solution are negative.
+    assert np.ptp(np.log10(np.abs(expected[expected != 0.0]))) > 3.0
     assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=0.0)
 
 

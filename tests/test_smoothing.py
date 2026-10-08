@@ -26,6 +26,7 @@ import ordito as od
 import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
 from ordito.kernels import smoothing as kernel_smoothing
+from tests.conftest import saddle_graded_large_arrays
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -110,12 +111,10 @@ def _noisy_icosphere_3(device: str) -> tuple[tm.Trimesh, wp.array[wp.vec3], wp.a
 @pytest.mark.parametrize(
     ("mesh_name", "iterations", "volume_constraint", "cotangent_operator"),
     [
-        pytest.param("icosahedron", 8, False, False, id="icosahedron"),
-        pytest.param("half_torus", 8, False, False, id="half_torus"),
-        pytest.param("hemisphere", 8, False, False, id="hemisphere"),
+        pytest.param("sphere_irregular", 8, False, False, id="sphere_irregular"),
         pytest.param("saddle_graded", 8, False, False, id="saddle_graded"),
-        pytest.param("icosahedron", 8, True, False, id="icosahedron-volume_constraint"),
-        pytest.param("half_torus", 6, False, True, id="half_torus-pluggable_operator"),
+        pytest.param("sphere_irregular", 8, True, False, id="sphere_irregular-volume_constraint"),
+        pytest.param("saddle_graded", 6, False, True, id="saddle_graded-pluggable_operator"),
     ],
 )
 def test_filter_laplacian_matches_trimesh(
@@ -214,7 +213,7 @@ def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> Non
             id=f"{lamb}-{mesh_name}",
         )
         for lamb in (0.5, 5.0, 50.0)
-        for mesh_name in ("icosahedron", "hemisphere", "half_torus", "saddle_graded")
+        for mesh_name in ("sphere_irregular", "saddle_graded")
     ],
 )
 def test_filter_laplacian_implicit_on_open_meshes(
@@ -225,9 +224,9 @@ def test_filter_laplacian_implicit_on_open_meshes(
 
     The uniform operator is built from directed ``mesh.edges`` (trimesh's own convention), so on a
     mesh with a boundary the backward-Euler system is not symmetric. A conjugate-gradient solve of
-    it matches trimesh on the closed icosahedron and returns vertices ~1e4 off on ``hemisphere`` at
-    ``lamb = 5``; the open arms are the point. ``lamb = 50`` pushes the fixed-point step count past
-    its cap, so it exercises the BiCGSTAB fallback.
+    it matched trimesh on a closed mesh and returned vertices ~1e4 off on an open one
+    (``hemisphere`` at ``lamb = 5``); the open arm is the point. ``lamb = 50`` pushes the
+    fixed-point step count past its cap, so it exercises the BiCGSTAB fallback.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     smoothed_wp = od.smoothing.filter_laplacian(
@@ -248,7 +247,7 @@ def test_filter_laplacian_implicit_on_open_meshes(
 
 
 def test_filter_laplacian_implicit_duplicate_built_operator(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     A duplicate-built operator gives the same result as its compact form.
@@ -261,7 +260,7 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
     ``‖values‖ = 1.1e13`` against a correct 84.3, and every vertex ``NaN`` end to end. Rebuilt
     sliced to ``nnz_sync()`` the same operator is compact, so the two must agree.
     """
-    _, mesh_wp = half_torus
+    _, mesh_wp = saddle_graded
     # Two independent builds of the same operator. ``nnz_sync()`` repairs the stale ``nnz`` cache
     # *in place*, so measuring the capacity on one build would hand the filter a repaired matrix and
     # the test would pass whatever the implementation does -- the operator under test has to be a
@@ -322,7 +321,10 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
 # ---------------------------------------------------------------------------
 
 
-def test_inflate_grows_the_volume_along_the_normals(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_well_shaped"])
+def test_inflate_grows_the_volume_along_the_normals(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
     """
     Not a library comparison: MeshLib's ``inflate`` is a different operation, measured.
 
@@ -339,21 +341,30 @@ def test_inflate_grows_the_volume_along_the_normals(icosphere: tuple[tm.Trimesh,
     So the properties carry it, and each excludes something a volume alone would not:
 
     * **volume monotone in the pressure**, which excludes a flow that smooths without inflating --
-      measured 4.153 unchanged at zero, 4.540 at 0.1 mean-edge and 6.328 at 0.5;
-    * **displacement normal-aligned**, mean cosine 0.959 and 0.998 at those pressures, ruling out
-      growing the volume by shearing;
-    * **watertight and free of self-intersections**, which is what a caller depends on;
+      on ``sphere_irregular`` 21.57 at zero, 24.96 at 0.1 mean edge and 41.71 at 0.5;
+    * **the pressure's displacement normal-aligned**: ``inflate(p) - inflate(0)`` against the
+      normals of ``inflate(0)``, mean cosine 0.987 / 0.964 at those pressures on
+      ``sphere_irregular`` (0.998 on the well-shaped sphere; 0.08-0.11 against shuffled normals),
+      ruling out growing the volume by shearing. The whole displacement is not: it includes the
+      relaxation's tangential motion, which on an irregular mesh dominates a small pressure;
+    * **watertight**, which is what a caller depends on;
     * **pressure zero is the identity in volume**, which is the tightest of the four: any change
       there would be the displacement leaking, since ``filter_laplacian``'s volume constraint is on.
+
+    Free of self-intersections only where no vertex is a sharp cone: on ``sphere_well_shaped``
+    none at any pressure, on ``sphere_irregular`` 17 faces at 0.1 mean edge and 93 at 0.5, where an
+    incident face sits more than 90 degrees from a vertex normal (the limit the docstring states,
+    shared with ``levelset.thicken_mesh``).
     """
-    mesh_tm, mesh_wp = icosphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     mean_edge = float(
         np.linalg.norm(
             mesh_tm.vertices[mesh_tm.edges[:, 0]] - mesh_tm.vertices[mesh_tm.edges[:, 1]], axis=1
         ).mean()
     )
-    normals_np = od.vertices.vertex_normals(vertices_wp, faces_wp).numpy()
+    rest_wp = od.smoothing.inflate(vertices_wp, faces_wp, 0.0)
+    rest_normals_np = od.vertices.vertex_normals(rest_wp, faces_wp).numpy()
 
     volumes = []
     for scale in (0.0, 0.1, 0.5):
@@ -361,12 +372,13 @@ def test_inflate_grows_the_volume_along_the_normals(icosphere: tuple[tm.Trimesh,
         inflated_tm = warp_to_trimesh(inflated_wp, faces_wp)
         volumes.append(float(inflated_tm.volume))
         assert inflated_tm.is_watertight
-        assert not od.validation.is_self_intersecting(wp.Mesh(inflated_wp, faces_wp))
+        if mesh_name == "sphere_well_shaped":
+            assert not od.validation.is_self_intersecting(wp.Mesh(inflated_wp, faces_wp))
         if scale == 0.0:
             assert np.isclose(volumes[-1], mesh_tm.volume, rtol=1e-3)
             continue
-        displacement_np = inflated_wp.numpy() - vertices_wp.numpy()
-        alignment_np = (displacement_np * normals_np).sum(axis=1) / np.linalg.norm(
+        displacement_np = inflated_wp.numpy() - rest_wp.numpy()
+        alignment_np = (displacement_np * rest_normals_np).sum(axis=1) / np.linalg.norm(
             displacement_np, axis=1
         )
         assert alignment_np.mean() > 0.9
@@ -407,7 +419,7 @@ def test_inflate_deflates_and_handles_edge_cases(device: str) -> None:
         od.smoothing.inflate(vertices_wp, faces_wp, 0.1, iterations=-1)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("filter_humphrey", "trimesh")
 def test_filter_humphrey(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -551,7 +563,7 @@ def test_filter_spikes_spike_rows_match_the_whole_operator(
 
 
 def test_filter_spikes_leaves_a_clean_mesh_alone(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], device: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
     """
     Not a library comparison: the do-nothing branch, which is the safety claim.
@@ -560,7 +572,7 @@ def test_filter_spikes_leaves_a_clean_mesh_alone(
     not merely close. That is what rules out a repair that smooths everything a little, which a
     displacement-magnitude assert on a spiky mesh would not catch.
     """
-    _, mesh_wp = icosphere
+    _, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     repaired_wp, flattened = od.smoothing.filter_spikes(
         vertices_wp, faces_wp, math.pi, return_count=True
@@ -834,7 +846,7 @@ def test_relax_approx_needs_a_radius_that_reaches(device: str) -> None:
         od.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, max_displacement=-1.0)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("filter_taubin", "trimesh")
 def test_filter_taubin(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -976,7 +988,7 @@ def test_filter_taubin_recompute_matches_pytorch3d(device: str, iterations: int)
         )
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_filter_neighborhood_average(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: the plain 1-ring mean against open3d's ``filter_smooth_simple``.
@@ -999,8 +1011,8 @@ def test_filter_neighborhood_average(request: pytest.FixtureRequest, mesh_name: 
 
 @pytest.mark.parametrize(
     ("mesh_name", "volume_constraint"),
-    [("icosahedron", True), ("cave_cube", True), ("hemisphere", False)],
-    ids=["icosahedron-volume_constraint", "cave_cube-volume_constraint", "hemisphere"],
+    [("sphere_round", True), ("cave_cube", True), ("hemisphere", False)],
+    ids=["sphere_round-volume_constraint", "cave_cube-volume_constraint", "hemisphere"],
 )
 @pytest.mark.parity("filter_mut_dif_laplacian", "trimesh")
 def test_filter_mut_dif_laplacian(
@@ -1013,14 +1025,14 @@ def test_filter_mut_dif_laplacian(
     preserve; restricting the constrained fixtures is what makes the comparison meaningful rather
     than a looser tolerance.
 
-    The unconstrained arm runs on ``hemisphere`` on purpose. The per-vertex
-    ``adil = 1/|N.(V - L.V)|`` reciprocal is coupled globally through its mean, so on
-    strongly-saddled meshes (e.g. ``half_torus``) the filter is chaotically sensitive to input
-    precision (the float64 trimesh reference itself diverges by ~1e-2 under a float32 input
-    round-trip). The hemisphere has no such near-zero normal residual, so float32 warp matches the
-    float64 reference tightly. ``saddle_graded`` is the same case as ``half_torus``, more so: a
-    1e-7 relative perturbation of its (float32-exact) vertices moves trimesh's own answer by 0.036,
-    16x ordito's 2.3e-3 distance from it.
+    Premise, and why the fixtures are saddle-free (``sphere_round``, ``cave_cube``,
+    ``hemisphere``): the per-vertex ``adil = 1/|N.(V - L.V)|`` reciprocal is coupled globally
+    through its mean, so wherever the normal residual nears zero -- a saddle, a bump's inflection --
+    the filter is chaotically sensitive to its input. A random 1e-7 relative perturbation of the
+    (``float32``-exact) vertices moves trimesh's own ``float64`` answer by 0.0146 on
+    ``sphere_irregular``, 0.0632 on ``sphere_irregular_hollow`` and 0.036 on ``saddle_graded``, as
+    far as ordito sits from it there (0.0296 / 0.0632 / 2.3e-3), so no fixture with such a region
+    can be an oracle. Without one, ``float32`` ordito matches the reference tightly.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
@@ -1044,7 +1056,7 @@ def test_filter_mut_dif_laplacian(
     "direct sparse factorization against Warp's conjugate gradient over a composition neither "
     "library exposes as a function, which is a solver comparison rather than this group's.",
 )
-def test_filter_implicit_fairing(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_filter_implicit_fairing(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A against libigl on a closed mesh, which is where the flow is defined.
 
@@ -1059,7 +1071,7 @@ def test_filter_implicit_fairing(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> Non
     # Implicit curvature flow is defined for closed meshes; on open boundaries the unconstrained
     # flow degrades boundary triangles and the conjugate-gradient solve diverges (igl's direct
     # solver tolerates it, Warp only offers CG), so the regression uses the watertight icosahedron.
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
 
     lamb = 0.1
     iterations = 6
@@ -1079,7 +1091,7 @@ def test_filter_implicit_fairing(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> Non
 
 
 def test_filter_implicit_fairing_pins_the_boundary_and_stays_stable(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     On an open mesh, boundary vertices are held exactly and many passes converge.
@@ -1091,7 +1103,7 @@ def test_filter_implicit_fairing_pins_the_boundary_and_stays_stable(
     interior, which is well posed however many times it is applied -- so this asserts *no*
     non-convergence warning over 25 passes, not merely finiteness.
     """
-    _, mesh_wp = hemisphere
+    _, mesh_wp = saddle_graded
     original_np = mesh_wp.points.numpy()
     extent = float(np.abs(original_np).max())
     boundary_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
@@ -1144,7 +1156,7 @@ def test_filter_implicit_fairing_pins_a_mesh_with_no_interior_vertex(device: str
 
 
 def test_filter_implicit_fairing_pin_boundary_is_a_no_op_on_a_closed_mesh(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     A watertight mesh has no boundary, so the flag routes down the same unreduced solve either way.
@@ -1152,7 +1164,7 @@ def test_filter_implicit_fairing_pin_boundary_is_a_no_op_on_a_closed_mesh(
     Compared at ``float64`` round-off rather than bitwise: the sparse mat-vec accumulates with
     atomics, so *any* two runs of this function differ in the last bits, flag or no flag.
     """
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     assert od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).size == 0
 
     pinned_np = od.smoothing.filter_implicit_fairing(
@@ -1171,10 +1183,17 @@ def test_filter_implicit_fairing_pin_boundary_is_a_no_op_on_a_closed_mesh(
 
 
 @pytest.mark.parametrize(
-    ("mesh_name", "factors"), [("saddle_graded", True), ("saddle_small", False)]
+    ("build", "factors"),
+    [
+        pytest.param(saddle_graded_large_arrays, True, id="saddle_graded_large"),
+        pytest.param(BUILDERS["saddle_small"], False, id="saddle_small"),
+    ],
 )
 def test_filter_implicit_fairing_refactors_only_a_slow_system(
-    device: str, mesh_name: str, factors: bool, monkeypatch: pytest.MonkeyPatch
+    device: str,
+    build: Callable[[], tuple[np.ndarray, np.ndarray]],
+    factors: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     Ordito against ordito: the per-pass refactorization solves the same systems as the iteration.
@@ -1185,7 +1204,7 @@ def test_filter_implicit_fairing_refactors_only_a_slow_system(
     reach) to the solves' tolerance. The flow's oracle is
     ``test_filter_implicit_fairing_matches_igl``.
     """
-    vertices_np, faces_np = BUILDERS[mesh_name]()
+    vertices_np, faces_np = build()
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     built: list[int] = []
     factor = od.smoothing.sparse_cholesky
@@ -1203,7 +1222,7 @@ def test_filter_implicit_fairing_refactors_only_a_slow_system(
     assert np.allclose(faired, iterated, rtol=1e-5, atol=1e-5 * np.ptp(iterated))
 
 
-def test_implicit_filters_cpu_match_cuda(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_implicit_filters_cpu_match_cuda(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: both implicit filters give the CUDA answer on CPU.
 
@@ -1212,7 +1231,7 @@ def test_implicit_filters_cpu_match_cuda(icosahedron: tuple[tm.Trimesh, wp.Mesh]
     """
     if not wp.is_cuda_available():
         pytest.skip("needs both devices to compare them")
-    mesh_tm, _ = icosahedron
+    mesh_tm, _ = sphere_irregular
 
     for name, call in (
         (
@@ -1775,7 +1794,9 @@ def _scalar_spike(mesh_tm: tm.Trimesh) -> np.ndarray:
     return values_np
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "torus", "cave_cube"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "torus_irregular", "sphere_irregular_hollow"]
+)
 @pytest.mark.parity("filter_scalar_laplacian", "pymeshlab")
 def test_filter_scalar_laplacian_matches_pymeshlab(
     request: pytest.FixtureRequest, mesh_name: str
@@ -1806,30 +1827,35 @@ def test_filter_scalar_laplacian_matches_pymeshlab(
     )
 
 
-def test_filter_scalar_laplacian_conserves_the_mean_on_a_closed_mesh(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+def test_filter_scalar_laplacian_conserves_the_degree_weighted_total_on_a_closed_mesh(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Repeated passes flatten the field without moving its total, on a mesh of uniform valence.
+    Repeated passes flatten the field without moving its degree-weighted total ``sum d_i x_i``.
 
-    The averaging operator is row-stochastic but not column-stochastic in general, so the sum is
-    only conserved when every vertex has the same degree — which an icosahedron does (valence 5
-    everywhere). That makes it the one fixture where this is an exact invariant.
+    The averaging operator ``W = D^-1 A`` is row-stochastic, and on a closed mesh the adjacency
+    ``A`` is symmetric, so ``d^T W = 1^T A = d^T``: each pass ``x + lamb (W x - x)`` keeps
+    ``d^T x``. The plain sum is kept only when every vertex has the same degree (an icosahedron);
+    ``sphere_irregular``'s degrees run 3-12, where the plain sum is not an invariant at all.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = sphere_irregular
     values_np = _scalar_spike(mesh_tm)
     values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=mesh_wp.device)
+    degrees_np = np.array([len(neighbours) for neighbours in mesh_tm.vertex_neighbors])
+    assert np.ptp(degrees_np) > 0  # non-vacuity: the plain sum would not do here
 
     smoothed_wp = od.smoothing.filter_scalar_laplacian(
         values_wp, mesh_wp.points, mesh_wp.indices, lamb=0.5, iterations=40
     )
-    assert np.isclose(smoothed_wp.numpy().sum(), values_np.sum(), rtol=1e-4)
+    assert np.isclose(smoothed_wp.numpy() @ degrees_np, values_np @ degrees_np, rtol=1e-4)
     assert smoothed_wp.numpy().std() < values_np.std()
     assert np.array_equal(values_wp.numpy(), values_np.astype(np.float32))  # input untouched
 
 
-def test_filter_scalar_laplacian_zero_iterations(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = icosahedron
+def test_filter_scalar_laplacian_zero_iterations(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    mesh_tm, mesh_wp = sphere_irregular
     values_np = _scalar_spike(mesh_tm).astype(np.float32)
     values_wp = wp.array(values_np, dtype=wp.float32, device=mesh_wp.device)
     out_wp = od.smoothing.filter_scalar_laplacian(
@@ -1838,8 +1864,10 @@ def test_filter_scalar_laplacian_zero_iterations(icosahedron: tuple[tm.Trimesh, 
     assert np.array_equal(out_wp.numpy(), values_np)
 
 
-def test_filter_scalar_laplacian_length_mismatch(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_filter_scalar_laplacian_length_mismatch(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     values_wp = wp.zeros(3, dtype=wp.float32, device=mesh_wp.device)
     with pytest.raises(ValueError, match="one entry per vertex"):
         od.smoothing.filter_scalar_laplacian(values_wp, mesh_wp.points, mesh_wp.indices)
@@ -1962,8 +1990,8 @@ def test_filter_normals_matches_meshlib(device: str) -> None:
     assert pair_worst > raw_worst
 
 
-def test_filter_normals_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+def test_filter_normals_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match=r"threshold must be in \[0, 180\]"):
         od.smoothing.filter_normals(mesh_wp.points, mesh_wp.indices, threshold=-1.0)
 
@@ -2113,10 +2141,10 @@ def test_filter_sharpen_matches_pymeshlab(device: str, iterations: int) -> None:
 
 
 def test_filter_sharpen_amplifies_detail(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """Sharpening inverts smoothing, so it must move the mesh *away* from its smooth self."""
-    sphere_tm, _sphere_tm_wp = icosphere
+    sphere_tm, _sphere_tm_wp = sphere_irregular
     rng = np.random.default_rng(4)
     bumpy_np = np.asarray(sphere_tm.vertices) * (
         1.0 + rng.normal(scale=0.02, size=(sphere_tm.vertices.shape[0], 1))
@@ -2143,9 +2171,9 @@ def test_filter_sharpen_amplifies_detail(
 
 
 def test_filter_sharpen_zero_weight_is_the_identity(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    _mesh_tm, mesh_wp = icosahedron
+    _mesh_tm, mesh_wp = sphere_irregular
     out_wp = od.smoothing.filter_sharpen(mesh_wp.points, mesh_wp.indices, weight=0.0)
     assert np.allclose(out_wp.numpy(), mesh_wp.points.numpy(), rtol=1e-6, atol=1e-6)
 
@@ -2179,10 +2207,10 @@ _SMOOTHING_VERTEX_FILTER_CASES = [
 )
 def test_smoothing_zero_iterations_returns_a_copy(
     smoothing_fn: Callable[[wp.array[wp.vec3], wp.array[wp.int32], int], wp.array[wp.vec3]],
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Not a library comparison: zero iterations is the identity for a vertex-position filter."""
-    _, mesh_wp = icosahedron
+    _, mesh_wp = sphere_irregular
     smoothed_wp = smoothing_fn(mesh_wp.points, mesh_wp.indices, 0)
     assert np.array_equal(smoothed_wp.numpy(), mesh_wp.points.numpy())
 
