@@ -15,7 +15,7 @@ benchmarks.
 - Record a new measured finding in the section that owns it (Part II here, or the reference files);
   a rule that follows from it goes into Part I. A measured decline is a result: do not re-propose it
   without new evidence.
-- A Warp version claim is spelled `Warp 1.17` (the word "Warp" immediately before the number); the
+- A Warp version claim is spelled `Warp 1.18` (the word "Warp" immediately before the number); the
   staleness check (§4.5, check 9) reads only that anchored form.
 
 ---
@@ -387,7 +387,7 @@ Thirty checks fail the default `pytest` run. Read an allowlist entry's reason be
 6. One public name exported by two modules.
 7. `kernels/<name>.py` without `ordito/<name>.py`, or the reverse.
 8. Private helper defined above its first caller (§5).
-9. Comment or docstring blaming a Warp version older than installed (anchored `Warp 1.17` spelling).
+9. Comment or docstring blaming a Warp version older than installed (anchored `Warp 1.18` spelling).
 10. Allocation with no `device=` (§3.3).
 11. Public function that raises with no `Raises` block (§4.3).
 12. Fenced ```python docstring example that does not run.
