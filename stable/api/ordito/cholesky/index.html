@@ -3363,6 +3363,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#ordito.cholesky.SparseCholesky.with_operator" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        with_operator
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ordito.cholesky.SparseCholesky.solve" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -4211,6 +4222,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#ordito.cholesky.SparseCholesky.with_operator" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        with_operator
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#ordito.cholesky.SparseCholesky.solve" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -4562,9 +4584,20 @@ what conjugate gradient converges on as well.</p>
       <a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a>
   </span>
 
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
             <span class="doc doc-backlink-crumb last">
       <a href="./#ordito.cholesky.SparseCholesky.refactor">refactor</a>
   </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.cholesky.SparseCholesky.with_operator">with_operator</a>
+  </span>
+
+      </li>
+  </ul>
 
       </li>
       <li class="doc doc-backlink">
@@ -4737,9 +4770,24 @@ what conjugate gradient converges on as well.</p>
       <a href="./#ordito.cholesky">cholesky</a>
   </span>
 
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.cholesky.SparseCholesky.with_operator">with_operator</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
             <span class="doc doc-backlink-crumb last">
       <a href="./#ordito.cholesky.sparse_cholesky">sparse_cholesky</a>
   </span>
+
+      </li>
+  </ul>
 
       </li>
   </ul>
@@ -4755,9 +4803,7 @@ what conjugate gradient converges on as well.</p>
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/cholesky.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 96</span>
-<span class="normal"> 97</span>
-<span class="normal"> 98</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 98</span>
 <span class="normal"> 99</span>
 <span class="normal">100</span>
 <span class="normal">101</span>
@@ -4765,7 +4811,18 @@ what conjugate gradient converges on as well.</p>
 <span class="normal">103</span>
 <span class="normal">104</span>
 <span class="normal">105</span>
-<span class="normal">106</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">plan</span><span class="p">:</span> <span class="n">_Plan</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">106</span>
+<span class="normal">107</span>
+<span class="normal">108</span>
+<span class="normal">109</span>
+<span class="normal">110</span>
+<span class="normal">111</span>
+<span class="normal">112</span>
+<span class="normal">113</span>
+<span class="normal">114</span>
+<span class="normal">115</span>
+<span class="normal">116</span>
+<span class="normal">117</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">plan</span><span class="p">:</span> <span class="n">_Plan</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Factor ``matrix`` (or its negation) over ``plan``'s structure."""</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">negated</span> <span class="o">=</span> <span class="n">negated</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">n</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">n</span>
@@ -4775,7 +4832,16 @@ what conjugate gradient converges on as well.</p>
     <span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">numeric</span><span class="p">()</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_solves</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">_Solve</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_matrix</span> <span class="o">=</span> <span class="n">matrix</span>
+    <span class="c1"># A caller that refactors repeatedly gets stable storage: the operator copied into arrays</span>
+    <span class="c1"># this factorization owns, the fronts arena kept, and the numeric factorization recorded</span>
+    <span class="c1"># once and replayed, as the refined solve then is too (``_Solve.run`` replays for one</span>
+    <span class="c1"># operator storage). Built on the first ``refactor`` after construction.</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_stable</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_fronts</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_factor_graph</span><span class="p">:</span> <span class="n">Any</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_constructing</span> <span class="o">=</span> <span class="kc">True</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">refactor</span><span class="p">(</span><span class="n">matrix</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_constructing</span> <span class="o">=</span> <span class="kc">False</span>
 </code></pre></div></td></tr></table></div>
                   </details>
 
@@ -5007,18 +5073,7 @@ is not positive).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/cholesky.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">108</span>
-<span class="normal">109</span>
-<span class="normal">110</span>
-<span class="normal">111</span>
-<span class="normal">112</span>
-<span class="normal">113</span>
-<span class="normal">114</span>
-<span class="normal">115</span>
-<span class="normal">116</span>
-<span class="normal">117</span>
-<span class="normal">118</span>
-<span class="normal">119</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">119</span>
 <span class="normal">120</span>
 <span class="normal">121</span>
 <span class="normal">122</span>
@@ -5032,7 +5087,41 @@ is not positive).</p>
 <span class="normal">130</span>
 <span class="normal">131</span>
 <span class="normal">132</span>
-<span class="normal">133</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refactor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">133</span>
+<span class="normal">134</span>
+<span class="normal">135</span>
+<span class="normal">136</span>
+<span class="normal">137</span>
+<span class="normal">138</span>
+<span class="normal">139</span>
+<span class="normal">140</span>
+<span class="normal">141</span>
+<span class="normal">142</span>
+<span class="normal">143</span>
+<span class="normal">144</span>
+<span class="normal">145</span>
+<span class="normal">146</span>
+<span class="normal">147</span>
+<span class="normal">148</span>
+<span class="normal">149</span>
+<span class="normal">150</span>
+<span class="normal">151</span>
+<span class="normal">152</span>
+<span class="normal">153</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span>
+<span class="normal">163</span>
+<span class="normal">164</span>
+<span class="normal">165</span>
+<span class="normal">166</span>
+<span class="normal">167</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refactor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Factor a new operator of the same sparsity pattern in place.</span>
 
@@ -5052,12 +5141,234 @@ is not positive).</p>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">matrix</span><span class="o">=</span><span class="n">matrix</span><span class="p">,</span> <span class="n">factor</span><span class="o">=</span><span class="bp">self</span><span class="p">)</span>
     <span class="n">plan</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_plan</span>
-    <span class="n">plan</span><span class="o">.</span><span class="n">factor</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.0</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">negated</span> <span class="k">else</span> <span class="mf">1.0</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">read_scalar</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span><span class="o">.</span><span class="n">status</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="n">sign</span> <span class="o">=</span> <span class="o">-</span><span class="mf">1.0</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">negated</span> <span class="k">else</span> <span class="mf">1.0</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_constructing</span><span class="p">:</span>
+        <span class="n">plan</span><span class="o">.</span><span class="n">factor</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span><span class="p">,</span> <span class="n">sign</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">matrix</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_stable_copy</span><span class="p">(</span><span class="n">matrix</span><span class="p">)</span>
+        <span class="n">fronts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fronts</span>
+        <span class="k">if</span> <span class="n">fronts</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">fronts</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fronts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
+                <span class="n">plan</span><span class="o">.</span><span class="n">front_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">device</span>
+            <span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">+=</span> <span class="mi">8</span> <span class="o">*</span> <span class="n">plan</span><span class="o">.</span><span class="n">front_entries</span>
+        <span class="n">device</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">device</span><span class="o">.</span><span class="n">is_cuda</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_factor_graph</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="k">with</span> <span class="n">wp</span><span class="o">.</span><span class="n">ScopedCapture</span><span class="p">(</span><span class="n">device</span><span class="p">)</span> <span class="k">as</span> <span class="n">capture</span><span class="p">:</span>
+                    <span class="n">plan</span><span class="o">.</span><span class="n">factor</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span><span class="p">,</span> <span class="n">sign</span><span class="p">,</span> <span class="n">fronts</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_factor_graph</span> <span class="o">=</span> <span class="n">capture</span><span class="o">.</span><span class="n">graph</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">capture_launch</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_factor_graph</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">plan</span><span class="o">.</span><span class="n">factor</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span><span class="p">,</span> <span class="n">sign</span><span class="p">,</span> <span class="n">fronts</span><span class="p">)</span>
+    <span class="c1"># Read back: a bad pivot raises, and whether any component is singular decides whether</span>
+    <span class="c1"># the solves project a null space at all -- both in one read.</span>
+    <span class="n">bad_pivot</span><span class="p">,</span> <span class="n">singular</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span><span class="o">.</span><span class="n">status</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">bad_pivot</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="n">NotPositiveDefiniteError</span><span class="p">(</span><span class="s2">"sparse_cholesky: the operator is not positive definite"</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span><span class="o">.</span><span class="n">any_singular</span> <span class="o">=</span> <span class="n">singular</span> <span class="o">!=</span> <span class="mi">0</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_matrix</span> <span class="o">=</span> <span class="n">matrix</span>
     <span class="k">for</span> <span class="n">solve</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_solves</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
         <span class="n">solve</span><span class="o">.</span><span class="n">matrix</span> <span class="o">=</span> <span class="n">matrix</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="ordito.cholesky.SparseCholesky.with_operator" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">with_operator</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">with_operator</span><span class="p">(</span>
+    <span class="n">matrix</span><span class="p">:</span> <span class="n">BsrMatrix</span><span class="p">[</span><span class="n">float64</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SparseCholesky</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Factor another operator of this one's sparsity pattern, sharing this analysis.</p>
+<p>Only the numeric factorization is paid: the ordering and every structure map are this
+factorization's, held by both. The two factorizations are independent otherwise.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>matrix</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="BsrMatrix (ordito.typing.BsrMatrix)" href="../typing/#ordito.typing.BsrMatrix">BsrMatrix</a>[<span title="warp.float64">float64</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n, n)</code> symmetric <code>float64</code> operator stored over the pattern this factorization
+was built for (the same row offsets and column indices).</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>negated</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>As <a class="autorefs autorefs-internal" title="sparse_cholesky" href="./#ordito.cholesky.sparse_cholesky"><code>sparse_cholesky</code></a> takes it: <code>None</code> factors
+whichever sign is positive definite.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="SparseCholesky (ordito.cholesky.SparseCholesky)" href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The new factorization.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="NotPositiveDefiniteError (ordito.cholesky.NotPositiveDefiniteError)" href="./#ordito.cholesky.NotPositiveDefiniteError">NotPositiveDefiniteError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the operator (with <code>negated=None</code>: either sign of it) is not positive definite.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>matrix</code> is not on this factorization's device.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+          
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/cholesky.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">187</span>
+<span class="normal">188</span>
+<span class="normal">189</span>
+<span class="normal">190</span>
+<span class="normal">191</span>
+<span class="normal">192</span>
+<span class="normal">193</span>
+<span class="normal">194</span>
+<span class="normal">195</span>
+<span class="normal">196</span>
+<span class="normal">197</span>
+<span class="normal">198</span>
+<span class="normal">199</span>
+<span class="normal">200</span>
+<span class="normal">201</span>
+<span class="normal">202</span>
+<span class="normal">203</span>
+<span class="normal">204</span>
+<span class="normal">205</span>
+<span class="normal">206</span>
+<span class="normal">207</span>
+<span class="normal">208</span>
+<span class="normal">209</span>
+<span class="normal">210</span>
+<span class="normal">211</span>
+<span class="normal">212</span>
+<span class="normal">213</span>
+<span class="normal">214</span>
+<span class="normal">215</span>
+<span class="normal">216</span>
+<span class="normal">217</span>
+<span class="normal">218</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">with_operator</span><span class="p">(</span>
+    <span class="bp">self</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SparseCholesky</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Factor another operator of this one's sparsity pattern, sharing this analysis.</span>
+
+<span class="sd">    Only the numeric factorization is paid: the ordering and every structure map are this</span>
+<span class="sd">    factorization's, held by both. The two factorizations are independent otherwise.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    matrix</span>
+<span class="sd">        ``(n, n)`` symmetric ``float64`` operator stored over the pattern this factorization</span>
+<span class="sd">        was built for (the same row offsets and column indices).</span>
+<span class="sd">    negated</span>
+<span class="sd">        As [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] takes it: ``None`` factors</span>
+<span class="sd">        whichever sign is positive definite.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    SparseCholesky</span>
+<span class="sd">        The new factorization.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    NotPositiveDefiniteError</span>
+<span class="sd">        If the operator (with ``negated=None``: either sign of it) is not positive definite.</span>
+<span class="sd">    RuntimeError</span>
+<span class="sd">        If ``matrix`` is not on this factorization's device.</span>
+<span class="sd">    """</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">matrix</span><span class="o">=</span><span class="n">matrix</span><span class="p">,</span> <span class="n">factor</span><span class="o">=</span><span class="bp">self</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_factored</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_plan</span><span class="p">,</span> <span class="n">matrix</span><span class="p">,</span> <span class="n">negated</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -5261,63 +5572,63 @@ entry -- or, with <code>componentwise</code>, times its own magnitude.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/cholesky.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">135</span>
-<span class="normal">136</span>
-<span class="normal">137</span>
-<span class="normal">138</span>
-<span class="normal">139</span>
-<span class="normal">140</span>
-<span class="normal">141</span>
-<span class="normal">142</span>
-<span class="normal">143</span>
-<span class="normal">144</span>
-<span class="normal">145</span>
-<span class="normal">146</span>
-<span class="normal">147</span>
-<span class="normal">148</span>
-<span class="normal">149</span>
-<span class="normal">150</span>
-<span class="normal">151</span>
-<span class="normal">152</span>
-<span class="normal">153</span>
-<span class="normal">154</span>
-<span class="normal">155</span>
-<span class="normal">156</span>
-<span class="normal">157</span>
-<span class="normal">158</span>
-<span class="normal">159</span>
-<span class="normal">160</span>
-<span class="normal">161</span>
-<span class="normal">162</span>
-<span class="normal">163</span>
-<span class="normal">164</span>
-<span class="normal">165</span>
-<span class="normal">166</span>
-<span class="normal">167</span>
-<span class="normal">168</span>
-<span class="normal">169</span>
-<span class="normal">170</span>
-<span class="normal">171</span>
-<span class="normal">172</span>
-<span class="normal">173</span>
-<span class="normal">174</span>
-<span class="normal">175</span>
-<span class="normal">176</span>
-<span class="normal">177</span>
-<span class="normal">178</span>
-<span class="normal">179</span>
-<span class="normal">180</span>
-<span class="normal">181</span>
-<span class="normal">182</span>
-<span class="normal">183</span>
-<span class="normal">184</span>
-<span class="normal">185</span>
-<span class="normal">186</span>
-<span class="normal">187</span>
-<span class="normal">188</span>
-<span class="normal">189</span>
-<span class="normal">190</span>
-<span class="normal">191</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span>
+<span class="normal">226</span>
+<span class="normal">227</span>
+<span class="normal">228</span>
+<span class="normal">229</span>
+<span class="normal">230</span>
+<span class="normal">231</span>
+<span class="normal">232</span>
+<span class="normal">233</span>
+<span class="normal">234</span>
+<span class="normal">235</span>
+<span class="normal">236</span>
+<span class="normal">237</span>
+<span class="normal">238</span>
+<span class="normal">239</span>
+<span class="normal">240</span>
+<span class="normal">241</span>
+<span class="normal">242</span>
+<span class="normal">243</span>
+<span class="normal">244</span>
+<span class="normal">245</span>
+<span class="normal">246</span>
+<span class="normal">247</span>
+<span class="normal">248</span>
+<span class="normal">249</span>
+<span class="normal">250</span>
+<span class="normal">251</span>
+<span class="normal">252</span>
+<span class="normal">253</span>
+<span class="normal">254</span>
+<span class="normal">255</span>
+<span class="normal">256</span>
+<span class="normal">257</span>
+<span class="normal">258</span>
+<span class="normal">259</span>
+<span class="normal">260</span>
+<span class="normal">261</span>
+<span class="normal">262</span>
+<span class="normal">263</span>
+<span class="normal">264</span>
+<span class="normal">265</span>
+<span class="normal">266</span>
+<span class="normal">267</span>
+<span class="normal">268</span>
+<span class="normal">269</span>
+<span class="normal">270</span>
+<span class="normal">271</span>
+<span class="normal">272</span>
+<span class="normal">273</span>
+<span class="normal">274</span>
+<span class="normal">275</span>
+<span class="normal">276</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span>
     <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span>
@@ -5401,7 +5712,7 @@ entry -- or, with <code>componentwise</code>, times its own magnitude.</p>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">BsrMatrix</span><span class="p">[</span><span class="n">float64</span><span class="p">],</span>
     <span class="n">coordinates</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SparseCholesky</span>
 </code></pre></div>
 
@@ -5466,12 +5777,14 @@ operator. When <code>None</code>, the ordering is computed from the pattern alon
                 <code>negated</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p>Factor <code>-matrix</code> instead, for a negative (semi-)definite operator such as
-<a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a>; solves still answer <code>matrix x = rhs</code>.</p>
+<a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a>; solves still answer <code>matrix x = rhs</code>. When
+<code>None</code>, factor whichever of <code>matrix</code> and <code>-matrix</code> is positive definite, over one
+analysis: the sign of the leading diagonal is tried first.</p>
               </div>
             </td>
             <td>
@@ -5537,7 +5850,7 @@ the factorization would exceed
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If the operator is not positive definite.</p>
+                <p>If the operator is not positive definite (with <code>negated=None</code>: neither sign is).</p>
               </div>
             </td>
           </tr>
@@ -5600,8 +5913,12 @@ the factorization would exceed
 
       </li>
       <li class="doc doc-backlink">
-            <span class="doc doc-backlink-crumb last">
+            <span class="doc doc-backlink-crumb">
       <a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.cholesky.SparseCholesky.with_operator">with_operator</a>
   </span>
 
       </li>
@@ -5667,74 +5984,75 @@ the factorization would exceed
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/cholesky.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">194</span>
-<span class="normal">195</span>
-<span class="normal">196</span>
-<span class="normal">197</span>
-<span class="normal">198</span>
-<span class="normal">199</span>
-<span class="normal">200</span>
-<span class="normal">201</span>
-<span class="normal">202</span>
-<span class="normal">203</span>
-<span class="normal">204</span>
-<span class="normal">205</span>
-<span class="normal">206</span>
-<span class="normal">207</span>
-<span class="normal">208</span>
-<span class="normal">209</span>
-<span class="normal">210</span>
-<span class="normal">211</span>
-<span class="normal">212</span>
-<span class="normal">213</span>
-<span class="normal">214</span>
-<span class="normal">215</span>
-<span class="normal">216</span>
-<span class="normal">217</span>
-<span class="normal">218</span>
-<span class="normal">219</span>
-<span class="normal">220</span>
-<span class="normal">221</span>
-<span class="normal">222</span>
-<span class="normal">223</span>
-<span class="normal">224</span>
-<span class="normal">225</span>
-<span class="normal">226</span>
-<span class="normal">227</span>
-<span class="normal">228</span>
-<span class="normal">229</span>
-<span class="normal">230</span>
-<span class="normal">231</span>
-<span class="normal">232</span>
-<span class="normal">233</span>
-<span class="normal">234</span>
-<span class="normal">235</span>
-<span class="normal">236</span>
-<span class="normal">237</span>
-<span class="normal">238</span>
-<span class="normal">239</span>
-<span class="normal">240</span>
-<span class="normal">241</span>
-<span class="normal">242</span>
-<span class="normal">243</span>
-<span class="normal">244</span>
-<span class="normal">245</span>
-<span class="normal">246</span>
-<span class="normal">247</span>
-<span class="normal">248</span>
-<span class="normal">249</span>
-<span class="normal">250</span>
-<span class="normal">251</span>
-<span class="normal">252</span>
-<span class="normal">253</span>
-<span class="normal">254</span>
-<span class="normal">255</span>
-<span class="normal">256</span>
-<span class="normal">257</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sparse_cholesky</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">279</span>
+<span class="normal">280</span>
+<span class="normal">281</span>
+<span class="normal">282</span>
+<span class="normal">283</span>
+<span class="normal">284</span>
+<span class="normal">285</span>
+<span class="normal">286</span>
+<span class="normal">287</span>
+<span class="normal">288</span>
+<span class="normal">289</span>
+<span class="normal">290</span>
+<span class="normal">291</span>
+<span class="normal">292</span>
+<span class="normal">293</span>
+<span class="normal">294</span>
+<span class="normal">295</span>
+<span class="normal">296</span>
+<span class="normal">297</span>
+<span class="normal">298</span>
+<span class="normal">299</span>
+<span class="normal">300</span>
+<span class="normal">301</span>
+<span class="normal">302</span>
+<span class="normal">303</span>
+<span class="normal">304</span>
+<span class="normal">305</span>
+<span class="normal">306</span>
+<span class="normal">307</span>
+<span class="normal">308</span>
+<span class="normal">309</span>
+<span class="normal">310</span>
+<span class="normal">311</span>
+<span class="normal">312</span>
+<span class="normal">313</span>
+<span class="normal">314</span>
+<span class="normal">315</span>
+<span class="normal">316</span>
+<span class="normal">317</span>
+<span class="normal">318</span>
+<span class="normal">319</span>
+<span class="normal">320</span>
+<span class="normal">321</span>
+<span class="normal">322</span>
+<span class="normal">323</span>
+<span class="normal">324</span>
+<span class="normal">325</span>
+<span class="normal">326</span>
+<span class="normal">327</span>
+<span class="normal">328</span>
+<span class="normal">329</span>
+<span class="normal">330</span>
+<span class="normal">331</span>
+<span class="normal">332</span>
+<span class="normal">333</span>
+<span class="normal">334</span>
+<span class="normal">335</span>
+<span class="normal">336</span>
+<span class="normal">337</span>
+<span class="normal">338</span>
+<span class="normal">339</span>
+<span class="normal">340</span>
+<span class="normal">341</span>
+<span class="normal">342</span>
+<span class="normal">343</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sparse_cholesky</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
     <span class="n">coordinates</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SparseCholesky</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Sparse Cholesky factorization of a symmetric positive-(semi-)definite ``float64`` operator.</span>
@@ -5756,7 +6074,9 @@ the factorization would exceed
 <span class="sd">        operator. When ``None``, the ordering is computed from the pattern alone.</span>
 <span class="sd">    negated</span>
 <span class="sd">        Factor ``-matrix`` instead, for a negative (semi-)definite operator such as</span>
-<span class="sd">        [`cotmatrix`][ordito.laplacian.cotmatrix]; solves still answer ``matrix x = rhs``.</span>
+<span class="sd">        [`cotmatrix`][ordito.laplacian.cotmatrix]; solves still answer ``matrix x = rhs``. When</span>
+<span class="sd">        ``None``, factor whichever of ``matrix`` and ``-matrix`` is positive definite, over one</span>
+<span class="sd">        analysis: the sign of the leading diagonal is tried first.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -5770,7 +6090,7 @@ the factorization would exceed
 <span class="sd">        the factorization would exceed</span>
 <span class="sd">        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].</span>
 <span class="sd">    NotPositiveDefiniteError</span>
-<span class="sd">        If the operator is not positive definite.</span>
+<span class="sd">        If the operator is not positive definite (with ``negated=None``: neither sign is).</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``matrix`` and ``coordinates`` are not on one device.</span>
 
@@ -5792,8 +6112,7 @@ the factorization would exceed
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">matrix</span><span class="o">=</span><span class="n">matrix</span><span class="p">,</span> <span class="n">coordinates</span><span class="o">=</span><span class="n">coordinates</span><span class="p">)</span>
-    <span class="n">plan</span> <span class="o">=</span> <span class="n">_plan_cholesky</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="n">coordinates</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">SparseCholesky</span><span class="p">(</span><span class="n">plan</span><span class="p">,</span> <span class="n">matrix</span><span class="p">,</span> <span class="n">negated</span><span class="o">=</span><span class="n">negated</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_factored</span><span class="p">(</span><span class="n">_plan_cholesky</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="n">coordinates</span><span class="p">),</span> <span class="n">matrix</span><span class="p">,</span> <span class="n">negated</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
