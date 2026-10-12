@@ -43,10 +43,11 @@ from ordito.laplacian import cotmatrix, cotmatrix_entries, graph_laplacian, mass
 from ordito.mesh import Trimesh, mesh_arguments
 
 _CG_TOLERANCE = 1e-8
-# Vertices from which ``"auto"`` factors a ``k == 2`` harmonic / tutte system at once: the
-# biharmonic iteration's work grows about as ``n^2`` on a surface mesh, a factorization's about as
-# ``n^1.5``, and past this size the factorization is the cheaper one-shot solve too.
-_BIHARMONIC_FACTOR_ROWS = 12_000
+# Vertices from which ``"auto"`` factors a ``k == 2`` harmonic / tutte system, or an ``lscm`` one,
+# at once: their iterations grow faster with the mesh than a factorization does (the biharmonic
+# operator's conditioning is the Laplacian's squared, and ``lscm`` pins only two vertices), and
+# past this size the factorization is the cheaper one-shot solve too.
+_FACTOR_FROM_VERTICES = 12_000
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -847,10 +848,11 @@ def lscm(
         ``bc``).
     solver
         ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
-        when the iteration's result fails the check. ``"direct"`` factors it at once (a sparse
-        Cholesky); given a `Trimesh`, the factorization is kept on it, so every later call fixing
-        the same vertices -- whatever their values -- is a factored solve with no iteration. Pays
-        from about the second such call; a one-shot call is usually faster under ``"auto"``.
+        when the iteration's result fails the check -- or at once on a mesh of 12 000 vertices or
+        more, where a factorization costs less than the iteration. ``"direct"`` factors it at once
+        (a sparse Cholesky); given a `Trimesh`, the factorization is kept on it, so every later
+        call fixing the same vertices -- whatever their values -- is a factored solve with no
+        iteration. Pays from about the second such call on a smaller mesh.
 
     Returns
     -------
@@ -1053,8 +1055,8 @@ class FixedVertexSolver:
             The harmonic power (``1`` for ``"lscm"``).
         solver
             ``"auto"`` iterates, verified, and factors only when the check fails (or at
-            ``k >= 3``, or at ``k == 2`` on a large mesh); ``"direct"`` factors at once. A
-            factorization either builds is kept.
+            ``k >= 3``, or for ``k == 2`` and ``"lscm"`` on a large mesh); ``"direct"`` factors
+            at once. A factorization either builds is kept.
 
         Returns
         -------
@@ -1092,9 +1094,7 @@ class FixedVertexSolver:
                 method,
                 k,
                 fixed_mask,
-                factor=solver == "direct"
-                or (method != "lscm" and k >= 3)
-                or (method != "lscm" and k == 2 and mesh.vertices.size >= _BIHARMONIC_FACTOR_ROWS),
+                factor=solver == "direct" or _factors_at_once(method, k, mesh.vertices.size),
             )
         solution, free_map, _ = system.solve(
             fixed_values, tol=_CG_TOLERANCE, preconditioner=preconditioner
@@ -1172,6 +1172,13 @@ def _require_fixed_vertex_method(method: str, k: int, caller: str) -> None:
         )
     if k < 1 or (method == "lscm" and k != 1):
         raise ValueError(f"{caller}: k={k} is not a power {method} takes.")
+
+
+def _factors_at_once(method: str, k: int, n_vertices: int) -> bool:
+    """Whether ``"auto"`` factors ``method``'s system before iterating (see ``solve``)."""
+    if method == "lscm":
+        return n_vertices >= _FACTOR_FROM_VERTICES
+    return k >= 3 or (k == 2 and n_vertices >= _FACTOR_FROM_VERTICES)
 
 
 def _fixed_vertex_system(

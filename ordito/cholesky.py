@@ -994,6 +994,7 @@ class _Solve:
         )
         self.graph: Any = None
         self.recorded_for: Any = None
+        self.ran_for: Any = None
 
     def _test(self) -> None:
         plan, device = self.plan, self.plan.device
@@ -1076,7 +1077,13 @@ class _Solve:
             id(self.matrix.values),
             self.numeric.any_singular,
         )
-        if device.is_cuda and wp.is_conditional_graph_supported():
+        # Recorded on the second run against one operator storage, not the first: a one-shot solve
+        # (a verified fallback, a call that drops its factorization) runs its few refinement
+        # rounds directly, one four-byte read each, rather than paying a recording it never
+        # replays.
+        repeat = self.ran_for == identity
+        self.ran_for = identity
+        if device.is_cuda and wp.is_conditional_graph_supported() and repeat:
             if self.graph is None or self.recorded_for != identity:
                 with wp.ScopedCapture(device) as capture:
                     self._body()
