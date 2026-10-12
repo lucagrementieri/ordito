@@ -36,6 +36,10 @@ from ordito.constants import TILE_1D
 from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
 
+# Block partials at or below which ``surface_centroid`` folds them on the host: the readback of a
+# few thousand beats a device reduction's launches; past it, the device fold wins (28 M faces).
+_HOST_FOLD_BLOCKS = 8192
+
 
 def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.int32]) -> float:
     """
@@ -156,7 +160,12 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
         block_dim=TILE_1D,
         device=device,
     )
-    weighted = od.reduce.sum(partials)
+    if blocks <= _HOST_FOLD_BLOCKS:
+        # Read back: the few block partials themselves, folded on the host in ``float64`` -- a
+        # fixed order still, without the device reduction's launches.
+        weighted = partials.numpy().astype(np.float64).sum(axis=0)
+    else:
+        weighted = od.reduce.sum(partials)
     total_area = float(weighted[3])
     if total_area == 0.0:
         # Every face degenerate: the weights are all zero, so there is no weighted mean. Same

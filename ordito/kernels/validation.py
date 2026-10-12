@@ -9,7 +9,6 @@ from ordito.kernels.algorithms.connected_components import (
     find_representative,
 )
 from ordito.kernels.halfedge import halfedge_endpoints
-from ordito.kernels.intersection import candidate_pair_intersects, candidate_slot_query
 from ordito.kernels.predicates import vector_angle
 
 wp.set_module_options({"enable_backward": False})
@@ -336,43 +335,6 @@ def corner_vertex_check(
             violation = True
     if violation:
         out_violation[0] = 1
-
-
-@wp.kernel
-def self_intersection_marks(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    targets: wp.array[wp.int32],
-    counts: wp.array[wp.int32],
-    max_hits: wp.int32,
-    mark_faces: wp.bool,
-    out_marks: wp.array[wp.bool],
-) -> None:
-    """
-    Narrow phase over ``collect_face_box_candidates``' slot blocks, one thread per slot.
-
-    ``intersection.candidate_pair_intersects`` decides each live candidate. ``mark_faces`` selects
-    the answer: the per-face mask marks both faces of every intersecting candidate (idempotent
-    ``True`` stores); the predicate stores ``True`` at ``out_marks[0]``, and a thread finding the
-    flag already raised skips its test. One kernel serves both, so the mask and the predicate
-    cannot disagree about a pair. The narrow phase stays one thread per pair rather than inside
-    the traversal: fused, a thread runs up to ``max_hits`` ``float64`` tests serially while holding
-    the traversal state, and measured several times slower.
-    """
-    s = wp.int32(wp.tid())
-    f = candidate_slot_query(counts, max_hits, s)
-    if f < 0:
-        return
-    if not mark_faces:
-        if out_marks[0]:
-            return
-    target = targets[s]
-    if candidate_pair_intersects(vertices, faces, vertices, faces, f, target):
-        if mark_faces:
-            out_marks[f] = True
-            out_marks[target] = True
-        else:
-            out_marks[0] = True
 
 
 @wp.func

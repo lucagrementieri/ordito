@@ -43,6 +43,10 @@ from ordito.laplacian import cotmatrix, cotmatrix_entries, graph_laplacian, mass
 from ordito.mesh import Trimesh, mesh_arguments
 
 _CG_TOLERANCE = 1e-8
+# Vertices from which ``"auto"`` factors a ``k == 2`` harmonic / tutte system at once: the
+# biharmonic iteration's work grows about as ``n^2`` on a surface mesh, a factorization's about as
+# ``n^1.5``, and past this size the factorization is the cheaper one-shot solve too.
+_BIHARMONIC_FACTOR_ROWS = 12_000
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -277,11 +281,12 @@ def harmonic(
         float64 (built native, never recast) so the ill-conditioned ``k > 1`` solve is accurate.
     solver
         ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
-        when the iteration's result fails the check (always at ``k >= 3``, where the iteration does
-        not converge). ``"direct"`` factors it at once (a sparse Cholesky); given a `Trimesh`, the
-        factorization is kept on it, so every later call fixing the same vertices -- whatever their
-        values -- is a factored solve with no iteration. Pays from about the second such call; a
-        one-shot call is usually faster under ``"auto"``.
+        when the iteration's result fails the check -- always at ``k >= 3``, where the iteration
+        does not converge, and at ``k == 2`` on a mesh of 12 000 vertices or more, where a
+        factorization costs less than the iteration. ``"direct"`` factors it at once (a sparse
+        Cholesky); given a `Trimesh`, the factorization is kept on it, so every later call fixing
+        the same vertices -- whatever their values -- is a factored solve with no iteration. Pays
+        from about the second such call; a one-shot call is usually faster under ``"auto"``.
 
     Returns
     -------
@@ -420,11 +425,11 @@ def tutte(
         Laplacian power (``>= 1``). ``k == 1`` is the classic Tutte embedding.
     solver
         ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
-        when the iteration's result fails the check (always at ``k >= 3``). ``"direct"`` factors it
-        at once (a sparse Cholesky); given a `Trimesh`, the factorization is kept on it, so every
-        later call fixing the same vertices -- whatever their values -- is a factored solve with no
-        iteration. Pays from about the second such call; a one-shot call is usually faster under
-        ``"auto"``.
+        when the iteration's result fails the check (always at ``k >= 3``, and at ``k == 2`` on a
+        mesh of 12 000 vertices or more). ``"direct"`` factors it at once (a sparse Cholesky);
+        given a `Trimesh`, the factorization is kept on it, so every later call fixing the same
+        vertices -- whatever their values -- is a factored solve with no iteration. Pays from
+        about the second such call; a one-shot call is usually faster under ``"auto"``.
 
     Returns
     -------
@@ -1048,7 +1053,8 @@ class FixedVertexSolver:
             The harmonic power (``1`` for ``"lscm"``).
         solver
             ``"auto"`` iterates, verified, and factors only when the check fails (or at
-            ``k >= 3``); ``"direct"`` factors at once. A factorization either builds is kept.
+            ``k >= 3``, or at ``k == 2`` on a large mesh); ``"direct"`` factors at once. A
+            factorization either builds is kept.
 
         Returns
         -------
@@ -1086,7 +1092,9 @@ class FixedVertexSolver:
                 method,
                 k,
                 fixed_mask,
-                factor=solver == "direct" or (method != "lscm" and k >= 3),
+                factor=solver == "direct"
+                or (method != "lscm" and k >= 3)
+                or (method != "lscm" and k == 2 and mesh.vertices.size >= _BIHARMONIC_FACTOR_ROWS),
             )
         solution, free_map, _ = system.solve(
             fixed_values, tol=_CG_TOLERANCE, preconditioner=preconditioner

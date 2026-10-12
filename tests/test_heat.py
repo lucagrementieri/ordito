@@ -1796,16 +1796,20 @@ def test_diffuse_tangent_field_solves_its_own_system(
 
 
 def _count_factorizations(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Count the sparse Cholesky factorizations built from here on, by every caller."""
+    """
+    Count the sparse Cholesky factorizations built from here on, by every caller.
+
+    Counted where one is constructed, so a factorization sharing another's analysis
+    (``SparseCholesky.with_operator``) counts, and a sign attempt that fails does not.
+    """
     built: list[int] = []
-    factor = od.linalg.sparse_cholesky
+    init = od.cholesky.SparseCholesky.__init__
 
-    def counted(*args: Any, **kwargs: Any) -> od.cholesky.SparseCholesky:
-        result = factor(*args, **kwargs)
-        built.append(result.n)
-        return result
+    def counted(self: od.cholesky.SparseCholesky, *args: Any, **kwargs: Any) -> None:
+        init(self, *args, **kwargs)
+        built.append(self.n)
 
-    monkeypatch.setattr(od.linalg, "sparse_cholesky", counted)
+    monkeypatch.setattr(od.cholesky.SparseCholesky, "__init__", counted)
     return built
 
 

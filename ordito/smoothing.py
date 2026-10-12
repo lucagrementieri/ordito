@@ -64,6 +64,7 @@ from ordito._device import read_scalar, require_same_device
 from ordito.cholesky import SparseCholesky, sparse_cholesky
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
+from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
@@ -904,9 +905,9 @@ def equalize_triangle_areas(
 
 def _without_boundary_vertices(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], region: wp.array[wp.bool] | None
-) -> wp.array[wp.bool] | None:
+) -> wp.array[wp.bool]:
     """
-    ``region`` less the boundary vertices, or ``region`` itself on a closed mesh.
+    ``region`` (every vertex when ``None``) less the boundary vertices.
 
     A boundary vertex's incident triangles form an open fan, whose summed area is not invariant
     under any motion of that vertex, so the per-vertex minimum collapses the fan toward the
@@ -915,17 +916,22 @@ def _without_boundary_vertices(
     vertices are held instead; their incident triangles are still evened out by the interior
     vertices around them.
     """
-    boundary = od.boundary.boundary_vertex_indices(vertices, faces)
-    if boundary.size == 0:
-        return region
     n_vertices = vertices.size
-    held = od.array.indices_to_mask(boundary, n_vertices, device=vertices.device)
+    # Cleared straight off the halfedge mates: the boundary needs no index list, so nothing is
+    # scanned or read back, and a closed mesh pays one launch that clears nothing.
+    mates = od.halfedge.halfedge_mates(faces, n_vertices)
     movable = (
         _launch.full(n_vertices, True, dtype=wp.bool, device=vertices.device)
         if region is None
         else _launch.clone(region)
     )
-    _launch.map(kernel_array.mask_and_not, movable, held, out=movable)
+    _launch.launch(
+        kernel_boundary.clear_boundary_vertices,
+        dim=mates.size,
+        inputs=[mates, faces],
+        outputs=[movable],
+        device=vertices.device,
+    )
     return movable
 
 
@@ -1802,7 +1808,7 @@ def filter_implicit_fairing(
         if conformalized
         else None
     )
-    fairing = _FairingSolver()
+    fairing = _FairingSolver(vertices, dirichlet)
     for _ in range(iterations):
         current = _as_vec3(positions)
         # Otherwise rebuilt every pass: the cotangent weights depend on ``current``, which the
@@ -1909,7 +1915,9 @@ class _FairingSolver:
     Held for one call only; nothing outlives it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, vertices: wp.array[wp.vec3], dirichlet: _Dirichlet | None) -> None:
+        self._vertices = vertices
+        self._dirichlet = dirichlet
         self._factor: SparseCholesky | None = None
         self._decided = False
 
@@ -1940,8 +1948,18 @@ class _FairingSolver:
         # One read, on the first pass only: whether the iteration is long enough to factor.
         count = int(read_scalar(iterations, 0)) if isinstance(iterations, wp.array) else iterations
         if count >= _FAIRING_FACTOR_ITERATIONS:
+            # Ordered by the input's positions: a geometric ordering is cheaper to factor than the
+            # pattern's own, and the flow moves the vertices too little to spoil it.
+            dirichlet = self._dirichlet
+            coordinates = (
+                self._vertices
+                if dirichlet is None
+                else twl.free_coordinates(
+                    self._vertices, dirichlet.fixed_mask, dirichlet.free_map, dirichlet.n_free
+                )
+            )
             try:
-                self._factor = sparse_cholesky(system)
+                self._factor = sparse_cholesky(system, coordinates)
             except ValueError:
                 self._factor = None
 

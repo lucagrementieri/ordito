@@ -111,20 +111,15 @@ def cotmatrix_entries_intrinsic(
 LENGTH_ROUNDING = wp.float64(5.9604645e-08)
 
 
-@wp.kernel
-def intrinsic_rounding_rows(
-    faces: wp.array[wp.int32],
-    edge_lengths: wp.array2d[wp.float32],
-    out_error: wp.array[wp.float64],
-    out_scale: wp.array[wp.float64],
-) -> None:
-    # How far the rounding of ``float32`` edge lengths can move the intrinsic cotangent weights,
-    # gathered per operator row: each half-cotangent's change under a half-ulp relative change of
-    # each of its face's three lengths (in ``float64``, so the finite difference measures the
-    # lengths' conditioning and not this kernel's arithmetic), summed into the rows of the edge it
-    # weights, beside the row's sum of ``|weight|``. A needle's area is ``eps * aspect^2`` sensitive
-    # to its sides, so a needle's rows are where the ratio grows.
-    f = wp.int32(wp.tid())
+@wp.func
+def half_cotangent_rounding(
+    edge_lengths: wp.array2d[wp.float32], f: wp.int32
+) -> tuple[wp.vec3d, wp.vec3d]:
+    # How far the rounding of face ``f``'s ``float32`` edge lengths can move its three intrinsic
+    # half-cotangents, beside their magnitudes: each one's change under a half-ulp relative change
+    # of each of the three lengths (in ``float64``, so the finite difference measures the lengths'
+    # conditioning and not this arithmetic). A needle's area is ``eps * aspect^2`` sensitive to its
+    # sides, so a needle's half-cotangents are where the ratio grows.
     l0, l1, l2 = row_triple(edge_lengths, f)
     d0 = wp.float64(l0)
     d1 = wp.float64(l1)
@@ -139,7 +134,22 @@ def intrinsic_rounding_rows(
         wp.abs(a1 - c1) + wp.abs(b1 - c1) + wp.abs(e1 - c1),
         wp.abs(a2 - c2) + wp.abs(b2 - c2) + wp.abs(e2 - c2),
     )
-    weight = wp.vec3d(wp.abs(c0), wp.abs(c1), wp.abs(c2))
+    return bound, wp.vec3d(wp.abs(c0), wp.abs(c1), wp.abs(c2))
+
+
+@wp.kernel
+def intrinsic_rounding_rows(
+    faces: wp.array[wp.int32],
+    edge_lengths: wp.array2d[wp.float32],
+    out_error: wp.array[wp.float64],
+    out_scale: wp.array[wp.float64],
+) -> None:
+    # Each half-cotangent's rounding movement, summed into the rows of the edge it weights, beside
+    # the row's sum of ``|weight|``. Bound by its ``float64`` arithmetic, not by the atomics: a
+    # first pass marking the rows that can exceed the limit (a row's ratio is a mediant of its
+    # terms') measured slower, since the faces it keeps evaluate the bound twice.
+    f = wp.int32(wp.tid())
+    bound, weight = half_cotangent_rounding(edge_lengths, f)
     for k in range(3):
         # Half-cotangent ``k`` weights the edge opposite corner ``k``.
         for end in range(1, 3):
@@ -150,12 +160,18 @@ def intrinsic_rounding_rows(
 
 @wp.kernel
 def max_row_ratio(
-    error: wp.array[wp.float64], scale: wp.array[wp.float64], out_max: wp.array[wp.float64]
+    error: wp.array[wp.float64],
+    scale: wp.array[wp.float64],
+    limit: wp.float64,
+    out_max: wp.array[wp.float64],
 ) -> None:
-    # The largest ``error / scale`` over the rows that carry any weight.
+    # The largest ``error / scale`` over the rows that carry any weight, where it exceeds
+    # ``limit`` (``0`` when none does): only a row past the limit takes the one-address atomic.
     v = wp.int32(wp.tid())
     if scale[v] > wp.float64(0.0):
-        wp.atomic_max(out_max, 0, error[v] / scale[v])
+        ratio = error[v] / scale[v]
+        if ratio > limit:
+            wp.atomic_max(out_max, 0, ratio)
 
 
 @wp.func

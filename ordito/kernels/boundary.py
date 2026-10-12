@@ -100,6 +100,16 @@ def emit_boundary_edges(
     out_edges[g, 1] = b
 
 
+@wp.func
+def boundary_halfedge_endpoints(
+    mates: wp.array[wp.int32], faces: wp.array[wp.int32], h: wp.int32
+) -> tuple[wp.int32, wp.int32]:
+    # Halfedge ``h``'s two endpoints when it is a boundary edge, else ``(-1, -1)``.
+    if not is_boundary_mate(mates[h]):
+        return -1, -1
+    return halfedge_endpoints(faces, h)
+
+
 @wp.kernel
 def mark_boundary_vertices(
     mates: wp.array[wp.int32], faces: wp.array[wp.int32], out_flags: wp.array[wp.int32]
@@ -108,11 +118,23 @@ def mark_boundary_vertices(
     # caller scans in place: the sorted unique boundary vertices then come out of the scan's steps
     # with no edge list and no ``unique_1d``. Concurrent writers all store 1, so no atomic.
     h = wp.int32(wp.tid())
-    if not is_boundary_mate(mates[h]):
-        return
-    a, b = halfedge_endpoints(faces, h)
-    out_flags[a] = 1
-    out_flags[b] = 1
+    a, b = boundary_halfedge_endpoints(mates, faces, h)
+    if a >= 0:
+        out_flags[a] = 1
+        out_flags[b] = 1
+
+
+@wp.kernel
+def clear_boundary_vertices(
+    mates: wp.array[wp.int32], faces: wp.array[wp.int32], out_mask: wp.array[wp.bool]
+) -> None:
+    # ``mark_boundary_vertices``' endpoints cleared in a vertex mask instead: the mask less the
+    # boundary vertices, with no scan, no index list and no readback.
+    h = wp.int32(wp.tid())
+    a, b = boundary_halfedge_endpoints(mates, faces, h)
+    if a >= 0:
+        out_mask[a] = False
+        out_mask[b] = False
 
 
 @wp.func

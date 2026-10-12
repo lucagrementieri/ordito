@@ -79,6 +79,24 @@ def mark_nonsingular_components(
 
 
 @wp.kernel
+def leading_diagonal_sum(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    n_rows: wp.int32,
+    out_sum: wp.array[wp.float64],
+) -> None:
+    # The diagonal of the first ``n_rows`` rows summed by one thread: its sign is the definite
+    # operator's, which ``sparse_cholesky`` tries first when either sign is acceptable.
+    total = wp.float64(0.0)
+    for i in range(n_rows):
+        for e in range(offsets[i], offsets[i + 1]):
+            if columns[e] == i:
+                total += values[e]
+    out_sum[0] = total
+
+
+@wp.kernel
 def pin_singular_components(
     component_label: wp.array[wp.int32],
     component_last: wp.array[wp.int32],
@@ -88,6 +106,7 @@ def pin_singular_components(
     out_pinned: wp.array[wp.int32],
     out_dropped: wp.array[wp.int32],
     out_fronts: wp.array[wp.float64],
+    out_status: wp.array[wp.int32],
 ) -> None:
     # One pin per singular component, at its last-eliminated row: that row's equation is dropped
     # and its unknown held at zero, which leaves a consistent system solvable. ``out_pinned`` is
@@ -101,6 +120,8 @@ def pin_singular_components(
     out_dropped[perm[component_last[c]]] = pin
     if pin != 0:
         out_fronts[component_diagonal[c]] = wp.float64(1.0)
+        # Some component is singular: the solves project its null space (``status[1]``).
+        out_status[1] = 1
 
 
 # --------------------------------------------------------------------------------------
@@ -570,18 +591,24 @@ def refine_start(
     n: wp.int32,
     state: wp.array[wp.int32],
     rhs_scale: wp.array[wp.float64],
+    componentwise: wp.int32,
     initial: wp.array[wp.float64],
     out_solution: wp.array[wp.float64],
 ) -> None:
-    # Arm the refinement loop, record each column's largest right-hand-side entry, and start the
-    # solution from the caller's initial guess.
+    # Arm the refinement loop, record each column's largest right-hand-side entry (the normwise
+    # test's scale; the componentwise one never reads it), and start the solution from the
+    # caller's initial guess.
     i, column = wp.tid()
     out_solution[column * n + i] = initial[column * n + i]
     if i == 0 and column == 0:
         state[REFINE_CONDITION] = 0
         state[REFINE_PENDING] = 0
         state[REFINE_ROUND] = 0
-    wp.atomic_max(rhs_scale, column, wp.abs(rhs[column * n + i]))
+    if componentwise == 0:
+        magnitude = wp.abs(rhs[column * n + i])
+        # Read first: the column's maximum only grows, so most rows skip the contended atomic.
+        if magnitude > rhs_scale[column]:
+            wp.atomic_max(rhs_scale, column, magnitude)
 
 
 @wp.func
@@ -649,41 +676,79 @@ def refine_advance(cap: wp.int32, state: wp.array[wp.int32]) -> None:
     state[REFINE_ROUND] = state[REFINE_ROUND] + 1
 
 
+# Positions of a component's rows one block of ``null_space_partials`` sums.
+NULL_SPACE_CHUNK = wp.constant(1024)
+
+
+@wp.func
+def chunk_component(chunk_offsets: wp.array[wp.int32], chunk: wp.int32) -> wp.int32:
+    # The component owning ``chunk``: the last whose first chunk is at or before it.
+    return binary_search_index(chunk_offsets, chunk) - 1
+
+
 @wp.kernel
-def project_null_space(
+def null_space_partials(
     component_offsets: wp.array[wp.int32],
     component_rows: wp.array[wp.int32],
     component_label: wp.array[wp.int32],
+    chunk_offsets: wp.array[wp.int32],
+    chunk_bound: wp.int32,
     singular: wp.array[wp.int32],
     initial: wp.array[wp.float64],
-    n: wp.int32,
     solution: wp.array[wp.float64],
+    n: wp.int32,
+    out_partials: wp.array[wp.float64],
 ) -> None:
-    # A singular component's constant offset: the solve held one row at zero, so shift the
-    # component to the initial guess's mean, the answer conjugate gradient returns from it.
-    c, lane = wp.tid()
-    n_components = component_offsets.shape[0] - 1
-    component = c % n_components
-    column = c // n_components
+    # A singular component's constant offset, first half: the solve held one row at zero, so the
+    # component is shifted to the initial guess's mean, the answer conjugate gradient returns from
+    # it. One block per ``NULL_SPACE_CHUNK`` of a component's rows sums its ``solution - initial``;
+    # ``null_space_shift`` adds a component's chunks in order, so the shift is reproducible.
+    b, lane = wp.tid()
+    chunk = b % chunk_bound
+    column = b // chunk_bound
+    if chunk >= chunk_offsets[chunk_offsets.shape[0] - 1]:
+        return
+    component = chunk_component(chunk_offsets, chunk)
     if singular[component_label[component]] == 0:
         return
     offset = column * n
-    width = wp.block_dim()
-    start = component_offsets[component]
-    count = component_offsets[component + 1] - start
+    start = component_offsets[component] + (chunk - chunk_offsets[component]) * NULL_SPACE_CHUNK
+    stop = wp.min(start + NULL_SPACE_CHUNK, component_offsets[component + 1])
     local = wp.float64(0.0)
-    k = lane
-    while k < count:
-        r = component_rows[start + k]
+    k = start + lane
+    while k < stop:
+        r = component_rows[k]
         local += solution[offset + r] - initial[offset + r]
-        k += width
-    shift = block_sum(local) / wp.float64(count)
-    block_barrier()
-    k = lane
-    while k < count:
-        r = component_rows[start + k]
-        solution[offset + r] = solution[offset + r] - shift
-        k += width
+        k += wp.block_dim()
+    total = block_sum(local)
+    if lane == 0:
+        out_partials[column * chunk_bound + chunk] = total
+
+
+@wp.kernel
+def null_space_shift(
+    component_offsets: wp.array[wp.int32],
+    component_rows: wp.array[wp.int32],
+    component_label: wp.array[wp.int32],
+    chunk_offsets: wp.array[wp.int32],
+    chunk_bound: wp.int32,
+    singular: wp.array[wp.int32],
+    partials: wp.array[wp.float64],
+    n: wp.int32,
+    solution: wp.array[wp.float64],
+) -> None:
+    # Second half: each row of a singular component subtracts its component's mean offset, the
+    # chunk partials summed in chunk order.
+    p, column = wp.tid()
+    component = binary_search_index(component_offsets, p) - 1
+    if singular[component_label[component]] == 0:
+        return
+    total = wp.float64(0.0)
+    for k in range(chunk_offsets[component], chunk_offsets[component + 1]):
+        total += partials[column * chunk_bound + k]
+    count = component_offsets[component + 1] - component_offsets[component]
+    r = column * n + component_rows[p]
+    solution[r] = solution[r] - total / wp.float64(count)
 
 
 @wp.kernel
@@ -724,8 +789,12 @@ def backward_error_exceeds(
 # cross the median and splits off the separator, while the host keeps the tree's bookkeeping
 # (node ids, sizes, intervals of the elimination order), one small array per segment.
 
-# Positions of ``order`` one ``dissection_partials`` thread sums.
-DISSECTION_CHUNK = wp.constant(256)
+# Positions of ``order`` one ``dissection_partials`` block sums, its lanes striding them. CUDA takes
+# 4096 a block: a thread summing a 256-position chunk serially left a 41 k-row depth on 160
+# threads, latency-bound. The CPU's one-lane blocks keep the 256-position serial sums, so its
+# orderings are the ones they always were.
+DISSECTION_CHUNK_CUDA = 4096
+DISSECTION_CHUNK_CPU = 256
 moment_vector = wp.types.vector(length=9, dtype=wp.float64)
 
 
@@ -757,13 +826,15 @@ def dissection_partials(
     task_end: wp.array[wp.int32],
     out_partials: wp.array[moment_vector],
 ) -> None:
-    # One chunk of one segment: the first and second moments of its points about the segment's
-    # reference point, summed serially (the segment sums them in task order, so the axis is the
+    # One chunk of one segment, one block: the first and second moments of its points about the
+    # segment's reference point, each lane summing a strided share and the block reducing them
+    # (the block reduction and the segment's sum in task order are both fixed, so the axis is the
     # same on every run).
-    t = wp.int32(wp.tid())
+    t, lane = wp.tid()
     reference = segment_reference(order, coordinates, segment_start[task_segment[t]])
     m = moment_vector()
-    for p in range(task_begin[t], task_end[t]):
+    p = task_begin[t] + lane
+    while p < task_end[t]:
         d = shifted_point(coordinates, order[p], reference)
         m[0] += d[0]
         m[1] += d[1]
@@ -774,7 +845,10 @@ def dissection_partials(
         m[6] += d[1] * d[1]
         m[7] += d[1] * d[2]
         m[8] += d[2] * d[2]
-    out_partials[t] = m
+        p += wp.block_dim()
+    total = block_sum(m)
+    if lane == 0:
+        out_partials[t] = total
 
 
 @wp.kernel
@@ -1470,6 +1544,16 @@ def component_tables(
         out_label[c] = sorted_labels[p]
         out_offsets[c] = p
     wp.atomic_max(out_last, c, pos[vertices[p]])
+
+
+@wp.kernel
+def component_chunk_counts(
+    component_offsets: wp.array[wp.int32], out_chunk_offsets: wp.array[wp.int32]
+) -> None:
+    # A component's ``NULL_SPACE_CHUNK`` count, into the tail of its chunk offsets (scanned after).
+    c = wp.int32(wp.tid())
+    count = component_offsets[c + 1] - component_offsets[c]
+    out_chunk_offsets[c + 1] = (count + NULL_SPACE_CHUNK - 1) // NULL_SPACE_CHUNK
 
 
 @wp.kernel

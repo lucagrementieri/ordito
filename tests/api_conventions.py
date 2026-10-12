@@ -413,7 +413,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # entries, then its factor and the Schur complement its parent extends; ``blocks`` the solve
     # blocks each panel's update rewrites. The refinement loop's ``state`` / ``rhs_scale`` are its
     # condition, round and scale words, read and rewritten every round; the solution is corrected
-    # (``backward_finalize``'s ``refined``) and shifted (``project_null_space``) in place.
+    # (``backward_finalize``'s ``refined``) and shifted (``null_space_shift``) in place.
     ("cholesky", "extend_add"): frozenset({"fronts"}),
     ("cholesky", "seed_blocks"): frozenset({"blocks"}),
     ("cholesky", "update_panel"): frozenset({"fronts", "blocks"}),
@@ -421,7 +421,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("cholesky", "residual_test"): frozenset({"state"}),
     ("cholesky", "refine_advance"): frozenset({"state"}),
     ("cholesky", "backward_finalize"): frozenset({"refined"}),
-    ("cholesky", "project_null_space"): frozenset({"solution"}),
+    ("cholesky", "null_space_shift"): frozenset({"solution"}),
     # The symbolic analysis' atomic cursors (compaction slots whose arrival order the following
     # sort erases), and the breadth-first search's distances and loop state, advanced in place
     # level by level inside a recorded loop.

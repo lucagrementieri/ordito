@@ -489,18 +489,26 @@ def robust_laplacian(
         intrinsic_faces = faces
         lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
     entries = cotmatrix_entries_intrinsic(lengths, dtype=dtype)
-    _warn_if_lengths_undetermined(vertices.size, intrinsic_faces, lengths)
-    return cotmatrix(vertices, intrinsic_faces, cot_entries=entries, dtype=dtype)
+    worst = _intrinsic_rounding_ratio(vertices.size, intrinsic_faces, lengths)
+    # Assembled before the check is read, so the host queues it while the device runs the check.
+    laplacian = cotmatrix(vertices, intrinsic_faces, cot_entries=entries, dtype=dtype)
+    _warn_if_lengths_undetermined(worst)
+    return laplacian
 
 
-def _warn_if_lengths_undetermined(
+def _intrinsic_rounding_ratio(
     n_vertices: int, faces: wp.array[wp.int32], lengths: odt.Array2dFloat32
-) -> None:
-    """Warn when rounding the ``float32`` lengths alone can move an operator row noticeably."""
+) -> wp.array[wp.float64] | None:
+    """
+    ``(1,)`` the largest row movement the ``float32`` lengths' rounding allows, past the limit.
+
+    ``0`` when no row exceeds ``_INTRINSIC_ROUNDING_LIMIT``; ``None`` for a mesh with no faces.
+    """
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return
+        return None
+    limit = wp.float64(_INTRINSIC_ROUNDING_LIMIT)
     error = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     scale = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     _launch.launch(
@@ -514,10 +522,17 @@ def _warn_if_lengths_undetermined(
     _launch.launch(
         kernel_laplacian.max_row_ratio,
         dim=n_vertices,
-        inputs=[error, scale],
+        inputs=[error, scale, limit],
         outputs=[worst],
         device=device,
     )
+    return worst
+
+
+def _warn_if_lengths_undetermined(worst: wp.array[wp.float64] | None) -> None:
+    """Warn when rounding the ``float32`` lengths alone can move an operator row noticeably."""
+    if worst is None:
+        return
     # Host readback: the one number the warning decides on.
     ratio = float(read_scalar(worst))
     if ratio > _INTRINSIC_ROUNDING_LIMIT:

@@ -1238,6 +1238,55 @@ def clone(src: ArrayT, device: wp.DeviceLike = None, **kwargs: Any) -> ArrayT:
     return cast("ArrayT", dst)  # ``src``'s own dtype and shape
 
 
+def view(src: ArrayT, start: int, stop: int) -> ArrayT:
+    """
+    ``src[start:stop]`` of a contiguous 1-D array, stamped without ``wp.array.__getitem__``.
+
+    The view Warp's slicing builds -- same state, ``src`` held as its owner -- at a fraction of the
+    cost, for a caller cutting many per-level views out of one buffer. Anything else (another rank,
+    a gradient, a bound outside ``[0, src.size]``) goes through ``__getitem__``.
+    """
+    s: Any = src
+    if (
+        type(s) is not _ARRAY
+        or s.ndim != 1
+        or s._grad is not None
+        or s._requires_grad
+        or not 0 <= start <= stop <= s.shape[0]
+        or start == s.shape[0]
+    ):
+        return cast("ArrayT", s[start:stop])
+    strides: Any = s.strides
+    itemsize = int(strides[0])
+    count = stop - start
+    arr = _new_array(_ARRAY)
+    arr.__dict__.update(
+        _array_interface=None,
+        _grad=None,
+        _is_read=False,
+        _memory_kind=None,
+        _ref=s,
+        _requires_grad=False,
+        _retain_grad=False,
+        _storage_base_ptr=None,
+        _storage_nbytes=None,
+        capacity=count * itemsize,
+        ctype=None,
+        deleter=None,
+        device=s.device,
+        dtype=s.dtype,
+        is_contiguous=True,
+        is_transposed=False,
+        ndim=1,
+        pinned=s.pinned,
+        ptr=None if s.ptr is None else s.ptr + start * itemsize,
+        shape=(count,),
+        size=count,
+        strides=(itemsize,),
+    )
+    return cast("ArrayT", arr)
+
+
 # -- host upload ----------------------------------------------------------------------------------
 #
 # ``wp.array(data, dtype=..., device=cuda)`` converts ``data`` with ``np.asarray(data, dtype=<the

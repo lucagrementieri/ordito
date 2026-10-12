@@ -1728,9 +1728,16 @@ class OperatorFactorization:
         """Device memory the built factorization holds, in bytes; ``0`` when none is."""
         return 0 if self._factorization is None else self._factorization.nbytes
 
-    def factor(self) -> bool:
+    def factor(self, sharing: OperatorFactorization | None = None) -> bool:
         """
         Factor the operator unless it already is, or could not be.
+
+        Parameters
+        ----------
+        sharing
+            ``None``, or a factorization of another scalar operator stored over this one's
+            pattern (the same ``offsets`` and ``columns`` arrays): when it holds a factorization,
+            this one reuses its analysis and pays only the numeric factorization.
 
         Returns
         -------
@@ -1749,21 +1756,29 @@ class OperatorFactorization:
             if blocks
             else cast("odt.BsrMatrix[wp.float64]", self._matrix)
         )
-        points = _expanded_coordinates(self._coordinates, 2 if blocks else 1)
-        indefinite = True
-        for negated in (False, True):
-            try:
-                self._factorization = sparse_cholesky(
-                    _storage_alias(scalar), points, negated=negated
-                )
-            except NotPositiveDefiniteError:
-                continue
-            except ValueError:
-                indefinite = False
-                continue
+        shared = None
+        if (
+            sharing is not None
+            and not blocks
+            and sharing.matrix.offsets is scalar.offsets
+            and sharing.matrix.columns is scalar.columns
+        ):
+            shared = sharing.factorization
+        try:
+            # Either sign, over one analysis: a cotangent operator is negative definite.
+            if shared is not None:
+                self._factorization = shared.with_operator(_storage_alias(scalar))
+            else:
+                points = _expanded_coordinates(self._coordinates, 2 if blocks else 1)
+                self._factorization = sparse_cholesky(_storage_alias(scalar), points, negated=None)
+        except NotPositiveDefiniteError:
+            self._indefinite = True
+        except ValueError:
+            # Over the memory budget (or int32 indexing): the same for either sign.
+            self._indefinite = False
+        else:
             return True
         self._refused = True
-        self._indefinite = indefinite
         return False
 
     def solve(
@@ -1985,6 +2000,8 @@ def solve_spd_settled(
             stacklevel=2,
         )
         return solver.iterations
+    # From zero, not from the rejected iterate, as ``_solve_columns_verified`` refines.
+    _launch.zero_(solution_flat)
     fallback.solve(
         _columns_view(rhs_flat, n_columns), _columns_view(solution_flat, n_columns),
         tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,

@@ -601,7 +601,7 @@ def _heat_signed_distance(
 
     if level_set_constraint == "zero_set":
         field = _solve_poisson_zero_set(
-            poisson_system, divergence, curve_vertices, n_vertices, device
+            poisson_system, divergence, curve_vertices, vertices, solver.ill_conditioned
         )
     else:
         field = _solve_poisson_shifted(solver, divergence, curve_vertices, vertices)
@@ -613,17 +613,19 @@ def _solve_poisson_zero_set(
     operator: odt.BsrMatrix[wp.float64],
     divergence: wp.array[wp.float64],
     curve_vertices: wp.array[wp.int32],
-    n_vertices: int,
-    device: wp.DeviceLike,
+    vertices: wp.array[wp.vec3],
+    factor: bool,
 ) -> wp.array[wp.float64]:
     """
-    Solve the Poisson problem with the curve pinned to zero.
+    Solve the Poisson problem with the curve pinned to zero; by a factorization when ``factor``.
 
     ``linalg.min_quad_with_fixed`` minimizes ``0.5 x' Q x`` and has no place for a linear term, so
     the pieces underneath it are used directly: the free-free block comes from
     [`assemble_interior_system`][ordito.linalg.assemble_interior_system] (whose own right-hand side
     is zero here, the pinned values being zero) and the divergence is compacted into it.
     """
+    device = vertices.device
+    n_vertices = vertices.size
     fixed_mask = od.array.indices_to_mask(curve_vertices, n_vertices)
     free_map, n_free = twl.free_partition(fixed_mask)
     if n_free == 0:
@@ -644,15 +646,24 @@ def _solve_poisson_zero_set(
     )
 
     solution = _launch.zeros((1, n_free), dtype=wp.float64, device=device)
-    # The same Poisson operator as the unpinned solve, less the curve's rows, so the same
-    # polynomial preconditioner; see ``heat_operators``' Notes.
-    twl.solve_spd_columns(
-        operator_uu,
-        rhs,
-        odt.as_array2d(solution, wp.float64),
-        tol=_CG_TOLERANCE,
-        preconditioner="chebyshev",
-    )
+    direct = None
+    if factor:
+        # The diffusion before it failed its check on this mesh: so would this iteration's speed.
+        direct = twl.OperatorFactorization(
+            operator_uu, twl.free_coordinates(vertices, fixed_mask, free_map, n_free)
+        )
+    if direct is not None and direct.factor():
+        direct.solve(rhs, solution, tol=_CG_TOLERANCE)
+    else:
+        # The same Poisson operator as the unpinned solve, less the curve's rows, so the same
+        # polynomial preconditioner; see ``heat_operators``' Notes.
+        twl.solve_spd_columns(
+            operator_uu,
+            rhs,
+            odt.as_array2d(solution, wp.float64),
+            tol=_CG_TOLERANCE,
+            preconditioner="chebyshev",
+        )
     field = _launch.empty(n_vertices, dtype=wp.float64, device=device)
     _launch.launch(
         kernel_heat.gather_free_solution,
@@ -832,7 +843,10 @@ def vector_heat_operators(
             vertices, faces, t, edge_sums=edge_sums, pattern=pattern
         )
     else:
-        mass = mass_matrix_entries(vertices, faces, dtype=wp.float64)
+        # The bundle's own face areas, which ``_heat_operators`` builds the mass from too.
+        mass = mass_matrix_entries(
+            vertices, faces, dtype=wp.float64, face_areas=scalar_operators[7]
+        )
     # ``M + t L_connection`` over the connection Laplacian's own pattern, as the scalar system is
     # built over the cotangent one's (``heat_operators``); the kernel forms each vertex's mass block
     # from the scalar mass as it reads it.
@@ -911,7 +925,7 @@ def _heat_operators(
     # Face normals / areas (float32) for the gradient; the lumped mass is built natively in float64
     # by ``mass_matrix_entries``.
     normals, areas = face_normals_and_areas(vertices, faces)
-    mass = mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    mass = mass_matrix_entries(vertices, faces, dtype=wp.float64, face_areas=areas)
 
     # Heat system (M - t L) and Poisson operator ``-L``, both over the Laplacian's own pattern
     # (which stores every referenced vertex's diagonal) and written in one pass
@@ -1744,6 +1758,9 @@ class HeatSolver:
         self._operators: HeatOperators | None = None
         self._vector_operators: VectorHeatOperators | None = None
         self._systems: dict[str, _KeptSystem] = {}
+        # Set once a settled iterate of this mesh's systems fails its backward-error check: the
+        # operators are ill-conditioned in places, so the Poisson solve is factored at once too.
+        self._ill_conditioned = False
 
     @property
     def operators(self) -> HeatOperators:
@@ -1794,6 +1811,11 @@ class HeatSolver:
         return self._vector_operators
 
     @property
+    def ill_conditioned(self) -> bool:
+        """Whether a settled diffusion on this mesh failed its backward-error check."""
+        return self._ill_conditioned
+
+    @property
     def nbytes(self) -> int:
         """Device memory this solver's kept factorizations hold, in bytes."""
         return sum(kept.factorization.nbytes for kept in self._systems.values())
@@ -1827,7 +1849,7 @@ class HeatSolver:
                 kept = self._systems[role] = _KeptSystem(
                     twl.OperatorFactorization(matrix, self._bound_mesh().vertices)
                 )
-            if kept.factorization.factorization is None and not kept.factorization.factor():
+            if not kept.factorization.factor(self._sharing(role)):
                 factored = False
         return factored
 
@@ -1916,6 +1938,16 @@ class HeatSolver:
         """
         operators = self.operators
         kept = self._kept("poisson", operators[3])
+        heat = self._systems.get("heat")
+        if heat is not None and heat.factorization.factorization is not None:
+            # The heat system is factored (its settled iterate failed, or it is solved again), and
+            # the Poisson system is stored over its pattern: the numeric factorization alone costs
+            # less than one Poisson iteration on such an operator.
+            kept.factorization.factor(heat.factorization)
+        elif self._ill_conditioned:
+            # A diffusion on this mesh failed its check: its Poisson iteration is as slow as the
+            # diffusion's was, and an analysis and factorization cost less.
+            kept.factorization.factor()
         if kept.factorization.factorization is not None:
             kept.factorization.solve(rhs, solution, tol=_CG_TOLERANCE)
             return
@@ -1944,6 +1976,7 @@ class HeatSolver:
             factorization=kept.factorization,
         )
         if not held and kept.factorization.factorization is not None:
+            self._ill_conditioned = True
             _LOGGER.debug(
                 "HeatSolver: the %s system's settled iterate failed its backward-error check; "
                 "factored it",
@@ -1961,10 +1994,15 @@ class HeatSolver:
         if (
             kept.solves >= 2
             and kept.factorization.factorization is None
-            and kept.factorization.factor()
+            and kept.factorization.factor(self._sharing(role))
         ):
             _LOGGER.debug("HeatSolver: factored the %s system on its second solve", role)
         return kept
+
+    def _sharing(self, role: str) -> twl.OperatorFactorization | None:
+        """Return the heat system's factorization slot, whose analysis the Poisson one shares."""
+        heat = self._systems.get("heat")
+        return heat.factorization if role == "poisson" and heat is not None else None
 
     def _bound_mesh(self) -> Trimesh:
         """Return the mesh this solver belongs to."""

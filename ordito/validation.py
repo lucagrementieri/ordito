@@ -20,6 +20,7 @@ from ordito._device import (
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import array as kernel_array
+from ordito.kernels import intersection as kernel_intersections
 from ordito.kernels import validation as kernel_validation
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -386,7 +387,7 @@ def vertex_manifold_mask(
     return mask
 
 
-def is_self_intersecting(mesh: wp.Mesh, *, max_triangle_collisions: int = 64) -> bool:
+def is_self_intersecting(mesh: wp.Mesh, *, max_triangle_collisions: int = 32) -> bool:
     """
     Whether any two non-adjacent triangles of the mesh intersect.
 
@@ -403,8 +404,8 @@ def is_self_intersecting(mesh: wp.Mesh, *, max_triangle_collisions: int = 64) ->
         always in sync with the triangles being tested (a separately-passed vertex/face pair
         could otherwise be misaligned with a caller's ``mesh``).
     max_triangle_collisions
-        Broad-phase slots reserved per query triangle at first. Not a cap: a triangle with more
-        candidates grows the table, so the answer does not depend on it.
+        Broad-phase slots reserved per triangle. Not a cap: a triangle with more candidates walks
+        the rest again on the device, so the answer does not depend on it.
 
     Returns
     -------
@@ -431,7 +432,7 @@ def face_self_intersecting_mask(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    max_triangle_collisions: int = 64,
+    max_triangle_collisions: int = 32,
     mesh: wp.Mesh | None = None,
 ) -> wp.array[wp.bool]:
     """
@@ -467,8 +468,8 @@ def face_self_intersecting_mask(
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
     max_triangle_collisions
-        Broad-phase slots reserved per query triangle at first. Not a cap: a triangle with more
-        candidates grows the table, so the answer does not depend on it.
+        Broad-phase slots reserved per triangle. Not a cap: a triangle with more candidates walks
+        the rest again on the device, so the answer does not depend on it.
     mesh
         A ``wp.Mesh`` already built over ``vertices`` and ``faces``, to spare the BVH build the
         broad phase otherwise pays on every call. Purely an optimization, and not checked against
@@ -533,13 +534,23 @@ def _mark_self_intersections(
     n_faces = faces.size // 3
     if n_faces == 0:
         return
+    # No host read: the faces whose candidates overflow the stride are re-walked on the device
+    # by ``mark_overflow_crossings``, so the table's stride stays ``max_triangle_collisions``.
     targets, counts, stride = od.intersection.face_box_candidates(
-        vertices, faces, mesh, capacity=max_triangle_collisions
+        vertices, faces, mesh, capacity=max_triangle_collisions, grow=False
+    )
+    flag_only = not mark_faces
+    inputs = [vertices, faces, vertices, faces]
+    _launch.launch(
+        kernel_intersections.mark_crossing_slot_masks,
+        dim=n_faces * stride,
+        inputs=[*inputs, targets, counts, stride, flag_only, out_marks, out_marks],
+        device=vertices.device,
     )
     _launch.launch(
-        kernel_validation.self_intersection_marks,
-        dim=n_faces * stride,
-        inputs=[vertices, faces, targets, counts, stride, mark_faces, out_marks],
+        kernel_intersections.mark_overflow_crossings,
+        dim=n_faces,
+        inputs=[mesh.id, *inputs, counts, stride, flag_only, out_marks, out_marks],
         device=vertices.device,
     )
 

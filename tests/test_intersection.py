@@ -1263,6 +1263,13 @@ def test_triangle_pair_answers_do_not_depend_on_the_capacity(
         od.intersection.mesh_with_mesh(*inputs, max_triangle_collisions=c).numpy() for c in (1, 256)
     ]
     assert curves[0].shape == curves[1].shape
+    # The masks re-walk an overflowing face on the device rather than growing the table.
+    collisions = [
+        od.intersection.collision_masks(*inputs, max_triangle_collisions=c) for c in (1, 256)
+    ]
+    for side in range(2):
+        assert collisions[0][side].numpy().any()
+        assert np.array_equal(collisions[0][side].numpy(), collisions[1][side].numpy())
 
     _, dome_wp = bohemian_dome
     masks = [
@@ -1273,6 +1280,7 @@ def test_triangle_pair_answers_do_not_depend_on_the_capacity(
     ]
     assert masks[0].any()
     assert np.array_equal(masks[0], masks[1])
+    assert od.validation.is_self_intersecting(dome_wp, max_triangle_collisions=1)
 
 
 def _sliced_meshes_equivalent(

@@ -993,8 +993,8 @@ def collision_masks(
     vertices_a, faces_a, vertices_b, faces_b
         The two meshes, as in [`mesh_collision_pairs`][ordito.intersection.mesh_collision_pairs].
     max_triangle_collisions
-        Broad-phase slots reserved per query triangle at first. Not a cap: a triangle with more
-        candidates grows the table, so the answer does not depend on it.
+        Broad-phase slots reserved per query triangle. Not a cap: a triangle with more candidates
+        walks the rest again on the device, so the answer does not depend on it.
 
     Returns
     -------
@@ -1025,26 +1025,55 @@ def collision_masks(
 
     # The narrow phase runs inside the marking kernel, over the broad-phase slots: the masks need
     # no compacted pair list, so the verdict flags, their scan and readback and the compaction
-    # ``mesh_collision_pairs`` pays for are all skipped, and nothing is read back. The candidates
+    # ``mesh_collision_pairs`` pays for are all skipped; an overflowing face is walked again on the
+    # device rather than growing the table, so nothing is read back. The candidates
     # are ``(query, target)``, so ``swapped`` only decides which mask is which.
     candidates = _candidate_face_pairs(
-        vertices_a, faces_a, vertices_b, faces_b, max_triangle_collisions, "mesh_collision_pairs"
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        max_triangle_collisions,
+        "mesh_collision_pairs",
+        grow=False,
     )
     if candidates is None:
         return mask_a, mask_b
     mask_query, mask_target = (mask_b, mask_a) if candidates.swapped else (mask_a, mask_b)
+    _mark_crossing_faces(candidates, mask_query, mask_target)
+    return mask_a, mask_b
+
+
+def _mark_crossing_faces(
+    candidates: _Candidates, out_mask_query: wp.array[wp.bool], out_mask_target: wp.array[wp.bool]
+) -> None:
+    """
+    Mark both faces of every crossing pair, from a ``_candidate_face_pairs(grow=False)`` table.
+
+    One launch tests every live slot and one more re-walks only the faces whose candidates the
+    stride could not hold, so the masks are complete with no host read.
+    """
+    device = candidates.query_vertices.device
+    marks = [False, out_mask_query, out_mask_target]
     _launch.launch(
         kernel_intersections.mark_crossing_slot_masks,
         dim=candidates.targets.size,
-        inputs=[*candidates.narrow_phase_inputs(), mask_query, mask_target],
+        inputs=[*candidates.narrow_phase_inputs(), *marks],
         device=device,
     )
-    return mask_a, mask_b
+    _launch.launch(
+        kernel_intersections.mark_overflow_crossings,
+        dim=candidates.counts.size,
+        inputs=[candidates.target_mesh.id, *candidates.narrow_phase_inputs(skip_targets=True),
+                *marks],
+        device=device,
+    )  # fmt: skip
 
 
 class _Candidates(NamedTuple):
     """``_candidate_face_pairs``' broad phase: fixed-stride candidate slots and the two meshes."""
 
+    target_mesh: wp.Mesh
     targets: wp.array[wp.int32]
     counts: wp.array[wp.int32]
     max_hits: int
@@ -1054,17 +1083,15 @@ class _Candidates(NamedTuple):
     target_faces: wp.array[wp.int32]
     swapped: bool
 
-    def narrow_phase_inputs(self) -> list[object]:
-        """Return the leading launch arguments every narrow-phase kernel over the slots shares."""
-        return [
-            self.query_vertices,
-            self.query_faces,
-            self.target_vertices,
-            self.target_faces,
-            self.targets,
-            self.counts,
-            self.max_hits,
-        ]
+    def narrow_phase_inputs(self, *, skip_targets: bool = False) -> list[object]:
+        """
+        Return the leading launch arguments every narrow-phase kernel over the slots shares.
+
+        ``skip_targets`` leaves out the slot table, for the overflow walk that reads only counts.
+        """
+        meshes = [self.query_vertices, self.query_faces, self.target_vertices, self.target_faces]
+        table = [self.counts] if skip_targets else [self.targets, self.counts]
+        return [*meshes, *table, self.max_hits]
 
 
 def _candidate_face_pairs(
@@ -1077,6 +1104,7 @@ def _candidate_face_pairs(
     *,
     mesh_a: wp.Mesh | None = None,
     mesh_b: wp.Mesh | None = None,
+    grow: bool = True,
 ) -> _Candidates | None:
     """
     Broad phase alone for two meshes: every candidate ``(query, target)`` pair, or ``None``.
@@ -1119,10 +1147,18 @@ def _candidate_face_pairs(
         target_mesh = wp.Mesh(points=target_vertices, indices=target_faces)
 
     targets, counts, stride = face_box_candidates(
-        query_vertices, query_faces, target_mesh, capacity=max_triangle_collisions
+        query_vertices, query_faces, target_mesh, capacity=max_triangle_collisions, grow=grow
     )
     return _Candidates(
-        targets, counts, stride, query_vertices, query_faces, target_vertices, target_faces, swapped
+        target_mesh,
+        targets,
+        counts,
+        stride,
+        query_vertices,
+        query_faces,
+        target_vertices,
+        target_faces,
+        swapped,
     )
 
 
@@ -1132,6 +1168,7 @@ def face_box_candidates(
     target_mesh: wp.Mesh,
     *,
     capacity: int = 16,
+    grow: bool = True,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int]:
     """
     Every target face whose bounding box overlaps each query face's, as a fixed-stride table.
@@ -1144,7 +1181,8 @@ def face_box_candidates(
 
     The answer is complete whatever ``capacity`` is: when any face has more candidates than
     ``capacity``, the walk is repeated at a stride equal to the largest count, so ``capacity`` is
-    only the first guess at the stride. Costs one host read of the largest count.
+    only the first guess at the stride. Costs one host read of the largest count -- unless
+    ``grow`` is off, for a caller that handles the overflow on the device itself.
 
     Parameters
     ----------
@@ -1154,6 +1192,10 @@ def face_box_candidates(
         BVH over the target faces.
     capacity
         First stride tried, in slots per query face.
+    grow
+        Re-walk at a wider stride when a face overflows (default). When ``False`` the stride is
+        ``capacity`` and nothing is read back: a face whose count exceeds it holds its first
+        ``capacity`` candidates, in traversal order, and the rest are the caller's to walk again.
 
     Returns
     -------
@@ -1161,7 +1203,7 @@ def face_box_candidates(
         ``(n_query * stride,)`` candidate target face indices; slots past a face's count are
         unwritten.
     counts
-        ``(n_query,)`` candidates per query face, each at most ``stride``.
+        ``(n_query,)`` candidates per query face, each at most ``stride`` when ``grow`` is on.
     stride
         Slots per query face.
 
@@ -1204,6 +1246,8 @@ def face_box_candidates(
             outputs=[targets, counts, overflow],
             device=device,
         )
+        if not grow:
+            return targets, counts, stride
         # The one read: the largest count of a face the stride could not hold, or 0.
         peak = int(read_scalar(overflow))
         if peak <= stride:

@@ -60,6 +60,8 @@ CHOLESKY_REFINE_ROUNDS = 12
 
 # A row sums to "zero" below this fraction of its diagonal.
 _SINGULAR_ROW_SUM = 1e-10
+# Rows whose diagonal ``sparse_cholesky(negated=None)`` sums to choose the sign it tries first.
+_SIGN_PROBE_ROWS = 64
 _INT32_MAX = 2**31 - 1
 
 
@@ -103,7 +105,16 @@ class SparseCholesky:
         self._numeric = plan.numeric()
         self._solves: dict[int, _Solve] = {}
         self._matrix = matrix
+        # A caller that refactors repeatedly gets stable storage: the operator copied into arrays
+        # this factorization owns, the fronts arena kept, and the numeric factorization recorded
+        # once and replayed, as the refined solve then is too (``_Solve.run`` replays for one
+        # operator storage). Built on the first ``refactor`` after construction.
+        self._stable: odt.BsrMatrix[wp.float64] | None = None
+        self._fronts: wp.array[wp.float64] | None = None
+        self._factor_graph: Any = None
+        self._constructing = True
         self.refactor(matrix)
+        self._constructing = False
 
     def refactor(self, matrix: odt.BsrMatrix[wp.float64]) -> None:
         """
@@ -125,12 +136,86 @@ class SparseCholesky:
         """
         require_same_device(matrix=matrix, factor=self)
         plan = self._plan
-        plan.factor(matrix, self._numeric, -1.0 if self.negated else 1.0)
-        if read_scalar(self._numeric.status, 0) != 0:
+        sign = -1.0 if self.negated else 1.0
+        if self._constructing:
+            plan.factor(matrix, self._numeric, sign)
+        else:
+            matrix = self._stable_copy(matrix)
+            fronts = self._fronts
+            if fronts is None:
+                fronts = self._fronts = _launch.empty(
+                    plan.front_entries, dtype=wp.float64, device=self.device
+                )
+                self.nbytes += 8 * plan.front_entries
+            device = wp.get_device(self.device)
+            if device.is_cuda:
+                if self._factor_graph is None:
+                    with wp.ScopedCapture(device) as capture:
+                        plan.factor(matrix, self._numeric, sign, fronts)
+                    self._factor_graph = capture.graph
+                wp.capture_launch(self._factor_graph)
+            else:
+                plan.factor(matrix, self._numeric, sign, fronts)
+        # Read back: a bad pivot raises, and whether any component is singular decides whether
+        # the solves project a null space at all -- both in one read.
+        bad_pivot, singular = read_values(self._numeric.status, 0, 2)
+        if bad_pivot != 0:
             raise NotPositiveDefiniteError("sparse_cholesky: the operator is not positive definite")
+        self._numeric.any_singular = singular != 0
         self._matrix = matrix
         for solve in self._solves.values():
             solve.matrix = matrix
+
+    def _stable_copy(self, matrix: odt.BsrMatrix[wp.float64]) -> odt.BsrMatrix[wp.float64]:
+        """Copy ``matrix``'s values into this factorization's own storage of its pattern."""
+        stable = self._stable
+        if stable is None:
+            stable = odt.bsr_matrix_t(wp.float64)()
+            stable.nrow, stable.ncol = int(matrix.nrow), int(matrix.ncol)
+            stable.offsets = _launch.clone(matrix.offsets)
+            stable.columns = _launch.clone(matrix.columns)
+            stable.values = _launch.clone(matrix.values)
+            stable.row_counts = None
+            stable.notify_nnz_changed(nnz=int(matrix.nnz))
+            self.nbytes += 4 * (stable.offsets.size + stable.columns.size)
+            self.nbytes += 8 * stable.values.size
+            self._stable = stable
+        else:
+            _launch.copy(stable.values, matrix.values)
+        return stable
+
+    def with_operator(
+        self, matrix: odt.BsrMatrix[wp.float64], *, negated: bool | None = None
+    ) -> SparseCholesky:
+        """
+        Factor another operator of this one's sparsity pattern, sharing this analysis.
+
+        Only the numeric factorization is paid: the ordering and every structure map are this
+        factorization's, held by both. The two factorizations are independent otherwise.
+
+        Parameters
+        ----------
+        matrix
+            ``(n, n)`` symmetric ``float64`` operator stored over the pattern this factorization
+            was built for (the same row offsets and column indices).
+        negated
+            As [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] takes it: ``None`` factors
+            whichever sign is positive definite.
+
+        Returns
+        -------
+        SparseCholesky
+            The new factorization.
+
+        Raises
+        ------
+        NotPositiveDefiniteError
+            If the operator (with ``negated=None``: either sign of it) is not positive definite.
+        RuntimeError
+            If ``matrix`` is not on this factorization's device.
+        """
+        require_same_device(matrix=matrix, factor=self)
+        return _factored(self._plan, matrix, negated)
 
     def solve(
         self,
@@ -195,7 +280,7 @@ def sparse_cholesky(
     matrix: odt.BsrMatrix[wp.float64],
     coordinates: wp.array[wp.vec3] | None = None,
     *,
-    negated: bool = False,
+    negated: bool | None = False,
 ) -> SparseCholesky:
     """
     Sparse Cholesky factorization of a symmetric positive-(semi-)definite ``float64`` operator.
@@ -217,7 +302,9 @@ def sparse_cholesky(
         operator. When ``None``, the ordering is computed from the pattern alone.
     negated
         Factor ``-matrix`` instead, for a negative (semi-)definite operator such as
-        [`cotmatrix`][ordito.laplacian.cotmatrix]; solves still answer ``matrix x = rhs``.
+        [`cotmatrix`][ordito.laplacian.cotmatrix]; solves still answer ``matrix x = rhs``. When
+        ``None``, factor whichever of ``matrix`` and ``-matrix`` is positive definite, over one
+        analysis: the sign of the leading diagonal is tried first.
 
     Returns
     -------
@@ -231,7 +318,7 @@ def sparse_cholesky(
         the factorization would exceed
         [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
     NotPositiveDefiniteError
-        If the operator is not positive definite.
+        If the operator is not positive definite (with ``negated=None``: neither sign is).
     RuntimeError
         If ``matrix`` and ``coordinates`` are not on one device.
 
@@ -253,8 +340,36 @@ def sparse_cholesky(
     ```
     """
     require_same_device(matrix=matrix, coordinates=coordinates)
-    plan = _plan_cholesky(matrix, coordinates)
-    return SparseCholesky(plan, matrix, negated=negated)
+    return _factored(_plan_cholesky(matrix, coordinates), matrix, negated)
+
+
+def _factored(
+    plan: _Plan, matrix: odt.BsrMatrix[wp.float64], negated: bool | None
+) -> SparseCholesky:
+    """Factor ``matrix`` over ``plan``; ``negated=None`` tries the leading diagonal's sign first."""
+    if negated is not None:
+        return SparseCholesky(plan, matrix, negated=negated)
+    first = _leading_diagonal_negative(matrix)
+    try:
+        return SparseCholesky(plan, matrix, negated=first)
+    except NotPositiveDefiniteError:
+        return SparseCholesky(plan, matrix, negated=not first)
+
+
+def _leading_diagonal_negative(matrix: odt.BsrMatrix[wp.float64]) -> bool:
+    """Whether the first rows' diagonal sums below zero: the sign a definite operator has."""
+    device = matrix.device
+    total = _launch.empty(1, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_cholesky.leading_diagonal_sum,
+        dim=1,
+        inputs=[matrix.offsets, matrix.columns, matrix.values,
+                wp.int32(min(int(matrix.nrow), _SIGN_PROBE_ROWS))],
+        outputs=[total],
+        device=device,
+    )  # fmt: skip
+    # Read back: which sign to factor first is the host's choice of launch arguments.
+    return float(read_scalar(total, 0)) < 0.0
 
 
 def _plan_cholesky(
@@ -415,7 +530,7 @@ class _Plan:
                 first, last = int(extend_bounds[g]), int(extend_bounds[g + 1])
                 width = int(nrow[child[extend_order[first:last]]].max())
                 self.extend[key // (n_sn + 1)].append(
-                    (odt.as_dense(members[first:last]), width * width)
+                    (_launch.view(members, first, last), width * width)
                 )
         # The per-level task maps, every level in one launch per map.
         level_nodes = put(level_node.astype(np.int32), wp.int32)
@@ -499,30 +614,30 @@ class _Plan:
             rows_below = int((size[nodes] - np.minimum(panel, ncol[nodes])).max())
             self.big.append(
                 (
-                    odt.as_dense(level_nodes[int(level_bounds[h]) : int(level_bounds[h + 1])]),
+                    _launch.view(level_nodes, int(level_bounds[h]), int(level_bounds[h + 1])),
                     work,
                     max(rows_below, 1),
                     int(ncol[nodes].max()),
                 )
             )
-            f = slice(f_levels[h], f_levels[h + 1])
-            r = slice(r_levels[h], r_levels[h + 1])
-            b = slice(b_levels[h], b_levels[h + 1])
-            c = slice(c_levels[h], c_levels[h + 1])
+            f = (f_levels[h], f_levels[h + 1])
+            r = (r_levels[h], r_levels[h + 1])
+            b = (b_levels[h], b_levels[h + 1])
+            c = (c_levels[h], c_levels[h + 1])
             self.forward.append(
                 {
-                    "rows": c_target[c],
-                    "offsets": contribution_offsets[c_levels[h] : c_levels[h + 1] + 1],
+                    "rows": _launch.view(c_target, *c),
+                    "offsets": _launch.view(contribution_offsets, c_levels[h], c_levels[h + 1] + 1),
                     "pairs": contribution_pairs,
-                    "task_block": f_block[f],
-                    "task_stride": f_stride[f],
-                    "task_count": f_count_d[f],
-                    "task_source": f_source[f],
-                    "task_slot": f_slot[f],
-                    "row_slot": r_slot[r],
-                    "row_stride": r_stride[r],
-                    "row_count": r_count[r],
-                    "row_target": r_target[r],
+                    "task_block": _launch.view(f_block, *f),
+                    "task_stride": _launch.view(f_stride, *f),
+                    "task_count": _launch.view(f_count_d, *f),
+                    "task_source": _launch.view(f_source, *f),
+                    "task_slot": _launch.view(f_slot, *f),
+                    "row_slot": _launch.view(r_slot, *r),
+                    "row_stride": _launch.view(r_stride, *r),
+                    "row_count": _launch.view(r_count, *r),
+                    "row_target": _launch.view(r_target, *r),
                     "n_rows": c_levels[h + 1] - c_levels[h],
                     "n_tasks": f_levels[h + 1] - f_levels[h],
                     "n_block_rows": r_levels[h + 1] - r_levels[h],
@@ -530,18 +645,18 @@ class _Plan:
             )
             self.backward.append(
                 {
-                    "task_block": b_block[b],
-                    "task_first": b_first[b],
-                    "task_ncol": b_ncol[b],
-                    "task_size": b_size[b],
-                    "task_start": b_start[b],
-                    "task_rows": b_rows[b],
-                    "task_slot": b_slot[b],
-                    "row_slot": c_slot[c],
-                    "row_stride": c_stride[c],
-                    "row_first": c_first[c],
-                    "row_count": c_count[c],
-                    "row_target": c_target[c],
+                    "task_block": _launch.view(b_block, *b),
+                    "task_first": _launch.view(b_first, *b),
+                    "task_ncol": _launch.view(b_ncol, *b),
+                    "task_size": _launch.view(b_size, *b),
+                    "task_start": _launch.view(b_start, *b),
+                    "task_rows": _launch.view(b_rows, *b),
+                    "task_slot": _launch.view(b_slot, *b),
+                    "row_slot": _launch.view(c_slot, *c),
+                    "row_stride": _launch.view(c_stride, *c),
+                    "row_first": _launch.view(c_first, *c),
+                    "row_count": _launch.view(c_count, *c),
+                    "row_target": _launch.view(c_target, *c),
                     "n_tasks": b_levels[h + 1] - b_levels[h],
                     "n_rows": c_levels[h + 1] - c_levels[h],
                 }
@@ -586,6 +701,18 @@ class _Plan:
                 outputs=[self.component_label, self.component_offsets, self.component_last],
                 device=device,
             )
+            # The null-space projection's chunks: each component's rows in ``NULL_SPACE_CHUNK``s,
+            # at most ``chunk_bound`` of them, so no count is read back.
+            self.chunk_offsets = _launch.zeros(n_components + 1, dtype=wp.int32, device=device)
+            _launch.launch(
+                kernel_cholesky.component_chunk_counts,
+                dim=n_components,
+                inputs=[self.component_offsets],
+                outputs=[self.chunk_offsets],
+                device=device,
+            )
+            _launch.array_scan(self.chunk_offsets, self.chunk_offsets, inclusive=True)
+            self.chunk_bound = n_components + n // int(kernel_cholesky.NULL_SPACE_CHUNK)
             self.component_diagonal = _launch.empty(n_components, dtype=wp.int64, device=device)
             _launch.launch(
                 kernel_cholesky.component_diagonals,
@@ -598,6 +725,8 @@ class _Plan:
         else:
             self.component_label = _launch.empty(0, dtype=wp.int32, device=device)
             self.component_offsets = _launch.zeros(1, dtype=wp.int32, device=device)
+            self.chunk_offsets = _launch.zeros(1, dtype=wp.int32, device=device)
+            self.chunk_bound = 0
             self.component_last = _launch.empty(0, dtype=wp.int32, device=device)
             self.component_diagonal = _launch.empty(0, dtype=wp.int64, device=device)
         self.n_components = n_components
@@ -609,7 +738,8 @@ class _Plan:
             singular=_launch.zeros(n, dtype=wp.int32, device=device),
             pinned=_launch.zeros(n, dtype=wp.int32, device=device),
             dropped=_launch.zeros(n, dtype=wp.int32, device=device),
-            status=_launch.zeros(1, dtype=wp.int32, device=device),
+            # A bad pivot (slot 0) and whether any component is singular (slot 1).
+            status=_launch.zeros(2, dtype=wp.int32, device=device),
             blocks=_launch.zeros(self.block_entries, dtype=wp.float64, device=device),
         )
 
@@ -634,8 +764,19 @@ class _Plan:
         )
         self.nbytes = nbytes
 
-    def factor(self, matrix: odt.BsrMatrix[wp.float64], numeric: _Numeric, sign: float) -> None:
-        """Numeric factorization of ``matrix`` into ``blocks``; ``status`` flags a bad pivot."""
+    def factor(
+        self,
+        matrix: odt.BsrMatrix[wp.float64],
+        numeric: _Numeric,
+        sign: float,
+        fronts: wp.array[wp.float64] | None = None,
+    ) -> None:
+        """
+        Numeric factorization of ``matrix`` into ``blocks``; ``status`` flags a bad pivot.
+
+        The fronts arena is ``fronts`` when given (zeroed here; nothing is allocated, so the
+        launches can be recorded), else allocated for this factorization alone.
+        """
         device = self.device
         n = self.n
         _launch.zero_(numeric.status)
@@ -648,13 +789,16 @@ class _Plan:
             outputs=[numeric.singular, numeric.pinned, numeric.dropped],
             device=device,
         )  # fmt: skip
-        fronts = _launch.zeros(self.front_entries, dtype=wp.float64, device=device)
+        if fronts is None:
+            fronts = _launch.zeros(self.front_entries, dtype=wp.float64, device=device)
+        else:
+            _launch.zero_(fronts)
         _launch.launch(
             kernel_cholesky.pin_singular_components,
             dim=self.n_components,
             inputs=[self.component_label, self.component_last, self.perm, numeric.singular,
                     self.component_diagonal],
-            outputs=[numeric.pinned, numeric.dropped, fronts],
+            outputs=[numeric.pinned, numeric.dropped, fronts, numeric.status],
             device=device,
         )  # fmt: skip
         _launch.launch(
@@ -795,6 +939,7 @@ class _Numeric:
     dropped: wp.array[wp.int32]
     status: wp.array[wp.int32]
     blocks: wp.array[wp.float64]
+    any_singular: bool = True
 
 
 @dataclass
@@ -833,6 +978,9 @@ class _Solve:
         self.initial = _launch.zeros(total, dtype=wp.float64, device=device)
         self.residual = _launch.zeros(total, dtype=wp.float64, device=device)
         self.rhs_scale = _launch.zeros(n_columns, dtype=wp.float64, device=device)
+        self.null_space_partials = _launch.empty(
+            max(plan.chunk_bound * n_columns, 1), dtype=wp.float64, device=device
+        )
         self.state = _launch.zeros(3, dtype=wp.int32, device=device)
         # ``wp.capture_while`` reads the condition slot, the state's first.
         self.condition = cast("wp.array[int]", self.state[0:1])
@@ -879,20 +1027,42 @@ class _Solve:
         _launch.launch(
             kernel_cholesky.refine_start,
             dim=(plan.n, self.n_columns),
-            inputs=[self.rhs, wp.int32(plan.n), self.state, self.rhs_scale, self.initial],
+            inputs=[
+                self.rhs,
+                wp.int32(plan.n),
+                self.state,
+                self.rhs_scale,
+                wp.int32(1 if self.componentwise else 0),
+                self.initial,
+            ],
             outputs=[self.solution],
             device=device,
         )
         self._test()
         wp.capture_while(self.condition, self._round)
-        if plan.n_components:
+        if plan.n_components and self.numeric.any_singular:
+            # Two launches over the whole device, not a block per component: a mesh's one
+            # component is every row.
+            tables = [
+                plan.component_offsets,
+                plan.component_rows,
+                plan.component_label,
+                plan.chunk_offsets,
+                wp.int32(plan.chunk_bound),
+                self.numeric.singular,
+            ]
             _launch.launch_tiled(
-                kernel_cholesky.project_null_space,
-                dim=[plan.n_components * self.n_columns],
-                inputs=[plan.component_offsets, plan.component_rows, plan.component_label,
-                        self.numeric.singular, self.initial, wp.int32(plan.n)],
-                outputs=[self.solution],
+                kernel_cholesky.null_space_partials,
+                dim=[plan.chunk_bound * self.n_columns],
+                inputs=[*tables, self.initial, self.solution, wp.int32(plan.n)],
+                outputs=[self.null_space_partials],
                 block_dim=256 if wp.get_device(device).is_cuda else 1,
+                device=device,
+            )
+            _launch.launch(
+                kernel_cholesky.null_space_shift,
+                dim=(plan.n, self.n_columns),
+                inputs=[*tables, self.null_space_partials, wp.int32(plan.n), self.solution],
                 device=device,
             )  # fmt: skip
 
@@ -900,7 +1070,12 @@ class _Solve:
         device = wp.get_device(self.plan.device)
         _launch.copy(self.rhs, rhs)
         _launch.copy(self.initial, solution)
-        identity = (id(self.matrix.offsets), id(self.matrix.columns), id(self.matrix.values))
+        identity = (
+            id(self.matrix.offsets),
+            id(self.matrix.columns),
+            id(self.matrix.values),
+            self.numeric.any_singular,
+        )
         if device.is_cuda and wp.is_conditional_graph_supported():
             if self.graph is None or self.recorded_for != identity:
                 with wp.ScopedCapture(device) as capture:
@@ -1160,7 +1335,8 @@ def _nested_dissection(
     tag = _launch.full(n, -1, dtype=wp.int32, device=device)
     lower_mark = _launch.zeros(n, dtype=wp.int32, device=device)
     upper_mark = _launch.zeros(n, dtype=wp.int32, device=device)
-    chunk = int(kernel_cholesky.DISSECTION_CHUNK)
+    cuda = wp.get_device(device).is_cuda
+    chunk = kernel_cholesky.DISSECTION_CHUNK_CUDA if cuda else kernel_cholesky.DISSECTION_CHUNK_CPU
     # Every depth's buffers, allocated once at their largest: a depth's live vertices are at most
     # ``n``, and its segments each hold more than ``CHOLESKY_LEAF_ROWS`` of them. The survivors are
     # compacted into ``order`` itself, which the depth has finished reading by then.
@@ -1196,17 +1372,20 @@ def _nested_dissection(
             device=device,
         )
         n_tasks = int(task_offsets[-1])
-        segment_start_d = table[: n_segments + 1]
-        task_offsets_d = table[n_segments + 1 : 2 * n_segments + 2]
+        segment_start_d = _launch.view(table, 0, n_segments + 1)
+        task_offsets_d = _launch.view(table, n_segments + 1, 2 * n_segments + 2)
         task_table = [
-            table[2 * n_segments + 2 + k * n_tasks : 2 * n_segments + 2 + (k + 1) * n_tasks]
+            _launch.view(
+                table, 2 * n_segments + 2 + k * n_tasks, 2 * n_segments + 2 + (k + 1) * n_tasks
+            )
             for k in range(3)
         ]
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_cholesky.dissection_partials,
-            dim=n_tasks,
+            dim=[n_tasks],
             inputs=[order, coordinates, segment_start_d, *task_table],
             outputs=[partials],
+            block_dim=256 if cuda else 1,
             device=device,
         )
         _launch.launch(
@@ -1231,7 +1410,7 @@ def _nested_dissection(
             outputs=[tag],
             device=device,
         )
-        counts = counts_all[: 2 * n_segments]
+        counts = _launch.view(counts_all, 0, 2 * n_segments)
         _launch.zero_(counts)
         _launch.launch(
             kernel_cholesky.dissection_crossings,
@@ -1290,9 +1469,10 @@ def _nested_dissection(
         _launch.launch(
             kernel_cholesky.dissection_relabel,
             dim=live,
-            inputs=[keys, vertices, segment_start_d, relabel[:n_segments],
-                    relabel[n_segments : 2 * n_segments],
-                    relabel[2 * n_segments : 4 * n_segments], relabel[4 * n_segments :],
+            inputs=[keys, vertices, segment_start_d, _launch.view(relabel, 0, n_segments),
+                    _launch.view(relabel, n_segments, 2 * n_segments),
+                    _launch.view(relabel, 2 * n_segments, 4 * n_segments),
+                    _launch.view(relabel, 4 * n_segments, relabel.size),
                     lower_mark, upper_mark, wp.int32(stamp)],
             outputs=[node, keep, next_segment],
             device=device,

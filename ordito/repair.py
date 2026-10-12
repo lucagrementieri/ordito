@@ -2514,13 +2514,15 @@ def _disjoint_loops(loops: list[np.ndarray]) -> list[np.ndarray]:
     loop, or cutting the whole basis can shatter the surface into several pieces. Keeping the
     selection pairwise disjoint is what makes ``removed`` mean what it says.
     """
-    claimed: set[int] = set()
+    if not loops:
+        return []
+    # A vertex mask rather than a set of Python ints: the loops are NumPy arrays already.
+    claimed = np.zeros(int(max(int(loop.max(initial=-1)) for loop in loops)) + 1, dtype=bool)
     kept: list[np.ndarray] = []
     for loop in loops:
-        loop_indices = {int(index) for index in loop}
-        if loop_indices & claimed:
+        if claimed[loop].any():
             continue
-        claimed |= loop_indices
+        claimed[loop] = True
         kept.append(loop)
     return kept
 

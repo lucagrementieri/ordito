@@ -376,11 +376,40 @@ def candidate_pair_intersects(
     query_face: wp.int32,
     target_face: wp.int32,
 ) -> wp.bool:
-    # The narrow phase of one broad-phase candidate, by face index. Shared by
-    # ``mark_crossing_slot_masks`` and ``validation.self_intersection_marks``.
+    # The narrow phase of one broad-phase candidate, by face index. Shared by every marking
+    # kernel through ``mark_crossing``.
     qa, qb, qc = kernel_triangles.face_vertices(query_vertices, query_faces, query_face)
     ta, tb, tc = kernel_triangles.face_vertices(target_vertices, target_faces, target_face)
     return corners_intersect(qa, qb, qc, ta, tb, tc)
+
+
+@wp.func
+def mark_crossing(
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
+    query_face: wp.int32,
+    target_face: wp.int32,
+    flag_only: wp.bool,
+    out_mask_query: wp.array[wp.bool],
+    out_mask_target: wp.array[wp.bool],
+) -> None:
+    # Mark one candidate pair that intersects: both faces in their masks (idempotent ``True``
+    # stores), or with ``flag_only`` (warp-uniform) the predicate's one flag at
+    # ``out_mask_query[0]``, which a thread finding already raised skips its test for. One rule for
+    # the slot table and its overflow tail, so the masks and the predicate cannot disagree.
+    if flag_only:
+        if out_mask_query[0]:
+            return
+    if candidate_pair_intersects(
+        query_vertices, query_faces, target_vertices, target_faces, query_face, target_face
+    ):
+        if flag_only:
+            out_mask_query[0] = True
+        else:
+            out_mask_query[query_face] = True
+            out_mask_target[target_face] = True
 
 
 @wp.kernel
@@ -447,20 +476,57 @@ def mark_crossing_slot_masks(
     targets: wp.array[wp.int32],
     counts: wp.array[wp.int32],
     max_hits: wp.int32,
+    flag_only: wp.bool,
     out_mask_query: wp.array[wp.bool],
     out_mask_target: wp.array[wp.bool],
 ) -> None:
-    # The narrow phase and the marking in one pass over the fixed-stride broad-phase slots: flag
-    # both faces of each live candidate that intersects (idempotent ``True`` writes), so a mask
-    # needs no per-pair verdict buffer, no compaction and no readback.
+    # The narrow phase and the marking in one pass over the fixed-stride broad-phase slots
+    # (``mark_crossing``), so a mask needs no per-pair verdict buffer, no compaction and no
+    # readback. One thread per slot rather than inside the traversal: fused, a thread runs up to
+    # ``max_hits`` ``float64`` tests serially while holding the traversal state, and measured
+    # several times slower. The candidates past a face's block are ``mark_overflow_crossings``'.
     s = wp.int32(wp.tid())
     q = candidate_slot_query(counts, max_hits, s)
     if q < 0:
         return
-    t = targets[s]
-    if candidate_pair_intersects(query_vertices, query_faces, target_vertices, target_faces, q, t):
-        out_mask_query[q] = True
-        out_mask_target[t] = True
+    mark_crossing(
+        query_vertices, query_faces, target_vertices, target_faces, q, targets[s], flag_only,
+        out_mask_query, out_mask_target,
+    )  # fmt: skip
+
+
+@wp.kernel
+def mark_overflow_crossings(
+    mesh_id: wp.uint64,
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    max_hits: wp.int32,
+    flag_only: wp.bool,
+    out_mask_query: wp.array[wp.bool],
+    out_mask_target: wp.array[wp.bool],
+) -> None:
+    # The candidates a query face's block could not hold (``counts[q] > max_hits``): the face walks
+    # its box again, skips the ``max_hits`` the block holds (the same traversal order) and marks the
+    # rest inline. Every other face returns at once, so a table that held every candidate costs one
+    # launch and no host read; a face that overflows is rare enough to test serially.
+    q = wp.int32(wp.tid())
+    if counts[q] <= max_hits:
+        return
+    v0, v1, v2 = kernel_triangles.face_vertices(query_vertices, query_faces, q)
+    lower, upper = kernel_triangles.triangle_aabb(v0, v1, v2)
+    query = wp.mesh_query_aabb(mesh_id, lower, upper)
+    t = wp.int32(0)
+    c = wp.int32(0)
+    while wp.mesh_query_next(query, t):
+        if c >= max_hits:
+            mark_crossing(
+                query_vertices, query_faces, target_vertices, target_faces, q, t, flag_only,
+                out_mask_query, out_mask_target,
+            )  # fmt: skip
+        c = c + 1
 
 
 @wp.kernel
