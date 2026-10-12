@@ -4212,7 +4212,7 @@ around it. The tangent directions are built in each vertex's frame from
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"edge crossings per torus ray: up to </span><span class="si">{</span><span class="nb">max</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">ray</span><span class="p">)</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">ray</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">torus_rays</span><span class="p">)</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">2</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </code></pre></div>
 <div class="highlight"><span class="filename">Output</span><pre><span></span><code>torus ray lengths: 4.000 to 4.000
-edge crossings per torus ray: up to 246
+edge crossings per torus ray: up to 247
 </code></pre></div>
 <p><img alt="Tracing straightest geodesics (the exponential map)" src="../../assets/examples/g3.webp" /></p>
 <p>A ray that runs exactly into a vertex stops there (the walk has no rule for which face to
@@ -4404,8 +4404,8 @@ side of the vertex's ring, until it settles on a short loop along the mesh edges
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">loops</span><span class="p">)</span><span class="si">}</span><span class="s2"> loops, length </span><span class="si">{</span><span class="n">before</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> -&gt; </span><span class="si">{</span><span class="n">after</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> (</span><span class="si">{</span><span class="n">sweeps</span><span class="si">}</span><span class="s2"> sweeps)"</span><span class="p">)</span>
     <span class="n">result</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="p">([</span><span class="n">loop</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="k">for</span> <span class="n">loop</span> <span class="ow">in</span> <span class="n">loops</span><span class="p">],</span> <span class="p">[</span><span class="n">loop</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="k">for</span> <span class="n">loop</span> <span class="ow">in</span> <span class="n">short</span><span class="p">])</span>
 </code></pre></div>
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code>torus: 2 loops, length 10.79 -&gt; 8.04 (65 sweeps)
-handles: 18 loops, length 485.80 -&gt; 451.22 (11 sweeps)
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>torus: 2 loops, length 10.74 -&gt; 8.00 (65 sweeps)
+handles: 18 loops, length 381.73 -&gt; 357.38 (10 sweeps)
 </code></pre></div>
 <p><img alt="Shortening non-contractible loops" src="../../assets/examples/g8.webp" /></p>
 <p>The shortened loops stay on mesh edges, so they are locally shortest <em>edge</em> paths rather than

@@ -4149,9 +4149,9 @@ on a noisy scan the default treats too many of them as features, so it is raised
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"mean radius ratio: </span><span class="si">{</span><span class="n">before</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> -&gt; </span><span class="si">{</span><span class="n">after</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"faces below 0.5: </span><span class="si">{</span><span class="p">(</span><span class="n">before</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mf">0.5</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> -&gt; </span><span class="si">{</span><span class="p">(</span><span class="n">after</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mf">0.5</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </code></pre></div>
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code>faces: 69451 -&gt; 20678
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>faces: 69451 -&gt; 20460
 mean radius ratio: 0.814 -&gt; 0.967
-faces below 0.5: 618 -&gt; 16
+faces below 0.5: 618 -&gt; 17
 </code></pre></div>
 <p><img alt="Isotropic remeshing" src="../../assets/examples/r4.webp" /></p>
 <p class="ordito-credits">Modelled on: <a href="https://pymeshlab.readthedocs.io/en/latest/filter_list.html">PyMeshLab</a></p>
@@ -4233,11 +4233,11 @@ that intrinsic triangulation (after mollifying the degenerate faces).</p>
     <span class="n">off_diagonal</span> <span class="o">=</span> <span class="n">matrix</span><span class="o">.</span><span class="n">values</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n</span><span class="p">][</span><span class="n">rows</span> <span class="o">!=</span> <span class="n">matrix</span><span class="o">.</span><span class="n">columns</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:</span><span class="n">n</span><span class="p">]]</span>
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">build</span><span class="o">.</span><span class="vm">__name__</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="p">(</span><span class="n">off_diagonal</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> negative off-diagonal entries"</span><span class="p">)</span>
 </code></pre></div>
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code>input: 412 negative half-cotangents
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>input: 415 negative half-cotangents
 flip_to_delaunay: 24 negative half-cotangents
 intrinsic_delaunay: 23 negative half-cotangents
 230 intrinsic flips
-cotmatrix: 410 negative off-diagonal entries
+cotmatrix: 414 negative off-diagonal entries
 robust_laplacian: 8 negative off-diagonal entries
 </code></pre></div>
 <p><img alt="Delaunay flips and the intrinsic Delaunay triangulation" src="../../assets/examples/r6.webp" /></p>

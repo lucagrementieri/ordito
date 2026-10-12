@@ -10570,10 +10570,10 @@ sum is exact and the result is reproducible only to rounding on CUDA.</p>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">mass_matrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
-    <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
+    <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">face_areas</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -10629,7 +10629,12 @@ sum is exact and the result is reproducible only to rounding on CUDA.</p>
                 <code>dtype</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#type">type</a></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#type">type</a>[<a class="autorefs autorefs-internal" title="Block
+
+
+  
+      module-attribute
+   (ordito.typing.Block)" href="../typing/#ordito.typing.Block">Block</a>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -10859,13 +10864,16 @@ sum is exact and the result is reproducible only to rounding on CUDA.</p>
 <span class="normal">1451</span>
 <span class="normal">1452</span>
 <span class="normal">1453</span>
-<span class="normal">1454</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix</span><span class="p">(</span>
+<span class="normal">1454</span>
+<span class="normal">1455</span>
+<span class="normal">1456</span>
+<span class="normal">1457</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
-    <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
+    <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">face_areas</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Diagonal barycentric lumped mass matrix of the mesh.</span>
 
@@ -10905,9 +10913,12 @@ sum is exact and the result is reproducible only to rounding on CUDA.</p>
 <span class="sd">    Matches ``igl::massmatrix`` under ``MASSMATRIX_TYPE_BARYCENTRIC``.</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">face_areas</span><span class="o">=</span><span class="n">face_areas</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">bsr_diag</span><span class="p">(</span>
-        <span class="n">diag</span><span class="o">=</span><span class="n">mass_matrix_entries</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">face_areas</span><span class="o">=</span><span class="n">face_areas</span><span class="p">)</span>
+    <span class="c1"># ``mass_matrix_entries`` resolves its return by overload, which a ``Block`` cannot select.</span>
+    <span class="n">diagonal</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span>
+        <span class="s2">"wp.array[odt.Block]"</span><span class="p">,</span>
+        <span class="n">mass_matrix_entries</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="s2">"type"</span><span class="p">,</span> <span class="n">dtype</span><span class="p">),</span> <span class="n">face_areas</span><span class="o">=</span><span class="n">face_areas</span><span class="p">),</span>
     <span class="p">)</span>
+    <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">bsr_diag</span><span class="p">(</span><span class="n">diag</span><span class="o">=</span><span class="n">diagonal</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

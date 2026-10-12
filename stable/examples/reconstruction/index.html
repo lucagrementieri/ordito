@@ -4088,7 +4088,7 @@ of a dense grid.</p>
 </code></pre></div>
 <div class="highlight"><span class="filename">Output</span><pre><span></span><code>dense depth 6: 23720 faces
 dense depth 8: 377948 faces
-adaptive depth 8: 416261 faces
+adaptive depth 8: 378540 faces
 </code></pre></div>
 <p><img alt="Screened Poisson reconstruction" src="../../assets/examples/rr1.webp" /></p>
 <p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/tutorial/geometry/surface_reconstruction.html">Open3D: Poisson surface reconstruction</a> · <a href="https://pymeshlab.readthedocs.io/en/latest/filter_list.html">PyMeshLab: screened Poisson</a></p>
@@ -4113,8 +4113,8 @@ sampling is sparser than the ball, which
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">faces</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">//</span><span class="w"> </span><span class="mi">3</span><span class="si">}</span><span class="s2"> triangles over </span><span class="si">{</span><span class="n">points</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2"> points"</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">holes</span><span class="p">)</span><span class="si">}</span><span class="s2"> boundary loops left open"</span><span class="p">)</span>
 </code></pre></div>
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code>58599 triangles over 30000 points
-53 boundary loops left open
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>58697 triangles over 30000 points
+29 boundary loops left open
 </code></pre></div>
 <p><img alt="Ball pivoting" src="../../assets/examples/rr2.webp" /></p>
 <p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/tutorial/geometry/surface_reconstruction.html">Open3D: ball pivoting</a> · <a href="https://pymeshlab.readthedocs.io/en/latest/filter_list.html">PyMeshLab: ball pivoting</a></p>
@@ -4209,7 +4209,7 @@ deviation, and both recover the pose.</p>
     <span class="n">angle</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">degrees</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">arccos</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">clip</span><span class="p">((</span><span class="n">np</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="n">rotation</span><span class="p">)</span> <span class="o">-</span> <span class="mf">1.0</span><span class="p">)</span> <span class="o">/</span> <span class="mf">2.0</span><span class="p">,</span> <span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)))</span>
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">kernel</span><span class="si">:</span><span class="s2">&gt;5</span><span class="si">}</span><span class="s2">: recovered a rotation of </span><span class="si">{</span><span class="n">angle</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2"> degrees (true: 15.0)"</span><span class="p">)</span>
 </code></pre></div>
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code> none: recovered a rotation of 28.4 degrees (true: 15.0)
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code> none: recovered a rotation of 28.2 degrees (true: 15.0)
 huber: recovered a rotation of 15.4 degrees (true: 15.0)
 tukey: recovered a rotation of 15.6 degrees (true: 15.0)
 </code></pre></div>

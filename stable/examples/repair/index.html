@@ -4302,7 +4302,7 @@ bridge triangles: 6
 </code></pre></div>
 <div class="highlight"><span class="filename">Output</span><pre><span></span><code>zero-area faces: 4; faces after dropping them: 412
 faces after collapsing small ones: 416 -&gt; 392
-welded: 4 slivers, worst aspect ratio 1591
+welded: 4 slivers, worst aspect ratio 1590
 flipped: 0 slivers, worst aspect ratio 2
 seam vertices welded: 5
 </code></pre></div>
@@ -4402,8 +4402,8 @@ the two touch). The 3-D view is cut in half to show the core.</p>
     <span class="n">left</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">validation</span><span class="o">.</span><span class="n">face_self_intersecting_mask</span><span class="p">(</span><span class="n">v</span><span class="p">,</span> <span class="n">f</span><span class="p">)</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span>
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">method</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">f</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">//</span><span class="w"> </span><span class="mi">3</span><span class="si">}</span><span class="s2"> faces, </span><span class="si">{</span><span class="n">left</span><span class="si">}</span><span class="s2"> still intersecting"</span><span class="p">)</span>
 </code></pre></div>
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code>self-intersecting faces: 325 of 9216
-local: 10122 faces, 0 still intersecting
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>self-intersecting faces: 384 of 9216
+local: 9852 faces, 0 still intersecting
 voxel: 54484 faces, 0 still intersecting
 </code></pre></div>
 <p><img alt="Fixing self-intersections" src="../../assets/examples/h8.webp" /></p>
@@ -4411,16 +4411,15 @@ voxel: 54484 faces, 0 still intersecting
 <h2 id="h9">Removing tunnels</h2>
 <p>A ring torus carries three thin handles fused onto its tube, the kind of spurious topology a
 scan picks up where two sheets touch: genus 4, of which only the ring's own tunnel is meant.
-<a class="autorefs autorefs-internal" title="remove_tunnels" href="../../api/ordito/repair/#ordito.repair.remove_tunnels"><code>remove_tunnels</code></a> computes a homology basis, shortens each
-loop within its class, and cuts the surface along every loop no longer than <code>max_length</code>,
+<a class="autorefs autorefs-internal" title="remove_tunnels" href="../../api/ordito/repair/#ordito.repair.remove_tunnels"><code>remove_tunnels</code></a> computes a greedy homology basis (each loop
+the shortest independent one through its root), shortens each loop within its class, and
+cuts the surface along every loop no longer than <code>max_length</code>,
 sealing both rims of each cut (red); nothing moves, so the cut is only visible as new
 topology. The threshold sits far below the ring's own loops, so the
 intended tunnel survives. One call removes at most one tunnel per family of dependent loops,
 hence the loop until nothing is cut.
-<a class="autorefs autorefs-internal" title="euler_characteristic" href="../../api/ordito/measures/#ordito.measures.euler_characteristic"><code>euler_characteristic</code></a> tracks the genus.</p>
-<p>The test is on <em>shortened</em> loop length, and shortening is a local descent: here the basis
-loops through one of the handles stay several times longer than its girth, so that handle is
-not found at this threshold.</p>
+<a class="autorefs autorefs-internal" title="euler_characteristic" href="../../api/ordito/measures/#ordito.measures.euler_characteristic"><code>euler_characteristic</code></a> tracks the genus: all three
+handles are cut and the torus keeps its own tunnel.</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
 
@@ -4435,9 +4434,10 @@ not found at this threshold.</p>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"genus after:"</span><span class="p">,</span> <span class="p">(</span><span class="mi">2</span> <span class="o">-</span> <span class="n">od</span><span class="o">.</span><span class="n">measures</span><span class="o">.</span><span class="n">euler_characteristic</span><span class="p">(</span><span class="n">faces</span><span class="p">))</span> <span class="o">//</span> <span class="mi">2</span><span class="p">)</span>
 </code></pre></div>
 <div class="highlight"><span class="filename">Output</span><pre><span></span><code>genus before: 4
+cut 1 tunnel(s)
 cut 2 tunnel(s)
 cut 0 tunnel(s)
-genus after: 2
+genus after: 1
 </code></pre></div>
 <p><img alt="Removing tunnels" src="../../assets/examples/h9.webp" /></p>
 <p class="ordito-credits">Modelled on: <a href="https://meshlib.io/documentation/Examples.html">MeshLib examples</a></p>

@@ -11790,20 +11790,6 @@ with <a class="autorefs autorefs-internal" title="is_orientable" href="../valida
       </li>
       <li class="doc doc-backlink">
             <span class="doc doc-backlink-crumb">
-      <span>Point clouds, voxels & reconstruction</span>
-  </span>
-
-            <span class="doc doc-backlink-crumb">
-      <a href="../reconstruction/#ordito.reconstruction">reconstruction</a>
-  </span>
-
-            <span class="doc doc-backlink-crumb last">
-      <a href="../reconstruction/#ordito.reconstruction.ball_pivoting">ball_pivoting</a>
-  </span>
-
-      </li>
-      <li class="doc doc-backlink">
-            <span class="doc doc-backlink-crumb">
       <span>Spatial queries</span>
   </span>
 
@@ -13855,9 +13841,26 @@ along a non-separating cycle and sealing the two rims it creates drops the genus
 so <code>2 * removed</code> is the rise in
 <a class="autorefs autorefs-internal" title="euler_characteristic" href="../measures/#ordito.measures.euler_characteristic"><code>euler_characteristic</code></a> -- verified rather than
 reported, and the invariant to assert if you extend this.</p>
+<p>The basis is the greedy system of loops through a root vertex
+(<a class="autorefs autorefs-internal" title="homology_generators" href="../homology/#ordito.homology.homology_generators"><code>homology_generators</code></a>), so a handle near the root comes
+out as its own short loop. One far from the root can come out only inside a combination with
+other classes, which no shortening within the class can separate again; so when no loop of that
+basis is short enough, the basis is computed again from one vertex of each of its loops in turn,
+shortest loop first, until one of them yields a short loop. The call that finds nothing, which
+is the last one of the documented loop, therefore computes up to <code>2 * genus + 1</code> bases.</p>
 <p>Nothing is removed when no loop is short enough, and the input is returned unchanged -- so this
 is safe to run on a mesh whose genus is intended, provided <code>max_length</code> is below the scale of
 its real handles.</p>
+<div class="admonition warning">
+<p class="admonition-title">A short handle can still be missed</p>
+<p>The search is over loops through the roots tried, not over every loop of the surface: the
+short loop of a handle is found when one of the roots lies on or near it. A handle whose
+short loop passes near none of them, and that every basis carries only in combination, is
+reported as not short and stays. On a slab whose tunnels sit a narrow bar from its edge,
+one of eight such bars can survive at a <code>max_length</code> just above the bar's girth. The
+loops that are cut are always non-separating and under <code>max_length</code>; only the
+completeness is not guaranteed.</p>
+</div>
 <div class="admonition note">
 <p class="admonition-title">One disjoint pass per call</p>
 <p>The loops kept are pairwise <strong>vertex-disjoint</strong>, shortest first. Cutting along two loops
@@ -14224,7 +14227,27 @@ different homology basis, so "tunnel" is not defined by this test).</p>
 <span class="normal">2424</span>
 <span class="normal">2425</span>
 <span class="normal">2426</span>
-<span class="normal">2427</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remove_tunnels</span><span class="p">(</span>
+<span class="normal">2427</span>
+<span class="normal">2428</span>
+<span class="normal">2429</span>
+<span class="normal">2430</span>
+<span class="normal">2431</span>
+<span class="normal">2432</span>
+<span class="normal">2433</span>
+<span class="normal">2434</span>
+<span class="normal">2435</span>
+<span class="normal">2436</span>
+<span class="normal">2437</span>
+<span class="normal">2438</span>
+<span class="normal">2439</span>
+<span class="normal">2440</span>
+<span class="normal">2441</span>
+<span class="normal">2442</span>
+<span class="normal">2443</span>
+<span class="normal">2444</span>
+<span class="normal">2445</span>
+<span class="normal">2446</span>
+<span class="normal">2447</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remove_tunnels</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">max_length</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -14246,9 +14269,26 @@ different homology basis, so "tunnel" is not defined by this test).</p>
 <span class="sd">    [`euler_characteristic`][ordito.measures.euler_characteristic] -- verified rather than</span>
 <span class="sd">    reported, and the invariant to assert if you extend this.</span>
 
+<span class="sd">    The basis is the greedy system of loops through a root vertex</span>
+<span class="sd">    ([`homology_generators`][ordito.homology.homology_generators]), so a handle near the root comes</span>
+<span class="sd">    out as its own short loop. One far from the root can come out only inside a combination with</span>
+<span class="sd">    other classes, which no shortening within the class can separate again; so when no loop of that</span>
+<span class="sd">    basis is short enough, the basis is computed again from one vertex of each of its loops in turn,</span>
+<span class="sd">    shortest loop first, until one of them yields a short loop. The call that finds nothing, which</span>
+<span class="sd">    is the last one of the documented loop, therefore computes up to ``2 * genus + 1`` bases.</span>
+
 <span class="sd">    Nothing is removed when no loop is short enough, and the input is returned unchanged -- so this</span>
 <span class="sd">    is safe to run on a mesh whose genus is intended, provided ``max_length`` is below the scale of</span>
 <span class="sd">    its real handles.</span>
+
+<span class="sd">    !!! warning "A short handle can still be missed"</span>
+<span class="sd">        The search is over loops through the roots tried, not over every loop of the surface: the</span>
+<span class="sd">        short loop of a handle is found when one of the roots lies on or near it. A handle whose</span>
+<span class="sd">        short loop passes near none of them, and that every basis carries only in combination, is</span>
+<span class="sd">        reported as not short and stays. On a slab whose tunnels sit a narrow bar from its edge,</span>
+<span class="sd">        one of eight such bars can survive at a ``max_length`` just above the bar's girth. The</span>
+<span class="sd">        loops that are cut are always non-separating and under ``max_length``; only the</span>
+<span class="sd">        completeness is not guaranteed.</span>
 
 <span class="sd">    !!! note "One disjoint pass per call"</span>
 <span class="sd">        The loops kept are pairwise **vertex-disjoint**, shortest first. Cutting along two loops</span>
@@ -14320,20 +14360,23 @@ different homology basis, so "tunnel" is not defined by this test).</p>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">max_length</span> <span class="o">&lt;</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"max_length must be non-negative, got </span><span class="si">{</span><span class="n">max_length</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-    <span class="c1"># The basis stays packed from the generators through the shortening to the measuring, so no</span>
-    <span class="c1"># per-loop array is built and split again on the way.</span>
-    <span class="n">loops</span><span class="p">,</span> <span class="n">loop_offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">homology</span><span class="o">.</span><span class="n">homology_generators_with_offsets</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">loop_offsets</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+    <span class="n">short</span> <span class="o">=</span> <span class="n">_shortened_basis</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">max_iter</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">short</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="mi">0</span>
-
-    <span class="n">shortened</span><span class="p">,</span> <span class="n">shortened_offsets</span><span class="p">,</span> <span class="n">_sweeps</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">geodesic_walk</span><span class="o">.</span><span class="n">shorten_loop_with_offsets</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">loops</span><span class="p">,</span> <span class="n">loop_offsets</span><span class="p">,</span> <span class="n">max_iter</span><span class="o">=</span><span class="n">max_iter</span>
-    <span class="p">)</span>
-    <span class="c1"># A basis has 2 * genus loops of a handful of indices each, so everything after the measuring</span>
-    <span class="c1"># runs on the host, over one readback of them all.</span>
-    <span class="n">lengths</span><span class="p">,</span> <span class="n">loops_np</span> <span class="o">=</span> <span class="n">_measure_loops</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">shortened</span><span class="p">,</span> <span class="n">shortened_offsets</span><span class="p">)</span>
-    <span class="n">short</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="nb">zip</span><span class="p">(</span><span class="n">lengths</span><span class="p">,</span> <span class="n">loops_np</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">pair</span><span class="p">:</span> <span class="n">pair</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
     <span class="n">selected</span> <span class="o">=</span> <span class="n">_disjoint_loops</span><span class="p">([</span><span class="n">loop</span> <span class="k">for</span> <span class="n">length</span><span class="p">,</span> <span class="n">loop</span> <span class="ow">in</span> <span class="n">short</span> <span class="k">if</span> <span class="n">length</span> <span class="o">&lt;=</span> <span class="n">max_length</span><span class="p">])</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">selected</span><span class="p">:</span>
+        <span class="c1"># The basis is the greedy one through its root, so a handle far from the root can appear</span>
+        <span class="c1"># only inside a longer combination of classes. Before answering "nothing is short", base a</span>
+        <span class="c1"># basis on one vertex of each loop found, shortest first: a root near a handle finds that</span>
+        <span class="c1"># handle's own short loop first.</span>
+        <span class="n">roots</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="nb">dict</span><span class="o">.</span><span class="n">fromkeys</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">loop</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="k">for</span> <span class="n">_</span><span class="p">,</span> <span class="n">loop</span> <span class="ow">in</span> <span class="n">short</span><span class="p">))</span>
+        <span class="k">for</span> <span class="n">root</span> <span class="ow">in</span> <span class="n">roots</span><span class="p">:</span>
+            <span class="n">candidates</span> <span class="o">=</span> <span class="n">_shortened_basis</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">root</span><span class="p">,</span> <span class="n">max_iter</span><span class="p">)</span>
+            <span class="n">selected</span> <span class="o">=</span> <span class="n">_disjoint_loops</span><span class="p">(</span>
+                <span class="p">[</span><span class="n">loop</span> <span class="k">for</span> <span class="n">length</span><span class="p">,</span> <span class="n">loop</span> <span class="ow">in</span> <span class="n">candidates</span> <span class="k">if</span> <span class="n">length</span> <span class="o">&lt;=</span> <span class="n">max_length</span><span class="p">]</span>
+            <span class="p">)</span>
+            <span class="k">if</span> <span class="n">selected</span><span class="p">:</span>
+                <span class="k">break</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">selected</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="mi">0</span>
 
@@ -14592,49 +14635,7 @@ which removes the sliver by merging its short edge instead.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/repair.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2595</span>
-<span class="normal">2596</span>
-<span class="normal">2597</span>
-<span class="normal">2598</span>
-<span class="normal">2599</span>
-<span class="normal">2600</span>
-<span class="normal">2601</span>
-<span class="normal">2602</span>
-<span class="normal">2603</span>
-<span class="normal">2604</span>
-<span class="normal">2605</span>
-<span class="normal">2606</span>
-<span class="normal">2607</span>
-<span class="normal">2608</span>
-<span class="normal">2609</span>
-<span class="normal">2610</span>
-<span class="normal">2611</span>
-<span class="normal">2612</span>
-<span class="normal">2613</span>
-<span class="normal">2614</span>
-<span class="normal">2615</span>
-<span class="normal">2616</span>
-<span class="normal">2617</span>
-<span class="normal">2618</span>
-<span class="normal">2619</span>
-<span class="normal">2620</span>
-<span class="normal">2621</span>
-<span class="normal">2622</span>
-<span class="normal">2623</span>
-<span class="normal">2624</span>
-<span class="normal">2625</span>
-<span class="normal">2626</span>
-<span class="normal">2627</span>
-<span class="normal">2628</span>
-<span class="normal">2629</span>
-<span class="normal">2630</span>
-<span class="normal">2631</span>
-<span class="normal">2632</span>
-<span class="normal">2633</span>
-<span class="normal">2634</span>
-<span class="normal">2635</span>
-<span class="normal">2636</span>
-<span class="normal">2637</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2637</span>
 <span class="normal">2638</span>
 <span class="normal">2639</span>
 <span class="normal">2640</span>
@@ -14653,7 +14654,49 @@ which removes the sliver by merging its short edge instead.</p>
 <span class="normal">2653</span>
 <span class="normal">2654</span>
 <span class="normal">2655</span>
-<span class="normal">2656</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_t_vertices</span><span class="p">(</span>
+<span class="normal">2656</span>
+<span class="normal">2657</span>
+<span class="normal">2658</span>
+<span class="normal">2659</span>
+<span class="normal">2660</span>
+<span class="normal">2661</span>
+<span class="normal">2662</span>
+<span class="normal">2663</span>
+<span class="normal">2664</span>
+<span class="normal">2665</span>
+<span class="normal">2666</span>
+<span class="normal">2667</span>
+<span class="normal">2668</span>
+<span class="normal">2669</span>
+<span class="normal">2670</span>
+<span class="normal">2671</span>
+<span class="normal">2672</span>
+<span class="normal">2673</span>
+<span class="normal">2674</span>
+<span class="normal">2675</span>
+<span class="normal">2676</span>
+<span class="normal">2677</span>
+<span class="normal">2678</span>
+<span class="normal">2679</span>
+<span class="normal">2680</span>
+<span class="normal">2681</span>
+<span class="normal">2682</span>
+<span class="normal">2683</span>
+<span class="normal">2684</span>
+<span class="normal">2685</span>
+<span class="normal">2686</span>
+<span class="normal">2687</span>
+<span class="normal">2688</span>
+<span class="normal">2689</span>
+<span class="normal">2690</span>
+<span class="normal">2691</span>
+<span class="normal">2692</span>
+<span class="normal">2693</span>
+<span class="normal">2694</span>
+<span class="normal">2695</span>
+<span class="normal">2696</span>
+<span class="normal">2697</span>
+<span class="normal">2698</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_t_vertices</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>

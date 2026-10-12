@@ -6646,9 +6646,11 @@ next triangle. The output mesh <strong>interpolates</strong> the input points (i
 compacted list of its boundary edges, mutated in place as triangles commit. Each wave pivots
 every live front edge independently through a hash-grid ball query and commits a conflict-free
 independent set via a two-phase vertex claim. Manifoldness is protected by an interior-edge
-guard (an edge already shared by two triangles never gains a third). The result is passed
-through the standard cleanup tail (deduplicate, drop degenerate / non-manifold faces, orient
-outward, optionally fill small holes).</p>
+guard (an edge already shared by two triangles never gains a third). Every triangle is wound so
+its normal agrees with the point normals: a seed triangle by its vertices' normals, every later
+one consistently with the triangle it pivots from. The result is passed through the standard
+cleanup tail (deduplicate, drop degenerate / non-manifold faces, optionally fill small holes),
+which keeps that winding.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6812,7 +6814,8 @@ filling; a negative value defaults to <code>0.1 x</code> the bounding-box diagon
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(3 * n_faces,)</code> flat triangle index buffer, oriented outward.</p>
+                <p><code>(3 * n_faces,)</code> flat triangle index buffer, wound consistently with <code>normals</code> (outward
+when they point outward).</p>
               </div>
             </td>
           </tr>
@@ -6869,18 +6872,15 @@ build return the same set of triangles, because a wave resolves competing propos
 packed from their own vertices and the wave counter rather than by the order they reached an
 atomic counter -- device state the loop advances deterministically, so the ordering varies
 between waves (which keeps a front edge from being starved by a globally fixed key) without
-varying between runs. Three caveats on how far that reaches:</p>
+varying between runs. Two caveats on how far that reaches:</p>
 <ul>
 <li>the default <code>radius &lt;= 0</code> is <strong>not</strong> covered. The auto-guess averages the nearest-neighbour
   spacings with a device reduction whose summation order is not fixed, so two calls on one cloud
   can guess radii a few ULP apart -- enough to tip a borderline pivot and change the triangle
   set. Pass <code>radius</code> explicitly wherever the result has to be reproducible;</li>
 <li>the face buffer's <em>row order</em> is not pinned -- <code>commit_triangles</code> appends with a
-  <code>wp.atomic_add</code> -- so compare reconstructions as a set of triangles, not buffer-to-buffer;</li>
-<li>neither is the <em>winding</em> of a component the cleanup tail cannot orient by volume, since
-  <a class="autorefs autorefs-internal" title="make_winding_consistent" href="../repair/#ordito.repair.make_winding_consistent"><code>make_winding_consistent</code></a> seeds each connected
-  component from an arbitrary face. Compare with the row entries sorted, or orient both sides
-  first.</li>
+  <code>wp.atomic_add</code> -- so compare reconstructions as a set of wound triangles, not
+  buffer-to-buffer.</li>
 </ul>
 <p>Results are not comparable across devices, where floating-point contraction differs.</p>
 <p>The result is <strong>interpolating and edge-manifold</strong>, and on a densely, uniformly sampled closed
@@ -7137,7 +7137,9 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">1910</span>
 <span class="normal">1911</span>
 <span class="normal">1912</span>
-<span class="normal">1913</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">1913</span>
+<span class="normal">1914</span>
+<span class="normal">1915</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7164,9 +7166,11 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="sd">    compacted list of its boundary edges, mutated in place as triangles commit. Each wave pivots</span>
 <span class="sd">    every live front edge independently through a hash-grid ball query and commits a conflict-free</span>
 <span class="sd">    independent set via a two-phase vertex claim. Manifoldness is protected by an interior-edge</span>
-<span class="sd">    guard (an edge already shared by two triangles never gains a third). The result is passed</span>
-<span class="sd">    through the standard cleanup tail (deduplicate, drop degenerate / non-manifold faces, orient</span>
-<span class="sd">    outward, optionally fill small holes).</span>
+<span class="sd">    guard (an edge already shared by two triangles never gains a third). Every triangle is wound so</span>
+<span class="sd">    its normal agrees with the point normals: a seed triangle by its vertices' normals, every later</span>
+<span class="sd">    one consistently with the triangle it pivots from. The result is passed through the standard</span>
+<span class="sd">    cleanup tail (deduplicate, drop degenerate / non-manifold faces, optionally fill small holes),</span>
+<span class="sd">    which keeps that winding.</span>
 
 
 <span class="sd">    Parameters</span>
@@ -7200,7 +7204,8 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="sd">        ``(m,)`` referenced input points, compacted from index zero, on ``points.device``,</span>
 <span class="sd">        ``m &lt;= n``.</span>
 <span class="sd">    faces : wp.array[wp.int32]</span>
-<span class="sd">        ``(3 * n_faces,)`` flat triangle index buffer, oriented outward.</span>
+<span class="sd">        ``(3 * n_faces,)`` flat triangle index buffer, wound consistently with ``normals`` (outward</span>
+<span class="sd">        when they point outward).</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
@@ -7225,18 +7230,15 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="sd">    packed from their own vertices and the wave counter rather than by the order they reached an</span>
 <span class="sd">    atomic counter -- device state the loop advances deterministically, so the ordering varies</span>
 <span class="sd">    between waves (which keeps a front edge from being starved by a globally fixed key) without</span>
-<span class="sd">    varying between runs. Three caveats on how far that reaches:</span>
+<span class="sd">    varying between runs. Two caveats on how far that reaches:</span>
 
 <span class="sd">    * the default ``radius &lt;= 0`` is **not** covered. The auto-guess averages the nearest-neighbour</span>
 <span class="sd">      spacings with a device reduction whose summation order is not fixed, so two calls on one cloud</span>
 <span class="sd">      can guess radii a few ULP apart -- enough to tip a borderline pivot and change the triangle</span>
 <span class="sd">      set. Pass ``radius`` explicitly wherever the result has to be reproducible;</span>
 <span class="sd">    * the face buffer's *row order* is not pinned -- ``commit_triangles`` appends with a</span>
-<span class="sd">      ``wp.atomic_add`` -- so compare reconstructions as a set of triangles, not buffer-to-buffer;</span>
-<span class="sd">    * neither is the *winding* of a component the cleanup tail cannot orient by volume, since</span>
-<span class="sd">      [`make_winding_consistent`][ordito.repair.make_winding_consistent] seeds each connected</span>
-<span class="sd">      component from an arbitrary face. Compare with the row entries sorted, or orient both sides</span>
-<span class="sd">      first.</span>
+<span class="sd">      ``wp.atomic_add`` -- so compare reconstructions as a set of wound triangles, not</span>
+<span class="sd">      buffer-to-buffer.</span>
 
 <span class="sd">    Results are not comparable across devices, where floating-point contraction differs.</span>
 
@@ -7280,7 +7282,9 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
     <span class="n">count</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">counters</span><span class="p">,</span> <span class="n">kernel_bpa</span><span class="o">.</span><span class="n">CNT_FACE</span><span class="p">))</span>
     <span class="n">faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">all_faces</span><span class="p">[:</span> <span class="n">count</span> <span class="o">*</span> <span class="mi">3</span><span class="p">]))</span>
-    <span class="k">return</span> <span class="n">_clean_reconstruction</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">crit_hole_length</span><span class="p">)</span>
+    <span class="c1"># Orientation is not re-derived (``orient=False``): every triangle is already wound from the</span>
+    <span class="c1"># normals, and ``make_normals_outward`` would rewind an inward-normal cloud's mesh outward.</span>
+    <span class="k">return</span> <span class="n">_clean_reconstruction</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">crit_hole_length</span><span class="p">,</span> <span class="n">orient</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

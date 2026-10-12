@@ -4254,7 +4254,7 @@ slivers where the scanner's patches were stitched.</p>
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"aspect ratio: median </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">aspect</span><span class="p">)</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">, worst </span><span class="si">{</span><span class="n">aspect</span><span class="o">.</span><span class="n">max</span><span class="p">()</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="p">(</span><span class="n">aspect</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">4</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="n">aspect</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> faces have an aspect ratio above 4"</span><span class="p">)</span>
 </code></pre></div>
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code>aspect ratio: median 1.231, worst 1666.9
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>aspect ratio: median 1.231, worst 1666.7
 85 of 69451 faces have an aspect ratio above 4
 </code></pre></div>
 <p><img alt="Triangle quality" src="../../assets/examples/i5.webp" /></p>
@@ -4322,7 +4322,7 @@ loop around one tunnel, because that is a different class.</p>
 </code></pre></div>
 <div class="highlight"><span class="filename">Output</span><pre><span></span><code>torus: 2 generators (genus 1)
 slab: 18 generators (genus 9)
-total loop length 485.8 before shortening, 451.2 after (11 sweeps)
+total loop length 381.7 before shortening, 357.4 after (10 sweeps)
 </code></pre></div>
 <p><img alt="Homology generators: handles and tunnels" src="../../assets/examples/i7.webp" /></p>
 <p class="ordito-credits">Modelled on: <a href="https://meshlib.io/documentation/index.html">MeshLib: tunnel detection</a></p>

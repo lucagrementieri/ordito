@@ -4099,7 +4099,7 @@ the mesh surface, no two closer than a radius.</p>
 </code></pre></div>
 <div class="highlight"><span class="filename">Output</span><pre><span></span><code>437645 input points
 voxel grid: 6269, farthest point: 6269
-blue noise: 6184
+blue noise: 6186
 </code></pre></div>
 <p><img alt="Down-sampling: voxel grid, farthest point and blue noise" src="../../assets/examples/pc1.webp" /></p>
 <p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html">Open3D: voxel down-sampling</a> · <a href="https://docs.pyvista.org/examples/01-filter/farthest_point_sampling">PyVista: farthest point sampling</a> · <a href="https://pytorch3d.readthedocs.io/en/latest/modules/ops.html">pytorch3d: sample_farthest_points</a></p>
@@ -4132,7 +4132,7 @@ the typical spacing, and blue noise has a hard floor at its radius.</p>
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">:</span><span class="s2">&gt;8</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">gap</span><span class="p">)</span><span class="si">}</span><span class="s2"> samples, gap median </span><span class="si">{</span><span class="n">median</span><span class="si">:</span><span class="s2">.5f</span><span class="si">}</span><span class="s2">, min </span><span class="si">{</span><span class="n">smallest</span><span class="si">:</span><span class="s2">.5f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </code></pre></div>
 <div class="highlight"><span class="filename">Output</span><pre><span></span><code> uniform: 4000 samples, gap median 0.00177, min 0.00003
- Poisson: 4000 samples, gap median 0.00311, min 0.00003
+ Poisson: 4000 samples, gap median 0.00315, min 0.00280
     blue: 4016 samples, gap median 0.00316, min 0.00300
 </code></pre></div>
 <p><img alt="Surface sampling: uniform, Poisson disk and blue noise" src="../../assets/examples/pc2.webp" /></p>

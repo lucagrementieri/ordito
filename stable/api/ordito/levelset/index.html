@@ -4138,7 +4138,7 @@ occupancy lattice, <a class="autorefs autorefs-internal" title="ordito.voxels" h
 
 </h2>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">marching_cubes</span><span class="p">(</span>
-    <span class="n">field</span><span class="p">:</span> <span class="n">Array3dFloat32</span><span class="p">,</span>
+    <span class="n">field</span><span class="p">:</span> <span class="n">ArrayNdFloat32</span><span class="p">,</span>
     <span class="n">iso</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">vec3</span><span class="p">,</span> <span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -4172,12 +4172,12 @@ surface out. It is what
                 <code>field</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-internal" title="Array3dFloat32
+                  <code><a class="autorefs autorefs-internal" title="ArrayNdFloat32
 
 
   
       module-attribute
-   (ordito.typing.Array3dFloat32)" href="../typing/#ordito.typing.Array3dFloat32">Array3dFloat32</a></code>
+   (ordito.typing.ArrayNdFloat32)" href="../typing/#ordito.typing.ArrayNdFloat32">ArrayNdFloat32</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -4642,7 +4642,7 @@ ambiguous cell, and can carry duplicate vertices where two cells agree on a cros
 <span class="normal">237</span>
 <span class="normal">238</span>
 <span class="normal">239</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">marching_cubes</span><span class="p">(</span>
-    <span class="n">field</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span><span class="p">,</span>
+    <span class="n">field</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat32</span><span class="p">,</span>
     <span class="n">iso</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>

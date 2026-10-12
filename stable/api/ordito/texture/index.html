@@ -4143,7 +4143,7 @@ part of this module.</p>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">rasterize_attribute</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
-    <span class="n">attribute</span><span class="p">:</span> <span class="n">Array2dFloat32</span><span class="p">,</span>
+    <span class="n">attribute</span><span class="p">:</span> <span class="n">ArrayNdFloat32</span><span class="p">,</span>
     <span class="n">resolution</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span>
 </code></pre></div>
@@ -4206,12 +4206,12 @@ construction no face indexes them.</p>
                 <code>attribute</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-internal" title="Array2dFloat32
+                  <code><a class="autorefs autorefs-internal" title="ArrayNdFloat32
 
 
   
       module-attribute
-   (ordito.typing.Array2dFloat32)" href="../typing/#ordito.typing.Array2dFloat32">Array2dFloat32</a></code>
+   (ordito.typing.ArrayNdFloat32)" href="../typing/#ordito.typing.ArrayNdFloat32">ArrayNdFloat32</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -4276,6 +4276,16 @@ construction no face indexes them.</p>
         </tr>
       </thead>
       <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#TypeError">TypeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>attribute</code> is not a rank-2 <code>wp.float32</code> array.</p>
+              </div>
+            </td>
+          </tr>
           <tr class="doc-section-item">
             <td>
                   <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
@@ -4423,8 +4433,10 @@ count, or if any finite UV lies outside <code>[0, 1]</code>.</p>
 <span class="normal"> 97</span>
 <span class="normal"> 98</span>
 <span class="normal"> 99</span>
-<span class="normal">100</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_attribute</span><span class="p">(</span>
-    <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">attribute</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span><span class="p">,</span> <span class="n">resolution</span><span class="p">:</span> <span class="nb">int</span>
+<span class="normal">100</span>
+<span class="normal">101</span>
+<span class="normal">102</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_attribute</span><span class="p">(</span>
+    <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">attribute</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat32</span><span class="p">,</span> <span class="n">resolution</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Rasterize a per-vertex attribute into a square UV-space texture.</span>
@@ -4455,6 +4467,8 @@ count, or if any finite UV lies outside <code>[0, 1]</code>.</p>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
+<span class="sd">    TypeError</span>
+<span class="sd">        If ``attribute`` is not a rank-2 ``wp.float32`` array.</span>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``resolution`` is not positive, if ``uv`` and ``attribute`` disagree on their row</span>
 <span class="sd">        count, or if any finite UV lies outside ``[0, 1]``.</span>
@@ -4702,9 +4716,7 @@ and <code>attribute</code> disagree on their row count, or if any finite UV lies
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">103</span>
-<span class="normal">104</span>
-<span class="normal">105</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">105</span>
 <span class="normal">106</span>
 <span class="normal">107</span>
 <span class="normal">108</span>
@@ -4763,7 +4775,9 @@ and <code>attribute</code> disagree on their row count, or if any finite UV lies
 <span class="normal">161</span>
 <span class="normal">162</span>
 <span class="normal">163</span>
-<span class="normal">164</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_discrete_attribute</span><span class="p">(</span>
+<span class="normal">164</span>
+<span class="normal">165</span>
+<span class="normal">166</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_discrete_attribute</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">attribute</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">resolution</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -5078,9 +5092,7 @@ image). Non-finite-UV rows are <code>NaN</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">254</span>
-<span class="normal">255</span>
-<span class="normal">256</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">256</span>
 <span class="normal">257</span>
 <span class="normal">258</span>
 <span class="normal">259</span>
@@ -5152,7 +5164,9 @@ image). Non-finite-UV rows are <code>NaN</code>.</p>
 <span class="normal">325</span>
 <span class="normal">326</span>
 <span class="normal">327</span>
-<span class="normal">328</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_attribute_from_uv</span><span class="p">(</span>
+<span class="normal">328</span>
+<span class="normal">329</span>
+<span class="normal">330</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_attribute_from_uv</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">image</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span> <span class="o">|</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -5401,9 +5415,7 @@ are <code>-1</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">333</span>
 <span class="normal">334</span>
 <span class="normal">335</span>
 <span class="normal">336</span>
@@ -5452,7 +5464,9 @@ are <code>-1</code>.</p>
 <span class="normal">379</span>
 <span class="normal">380</span>
 <span class="normal">381</span>
-<span class="normal">382</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_discrete_attribute_from_uv</span><span class="p">(</span>
+<span class="normal">382</span>
+<span class="normal">383</span>
+<span class="normal">384</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_discrete_attribute_from_uv</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">class_image</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array1dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>

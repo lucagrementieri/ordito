@@ -4061,6 +4061,7 @@ walk along real mesh edges that visits no vertex twice.</p>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
+    <span class="n">root</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">copy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
 </code></pre></div>
@@ -4072,12 +4073,18 @@ walk along real mesh edges that visits no vertex twice.</p>
 closed walk along mesh edges: consecutive entries share an edge, and so do the last and first
 (the start vertex is not repeated, matching
 <a class="autorefs autorefs-internal" title="boundary_loops" href="../boundary/#ordito.boundary.boundary_loops"><code>boundary_loops</code></a>).</p>
-<p>The loops are a <em>basis</em>, not canonical: any generating set is as valid as any other, and this
-one falls out of the spanning trees the construction happens to build. They are also as long
-and as jagged as those trees, which is what
-<a class="autorefs autorefs-internal" title="shorten_loop" href="../geodesic_walk/#ordito.geodesic_walk.shorten_loop"><code>shorten_loop</code></a> is for. The basis is <strong>reproducible</strong>, and
-the same on every device: the primal tree resolves competing claims by lowest vertex index and
-the dual forest by lowest edge index, so neither depends on the order the threads ran in.</p>
+<p>The loops are a <em>basis</em>, not canonical: any generating set is as valid as any other. This one
+is the <strong>greedy system of loops through the root</strong> in the hop metric (Erickson and Whittlesey,
+<em>Greedy optimal homotopy and homology generators</em>, SODA 2005): the primal tree is a
+breadth-first tree from <code>root</code>, and the dual forest is a maximum spanning tree under the
+length of each edge's loop through the root, so each generator is the shortest loop through the
+root independent of the ones before it. A handle near the root therefore shows up as its own
+short loop rather than as part of a combination; one far from it can still be represented only
+through longer loops, so which loops come out depends on where the root is. The loops are as
+jagged as the tree, which is what <a class="autorefs autorefs-internal" title="shorten_loop" href="../geodesic_walk/#ordito.geodesic_walk.shorten_loop"><code>shorten_loop</code></a> is for.
+The basis is <strong>reproducible</strong>, and the same on every device: the primal tree resolves competing
+claims by lowest vertex index and the dual forest breaks equal loop lengths by lowest edge
+index, so neither depends on the order the threads ran in.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4122,6 +4129,23 @@ edge-manifold surface: the counting argument this rests on assumes it.</p>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>root</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Vertex the loops are based at, or <code>None</code> for a referenced vertex the connectivity fixes
+(the same one on every call and device). Must be a referenced vertex.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -4186,7 +4210,8 @@ sphere, and for a mesh with no faces.</p>
                 <p>If the mesh has a boundary, since a surface with boundary has a different homology basis
 (every boundary loop contributes one, and the tree-cotree count no longer applies), or if
 its referenced vertices are not all in one connected component, since the count is then a
-sum over components that a single pair of spanning trees does not produce.</p>
+sum over components that a single pair of spanning trees does not produce, or if <code>root</code>
+is not a referenced vertex.</p>
               </div>
             </td>
           </tr>
@@ -4356,63 +4381,81 @@ sum over components that a single pair of spanning trees does not produce.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/homology.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">37</span>
-<span class="normal">38</span>
-<span class="normal">39</span>
-<span class="normal">40</span>
-<span class="normal">41</span>
-<span class="normal">42</span>
-<span class="normal">43</span>
-<span class="normal">44</span>
-<span class="normal">45</span>
-<span class="normal">46</span>
-<span class="normal">47</span>
-<span class="normal">48</span>
-<span class="normal">49</span>
-<span class="normal">50</span>
-<span class="normal">51</span>
-<span class="normal">52</span>
-<span class="normal">53</span>
-<span class="normal">54</span>
-<span class="normal">55</span>
-<span class="normal">56</span>
-<span class="normal">57</span>
-<span class="normal">58</span>
-<span class="normal">59</span>
-<span class="normal">60</span>
-<span class="normal">61</span>
-<span class="normal">62</span>
-<span class="normal">63</span>
-<span class="normal">64</span>
-<span class="normal">65</span>
-<span class="normal">66</span>
-<span class="normal">67</span>
-<span class="normal">68</span>
-<span class="normal">69</span>
-<span class="normal">70</span>
-<span class="normal">71</span>
-<span class="normal">72</span>
-<span class="normal">73</span>
-<span class="normal">74</span>
-<span class="normal">75</span>
-<span class="normal">76</span>
-<span class="normal">77</span>
-<span class="normal">78</span>
-<span class="normal">79</span>
-<span class="normal">80</span>
-<span class="normal">81</span>
-<span class="normal">82</span>
-<span class="normal">83</span>
-<span class="normal">84</span>
-<span class="normal">85</span>
-<span class="normal">86</span>
-<span class="normal">87</span>
-<span class="normal">88</span>
-<span class="normal">89</span>
-<span class="normal">90</span>
-<span class="normal">91</span>
-<span class="normal">92</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators</span><span class="p">(</span>
-    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">copy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 37</span>
+<span class="normal"> 38</span>
+<span class="normal"> 39</span>
+<span class="normal"> 40</span>
+<span class="normal"> 41</span>
+<span class="normal"> 42</span>
+<span class="normal"> 43</span>
+<span class="normal"> 44</span>
+<span class="normal"> 45</span>
+<span class="normal"> 46</span>
+<span class="normal"> 47</span>
+<span class="normal"> 48</span>
+<span class="normal"> 49</span>
+<span class="normal"> 50</span>
+<span class="normal"> 51</span>
+<span class="normal"> 52</span>
+<span class="normal"> 53</span>
+<span class="normal"> 54</span>
+<span class="normal"> 55</span>
+<span class="normal"> 56</span>
+<span class="normal"> 57</span>
+<span class="normal"> 58</span>
+<span class="normal"> 59</span>
+<span class="normal"> 60</span>
+<span class="normal"> 61</span>
+<span class="normal"> 62</span>
+<span class="normal"> 63</span>
+<span class="normal"> 64</span>
+<span class="normal"> 65</span>
+<span class="normal"> 66</span>
+<span class="normal"> 67</span>
+<span class="normal"> 68</span>
+<span class="normal"> 69</span>
+<span class="normal"> 70</span>
+<span class="normal"> 71</span>
+<span class="normal"> 72</span>
+<span class="normal"> 73</span>
+<span class="normal"> 74</span>
+<span class="normal"> 75</span>
+<span class="normal"> 76</span>
+<span class="normal"> 77</span>
+<span class="normal"> 78</span>
+<span class="normal"> 79</span>
+<span class="normal"> 80</span>
+<span class="normal"> 81</span>
+<span class="normal"> 82</span>
+<span class="normal"> 83</span>
+<span class="normal"> 84</span>
+<span class="normal"> 85</span>
+<span class="normal"> 86</span>
+<span class="normal"> 87</span>
+<span class="normal"> 88</span>
+<span class="normal"> 89</span>
+<span class="normal"> 90</span>
+<span class="normal"> 91</span>
+<span class="normal"> 92</span>
+<span class="normal"> 93</span>
+<span class="normal"> 94</span>
+<span class="normal"> 95</span>
+<span class="normal"> 96</span>
+<span class="normal"> 97</span>
+<span class="normal"> 98</span>
+<span class="normal"> 99</span>
+<span class="normal">100</span>
+<span class="normal">101</span>
+<span class="normal">102</span>
+<span class="normal">103</span>
+<span class="normal">104</span>
+<span class="normal">105</span>
+<span class="normal">106</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">root</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">copy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Non-contractible loops of the surface, as ordered vertex-index cycles.</span>
@@ -4422,12 +4465,18 @@ sum over components that a single pair of spanning trees does not produce.</p>
 <span class="sd">    (the start vertex is not repeated, matching</span>
 <span class="sd">    [`boundary_loops`][ordito.boundary.boundary_loops]).</span>
 
-<span class="sd">    The loops are a *basis*, not canonical: any generating set is as valid as any other, and this</span>
-<span class="sd">    one falls out of the spanning trees the construction happens to build. They are also as long</span>
-<span class="sd">    and as jagged as those trees, which is what</span>
-<span class="sd">    [`shorten_loop`][ordito.geodesic_walk.shorten_loop] is for. The basis is **reproducible**, and</span>
-<span class="sd">    the same on every device: the primal tree resolves competing claims by lowest vertex index and</span>
-<span class="sd">    the dual forest by lowest edge index, so neither depends on the order the threads ran in.</span>
+<span class="sd">    The loops are a *basis*, not canonical: any generating set is as valid as any other. This one</span>
+<span class="sd">    is the **greedy system of loops through the root** in the hop metric (Erickson and Whittlesey,</span>
+<span class="sd">    *Greedy optimal homotopy and homology generators*, SODA 2005): the primal tree is a</span>
+<span class="sd">    breadth-first tree from ``root``, and the dual forest is a maximum spanning tree under the</span>
+<span class="sd">    length of each edge's loop through the root, so each generator is the shortest loop through the</span>
+<span class="sd">    root independent of the ones before it. A handle near the root therefore shows up as its own</span>
+<span class="sd">    short loop rather than as part of a combination; one far from it can still be represented only</span>
+<span class="sd">    through longer loops, so which loops come out depends on where the root is. The loops are as</span>
+<span class="sd">    jagged as the tree, which is what [`shorten_loop`][ordito.geodesic_walk.shorten_loop] is for.</span>
+<span class="sd">    The basis is **reproducible**, and the same on every device: the primal tree resolves competing</span>
+<span class="sd">    claims by lowest vertex index and the dual forest breaks equal loop lengths by lowest edge</span>
+<span class="sd">    index, so neither depends on the order the threads ran in.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -4436,6 +4485,9 @@ sum over components that a single pair of spanning trees does not produce.</p>
 <span class="sd">    faces</span>
 <span class="sd">        ``(3 * n_faces,)`` triangle index buffer. Must be a closed, connected,</span>
 <span class="sd">        edge-manifold surface: the counting argument this rests on assumes it.</span>
+<span class="sd">    root</span>
+<span class="sd">        Vertex the loops are based at, or ``None`` for a referenced vertex the connectivity fixes</span>
+<span class="sd">        (the same one on every call and device). Must be a referenced vertex.</span>
 <span class="sd">    copy</span>
 <span class="sd">        Return independent buffers instead of views into one packed allocation.</span>
 
@@ -4451,7 +4503,8 @@ sum over components that a single pair of spanning trees does not produce.</p>
 <span class="sd">        If the mesh has a boundary, since a surface with boundary has a different homology basis</span>
 <span class="sd">        (every boundary loop contributes one, and the tree-cotree count no longer applies), or if</span>
 <span class="sd">        its referenced vertices are not all in one connected component, since the count is then a</span>
-<span class="sd">        sum over components that a single pair of spanning trees does not produce.</span>
+<span class="sd">        sum over components that a single pair of spanning trees does not produce, or if ``root``</span>
+<span class="sd">        is not a referenced vertex.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
 
@@ -4465,7 +4518,7 @@ sum over components that a single pair of spanning trees does not produce.</p>
 <span class="sd">        Fixes how many loops there are: ``2 * g == 2 - chi``.</span>
 <span class="sd">    [`boundary_loops`][ordito.boundary.boundary_loops]</span>
 <span class="sd">    """</span>
-    <span class="n">loops</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">homology_generators_with_offsets</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+    <span class="n">loops</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">homology_generators_with_offsets</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">root</span><span class="o">=</span><span class="n">root</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">loops</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">copy</span><span class="o">=</span><span class="n">copy</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -4482,7 +4535,10 @@ sum over components that a single pair of spanning trees does not produce.</p>
 
 </h2>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">homology_generators_with_offsets</span><span class="p">(</span>
-    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">root</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
 </code></pre></div>
 
@@ -4535,6 +4591,23 @@ edge-manifold surface: the counting argument this rests on assumes it.</p>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>root</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Vertex the loops are based at, or <code>None</code> for a referenced vertex the connectivity fixes
+(the same one on every call and device). Must be a referenced vertex.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -4591,8 +4664,9 @@ edge-manifold surface: the counting argument this rests on assumes it.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If the mesh has a boundary, or its referenced vertices are not all in one connected
-component (see <a class="autorefs autorefs-internal" title="homology_generators" href="./#ordito.homology.homology_generators"><code>homology_generators</code></a>).</p>
+                <p>If the mesh has a boundary, its referenced vertices are not all in one connected
+component, or <code>root</code> is not a referenced vertex (see
+<a class="autorefs autorefs-internal" title="homology_generators" href="./#ordito.homology.homology_generators"><code>homology_generators</code></a>).</p>
               </div>
             </td>
           </tr>
@@ -4667,21 +4741,7 @@ component (see <a class="autorefs autorefs-internal" title="homology_generators"
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/homology.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 95</span>
-<span class="normal"> 96</span>
-<span class="normal"> 97</span>
-<span class="normal"> 98</span>
-<span class="normal"> 99</span>
-<span class="normal">100</span>
-<span class="normal">101</span>
-<span class="normal">102</span>
-<span class="normal">103</span>
-<span class="normal">104</span>
-<span class="normal">105</span>
-<span class="normal">106</span>
-<span class="normal">107</span>
-<span class="normal">108</span>
-<span class="normal">109</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">109</span>
 <span class="normal">110</span>
 <span class="normal">111</span>
 <span class="normal">112</span>
@@ -4785,8 +4845,30 @@ component (see <a class="autorefs autorefs-internal" title="homology_generators"
 <span class="normal">210</span>
 <span class="normal">211</span>
 <span class="normal">212</span>
-<span class="normal">213</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators_with_offsets</span><span class="p">(</span>
-    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
+<span class="normal">213</span>
+<span class="normal">214</span>
+<span class="normal">215</span>
+<span class="normal">216</span>
+<span class="normal">217</span>
+<span class="normal">218</span>
+<span class="normal">219</span>
+<span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span>
+<span class="normal">226</span>
+<span class="normal">227</span>
+<span class="normal">228</span>
+<span class="normal">229</span>
+<span class="normal">230</span>
+<span class="normal">231</span>
+<span class="normal">232</span>
+<span class="normal">233</span>
+<span class="normal">234</span>
+<span class="normal">235</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators_with_offsets</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">root</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Non-contractible loops of the surface, packed: every loop's vertices, then their offsets.</span>
@@ -4801,6 +4883,9 @@ component (see <a class="autorefs autorefs-internal" title="homology_generators"
 <span class="sd">    faces</span>
 <span class="sd">        ``(3 * n_faces,)`` triangle index buffer. Must be a closed, connected,</span>
 <span class="sd">        edge-manifold surface: the counting argument this rests on assumes it.</span>
+<span class="sd">    root</span>
+<span class="sd">        Vertex the loops are based at, or ``None`` for a referenced vertex the connectivity fixes</span>
+<span class="sd">        (the same one on every call and device). Must be a referenced vertex.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -4814,8 +4899,9 @@ component (see <a class="autorefs autorefs-internal" title="homology_generators"
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If the mesh has a boundary, or its referenced vertices are not all in one connected</span>
-<span class="sd">        component (see [`homology_generators`][ordito.homology.homology_generators]).</span>
+<span class="sd">        If the mesh has a boundary, its referenced vertices are not all in one connected</span>
+<span class="sd">        component, or ``root`` is not a referenced vertex (see</span>
+<span class="sd">        [`homology_generators`][ordito.homology.homology_generators]).</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
 
@@ -4830,6 +4916,8 @@ component (see <a class="autorefs autorefs-internal" title="homology_generators"
     <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
     <span class="n">n_faces</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
+    <span class="k">if</span> <span class="n">root</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="mi">0</span> <span class="o">&lt;=</span> <span class="n">root</span> <span class="o">&lt;</span> <span class="n">n_vertices</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"root must index a vertex in [0, </span><span class="si">{</span><span class="n">n_vertices</span><span class="si">}</span><span class="s2">), got </span><span class="si">{</span><span class="n">root</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty_packed</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 
@@ -4855,7 +4943,7 @@ component (see <a class="autorefs autorefs-internal" title="homology_generators"
     <span class="c1"># The vertex graph the primal tree spans. Unsorted rows, which the level loop cannot see: it</span>
     <span class="c1"># resolves competing claims by lowest vertex index, not by column position.</span>
     <span class="n">neighbors</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">edges_to_neighbor_lists</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-    <span class="n">parents</span><span class="p">,</span> <span class="n">distances</span> <span class="o">=</span> <span class="n">_primal_spanning_tree</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="n">neighbors</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">)</span>
+    <span class="n">parents</span><span class="p">,</span> <span class="n">distances</span> <span class="o">=</span> <span class="n">_primal_spanning_tree</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="n">neighbors</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">root</span><span class="p">)</span>
 
     <span class="c1"># Both preconditions are counting questions, and both are answered on the device into one</span>
     <span class="c1"># three-slot buffer that is read back once: a guard that raises does not need to raise early,</span>
@@ -4896,13 +4984,15 @@ component (see <a class="autorefs autorefs-internal" title="homology_generators"
             <span class="s2">"homology_generators requires a closed surface: this mesh has "</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="mi">3</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">n_faces</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mi">2</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">n_interior</span><span class="si">}</span><span class="s2"> boundary edge(s)."</span>
         <span class="p">)</span>
+    <span class="k">if</span> <span class="n">root</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">n_reached</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"root </span><span class="si">{</span><span class="n">root</span><span class="si">}</span><span class="s2"> is not referenced by any face"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_reached</span> <span class="o">!=</span> <span class="n">n_referenced</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
             <span class="s2">"homology_generators requires a connected surface: the traversal reached "</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">n_reached</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="n">n_referenced</span><span class="si">}</span><span class="s2"> referenced vertices."</span>
         <span class="p">)</span>
 
-    <span class="n">_remove_dual_spanning_forest</span><span class="p">(</span><span class="n">candidate</span><span class="p">,</span> <span class="n">edge_faces</span><span class="p">,</span> <span class="n">n_faces</span><span class="p">)</span>
+    <span class="n">_remove_dual_spanning_forest</span><span class="p">(</span><span class="n">candidate</span><span class="p">,</span> <span class="n">edge_faces</span><span class="p">,</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">distances</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_trace_generator_loops</span><span class="p">(</span><span class="n">candidate</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">parents</span><span class="p">,</span> <span class="n">distances</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>

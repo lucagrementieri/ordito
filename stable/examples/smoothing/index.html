@@ -1138,7 +1138,7 @@
   <a href="#s3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Mean-curvature flow
+        Mean-curvature flow, plain and conformalized
       </span>
     </span>
   </a>
@@ -3994,7 +3994,7 @@
   <a href="#s3" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Mean-curvature flow
+        Mean-curvature flow, plain and conformalized
       </span>
     </span>
   </a>
@@ -4142,38 +4142,53 @@ Mut. dif. Laplacian: volume x 1.000
 </code></pre></div>
 <p><img alt="Smoothing without shrinking" src="../../assets/examples/s2.webp" /></p>
 <p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/tutorial/geometry/mesh.html">Open3D: Taubin vs Laplacian</a> · <a href="https://pymeshlab.readthedocs.io/en/latest/filter_list.html">PyMeshLab: smoothing</a></p>
-<h2 id="s3">Mean-curvature flow</h2>
-<p>Each step of <a class="autorefs autorefs-internal" title="filter_implicit_fairing" href="../../api/ordito/smoothing/#ordito.smoothing.filter_implicit_fairing"><code>filter_implicit_fairing</code></a> moves every
-vertex along its mean-curvature normal by solving one implicit (backward Euler) system with
-the cotangent Laplacian and the mass matrix, rebuilt from the current shape. Repeating it is
-mean-curvature flow: the fur-like bumps vanish in the first step, then the thin ears shrink
-fastest and melt into the head while the body rounds off. The rims of the scan's holes in the
-base are held fixed, so the base stays where it is. Surface areas come from
+<h2 id="s3">Mean-curvature flow, plain and conformalized</h2>
+<p>Each pass of <a class="autorefs autorefs-internal" title="filter_implicit_fairing" href="../../api/ordito/smoothing/#ordito.smoothing.filter_implicit_fairing"><code>filter_implicit_fairing</code></a> moves every
+vertex along its mean-curvature normal by one implicit (backward Euler) step of
+<code>(M - lamb L) V' = M V</code>. Rebuilding the cotangent Laplacian <code>L</code> from the current shape
+every pass is mean-curvature flow: the fur-like bumps vanish first, then the thin ears shrink
+fastest and pinch. With <code>conformalized=True</code> the stiffness stays the input's and only the
+mass follows the surface (Kazhdan, Solomon and Ben-Chen 2012): each pass solves a system as
+well conditioned as the first, so a long flow stays cheap. The rims of the scan's holes in the
+base are held fixed. Surface areas come from
 <a class="autorefs autorefs-internal" title="face_normals_and_areas" href="../../api/ordito/triangles/#ordito.triangles.face_normals_and_areas"><code>face_normals_and_areas</code></a>.</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"bunny"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-<span class="n">frames</span> <span class="o">=</span> <span class="p">[</span><span class="n">vertices</span><span class="p">]</span>
+
+<span class="c1"># Plain flow: each call rebuilds the Laplacian from the shape it is given.</span>
+<span class="n">plain</span> <span class="o">=</span> <span class="p">[</span><span class="n">vertices</span><span class="p">]</span>
 <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">):</span>
-    <span class="n">frames</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
-        <span class="n">od</span><span class="o">.</span><span class="n">smoothing</span><span class="o">.</span><span class="n">filter_implicit_fairing</span><span class="p">(</span><span class="n">frames</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">lamb</span><span class="o">=</span><span class="mf">1e-4</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+    <span class="n">plain</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+        <span class="n">od</span><span class="o">.</span><span class="n">smoothing</span><span class="o">.</span><span class="n">filter_implicit_fairing</span><span class="p">(</span><span class="n">plain</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">lamb</span><span class="o">=</span><span class="mf">1e-4</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
     <span class="p">)</span>
-<span class="k">for</span> <span class="n">step</span><span class="p">,</span> <span class="n">positions</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">frames</span><span class="p">):</span>
-    <span class="n">_</span><span class="p">,</span> <span class="n">areas</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">positions</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"step </span><span class="si">{</span><span class="n">step</span><span class="si">}</span><span class="s2">: surface area </span><span class="si">{</span><span class="n">areas</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+<span class="c1"># Conformalized flow: one call, the input's Laplacian kept for every pass.</span>
+<span class="n">conformal</span> <span class="o">=</span> <span class="p">[</span><span class="n">vertices</span><span class="p">]</span> <span class="o">+</span> <span class="p">[</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">smoothing</span><span class="o">.</span><span class="n">filter_implicit_fairing</span><span class="p">(</span>
+        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">lamb</span><span class="o">=</span><span class="mf">1e-4</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="n">passes</span><span class="p">,</span> <span class="n">conformalized</span><span class="o">=</span><span class="kc">True</span>
+    <span class="p">)</span>
+    <span class="k">for</span> <span class="n">passes</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">6</span><span class="p">)</span>
+<span class="p">]</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">frames</span> <span class="ow">in</span> <span class="p">((</span><span class="s2">"plain"</span><span class="p">,</span> <span class="n">plain</span><span class="p">),</span> <span class="p">(</span><span class="s2">"conformalized"</span><span class="p">,</span> <span class="n">conformal</span><span class="p">)):</span>
+    <span class="n">areas</span> <span class="o">=</span> <span class="p">[</span><span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">v</span><span class="p">,</span> <span class="n">faces</span><span class="p">)[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">frames</span><span class="p">]</span>
+    <span class="nb">print</span><span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">:</span><span class="s2">&gt;13</span><span class="si">}</span><span class="s2">: area </span><span class="si">{</span><span class="s1">' -&gt; '</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">f</span><span class="s1">'</span><span class="si">{</span><span class="n">a</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">:</span><span class="s1">.4f</span><span class="si">}</span><span class="s1">'</span><span class="w"> </span><span class="k">for</span><span class="w"> </span><span class="n">a</span><span class="w"> </span><span class="ow">in</span><span class="w"> </span><span class="n">areas</span><span class="p">)</span><span class="si">}</span><span class="s2">, "</span>
+        <span class="sa">f</span><span class="s2">"smallest triangle </span><span class="si">{</span><span class="n">areas</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">()</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="n">areas</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">()</span><span class="si">:</span><span class="s2">.2g</span><span class="si">}</span><span class="s2"> of the input's"</span>
+    <span class="p">)</span>
 </code></pre></div>
-<div class="highlight"><span class="filename">Output</span><pre><span></span><code>step 0: surface area 0.0571
-step 1: surface area 0.0425
-step 2: surface area 0.0347
-step 3: surface area 0.0295
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>        plain: area 0.0571 -&gt; 0.0425 -&gt; 0.0347 -&gt; 0.0295, smallest triangle 0 of the input's
+conformalized: area 0.0571 -&gt; 0.0425 -&gt; 0.0301 -&gt; 0.0191, smallest triangle 1.1e-08 of the input's
 </code></pre></div>
-<p><img alt="Mean-curvature flow" src="../../assets/examples/s3.webp" /></p>
-<p>The flow is continued only until the ears are about to vanish. Beyond that point their
-triangles collapse to zero area, the cotangent system rebuilt from them is badly conditioned,
-and further steps become slow and can throw single vertices far off the surface. Pinching
-off thin parts is a known property of mean-curvature flow; the conformalized variant (which
-keeps the Laplacian of the input) avoids it but is not what this filter computes.</p>
+<p><img alt="Mean-curvature flow, plain and conformalized" src="../../assets/examples/s3.webp" /></p>
+<p>Neither variant keeps the triangles well shaped: on the bunny the ears still shrink to slivers
+under the conformalized flow, and both outputs end with triangles a tiny fraction of the
+input's. What differs is the linear system. The plain flow rebuilds its cotangent weights from
+those slivers, so each further pass needs far more solver iterations; the conformalized flow
+keeps the input's weights, so it does not. Pinching off thin parts is a property of
+mean-curvature flow itself. The conformalized flow keeps one stiffness for the whole call, so
+it is run as one call with several passes rather than as repeated calls.</p>
 <p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#laplacian">libigl 205</a></p>
 <h2 id="s4">Removing spikes and sharpening detail</h2>
 <p>Two targeted filters. <a class="autorefs autorefs-internal" title="filter_spikes" href="../../api/ordito/smoothing/#ordito.smoothing.filter_spikes"><code>filter_spikes</code></a> finds vertices whose
@@ -4270,7 +4285,7 @@ mean edge lengths from <a class="autorefs autorefs-internal" title="edges_unique
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">:</span><span class="s2">&gt;9</span><span class="si">}</span><span class="s2">: mean distance from the clean scan </span><span class="si">{</span><span class="n">error</span><span class="si">:</span><span class="s2">.2e</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </code></pre></div>
 <div class="highlight"><span class="filename">Output</span><pre><span></span><code>     scan: triangle area spread (std / mean) 0.249
-equalized: triangle area spread (std / mean) 0.161
+equalized: triangle area spread (std / mean) 0.147
     noisy: mean distance from the clean scan 3.50e-04
   relaxed: mean distance from the clean scan 1.82e-04
 </code></pre></div>
