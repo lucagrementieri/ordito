@@ -4412,10 +4412,10 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/parametrization.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">965</span>
-<span class="normal">966</span>
-<span class="normal">967</span>
-<span class="normal">968</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">967</span>
+<span class="normal">968</span>
+<span class="normal">969</span>
+<span class="normal">970</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Bind a solver to ``mesh``; nothing is assembled until a factorization is asked for."""</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_mesh</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="n">twl</span><span class="o">.</span><span class="n">MinQuadWithFixedData</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
@@ -4533,11 +4533,11 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">975</span>
-<span class="normal">976</span>
-<span class="normal">977</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">977</span>
 <span class="normal">978</span>
-<span class="normal">979</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">979</span>
+<span class="normal">980</span>
+<span class="normal">981</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Drop every kept factorization."""</span>
     <span class="k">for</span> <span class="n">system</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
         <span class="n">system</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
@@ -4765,9 +4765,7 @@ definite in <code>float64</code>), and they keep iterating.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 981</span>
-<span class="normal"> 982</span>
-<span class="normal"> 983</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 983</span>
 <span class="normal"> 984</span>
 <span class="normal"> 985</span>
 <span class="normal"> 986</span>
@@ -4809,7 +4807,9 @@ definite in <code>float64</code>), and they keep iterating.</p>
 <span class="normal">1022</span>
 <span class="normal">1023</span>
 <span class="normal">1024</span>
-<span class="normal">1025</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">1025</span>
+<span class="normal">1026</span>
+<span class="normal">1027</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Factor ``method``'s system with ``fixed_indices`` fixed, for every later call fixing them.</span>
 
@@ -4977,8 +4977,8 @@ that solve builds is kept here, replacing the one <code>(method, k)</code> held.
             <td>
               <div class="doc-md-description">
                 <p><code>"auto"</code> iterates, verified, and factors only when the check fails (or at
-<code>k &gt;= 3</code>, or at <code>k == 2</code> on a large mesh); <code>"direct"</code> factors at once. A
-factorization either builds is kept.</p>
+<code>k &gt;= 3</code>, or for <code>k == 2</code> and <code>"lscm"</code> on a large mesh); <code>"direct"</code> factors
+at once. A factorization either builds is kept.</p>
               </div>
             </td>
             <td>
@@ -5088,9 +5088,7 @@ if <code>solver</code> is not <code>"auto"</code> or <code>"direct"</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1027</span>
-<span class="normal">1028</span>
-<span class="normal">1029</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1029</span>
 <span class="normal">1030</span>
 <span class="normal">1031</span>
 <span class="normal">1032</span>
@@ -5195,8 +5193,8 @@ if <code>solver</code> is not <code>"auto"</code> or <code>"direct"</code>.</p>
 <span class="sd">        The harmonic power (``1`` for ``"lscm"``).</span>
 <span class="sd">    solver</span>
 <span class="sd">        ``"auto"`` iterates, verified, and factors only when the check fails (or at</span>
-<span class="sd">        ``k &gt;= 3``, or at ``k == 2`` on a large mesh); ``"direct"`` factors at once. A</span>
-<span class="sd">        factorization either builds is kept.</span>
+<span class="sd">        ``k &gt;= 3``, or for ``k == 2`` and ``"lscm"`` on a large mesh); ``"direct"`` factors</span>
+<span class="sd">        at once. A factorization either builds is kept.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -5234,9 +5232,7 @@ if <code>solver</code> is not <code>"auto"</code> or <code>"direct"</code>.</p>
             <span class="n">method</span><span class="p">,</span>
             <span class="n">k</span><span class="p">,</span>
             <span class="n">fixed_mask</span><span class="p">,</span>
-            <span class="n">factor</span><span class="o">=</span><span class="n">solver</span> <span class="o">==</span> <span class="s2">"direct"</span>
-            <span class="ow">or</span> <span class="p">(</span><span class="n">method</span> <span class="o">!=</span> <span class="s2">"lscm"</span> <span class="ow">and</span> <span class="n">k</span> <span class="o">&gt;=</span> <span class="mi">3</span><span class="p">)</span>
-            <span class="ow">or</span> <span class="p">(</span><span class="n">method</span> <span class="o">!=</span> <span class="s2">"lscm"</span> <span class="ow">and</span> <span class="n">k</span> <span class="o">==</span> <span class="mi">2</span> <span class="ow">and</span> <span class="n">mesh</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;=</span> <span class="n">_BIHARMONIC_FACTOR_ROWS</span><span class="p">),</span>
+            <span class="n">factor</span><span class="o">=</span><span class="n">solver</span> <span class="o">==</span> <span class="s2">"direct"</span> <span class="ow">or</span> <span class="n">_factors_at_once</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">mesh</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">),</span>
         <span class="p">)</span>
     <span class="n">solution</span><span class="p">,</span> <span class="n">free_map</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">system</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span>
         <span class="n">fixed_values</span><span class="p">,</span> <span class="n">tol</span><span class="o">=</span><span class="n">_CG_TOLERANCE</span><span class="p">,</span> <span class="n">preconditioner</span><span class="o">=</span><span class="n">preconditioner</span>
@@ -5460,8 +5456,7 @@ and vice versa.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 54</span>
-<span class="normal"> 55</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 55</span>
 <span class="normal"> 56</span>
 <span class="normal"> 57</span>
 <span class="normal"> 58</span>
@@ -5520,7 +5515,8 @@ and vice versa.</p>
 <span class="normal">111</span>
 <span class="normal">112</span>
 <span class="normal">113</span>
-<span class="normal">114</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_flipped_mask</span><span class="p">(</span><span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
+<span class="normal">114</span>
+<span class="normal">115</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_flipped_mask</span><span class="p">(</span><span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Per-face flag: whether a triangle is inverted (negative 2D signed area) in the parametrization.</span>
 
@@ -5776,8 +5772,7 @@ triangle is flipped.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">117</span>
-<span class="normal">118</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">118</span>
 <span class="normal">119</span>
 <span class="normal">120</span>
 <span class="normal">121</span>
@@ -5812,7 +5807,8 @@ triangle is flipped.</p>
 <span class="normal">150</span>
 <span class="normal">151</span>
 <span class="normal">152</span>
-<span class="normal">153</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_flipped_indices</span><span class="p">(</span>
+<span class="normal">153</span>
+<span class="normal">154</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_flipped_indices</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6046,8 +6042,7 @@ disk parametrization.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">156</span>
-<span class="normal">157</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">157</span>
 <span class="normal">158</span>
 <span class="normal">159</span>
 <span class="normal">160</span>
@@ -6109,7 +6104,8 @@ disk parametrization.</p>
 <span class="normal">216</span>
 <span class="normal">217</span>
 <span class="normal">218</span>
-<span class="normal">219</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">map_vertices_to_circle</span><span class="p">(</span>
+<span class="normal">219</span>
+<span class="normal">220</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">map_vertices_to_circle</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">boundary</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6659,8 +6655,7 @@ there, as this one does with them.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">243</span>
-<span class="normal">244</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">244</span>
 <span class="normal">245</span>
 <span class="normal">246</span>
 <span class="normal">247</span>
@@ -6779,7 +6774,8 @@ there, as this one does with them.</p>
 <span class="normal">360</span>
 <span class="normal">361</span>
 <span class="normal">362</span>
-<span class="normal">363</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">harmonic</span><span class="p">(</span>
+<span class="normal">363</span>
+<span class="normal">364</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">harmonic</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">boundary_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7288,8 +7284,7 @@ device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">387</span>
-<span class="normal">388</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">388</span>
 <span class="normal">389</span>
 <span class="normal">390</span>
 <span class="normal">391</span>
@@ -7367,7 +7362,8 @@ device.</p>
 <span class="normal">463</span>
 <span class="normal">464</span>
 <span class="normal">465</span>
-<span class="normal">466</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tutte</span><span class="p">(</span>
+<span class="normal">466</span>
+<span class="normal">467</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tutte</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">boundary_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7766,8 +7762,7 @@ going looser risks the inner error exceeding the outer truncation error on large
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">519</span>
-<span class="normal">520</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">520</span>
 <span class="normal">521</span>
 <span class="normal">522</span>
 <span class="normal">523</span>
@@ -7993,7 +7988,8 @@ going looser risks the inner error exceeding the outer truncation error on large
 <span class="normal">743</span>
 <span class="normal">744</span>
 <span class="normal">745</span>
-<span class="normal">746</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">arap</span><span class="p">(</span>
+<span class="normal">746</span>
+<span class="normal">747</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">arap</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -8393,10 +8389,11 @@ similarity-transform null space.</p>
             <td>
               <div class="doc-md-description">
                 <p><code>"auto"</code> (default) solves by conjugate gradient, verified, and factors the system only
-when the iteration's result fails the check. <code>"direct"</code> factors it at once (a sparse
-Cholesky); given a <code>Trimesh</code>, the factorization is kept on it, so every later call fixing
-the same vertices -- whatever their values -- is a factored solve with no iteration. Pays
-from about the second such call; a one-shot call is usually faster under <code>"auto"</code>.</p>
+when the iteration's result fails the check -- or at once on a mesh of 12 000 vertices or
+more, where a factorization costs less than the iteration. <code>"direct"</code> factors it at once
+(a sparse Cholesky); given a <code>Trimesh</code>, the factorization is kept on it, so every later
+call fixing the same vertices -- whatever their values -- is a factored solve with no
+iteration. Pays from about the second such call on a smaller mesh.</p>
               </div>
             </td>
             <td>
@@ -8654,8 +8651,7 @@ from about the second such call; a one-shot call is usually faster under <code>"
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">802</span>
-<span class="normal">803</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">803</span>
 <span class="normal">804</span>
 <span class="normal">805</span>
 <span class="normal">806</span>
@@ -8777,7 +8773,9 @@ from about the second such call; a one-shot call is usually faster under <code>"
 <span class="normal">922</span>
 <span class="normal">923</span>
 <span class="normal">924</span>
-<span class="normal">925</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
+<span class="normal">925</span>
+<span class="normal">926</span>
+<span class="normal">927</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">pinned_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8825,10 +8823,11 @@ from about the second such call; a one-shot call is usually faster under <code>"
 <span class="sd">        ``bc``).</span>
 <span class="sd">    solver</span>
 <span class="sd">        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only</span>
-<span class="sd">        when the iteration's result fails the check. ``"direct"`` factors it at once (a sparse</span>
-<span class="sd">        Cholesky); given a `Trimesh`, the factorization is kept on it, so every later call fixing</span>
-<span class="sd">        the same vertices -- whatever their values -- is a factored solve with no iteration. Pays</span>
-<span class="sd">        from about the second such call; a one-shot call is usually faster under ``"auto"``.</span>
+<span class="sd">        when the iteration's result fails the check -- or at once on a mesh of 12 000 vertices or</span>
+<span class="sd">        more, where a factorization costs less than the iteration. ``"direct"`` factors it at once</span>
+<span class="sd">        (a sparse Cholesky); given a `Trimesh`, the factorization is kept on it, so every later</span>
+<span class="sd">        call fixing the same vertices -- whatever their values -- is a factored solve with no</span>
+<span class="sd">        iteration. Pays from about the second such call on a smaller mesh.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
