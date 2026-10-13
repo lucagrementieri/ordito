@@ -343,6 +343,117 @@ def panel_rows(
     substitute_panel(base, m64, first, last, first, fronts, fronts, front_index(base, m64, row, 0))
 
 
+@wp.func
+def unit_entry(i: wp.int32, j: wp.int32) -> wp.float64:
+    return wp.where(i == j, wp.float64(1.0), wp.float64(0.0))
+
+
+@wp.kernel
+def factor_panel_tiled(
+    level: wp.array[wp.int32],
+    front_offset: wp.array[wp.int64],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    panel: wp.int32,
+    fronts: wp.array[wp.float64],
+    status: wp.array[wp.int32],
+    scratch: wp.array2d[wp.float64],
+    out_inverse: wp.array2d[wp.float64],
+) -> None:
+    # ``factor_panel`` on CUDA: the ``PANEL``-square diagonal block staged in ``scratch`` (a tile a
+    # front of the level, padded with the identity past the panel's width) and factored as one
+    # shared-memory tile. Its Cholesky goes back to the front and its inverse to
+    # ``out_inverse``, which ``panel_rows_inverse`` multiplies by instead of substituting, so
+    # every row forms its entries independently. A pivot that is not positive flags ``status``
+    # (the factorization is refused; the rest of the front is not used).
+    b, lane = wp.tid()
+    k = level[b]
+    first, last = panel_span(ncol[k], panel)
+    if last <= first:
+        return
+    base = front_offset[k]
+    m64 = wp.int64(front_size[k])
+    width = last - first
+    row0 = b * PANEL
+    for e in range(lane, PANEL * PANEL, wp.block_dim()):
+        i = e // PANEL
+        j = e % PANEL
+        value = unit_entry(i, j)
+        if i < width and j < width:
+            # The lower triangle, mirrored: a front's strict upper one is not kept current.
+            value = fronts[front_index(base, m64, first + wp.max(i, j), first + wp.min(i, j))]
+        scratch[row0 + i, j] = value
+    block_barrier()
+    factor = wp.tile_cholesky(wp.tile_load(scratch, shape=(PANEL, PANEL), offset=(row0, 0)))
+    identity = wp.tile_diag_add(
+        wp.tile_zeros(shape=(PANEL, PANEL), dtype=wp.float64),
+        wp.tile_ones(shape=(PANEL,), dtype=wp.float64),
+    )
+    wp.tile_store(out_inverse, wp.tile_lower_solve(factor, identity), offset=(row0, 0))
+    wp.tile_store(scratch, factor, offset=(row0, 0))
+    block_barrier()
+    for e in range(lane, PANEL * PANEL, wp.block_dim()):
+        i = e // PANEL
+        j = e % PANEL
+        if i < width and j <= i:
+            entry = scratch[row0 + i, j]
+            if i == j and not (entry > wp.float64(0.0)):
+                status[0] = 1
+            fronts[front_index(base, m64, first + i, first + j)] = entry
+
+
+@wp.kernel
+def panel_rows_inverse(
+    level: wp.array[wp.int32],
+    front_offset: wp.array[wp.int64],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    block_offset: wp.array[wp.int64],
+    panel: wp.int32,
+    rows_below: wp.int32,
+    inverse: wp.array[wp.float64],
+    fronts: wp.array[wp.float64],
+    blocks: wp.array[wp.float64],
+) -> None:
+    # ``panel_rows`` after ``factor_panel_tiled``: a row below the panel is ``A[i, panel]
+    # L_pp^-T`` and a solve-block column's panel rows ``L_pp^-1 x``, both products with the
+    # panel's inverse (its upper triangle zero), every entry an independent dot.
+    b, t = wp.tid()
+    k = level[b]
+    first, last = panel_span(ncol[k], panel)
+    if last <= first:
+        return
+    width = last - first
+    size = front_size[k]
+    base = front_offset[k]
+    m64 = wp.int64(size)
+    tile_base = b * PANEL * PANEL
+    target = blocks
+    target_base = wp.int64(0)
+    if t >= rows_below:
+        c = t - rows_below
+        if c >= last:
+            return
+        target_base = block_offset[k] + wp.int64(c) * m64
+    else:
+        row = last + t
+        if row >= size:
+            return
+        target = fronts
+        target_base = front_index(base, m64, row, 0)
+    values = panel_vector()
+    for q in range(PANEL):
+        if wp.int32(q) < width:
+            values[q] = target[target_base + wp.int64(first + wp.int32(q))]
+    for q1 in range(PANEL):
+        if wp.int32(q1) < width:
+            total = wp.float64(0.0)
+            for q2 in range(PANEL):
+                if wp.int32(q2) <= wp.int32(q1):
+                    total += inverse[tile_base + q1 * PANEL + q2] * values[q2]
+            target[target_base + wp.int64(first + wp.int32(q1))] = total
+
+
 @wp.kernel
 def update_panel(
     level: wp.array[wp.int32],
@@ -817,28 +928,33 @@ def segment_reference(
 
 
 @wp.func
+def sorted_segment(keys: wp.array[wp.uint64], p: wp.int32) -> wp.int32:
+    return wp.int32(keys[p] >> wp.uint64(32))
+
+
+@wp.func
+def live_count(segment_start: wp.array[wp.int32]) -> wp.int32:
+    # The depth's live vertices: its segment starts end in their total, every slot past its
+    # segments being an empty one.
+    return segment_start[segment_start.shape[0] - 1]
+
+
+# ``dissection_state`` slots: the tree's node count, and the depth being split.
+DISSECTION_NODES = wp.constant(0)
+DISSECTION_DEPTH = wp.constant(1)
+
+
+@wp.func
 def dissection_task(
-    segment_start: wp.array[wp.int32],
-    task_offsets: wp.array[wp.int32],
-    chunk: wp.int32,
-    t: wp.int32,
+    segment_start: wp.array[wp.int32], tasks: wp.array[wp.int32], chunk: wp.int32, t: wp.int32
 ) -> tuple[wp.int32, wp.int32, wp.int32]:
     # Task ``t``'s segment and its ``[begin, end)`` positions: each segment's positions in
-    # ``chunk``-sized tasks, numbered segment by segment (``task_offsets``, its scanned counts).
-    s = chunk_component(task_offsets, t)
-    begin = segment_start[s] + chunk * (t - task_offsets[s])
+    # ``chunk``-sized tasks, numbered segment by segment. ``tasks`` is the second half of the
+    # depth's table, scanned with the starts, so each entry carries the live count in front.
+    shifted = t + live_count(segment_start)
+    s = chunk_component(tasks, shifted)
+    begin = segment_start[s] + chunk * (shifted - tasks[s])
     return s, begin, wp.min(begin + chunk, segment_start[s + 1])
-
-
-@wp.kernel
-def dissection_task_counts(
-    segment_start: wp.array[wp.int32], chunk: wp.int32, out_task_offsets: wp.array[wp.int32]
-) -> None:
-    # A segment's task count, into the tail of its task offsets (scanned in place after). A slot
-    # past the depth's segments is an empty segment and counts none.
-    s = wp.int32(wp.tid())
-    count = segment_start[s + 1] - segment_start[s]
-    out_task_offsets[s + 1] = (count + chunk - 1) // chunk
 
 
 @wp.kernel
@@ -846,7 +962,7 @@ def dissection_partials(
     order: wp.array[wp.int32],
     coordinates: wp.array[wp.vec3],
     segment_start: wp.array[wp.int32],
-    task_offsets: wp.array[wp.int32],
+    tasks: wp.array[wp.int32],
     chunk: wp.int32,
     out_partials: wp.array[moment_vector],
 ) -> None:
@@ -856,9 +972,9 @@ def dissection_partials(
     # same on every run). Launched over the depth's largest task count; a block past the depth's
     # tasks returns whole.
     t, lane = wp.tid()
-    if t >= task_offsets[task_offsets.shape[0] - 1]:
+    if t + live_count(segment_start) >= tasks[tasks.shape[0] - 1]:
         return
-    s, begin, end = dissection_task(segment_start, task_offsets, chunk, t)
+    s, begin, end = dissection_task(segment_start, tasks, chunk, t)
     reference = segment_reference(order, coordinates, segment_start[s])
     m = moment_vector()
     p = begin + lane
@@ -884,7 +1000,7 @@ def dissection_axes(
     order: wp.array[wp.int32],
     coordinates: wp.array[wp.vec3],
     segment_start: wp.array[wp.int32],
-    task_offsets: wp.array[wp.int32],
+    tasks: wp.array[wp.int32],
     partials: wp.array[moment_vector],
     out_centre: wp.array[wp.vec3d],
     out_axis: wp.array[wp.vec3d],
@@ -894,9 +1010,10 @@ def dissection_axes(
     s = wp.int32(wp.tid())
     if segment_start[s + 1] == segment_start[s]:
         return
+    live = live_count(segment_start)
     m = moment_vector()
-    for t in range(task_offsets[s], task_offsets[s + 1]):
-        m += partials[t]
+    for t in range(tasks[s], tasks[s + 1]):
+        m += partials[t - live]
     count = wp.float64(segment_start[s + 1] - segment_start[s])
     mean = wp.vec3d(m[0], m[1], m[2]) / count
     covariance = wp.mat33d(
@@ -940,31 +1057,21 @@ def dissection_keys(
     out_vertices[p] = v
 
 
-@wp.func
-def sorted_segment(keys: wp.array[wp.uint64], p: wp.int32) -> wp.int32:
-    return wp.int32(keys[p] >> wp.uint64(32))
-
-
-@wp.func
-def live_count(segment_start: wp.array[wp.int32]) -> wp.int32:
-    # The depth's live vertices: its segment starts end in their total, every slot past its
-    # segments being an empty one.
-    return segment_start[segment_start.shape[0] - 1]
-
-
 @wp.kernel
 def dissection_sides(
     keys: wp.array[wp.uint64],
     vertices: wp.array[wp.int32],
     segment_start: wp.array[wp.int32],
-    base: wp.int32,
+    state: wp.array[wp.int32],
     out_tag: wp.array[wp.int32],
 ) -> None:
-    # Each sorted vertex's side of its segment's median, as ``base + 2 segment + upper``: tags of
-    # earlier depths are all below ``base``, so the array needs no reset between depths.
+    # Each sorted vertex's side of its segment's median, as ``base + 2 segment + upper`` with
+    # ``base`` the depth times twice the segment slots: tags of earlier depths are all below it, so
+    # the array needs no reset between depths.
     p = wp.int32(wp.tid())
     if p >= live_count(segment_start):
         return
+    base = 2 * (segment_start.shape[0] - 1) * state[DISSECTION_DEPTH]
     s = sorted_segment(keys, p)
     start = segment_start[s]
     count = segment_start[s + 1] - start
@@ -980,7 +1087,7 @@ def dissection_crossings(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     tag: wp.array[wp.int32],
-    stamp: wp.int32,
+    state: wp.array[wp.int32],
     out_lower_mark: wp.array[wp.int32],
     out_upper_mark: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
@@ -991,6 +1098,7 @@ def dissection_crossings(
     p = wp.int32(wp.tid())
     if p >= live_count(segment_start):
         return
+    stamp = state[DISSECTION_DEPTH] + 1
     u = vertices[p]
     t = tag[u]
     s = sorted_segment(keys, p)
@@ -1019,7 +1127,7 @@ def dissection_relabel(
     child_leaf: wp.array[wp.int32],
     lower_mark: wp.array[wp.int32],
     upper_mark: wp.array[wp.int32],
-    stamp: wp.int32,
+    state: wp.array[wp.int32],
     out_node: wp.array[wp.int32],
     out_keep: wp.array[wp.int32],
     out_next_segment: wp.array[wp.int32],
@@ -1033,6 +1141,7 @@ def dissection_relabel(
     if p >= live_count(segment_start):
         out_keep[p] = 0
         return
+    stamp = state[DISSECTION_DEPTH] + 1
     s = sorted_segment(keys, p)
     v = vertices[p]
     start = segment_start[s]
@@ -1059,14 +1168,27 @@ def dissection_relabel(
 
 @wp.kernel
 def seed_dissection(
-    n: wp.int32, out_start: wp.array[wp.int32], out_segments: wp.array2d[wp.int32]
+    n: wp.int32, chunk: wp.int32, out_table: wp.array[wp.int32], out_segments: wp.array2d[wp.int32]
 ) -> None:
     # The first depth's one segment: every row, at the start of the order, with no parent node.
-    out_start[1] = n
+    # ``out_table`` holds the depth's segment sizes then its task counts, each after a zero slot.
+    slots = out_table.shape[0] // 2 - 1
+    out_table[1] = n
+    out_table[slots + 2] = (n + chunk - 1) // chunk
     out_segments[0, 0] = 0
     out_segments[1, 0] = -1
     out_segments[2, 0] = -1
     out_segments[3, 0] = -1
+
+
+@wp.func
+def section_rank(ranks: wp.array[wp.int32], section: wp.int32, i: wp.int32) -> wp.int32:
+    # Entry ``i``'s exclusive rank within one section of ``dissection_split_flags``' scanned
+    # buffer: separators (``section`` 0, ``slots`` entries), then leaves, then next segments
+    # (``2 slots`` each).
+    slots = (ranks.shape[0] - 1) // 5
+    start = wp.where(section == 0, 0, wp.where(section == 1, slots, 3 * slots))
+    return ranks[start + i] - ranks[start]
 
 
 @wp.func
@@ -1093,21 +1215,20 @@ def dissection_split_flags(
     segment_start: wp.array[wp.int32],
     counts: wp.array[wp.int32],
     leaf_rows: wp.int32,
-    out_has_ranks: wp.array[wp.int32],
-    out_leaf_ranks: wp.array[wp.int32],
-    out_next_ranks: wp.array[wp.int32],
+    out_ranks: wp.array[wp.int32],
 ) -> None:
     # Per segment slot: whether it makes a separator node, and per child half whether it becomes a
-    # leaf node or a next-depth segment -- each into the tail of its rank buffer, scanned in place
-    # after, so the nodes and segments are numbered as the host-side tree numbered them (this
-    # depth's separators in segment order, then its leaves in child order).
+    # leaf node or a next-depth segment -- three sections of one buffer after a zero slot, scanned
+    # in place as one, so the nodes and segments are numbered as the host-side tree numbered them
+    # (this depth's separators in segment order, then its leaves in child order).
     s = wp.int32(wp.tid())
+    slots = segment_start.shape[0] - 1
     side, _separator, lower, upper = dissection_children(segment_start, counts, s)
-    out_has_ranks[s + 1] = wp.where(side != 0, 1, 0)
+    out_ranks[1 + s] = wp.where(side != 0, 1, 0)
     for k in range(2):
         rows = wp.where(k == 0, lower, upper)
-        out_leaf_ranks[2 * s + k + 1] = wp.where(rows > 0 and rows <= leaf_rows, 1, 0)
-        out_next_ranks[2 * s + k + 1] = wp.where(rows > leaf_rows, 1, 0)
+        out_ranks[1 + slots + 2 * s + k] = wp.where(rows > 0 and rows <= leaf_rows, 1, 0)
+        out_ranks[1 + 3 * slots + 2 * s + k] = wp.where(rows > leaf_rows, 1, 0)
 
 
 @wp.func
@@ -1132,40 +1253,43 @@ def write_tree_node(
 @wp.kernel
 def dissection_link(
     segment_start: wp.array[wp.int32],
-    counts: wp.array[wp.int32],
     segments: wp.array2d[wp.int32],
-    has_ranks: wp.array[wp.int32],
-    leaf_ranks: wp.array[wp.int32],
-    next_ranks: wp.array[wp.int32],
-    node_count: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    state: wp.array[wp.int32],
     leaf_rows: wp.int32,
+    chunk: wp.int32,
+    counts: wp.array[wp.int32],
     out_tree: wp.array2d[wp.int32],
     out_separator_side: wp.array[wp.int32],
     out_separator_node: wp.array[wp.int32],
     out_child_next: wp.array[wp.int32],
     out_child_leaf: wp.array[wp.int32],
-    out_next_start: wp.array[wp.int32],
+    out_next_table: wp.array[wp.int32],
     out_next_segments: wp.array2d[wp.int32],
 ) -> None:
     # Segment ``s``'s nodes and next-depth segments: its separator node, each half that is a leaf
-    # as a leaf node, and each half that goes on as a next-depth segment (its size into the tail of
-    # the next depth's starts, scanned there). ``segments`` rows are each segment's first position,
-    # parent node, that node's depth and root; ``out_tree`` rows ``write_tree_node``'s.
+    # as a leaf node, and each half that goes on as a next-depth segment (its size and task count
+    # into the next depth's table, scanned there). ``segments`` rows are each segment's first
+    # position, parent node, that node's depth and root; ``out_tree`` rows ``write_tree_node``'s.
+    # The crossing counts are cleared once read, for the next depth.
     s = wp.int32(wp.tid())
     if segment_start[s + 1] == segment_start[s]:
         return
     side, separator, lower, upper = dissection_children(segment_start, counts, s)
+    counts[2 * s] = 0
+    counts[2 * s + 1] = 0
+    slots = segment_start.shape[0] - 1
     first = segments[0, s]
     parent = segments[1, s]
     parent_depth = segments[2, s]
     root = segments[3, s]
-    base = node_count[0]
+    base = state[DISSECTION_NODES]
     separator_node = wp.int32(-1)
     me = parent
     me_depth = parent_depth
     me_root = root
     if side != 0:
-        separator_node = base + has_ranks[s]
+        separator_node = base + section_rank(ranks, 0, s)
         count = segment_start[s + 1] - segment_start[s]
         write_tree_node(
             separator_node, first + count - separator, separator, parent, parent_depth + 1, root,
@@ -1176,7 +1300,7 @@ def dissection_link(
         me_root = wp.where(root >= 0, root, separator_node)
     out_separator_side[s] = side
     out_separator_node[s] = separator_node
-    n_separators = has_ranks[has_ranks.shape[0] - 1]
+    n_separators = ranks[slots]
     for k in range(2):
         c = 2 * s + k
         rows = wp.where(k == 0, lower, upper)
@@ -1184,11 +1308,12 @@ def dissection_link(
         leaf = wp.int32(-1)
         next_segment = wp.int32(-1)
         if rows > 0 and rows <= leaf_rows:
-            leaf = base + n_separators + leaf_ranks[c]
+            leaf = base + n_separators + section_rank(ranks, 1, c)
             write_tree_node(leaf, child_first, rows, me, me_depth + 1, me_root, out_tree)
         elif rows > leaf_rows:
-            next_segment = next_ranks[c]
-            out_next_start[next_segment + 1] = rows
+            next_segment = section_rank(ranks, 2, c)
+            out_next_table[next_segment + 1] = rows
+            out_next_table[slots + 2 + next_segment] = (rows + chunk - 1) // chunk
             out_next_segments[0, next_segment] = child_first
             out_next_segments[1, next_segment] = me
             out_next_segments[2, next_segment] = me_depth
@@ -1198,26 +1323,27 @@ def dissection_link(
 
 
 @wp.kernel
-def dissection_advance(
-    has_ranks: wp.array[wp.int32], leaf_ranks: wp.array[wp.int32], node_count: wp.array[wp.int32]
-) -> None:
-    # The tree's node count past this depth's separators and leaves.
-    node_count[0] = (
-        node_count[0] + has_ranks[has_ranks.shape[0] - 1] + leaf_ranks[leaf_ranks.shape[0] - 1]
-    )
-
-
-@wp.kernel
 def dissection_compact(
     vertices: wp.array[wp.int32],
     kept_through: wp.array[wp.int32],
     next_segment: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    table: wp.array[wp.int32],
+    state: wp.array[wp.int32],
     out_order: wp.array[wp.int32],
     out_order_segment: wp.array[wp.int32],
 ) -> None:
     # The survivors in sorted order: ``kept_through`` is the keep flags' inclusive scan, done in
-    # place, from which each position recovers its own flag.
+    # place, from which each position recovers its own flag. The depth closes here: its table is
+    # cleared for the depth after next, which writes it again, and the tree's node count and the
+    # depth advance (this depth's separators and leaves are the scanned ranks' first two sections).
     p = wp.int32(wp.tid())
+    if p < table.shape[0]:
+        table[p] = 0
+    if p == 0:
+        slots = (ranks.shape[0] - 1) // 5
+        state[DISSECTION_NODES] = state[DISSECTION_NODES] + ranks[3 * slots]
+        state[DISSECTION_DEPTH] = state[DISSECTION_DEPTH] + 1
     q, kept = scanned_count(kept_through, p)
     if kept != 0:
         out_order[q] = vertices[p]
@@ -1273,30 +1399,48 @@ def owns_entry(
     return wp.where(r >= column_end[k], k, -1)
 
 
+@wp.func
+def structure_parent(
+    parent: wp.array[wp.int32], column_end: wp.array[wp.int32], k: wp.int32, row: wp.int32
+) -> wp.int32:
+    # The supernode a row of ``k``'s structure is passed up to (``-1`` for none): ``k``'s parent,
+    # unless the row is one of the parent's own columns -- there the path ends at its owner.
+    q = parent[k]
+    return wp.where(q >= 0 and row >= column_end[q], q, -1)
+
+
 @wp.kernel
-def count_own_entries(
+def count_structure_paths(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     pos: wp.array[wp.int32],
     owner: wp.array[wp.int32],
     column_end: wp.array[wp.int32],
+    parent: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
+    # The row structure as paths: an operator entry's row belongs to the structure of the
+    # supernode of its column and of every ancestor up to the row's owner (exclusive). Row ``i``'s
+    # count of those ``(supernode, row)`` pairs over its entries.
     i = wp.int32(wp.tid())
+    r = pos[i]
     count = wp.int32(0)
     for e in range(offsets[i], offsets[i + 1]):
-        if owns_entry(pos, owner, column_end, i, columns[e]) >= 0:
+        k = owns_entry(pos, owner, column_end, i, columns[e])
+        while k >= 0:
             count += 1
+            k = structure_parent(parent, column_end, k, r)
     out_counts[i] = count
 
 
 @wp.kernel
-def write_own_entries(
+def write_structure_paths(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     pos: wp.array[wp.int32],
     owner: wp.array[wp.int32],
     column_end: wp.array[wp.int32],
+    parent: wp.array[wp.int32],
     height: wp.array[wp.int32],
     n: wp.int32,
     shift: wp.int32,
@@ -1304,132 +1448,47 @@ def write_own_entries(
     out_keys: wp.array[wp.uint64],
     out_values: wp.array[wp.int32],
 ) -> None:
-    # Each own entry as ``(height, supernode, row)`` packed for one sort: the entries of one
-    # height become one contiguous run, each supernode's rows ascending within it.
+    # ``count_structure_paths``' pairs, each packed as ``(height, supernode, row)`` for one sort
+    # and deduplication: the rows come out level-major, each supernode's ascending, at the slots
+    # the counts' inclusive scan ``ends`` gives row ``i``.
     i = wp.int32(wp.tid())
     q = wp.where(i > 0, ends[wp.max(i - 1, 0)], 0)
-    r = wp.uint64(pos[i])
+    r = pos[i]
     for e in range(offsets[i], offsets[i + 1]):
         k = owns_entry(pos, owner, column_end, i, columns[e])
-        if k >= 0:
+        while k >= 0:
             out_keys[q] = (wp.uint64(height[k]) << wp.uint64(shift)) | (
-                wp.uint64(k) * wp.uint64(n) + r
+                wp.uint64(k) * wp.uint64(n) + wp.uint64(r)
             )
             out_values[q] = q
             q += 1
+            k = structure_parent(parent, column_end, k, r)
 
 
 @wp.kernel
-def height_starts(
-    keys: wp.array[wp.uint64], shift: wp.int32, out_starts: wp.array[wp.int32]
-) -> None:
-    # The first sorted position of each height (``out_starts`` is filled with the count first, so
-    # a height with no entry starts where the next one does).
-    p = wp.int32(wp.tid())
-    h = wp.int32(keys[p] >> wp.uint64(shift))
-    previous = wp.int32(-1)
-    if p > 0:
-        previous = wp.int32(keys[p - 1] >> wp.uint64(shift))
-    for hh in range(previous + 1, h + 1):
-        out_starts[hh] = p
-
-
-# ``structure_cursors`` slots: pending rows kept for a later height, rows passed up, and the
-# height's distinct rows.
-CURSOR_KEPT = wp.constant(0)
-CURSOR_PASSED = wp.constant(1)
-CURSOR_UNIQUE = wp.constant(2)
-
-
-@wp.kernel
-def gather_candidates(
-    own_keys: wp.array[wp.uint64],
-    own_begin: wp.int32,
-    own_count: wp.int32,
-    key_mask: wp.uint64,
-    pending: wp.array[wp.uint64],
-    height: wp.array[wp.int32],
-    n: wp.int32,
-    level: wp.int32,
-    cursors: wp.array[wp.int32],
-    out_candidates: wp.array[wp.uint64],
-    out_values: wp.array[wp.int32],
-    out_kept: wp.array[wp.uint64],
-) -> None:
-    # The row candidates of one height's supernodes: their own entries, then the rows their
-    # descendants passed up (``pending``). A pending row another height takes is moved to
-    # ``out_kept`` and its candidate slot holds ``key_mask``, above every real key (rows below
-    # ``2^key_bits - 1``), so the sort puts those slots last and the host need not count them
-    # first. The candidates are sorted and deduplicated next, so the cursor's arrival order does
-    # not matter.
-    t = wp.int32(wp.tid())
-    out_values[t] = t
-    if t < own_count:
-        out_candidates[t] = own_keys[own_begin + t] & key_mask
-        return
-    key = pending[t - own_count]
-    if height[wp.int32(key // wp.uint64(n))] == level:
-        out_candidates[t] = key
-    else:
-        out_candidates[t] = key_mask
-        out_kept[wp.atomic_add(cursors, CURSOR_KEPT, 1)] = key
-
-
-@wp.kernel
-def emit_rows(
-    candidates: wp.array[wp.uint64],
+def emit_structure_rows(
+    keys: wp.array[wp.uint64],
     run_ends: wp.array[wp.int32],
     key_mask: wp.uint64,
     n: wp.int32,
-    level_base: wp.int32,
-    parent: wp.array[wp.int32],
-    column_end: wp.array[wp.int32],
-    cursors: wp.array[wp.int32],
-    out_unique: wp.array[wp.uint64],
+    out_rows: wp.array[wp.int32],
+    out_row_node: wp.array[wp.int32],
     out_row_start: wp.array[wp.int32],
     out_nrow: wp.array[wp.int32],
-    out_pending: wp.array[wp.uint64],
 ) -> None:
-    # One height's row structure is final, from its sorted candidates and the in-place inclusive
-    # scan of their run starts: each distinct row is stored, each supernode's run recorded, and
-    # every row past the parent's columns passed up to the parent, after the rows
-    # ``gather_candidates`` kept. The last thread (``run_ends`` is exactly the height's capacity;
-    # ``candidates`` is twice it, the sort's scratch) publishes the distinct count: the scan's
-    # total, less the run of placeholder keys if there is one.
+    # Each distinct sorted pair once (``run_ends`` the in-place inclusive scan of the run starts):
+    # its row and supernode stored at its rank, each supernode's first rank and its row count.
     p = wp.int32(wp.tid())
-    key = candidates[p]
-    if p == run_ends.shape[0] - 1:
-        cursors[CURSOR_UNIQUE] = run_ends[p] - wp.where(key == key_mask, 1, 0)
-    if key == key_mask:
-        return
     i, starts = scanned_count(run_ends, p)
     if starts == 0:
         return
-    out_unique[i] = key
+    key = keys[p] & key_mask
     k = wp.int32(key // wp.uint64(n))
-    row = wp.int32(key % wp.uint64(n))
-    # ``candidates[p - 1]`` is the previous distinct row: placeholders sort last.
-    if p == 0 or wp.int32(candidates[wp.max(p - 1, 0)] // wp.uint64(n)) != k:
-        out_row_start[k] = level_base + i
+    out_rows[i] = wp.int32(key % wp.uint64(n))
+    out_row_node[i] = k
+    if p == 0 or wp.int32((keys[wp.max(p - 1, 0)] & key_mask) // wp.uint64(n)) != k:
+        out_row_start[k] = i
     wp.atomic_add(out_nrow, k, 1)
-    q = parent[k]
-    if q >= 0 and row >= column_end[q]:
-        slot = cursors[CURSOR_KEPT] + wp.atomic_add(cursors, CURSOR_PASSED, 1)
-        out_pending[slot] = wp.uint64(q) * wp.uint64(n) + wp.uint64(row)
-
-
-@wp.kernel
-def split_rows(
-    unique: wp.array[wp.uint64],
-    n: wp.int32,
-    base: wp.int32,
-    out_rows: wp.array[wp.int32],
-    out_row_node: wp.array[wp.int32],
-) -> None:
-    i = wp.int32(wp.tid())
-    key = unique[i]
-    out_rows[base + i] = wp.int32(key % wp.uint64(n))
-    out_row_node[base + i] = wp.int32(key // wp.uint64(n))
 
 
 # --------------------------------------------------------------------------------------

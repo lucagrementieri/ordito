@@ -413,9 +413,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # entries, then its factor and the Schur complement its parent extends; ``blocks`` the solve
     # blocks each panel's update rewrites. The refinement loop's ``state`` / ``rhs_scale`` are its
     # condition, round and scale words, read and rewritten every round; the solution is corrected
-    # (``backward_finalize``'s ``refined``) and shifted (``null_space_shift``) in place, and the
-    # dissection's node counter advances in place a depth at a time.
+    # (``backward_finalize``'s ``refined``) and shifted (``null_space_shift``) in place. A panel's
+    # tiled factor stages its diagonal block in ``scratch`` and flags a bad pivot in ``status``.
     ("cholesky", "extend_add"): frozenset({"fronts"}),
+    ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
     ("cholesky", "seed_blocks"): frozenset({"blocks"}),
     ("cholesky", "update_panel"): frozenset({"fronts", "blocks"}),
     ("cholesky", "refine_start"): frozenset({"state", "rhs_scale"}),
@@ -423,12 +424,12 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("cholesky", "refine_advance"): frozenset({"state"}),
     ("cholesky", "backward_finalize"): frozenset({"refined"}),
     ("cholesky", "null_space_shift"): frozenset({"solution"}),
-    ("cholesky", "dissection_advance"): frozenset({"node_count"}),
-    # The symbolic analysis' atomic cursors (compaction slots whose arrival order the following
-    # sort erases), and the breadth-first search's distances and loop state, advanced in place
+    # The dissection's per-depth state, carried across its depths in place: the crossing counts
+    # each segment clears once read, and the depth's table and node / depth words its last launch
+    # clears and advances. The breadth-first search's distances and loop state, advanced in place
     # level by level inside a recorded loop.
-    ("cholesky", "gather_candidates"): frozenset({"cursors"}),
-    ("cholesky", "emit_rows"): frozenset({"cursors"}),
+    ("cholesky", "dissection_link"): frozenset({"counts"}),
+    ("cholesky", "dissection_compact"): frozenset({"table", "state"}),
     ("cholesky", "breadth_first_level"): frozenset({"distance", "state"}),
     ("cholesky", "breadth_first_advance"): frozenset({"state"}),
     # in-place

@@ -661,6 +661,11 @@ class _Plan:
                     "n_rows": c_levels[h + 1] - c_levels[h],
                 }
             )
+        # ``factor_panel_tiled``'s panel inverses: one ``PANEL``-square tile a front of a level.
+        widest = max((int(big[0].size) for big in self.big if big is not None), default=1)
+        self.panel_inverse = _launch.empty(widest * panel * panel, dtype=wp.float64, device=device)
+        self.panel_inverse_tiles = self.panel_inverse.reshape((widest * panel, panel))
+        self.panel_scratch = odt.empty_2d((widest * panel, panel), wp.float64, device=device)
         # Components, for the singular-component pins and the null-space projection: the vertices
         # in label order (one stable sort), each component's label, start and last-eliminated row.
         self.labels = labels
@@ -817,30 +822,55 @@ class _Plan:
             device=device,
         )
         tables = [self.front_offset, self.ncol, self.front_size]
-        block_dim = 256 if wp.get_device(device).is_cuda else 1
+        cuda = wp.get_device(device).is_cuda
         panel = int(kernel_cholesky.PANEL)
         for h in range(self.n_levels):
             big = self.big[h]
             if big is not None:
                 nodes, work, rows_below, max_ncol = big
                 for p, width in enumerate(work):
-                    _launch.launch_tiled(
-                        kernel_cholesky.factor_panel,
-                        dim=[nodes.size],
-                        inputs=[nodes, *tables, wp.int32(p), fronts, numeric.status],
-                        # One warp: the diagonal block is ``PANEL`` columns, and one warp's
-                        # barrier is the cheap one.
-                        block_dim=min(block_dim, 32),
-                        device=device,
-                    )
-                    _launch.launch(
-                        kernel_cholesky.panel_rows,
-                        dim=(nodes.size, rows_below + min((p + 1) * panel, max_ncol)),
-                        inputs=[nodes, self.front_offset, self.ncol, self.front_size,
-                                self.block_offset, wp.int32(p), wp.int32(rows_below), fronts,
-                                numeric.blocks],
-                        device=device,
-                    )  # fmt: skip
+                    row_dim = (nodes.size, rows_below + min((p + 1) * panel, max_ncol))
+                    if cuda:
+                        # The diagonal block as a tile, and the rows by its inverse.
+                        _launch.launch_tiled(
+                            kernel_cholesky.factor_panel_tiled,
+                            dim=[nodes.size],
+                            inputs=[
+                                nodes,
+                                *tables,
+                                wp.int32(p),
+                                fronts,
+                                numeric.status,
+                                self.panel_scratch,
+                            ],
+                            outputs=[self.panel_inverse_tiles],
+                            block_dim=128,
+                            device=device,
+                        )
+                        _launch.launch(
+                            kernel_cholesky.panel_rows_inverse,
+                            dim=row_dim,
+                            inputs=[nodes, self.front_offset, self.ncol, self.front_size,
+                                    self.block_offset, wp.int32(p), wp.int32(rows_below),
+                                    self.panel_inverse, fronts, numeric.blocks],
+                            device=device,
+                        )  # fmt: skip
+                    else:
+                        _launch.launch_tiled(
+                            kernel_cholesky.factor_panel,
+                            dim=[nodes.size],
+                            inputs=[nodes, *tables, wp.int32(p), fronts, numeric.status],
+                            block_dim=1,
+                            device=device,
+                        )
+                        _launch.launch(
+                            kernel_cholesky.panel_rows,
+                            dim=row_dim,
+                            inputs=[nodes, self.front_offset, self.ncol, self.front_size,
+                                    self.block_offset, wp.int32(p), wp.int32(rows_below),
+                                    fronts, numeric.blocks],
+                            device=device,
+                        )  # fmt: skip
                     _launch.launch(
                         kernel_cholesky.update_panel,
                         dim=(nodes.size, width),
@@ -1172,104 +1202,56 @@ def _structure(
         raise ValueError("sparse_cholesky: the factorization exceeds 64-bit row keys")
     row_start = _launch.zeros(max(n_sn, 1), dtype=wp.int32, device=device)
     nrow_d = _launch.zeros(max(n_sn, 1), dtype=wp.int32, device=device)
-    parent_d = put(parent)
-    levels: list[tuple[wp.array[wp.uint64], int, int]] = []
-    level_base = 0
+    n_rows = 0
+    rows: wp.array[wp.int32] = _launch.zeros(1, dtype=wp.int32, device=device)
+    row_node = _launch.empty(1, dtype=wp.int32, device=device)
     if n_levels:
-        own_counts = _launch.empty(n, dtype=wp.int32, device=device)
-        own_ends = _launch.empty(n, dtype=wp.int32, device=device)
+        # Row structure as paths: every operator entry's row up the tree from its column's
+        # supernode to its own, all pairs written, sorted by ``(height, supernode, row)`` and
+        # deduplicated once -- the rows level-major, each supernode's ascending.
+        path_inputs = [offsets, columns, pos, owner, column_end, put(parent)]
+        path_counts = _launch.empty(n, dtype=wp.int32, device=device)
         _launch.launch(
-            kernel_cholesky.count_own_entries,
+            kernel_cholesky.count_structure_paths,
             dim=n,
-            inputs=[offsets, columns, pos, owner, column_end],
-            outputs=[own_counts],
+            inputs=path_inputs,
+            outputs=[path_counts],
             device=device,
         )
-        _launch.array_scan(own_counts, own_ends, inclusive=True)
-        # Read back: the own-entry count sizes their sort.
-        n_own = int(read_scalar(own_ends, -1))
-        own_keys = _launch.empty(2 * max(n_own, 1), dtype=wp.uint64, device=device)
-        own_values = _launch.empty(2 * max(n_own, 1), dtype=wp.int32, device=device)
-        starts = _launch.full(n_levels + 1, n_own, dtype=wp.int32, device=device)
-        if n_own:
+        _launch.array_scan(path_counts, path_counts, inclusive=True)
+        # Read back: the pair count sizes their sort.
+        n_pairs = int(read_scalar(path_counts, -1))
+        if n_pairs:
+            keys_pairs = _launch.empty(2 * n_pairs, dtype=wp.uint64, device=device)
+            values = _launch.empty(2 * n_pairs, dtype=wp.int32, device=device)
             _launch.launch(
-                kernel_cholesky.write_own_entries,
+                kernel_cholesky.write_structure_paths,
                 dim=n,
-                inputs=[offsets, columns, pos, owner, column_end, height_d, wp.int32(n),
-                        wp.int32(shift), own_ends],
-                outputs=[own_keys, own_values],
-                device=device,
-            )  # fmt: skip
-            _launch.radix_sort_pairs(own_keys, own_values, n_own, end_bit=shift + _bits(n_levels))
-            _launch.launch(
-                kernel_cholesky.height_starts,
-                dim=n_own,
-                inputs=[own_keys, wp.int32(shift)],
-                outputs=[starts],
+                inputs=[*path_inputs, height_d, wp.int32(n), wp.int32(shift), path_counts],
+                outputs=[keys_pairs, values],
                 device=device,
             )
-        # Read back: each height's own entries are one slice of the sorted keys.
-        own_start = starts.numpy().astype(np.int64)
-        key_mask = wp.uint64((1 << shift) - 1)
-        pending = _launch.empty(1, dtype=wp.uint64, device=device)
-        n_pending = 0
-        cursors = _launch.empty(3, dtype=wp.int32, device=device)
-        for h in range(n_levels):
-            n_own_h = int(own_start[h + 1] - own_start[h])
-            capacity = n_own_h + n_pending
-            if capacity == 0:
-                continue
-            # Sized for the worst case so that one read closes the height: every candidate is
-            # distinct and every pending row waits.
-            candidates = _launch.empty(2 * capacity, dtype=wp.uint64, device=device)
-            values = _launch.empty(2 * capacity, dtype=wp.int32, device=device)
-            run_ends = _launch.empty(capacity, dtype=wp.int32, device=device)
-            unique = _launch.empty(capacity, dtype=wp.uint64, device=device)
-            next_pending = _launch.empty(n_pending + capacity, dtype=wp.uint64, device=device)
-            _launch.zero_(cursors)
-            _launch.launch(
-                kernel_cholesky.gather_candidates,
-                dim=capacity,
-                inputs=[own_keys, wp.int32(own_start[h]), wp.int32(n_own_h), key_mask, pending,
-                        height_d, wp.int32(n), wp.int32(h), cursors],
-                outputs=[candidates, values, next_pending],
-                device=device,
-            )  # fmt: skip
-            _launch.radix_sort_pairs(candidates, values, capacity, end_bit=key_bits)
+            _launch.radix_sort_pairs(keys_pairs, values, n_pairs, end_bit=shift + _bits(n_levels))
+            run_ends = _launch.empty(n_pairs, dtype=wp.int32, device=device)
             _launch.launch(
                 kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
-                dim=capacity,
-                inputs=[candidates],
+                dim=n_pairs,
+                inputs=[keys_pairs],
                 outputs=[run_ends],
                 device=device,
             )
             _launch.array_scan(run_ends, run_ends, inclusive=True)
+            # Read back: the distinct rows size the row buffers.
+            n_rows = int(read_scalar(run_ends, -1))
+            rows = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
+            row_node = _launch.empty(max(n_rows, 1), dtype=wp.int32, device=device)
             _launch.launch(
-                kernel_cholesky.emit_rows,
-                dim=capacity,
-                inputs=[candidates, run_ends, key_mask, wp.int32(n), wp.int32(level_base),
-                        parent_d, column_end, cursors],
-                outputs=[unique, row_start, nrow_d, next_pending],
+                kernel_cholesky.emit_structure_rows,
+                dim=n_pairs,
+                inputs=[keys_pairs, run_ends, wp.uint64((1 << shift) - 1), wp.int32(n)],
+                outputs=[rows, row_node, row_start, nrow_d],
                 device=device,
-            )  # fmt: skip
-            # Read back: the rows kept and passed up size the next height's candidates, and the
-            # distinct rows place the next height's in the row buffer.
-            waiting, passed, n_unique = (int(x) for x in read_values(cursors, 0, 3))
-            pending, n_pending = next_pending, waiting + passed
-            if n_unique:
-                levels.append((unique, level_base, n_unique))
-                level_base += n_unique
-    n_rows = level_base
-    rows = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
-    row_node = _launch.empty(max(n_rows, 1), dtype=wp.int32, device=device)
-    for unique, base, count in levels:
-        _launch.launch(
-            kernel_cholesky.split_rows,
-            dim=count,
-            inputs=[unique, wp.int32(n), wp.int32(base)],
-            outputs=[rows, row_node],
-            device=device,
-        )
+            )
     # Read back: the row counts size every front.
     nrow = nrow_d.numpy()[:n_sn].astype(np.int64)
     return _Structure(
@@ -1359,62 +1341,54 @@ def _nested_dissection(
     axis = _launch.empty(slots, dtype=wp.vec3d, device=device)
     keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
     vertices = _launch.empty(2 * n, dtype=wp.int32, device=device)
-    counts = _launch.empty(2 * slots, dtype=wp.int32, device=device)
+    # The crossing counts start zeroed; ``dissection_link`` clears each segment's once read.
+    counts = _launch.zeros(2 * slots, dtype=wp.int32, device=device)
     keep = _launch.empty(n, dtype=wp.int32, device=device)
     next_segment = _launch.empty(n, dtype=wp.int32, device=device)
-    task_offsets = _launch.zeros(slots + 1, dtype=wp.int32, device=device)
-    # Rank buffers: a leading zero, then the flags ``dissection_split_flags`` writes and the scan
-    # turns into exclusive ranks ending in their total.
-    has_ranks = _launch.zeros(slots + 1, dtype=wp.int32, device=device)
-    leaf_ranks = _launch.zeros(2 * slots + 1, dtype=wp.int32, device=device)
-    next_ranks = _launch.zeros(2 * slots + 1, dtype=wp.int32, device=device)
+    # One rank buffer: a zero slot, then the separator, leaf and next-segment flags
+    # ``dissection_split_flags`` writes and one scan turns into ranks (``section_rank``).
+    ranks = _launch.zeros(5 * slots + 1, dtype=wp.int32, device=device)
+    rank_tail = _launch.view(ranks, 1, ranks.size)
     separator_side = _launch.empty(slots, dtype=wp.int32, device=device)
     separator_node = _launch.empty(slots, dtype=wp.int32, device=device)
     child_next = _launch.empty(2 * slots, dtype=wp.int32, device=device)
     child_leaf = _launch.empty(2 * slots, dtype=wp.int32, device=device)
-    # Two generations of segment tables (starts, then first position, parent, its depth and root);
-    # the first depth's one segment is every vertex, with no parent.
-    starts = [_launch.zeros(slots + 1, dtype=wp.int32, device=device) for _ in range(2)]
+    # Two generations of segment tables -- sizes after a zero slot, then task counts after one,
+    # scanned as one into the starts and the live-shifted task offsets -- and of segment rows
+    # (first position, parent, its depth and root). The first depth's one segment is every vertex.
+    tables = [_launch.zeros(2 * (slots + 1), dtype=wp.int32, device=device) for _ in range(2)]
     segments = [odt.empty_2d((4, slots), wp.int32, device=device) for _ in range(2)]
     _launch.launch(
         kernel_cholesky.seed_dissection,
         dim=1,
-        inputs=[wp.int32(n)],
-        outputs=[starts[0], segments[0]],
+        inputs=[wp.int32(n), wp.int32(chunk)],
+        outputs=[tables[0], segments[0]],
         device=device,
     )
     # The tree has at most one node a row (every node holds at least one).
     tree = odt.empty_2d((5, n), wp.int32, device=device)
-    node_count = _launch.zeros(1, dtype=wp.int32, device=device)
+    state = _launch.zeros(2, dtype=wp.int32, device=device)
     leaf_rows = wp.int32(CHOLESKY_LEAF_ROWS)
     # The sentinel key past the live vertices carries segment ``slots + 1`` (above every real one).
     sort_bits = 32 + _bits(slots + 1)
     block_dim = 256 if cuda else 1
-    for depth in range(depths):
-        segment_start, segment = starts[depth % 2], segments[depth % 2]
-        next_start, next_segments = starts[(depth + 1) % 2], segments[(depth + 1) % 2]
-        # The sizes written into the tail become this depth's starts, ending in the live count.
+
+    def split(
+        table: wp.array[wp.int32],
+        segment: odt.Array2dInt32,
+        next_table: wp.array[wp.int32],
+        next_segments: odt.Array2dInt32,
+    ) -> None:
+        """Split every segment of one depth; the depth itself lives in ``state``."""
         _launch.array_scan(
-            _launch.view(segment_start, 1, slots + 1),
-            _launch.view(segment_start, 1, slots + 1),
-            inclusive=True,
+            _launch.view(table, 1, table.size), _launch.view(table, 1, table.size), inclusive=True
         )
-        _launch.launch(
-            kernel_cholesky.dissection_task_counts,
-            dim=slots,
-            inputs=[segment_start, wp.int32(chunk)],
-            outputs=[task_offsets],
-            device=device,
-        )
-        _launch.array_scan(
-            _launch.view(task_offsets, 1, slots + 1),
-            _launch.view(task_offsets, 1, slots + 1),
-            inclusive=True,
-        )
+        segment_start = _launch.view(table, 0, slots + 1)
+        tasks = _launch.view(table, slots + 1, table.size)
         _launch.launch_tiled(
             kernel_cholesky.dissection_partials,
             dim=[max_tasks],
-            inputs=[order, coordinates, segment_start, task_offsets, wp.int32(chunk)],
+            inputs=[order, coordinates, segment_start, tasks, wp.int32(chunk)],
             outputs=[partials],
             block_dim=block_dim,
             device=device,
@@ -1422,7 +1396,7 @@ def _nested_dissection(
         _launch.launch(
             kernel_cholesky.dissection_axes,
             dim=slots,
-            inputs=[order, coordinates, segment_start, task_offsets, partials],
+            inputs=[order, coordinates, segment_start, tasks, partials],
             outputs=[centre, axis],
             device=device,
         )
@@ -1437,15 +1411,14 @@ def _nested_dissection(
         _launch.launch(
             kernel_cholesky.dissection_sides,
             dim=n,
-            inputs=[keys, vertices, segment_start, wp.int32(2 * slots * depth)],
+            inputs=[keys, vertices, segment_start, state],
             outputs=[tag],
             device=device,
         )
-        _launch.zero_(counts)
         _launch.launch(
             kernel_cholesky.dissection_crossings,
             dim=n,
-            inputs=[keys, vertices, segment_start, offsets, columns, tag, wp.int32(depth + 1)],
+            inputs=[keys, vertices, segment_start, offsets, columns, tag, state],
             outputs=[lower_mark, upper_mark, counts],
             device=device,
         )
@@ -1453,33 +1426,23 @@ def _nested_dissection(
             kernel_cholesky.dissection_split_flags,
             dim=slots,
             inputs=[segment_start, counts, leaf_rows],
-            outputs=[has_ranks, leaf_ranks, next_ranks],
+            outputs=[ranks],
             device=device,
         )
-        for ranks in (has_ranks, leaf_ranks, next_ranks):
-            tail = _launch.view(ranks, 1, ranks.size)
-            _launch.array_scan(tail, tail, inclusive=True)
-        _launch.zero_(next_start)
+        _launch.array_scan(rank_tail, rank_tail, inclusive=True)
         _launch.launch(
             kernel_cholesky.dissection_link,
             dim=slots,
-            inputs=[segment_start, counts, segment, has_ranks, leaf_ranks, next_ranks, node_count,
-                    leaf_rows],
-            outputs=[tree, separator_side, separator_node, child_next, child_leaf, next_start,
+            inputs=[segment_start, segment, ranks, state, leaf_rows, wp.int32(chunk), counts],
+            outputs=[tree, separator_side, separator_node, child_next, child_leaf, next_table,
                      next_segments],
             device=device,
         )  # fmt: skip
         _launch.launch(
-            kernel_cholesky.dissection_advance,
-            dim=1,
-            inputs=[has_ranks, leaf_ranks, node_count],
-            device=device,
-        )
-        _launch.launch(
             kernel_cholesky.dissection_relabel,
             dim=n,
             inputs=[keys, vertices, segment_start, separator_side, separator_node, child_next,
-                    child_leaf, lower_mark, upper_mark, wp.int32(depth + 1)],
+                    child_leaf, lower_mark, upper_mark, state],
             outputs=[node, keep, next_segment],
             device=device,
         )  # fmt: skip
@@ -1487,12 +1450,18 @@ def _nested_dissection(
         _launch.launch(
             kernel_cholesky.dissection_compact,
             dim=n,
-            inputs=[vertices, keep, next_segment],
+            inputs=[vertices, keep, next_segment, ranks, table, state],
             outputs=[order, order_segment],
             device=device,
         )
+
+    # Issued directly: recording two depths and replaying them was slower (the scans' and the
+    # sort's allocation nodes make the recording cost more than the replays save).
+    for depth in range(depths):
+        split(tables[depth % 2], segments[depth % 2],
+              tables[(depth + 1) % 2], segments[(depth + 1) % 2])  # fmt: skip
     # Read back: the tree, once, for the host's bookkeeping over its nodes.
-    n_nodes = int(read_scalar(node_count))
+    n_nodes = int(read_scalar(state, 0))  # ``DISSECTION_NODES``
     table = tree.numpy()[:, :n_nodes].astype(np.int64)
     return node, _Tree(*table)
 
