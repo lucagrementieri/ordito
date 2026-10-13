@@ -422,8 +422,11 @@ def panel_rows_inverse(
 ) -> None:
     # ``panel_rows`` after ``factor_panel_tiled``: a row below the panel is ``A[i, panel]
     # L_pp^-T`` and a solve-block column's panel rows ``L_pp^-1 x``, both products with the
-    # panel's inverse (its upper triangle zero), every entry an independent dot.
-    b, t = wp.tid()
+    # panel's inverse (its upper triangle zero). One lane an entry, ``PANEL`` rows a block of
+    # ``PANEL * PANEL`` lanes (launched over ``(front, row group)``): every lane reads its row
+    # and forms its dot, the block synchronizes, then each writes its entry back in place -- a
+    # row's entries are read by all its lanes before any is overwritten.
+    b, g, lane = wp.tid()
     k = level[b]
     first, last = panel_span(ncol[k], panel)
     if last <= first:
@@ -432,31 +435,29 @@ def panel_rows_inverse(
     size = front_size[k]
     base = front_offset[k]
     m64 = wp.int64(size)
-    tile_base = b * PANEL * PANEL
+    q1 = lane % PANEL
+    t = g * PANEL + lane // PANEL
     target = blocks
     target_base = wp.int64(0)
+    valid = q1 < width
     if t >= rows_below:
         c = t - rows_below
-        if c >= last:
-            return
-        target_base = block_offset[k] + wp.int64(c) * m64
+        valid = valid and c < last
+        target_base = block_offset[k] + wp.int64(wp.min(c, last - 1)) * m64
     else:
         row = last + t
-        if row >= size:
-            return
+        valid = valid and row < size
         target = fronts
-        target_base = front_index(base, m64, row, 0)
-    values = panel_vector()
-    for q in range(PANEL):
-        if wp.int32(q) < width:
-            values[q] = target[target_base + wp.int64(first + wp.int32(q))]
-    for q1 in range(PANEL):
-        if wp.int32(q1) < width:
-            total = wp.float64(0.0)
-            for q2 in range(PANEL):
-                if wp.int32(q2) <= wp.int32(q1):
-                    total += inverse[tile_base + q1 * PANEL + q2] * values[q2]
-            target[target_base + wp.int64(first + wp.int32(q1))] = total
+        target_base = front_index(base, m64, wp.min(row, size - 1), 0)
+    total = wp.float64(0.0)
+    if valid:
+        tile_row = b * PANEL * PANEL + q1 * PANEL
+        for q2 in range(PANEL):
+            if wp.int32(q2) <= q1:
+                total += inverse[tile_row + q2] * target[target_base + wp.int64(first + q2)]
+    block_barrier()
+    if valid:
+        target[target_base + wp.int64(first + q1)] = total
 
 
 @wp.kernel
@@ -1037,13 +1038,20 @@ def dissection_axes(
         m[4], m[6], m[7],
         m[5], m[7], m[8],
     ) / count - wp.outer(mean, mean)  # fmt: skip
-    vectors, values = wp.eig3(covariance)
+    # The eigenvectors in ``float32`` from the ``float64`` covariance: the axis only orients the
+    # split, and a ``float64`` ``eig3`` -- an iteration of square roots and divisions at a
+    # sixty-fourth of the ``float32`` rate on this class of device -- was most of a depth.
+    scale = wp.max(wp.max(covariance[0, 0], covariance[1, 1]), covariance[2, 2])
+    reduced = wp.mat33(covariance / wp.where(scale > wp.float64(0.0), scale, wp.float64(1.0)))
+    vectors, values = wp.eig3(reduced)
     best = wp.int32(0)
     for q in range(1, 3):
         if values[q] > values[best]:
             best = wp.int32(q)
     out_centre[s] = segment_reference(order, coordinates, segment_start[s]) + mean
-    out_axis[s] = wp.vec3d(vectors[0, best], vectors[1, best], vectors[2, best])
+    out_axis[s] = wp.vec3d(
+        wp.float64(vectors[0, best]), wp.float64(vectors[1, best]), wp.float64(vectors[2, best])
+    )
 
 
 @wp.kernel

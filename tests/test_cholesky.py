@@ -18,7 +18,7 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
-from tests.conversions import bsr_to_csr, numpy_to_warp, scipy_to_bsr
+from tests.conversions import bsr_to_csr, numpy_to_warp, scipy_to_bsr, warp_empty
 
 
 def _heat_system(mesh_wp: wp.Mesh) -> odt.BsrMatrix[wp.float64]:
@@ -169,6 +169,23 @@ def test_an_empty_row_keeps_its_initial_value(device: str) -> None:
     solution = wp.array(np.array([0.0, 0.0, 7.0]), dtype=wp.float64, device=device)
     factor.solve(wp.array(np.array([3.0, 3.0, 0.0]), dtype=wp.float64, device=device), solution)
     assert np.allclose(solution.numpy(), [1.0, 1.0, 7.0], rtol=1e-14, atol=0.0)
+
+
+@pytest.mark.parametrize("with_coordinates", [False, True], ids=["landmarks", "coordinates"])
+def test_an_empty_operator_factors_and_solves_nothing(device: str, with_coordinates: bool) -> None:
+    """
+    Not a library comparison: a ``0 x 0`` operator factors with no levels and solves to nothing.
+
+    The coordinate-free path computes landmark coordinates first, which raised on an empty
+    operator; both paths now return an empty factorization.
+    """
+    empty = scipy_to_bsr(sp.csr_matrix((0, 0)), device)
+    coordinates = warp_empty(0, wp.vec3, device) if with_coordinates else None
+    factor = od.cholesky.sparse_cholesky(empty, coordinates)
+    solution = warp_empty(0, wp.float64, device)
+    factor.solve(warp_empty(0, wp.float64, device), solution)
+    assert factor.n == 0
+    assert solution.shape == (0,)
 
 
 def test_sparse_cholesky_rejects_an_indefinite_operator(

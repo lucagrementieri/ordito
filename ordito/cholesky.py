@@ -910,12 +910,13 @@ class _Plan:
                             block_dim=128,
                             device=device,
                         )
-                        _launch.launch(
+                        _launch.launch_tiled(
                             kernel_cholesky.panel_rows_inverse,
-                            dim=row_dim,
+                            dim=[nodes.size, -(-row_dim[1] // panel)],
                             inputs=[nodes, self.front_offset, self.ncol, self.front_size,
                                     self.block_offset, wp.int32(p), wp.int32(rows_below),
                                     self.panel_inverse, fronts, numeric.blocks],
+                            block_dim=panel * panel,
                             device=device,
                         )  # fmt: skip
                     else:
@@ -1505,7 +1506,12 @@ def _nested_dissection(
             outputs=[keys, vertices],
             device=device,
         )
-        _launch.radix_sort_pairs(keys, vertices, n, end_bit=sort_bits)
+        # The top 32 bits only -- the segment and the projection's leading bits -- in four radix
+        # passes instead of six: projections closer than that keep their order (a stable sort),
+        # an equally valid median.
+        _launch.radix_sort_pairs(
+            keys, vertices, n, begin_bit=max(sort_bits - 32, 0), end_bit=sort_bits
+        )
         _launch.launch(
             kernel_cholesky.dissection_sides,
             dim=n,
@@ -1588,6 +1594,9 @@ def _landmark_coordinates(
     n = int(matrix.nrow)
     device = matrix.device
     coordinates = _launch.zeros(n, dtype=wp.vec3, device=device)
+    if n == 0:
+        # No row, no search: slicing an empty axis would raise.
+        return coordinates
     if not wp.get_device(device).is_cuda:
         # The CPU device runs a launch grid as one loop, so a search sweeping every row per level
         # costs ``n`` times the graph's diameter; the host's frontier search is linear.
