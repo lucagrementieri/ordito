@@ -28,7 +28,12 @@ one-lane blocks run the same code.
 
 import warp as wp
 
-from ordito.kernels.array import binary_search_index, ordered_float_bits, scanned_count
+from ordito.kernels.array import (
+    binary_search_index,
+    binary_search_index_left,
+    ordered_float_bits,
+    scanned_count,
+)
 from ordito.kernels.reduce import block_barrier, block_sum
 
 wp.set_module_options({"enable_backward": False})
@@ -1365,6 +1370,432 @@ def dissection_compact(
 # --------------------------------------------------------------------------------------
 # Symbolic analysis: elimination order and row structure
 # --------------------------------------------------------------------------------------
+
+
+# ``analysis_header`` slots, the counts the analysis reads back at its first sync.
+HEADER_SUPERNODES = wp.constant(0)
+HEADER_LEVELS = wp.constant(1)
+
+
+@wp.kernel
+def top_depth_rows(
+    tree: wp.array2d[wp.int32],
+    state: wp.array[wp.int32],
+    width: wp.int32,
+    out_rows: wp.array[wp.int32],
+) -> None:
+    # Each tree's rows at each depth, ``root * width + depth``: the top merge's cumulative counts.
+    t = wp.int32(wp.tid())
+    if t >= state[DISSECTION_NODES]:
+        return
+    wp.atomic_add(out_rows, tree[t, 4] * width + tree[t, 3], tree[t, 1])
+
+
+@wp.kernel
+def supernode_keys(
+    tree: wp.array2d[wp.int32],
+    state: wp.array[wp.int32],
+    depth_rows: wp.array[wp.int32],
+    width: wp.int32,
+    top_rows: wp.int32,
+    n: wp.int32,
+    sentinel: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_values: wp.array[wp.int32],
+) -> None:
+    # Each node keyed by its group's first position, then its own: a tree's top -- its depths
+    # while their cumulative rows stay within ``top_rows``, the root's at least -- is merged into
+    # the root and takes the root's place, every other node is a group of its own. Sorted, the
+    # nodes run in elimination order (a node's first position orders its subtree in postorder)
+    # and each group is one run. A slot past the tree's nodes sorts last.
+    t = wp.int32(wp.tid())
+    out_values[t] = t
+    if t >= state[DISSECTION_NODES]:
+        out_keys[t] = sentinel
+        return
+    root = tree[t, 4]
+    depth = tree[t, 3]
+    rows = wp.int32(0)
+    for d in range(depth + 1):
+        rows += depth_rows[root * width + d]
+    group_start = tree[t, 0]
+    if depth == 0 or rows <= top_rows:
+        group_start = tree[root, 0]
+    out_keys[t] = wp.uint64(group_start) * wp.uint64(n + 1) + wp.uint64(tree[t, 0])
+
+
+@wp.func
+def key_group(keys: wp.array[wp.uint64], p: wp.int32, n: wp.int32) -> wp.int64:
+    return wp.int64(keys[p] // wp.uint64(n + 1))
+
+
+@wp.kernel
+def supernode_flags(
+    keys: wp.array[wp.uint64],
+    nodes: wp.array[wp.int32],
+    tree: wp.array2d[wp.int32],
+    state: wp.array[wp.int32],
+    n: wp.int32,
+    out_counts: wp.array[wp.vec2i],
+) -> None:
+    # Per sorted node: whether it starts a group, and its rows -- scanned together into each
+    # node's supernode and first position.
+    p = wp.int32(wp.tid())
+    if p >= state[DISSECTION_NODES]:
+        out_counts[p] = wp.vec2i(0, 0)
+        return
+    first = p == 0 or key_group(keys, p, n) != key_group(keys, wp.max(p - 1, 0), n)
+    out_counts[p] = wp.vec2i(wp.where(first, 1, 0), tree[nodes[p], 1])
+
+
+@wp.kernel
+def supernode_tables(
+    keys: wp.array[wp.uint64],
+    nodes: wp.array[wp.int32],
+    ends: wp.array[wp.vec2i],
+    tree: wp.array2d[wp.int32],
+    state: wp.array[wp.int32],
+    n: wp.int32,
+    out_node_start: wp.array[wp.int32],
+    out_node_supernode: wp.array[wp.int32],
+    out_c0: wp.array[wp.int32],
+    out_ncol: wp.array[wp.int32],
+    out_kept: wp.array[wp.int32],
+    out_header: wp.array[wp.int32],
+) -> None:
+    # Every node's first position and supernode; each supernode's first column, column count and
+    # the node it keeps (its group's last: a merged top's root, whose interval ends the tree's).
+    p = wp.int32(wp.tid())
+    count = state[DISSECTION_NODES]
+    if p >= count:
+        return
+    node = nodes[p]
+    size = tree[node, 1]
+    sn = ends[p][0] - 1
+    start = ends[p][1] - size
+    out_node_start[node] = start
+    out_node_supernode[node] = sn
+    group = key_group(keys, p, n)
+    if p == 0 or key_group(keys, wp.max(p - 1, 0), n) != group:
+        out_c0[sn] = start
+    wp.atomic_add(out_ncol, sn, size)
+    if p == count - 1 or key_group(keys, wp.min(p + 1, count - 1), n) != group:
+        out_kept[sn] = node
+    if p == count - 1:
+        out_header[HEADER_SUPERNODES] = sn + 1
+
+
+@wp.kernel
+def supernode_links(
+    kept: wp.array[wp.int32],
+    tree: wp.array2d[wp.int32],
+    node_supernode: wp.array[wp.int32],
+    c0: wp.array[wp.int32],
+    ncol: wp.array[wp.int32],
+    header: wp.array[wp.int32],
+    out_parent: wp.array[wp.int32],
+    out_column_end: wp.array[wp.int32],
+) -> None:
+    # A supernode's parent (its kept node's parent's supernode, ``-1`` for a root) and the end of
+    # its columns.
+    sn = wp.int32(wp.tid())
+    if sn >= header[HEADER_SUPERNODES]:
+        return
+    parent = tree[kept[sn], 2]
+    out_parent[sn] = wp.where(parent >= 0, node_supernode[wp.max(parent, 0)], -1)
+    out_column_end[sn] = c0[sn] + ncol[sn]
+
+
+@wp.kernel
+def supernode_heights(
+    parent: wp.array[wp.int32], out_height: wp.array[wp.int32], out_header: wp.array[wp.int32]
+) -> None:
+    # Each supernode's height -- its longest path down to a leaf -- by every supernode walking up
+    # to its root and raising each ancestor's to its distance; the walks' longest is the number
+    # of levels.
+    sn = wp.int32(wp.tid())
+    if sn >= out_header[HEADER_SUPERNODES]:
+        return
+    a = sn
+    k = wp.int32(0)
+    while a >= 0:
+        wp.atomic_max(out_height, a, k)
+        a = parent[a]
+        k += 1
+    wp.atomic_max(out_header, HEADER_LEVELS, k)
+
+
+# One supernode's prefix-summed quantities in supernode order: front entries, solve-block entries,
+# forward and backward chunk slots, forward and backward tasks.
+front_terms = wp.types.vector(length=6, dtype=wp.int64)
+# ``analysis_schedule`` layout: a header (``SCHEDULE_ROWS``, ``SCHEDULE_GROUPS``,
+# ``SCHEDULE_PANELS``), one row of ``LEVEL_FIELDS`` per level and a closing row, every level's panel
+# work, then four entries per extend-add group.
+SCHEDULE_ROWS = wp.constant(0)
+SCHEDULE_GROUPS = wp.constant(1)
+SCHEDULE_PANELS = wp.constant(2)
+SCHEDULE_HEADER = wp.constant(3)
+LEVEL_FIELDS = wp.constant(10)
+
+
+@wp.func
+def solve_task_counts(
+    ncol: wp.int64, size: wp.int64
+) -> tuple[wp.int64, wp.int64, wp.int64, wp.int64]:
+    # A supernode's forward and backward chunk counts and task counts: a forward task is a solve
+    # block row times ``CHUNK`` of its columns, a backward one ``CHUNK`` of a column's rows; a
+    # chunk skips the rows (forward) or columns (backward) where ``L11^-1`` is zero.
+    chunk = wp.int64(CHUNK)
+    half = chunk // wp.int64(2)
+    f_chunks = (ncol + chunk - wp.int64(1)) // chunk
+    b_chunks = (size + chunk - wp.int64(1)) // chunk
+    full = ncol // chunk
+    f_count = f_chunks * size - half * f_chunks * (f_chunks - wp.int64(1))
+    b_count = half * full * (full + wp.int64(1)) + (b_chunks - full) * ncol
+    return f_chunks, b_chunks, f_count, b_count
+
+
+@wp.kernel
+def front_terms_and_keys(
+    ncol: wp.array[wp.int32],
+    nrow: wp.array[wp.int32],
+    height: wp.array[wp.int32],
+    parent: wp.array[wp.int32],
+    sentinel: wp.uint64,
+    out_front_size: wp.array[wp.int32],
+    out_parent: wp.array[wp.int32],
+    out_terms: wp.array[front_terms],
+    out_level_keys: wp.array[wp.uint64],
+    out_level_values: wp.array[wp.int32],
+    out_child_keys: wp.array[wp.uint64],
+    out_child_values: wp.array[wp.int32],
+    out_level_stats: wp.array2d[wp.int32],
+) -> None:
+    # A supernode's front size, its clamped parent and its prefix-summed terms (after a zero slot),
+    # its key in the
+    # level order (height, then supernode), its key among its parent's children when it extends
+    # a parent (parent, then supernode; otherwise last), and its level's front count, widest
+    # column count and most rows below a first panel.
+    sn = wp.int32(wp.tid())
+    n_sn = ncol.shape[0]
+    c = ncol[sn]
+    size = c + nrow[sn]
+    out_front_size[sn] = size
+    # The parent as the extend-add reads it: a root's own ``-1`` as ``0``, never read.
+    out_parent[sn] = wp.max(parent[sn], 0)
+    c64 = wp.int64(c)
+    s64 = wp.int64(size)
+    f_chunks, b_chunks, f_count, b_count = solve_task_counts(c64, s64)
+    terms = front_terms()
+    terms[0] = s64 * s64
+    terms[1] = s64 * c64
+    terms[2] = f_chunks * s64
+    terms[3] = b_chunks * c64
+    terms[4] = f_count
+    terms[5] = b_count
+    out_terms[sn + 1] = terms
+    h = height[sn]
+    out_level_keys[sn] = wp.uint64(h) * wp.uint64(n_sn) + wp.uint64(sn)
+    out_level_values[sn] = sn
+    out_child_values[sn] = sn
+    out_child_keys[sn] = sentinel
+    if parent[sn] >= 0 and nrow[sn] > 0:
+        out_child_keys[sn] = wp.uint64(parent[sn]) * wp.uint64(n_sn) + wp.uint64(sn)
+    wp.atomic_add(out_level_stats, h, 0, 1)
+    wp.atomic_max(out_level_stats, h, 1, c)
+    wp.atomic_max(out_level_stats, h, 2, size - wp.min(PANEL, c))
+
+
+@wp.kernel
+def level_terms(
+    level_nodes: wp.array[wp.int32],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    out_terms: wp.array[wp.vec4i],
+) -> None:
+    # The level-major counts the solve maps are laid out by -- forward tasks, front rows, backward
+    # tasks, columns -- in level order, after a zero slot, for one scan.
+    r = wp.int32(wp.tid())
+    sn = level_nodes[r]
+    _f_chunks, _b_chunks, f_count, b_count = solve_task_counts(
+        wp.int64(ncol[sn]), wp.int64(front_size[sn])
+    )
+    out_terms[r + 1] = wp.vec4i(wp.int32(f_count), front_size[sn], wp.int32(b_count), ncol[sn])
+
+
+@wp.kernel
+def split_terms(
+    terms: wp.array[front_terms],
+    level_sums: wp.array[wp.vec4i],
+    level_nodes: wp.array[wp.int32],
+    out_front_offset: wp.array[wp.int64],
+    out_block_offset: wp.array[wp.int64],
+    out_f_base: wp.array[wp.int32],
+    out_b_base: wp.array[wp.int32],
+    out_level_offsets: wp.array2d[wp.int32],
+    out_column_base: wp.array[wp.int32],
+) -> None:
+    # The scanned terms as the tables the maps read: every supernode's front and solve-block
+    # offsets and chunk bases, the four level-major prefixes, and each supernode's first column in
+    # level order.
+    i = wp.int32(wp.tid())
+    t = terms[i]
+    out_front_offset[i] = t[0]
+    out_block_offset[i] = t[1]
+    out_f_base[i] = wp.int32(t[2])
+    out_b_base[i] = wp.int32(t[3])
+    sums = level_sums[i]
+    for k in range(4):
+        out_level_offsets[k, i] = sums[k]
+    if i < level_nodes.shape[0]:
+        out_column_base[level_nodes[i]] = sums[3]
+
+
+@wp.kernel
+def sibling_keys(
+    child_keys: wp.array[wp.uint64],
+    child_values: wp.array[wp.int32],
+    height: wp.array[wp.int32],
+    sentinel: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_values: wp.array[wp.int32],
+) -> None:
+    # A child's extend-add key: its height, then its slot among its parent's children (in child
+    # order), then the child -- one launch per ``(height, slot)`` group keeps two children of a
+    # launch from sharing a parent.
+    p = wp.int32(wp.tid())
+    n_sn = child_keys.shape[0]
+    key = child_keys[p]
+    out_values[p] = child_values[p]
+    if key == sentinel:
+        out_keys[p] = sentinel
+        return
+    parent = key // wp.uint64(n_sn)
+    slot = p - binary_search_index_left(child_keys, parent * wp.uint64(n_sn))
+    child = child_values[p]
+    group = wp.uint64(height[child]) * wp.uint64(n_sn + 1) + wp.uint64(slot)
+    out_keys[p] = group * wp.uint64(n_sn) + wp.uint64(child)
+
+
+@wp.func
+def extend_group_key(keys: wp.array[wp.uint64], p: wp.int32) -> wp.uint64:
+    return keys[p] // wp.uint64(keys.shape[0])
+
+
+@wp.kernel
+def extend_group_flags(
+    keys: wp.array[wp.uint64], sentinel: wp.uint64, out_ends: wp.array[wp.int32]
+) -> None:
+    # Whether a sorted child starts an extend-add group, scanned in place into the group ranks.
+    p = wp.int32(wp.tid())
+    first = keys[p] != sentinel and (
+        p == 0 or extend_group_key(keys, p) != extend_group_key(keys, wp.max(p - 1, 0))
+    )
+    out_ends[p] = wp.where(first, 1, 0)
+
+
+@wp.kernel
+def extend_group_tables(
+    keys: wp.array[wp.uint64],
+    children: wp.array[wp.int32],
+    ends: wp.array[wp.int32],
+    nrow: wp.array[wp.int32],
+    sentinel: wp.uint64,
+    out_groups: wp.array2d[wp.int32],
+) -> None:
+    # Each extend-add group's first and end position among the sorted children, its key's level
+    # and its widest member's rows (``out_groups`` rows: level, start, end, width; zeroed).
+    p = wp.int32(wp.tid())
+    if keys[p] == sentinel:
+        return
+    g = ends[p] - 1
+    group = extend_group_key(keys, p)
+    count = keys.shape[0]
+    if p == 0 or extend_group_key(keys, wp.max(p - 1, 0)) != group:
+        out_groups[g, 0] = wp.int32(group // wp.uint64(count + 1))
+        out_groups[g, 1] = p
+    last = p == count - 1
+    if not last:
+        nxt = keys[wp.min(p + 1, count - 1)]
+        last = nxt == sentinel or nxt // wp.uint64(count) != group
+    if last:
+        out_groups[g, 2] = p + 1
+    wp.atomic_max(out_groups, g, 3, nrow[children[p]])
+
+
+@wp.kernel
+def schedule_levels(
+    level_stats: wp.array2d[wp.int32],
+    level_offsets: wp.array2d[wp.int32],
+    row_ends: wp.array[wp.int32],
+    group_ends: wp.array[wp.int32],
+    out_schedule: wp.array[wp.int32],
+) -> None:
+    # One thread: each level's row of the schedule -- its first supernode in level order, its
+    # front count, panel count, most rows below a first panel, widest column count, the four
+    # level-major starts and its first panel's slot -- then a closing row with the totals, and
+    # every panel's work seeded at one.
+    n_levels = level_stats.shape[0]
+    start = wp.int32(0)
+    panels = wp.int32(0)
+    for h in range(n_levels + 1):
+        row = SCHEDULE_HEADER + h * LEVEL_FIELDS
+        out_schedule[row] = start
+        for k in range(4):
+            out_schedule[row + 5 + k] = level_offsets[k, start]
+        out_schedule[row + 9] = panels
+        if h < n_levels:
+            count = level_stats[h, 0]
+            level_panels = (level_stats[h, 1] + PANEL - 1) // PANEL
+            out_schedule[row + 1] = count
+            out_schedule[row + 2] = level_panels
+            out_schedule[row + 3] = level_stats[h, 2]
+            out_schedule[row + 4] = level_stats[h, 1]
+            start += count
+            panels += level_panels
+    out_schedule[SCHEDULE_ROWS] = row_ends[row_ends.shape[0] - 1]
+    out_schedule[SCHEDULE_GROUPS] = group_ends[group_ends.shape[0] - 1]
+    out_schedule[SCHEDULE_PANELS] = panels
+    work = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS
+    for p in range(panels):
+        out_schedule[work + p] = 1
+
+
+@wp.kernel
+def schedule_work(
+    level_nodes: wp.array[wp.int32],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    height: wp.array[wp.int32],
+    n_levels: wp.int32,
+    out_schedule: wp.array[wp.int32],
+) -> None:
+    # Every panel's update work: the largest trailing triangle and solve-block rows any front of
+    # the level updates after it, a panel past a narrower front's columns counting that front's
+    # last.
+    r = wp.int32(wp.tid())
+    sn = level_nodes[r]
+    row = SCHEDULE_HEADER + height[sn] * LEVEL_FIELDS
+    work = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS + out_schedule[row + 9]
+    c = ncol[sn]
+    size = front_size[sn]
+    for p in range(out_schedule[row + 2]):
+        last = wp.min((p + 1) * PANEL, c)
+        span = size - last
+        wp.atomic_max(out_schedule, work + p, span * span + span * last)
+
+
+@wp.kernel
+def schedule_groups(
+    groups: wp.array2d[wp.int32], n_levels: wp.int32, out_schedule: wp.array[wp.int32]
+) -> None:
+    # The extend-add groups after the panel work, four entries each.
+    g = wp.int32(wp.tid())
+    if g >= out_schedule[SCHEDULE_GROUPS]:
+        return
+    base = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS + out_schedule[SCHEDULE_PANELS] + 4 * g
+    for k in range(4):
+        out_schedule[base + k] = groups[g, k]
 
 
 @wp.kernel

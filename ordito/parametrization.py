@@ -47,7 +47,7 @@ _CG_TOLERANCE = 1e-8
 # at once: their iterations grow faster with the mesh than a factorization does (the biharmonic
 # operator's conditioning is the Laplacian's squared, and ``lscm`` pins only two vertices), and
 # past this size the factorization is the cheaper one-shot solve too.
-_FACTOR_FROM_VERTICES = 5_000
+_FACTOR_FROM_VERTICES = 4_000
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -283,7 +283,7 @@ def harmonic(
     solver
         ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
         when the iteration's result fails the check -- always at ``k >= 3``, where the iteration
-        does not converge, and at ``k == 2`` on a mesh of 5 000 vertices or more, where a
+        does not converge, and at ``k == 2`` on a mesh of 4 000 vertices or more, where a
         factorization costs less than the iteration. ``"direct"`` factors it at once (a sparse
         Cholesky); given a `Trimesh`, the factorization is kept on it, so every later call fixing
         the same vertices -- whatever their values -- is a factored solve with no iteration. Pays
@@ -427,7 +427,7 @@ def tutte(
     solver
         ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
         when the iteration's result fails the check (always at ``k >= 3``, and at ``k == 2`` on a
-        mesh of 5 000 vertices or more). ``"direct"`` factors it at once (a sparse Cholesky);
+        mesh of 4 000 vertices or more). ``"direct"`` factors it at once (a sparse Cholesky);
         given a `Trimesh`, the factorization is kept on it, so every later call fixing the same
         vertices -- whatever their values -- is a factored solve with no iteration. Pays from
         about the second such call; a one-shot call is usually faster under ``"auto"``.
@@ -848,7 +848,7 @@ def lscm(
         ``bc``).
     solver
         ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
-        when the iteration's result fails the check -- or at once on a mesh of 5 000 vertices or
+        when the iteration's result fails the check -- or at once on a mesh of 4 000 vertices or
         more, where a factorization costs less than the iteration. ``"direct"`` factors it at once
         (a sparse Cholesky); given a `Trimesh`, the factorization is kept on it, so every later
         call fixing the same vertices -- whatever their values -- is a factored solve with no
