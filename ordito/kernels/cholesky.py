@@ -539,11 +539,14 @@ def forward_gather(
     pair_values: wp.array[wp.float64],
     n: wp.int32,
     n_pairs: wp.int32,
+    start: wp.int32,
     out_gathered: wp.array[wp.float64],
 ) -> None:
     # A level's rows of the forward right-hand side: the original entry plus every descendant's
-    # contribution (their solve blocks' lower rows carry the sign), summed in a fixed order.
-    t, column = wp.tid()
+    # contribution (their solve blocks' lower rows carry the sign), summed in a fixed order. The
+    # level's entries of the level-major maps begin at ``start``, as in every solve kernel.
+    t0, column = wp.tid()
+    t = start + t0
     i = level_rows[t]
     value = rhs[column * n + perm[i]]
     pairs = wp.int64(column) * wp.int64(n_pairs)
@@ -565,10 +568,12 @@ def forward_partial(
     gathered: wp.array[wp.float64],
     n: wp.int32,
     n_parts: wp.int32,
+    start: wp.int32,
     out_parts: wp.array[wp.float64],
 ) -> None:
     # One row of a solve block against ``CHUNK`` of its supernode's gathered entries.
-    t, column = wp.tid()
+    t0, column = wp.tid()
+    t = start + t0
     out_parts[wp.int64(column) * wp.int64(n_parts) + wp.int64(task_slot[t])] = chunk_dot(
         blocks, task_block[t], wp.int64(task_stride[t]), gathered, column * n + task_source[t],
         task_count[t],
@@ -602,12 +607,14 @@ def forward_finalize(
     n: wp.int32,
     n_parts: wp.int32,
     n_pairs: wp.int32,
+    start: wp.int32,
     out_forward: wp.array[wp.float64],
     out_pair_values: wp.array[wp.float64],
 ) -> None:
     # A level's solve-block rows: their chunks summed in order. A diagonal-block row is the
     # forward solution's entry; a lower row is a contribution to an ancestor (``-1 - pair``).
-    t, column = wp.tid()
+    t0, column = wp.tid()
+    t = start + t0
     value = slot_sum(
         parts, wp.int64(column) * wp.int64(n_parts), row_slot[t], row_stride[t], 0, row_count[t]
     )
@@ -633,11 +640,13 @@ def backward_partial(
     solution: wp.array[wp.float64],
     n: wp.int32,
     n_parts: wp.int32,
+    level_start: wp.int32,
     out_parts: wp.array[wp.float64],
 ) -> None:
     # ``CHUNK`` entries of one solve-block column, transposed, against its supernode's forward
     # entries and its ancestors' finished solution entries.
-    t, column = wp.tid()
+    t0, column = wp.tid()
+    t = level_start + t0
     block = task_block[t]
     first = task_first[t]
     ncol = task_ncol[t]
@@ -672,13 +681,15 @@ def backward_finalize(
     refined: wp.array[wp.float64],
     n: wp.int32,
     n_parts: wp.int32,
+    start: wp.int32,
     out_correction: wp.array[wp.float64],
 ) -> None:
     # A level's entries of the correction (in elimination order, which the next level's
     # ``backward_partial`` reads): their chunks summed in order. Each is also added to the refined
     # solution at its operator row: every row is finished by exactly one level, so this is the
     # whole correction's scatter, one launch fewer per refinement round.
-    t, column = wp.tid()
+    t0, column = wp.tid()
+    t = start + t0
     value = slot_sum(
         parts, wp.int64(column) * wp.int64(n_parts), row_slot[t], row_stride[t], row_first[t],
         row_count[t],
@@ -1241,13 +1252,14 @@ def write_tree_node(
     root: wp.int32,
     tree: wp.array2d[wp.int32],
 ) -> None:
-    # One node of the dissection tree: its first position, rows, parent, depth and root (its own id
-    # when it roots its tree).
-    tree[0, node] = start
-    tree[1, node] = size
-    tree[2, node] = parent
-    tree[3, node] = depth
-    tree[4, node] = wp.where(root >= 0, root, node)
+    # One node of the dissection tree, a row of ``tree``: its first position, rows, parent, depth
+    # and root (its own id when it roots its tree). Row-major by node, so the nodes the
+    # dissection made are one contiguous prefix to read back.
+    tree[node, 0] = start
+    tree[node, 1] = size
+    tree[node, 2] = parent
+    tree[node, 3] = depth
+    tree[node, 4] = wp.where(root >= 0, root, node)
 
 
 @wp.kernel
@@ -1270,7 +1282,7 @@ def dissection_link(
     # Segment ``s``'s nodes and next-depth segments: its separator node, each half that is a leaf
     # as a leaf node, and each half that goes on as a next-depth segment (its size and task count
     # into the next depth's table, scanned there). ``segments`` rows are each segment's first
-    # position, parent node, that node's depth and root; ``out_tree`` rows ``write_tree_node``'s.
+    # position, parent node, that node's depth and root; ``out_tree`` holds ``write_tree_node``'s.
     # The crossing counts are cleared once read, for the next depth.
     s = wp.int32(wp.tid())
     if segment_start[s + 1] == segment_start[s]:
