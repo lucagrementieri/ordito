@@ -6352,7 +6352,7 @@ float64 (built native, never recast) so the ill-conditioned <code>k &gt; 1</code
               <div class="doc-md-description">
                 <p><code>"auto"</code> (default) solves by conjugate gradient, verified, and factors the system only
 when the iteration's result fails the check -- always at <code>k &gt;= 3</code>, where the iteration
-does not converge, and at <code>k == 2</code> on a mesh of 5 000 vertices or more, where a
+does not converge, and at <code>k == 2</code> on a mesh of 4 000 vertices or more, where a
 factorization costs less than the iteration. <code>"direct"</code> factors it at once (a sparse
 Cholesky); given a <code>Trimesh</code>, the factorization is kept on it, so every later call fixing
 the same vertices -- whatever their values -- is a factored solve with no iteration. Pays
@@ -6817,7 +6817,7 @@ there, as this one does with them.</p>
 <span class="sd">    solver</span>
 <span class="sd">        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only</span>
 <span class="sd">        when the iteration's result fails the check -- always at ``k &gt;= 3``, where the iteration</span>
-<span class="sd">        does not converge, and at ``k == 2`` on a mesh of 5 000 vertices or more, where a</span>
+<span class="sd">        does not converge, and at ``k == 2`` on a mesh of 4 000 vertices or more, where a</span>
 <span class="sd">        factorization costs less than the iteration. ``"direct"`` factors it at once (a sparse</span>
 <span class="sd">        Cholesky); given a `Trimesh`, the factorization is kept on it, so every later call fixing</span>
 <span class="sd">        the same vertices -- whatever their values -- is a factored solve with no iteration. Pays</span>
@@ -7079,7 +7079,7 @@ convex loop from
               <div class="doc-md-description">
                 <p><code>"auto"</code> (default) solves by conjugate gradient, verified, and factors the system only
 when the iteration's result fails the check (always at <code>k &gt;= 3</code>, and at <code>k == 2</code> on a
-mesh of 5 000 vertices or more). <code>"direct"</code> factors it at once (a sparse Cholesky);
+mesh of 4 000 vertices or more). <code>"direct"</code> factors it at once (a sparse Cholesky);
 given a <code>Trimesh</code>, the factorization is kept on it, so every later call fixing the same
 vertices -- whatever their values -- is a factored solve with no iteration. Pays from
 about the second such call; a one-shot call is usually faster under <code>"auto"</code>.</p>
@@ -7405,7 +7405,7 @@ device.</p>
 <span class="sd">    solver</span>
 <span class="sd">        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only</span>
 <span class="sd">        when the iteration's result fails the check (always at ``k &gt;= 3``, and at ``k == 2`` on a</span>
-<span class="sd">        mesh of 5 000 vertices or more). ``"direct"`` factors it at once (a sparse Cholesky);</span>
+<span class="sd">        mesh of 4 000 vertices or more). ``"direct"`` factors it at once (a sparse Cholesky);</span>
 <span class="sd">        given a `Trimesh`, the factorization is kept on it, so every later call fixing the same</span>
 <span class="sd">        vertices -- whatever their values -- is a factored solve with no iteration. Pays from</span>
 <span class="sd">        about the second such call; a one-shot call is usually faster under ``"auto"``.</span>
@@ -8389,7 +8389,7 @@ similarity-transform null space.</p>
             <td>
               <div class="doc-md-description">
                 <p><code>"auto"</code> (default) solves by conjugate gradient, verified, and factors the system only
-when the iteration's result fails the check -- or at once on a mesh of 5 000 vertices or
+when the iteration's result fails the check -- or at once on a mesh of 4 000 vertices or
 more, where a factorization costs less than the iteration. <code>"direct"</code> factors it at once
 (a sparse Cholesky); given a <code>Trimesh</code>, the factorization is kept on it, so every later
 call fixing the same vertices -- whatever their values -- is a factored solve with no
@@ -8823,7 +8823,7 @@ iteration. Pays from about the second such call on a smaller mesh.</p>
 <span class="sd">        ``bc``).</span>
 <span class="sd">    solver</span>
 <span class="sd">        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only</span>
-<span class="sd">        when the iteration's result fails the check -- or at once on a mesh of 5 000 vertices or</span>
+<span class="sd">        when the iteration's result fails the check -- or at once on a mesh of 4 000 vertices or</span>
 <span class="sd">        more, where a factorization costs less than the iteration. ``"direct"`` factors it at once</span>
 <span class="sd">        (a sparse Cholesky); given a `Trimesh`, the factorization is kept on it, so every later</span>
 <span class="sd">        call fixing the same vertices -- whatever their values -- is a factored solve with no</span>
