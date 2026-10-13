@@ -1447,10 +1447,6 @@ def _nested_dissection(
     counts = _launch.zeros(2 * slots, dtype=wp.int32, device=device)
     keep = _launch.empty(n, dtype=wp.int32, device=device)
     next_segment = _launch.empty(n, dtype=wp.int32, device=device)
-    # One rank buffer: a zero slot, then the separator, leaf and next-segment flags
-    # ``dissection_split_flags`` writes and one scan turns into ranks (``section_rank``).
-    ranks = _launch.zeros(5 * slots + 1, dtype=wp.int32, device=device)
-    rank_tail = _launch.view(ranks, 1, ranks.size)
     separator_side = _launch.empty(slots, dtype=wp.int32, device=device)
     separator_node = _launch.empty(slots, dtype=wp.int32, device=device)
     child_next = _launch.empty(2 * slots, dtype=wp.int32, device=device)
@@ -1462,7 +1458,7 @@ def _nested_dissection(
     segments = [odt.empty_2d((4, slots), wp.int32, device=device) for _ in range(2)]
     _launch.launch(
         kernel_cholesky.seed_dissection,
-        dim=1,
+        dim=tables[0].size,
         inputs=[wp.int32(n), wp.int32(chunk)],
         outputs=[tables[0], segments[0]],
         device=device,
@@ -1473,23 +1469,25 @@ def _nested_dissection(
     leaf_rows = wp.int32(CHOLESKY_LEAF_ROWS)
     # The sentinel key past the live vertices carries segment ``slots + 1`` (above every real one).
     sort_bits = 32 + _bits(slots + 1)
-    block_dim = 256 if cuda else 1
+    block_dim = 128 if cuda else 1
+    # The bookkeeping block's lanes: its packed tallies hold a chunk of at most 512 slots.
+    bookkeeping_lanes = 512 if cuda else 1
 
     def split(
+        depth: int,
         table: wp.array[wp.int32],
         segment: odt.Array2dInt32,
         next_table: wp.array[wp.int32],
         next_segments: odt.Array2dInt32,
     ) -> None:
         """Split every segment of one depth; the depth itself lives in ``state``."""
-        _launch.array_scan(
-            _launch.view(table, 1, table.size), _launch.view(table, 1, table.size), inclusive=True
-        )
         segment_start = _launch.view(table, 0, slots + 1)
         tasks = _launch.view(table, slots + 1, table.size)
+        # A depth has at most ``2^depth`` segments, each a task more than its chunks.
+        live = min(1 << depth, slots)
         _launch.launch_tiled(
             kernel_cholesky.dissection_partials,
-            dim=[max_tasks],
+            dim=[min(live + n // chunk + 1, max_tasks)],
             inputs=[order, coordinates, segment_start, tasks, wp.int32(chunk)],
             outputs=[partials],
             block_dim=block_dim,
@@ -1497,7 +1495,7 @@ def _nested_dissection(
         )
         _launch.launch(
             kernel_cholesky.dissection_axes,
-            dim=slots,
+            dim=live,
             inputs=[order, coordinates, segment_start, tasks, partials],
             outputs=[centre, axis],
             device=device,
@@ -1529,20 +1527,14 @@ def _nested_dissection(
             outputs=[lower_mark, upper_mark, counts],
             device=device,
         )
-        _launch.launch(
-            kernel_cholesky.dissection_split_flags,
-            dim=slots,
-            inputs=[segment_start, counts, leaf_rows],
-            outputs=[ranks],
-            device=device,
-        )
-        _launch.array_scan(rank_tail, rank_tail, inclusive=True)
-        _launch.launch(
-            kernel_cholesky.dissection_link,
-            dim=slots,
-            inputs=[segment_start, segment, ranks, state, leaf_rows, wp.int32(chunk), counts],
+        _launch.launch_tiled(
+            kernel_cholesky.dissection_bookkeeping,
+            dim=[1],
+            inputs=[segment_start, segment, wp.int32(live), leaf_rows,
+                    wp.int32(chunk), counts, state],
             outputs=[tree, separator_side, separator_node, child_next, child_leaf, next_table,
                      next_segments],
+            block_dim=bookkeeping_lanes,
             device=device,
         )  # fmt: skip
         _launch.launch(
@@ -1557,7 +1549,7 @@ def _nested_dissection(
         _launch.launch(
             kernel_cholesky.dissection_compact,
             dim=n,
-            inputs=[vertices, keep, next_segment, ranks, table, state],
+            inputs=[vertices, keep, next_segment, state],
             outputs=[order, order_segment],
             device=device,
         )
@@ -1565,7 +1557,7 @@ def _nested_dissection(
     # Issued directly: recording two depths and replaying them was slower (the scans' and the
     # sort's allocation nodes make the recording cost more than the replays save).
     for depth in range(depths):
-        split(tables[depth % 2], segments[depth % 2],
+        split(depth, tables[depth % 2], segments[depth % 2],
               tables[(depth + 1) % 2], segments[(depth + 1) % 2])  # fmt: skip
     return node, tree, state, depths
 

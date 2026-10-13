@@ -428,8 +428,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # each segment clears once read, and the depth's table and node / depth words its last launch
     # clears and advances. The breadth-first search's distances and loop state, advanced in place
     # level by level inside a recorded loop.
-    ("cholesky", "dissection_link"): frozenset({"counts"}),
-    ("cholesky", "dissection_compact"): frozenset({"table", "state"}),
+    ("cholesky", "dissection_bookkeeping"): frozenset({"state"}),
+    ("cholesky", "dissection_compact"): frozenset({"state"}),
     ("cholesky", "breadth_first_level"): frozenset({"distance", "state"}),
     ("cholesky", "breadth_first_advance"): frozenset({"state"}),
     # in-place

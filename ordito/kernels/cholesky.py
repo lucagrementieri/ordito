@@ -986,7 +986,7 @@ def dissection_partials(
     # One chunk of one segment, one block: the first and second moments of its points about the
     # segment's reference point, each lane summing a strided share and the block reducing them
     # (the block reduction and the segment's sum in task order are both fixed, so the axis is the
-    # same on every run). Launched over the depth's largest task count; a block past the depth's
+    # same on every run). Launched over a bound on the depth's task count; a block past the depth's
     # tasks returns whole.
     t, lane = wp.tid()
     if t + live_count(segment_start) >= tasks[tasks.shape[0] - 1]:
@@ -1195,24 +1195,17 @@ def seed_dissection(
     n: wp.int32, chunk: wp.int32, out_table: wp.array[wp.int32], out_segments: wp.array2d[wp.int32]
 ) -> None:
     # The first depth's one segment: every row, at the start of the order, with no parent node.
-    # ``out_table`` holds the depth's segment sizes then its task counts, each after a zero slot.
+    # ``out_table`` holds the depth's segment starts then its live-shifted task offsets -- the
+    # inclusive scan ``dissection_bookkeeping`` leaves for every later depth -- a thread an entry.
+    p = wp.int32(wp.tid())
     slots = out_table.shape[0] // 2 - 1
-    out_table[1] = n
-    out_table[slots + 2] = (n + chunk - 1) // chunk
-    out_segments[0, 0] = 0
-    out_segments[1, 0] = -1
-    out_segments[2, 0] = -1
-    out_segments[3, 0] = -1
-
-
-@wp.func
-def section_rank(ranks: wp.array[wp.int32], section: wp.int32, i: wp.int32) -> wp.int32:
-    # Entry ``i``'s exclusive rank within one section of ``dissection_split_flags``' scanned
-    # buffer: separators (``section`` 0, ``slots`` entries), then leaves, then next segments
-    # (``2 slots`` each).
-    slots = (ranks.shape[0] - 1) // 5
-    start = wp.where(section == 0, 0, wp.where(section == 1, slots, 3 * slots))
-    return ranks[start + i] - ranks[start]
+    if p > 0:
+        out_table[p] = wp.where(p <= slots + 1, n, n + (n + chunk - 1) // chunk)
+    if p == 0:
+        out_segments[0, 0] = 0
+        out_segments[1, 0] = -1
+        out_segments[2, 0] = -1
+        out_segments[3, 0] = -1
 
 
 @wp.func
@@ -1232,27 +1225,6 @@ def dissection_children(
     upper = count - half - wp.where(take_lower, 0, separator)
     side = wp.where(separator > 0, wp.where(take_lower, 1, 2), 0)
     return side, separator, lower, upper
-
-
-@wp.kernel
-def dissection_split_flags(
-    segment_start: wp.array[wp.int32],
-    counts: wp.array[wp.int32],
-    leaf_rows: wp.int32,
-    out_ranks: wp.array[wp.int32],
-) -> None:
-    # Per segment slot: whether it makes a separator node, and per child half whether it becomes a
-    # leaf node or a next-depth segment -- three sections of one buffer after a zero slot, scanned
-    # in place as one, so the nodes and segments are numbered as the host-side tree numbered them
-    # (this depth's separators in segment order, then its leaves in child order).
-    s = wp.int32(wp.tid())
-    slots = segment_start.shape[0] - 1
-    side, _separator, lower, upper = dissection_children(segment_start, counts, s)
-    out_ranks[1 + s] = wp.where(side != 0, 1, 0)
-    for k in range(2):
-        rows = wp.where(k == 0, lower, upper)
-        out_ranks[1 + slots + 2 * s + k] = wp.where(rows > 0 and rows <= leaf_rows, 1, 0)
-        out_ranks[1 + 3 * slots + 2 * s + k] = wp.where(rows > leaf_rows, 1, 0)
 
 
 @wp.func
@@ -1275,15 +1247,67 @@ def write_tree_node(
     tree[node, 4] = wp.where(root >= 0, root, node)
 
 
-@wp.kernel
+# ``segment_tallies`` packs a slot's separator, leaf and next-segment counts into one ``uint32``
+# (bits 0-9, 10-20, 21-31): summed over a block-wide chunk of at most 512 slots no field
+# overflows, so a chunk ranks its slots by one scan of them, and two of the next segments' rows
+# and tasks.
+TALLY_LEAF = wp.uint32(1 << 10)
+TALLY_NEXT = wp.uint32(1 << 21)
+
+
+@wp.func
+def segment_tallies(
+    segment_start: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    leaf_rows: wp.int32,
+    chunk: wp.int32,
+    s: wp.int32,
+    live: wp.int32,
+) -> tuple[wp.uint32, wp.int32, wp.int32]:
+    # What segment slot ``s`` adds to its depth: a separator node (``0`` or ``1``), leaf nodes and
+    # next-depth segments (``0`` to ``2`` each), packed, and its next segments' rows and task
+    # counts. A slot past ``live`` adds nothing.
+    nodes = wp.uint32(0)
+    rows_on = wp.int32(0)
+    tasks_on = wp.int32(0)
+    if s < live:
+        side, _separator, lower, upper = dissection_children(segment_start, counts, s)
+        nodes = wp.where(side != 0, wp.uint32(1), wp.uint32(0))
+        for k in range(2):
+            rows = wp.where(k == 0, lower, upper)
+            leaf = rows > 0 and rows <= leaf_rows
+            goes_on = rows > leaf_rows
+            nodes += wp.where(leaf, TALLY_LEAF, wp.uint32(0))
+            nodes += wp.where(goes_on, TALLY_NEXT, wp.uint32(0))
+            rows_on += wp.where(goes_on, rows, 0)
+            tasks_on += wp.where(goes_on, (rows + chunk - 1) // chunk, 0)
+    return nodes, rows_on, tasks_on
+
+
+@wp.func
+def tally_counts(packed: wp.uint32) -> wp.vec3i:
+    # The separator, leaf and next-segment counts a ``segment_tallies`` sum packs.
+    return wp.vec3i(
+        wp.int32(packed & wp.uint32(0x3FF)),
+        wp.int32((packed >> wp.uint32(10)) & wp.uint32(0x7FF)),
+        wp.int32(packed >> wp.uint32(21)),
+    )
+
+
+@wp.func
 def dissection_link(
     segment_start: wp.array[wp.int32],
     segments: wp.array2d[wp.int32],
-    ranks: wp.array[wp.int32],
     state: wp.array[wp.int32],
     leaf_rows: wp.int32,
     chunk: wp.int32,
     counts: wp.array[wp.int32],
+    s: wp.int32,
+    nodes_before: wp.vec3i,
+    rows_before: wp.int32,
+    tasks_before: wp.int32,
+    n_separators: wp.int32,
+    total_rows: wp.int32,
     out_tree: wp.array2d[wp.int32],
     out_separator_side: wp.array[wp.int32],
     out_separator_node: wp.array[wp.int32],
@@ -1293,11 +1317,14 @@ def dissection_link(
     out_next_segments: wp.array2d[wp.int32],
 ) -> None:
     # Segment ``s``'s nodes and next-depth segments: its separator node, each half that is a leaf
-    # as a leaf node, and each half that goes on as a next-depth segment (its size and task count
-    # into the next depth's table, scanned there). ``segments`` rows are each segment's first
-    # position, parent node, that node's depth and root; ``out_tree`` holds ``write_tree_node``'s.
-    # The crossing counts are cleared once read, for the next depth.
-    s = wp.int32(wp.tid())
+    # as a leaf node, and each half that goes on as a next-depth segment (its start and task
+    # offset into the next depth's table, already scanned). ``nodes_before``, ``rows_before``
+    # and ``tasks_before`` are the ``segment_tallies`` of the slots before ``s``, and
+    # ``n_separators`` / ``total_rows`` the depth's totals, so the nodes are numbered as the
+    # host-side tree numbered them: the depth's separators in segment order, then its leaves in
+    # child order. ``segments`` rows are each segment's first position, parent node, that node's
+    # depth and root; ``out_tree`` holds ``write_tree_node``'s. The crossing counts are cleared
+    # once read, for the next depth.
     if segment_start[s + 1] == segment_start[s]:
         return
     side, separator, lower, upper = dissection_children(segment_start, counts, s)
@@ -1314,7 +1341,7 @@ def dissection_link(
     me_depth = parent_depth
     me_root = root
     if side != 0:
-        separator_node = base + section_rank(ranks, 0, s)
+        separator_node = base + nodes_before[0]
         count = segment_start[s + 1] - segment_start[s]
         write_tree_node(
             separator_node, first + count - separator, separator, parent, parent_depth + 1, root,
@@ -1325,7 +1352,10 @@ def dissection_link(
         me_root = wp.where(root >= 0, root, separator_node)
     out_separator_side[s] = side
     out_separator_node[s] = separator_node
-    n_separators = ranks[slots]
+    leaves = nodes_before[1]
+    nexts = nodes_before[2]
+    rows_through = rows_before
+    tasks_through = total_rows + tasks_before
     for k in range(2):
         c = 2 * s + k
         rows = wp.where(k == 0, lower, upper)
@@ -1333,12 +1363,16 @@ def dissection_link(
         leaf = wp.int32(-1)
         next_segment = wp.int32(-1)
         if rows > 0 and rows <= leaf_rows:
-            leaf = base + n_separators + section_rank(ranks, 1, c)
+            leaf = base + n_separators + leaves
+            leaves += 1
             write_tree_node(leaf, child_first, rows, me, me_depth + 1, me_root, out_tree)
         elif rows > leaf_rows:
-            next_segment = section_rank(ranks, 2, c)
-            out_next_table[next_segment + 1] = rows
-            out_next_table[slots + 2 + next_segment] = (rows + chunk - 1) // chunk
+            next_segment = nexts
+            nexts += 1
+            rows_through += rows
+            tasks_through += (rows + chunk - 1) // chunk
+            out_next_table[next_segment + 1] = rows_through
+            out_next_table[slots + 2 + next_segment] = tasks_through
             out_next_segments[0, next_segment] = child_first
             out_next_segments[1, next_segment] = me
             out_next_segments[2, next_segment] = me_depth
@@ -1348,26 +1382,80 @@ def dissection_link(
 
 
 @wp.kernel
+def dissection_bookkeeping(
+    segment_start: wp.array[wp.int32],
+    segments: wp.array2d[wp.int32],
+    live: wp.int32,
+    leaf_rows: wp.int32,
+    chunk: wp.int32,
+    counts: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_tree: wp.array2d[wp.int32],
+    out_separator_side: wp.array[wp.int32],
+    out_separator_node: wp.array[wp.int32],
+    out_child_next: wp.array[wp.int32],
+    out_child_leaf: wp.array[wp.int32],
+    out_next_table: wp.array[wp.int32],
+    out_next_segments: wp.array2d[wp.int32],
+) -> None:
+    # A depth's per-segment bookkeeping in one block, over its ``live`` first segment slots (a
+    # depth has at most ``2^depth`` segments): the depth's totals, then the slots a block-wide
+    # chunk at a time, each ranked by an exclusive scan of ``segment_tallies`` carried across
+    # chunks and linked (``dissection_link``), then the next depth's table past its last segment
+    # filled with the totals -- the inclusive scan its readers expect -- and the node count
+    # advanced. The tables are a few entries a segment, so one block walks them in less time
+    # than separate flag, scan and link launches took to issue.
+    _block, lane = wp.tid()
+    lanes = wp.block_dim()
+    slots = segment_start.shape[0] - 1
+    nodes_total = wp.vec3i(0, 0, 0)
+    rows_total = wp.int32(0)
+    tasks_total = wp.int32(0)
+    for start in range(0, live, lanes):
+        nodes, rows, tasks = segment_tallies(segment_start, counts, leaf_rows, chunk,
+                                             start + lane, live)  # fmt: skip
+        nodes_total += tally_counts(block_sum(nodes))
+        rows_total += block_sum(rows)
+        tasks_total += block_sum(tasks)
+    nodes_carry = wp.vec3i(0, 0, 0)
+    rows_carry = wp.int32(0)
+    tasks_carry = wp.int32(0)
+    for start in range(0, live, lanes):
+        s = start + lane
+        nodes, rows, tasks = segment_tallies(segment_start, counts, leaf_rows, chunk, s, live)
+        nodes_before = nodes_carry + tally_counts(wp.untile(wp.tile_scan_exclusive(wp.tile(nodes))))
+        rows_before = rows_carry + wp.untile(wp.tile_scan_exclusive(wp.tile(rows)))
+        tasks_before = tasks_carry + wp.untile(wp.tile_scan_exclusive(wp.tile(tasks)))
+        nodes_carry += tally_counts(block_sum(nodes))
+        rows_carry += block_sum(rows)
+        tasks_carry += block_sum(tasks)
+        if s < live:
+            dissection_link(segment_start, segments, state, leaf_rows, chunk, counts, s,
+                            nodes_before, rows_before, tasks_before, nodes_total[0], rows_total,
+                            out_tree, out_separator_side, out_separator_node, out_child_next,
+                            out_child_leaf, out_next_table, out_next_segments)  # fmt: skip
+    for j in range(nodes_total[2] + lane, slots, lanes):
+        out_next_table[j + 1] = rows_total
+        out_next_table[slots + 2 + j] = rows_total + tasks_total
+    block_barrier()
+    if lane == 0:
+        out_next_table[slots + 1] = rows_total
+        state[DISSECTION_NODES] = state[DISSECTION_NODES] + nodes_total[0] + nodes_total[1]
+
+
+@wp.kernel
 def dissection_compact(
     vertices: wp.array[wp.int32],
     kept_through: wp.array[wp.int32],
     next_segment: wp.array[wp.int32],
-    ranks: wp.array[wp.int32],
-    table: wp.array[wp.int32],
     state: wp.array[wp.int32],
     out_order: wp.array[wp.int32],
     out_order_segment: wp.array[wp.int32],
 ) -> None:
     # The survivors in sorted order: ``kept_through`` is the keep flags' inclusive scan, done in
-    # place, from which each position recovers its own flag. The depth closes here: its table is
-    # cleared for the depth after next, which writes it again, and the tree's node count and the
-    # depth advance (this depth's separators and leaves are the scanned ranks' first two sections).
+    # place, from which each position recovers its own flag. The depth closes here: it advances.
     p = wp.int32(wp.tid())
-    if p < table.shape[0]:
-        table[p] = 0
     if p == 0:
-        slots = (ranks.shape[0] - 1) // 5
-        state[DISSECTION_NODES] = state[DISSECTION_NODES] + ranks[3 * slots]
         state[DISSECTION_DEPTH] = state[DISSECTION_DEPTH] + 1
     q, kept = scanned_count(kept_through, p)
     if kept != 0:
