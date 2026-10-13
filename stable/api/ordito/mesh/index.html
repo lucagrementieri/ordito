@@ -14673,8 +14673,9 @@ weld.</p>
         <p>Drop every factorization the solvers keep on this mesh, keeping the mesh's cache.</p>
 <p>Each <a class="autorefs autorefs-internal" title="heat_solver" href="./#ordito.mesh.Trimesh.heat_solver"><code>heat_solver</code></a> and the
 <a class="autorefs autorefs-internal" title="fixed_vertex_solver" href="./#ordito.mesh.Trimesh.fixed_vertex_solver"><code>fixed_vertex_solver</code></a> is released (its
-factorizations and solve counts dropped) and forgotten; the operators cached as properties
-stay. A later solve starts counting afresh, so it factors again only when that pays.</p>
+factorizations, solve counts and remembered refusals dropped) and forgotten; the operators
+cached as properties stay. A later solve starts counting afresh, so it factors again only
+when that pays.</p>
 
 
 <details class="see-also" open>
@@ -14742,14 +14743,16 @@ stay. A later solve starts counting afresh, so it factors again only when that p
 <span class="normal">2489</span>
 <span class="normal">2490</span>
 <span class="normal">2491</span>
-<span class="normal">2492</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release_factorizations</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">2492</span>
+<span class="normal">2493</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release_factorizations</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Drop every factorization the solvers keep on this mesh, keeping the mesh's cache.</span>
 
 <span class="sd">    Each [`heat_solver`][ordito.mesh.Trimesh.heat_solver] and the</span>
 <span class="sd">    [`fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver] is released (its</span>
-<span class="sd">    factorizations and solve counts dropped) and forgotten; the operators cached as properties</span>
-<span class="sd">    stay. A later solve starts counting afresh, so it factors again only when that pays.</span>
+<span class="sd">    factorizations, solve counts and remembered refusals dropped) and forgotten; the operators</span>
+<span class="sd">    cached as properties stay. A later solve starts counting afresh, so it factors again only</span>
+<span class="sd">    when that pays.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -14828,8 +14831,7 @@ go stale.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2494</span>
-<span class="normal">2495</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2495</span>
 <span class="normal">2496</span>
 <span class="normal">2497</span>
 <span class="normal">2498</span>
@@ -14851,7 +14853,8 @@ go stale.</p>
 <span class="normal">2514</span>
 <span class="normal">2515</span>
 <span class="normal">2516</span>
-<span class="normal">2517</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">invalidate</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">2517</span>
+<span class="normal">2518</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">invalidate</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Clear every cached value, including the `warp_mesh` BVH.</span>
 
@@ -15116,8 +15119,7 @@ position.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2520</span>
-<span class="normal">2521</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2521</span>
 <span class="normal">2522</span>
 <span class="normal">2523</span>
 <span class="normal">2524</span>
@@ -15212,7 +15214,8 @@ position.</p>
 <span class="normal">2613</span>
 <span class="normal">2614</span>
 <span class="normal">2615</span>
-<span class="normal">2616</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_arguments</span><span class="p">(</span>
+<span class="normal">2616</span>
+<span class="normal">2617</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_arguments</span><span class="p">(</span>
     <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="nb">object</span><span class="p">,</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="nb">object</span><span class="p">,</span>

@@ -4424,8 +4424,18 @@ iteration, only the factorization's solve.</p>
 builds it ahead of the calls, when a call asks for one (<code>solver="direct"</code>), or when a call
 built one anyway: the iteration's result failed
 its verification (see <a class="autorefs autorefs-internal" title="min_quad_with_fixed" href="../linalg/#ordito.linalg.min_quad_with_fixed"><code>min_quad_with_fixed</code></a>), or the
-system is factored from the start (<code>k &gt;= 3</code>). A call fixing other vertices than the kept
-factorization's solves as if none were kept, and replaces it with its own when it builds one.</p>
+system is factored from the start -- at <code>k &gt;= 3</code>, and for a <code>k == 2</code> <code>harmonic</code> /
+<code>tutte</code> system or an <code>lscm</code> one on a mesh of 4 000 vertices or more. A call fixing other
+vertices than the kept factorization's solves as if none were kept, and replaces it with its
+own when it builds one. A system factored from the start that cannot be factored (over
+<a class="autorefs autorefs-internal" title="CHOLESKY_MEMORY_BUDGET
+
+
+  
+      module-attribute
+  " href="../cholesky/#ordito.cholesky.CHOLESKY_MEMORY_BUDGET"><code>CHOLESKY_MEMORY_BUDGET</code></a>, or not definite) is
+remembered as such until <a class="autorefs autorefs-internal" title="release" href="./#ordito.parametrization.FixedVertexSolver.release"><code>release</code></a>, and
+later <code>"auto"</code> calls iterate without attempting it again.</p>
 
 
 <details class="note" open>
@@ -4496,7 +4506,7 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
               <td><code><a class="autorefs autorefs-internal" title="release (ordito.parametrization.FixedVertexSolver.release)" href="./#ordito.parametrization.FixedVertexSolver.release">release</a></code></td>
               <td>
                 <div class="doc-md-description">
-                  <p>Drop every kept factorization.</p>
+                  <p>Drop every kept factorization, and forget which systems could not be factored.</p>
                 </div>
               </td>
             </tr>
@@ -4522,13 +4532,21 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/parametrization.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1123</span>
-<span class="normal">1124</span>
-<span class="normal">1125</span>
-<span class="normal">1126</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1156</span>
+<span class="normal">1157</span>
+<span class="normal">1158</span>
+<span class="normal">1159</span>
+<span class="normal">1160</span>
+<span class="normal">1161</span>
+<span class="normal">1162</span>
+<span class="normal">1163</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Bind a solver to ``mesh``; nothing is assembled until a factorization is asked for."""</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_mesh</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="n">twl</span><span class="o">.</span><span class="n">MinQuadWithFixedData</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="c1"># The ``(method, k)`` whose system ``"auto"`` factored at once (``_factors_at_once``) and</span>
+    <span class="c1"># the factorization refused -- over the memory budget, or not definite. Its later calls</span>
+    <span class="c1"># iterate without paying for the refused attempt's analysis again; ``release`` forgets it.</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_refused</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">]]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
 </code></pre></div></td></tr></table></div>
                   </details>
 
@@ -4589,7 +4607,7 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Drop every kept factorization.</p>
+        <p>Drop every kept factorization, and forget which systems could not be factored.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
@@ -4601,15 +4619,17 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1133</span>
-<span class="normal">1134</span>
-<span class="normal">1135</span>
-<span class="normal">1136</span>
-<span class="normal">1137</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">"""Drop every kept factorization."""</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1170</span>
+<span class="normal">1171</span>
+<span class="normal">1172</span>
+<span class="normal">1173</span>
+<span class="normal">1174</span>
+<span class="normal">1175</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Drop every kept factorization, and forget which systems could not be factored."""</span>
     <span class="k">for</span> <span class="n">system</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
         <span class="n">system</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_refused</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -4745,7 +4765,8 @@ definite in <code>float64</code>), and they keep iterating.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>method</code> is not one of the three, if <code>k &lt; 1</code>, or if <code>k != 1</code> for <code>"lscm"</code>.</p>
+                <p>If <code>method</code> is not one of the three, if <code>k &lt; 1</code>, if <code>k != 1</code> for <code>"lscm"</code>, or
+if <code>fixed_indices</code> repeats a vertex or holds one outside <code>[0, n_vertices)</code>.</p>
               </div>
             </td>
           </tr>
@@ -4782,45 +4803,7 @@ definite in <code>float64</code>), and they keep iterating.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1139</span>
-<span class="normal">1140</span>
-<span class="normal">1141</span>
-<span class="normal">1142</span>
-<span class="normal">1143</span>
-<span class="normal">1144</span>
-<span class="normal">1145</span>
-<span class="normal">1146</span>
-<span class="normal">1147</span>
-<span class="normal">1148</span>
-<span class="normal">1149</span>
-<span class="normal">1150</span>
-<span class="normal">1151</span>
-<span class="normal">1152</span>
-<span class="normal">1153</span>
-<span class="normal">1154</span>
-<span class="normal">1155</span>
-<span class="normal">1156</span>
-<span class="normal">1157</span>
-<span class="normal">1158</span>
-<span class="normal">1159</span>
-<span class="normal">1160</span>
-<span class="normal">1161</span>
-<span class="normal">1162</span>
-<span class="normal">1163</span>
-<span class="normal">1164</span>
-<span class="normal">1165</span>
-<span class="normal">1166</span>
-<span class="normal">1167</span>
-<span class="normal">1168</span>
-<span class="normal">1169</span>
-<span class="normal">1170</span>
-<span class="normal">1171</span>
-<span class="normal">1172</span>
-<span class="normal">1173</span>
-<span class="normal">1174</span>
-<span class="normal">1175</span>
-<span class="normal">1176</span>
-<span class="normal">1177</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1177</span>
 <span class="normal">1178</span>
 <span class="normal">1179</span>
 <span class="normal">1180</span>
@@ -4837,7 +4820,48 @@ definite in <code>float64</code>), and they keep iterating.</p>
 <span class="normal">1191</span>
 <span class="normal">1192</span>
 <span class="normal">1193</span>
-<span class="normal">1194</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">1194</span>
+<span class="normal">1195</span>
+<span class="normal">1196</span>
+<span class="normal">1197</span>
+<span class="normal">1198</span>
+<span class="normal">1199</span>
+<span class="normal">1200</span>
+<span class="normal">1201</span>
+<span class="normal">1202</span>
+<span class="normal">1203</span>
+<span class="normal">1204</span>
+<span class="normal">1205</span>
+<span class="normal">1206</span>
+<span class="normal">1207</span>
+<span class="normal">1208</span>
+<span class="normal">1209</span>
+<span class="normal">1210</span>
+<span class="normal">1211</span>
+<span class="normal">1212</span>
+<span class="normal">1213</span>
+<span class="normal">1214</span>
+<span class="normal">1215</span>
+<span class="normal">1216</span>
+<span class="normal">1217</span>
+<span class="normal">1218</span>
+<span class="normal">1219</span>
+<span class="normal">1220</span>
+<span class="normal">1221</span>
+<span class="normal">1222</span>
+<span class="normal">1223</span>
+<span class="normal">1224</span>
+<span class="normal">1225</span>
+<span class="normal">1226</span>
+<span class="normal">1227</span>
+<span class="normal">1228</span>
+<span class="normal">1229</span>
+<span class="normal">1230</span>
+<span class="normal">1231</span>
+<span class="normal">1232</span>
+<span class="normal">1233</span>
+<span class="normal">1234</span>
+<span class="normal">1235</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Factor ``method``'s system with ``fixed_indices`` fixed, for every later call fixing them.</span>
 
@@ -4863,7 +4887,8 @@ definite in <code>float64</code>), and they keep iterating.</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``method`` is not one of the three, if ``k &lt; 1``, or if ``k != 1`` for ``"lscm"``.</span>
+<span class="sd">        If ``method`` is not one of the three, if ``k &lt; 1``, if ``k != 1`` for ``"lscm"``, or</span>
+<span class="sd">        if ``fixed_indices`` repeats a vertex or holds one outside ``[0, n_vertices)``.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``fixed_indices`` is not on the mesh's device.</span>
 
@@ -4884,12 +4909,14 @@ definite in <code>float64</code>), and they keep iterating.</p>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">n_vertices</span>
     <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="kc">True</span>
-    <span class="n">no_uv</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">fixed_indices</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">mesh</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">n_fixed</span> <span class="o">=</span> <span class="n">fixed_indices</span><span class="o">.</span><span class="n">size</span>
+    <span class="n">no_uv</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_fixed</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">mesh</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"lscm"</span><span class="p">:</span>
         <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_pin_stacked</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">,</span> <span class="n">no_uv</span><span class="p">,</span> <span class="n">mesh</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">n_fixed</span> <span class="o">*=</span> <span class="mi">2</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_scatter_constraints</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">,</span> <span class="n">no_uv</span><span class="p">,</span> <span class="n">mesh</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">system</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_fixed_vertex_system</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">factor</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">system</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_fixed_vertex_system</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">n_fixed</span><span class="p">,</span> <span class="n">factor</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">system</span><span class="o">.</span><span class="n">factored</span><span class="p">:</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_keep</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">system</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">system</span><span class="o">.</span><span class="n">factored</span> <span class="ow">or</span> <span class="n">system</span><span class="o">.</span><span class="n">n_free</span> <span class="o">==</span> <span class="mi">0</span>
@@ -4910,7 +4937,7 @@ definite in <code>float64</code>), and they keep iterating.</p>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">solve</span><span class="p">(</span>
     <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="nb">bool</span><span class="p">],</span>
-    <span class="n">fixed_values</span><span class="p">:</span> <span class="n">Array2dFloat</span><span class="p">,</span>
+    <span class="n">fixed_values</span><span class="p">:</span> <span class="n">Array2dFloat64</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
     <span class="n">solver</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"auto"</span><span class="p">,</span> <span class="s2">"direct"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"auto"</span><span class="p">,</span>
@@ -4974,12 +5001,12 @@ that solve builds is kept here, replacing the one <code>(method, k)</code> held.
                 <code>fixed_values</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-internal" title="Array2dFloat
+                  <code><a class="autorefs autorefs-internal" title="Array2dFloat64
 
 
   
       module-attribute
-   (ordito.typing.Array2dFloat)" href="../typing/#ordito.typing.Array2dFloat">Array2dFloat</a></code>
+   (ordito.typing.Array2dFloat64)" href="../typing/#ordito.typing.Array2dFloat64">Array2dFloat64</a></code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -5015,9 +5042,10 @@ that solve builds is kept here, replacing the one <code>(method, k)</code> held.
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>"auto"</code> iterates, verified, and factors only when the check fails (or at
-<code>k &gt;= 3</code>, or for <code>k == 2</code> and <code>"lscm"</code> on a large mesh); <code>"direct"</code> factors
-at once. A factorization either builds is kept.</p>
+                <p><code>"auto"</code> iterates, verified, and factors only when the check fails -- or at once at
+<code>k &gt;= 3</code>, and for <code>k == 2</code> and <code>"lscm"</code> on a mesh of 4 000 vertices or more,
+unless that system was already refused; <code>"direct"</code> factors at once. A factorization
+either builds is kept.</p>
               </div>
             </td>
             <td>
@@ -5149,48 +5177,7 @@ free values are the interior <code>x</code> coordinates:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1196</span>
-<span class="normal">1197</span>
-<span class="normal">1198</span>
-<span class="normal">1199</span>
-<span class="normal">1200</span>
-<span class="normal">1201</span>
-<span class="normal">1202</span>
-<span class="normal">1203</span>
-<span class="normal">1204</span>
-<span class="normal">1205</span>
-<span class="normal">1206</span>
-<span class="normal">1207</span>
-<span class="normal">1208</span>
-<span class="normal">1209</span>
-<span class="normal">1210</span>
-<span class="normal">1211</span>
-<span class="normal">1212</span>
-<span class="normal">1213</span>
-<span class="normal">1214</span>
-<span class="normal">1215</span>
-<span class="normal">1216</span>
-<span class="normal">1217</span>
-<span class="normal">1218</span>
-<span class="normal">1219</span>
-<span class="normal">1220</span>
-<span class="normal">1221</span>
-<span class="normal">1222</span>
-<span class="normal">1223</span>
-<span class="normal">1224</span>
-<span class="normal">1225</span>
-<span class="normal">1226</span>
-<span class="normal">1227</span>
-<span class="normal">1228</span>
-<span class="normal">1229</span>
-<span class="normal">1230</span>
-<span class="normal">1231</span>
-<span class="normal">1232</span>
-<span class="normal">1233</span>
-<span class="normal">1234</span>
-<span class="normal">1235</span>
-<span class="normal">1236</span>
-<span class="normal">1237</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1237</span>
 <span class="normal">1238</span>
 <span class="normal">1239</span>
 <span class="normal">1240</span>
@@ -5249,11 +5236,30 @@ free values are the interior <code>x</code> coordinates:</p>
 <span class="normal">1293</span>
 <span class="normal">1294</span>
 <span class="normal">1295</span>
-<span class="normal">1296</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
+<span class="normal">1296</span>
+<span class="normal">1297</span>
+<span class="normal">1298</span>
+<span class="normal">1299</span>
+<span class="normal">1300</span>
+<span class="normal">1301</span>
+<span class="normal">1302</span>
+<span class="normal">1303</span>
+<span class="normal">1304</span>
+<span class="normal">1305</span>
+<span class="normal">1306</span>
+<span class="normal">1307</span>
+<span class="normal">1308</span>
+<span class="normal">1309</span>
+<span class="normal">1310</span>
+<span class="normal">1311</span>
+<span class="normal">1312</span>
+<span class="normal">1313</span>
+<span class="normal">1314</span>
+<span class="normal">1315</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
-    <span class="n">fixed_values</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span><span class="p">,</span>
+    <span class="n">fixed_values</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat64</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
     <span class="n">solver</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"auto"</span><span class="p">,</span> <span class="s2">"direct"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"auto"</span><span class="p">,</span>
@@ -5277,9 +5283,10 @@ free values are the interior <code>x</code> coordinates:</p>
 <span class="sd">    k</span>
 <span class="sd">        The harmonic power (``1`` for ``"lscm"``).</span>
 <span class="sd">    solver</span>
-<span class="sd">        ``"auto"`` iterates, verified, and factors only when the check fails (or at</span>
-<span class="sd">        ``k &gt;= 3``, or for ``k == 2`` and ``"lscm"`` on a large mesh); ``"direct"`` factors</span>
-<span class="sd">        at once. A factorization either builds is kept.</span>
+<span class="sd">        ``"auto"`` iterates, verified, and factors only when the check fails -- or at once at</span>
+<span class="sd">        ``k &gt;= 3``, and for ``k == 2`` and ``"lscm"`` on a mesh of 4 000 vertices or more,</span>
+<span class="sd">        unless that system was already refused; ``"direct"`` factors at once. A factorization</span>
+<span class="sd">        either builds is kept.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -5326,30 +5333,7 @@ free values are the interior <code>x</code> coordinates:</p>
 <span class="sd">    print(np.allclose(solution.numpy()[0], x[~mask]))  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">_require_fixed_vertex_method</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="s2">"FixedVertexSolver.solve"</span><span class="p">)</span>
-    <span class="n">_require_solver_name</span><span class="p">(</span><span class="n">solver</span><span class="p">,</span> <span class="s2">"FixedVertexSolver.solve"</span><span class="p">)</span>
-    <span class="n">mesh</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_bound_mesh</span><span class="p">()</span>
-    <span class="n">require_same_device</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="o">=</span><span class="n">mesh</span><span class="o">.</span><span class="n">vertices</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="o">=</span><span class="n">fixed_mask</span><span class="p">,</span> <span class="n">fixed_values</span><span class="o">=</span><span class="n">fixed_values</span>
-    <span class="p">)</span>
-    <span class="n">system</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_matching</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">)</span>
-    <span class="n">preconditioner</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">twl</span><span class="o">.</span><span class="n">SquaredLaplacianPreconditioner</span> <span class="o">=</span> <span class="s2">"adaptive"</span>
-    <span class="n">built</span> <span class="o">=</span> <span class="n">system</span> <span class="ow">is</span> <span class="kc">None</span>
-    <span class="k">if</span> <span class="n">system</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">system</span><span class="p">,</span> <span class="n">preconditioner</span> <span class="o">=</span> <span class="n">_fixed_vertex_system</span><span class="p">(</span>
-            <span class="n">mesh</span><span class="p">,</span>
-            <span class="n">method</span><span class="p">,</span>
-            <span class="n">k</span><span class="p">,</span>
-            <span class="n">fixed_mask</span><span class="p">,</span>
-            <span class="n">factor</span><span class="o">=</span><span class="n">solver</span> <span class="o">==</span> <span class="s2">"direct"</span> <span class="ow">or</span> <span class="n">_factors_at_once</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">mesh</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">),</span>
-        <span class="p">)</span>
-    <span class="n">solution</span><span class="p">,</span> <span class="n">free_map</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">system</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span>
-        <span class="n">fixed_values</span><span class="p">,</span> <span class="n">tol</span><span class="o">=</span><span class="n">_CG_TOLERANCE</span><span class="p">,</span> <span class="n">preconditioner</span><span class="o">=</span><span class="n">preconditioner</span>
-    <span class="p">)</span>
-    <span class="k">if</span> <span class="n">built</span> <span class="ow">and</span> <span class="n">system</span><span class="o">.</span><span class="n">factored</span><span class="p">:</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_keep</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">system</span><span class="p">)</span>
-        <span class="n">_LOGGER</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">"</span><span class="si">%s</span><span class="s2">: kept the factorization of its k=</span><span class="si">%d</span><span class="s2"> system"</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">k</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">solution</span><span class="p">,</span> <span class="n">free_map</span>
+    <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_solve</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">fixed_values</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">solver</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -6299,9 +6283,10 @@ disk parametrization.</p>
 <a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> subject to the boundary vertices being pinned to
 <code>boundary_uv</code>. For <code>k == 1</code> this is the harmonic map (each interior UV is the
 cotangent-weighted average of its neighbors); <code>k == 2</code> is the biharmonic map, and so on. The
-interior system is solved with conjugate gradient at <code>k &lt;= 2</code> and by a sparse Cholesky
-factorization above, the iterative result verified and replaced by the factorization's when it
-is not the system's answer (see Notes).</p>
+interior system is solved with conjugate gradient at <code>k == 1</code>, and at <code>k == 2</code> on a mesh of
+fewer than 4 000 vertices; it is factored at once (a sparse Cholesky) at <code>k &gt;= 3</code>, and at
+<code>k == 2</code> from 4 000 vertices. An iterative result is verified and replaced by the
+factorization's when it is not the system's answer (see Notes).</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6424,13 +6409,14 @@ float64 (built native, never recast) so the ill-conditioned <code>k &gt; 1</code
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>"auto"</code> (default) solves by conjugate gradient, verified, and factors the system only
-when the iteration's result fails the check -- always at <code>k &gt;= 3</code>, where the iteration
-does not converge, and at <code>k == 2</code> on a mesh of 4 000 vertices or more, where a
-factorization costs less than the iteration. <code>"direct"</code> factors it at once (a sparse
-Cholesky); given a <code>Trimesh</code>, the factorization is kept on it, so every later call fixing
-the same vertices -- whatever their values -- is a factored solve with no iteration. Pays
-from about the second such call; a one-shot call is usually faster under <code>"auto"</code>.</p>
+                <p><code>"auto"</code> (default) factors the system at once at <code>k &gt;= 3</code>, where the iteration does
+not converge, and at <code>k == 2</code> on a mesh of 4 000 vertices or more, where a factorization
+costs less than the iteration; otherwise it solves by conjugate gradient, verified, and
+factors the system only when the iteration's result fails the check. <code>"direct"</code> factors
+it at once (a sparse Cholesky); given a <code>Trimesh</code>, the factorization is kept on it, so
+every later call fixing the same vertices -- whatever their values -- is a factored solve
+with no iteration. Pays from about the second such call; a one-shot call is usually faster
+under <code>"auto"</code>.</p>
               </div>
             </td>
             <td>
@@ -6481,7 +6467,8 @@ from about the second such call; a one-shot call is usually faster under <code>"
               <div class="doc-md-description">
                 <p>If <code>k &lt; 1</code>, if there are interior vertices but <code>boundary_indices</code> is empty (the
 Dirichlet system would be singular), if <code>boundary_indices</code> and <code>boundary_uv</code> have
-different lengths, or if <code>solver</code> is not <code>"auto"</code> or <code>"direct"</code>.</p>
+different lengths, if <code>boundary_indices</code> repeats a vertex or holds one outside
+<code>[0, n_vertices)</code>, or if <code>solver</code> is not <code>"auto"</code> or <code>"direct"</code>.</p>
               </div>
             </td>
           </tr>
@@ -6545,7 +6532,9 @@ where this uses the barycentric lumped mass; <code>igl::harmonic</code> given a 
 condition number to it. <code>k == 1</code> runs conjugate gradient under the Jacobi-Chebyshev polynomial
 (<a class="autorefs autorefs-internal" title="chebyshev_preconditioner" href="../linalg/#ordito.linalg.chebyshev_preconditioner"><code>chebyshev_preconditioner</code></a>), <code>k == 2</code> under the
 square of that Laplacian's polynomial
-(<a class="autorefs autorefs-internal" title="squared_laplacian_preconditioner" href="../linalg/#ordito.linalg.squared_laplacian_preconditioner"><code>squared_laplacian_preconditioner</code></a>). Both
+(<a class="autorefs autorefs-internal" title="squared_laplacian_preconditioner" href="../linalg/#ordito.linalg.squared_laplacian_preconditioner"><code>squared_laplacian_preconditioner</code></a>) -- on a
+mesh of fewer than 4 000 vertices; from 4 000 the <code>k == 2</code> system is factored at once, as
+<code>k &gt;= 3</code> is below, its iteration growing faster with the mesh than the factorization. Both
 results are verified -- converged within
 <a class="autorefs autorefs-internal" title="CG_FACTOR_AFTER_ROUNDS
 
@@ -6565,10 +6554,12 @@ graded mesh the <code>k == 2</code> system's condition number nears the reciproc
 precision, where no iteration converges. <code>k &gt;= 3</code> is factored from the start, the iteration
 (under the multigrid preconditioner
 <a class="autorefs autorefs-internal" title="multigrid_preconditioner" href="../linalg/#ordito.linalg.multigrid_preconditioner"><code>multigrid_preconditioner</code></a>) taken only when the
-system cannot be factored. Given a <code>Trimesh</code>, a factorization built here is kept on it, and
-one prepared with <a class="autorefs autorefs-internal" title="factor" href="./#ordito.parametrization.FixedVertexSolver.factor"><code>FixedVertexSolver.factor</code></a>
-serves every later call fixing the same vertices -- whatever their values -- with no
-iteration; the <code>vertices, faces</code> form drops it, and says so at <code>INFO</code>.</p>
+system cannot be factored; a <code>Trimesh</code> remembers that refusal, so its later calls iterate
+without attempting the factorization again. Given a <code>Trimesh</code>, a factorization built here is
+kept on it, and one prepared with
+<a class="autorefs autorefs-internal" title="factor" href="./#ordito.parametrization.FixedVertexSolver.factor"><code>FixedVertexSolver.factor</code></a> serves every
+later call fixing the same vertices -- whatever their values -- with no iteration; the
+<code>vertices, faces</code> form drops it, and says so at <code>INFO</code>.</p>
 <p>On such an ill-conditioned system the answer itself is determined only to the system's own
 precision: direct solvers under different orderings agree to about a percent of the UV range
 there, as this one does with them.</p>
@@ -6772,7 +6763,14 @@ linearly, so it reproduces the grid:</p>
 <span class="normal">439</span>
 <span class="normal">440</span>
 <span class="normal">441</span>
-<span class="normal">442</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">harmonic</span><span class="p">(</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">harmonic</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">boundary_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -6789,9 +6787,10 @@ linearly, so it reproduces the grid:</p>
 <span class="sd">    [`cotmatrix`][ordito.laplacian.cotmatrix] subject to the boundary vertices being pinned to</span>
 <span class="sd">    ``boundary_uv``. For ``k == 1`` this is the harmonic map (each interior UV is the</span>
 <span class="sd">    cotangent-weighted average of its neighbors); ``k == 2`` is the biharmonic map, and so on. The</span>
-<span class="sd">    interior system is solved with conjugate gradient at ``k &lt;= 2`` and by a sparse Cholesky</span>
-<span class="sd">    factorization above, the iterative result verified and replaced by the factorization's when it</span>
-<span class="sd">    is not the system's answer (see Notes).</span>
+<span class="sd">    interior system is solved with conjugate gradient at ``k == 1``, and at ``k == 2`` on a mesh of</span>
+<span class="sd">    fewer than 4 000 vertices; it is factored at once (a sparse Cholesky) at ``k &gt;= 3``, and at</span>
+<span class="sd">    ``k == 2`` from 4 000 vertices. An iterative result is verified and replaced by the</span>
+<span class="sd">    factorization's when it is not the system's answer (see Notes).</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -6812,13 +6811,14 @@ linearly, so it reproduces the grid:</p>
 <span class="sd">        [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries]. The operator is assembled in</span>
 <span class="sd">        float64 (built native, never recast) so the ill-conditioned ``k &gt; 1`` solve is accurate.</span>
 <span class="sd">    solver</span>
-<span class="sd">        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only</span>
-<span class="sd">        when the iteration's result fails the check -- always at ``k &gt;= 3``, where the iteration</span>
-<span class="sd">        does not converge, and at ``k == 2`` on a mesh of 4 000 vertices or more, where a</span>
-<span class="sd">        factorization costs less than the iteration. ``"direct"`` factors it at once (a sparse</span>
-<span class="sd">        Cholesky); given a `Trimesh`, the factorization is kept on it, so every later call fixing</span>
-<span class="sd">        the same vertices -- whatever their values -- is a factored solve with no iteration. Pays</span>
-<span class="sd">        from about the second such call; a one-shot call is usually faster under ``"auto"``.</span>
+<span class="sd">        ``"auto"`` (default) factors the system at once at ``k &gt;= 3``, where the iteration does</span>
+<span class="sd">        not converge, and at ``k == 2`` on a mesh of 4 000 vertices or more, where a factorization</span>
+<span class="sd">        costs less than the iteration; otherwise it solves by conjugate gradient, verified, and</span>
+<span class="sd">        factors the system only when the iteration's result fails the check. ``"direct"`` factors</span>
+<span class="sd">        it at once (a sparse Cholesky); given a `Trimesh`, the factorization is kept on it, so</span>
+<span class="sd">        every later call fixing the same vertices -- whatever their values -- is a factored solve</span>
+<span class="sd">        with no iteration. Pays from about the second such call; a one-shot call is usually faster</span>
+<span class="sd">        under ``"auto"``.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -6830,7 +6830,8 @@ linearly, so it reproduces the grid:</p>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``k &lt; 1``, if there are interior vertices but ``boundary_indices`` is empty (the</span>
 <span class="sd">        Dirichlet system would be singular), if ``boundary_indices`` and ``boundary_uv`` have</span>
-<span class="sd">        different lengths, or if ``solver`` is not ``"auto"`` or ``"direct"``.</span>
+<span class="sd">        different lengths, if ``boundary_indices`` repeats a vertex or holds one outside</span>
+<span class="sd">        ``[0, n_vertices)``, or if ``solver`` is not ``"auto"`` or ``"direct"``.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces``, ``boundary_indices`` and ``boundary_uv`` are not all on one</span>
 <span class="sd">        device.</span>
@@ -6862,7 +6863,9 @@ linearly, so it reproduces the grid:</p>
 <span class="sd">    condition number to it. ``k == 1`` runs conjugate gradient under the Jacobi-Chebyshev polynomial</span>
 <span class="sd">    ([`chebyshev_preconditioner`][ordito.linalg.chebyshev_preconditioner]), ``k == 2`` under the</span>
 <span class="sd">    square of that Laplacian's polynomial</span>
-<span class="sd">    ([`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]). Both</span>
+<span class="sd">    ([`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]) -- on a</span>
+<span class="sd">    mesh of fewer than 4 000 vertices; from 4 000 the ``k == 2`` system is factored at once, as</span>
+<span class="sd">    ``k &gt;= 3`` is below, its iteration growing faster with the mesh than the factorization. Both</span>
 <span class="sd">    results are verified -- converged within</span>
 <span class="sd">    [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds, with a componentwise</span>
 <span class="sd">    backward error under</span>
@@ -6872,10 +6875,12 @@ linearly, so it reproduces the grid:</p>
 <span class="sd">    precision, where no iteration converges. ``k &gt;= 3`` is factored from the start, the iteration</span>
 <span class="sd">    (under the multigrid preconditioner</span>
 <span class="sd">    [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]) taken only when the</span>
-<span class="sd">    system cannot be factored. Given a `Trimesh`, a factorization built here is kept on it, and</span>
-<span class="sd">    one prepared with [`FixedVertexSolver.factor`][ordito.parametrization.FixedVertexSolver.factor]</span>
-<span class="sd">    serves every later call fixing the same vertices -- whatever their values -- with no</span>
-<span class="sd">    iteration; the ``vertices, faces`` form drops it, and says so at ``INFO``.</span>
+<span class="sd">    system cannot be factored; a `Trimesh` remembers that refusal, so its later calls iterate</span>
+<span class="sd">    without attempting the factorization again. Given a `Trimesh`, a factorization built here is</span>
+<span class="sd">    kept on it, and one prepared with</span>
+<span class="sd">    [`FixedVertexSolver.factor`][ordito.parametrization.FixedVertexSolver.factor] serves every</span>
+<span class="sd">    later call fixing the same vertices -- whatever their values -- with no iteration; the</span>
+<span class="sd">    ``vertices, faces`` form drops it, and says so at ``INFO``.</span>
 
 <span class="sd">    On such an ill-conditioned system the answer itself is determined only to the system's own</span>
 <span class="sd">    precision: direct solvers under different orderings agree to about a percent of the UV range</span>
@@ -7164,7 +7169,8 @@ about the second such call; a one-shot call is usually faster under <code>"auto"
             <td>
               <div class="doc-md-description">
                 <p>If <code>k &lt; 1</code>, if there are interior vertices but <code>boundary_indices</code> is empty, if
-<code>boundary_indices</code> and <code>boundary_uv</code> have different lengths, or if <code>solver</code> is not
+<code>boundary_indices</code> and <code>boundary_uv</code> have different lengths, if <code>boundary_indices</code>
+repeats a vertex or holds one outside <code>[0, n_vertices)</code>, or if <code>solver</code> is not
 <code>"auto"</code> or <code>"direct"</code>.</p>
               </div>
             </td>
@@ -7217,14 +7223,7 @@ device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">466</span>
-<span class="normal">467</span>
-<span class="normal">468</span>
-<span class="normal">469</span>
-<span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span>
-<span class="normal">473</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">473</span>
 <span class="normal">474</span>
 <span class="normal">475</span>
 <span class="normal">476</span>
@@ -7313,7 +7312,15 @@ device.</p>
 <span class="normal">559</span>
 <span class="normal">560</span>
 <span class="normal">561</span>
-<span class="normal">562</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tutte</span><span class="p">(</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tutte</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">boundary_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7369,7 +7376,8 @@ device.</p>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``k &lt; 1``, if there are interior vertices but ``boundary_indices`` is empty, if</span>
-<span class="sd">        ``boundary_indices`` and ``boundary_uv`` have different lengths, or if ``solver`` is not</span>
+<span class="sd">        ``boundary_indices`` and ``boundary_uv`` have different lengths, if ``boundary_indices``</span>
+<span class="sd">        repeats a vertex or holds one outside ``[0, n_vertices)``, or if ``solver`` is not</span>
 <span class="sd">        ``"auto"`` or ``"direct"``.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces``, ``boundary_indices`` and ``boundary_uv`` are not all on one</span>
@@ -7627,7 +7635,8 @@ why the default is looser than the <code>1e-8</code> the other solvers in this m
             <td>
               <div class="doc-md-description">
                 <p>If <code>max_iterations &lt; 1</code>, if <code>tolerance &lt;= 0</code>, if there are interior vertices but
-<code>fixed_indices</code> is empty, or if <code>fixed_indices</code> and <code>fixed_uv</code> have different lengths.</p>
+<code>fixed_indices</code> is empty, if <code>fixed_indices</code> and <code>fixed_uv</code> have different lengths,
+or if <code>fixed_indices</code> repeats a vertex or holds one outside <code>[0, n_vertices)</code>.</p>
               </div>
             </td>
           </tr>
@@ -7707,15 +7716,7 @@ exactly:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">615</span>
-<span class="normal">616</span>
-<span class="normal">617</span>
-<span class="normal">618</span>
-<span class="normal">619</span>
-<span class="normal">620</span>
-<span class="normal">621</span>
-<span class="normal">622</span>
-<span class="normal">623</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">623</span>
 <span class="normal">624</span>
 <span class="normal">625</span>
 <span class="normal">626</span>
@@ -7955,7 +7956,23 @@ exactly:</p>
 <span class="normal">860</span>
 <span class="normal">861</span>
 <span class="normal">862</span>
-<span class="normal">863</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">arap</span><span class="p">(</span>
+<span class="normal">863</span>
+<span class="normal">864</span>
+<span class="normal">865</span>
+<span class="normal">866</span>
+<span class="normal">867</span>
+<span class="normal">868</span>
+<span class="normal">869</span>
+<span class="normal">870</span>
+<span class="normal">871</span>
+<span class="normal">872</span>
+<span class="normal">873</span>
+<span class="normal">874</span>
+<span class="normal">875</span>
+<span class="normal">876</span>
+<span class="normal">877</span>
+<span class="normal">878</span>
+<span class="normal">879</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">arap</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -8018,7 +8035,8 @@ exactly:</p>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``max_iterations &lt; 1``, if ``tolerance &lt;= 0``, if there are interior vertices but</span>
-<span class="sd">        ``fixed_indices`` is empty, or if ``fixed_indices`` and ``fixed_uv`` have different lengths.</span>
+<span class="sd">        ``fixed_indices`` is empty, if ``fixed_indices`` and ``fixed_uv`` have different lengths,</span>
+<span class="sd">        or if ``fixed_indices`` repeats a vertex or holds one outside ``[0, n_vertices)``.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces``, ``fixed_indices``, ``fixed_uv`` and ``uv_init`` are not all on</span>
 <span class="sd">        one device.</span>
@@ -8112,6 +8130,13 @@ exactly:</p>
     <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">fixed_values</span> <span class="o">=</span> <span class="n">_scatter_constraints</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">,</span> <span class="n">fixed_uv</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">fixed_values_2d</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">fixed_values</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
     <span class="n">interior_map</span><span class="p">,</span> <span class="n">n_interior</span> <span class="o">=</span> <span class="n">twl</span><span class="o">.</span><span class="n">free_partition</span><span class="p">(</span><span class="n">fixed_mask</span><span class="p">)</span>
+    <span class="c1"># The scatter skips an out-of-range index and a repeated one marks its vertex once, so either</span>
+    <span class="c1"># leaves fewer vertices fixed than ``fixed_indices`` lists: the free count just read shows it.</span>
+    <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">-</span> <span class="n">n_interior</span> <span class="o">!=</span> <span class="n">fixed_indices</span><span class="o">.</span><span class="n">size</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"arap: fixed_indices must be distinct vertex indices in [0, n_vertices); they fix "</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">n_vertices</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">n_interior</span><span class="si">}</span><span class="s2"> vertices where </span><span class="si">{</span><span class="n">fixed_indices</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> were given"</span>
+        <span class="p">)</span>
 
     <span class="n">out_uv</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_interior</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
@@ -8261,9 +8286,11 @@ over the stacked <code>[u; v]</code> vector of <code>2 * n_vertices</code> unkno
 pin the whole boundary and solve two independent columns), LSCM couples <code>u</code> and <code>v</code> through
 the boundary vector-area term, so it needs only a few pins — typically <strong>two</strong> — to fix the
 remaining similarity-transform (rotation + scale + translation) degree of freedom.</p>
-<p>The interior system is solved with conjugate gradient, verified as
-<a class="autorefs autorefs-internal" title="min_quad_with_fixed" href="../linalg/#ordito.linalg.min_quad_with_fixed"><code>min_quad_with_fixed</code></a> verifies it, with a sparse Cholesky
-factorization taking over a solve that does not converge within its budget. Closed meshes are
+<p>On a mesh of fewer than 4 000 vertices the interior system is solved with conjugate gradient,
+verified as <a class="autorefs autorefs-internal" title="min_quad_with_fixed" href="../linalg/#ordito.linalg.min_quad_with_fixed"><code>min_quad_with_fixed</code></a> verifies it, with a
+sparse Cholesky factorization taking over a solve that does not converge within its budget;
+from 4 000 vertices it is factored at once, since with only a few pins its iteration grows
+faster with the mesh than the factorization does. Closed meshes are
 valid input: the boundary vector-area matrix is then zero and the Hessian reduces to
 <code>-repdiag(L, 2)</code>. Given a <code>Trimesh</code>,
 a factorization is kept on it; one prepared with
@@ -8430,8 +8457,9 @@ iteration. Pays from about the second such call on a smaller mesh.</p>
             <td>
               <div class="doc-md-description">
                 <p>If fewer than two vertices are pinned (and the mesh has at least two vertices), if
-<code>pinned_indices</code> and <code>pinned_uv</code> have different lengths, or if <code>solver</code> is not
-<code>"auto"</code> or <code>"direct"</code>.</p>
+<code>pinned_indices</code> and <code>pinned_uv</code> have different lengths, if <code>pinned_indices</code> repeats
+a vertex or holds one outside <code>[0, n_vertices)</code>, or if <code>solver</code> is not <code>"auto"</code> or
+<code>"direct"</code>.</p>
               </div>
             </td>
           </tr>
@@ -8521,25 +8549,7 @@ LSCM recovers it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 919</span>
-<span class="normal"> 920</span>
-<span class="normal"> 921</span>
-<span class="normal"> 922</span>
-<span class="normal"> 923</span>
-<span class="normal"> 924</span>
-<span class="normal"> 925</span>
-<span class="normal"> 926</span>
-<span class="normal"> 927</span>
-<span class="normal"> 928</span>
-<span class="normal"> 929</span>
-<span class="normal"> 930</span>
-<span class="normal"> 931</span>
-<span class="normal"> 932</span>
-<span class="normal"> 933</span>
-<span class="normal"> 934</span>
-<span class="normal"> 935</span>
-<span class="normal"> 936</span>
-<span class="normal"> 937</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 937</span>
 <span class="normal"> 938</span>
 <span class="normal"> 939</span>
 <span class="normal"> 940</span>
@@ -8666,7 +8676,35 @@ LSCM recovers it:</p>
 <span class="normal">1061</span>
 <span class="normal">1062</span>
 <span class="normal">1063</span>
-<span class="normal">1064</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
+<span class="normal">1064</span>
+<span class="normal">1065</span>
+<span class="normal">1066</span>
+<span class="normal">1067</span>
+<span class="normal">1068</span>
+<span class="normal">1069</span>
+<span class="normal">1070</span>
+<span class="normal">1071</span>
+<span class="normal">1072</span>
+<span class="normal">1073</span>
+<span class="normal">1074</span>
+<span class="normal">1075</span>
+<span class="normal">1076</span>
+<span class="normal">1077</span>
+<span class="normal">1078</span>
+<span class="normal">1079</span>
+<span class="normal">1080</span>
+<span class="normal">1081</span>
+<span class="normal">1082</span>
+<span class="normal">1083</span>
+<span class="normal">1084</span>
+<span class="normal">1085</span>
+<span class="normal">1086</span>
+<span class="normal">1087</span>
+<span class="normal">1088</span>
+<span class="normal">1089</span>
+<span class="normal">1090</span>
+<span class="normal">1091</span>
+<span class="normal">1092</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">pinned_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8687,9 +8725,11 @@ LSCM recovers it:</p>
 <span class="sd">    the boundary vector-area term, so it needs only a few pins — typically **two** — to fix the</span>
 <span class="sd">    remaining similarity-transform (rotation + scale + translation) degree of freedom.</span>
 
-<span class="sd">    The interior system is solved with conjugate gradient, verified as</span>
-<span class="sd">    [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] verifies it, with a sparse Cholesky</span>
-<span class="sd">    factorization taking over a solve that does not converge within its budget. Closed meshes are</span>
+<span class="sd">    On a mesh of fewer than 4 000 vertices the interior system is solved with conjugate gradient,</span>
+<span class="sd">    verified as [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] verifies it, with a</span>
+<span class="sd">    sparse Cholesky factorization taking over a solve that does not converge within its budget;</span>
+<span class="sd">    from 4 000 vertices it is factored at once, since with only a few pins its iteration grows</span>
+<span class="sd">    faster with the mesh than the factorization does. Closed meshes are</span>
 <span class="sd">    valid input: the boundary vector-area matrix is then zero and the Hessian reduces to</span>
 <span class="sd">    ``-repdiag(L, 2)``. Given a `Trimesh`,</span>
 <span class="sd">    a factorization is kept on it; one prepared with</span>
@@ -8729,8 +8769,9 @@ LSCM recovers it:</p>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
 <span class="sd">        If fewer than two vertices are pinned (and the mesh has at least two vertices), if</span>
-<span class="sd">        ``pinned_indices`` and ``pinned_uv`` have different lengths, or if ``solver`` is not</span>
-<span class="sd">        ``"auto"`` or ``"direct"``.</span>
+<span class="sd">        ``pinned_indices`` and ``pinned_uv`` have different lengths, if ``pinned_indices`` repeats</span>
+<span class="sd">        a vertex or holds one outside ``[0, n_vertices)``, or if ``solver`` is not ``"auto"`` or</span>
+<span class="sd">        ``"direct"``.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces``, ``pinned_indices`` and ``pinned_uv`` are not all on one device.</span>
 
@@ -8802,7 +8843,14 @@ LSCM recovers it:</p>
     <span class="p">)</span>
     <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">fixed_values</span> <span class="o">=</span> <span class="n">_pin_stacked</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">pinned_indices</span><span class="p">,</span> <span class="n">pinned_uv</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">sol</span><span class="p">,</span> <span class="n">free_map</span> <span class="o">=</span> <span class="n">_solve_fixed_vertices</span><span class="p">(</span>
-        <span class="n">bound</span><span class="p">,</span> <span class="n">owned</span><span class="p">,</span> <span class="s2">"lscm"</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">fixed_values</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span> <span class="n">solver</span>
+        <span class="n">bound</span><span class="p">,</span>
+        <span class="n">owned</span><span class="p">,</span>
+        <span class="s2">"lscm"</span><span class="p">,</span>
+        <span class="mi">1</span><span class="p">,</span>
+        <span class="n">fixed_mask</span><span class="p">,</span>
+        <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">fixed_values</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span>
+        <span class="n">solver</span><span class="p">,</span>
+        <span class="mi">2</span> <span class="o">*</span> <span class="n">n_pinned</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">out_uv</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>

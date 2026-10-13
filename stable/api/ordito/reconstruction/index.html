@@ -5206,11 +5206,12 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 used instead of PoissonRecon's octree: the oriented normals are trilinearly splatted into a
 smoothed vector field <code>V</code> (with a density weight <code>W</code>), the indicator function <code>x</code> is
 recovered by solving the screened-Poisson system <code>(L_N + point_weight * W) x = -div V</code>
-matrix-free with a Jacobi-preconditioned conjugate gradient, and the iso-surface is extracted
-with <a class="autorefs autorefs-internal" title="marching_cubes" href="../levelset/#ordito.levelset.marching_cubes"><code>levelset.marching_cubes</code></a> at the iso-value given by the
-average of <code>x</code> over the input points. A <strong>cascadic</strong> coarse-to-fine schedule solves the
-system from <code>full_depth</code> up to <code>depth</code>, prolonging each level's solution as the next level's
-initial guess (mirroring PoissonRecon's multigrid hierarchy).</p>
+matrix-free with a multigrid-preconditioned conjugate gradient, and the iso-surface is
+extracted with <a class="autorefs autorefs-internal" title="marching_cubes" href="../levelset/#ordito.levelset.marching_cubes"><code>levelset.marching_cubes</code></a> at the iso-value
+given by the average of <code>x</code> over the input points. A <strong>cascadic</strong> coarse-to-fine schedule
+solves the system from <code>full_depth</code> up to <code>depth</code>, prolonging each level's solution as the
+next level's initial guess (mirroring PoissonRecon's multigrid hierarchy); <code>method</code> describes
+the adaptive backend's variant of the schedule.</p>
 <p><code>normals</code> are <strong>required</strong> and must be globally consistently oriented (all pointing outward or
 all inward): the reconstruction encodes the surface orientation in the sign of the vector field,
 and <a class="autorefs autorefs-internal" title="estimate_normals" href="../points/#ordito.points.estimate_normals"><code>estimate_normals</code></a> performs no global orientation.</p>
@@ -5270,8 +5271,8 @@ and <a class="autorefs autorefs-internal" title="estimate_normals" href="../poin
             <td>
               <div class="doc-md-description">
                 <p>Finest grid depth: the finest grid has <code>2**depth + 1</code> nodes per axis. Memory grows as the
-cube of this; <code>depth=8</code> (a <code>257**3</code> grid) is a safe default and <code>depth</code> is capped at
-<code>10</code>. This is the single biggest lever on both cost and quality — see Notes before
+cube of this; <code>depth=8</code> (a <code>257**3</code> grid) is a safe default, and a <code>depth</code> above
+<code>10</code> raises. This is the single biggest lever on both cost and quality — see Notes before
 lowering it.</p>
               </div>
             </td>
@@ -5288,8 +5289,9 @@ lowering it.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Coarsest depth of the cascade (<code>3 &lt;= full_depth &lt;= depth</code>). The system is solved at every
-depth from <code>full_depth</code> to <code>depth</code>.</p>
+                <p>Coarsest depth of the cascade (<code>3 &lt;= full_depth &lt;= depth</code>). The dense backend solves the
+system at every depth from <code>full_depth</code> to <code>depth</code>; the adaptive one solves its dense
+base at <code>max(full_depth, depth - 2)</code> and a band level at every depth above it.</p>
               </div>
             </td>
             <td>
@@ -5339,9 +5341,11 @@ unscreened Poisson reconstruction (a tiny epsilon is still added to keep the ope
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Maximum conjugate-gradient iterations per cascade level. The default leaves room: the dense
-grid's multigrid-preconditioned solve reaches the default tolerance in a dozen or so at any
-depth, and the adaptive backend's Jacobi-preconditioned one in under a hundred.</p>
+                <p>Maximum conjugate-gradient iterations per dense level (every level of the dense backend,
+the adaptive backend's dense base). The default leaves room: the multigrid-preconditioned
+solve reaches the default tolerance in a dozen or so at any depth. The adaptive backend's
+band levels instead run a fixed, smaller number of Jacobi-preconditioned rounds, capped by
+this value: each only corrects its coarser level's solution near the surface.</p>
               </div>
             </td>
             <td>
@@ -5357,10 +5361,11 @@ depth, and the adaptive backend's Jacobi-preconditioned one in under a hundred.<
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Relative residual tolerance for the conjugate-gradient solve. A level that stops at
-<code>solver_iterations</code> above it warns. The system is solved in <code>float32</code>, whose rounding
-bounds the relative residual either backend can actually reach at a few <code>1e-6</code> -- a
-tolerance below that is never met and only spends the whole iteration budget.</p>
+                <p>Relative residual tolerance for the conjugate-gradient solves. A dense level that stops at
+<code>solver_iterations</code> above it warns; an adaptive band level stops at it or at its fixed
+round count and never warns. The system is solved in <code>float32</code>, whose rounding bounds
+the relative residual either backend can actually reach at a few <code>1e-6</code> -- a tolerance
+below that is never met and only spends the whole iteration budget.</p>
               </div>
             </td>
             <td>
@@ -5467,7 +5472,9 @@ back to dropping the faces
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>points</code> has fewer than 3 points, or the depth/scale parameters are out of range.</p>
+                <p>If <code>points</code> has fewer than 3 points, <code>normals</code> does not have one entry per point, the
+depth/scale parameters are out of range, or <code>method</code> is not <code>"dense"</code> or
+<code>"adaptive"</code>.</p>
               </div>
             </td>
           </tr>
@@ -5500,8 +5507,22 @@ back to dropping the faces
             </td>
             <td>
               <div class="doc-md-description">
-                <p>When a level's conjugate-gradient solve stops at <code>solver_iterations</code> with its residual
-still above <code>solver_tolerance</code>: the surface is then extracted from an unconverged field.</p>
+                <p>When a dense level's conjugate-gradient solve (any level of the dense backend, the adaptive
+backend's dense base) stops at <code>solver_iterations</code> with its residual still above
+<code>solver_tolerance</code>: the surface is then extracted from an unconverged field. The
+adaptive backend's band levels are not checked (see <code>solver_iterations</code>).</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#UserWarning">UserWarning</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>With <code>method="adaptive"</code>, when the extraction meets crossing cells its narrow band cannot
+hold (as a degenerate, for instance coplanar, cloud does): those cells are dropped and the
+surface has holes.</p>
               </div>
             </td>
           </tr>
@@ -5791,7 +5812,27 @@ taken from it.</p>
 <span class="normal">668</span>
 <span class="normal">669</span>
 <span class="normal">670</span>
-<span class="normal">671</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
+<span class="normal">671</span>
+<span class="normal">672</span>
+<span class="normal">673</span>
+<span class="normal">674</span>
+<span class="normal">675</span>
+<span class="normal">676</span>
+<span class="normal">677</span>
+<span class="normal">678</span>
+<span class="normal">679</span>
+<span class="normal">680</span>
+<span class="normal">681</span>
+<span class="normal">682</span>
+<span class="normal">683</span>
+<span class="normal">684</span>
+<span class="normal">685</span>
+<span class="normal">686</span>
+<span class="normal">687</span>
+<span class="normal">688</span>
+<span class="normal">689</span>
+<span class="normal">690</span>
+<span class="normal">691</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -5813,11 +5854,12 @@ taken from it.</p>
 <span class="sd">    used instead of PoissonRecon's octree: the oriented normals are trilinearly splatted into a</span>
 <span class="sd">    smoothed vector field ``V`` (with a density weight ``W``), the indicator function ``x`` is</span>
 <span class="sd">    recovered by solving the screened-Poisson system ``(L_N + point_weight * W) x = -div V``</span>
-<span class="sd">    matrix-free with a Jacobi-preconditioned conjugate gradient, and the iso-surface is extracted</span>
-<span class="sd">    with [`levelset.marching_cubes`][ordito.levelset.marching_cubes] at the iso-value given by the</span>
-<span class="sd">    average of ``x`` over the input points. A **cascadic** coarse-to-fine schedule solves the</span>
-<span class="sd">    system from ``full_depth`` up to ``depth``, prolonging each level's solution as the next level's</span>
-<span class="sd">    initial guess (mirroring PoissonRecon's multigrid hierarchy).</span>
+<span class="sd">    matrix-free with a multigrid-preconditioned conjugate gradient, and the iso-surface is</span>
+<span class="sd">    extracted with [`levelset.marching_cubes`][ordito.levelset.marching_cubes] at the iso-value</span>
+<span class="sd">    given by the average of ``x`` over the input points. A **cascadic** coarse-to-fine schedule</span>
+<span class="sd">    solves the system from ``full_depth`` up to ``depth``, prolonging each level's solution as the</span>
+<span class="sd">    next level's initial guess (mirroring PoissonRecon's multigrid hierarchy); ``method`` describes</span>
+<span class="sd">    the adaptive backend's variant of the schedule.</span>
 
 <span class="sd">    ``normals`` are **required** and must be globally consistently oriented (all pointing outward or</span>
 <span class="sd">    all inward): the reconstruction encodes the surface orientation in the sign of the vector field,</span>
@@ -5832,12 +5874,13 @@ taken from it.</p>
 <span class="sd">        ``confidence`` is set).</span>
 <span class="sd">    depth</span>
 <span class="sd">        Finest grid depth: the finest grid has ``2**depth + 1`` nodes per axis. Memory grows as the</span>
-<span class="sd">        cube of this; ``depth=8`` (a ``257**3`` grid) is a safe default and ``depth`` is capped at</span>
-<span class="sd">        ``10``. This is the single biggest lever on both cost and quality — see Notes before</span>
+<span class="sd">        cube of this; ``depth=8`` (a ``257**3`` grid) is a safe default, and a ``depth`` above</span>
+<span class="sd">        ``10`` raises. This is the single biggest lever on both cost and quality — see Notes before</span>
 <span class="sd">        lowering it.</span>
 <span class="sd">    full_depth</span>
-<span class="sd">        Coarsest depth of the cascade (``3 &lt;= full_depth &lt;= depth``). The system is solved at every</span>
-<span class="sd">        depth from ``full_depth`` to ``depth``.</span>
+<span class="sd">        Coarsest depth of the cascade (``3 &lt;= full_depth &lt;= depth``). The dense backend solves the</span>
+<span class="sd">        system at every depth from ``full_depth`` to ``depth``; the adaptive one solves its dense</span>
+<span class="sd">        base at ``max(full_depth, depth - 2)`` and a band level at every depth above it.</span>
 <span class="sd">    scale</span>
 <span class="sd">        Ratio between the reconstruction cube's side and the point cloud's largest bounding-box</span>
 <span class="sd">        extent (``&gt;= 1``, so the cube always contains the cloud); ``1.1`` pads the cloud by 10 %.</span>
@@ -5845,14 +5888,17 @@ taken from it.</p>
 <span class="sd">        Screening weight ``alpha`` tying the iso-surface to the input samples. ``0`` recovers the</span>
 <span class="sd">        unscreened Poisson reconstruction (a tiny epsilon is still added to keep the operator SPD).</span>
 <span class="sd">    solver_iterations</span>
-<span class="sd">        Maximum conjugate-gradient iterations per cascade level. The default leaves room: the dense</span>
-<span class="sd">        grid's multigrid-preconditioned solve reaches the default tolerance in a dozen or so at any</span>
-<span class="sd">        depth, and the adaptive backend's Jacobi-preconditioned one in under a hundred.</span>
+<span class="sd">        Maximum conjugate-gradient iterations per dense level (every level of the dense backend,</span>
+<span class="sd">        the adaptive backend's dense base). The default leaves room: the multigrid-preconditioned</span>
+<span class="sd">        solve reaches the default tolerance in a dozen or so at any depth. The adaptive backend's</span>
+<span class="sd">        band levels instead run a fixed, smaller number of Jacobi-preconditioned rounds, capped by</span>
+<span class="sd">        this value: each only corrects its coarser level's solution near the surface.</span>
 <span class="sd">    solver_tolerance</span>
-<span class="sd">        Relative residual tolerance for the conjugate-gradient solve. A level that stops at</span>
-<span class="sd">        ``solver_iterations`` above it warns. The system is solved in ``float32``, whose rounding</span>
-<span class="sd">        bounds the relative residual either backend can actually reach at a few ``1e-6`` -- a</span>
-<span class="sd">        tolerance below that is never met and only spends the whole iteration budget.</span>
+<span class="sd">        Relative residual tolerance for the conjugate-gradient solves. A dense level that stops at</span>
+<span class="sd">        ``solver_iterations`` above it warns; an adaptive band level stops at it or at its fixed</span>
+<span class="sd">        round count and never warns. The system is solved in ``float32``, whose rounding bounds</span>
+<span class="sd">        the relative residual either backend can actually reach at a few ``1e-6`` -- a tolerance</span>
+<span class="sd">        below that is never met and only spends the whole iteration budget.</span>
 <span class="sd">    confidence</span>
 <span class="sd">        When ``True``, weight each sample's splat by ``|normals[i]|`` (treating the normal magnitude</span>
 <span class="sd">        as a per-sample confidence), matching PoissonRecon's ``confidence`` flag.</span>
@@ -5884,15 +5930,23 @@ taken from it.</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``points`` has fewer than 3 points, or the depth/scale parameters are out of range.</span>
+<span class="sd">        If ``points`` has fewer than 3 points, ``normals`` does not have one entry per point, the</span>
+<span class="sd">        depth/scale parameters are out of range, or ``method`` is not ``"dense"`` or</span>
+<span class="sd">        ``"adaptive"``.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``points`` and ``normals`` are not all on one device.</span>
 
 <span class="sd">    Warns</span>
 <span class="sd">    -----</span>
 <span class="sd">    UserWarning</span>
-<span class="sd">        When a level's conjugate-gradient solve stops at ``solver_iterations`` with its residual</span>
-<span class="sd">        still above ``solver_tolerance``: the surface is then extracted from an unconverged field.</span>
+<span class="sd">        When a dense level's conjugate-gradient solve (any level of the dense backend, the adaptive</span>
+<span class="sd">        backend's dense base) stops at ``solver_iterations`` with its residual still above</span>
+<span class="sd">        ``solver_tolerance``: the surface is then extracted from an unconverged field. The</span>
+<span class="sd">        adaptive backend's band levels are not checked (see ``solver_iterations``).</span>
+<span class="sd">    UserWarning</span>
+<span class="sd">        With ``method="adaptive"``, when the extraction meets crossing cells its narrow band cannot</span>
+<span class="sd">        hold (as a degenerate, for instance coplanar, cloud does): those cells are dropped and the</span>
+<span class="sd">        surface has holes.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -5957,6 +6011,12 @@ taken from it.</p>
     <span class="n">n</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">size</span>
     <span class="k">if</span> <span class="n">n</span> <span class="o">&lt;</span> <span class="mi">3</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"screened_poisson requires at least 3 points, got </span><span class="si">{</span><span class="n">n</span><span class="si">}</span><span class="s2">."</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">normals</span><span class="o">.</span><span class="n">size</span> <span class="o">!=</span> <span class="n">n</span><span class="p">:</span>
+        <span class="c1"># Every splat and sampling kernel reads ``normals[i]`` for each point ``i``.</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"screened_poisson requires one normal per point, got </span><span class="si">{</span><span class="n">normals</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> normals for "</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">n</span><span class="si">}</span><span class="s2"> points."</span>
+        <span class="p">)</span>
 
     <span class="n">cube_lower</span><span class="p">,</span> <span class="n">cube_upper</span><span class="p">,</span> <span class="n">cube_size</span> <span class="o">=</span> <span class="n">_poisson_cube</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">scale</span><span class="p">)</span>
     <span class="c1"># Effective screening weight: a floor keeps the operator SPD even at point_weight == 0.</span>
@@ -6002,13 +6062,14 @@ taken from it.</p>
             <span class="n">odt</span><span class="o">.</span><span class="n">as_array3d</span><span class="p">(</span><span class="n">solution</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="n">res</span><span class="p">,</span> <span class="n">res</span><span class="p">,</span> <span class="n">res</span><span class="p">)),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span>
             <span class="n">iso</span><span class="p">,</span>
             <span class="n">bounds</span><span class="o">=</span><span class="p">(</span><span class="n">cube_lower</span><span class="p">,</span> <span class="n">cube_upper</span><span class="p">),</span>
-            <span class="n">edge_margin</span><span class="o">=</span><span class="n">_lattice_edge_margin</span><span class="p">(</span><span class="n">cube_size</span> <span class="o">/</span> <span class="nb">float</span><span class="p">(</span><span class="n">res</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)),</span>
+            <span class="n">edge_margin</span><span class="o">=</span><span class="n">kernel_levelset</span><span class="o">.</span><span class="n">lattice_edge_margin</span><span class="p">(</span><span class="n">cube_size</span> <span class="o">/</span> <span class="nb">float</span><span class="p">(</span><span class="n">res</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)),</span>
         <span class="p">)</span>
 
-    <span class="c1"># Both extractions keep every vertex ``_lattice_edge_margin`` of an edge off the lattice nodes,</span>
-    <span class="c1"># which is what makes the surface free of degenerate faces: without it a vertex lands within</span>
-    <span class="c1"># rounding of a node wherever the level set grazes one, and the slivers around it fall under</span>
-    <span class="c1"># ``face_nondegenerate_mask``'s absolute tolerance -- dozens a call at depth 9, and removing</span>
+    <span class="c1"># Both extractions keep every vertex ``kernel_levelset.lattice_edge_margin`` of an edge off the</span>
+    <span class="c1"># lattice nodes, which is what makes the surface free of degenerate faces: without it a vertex</span>
+    <span class="c1"># lands within rounding of a node wherever the level set grazes one, and the slivers around it</span>
+    <span class="c1"># fall under ``face_nondegenerate_mask``'s absolute tolerance -- dozens a call at depth 9, and</span>
+    <span class="c1"># removing</span>
     <span class="c1"># them opened the closed surface, since their neighbours do not share their vertices. This</span>
     <span class="c1"># drop is then a guard for a lattice so fine its spacing nears that tolerance. It is</span>
     <span class="c1"># deliberately *not* the full ``_clean_reconstruction`` tail the other three reconstructions</span>
@@ -6268,62 +6329,7 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1692</span>
-<span class="normal">1693</span>
-<span class="normal">1694</span>
-<span class="normal">1695</span>
-<span class="normal">1696</span>
-<span class="normal">1697</span>
-<span class="normal">1698</span>
-<span class="normal">1699</span>
-<span class="normal">1700</span>
-<span class="normal">1701</span>
-<span class="normal">1702</span>
-<span class="normal">1703</span>
-<span class="normal">1704</span>
-<span class="normal">1705</span>
-<span class="normal">1706</span>
-<span class="normal">1707</span>
-<span class="normal">1708</span>
-<span class="normal">1709</span>
-<span class="normal">1710</span>
-<span class="normal">1711</span>
-<span class="normal">1712</span>
-<span class="normal">1713</span>
-<span class="normal">1714</span>
-<span class="normal">1715</span>
-<span class="normal">1716</span>
-<span class="normal">1717</span>
-<span class="normal">1718</span>
-<span class="normal">1719</span>
-<span class="normal">1720</span>
-<span class="normal">1721</span>
-<span class="normal">1722</span>
-<span class="normal">1723</span>
-<span class="normal">1724</span>
-<span class="normal">1725</span>
-<span class="normal">1726</span>
-<span class="normal">1727</span>
-<span class="normal">1728</span>
-<span class="normal">1729</span>
-<span class="normal">1730</span>
-<span class="normal">1731</span>
-<span class="normal">1732</span>
-<span class="normal">1733</span>
-<span class="normal">1734</span>
-<span class="normal">1735</span>
-<span class="normal">1736</span>
-<span class="normal">1737</span>
-<span class="normal">1738</span>
-<span class="normal">1739</span>
-<span class="normal">1740</span>
-<span class="normal">1741</span>
-<span class="normal">1742</span>
-<span class="normal">1743</span>
-<span class="normal">1744</span>
-<span class="normal">1745</span>
-<span class="normal">1746</span>
-<span class="normal">1747</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1747</span>
 <span class="normal">1748</span>
 <span class="normal">1749</span>
 <span class="normal">1750</span>
@@ -6399,7 +6405,62 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="normal">1820</span>
 <span class="normal">1821</span>
 <span class="normal">1822</span>
-<span class="normal">1823</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+<span class="normal">1823</span>
+<span class="normal">1824</span>
+<span class="normal">1825</span>
+<span class="normal">1826</span>
+<span class="normal">1827</span>
+<span class="normal">1828</span>
+<span class="normal">1829</span>
+<span class="normal">1830</span>
+<span class="normal">1831</span>
+<span class="normal">1832</span>
+<span class="normal">1833</span>
+<span class="normal">1834</span>
+<span class="normal">1835</span>
+<span class="normal">1836</span>
+<span class="normal">1837</span>
+<span class="normal">1838</span>
+<span class="normal">1839</span>
+<span class="normal">1840</span>
+<span class="normal">1841</span>
+<span class="normal">1842</span>
+<span class="normal">1843</span>
+<span class="normal">1844</span>
+<span class="normal">1845</span>
+<span class="normal">1846</span>
+<span class="normal">1847</span>
+<span class="normal">1848</span>
+<span class="normal">1849</span>
+<span class="normal">1850</span>
+<span class="normal">1851</span>
+<span class="normal">1852</span>
+<span class="normal">1853</span>
+<span class="normal">1854</span>
+<span class="normal">1855</span>
+<span class="normal">1856</span>
+<span class="normal">1857</span>
+<span class="normal">1858</span>
+<span class="normal">1859</span>
+<span class="normal">1860</span>
+<span class="normal">1861</span>
+<span class="normal">1862</span>
+<span class="normal">1863</span>
+<span class="normal">1864</span>
+<span class="normal">1865</span>
+<span class="normal">1866</span>
+<span class="normal">1867</span>
+<span class="normal">1868</span>
+<span class="normal">1869</span>
+<span class="normal">1870</span>
+<span class="normal">1871</span>
+<span class="normal">1872</span>
+<span class="normal">1873</span>
+<span class="normal">1874</span>
+<span class="normal">1875</span>
+<span class="normal">1876</span>
+<span class="normal">1877</span>
+<span class="normal">1878</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6522,7 +6583,7 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
         <span class="p">(</span><span class="n">n_x</span><span class="p">,</span> <span class="n">n_y</span><span class="p">,</span> <span class="n">n_z</span><span class="p">),</span>
         <span class="n">bounds</span><span class="o">=</span><span class="p">(</span><span class="n">grid_lower</span><span class="p">,</span> <span class="n">grid_upper</span><span class="p">),</span>
         <span class="n">sign_mode</span><span class="o">=</span><span class="n">sign_mode</span><span class="p">,</span>
-        <span class="n">edge_margin</span><span class="o">=</span><span class="n">_lattice_edge_margin</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">),</span>
+        <span class="n">edge_margin</span><span class="o">=</span><span class="n">kernel_levelset</span><span class="o">.</span><span class="n">lattice_edge_margin</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">),</span>
     <span class="p">)</span>
     <span class="c1"># The margin keeps every vertex off the lattice nodes. Without it a node landing on the level</span>
     <span class="c1"># set (a unit cube on a 0.05 grid puts whole planes of nodes on its faces) leaves slivers the</span>
@@ -6847,48 +6908,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1840</span>
-<span class="normal">1841</span>
-<span class="normal">1842</span>
-<span class="normal">1843</span>
-<span class="normal">1844</span>
-<span class="normal">1845</span>
-<span class="normal">1846</span>
-<span class="normal">1847</span>
-<span class="normal">1848</span>
-<span class="normal">1849</span>
-<span class="normal">1850</span>
-<span class="normal">1851</span>
-<span class="normal">1852</span>
-<span class="normal">1853</span>
-<span class="normal">1854</span>
-<span class="normal">1855</span>
-<span class="normal">1856</span>
-<span class="normal">1857</span>
-<span class="normal">1858</span>
-<span class="normal">1859</span>
-<span class="normal">1860</span>
-<span class="normal">1861</span>
-<span class="normal">1862</span>
-<span class="normal">1863</span>
-<span class="normal">1864</span>
-<span class="normal">1865</span>
-<span class="normal">1866</span>
-<span class="normal">1867</span>
-<span class="normal">1868</span>
-<span class="normal">1869</span>
-<span class="normal">1870</span>
-<span class="normal">1871</span>
-<span class="normal">1872</span>
-<span class="normal">1873</span>
-<span class="normal">1874</span>
-<span class="normal">1875</span>
-<span class="normal">1876</span>
-<span class="normal">1877</span>
-<span class="normal">1878</span>
-<span class="normal">1879</span>
-<span class="normal">1880</span>
-<span class="normal">1881</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1881</span>
 <span class="normal">1882</span>
 <span class="normal">1883</span>
 <span class="normal">1884</span>
@@ -7008,7 +7028,48 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">1998</span>
 <span class="normal">1999</span>
 <span class="normal">2000</span>
-<span class="normal">2001</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">2001</span>
+<span class="normal">2002</span>
+<span class="normal">2003</span>
+<span class="normal">2004</span>
+<span class="normal">2005</span>
+<span class="normal">2006</span>
+<span class="normal">2007</span>
+<span class="normal">2008</span>
+<span class="normal">2009</span>
+<span class="normal">2010</span>
+<span class="normal">2011</span>
+<span class="normal">2012</span>
+<span class="normal">2013</span>
+<span class="normal">2014</span>
+<span class="normal">2015</span>
+<span class="normal">2016</span>
+<span class="normal">2017</span>
+<span class="normal">2018</span>
+<span class="normal">2019</span>
+<span class="normal">2020</span>
+<span class="normal">2021</span>
+<span class="normal">2022</span>
+<span class="normal">2023</span>
+<span class="normal">2024</span>
+<span class="normal">2025</span>
+<span class="normal">2026</span>
+<span class="normal">2027</span>
+<span class="normal">2028</span>
+<span class="normal">2029</span>
+<span class="normal">2030</span>
+<span class="normal">2031</span>
+<span class="normal">2032</span>
+<span class="normal">2033</span>
+<span class="normal">2034</span>
+<span class="normal">2035</span>
+<span class="normal">2036</span>
+<span class="normal">2037</span>
+<span class="normal">2038</span>
+<span class="normal">2039</span>
+<span class="normal">2040</span>
+<span class="normal">2041</span>
+<span class="normal">2042</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>

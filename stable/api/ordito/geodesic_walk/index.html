@@ -4513,8 +4513,7 @@ beginning at its start vertex. A ray always contributes at least one point.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 49</span>
-<span class="normal"> 50</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 50</span>
 <span class="normal"> 51</span>
 <span class="normal"> 52</span>
 <span class="normal"> 53</span>
@@ -4658,7 +4657,8 @@ beginning at its start vertex. A ray always contributes at least one point.</p>
 <span class="normal">191</span>
 <span class="normal">192</span>
 <span class="normal">193</span>
-<span class="normal">194</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trace_from_vertex</span><span class="p">(</span>
+<span class="normal">194</span>
+<span class="normal">195</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trace_from_vertex</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">start_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -5055,8 +5055,7 @@ streamlines of a face-based vector field.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">197</span>
-<span class="normal">198</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">198</span>
 <span class="normal">199</span>
 <span class="normal">200</span>
 <span class="normal">201</span>
@@ -5155,7 +5154,8 @@ streamlines of a face-based vector field.</p>
 <span class="normal">294</span>
 <span class="normal">295</span>
 <span class="normal">296</span>
-<span class="normal">297</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trace_from_face</span><span class="p">(</span>
+<span class="normal">297</span>
+<span class="normal">298</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trace_from_face</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">start_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -5581,8 +5581,7 @@ corner along the diagonal and from vertex 10 along the edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">300</span>
-<span class="normal">301</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">301</span>
 <span class="normal">302</span>
 <span class="normal">303</span>
 <span class="normal">304</span>
@@ -5723,7 +5722,8 @@ corner along the diagonal and from vertex 10 along the edge:</p>
 <span class="normal">439</span>
 <span class="normal">440</span>
 <span class="normal">441</span>
-<span class="normal">442</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">descend_field</span><span class="p">(</span>
+<span class="normal">442</span>
+<span class="normal">443</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">descend_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -6120,8 +6120,8 @@ with <a class="autorefs autorefs-internal" title="polyline_length" href="../poly
             </td>
             <td>
               <div class="doc-md-description">
-                <p>When a path stopped short of the source on the heat distance and was finished along mesh
-edges (see Notes); the message counts them.</p>
+                <p>When paths stopped short of the source on the heat distance and were finished along mesh
+edges (see Notes); the message counts the paths so finished.</p>
               </div>
             </td>
           </tr>
@@ -6136,14 +6136,17 @@ first-order, so this is an <em>approximate</em> geodesic: measured against <code
 geodesics -- which are exact -- the length comes out a few per cent long, and the excess is the
 field's error rather than the walk's. It is never <em>shorter</em> than the true geodesic, which is the
 invariant worth testing against.</p>
-<p><strong>Every path reaches the source.</strong> The heat distance can have a spurious local minimum -- on a
-mesh of mostly obtuse triangles a vertex can read well below its neighbours -- and a descent
-can also run into the mesh boundary. A path stopped either way is finished along the shortest
-mesh-edge path from where it stopped to the nearest source, and a warning counts how many were.
-That tail follows edges, so it is longer than the surface geodesic it stands in for; it is
-never shorter. Only <code>max_steps</code> running out leaves a path truncated, as does a target in a
-component no source reaches. <a class="autorefs autorefs-internal" title="descend_field" href="./#ordito.geodesic_walk.descend_field"><code>descend_field</code></a> keeps the
-plain behaviour: a descent of any other field stops where that field does.</p>
+<p><strong>Every path reaches the source.</strong> A path ends when it reaches a source vertex, whatever the
+field reads there: with several sources the heat distance is zero on their <em>mean</em>, not on each.
+The heat distance can have a spurious local minimum -- on a mesh of mostly obtuse triangles a
+vertex can read well below its neighbours -- and a descent can also run into the mesh boundary.
+A path stopped either way is finished along the shortest mesh-edge path from where it stopped
+to the nearest source, and a warning counts how many were. That tail follows edges, so it is
+longer than the surface geodesic it stands in for; it is never shorter. Only <code>max_steps</code>
+running out leaves a path truncated, and a target in a component no source reaches keeps the
+path the descent left, with no tail and no count in the warning.
+<a class="autorefs autorefs-internal" title="descend_field" href="./#ordito.geodesic_walk.descend_field"><code>descend_field</code></a> keeps the plain behaviour: a descent of
+any other field stops where that field does.</p>
 </details>
 
 <details class="see-also" open>
@@ -6181,8 +6184,7 @@ plain behaviour: a descent of any other field stops where that field does.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">466</span>
-<span class="normal">467</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">467</span>
 <span class="normal">468</span>
 <span class="normal">469</span>
 <span class="normal">470</span>
@@ -6317,7 +6319,14 @@ plain behaviour: a descent of any other field stops where that field does.</p>
 <span class="normal">599</span>
 <span class="normal">600</span>
 <span class="normal">601</span>
-<span class="normal">602</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_path</span><span class="p">(</span>
+<span class="normal">602</span>
+<span class="normal">603</span>
+<span class="normal">604</span>
+<span class="normal">605</span>
+<span class="normal">606</span>
+<span class="normal">607</span>
+<span class="normal">608</span>
+<span class="normal">609</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_path</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">source</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -6376,8 +6385,8 @@ plain behaviour: a descent of any other field stops where that field does.</p>
 <span class="sd">    Warns</span>
 <span class="sd">    -----</span>
 <span class="sd">    UserWarning</span>
-<span class="sd">        When a path stopped short of the source on the heat distance and was finished along mesh</span>
-<span class="sd">        edges (see Notes); the message counts them.</span>
+<span class="sd">        When paths stopped short of the source on the heat distance and were finished along mesh</span>
+<span class="sd">        edges (see Notes); the message counts the paths so finished.</span>
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
@@ -6387,14 +6396,17 @@ plain behaviour: a descent of any other field stops where that field does.</p>
 <span class="sd">    field's error rather than the walk's. It is never *shorter* than the true geodesic, which is the</span>
 <span class="sd">    invariant worth testing against.</span>
 
-<span class="sd">    **Every path reaches the source.** The heat distance can have a spurious local minimum -- on a</span>
-<span class="sd">    mesh of mostly obtuse triangles a vertex can read well below its neighbours -- and a descent</span>
-<span class="sd">    can also run into the mesh boundary. A path stopped either way is finished along the shortest</span>
-<span class="sd">    mesh-edge path from where it stopped to the nearest source, and a warning counts how many were.</span>
-<span class="sd">    That tail follows edges, so it is longer than the surface geodesic it stands in for; it is</span>
-<span class="sd">    never shorter. Only ``max_steps`` running out leaves a path truncated, as does a target in a</span>
-<span class="sd">    component no source reaches. [`descend_field`][ordito.geodesic_walk.descend_field] keeps the</span>
-<span class="sd">    plain behaviour: a descent of any other field stops where that field does.</span>
+<span class="sd">    **Every path reaches the source.** A path ends when it reaches a source vertex, whatever the</span>
+<span class="sd">    field reads there: with several sources the heat distance is zero on their *mean*, not on each.</span>
+<span class="sd">    The heat distance can have a spurious local minimum -- on a mesh of mostly obtuse triangles a</span>
+<span class="sd">    vertex can read well below its neighbours -- and a descent can also run into the mesh boundary.</span>
+<span class="sd">    A path stopped either way is finished along the shortest mesh-edge path from where it stopped</span>
+<span class="sd">    to the nearest source, and a warning counts how many were. That tail follows edges, so it is</span>
+<span class="sd">    longer than the surface geodesic it stands in for; it is never shorter. Only ``max_steps``</span>
+<span class="sd">    running out leaves a path truncated, and a target in a component no source reaches keeps the</span>
+<span class="sd">    path the descent left, with no tail and no count in the warning.</span>
+<span class="sd">    [`descend_field`][ordito.geodesic_walk.descend_field] keeps the plain behaviour: a descent of</span>
+<span class="sd">    any other field stops where that field does.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -6434,23 +6446,26 @@ plain behaviour: a descent of any other field stops where that field does.</p>
         <span class="k">if</span> <span class="n">owned</span>
         <span class="k">else</span> <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">heat_geodesic</span><span class="p">(</span><span class="n">bound</span><span class="o">.</span><span class="n">vertices</span><span class="p">,</span> <span class="n">bound</span><span class="o">.</span><span class="n">faces</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">t</span><span class="p">)</span>
     <span class="p">)</span>
+    <span class="c1"># A path arrives on a source vertex, not at a field value: the heat distance is shifted to a</span>
+    <span class="c1"># zero *mean* over the sources, so with several of them each reads a little above or below</span>
+    <span class="c1"># zero and no one threshold separates the sources from their neighbours.</span>
     <span class="n">points</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">n_completed</span> <span class="o">=</span> <span class="n">_descend</span><span class="p">(</span>
         <span class="n">bound</span><span class="o">.</span><span class="n">vertices</span><span class="p">,</span>
         <span class="n">bound</span><span class="o">.</span><span class="n">faces</span><span class="p">,</span>
         <span class="n">distance</span><span class="p">,</span>
         <span class="n">targets</span><span class="p">,</span>
-        <span class="mf">0.0</span><span class="p">,</span>
-        <span class="kc">None</span><span class="p">,</span>
-        <span class="kc">None</span><span class="p">,</span>
+        <span class="o">-</span><span class="n">math</span><span class="o">.</span><span class="n">inf</span><span class="p">,</span>
+        <span class="n">bound</span><span class="o">.</span><span class="n">halfedge_twins</span><span class="p">,</span>
+        <span class="n">bound</span><span class="o">.</span><span class="n">vertex_face_adjacency</span><span class="p">,</span>
         <span class="kc">None</span><span class="p">,</span>
         <span class="n">max_steps</span><span class="p">,</span>
-        <span class="n">complete_to</span><span class="o">=</span><span class="n">source</span><span class="p">,</span>
+        <span class="n">complete_to</span><span class="o">=</span><span class="p">(</span><span class="n">bound</span><span class="p">,</span> <span class="n">source</span><span class="p">),</span>
     <span class="p">)</span>
     <span class="k">if</span> <span class="n">n_completed</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"geodesic_path: </span><span class="si">{</span><span class="n">n_completed</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="n">targets</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> paths stopped short of the source "</span>
-            <span class="s2">"on the heat distance (a spurious local minimum, or the mesh boundary); each was "</span>
-            <span class="s2">"finished along the shortest mesh-edge path from where it stopped."</span><span class="p">,</span>
+            <span class="s2">"on the heat distance (a spurious local minimum, or the mesh boundary) and were "</span>
+            <span class="s2">"finished along the shortest mesh-edge path from where they stopped."</span><span class="p">,</span>
             <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
         <span class="p">)</span>
     <span class="k">return</span> <span class="n">points</span><span class="p">,</span> <span class="n">offsets</span>
@@ -6756,22 +6771,7 @@ answer is locally minimal; equal to it, the cap bound the result.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">722</span>
-<span class="normal">723</span>
-<span class="normal">724</span>
-<span class="normal">725</span>
-<span class="normal">726</span>
-<span class="normal">727</span>
-<span class="normal">728</span>
-<span class="normal">729</span>
-<span class="normal">730</span>
-<span class="normal">731</span>
-<span class="normal">732</span>
-<span class="normal">733</span>
-<span class="normal">734</span>
-<span class="normal">735</span>
-<span class="normal">736</span>
-<span class="normal">737</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">737</span>
 <span class="normal">738</span>
 <span class="normal">739</span>
 <span class="normal">740</span>
@@ -6888,7 +6888,22 @@ answer is locally minimal; equal to it, the cap bound the result.</p>
 <span class="normal">851</span>
 <span class="normal">852</span>
 <span class="normal">853</span>
-<span class="normal">854</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop</span><span class="p">(</span>
+<span class="normal">854</span>
+<span class="normal">855</span>
+<span class="normal">856</span>
+<span class="normal">857</span>
+<span class="normal">858</span>
+<span class="normal">859</span>
+<span class="normal">860</span>
+<span class="normal">861</span>
+<span class="normal">862</span>
+<span class="normal">863</span>
+<span class="normal">864</span>
+<span class="normal">865</span>
+<span class="normal">866</span>
+<span class="normal">867</span>
+<span class="normal">868</span>
+<span class="normal">869</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">loops</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]],</span>
@@ -7318,22 +7333,7 @@ all on one device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 857</span>
-<span class="normal"> 858</span>
-<span class="normal"> 859</span>
-<span class="normal"> 860</span>
-<span class="normal"> 861</span>
-<span class="normal"> 862</span>
-<span class="normal"> 863</span>
-<span class="normal"> 864</span>
-<span class="normal"> 865</span>
-<span class="normal"> 866</span>
-<span class="normal"> 867</span>
-<span class="normal"> 868</span>
-<span class="normal"> 869</span>
-<span class="normal"> 870</span>
-<span class="normal"> 871</span>
-<span class="normal"> 872</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 872</span>
 <span class="normal"> 873</span>
 <span class="normal"> 874</span>
 <span class="normal"> 875</span>
@@ -7468,7 +7468,22 @@ all on one device.</p>
 <span class="normal">1004</span>
 <span class="normal">1005</span>
 <span class="normal">1006</span>
-<span class="normal">1007</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop_with_offsets</span><span class="p">(</span>
+<span class="normal">1007</span>
+<span class="normal">1008</span>
+<span class="normal">1009</span>
+<span class="normal">1010</span>
+<span class="normal">1011</span>
+<span class="normal">1012</span>
+<span class="normal">1013</span>
+<span class="normal">1014</span>
+<span class="normal">1015</span>
+<span class="normal">1016</span>
+<span class="normal">1017</span>
+<span class="normal">1018</span>
+<span class="normal">1019</span>
+<span class="normal">1020</span>
+<span class="normal">1021</span>
+<span class="normal">1022</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop_with_offsets</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">loops</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>

@@ -4355,7 +4355,9 @@ cross <code>iso</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If any of <code>field</code>'s dimensions is below 2, or <code>edge_margin</code> is outside <code>[0, 0.5)</code>.</p>
+                <p>If any of <code>field</code>'s dimensions is below 2, <code>edge_margin</code> is outside <code>[0, 0.5)</code>,
+<code>field</code> has <code>2**31</code> nodes or more, or the level set has <code>2**31</code> vertices or more or
+<code>3 * n_faces</code> reaches <code>2**31</code>: the extraction indexes in <code>int32</code>.</p>
               </div>
             </td>
           </tr>
@@ -4376,11 +4378,16 @@ cross <code>iso</code>.</p>
   <summary>Notes</summary>
   <p>The triangulation is Warp's <code>warp.geometry.IsoSurfaceMarchingCubes</code>: its case tables, its
 vertex numbering (one vertex per crossing lattice edge, in row-major order of the edge's lower
-node and then by axis), its triangle order and its interpolation, so the result equals
-<code>IsoSurfaceMarchingCubes.extract</code> on the same lattice and bounds bit for bit, buffer order
-included. What differs is the scratch it needs: a pair of counters per lattice node, about twice
-the field, where Warp's extraction needs about eleven times the field -- the margin between
-fitting a fine lattice on the device and not.</p>
+node and then by axis), its triangle order and its interpolation, so on a field without NaN
+the result equals <code>IsoSurfaceMarchingCubes.extract</code> on the same lattice and bounds bit for
+bit, buffer order included. A NaN sample is on neither side of <code>iso</code>: no edge from it
+crosses and no cell it is a corner of emits a triangle, so the surface has a hole around it
+and every face index names a vertex. Warp's extraction instead triangulates such a cell as if
+the sample were below <code>iso</code> and gives the edges from it, which have no vertex, index <code>-1</code>.
+A vertex on a crossing edge all of whose cells have a NaN corner is kept, unreferenced, so
+the vertex numbering stays Warp's. What differs otherwise is the scratch it needs: a pair of
+counters per lattice node, about twice the field, where Warp's extraction needs about eleven
+times the field -- the margin between fitting a fine lattice on the device and not.</p>
 <p>The consequence worth knowing is that the result is <strong>not guaranteed manifold</strong> at an
 ambiguous cell, and can carry duplicate vertices where two cells agree on a crossing —
 <a class="autorefs autorefs-internal" title="resample_uniform" href="../reconstruction/#ordito.reconstruction.resample_uniform"><code>reconstruction.resample_uniform</code></a> runs
@@ -4415,17 +4422,7 @@ ambiguous cell, and can carry duplicate vertices where two cells agree on a cros
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">115</span>
-<span class="normal">116</span>
-<span class="normal">117</span>
-<span class="normal">118</span>
-<span class="normal">119</span>
-<span class="normal">120</span>
-<span class="normal">121</span>
-<span class="normal">122</span>
-<span class="normal">123</span>
-<span class="normal">124</span>
-<span class="normal">125</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">125</span>
 <span class="normal">126</span>
 <span class="normal">127</span>
 <span class="normal">128</span>
@@ -4558,7 +4555,37 @@ ambiguous cell, and can carry duplicate vertices where two cells agree on a cros
 <span class="normal">255</span>
 <span class="normal">256</span>
 <span class="normal">257</span>
-<span class="normal">258</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">marching_cubes</span><span class="p">(</span>
+<span class="normal">258</span>
+<span class="normal">259</span>
+<span class="normal">260</span>
+<span class="normal">261</span>
+<span class="normal">262</span>
+<span class="normal">263</span>
+<span class="normal">264</span>
+<span class="normal">265</span>
+<span class="normal">266</span>
+<span class="normal">267</span>
+<span class="normal">268</span>
+<span class="normal">269</span>
+<span class="normal">270</span>
+<span class="normal">271</span>
+<span class="normal">272</span>
+<span class="normal">273</span>
+<span class="normal">274</span>
+<span class="normal">275</span>
+<span class="normal">276</span>
+<span class="normal">277</span>
+<span class="normal">278</span>
+<span class="normal">279</span>
+<span class="normal">280</span>
+<span class="normal">281</span>
+<span class="normal">282</span>
+<span class="normal">283</span>
+<span class="normal">284</span>
+<span class="normal">285</span>
+<span class="normal">286</span>
+<span class="normal">287</span>
+<span class="normal">288</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">marching_cubes</span><span class="p">(</span>
     <span class="n">field</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat32</span><span class="p">,</span>
     <span class="n">iso</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -4612,7 +4639,9 @@ ambiguous cell, and can carry duplicate vertices where two cells agree on a cros
 <span class="sd">    TypeError</span>
 <span class="sd">        If ``field`` is not a rank-3 ``wp.float32`` array.</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If any of ``field``'s dimensions is below 2, or ``edge_margin`` is outside ``[0, 0.5)``.</span>
+<span class="sd">        If any of ``field``'s dimensions is below 2, ``edge_margin`` is outside ``[0, 0.5)``,</span>
+<span class="sd">        ``field`` has ``2**31`` nodes or more, or the level set has ``2**31`` vertices or more or</span>
+<span class="sd">        ``3 * n_faces`` reaches ``2**31``: the extraction indexes in ``int32``.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -4626,11 +4655,16 @@ ambiguous cell, and can carry duplicate vertices where two cells agree on a cros
 <span class="sd">    -----</span>
 <span class="sd">    The triangulation is Warp's ``warp.geometry.IsoSurfaceMarchingCubes``: its case tables, its</span>
 <span class="sd">    vertex numbering (one vertex per crossing lattice edge, in row-major order of the edge's lower</span>
-<span class="sd">    node and then by axis), its triangle order and its interpolation, so the result equals</span>
-<span class="sd">    ``IsoSurfaceMarchingCubes.extract`` on the same lattice and bounds bit for bit, buffer order</span>
-<span class="sd">    included. What differs is the scratch it needs: a pair of counters per lattice node, about twice</span>
-<span class="sd">    the field, where Warp's extraction needs about eleven times the field -- the margin between</span>
-<span class="sd">    fitting a fine lattice on the device and not.</span>
+<span class="sd">    node and then by axis), its triangle order and its interpolation, so on a field without NaN</span>
+<span class="sd">    the result equals ``IsoSurfaceMarchingCubes.extract`` on the same lattice and bounds bit for</span>
+<span class="sd">    bit, buffer order included. A NaN sample is on neither side of ``iso``: no edge from it</span>
+<span class="sd">    crosses and no cell it is a corner of emits a triangle, so the surface has a hole around it</span>
+<span class="sd">    and every face index names a vertex. Warp's extraction instead triangulates such a cell as if</span>
+<span class="sd">    the sample were below ``iso`` and gives the edges from it, which have no vertex, index ``-1``.</span>
+<span class="sd">    A vertex on a crossing edge all of whose cells have a NaN corner is kept, unreferenced, so</span>
+<span class="sd">    the vertex numbering stays Warp's. What differs otherwise is the scratch it needs: a pair of</span>
+<span class="sd">    counters per lattice node, about twice the field, where Warp's extraction needs about eleven</span>
+<span class="sd">    times the field -- the margin between fitting a fine lattice on the device and not.</span>
 
 <span class="sd">    The consequence worth knowing is that the result is **not guaranteed manifold** at an</span>
 <span class="sd">    ambiguous cell, and can carry duplicate vertices where two cells agree on a crossing —</span>
@@ -4663,6 +4697,9 @@ ambiguous cell, and can carry duplicate vertices where two cells agree on a cros
     <span class="k">if</span> <span class="ow">not</span> <span class="mf">0.0</span> <span class="o">&lt;=</span> <span class="n">edge_margin</span> <span class="o">&lt;</span> <span class="mf">0.5</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"edge_margin must be in [0, 0.5), got </span><span class="si">{</span><span class="n">edge_margin</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="n">nx</span><span class="p">,</span> <span class="n">ny</span><span class="p">,</span> <span class="n">nz</span> <span class="o">=</span> <span class="n">shape</span>
+    <span class="c1"># The kernels index nodes, and the scan counts vertices and triangles, in ``int32``.</span>
+    <span class="k">if</span> <span class="n">nx</span> <span class="o">*</span> <span class="n">ny</span> <span class="o">*</span> <span class="n">nz</span> <span class="o">&gt;</span> <span class="n">_INT32_MAX</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"field has </span><span class="si">{</span><span class="n">nx</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">ny</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">nz</span><span class="si">}</span><span class="s2"> nodes, past the int32 limit of </span><span class="si">{</span><span class="n">_INT32_MAX</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">bounds</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">lower</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
@@ -4691,9 +4728,19 @@ ambiguous cell, and can carry duplicate vertices where two cells agree on a cros
     <span class="c1"># One read sizes both outputs: the scanned pair's last entry is the vertex and triangle totals.</span>
     <span class="n">totals</span> <span class="o">=</span> <span class="n">read_scalar</span><span class="p">(</span><span class="n">counts</span><span class="p">)</span>
     <span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_faces</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">totals</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="nb">int</span><span class="p">(</span><span class="n">totals</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+    <span class="c1"># A total past ``int32`` wraps negative in the scan (wrapping all the way round to a positive</span>
+    <span class="c1"># one needs 2**32 of them, a buffer larger than any device), and a face's flat index is</span>
+    <span class="c1"># ``int32``.</span>
+    <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">&lt;</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n_faces</span> <span class="o">&lt;</span> <span class="mi">0</span> <span class="ow">or</span> <span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span> <span class="o">&gt;</span> <span class="n">_INT32_MAX</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"the level set has more vertices or triangles than int32 indices address; "</span>
+            <span class="s2">"extract it from a coarser field or in pieces"</span>
+        <span class="p">)</span>
     <span class="n">vertices</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="c1"># A crossing edge whose every cell has a NaN corner still owns a vertex, so either total alone</span>
+    <span class="c1"># can be non-zero.</span>
+    <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n_faces</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">marching_cubes_emit</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">nx</span><span class="p">,</span> <span class="n">ny</span><span class="p">,</span> <span class="n">nz</span><span class="p">),</span>
@@ -4828,7 +4875,7 @@ distance alone can be coarser than what is left of it.</p>
             <td>
               <div class="doc-md-description">
                 <p>Forwarded to
-<a class="autorefs autorefs-internal" title="signed_distance_grid" href="../proximity/#ordito.proximity.signed_distance_grid"><code>ordito.proximity.signed_distance_grid</code></a>. Defaults
+<a class="autorefs autorefs-internal" title="signed_distance_level_set" href="./#ordito.levelset.signed_distance_level_set"><code>signed_distance_level_set</code></a>. Defaults
 to <code>"winding"</code> rather than <code>"parity"</code>: an offset of a mesh with a few open rims is a
 common ask, and parity is the mode that goes wrong on one.</p>
               </div>
@@ -4935,7 +4982,11 @@ input's own triangulation must survive, the operation wanted is
 <p>Accuracy is the lattice's, improved by marching cubes' linear interpolation across a cell.</p>
 <p>The extraction is
 <a class="autorefs autorefs-internal" title="signed_distance_level_set" href="./#ordito.levelset.signed_distance_level_set"><code>signed_distance_level_set</code></a>, which searches for
-distances only near the offset surface.</p>
+distances only near the offset surface. It keeps every vertex at least a thousandth of a
+lattice edge off the lattice nodes (its <code>edge_margin</code>), so an offset level that passes
+through nodes, as a box's does on a lattice aligned with its faces, gives no degenerate
+triangles; with <code>sign_mode="parity"</code> that margin is also why a large lattice is sampled
+node by node rather than through the octree its Notes describe.</p>
 </details>
 
 <details class="see-also" open>
@@ -4971,37 +5022,7 @@ distances only near the offset surface.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">267</span>
-<span class="normal">268</span>
-<span class="normal">269</span>
-<span class="normal">270</span>
-<span class="normal">271</span>
-<span class="normal">272</span>
-<span class="normal">273</span>
-<span class="normal">274</span>
-<span class="normal">275</span>
-<span class="normal">276</span>
-<span class="normal">277</span>
-<span class="normal">278</span>
-<span class="normal">279</span>
-<span class="normal">280</span>
-<span class="normal">281</span>
-<span class="normal">282</span>
-<span class="normal">283</span>
-<span class="normal">284</span>
-<span class="normal">285</span>
-<span class="normal">286</span>
-<span class="normal">287</span>
-<span class="normal">288</span>
-<span class="normal">289</span>
-<span class="normal">290</span>
-<span class="normal">291</span>
-<span class="normal">292</span>
-<span class="normal">293</span>
-<span class="normal">294</span>
-<span class="normal">295</span>
-<span class="normal">296</span>
-<span class="normal">297</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">297</span>
 <span class="normal">298</span>
 <span class="normal">299</span>
 <span class="normal">300</span>
@@ -5108,7 +5129,49 @@ distances only near the offset surface.</p>
 <span class="normal">401</span>
 <span class="normal">402</span>
 <span class="normal">403</span>
-<span class="normal">404</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">offset_mesh</span><span class="p">(</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span>
+<span class="normal">408</span>
+<span class="normal">409</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span>
+<span class="normal">414</span>
+<span class="normal">415</span>
+<span class="normal">416</span>
+<span class="normal">417</span>
+<span class="normal">418</span>
+<span class="normal">419</span>
+<span class="normal">420</span>
+<span class="normal">421</span>
+<span class="normal">422</span>
+<span class="normal">423</span>
+<span class="normal">424</span>
+<span class="normal">425</span>
+<span class="normal">426</span>
+<span class="normal">427</span>
+<span class="normal">428</span>
+<span class="normal">429</span>
+<span class="normal">430</span>
+<span class="normal">431</span>
+<span class="normal">432</span>
+<span class="normal">433</span>
+<span class="normal">434</span>
+<span class="normal">435</span>
+<span class="normal">436</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">offset_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">distance</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -5144,7 +5207,7 @@ distances only near the offset surface.</p>
 <span class="sd">        distance alone can be coarser than what is left of it.</span>
 <span class="sd">    sign_mode</span>
 <span class="sd">        Forwarded to</span>
-<span class="sd">        [`ordito.proximity.signed_distance_grid`][ordito.proximity.signed_distance_grid]. Defaults</span>
+<span class="sd">        [`signed_distance_level_set`][ordito.levelset.signed_distance_level_set]. Defaults</span>
 <span class="sd">        to ``"winding"`` rather than ``"parity"``: an offset of a mesh with a few open rims is a</span>
 <span class="sd">        common ask, and parity is the mode that goes wrong on one.</span>
 <span class="sd">    bounds</span>
@@ -5187,7 +5250,11 @@ distances only near the offset surface.</p>
 
 <span class="sd">    The extraction is</span>
 <span class="sd">    [`signed_distance_level_set`][ordito.levelset.signed_distance_level_set], which searches for</span>
-<span class="sd">    distances only near the offset surface.</span>
+<span class="sd">    distances only near the offset surface. It keeps every vertex at least a thousandth of a</span>
+<span class="sd">    lattice edge off the lattice nodes (its ``edge_margin``), so an offset level that passes</span>
+<span class="sd">    through nodes, as a box's does on a lattice aligned with its faces, gives no degenerate</span>
+<span class="sd">    triangles; with ``sign_mode="parity"`` that margin is also why a large lattice is sampled</span>
+<span class="sd">    node by node rather than through the octree its Notes describe.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -5243,8 +5310,16 @@ distances only near the offset surface.</p>
     <span class="k">if</span> <span class="n">bounds</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">bounds</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">bounds</span><span class="o">.</span><span class="n">aabb</span><span class="p">(</span><span class="n">vertices</span><span class="p">)</span>
     <span class="n">shape</span><span class="p">,</span> <span class="n">box</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">proximity</span><span class="o">.</span><span class="n">signed_distance_lattice</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">spacing</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">,</span> <span class="n">pad</span><span class="o">=</span><span class="n">pad</span><span class="p">)</span>
+    <span class="c1"># The margin keeps every vertex off the lattice nodes: an offset level that lands on a plane of</span>
+    <span class="c1"># them (a unit box grown by 0.1 on a 0.02 lattice) otherwise leaves zero-area slivers.</span>
     <span class="k">return</span> <span class="n">signed_distance_level_set</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">distance</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">box</span><span class="p">,</span> <span class="n">sign_mode</span><span class="o">=</span><span class="n">sign_mode</span>
+        <span class="n">vertices</span><span class="p">,</span>
+        <span class="n">faces</span><span class="p">,</span>
+        <span class="n">distance</span><span class="p">,</span>
+        <span class="n">shape</span><span class="p">,</span>
+        <span class="n">bounds</span><span class="o">=</span><span class="n">box</span><span class="p">,</span>
+        <span class="n">sign_mode</span><span class="o">=</span><span class="n">sign_mode</span><span class="p">,</span>
+        <span class="n">edge_margin</span><span class="o">=</span><span class="n">kernel_levelset</span><span class="o">.</span><span class="n">lattice_edge_margin</span><span class="p">(</span><span class="n">spacing</span><span class="p">),</span>
     <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -5489,8 +5564,8 @@ Wherever that count is in doubt, or the winding number is close enough to 1/2 fo
 approximation of it to decide differently, the node takes Warp's sign, and a node past the
 search's reach that still ends a crossing edge (the sign of an open surface's field can change
 away from the surface) gets its full distance. The result is the dense lattice's surface,
-vertex for vertex and face for face. A boundary of very many edges or components, as a
-triangle soup has, samples every node instead.</p>
+vertex for vertex and face for face. A boundary of very many edges for the lattice's size, as
+a triangle soup has, samples every node instead.</p>
 <p>Otherwise, on a large lattice, a closed, consistently wound input is not sampled on every node
 either: an octree over the lattice discards every cell whose centre is farther from the level
 set than the cell is wide -- sound because a signed distance changes no faster than the
@@ -5530,49 +5605,7 @@ sphere):</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">407</span>
-<span class="normal">408</span>
-<span class="normal">409</span>
-<span class="normal">410</span>
-<span class="normal">411</span>
-<span class="normal">412</span>
-<span class="normal">413</span>
-<span class="normal">414</span>
-<span class="normal">415</span>
-<span class="normal">416</span>
-<span class="normal">417</span>
-<span class="normal">418</span>
-<span class="normal">419</span>
-<span class="normal">420</span>
-<span class="normal">421</span>
-<span class="normal">422</span>
-<span class="normal">423</span>
-<span class="normal">424</span>
-<span class="normal">425</span>
-<span class="normal">426</span>
-<span class="normal">427</span>
-<span class="normal">428</span>
-<span class="normal">429</span>
-<span class="normal">430</span>
-<span class="normal">431</span>
-<span class="normal">432</span>
-<span class="normal">433</span>
-<span class="normal">434</span>
-<span class="normal">435</span>
-<span class="normal">436</span>
-<span class="normal">437</span>
-<span class="normal">438</span>
-<span class="normal">439</span>
-<span class="normal">440</span>
-<span class="normal">441</span>
-<span class="normal">442</span>
-<span class="normal">443</span>
-<span class="normal">444</span>
-<span class="normal">445</span>
-<span class="normal">446</span>
-<span class="normal">447</span>
-<span class="normal">448</span>
-<span class="normal">449</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">449</span>
 <span class="normal">450</span>
 <span class="normal">451</span>
 <span class="normal">452</span>
@@ -5679,7 +5712,51 @@ sphere):</p>
 <span class="normal">553</span>
 <span class="normal">554</span>
 <span class="normal">555</span>
-<span class="normal">556</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_level_set</span><span class="p">(</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span>
+<span class="normal">580</span>
+<span class="normal">581</span>
+<span class="normal">582</span>
+<span class="normal">583</span>
+<span class="normal">584</span>
+<span class="normal">585</span>
+<span class="normal">586</span>
+<span class="normal">587</span>
+<span class="normal">588</span>
+<span class="normal">589</span>
+<span class="normal">590</span>
+<span class="normal">591</span>
+<span class="normal">592</span>
+<span class="normal">593</span>
+<span class="normal">594</span>
+<span class="normal">595</span>
+<span class="normal">596</span>
+<span class="normal">597</span>
+<span class="normal">598</span>
+<span class="normal">599</span>
+<span class="normal">600</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_level_set</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">iso</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -5752,8 +5829,8 @@ sphere):</p>
 <span class="sd">    approximation of it to decide differently, the node takes Warp's sign, and a node past the</span>
 <span class="sd">    search's reach that still ends a crossing edge (the sign of an open surface's field can change</span>
 <span class="sd">    away from the surface) gets its full distance. The result is the dense lattice's surface,</span>
-<span class="sd">    vertex for vertex and face for face. A boundary of very many edges or components, as a</span>
-<span class="sd">    triangle soup has, samples every node instead.</span>
+<span class="sd">    vertex for vertex and face for face. A boundary of very many edges for the lattice's size, as</span>
+<span class="sd">    a triangle soup has, samples every node instead.</span>
 
 <span class="sd">    Otherwise, on a large lattice, a closed, consistently wound input is not sampled on every node</span>
 <span class="sd">    either: an octree over the lattice discards every cell whose centre is farther from the level</span>
@@ -5791,6 +5868,8 @@ sphere):</p>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"signed_distance_level_set needs at least one face"</span><span class="p">)</span>
     <span class="k">if</span> <span class="nb">min</span><span class="p">(</span><span class="n">shape</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"shape must be at least 2 along every axis, got </span><span class="si">{</span><span class="n">shape</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="mf">0.0</span> <span class="o">&lt;=</span> <span class="n">edge_margin</span> <span class="o">&lt;</span> <span class="mf">0.5</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"edge_margin must be in [0, 0.5), got </span><span class="si">{</span><span class="n">edge_margin</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span> <span class="o">=</span> <span class="n">bounds</span>
     <span class="n">n_nodes</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">prod</span><span class="p">(</span><span class="n">shape</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">sign_mode</span> <span class="o">==</span> <span class="s2">"winding"</span> <span class="ow">and</span> <span class="n">n_nodes</span> <span class="o">&lt;</span> <span class="n">_LATTICE_WINDING_BELOW_NODES</span><span class="p">:</span>
@@ -6057,48 +6136,7 @@ triangles over each of its 16 boundary edges:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">842</span>
-<span class="normal">843</span>
-<span class="normal">844</span>
-<span class="normal">845</span>
-<span class="normal">846</span>
-<span class="normal">847</span>
-<span class="normal">848</span>
-<span class="normal">849</span>
-<span class="normal">850</span>
-<span class="normal">851</span>
-<span class="normal">852</span>
-<span class="normal">853</span>
-<span class="normal">854</span>
-<span class="normal">855</span>
-<span class="normal">856</span>
-<span class="normal">857</span>
-<span class="normal">858</span>
-<span class="normal">859</span>
-<span class="normal">860</span>
-<span class="normal">861</span>
-<span class="normal">862</span>
-<span class="normal">863</span>
-<span class="normal">864</span>
-<span class="normal">865</span>
-<span class="normal">866</span>
-<span class="normal">867</span>
-<span class="normal">868</span>
-<span class="normal">869</span>
-<span class="normal">870</span>
-<span class="normal">871</span>
-<span class="normal">872</span>
-<span class="normal">873</span>
-<span class="normal">874</span>
-<span class="normal">875</span>
-<span class="normal">876</span>
-<span class="normal">877</span>
-<span class="normal">878</span>
-<span class="normal">879</span>
-<span class="normal">880</span>
-<span class="normal">881</span>
-<span class="normal">882</span>
-<span class="normal">883</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">883</span>
 <span class="normal">884</span>
 <span class="normal">885</span>
 <span class="normal">886</span>
@@ -6171,7 +6209,48 @@ triangles over each of its 16 boundary edges:</p>
 <span class="normal">953</span>
 <span class="normal">954</span>
 <span class="normal">955</span>
-<span class="normal">956</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thicken_mesh</span><span class="p">(</span>
+<span class="normal">956</span>
+<span class="normal">957</span>
+<span class="normal">958</span>
+<span class="normal">959</span>
+<span class="normal">960</span>
+<span class="normal">961</span>
+<span class="normal">962</span>
+<span class="normal">963</span>
+<span class="normal">964</span>
+<span class="normal">965</span>
+<span class="normal">966</span>
+<span class="normal">967</span>
+<span class="normal">968</span>
+<span class="normal">969</span>
+<span class="normal">970</span>
+<span class="normal">971</span>
+<span class="normal">972</span>
+<span class="normal">973</span>
+<span class="normal">974</span>
+<span class="normal">975</span>
+<span class="normal">976</span>
+<span class="normal">977</span>
+<span class="normal">978</span>
+<span class="normal">979</span>
+<span class="normal">980</span>
+<span class="normal">981</span>
+<span class="normal">982</span>
+<span class="normal">983</span>
+<span class="normal">984</span>
+<span class="normal">985</span>
+<span class="normal">986</span>
+<span class="normal">987</span>
+<span class="normal">988</span>
+<span class="normal">989</span>
+<span class="normal">990</span>
+<span class="normal">991</span>
+<span class="normal">992</span>
+<span class="normal">993</span>
+<span class="normal">994</span>
+<span class="normal">995</span>
+<span class="normal">996</span>
+<span class="normal">997</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thicken_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">thickness</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
