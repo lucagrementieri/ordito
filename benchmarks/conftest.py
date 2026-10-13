@@ -61,11 +61,11 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 import numpy as np
 import pytest
 import warp as wp
+from fetch import ensure_mesh
 from meshes import (
     ALL_MESHES_BY_NAME,
     AXES,
     BUILDERS,
-    DATA_DIR,
     MESH_ORDER,
     MESHES,
     MESHES_BY_NAME,
@@ -378,7 +378,7 @@ def _load_numpy(name: str) -> tuple[np.ndarray, np.ndarray]:
 
         import meshio
 
-        mesh = meshio.read(DATA_DIR / MESHES_BY_NAME[name]["filename"])
+        mesh = meshio.read(ensure_mesh(name))
         faces = mesh.cells_dict.get("triangle")
         if faces is None or len(faces) == 0:
             raise ValueError(f"{name!r} has no triangle faces to benchmark.")

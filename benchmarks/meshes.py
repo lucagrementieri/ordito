@@ -28,6 +28,7 @@ open3d and warp all receive one shared NumPy source. ``ordito.creation`` is the 
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import TypedDict
@@ -36,7 +37,14 @@ import numpy as np
 import numpy.typing as npt
 import trimesh as tm
 
-DATA_DIR = Path(__file__).parent / "data"
+# Where the scan meshes are cached. ``ORDITO_BENCHMARK_DATA`` points it elsewhere (a CI cache, a
+# directory shared between checkouts); ``fetch.py`` downloads into it on first use.
+DATA_DIR = Path(os.environ.get("ORDITO_BENCHMARK_DATA") or Path(__file__).parent / "data")
+
+# The scan meshes are mirrored, byte for byte, as assets of one GitHub release. A release is never
+# edited: a changed or added file goes into a new ``meshes-vN`` tag, and ``sha256`` pins each
+# file, so every machine benchmarks the same bytes whatever served them.
+MESH_RELEASE_URL = "https://github.com/lucagrementieri/ordito/releases/download/meshes-v1"
 
 # Ordered from smallest to largest -- used for size comparisons.
 SIZE_ORDER = ["small", "medium", "large", "extralarge", "huge"]
@@ -61,13 +69,15 @@ class MeshSpec(TypedDict):
 
     ``n_vertices`` / ``n_faces`` are recorded rather than measured so a mesh can be size-filtered
     or asserted against before it is read off disk or generated; ``test_meshes.py`` checks every
-    recorded number against the real thing. ``filename`` is empty for synthetic meshes and
+    recorded number against the real thing. ``filename`` and ``sha256`` are empty for synthetic
+    meshes; for a scan mesh they name its asset under ``MESH_RELEASE_URL`` and pin its content.
     ``axis`` is the property the mesh perturbs (``None`` for the scan meshes, which vary only in
     size).
     """
 
     name: str
     filename: str
+    sha256: str
     n_vertices: int
     n_faces: int
     size: str
@@ -75,11 +85,18 @@ class MeshSpec(TypedDict):
 
 
 def _mesh(
-    name: str, filename: str, n_vertices: int, n_faces: int, axis: str | None = None
+    name: str,
+    filename: str,
+    n_vertices: int,
+    n_faces: int,
+    axis: str | None = None,
+    *,
+    sha256: str = "",
 ) -> MeshSpec:
     return {
         "name": name,
         "filename": filename,
+        "sha256": sha256,
         "n_vertices": n_vertices,
         "n_faces": n_faces,
         "size": size_category(n_faces),
@@ -91,15 +108,50 @@ def _mesh(
 # scan meshes: the pure-N axis
 # ---------------------------------------------------------------------------
 
-# ``heptoroid.ply`` is intentionally absent: it is a tristrip PLY that meshio cannot decode as
-# triangle faces. Counts are read from the PLY headers so a mesh can be skipped by size before it
-# is ever loaded.
+# The Stanford 3D Scanning Repository's reconstructions, unmodified and renamed
+# (http://graphics.stanford.edu/data/3Dscanrep/): ``bunny`` is ``bunny.tar.gz``'s
+# ``bun_zipper.ply`` and ``bunny_decimated`` its ``bun_zipper_res2.ply``; ``dragon``,
+# ``happy_buddha`` and ``lucy`` are ``dragon_vrip.ply``, ``happy_vrip.ply`` and ``lucy.ply``. Free
+# to mirror for research use with attribution to the Stanford Computer Graphics Laboratory; not for
+# commercial use without permission. ``heptoroid.ply`` is intentionally absent: it is a tristrip
+# PLY that meshio cannot decode as triangle faces. Counts are read from the PLY headers so a mesh
+# can be skipped by size before it is ever loaded.
 MESHES: list[MeshSpec] = [
-    _mesh("bunny_decimated", "bunny_decimated.ply", 8_171, 16_301),
-    _mesh("bunny", "bunny.ply", 35_947, 69_451),
-    _mesh("dragon", "dragon.ply", 437_645, 871_414),
-    _mesh("happy_buddha", "happy_buddha.ply", 543_652, 1_087_716),
-    _mesh("lucy", "lucy.ply", 14_027_872, 28_055_742),
+    _mesh(
+        "bunny_decimated",
+        "bunny_decimated.ply",
+        8_171,
+        16_301,
+        sha256="8faa052bb08cf1625eec97b6508baceee11eec9cf28f83f6a9d4547ab15d7761",
+    ),
+    _mesh(
+        "bunny",
+        "bunny.ply",
+        35_947,
+        69_451,
+        sha256="b1acc63bece78444aa2e15bdcc72371a201279b98c6f5d4b74c993d02f0566fe",
+    ),
+    _mesh(
+        "dragon",
+        "dragon.ply",
+        437_645,
+        871_414,
+        sha256="fea87ff48f2aba22fb53e7b67c3ff3f7b8c2a3b3a0653af62c48bba67c6d5744",
+    ),
+    _mesh(
+        "happy_buddha",
+        "happy_buddha.ply",
+        543_652,
+        1_087_716,
+        sha256="2283371216d748a08376a3c88698e283cc8f18d10ced348d6d133051bcf217ab",
+    ),
+    _mesh(
+        "lucy",
+        "lucy.ply",
+        14_027_872,
+        28_055_742,
+        sha256="bfb191b35f0155214844c6d211302231d7bc77f3437b7719c92e0abfa9db5abe",
+    ),
 ]
 MESHES_BY_NAME = {mesh["name"]: mesh for mesh in MESHES}
 MESH_ORDER = [mesh["name"] for mesh in MESHES]

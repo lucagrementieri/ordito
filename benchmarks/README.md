@@ -74,8 +74,29 @@ Two registries, in [`meshes.py`](meshes.py), for two different questions.
 
 ### Scan meshes — the pure-`N` axis
 
-Real scan meshes, read once with `meshio` (the same loader `ordito.io` uses). Place the files in
-`benchmarks/data/` (gitignored, local-only). Used **only** by the throughput groups: `triangles`,
+Real scan meshes, read once with `meshio` (the same loader `ordito.io` uses): the Stanford
+3D Scanning Repository's reconstructions, unmodified, mirrored as the assets of the
+[`meshes-v1`](https://github.com/lucagrementieri/ordito/releases/tag/meshes-v1) release. Each is
+pinned by a SHA-256 in `meshes.py`, so every machine benchmarks the same bytes. A run downloads the
+meshes it uses on first use into `benchmarks/data/` (gitignored; override it with
+`ORDITO_BENCHMARK_DATA`) and re-checks every cached file's hash; a mismatch is an error, never a
+skip. To prefetch, e.g. before going offline or in a CI cache step:
+
+```bash
+uv run python benchmarks/fetch.py              # all five, 585 MB (lucy alone is 508 MB)
+uv run python benchmarks/fetch.py bunny dragon # just these
+```
+
+**Adding a scan mesh**: upload it to a *new* release tag (`gh release create meshes-v2 ...` carrying
+every asset; a published `meshes-vN` is never edited), bump `MESH_RELEASE_URL`, and add one
+`_mesh(...)` line with its counts and `sha256=` (`sha256sum file.ply`).
+
+The models are © Stanford Computer Graphics Laboratory: free to use and redistribute for research
+with attribution, not for commercial use without their permission, and the Buddha, Dragon and Lucy
+are to be used "in good taste" (no animating, morphing, Boolean operations or simulated
+destruction). See the [repository's terms](http://graphics.stanford.edu/data/3Dscanrep/).
+
+Used **only** by the throughput groups: `triangles`,
 `edges`, `reduce`, `grouping`, the `laplacian` entry kernels, `array.index_bound` /
 `mean_vertex_normals`, and the parts of `remesh` / `proximity` / `texture` / `neighbors` that
 genuinely scale with size.

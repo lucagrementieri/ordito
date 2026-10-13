@@ -12,15 +12,25 @@ So the recorded ``MeshSpec`` counts are checked against the built geometry, the 
 mesh is chosen for is asserted directly, and the cross-mesh pinning invariants -- equal ``F``
 across the component axis, equal ``V`` across the diameter and valence axes, identical
 connectivity across the quality axis -- are checked as their own tests.
+
+The scan meshes are downloaded rather than built, so what is checked for them is the contract
+that makes a download reproducible: every one is pinned by a SHA-256, and [`fetch.py`](fetch.py)
+refuses bytes that do not match it (exercised offline through ``file://`` URLs).
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
+from collections.abc import Iterator
+from pathlib import Path
+
+import fetch
 import numpy as np
 import numpy.typing as npt
 import pytest
 import trimesh as tm
-from meshes import AXES, BUILDERS, FEATURE_MESHES, FEATURE_MESHES_BY_NAME, MeshSpec
+from meshes import AXES, BUILDERS, FEATURE_MESHES, FEATURE_MESHES_BY_NAME, MESHES, MeshSpec
 
 _mesh_cache: dict[str, tm.Trimesh] = {}
 
@@ -192,3 +202,56 @@ def test_vertices_are_finite(spec: MeshSpec) -> None:
     """Guards the graded spacing and the slice-plane cut, which are the two easiest to break."""
     vertices_np: npt.NDArray[np.floating] = _built(spec["name"]).vertices
     assert np.isfinite(vertices_np).all()
+
+
+def test_scan_meshes_are_pinned() -> None:
+    """Every scan mesh names a distinct release asset and a SHA-256; no feature mesh does."""
+    assert all(re.fullmatch(r"[0-9a-f]{64}", spec["sha256"]) for spec in MESHES)
+    assert len({spec["filename"] for spec in MESHES}) == len(MESHES)
+    assert all(spec["filename"] == spec["sha256"] == "" for spec in FEATURE_MESHES)
+
+
+@pytest.fixture
+def fake_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Path, Path]]:
+    """Serve ``bunny.ply`` from a ``file://`` release into an empty cache; yield both folders."""
+    release = tmp_path / "release"
+    release.mkdir()
+    content = b"ply\nformat ascii 1.0\nend_header\n"
+    (release / "bunny.ply").write_bytes(content)
+    sha256 = hashlib.sha256(content).hexdigest()
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(fetch, "DATA_DIR", cache)
+    monkeypatch.setattr(fetch, "MESH_RELEASE_URL", release.as_uri())
+    monkeypatch.setitem(
+        fetch.MESHES_BY_NAME, "bunny", {**fetch.MESHES_BY_NAME["bunny"], "sha256": sha256}
+    )
+    fetch.ensure_mesh.cache_clear()
+    yield release, cache
+    fetch.ensure_mesh.cache_clear()
+
+
+def test_ensure_mesh_downloads_a_missing_mesh(fake_release: tuple[Path, Path]) -> None:
+    """A missing file is downloaded into the cache, with no partial file left beside it."""
+    release, cache = fake_release
+    path = fetch.ensure_mesh("bunny")
+    assert path == cache / "bunny.ply"
+    assert path.read_bytes() == (release / "bunny.ply").read_bytes()
+    assert sorted(item.name for item in cache.iterdir()) == ["bunny.ply"]
+
+
+def test_ensure_mesh_rejects_a_changed_release_asset(fake_release: tuple[Path, Path]) -> None:
+    """A download whose bytes differ from the pin raises and leaves nothing in the cache."""
+    release, cache = fake_release
+    (release / "bunny.ply").write_bytes(b"something else")
+    with pytest.raises(RuntimeError, match="SHA-256"):
+        fetch.ensure_mesh("bunny")
+    assert list(cache.iterdir()) == []
+
+
+def test_ensure_mesh_rejects_a_corrupted_cached_file(fake_release: tuple[Path, Path]) -> None:
+    """A cached file is re-hashed, so a corrupted copy raises instead of being benchmarked."""
+    _, cache = fake_release
+    cache.mkdir()
+    (cache / "bunny.ply").write_bytes(b"truncated")
+    with pytest.raises(RuntimeError, match="delete it"):
+        fetch.ensure_mesh("bunny")
