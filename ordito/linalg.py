@@ -467,7 +467,10 @@ def min_quad_with_fixed_precompute(
     [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]
     """
     require_same_device(fixed_mask=fixed_mask, coordinates=coordinates)
-    return MinQuadWithFixedData(q, fixed_mask, coordinates, factor=True)
+    system = MinQuadWithFixedData(q, fixed_mask, coordinates, factor=True)
+    if system.factorization is not None:
+        _solved_repeatedly(system.factorization)
+    return system
 
 
 class MinQuadWithFixedData:
@@ -1646,8 +1649,15 @@ class _FactoringColumns:
         self._calls += 1
         if self._calls == 1 or not self._factorization.factor():
             return self._state()
+        _solved_repeatedly(self._factorization)
         self._factorization.solve(self._rhs, self._solution, tol=self._tol)
         return _direct_result(self._factorization, self._tol, self._check_every, self._rhs.device)
+
+
+def _solved_repeatedly(factorization: OperatorFactorization) -> None:
+    """Have a factorization built for many solves record its solve graph on the first one."""
+    if factorization.factorization is not None:
+        factorization.factorization.records_at_once = True
 
 
 class OperatorFactorization:

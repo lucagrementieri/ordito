@@ -93,11 +93,16 @@ class SparseCholesky:
         Device memory the factorization holds, in bytes.
     negated : bool
         Whether ``-matrix`` was factored (a negative semi-definite operator).
+    records_at_once : bool
+        Whether a solve records its refinement graph on its first run (a factorization solved many
+        times), rather than on its second against the same operator storage (the default: a
+        one-shot solve then runs its rounds directly and records nothing).
     """
 
     def __init__(self, plan: _Plan, matrix: odt.BsrMatrix[wp.float64], *, negated: bool) -> None:
         """Factor ``matrix`` (or its negation) over ``plan``'s structure."""
         self.negated = negated
+        self.records_at_once = False
         self.n = plan.n
         self.device = plan.device
         self.nbytes = plan.nbytes
@@ -273,7 +278,7 @@ class SparseCholesky:
                 -1.0 if self.negated else 1.0,
             )
             self._solves[n_columns] = solve
-        solve.run(rhs.flatten(), solution.flatten())
+        solve.run(rhs.flatten(), solution.flatten(), self.records_at_once)
 
 
 def sparse_cholesky(
@@ -606,11 +611,13 @@ class _Plan:
         self.backward: list[dict[str, Any]] = []
         for h in range(n_levels):
             nodes = level_node[level_bounds[h] : level_bounds[h + 1]]
-            work = []
-            for p in range(int(-(-ncol[nodes].max() // panel))):
-                last = np.minimum((p + 1) * panel, ncol[nodes])
-                span = size[nodes] - last
-                work.append(max(int((span * span + span * last).max()), 1))
+            # Every panel's update work at once: panel ``p`` ends at ``min((p + 1) PANEL, ncol)``.
+            ends = np.minimum(
+                np.arange(1, -(-int(ncol[nodes].max()) // panel) + 1)[:, None] * panel,
+                ncol[nodes][None, :],
+            )
+            spans = size[nodes][None, :] - ends
+            work = np.maximum((spans * spans + spans * ends).max(axis=1), 1).tolist()
             rows_below = int((size[nodes] - np.minimum(panel, ncol[nodes])).max())
             self.big.append(
                 (
@@ -1097,7 +1104,7 @@ class _Solve:
                 device=device,
             )  # fmt: skip
 
-    def run(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]) -> None:
+    def run(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64], at_once: bool) -> None:
         device = wp.get_device(self.plan.device)
         _launch.copy(self.rhs, rhs)
         _launch.copy(self.initial, solution)
@@ -1107,11 +1114,11 @@ class _Solve:
             id(self.matrix.values),
             self.numeric.any_singular,
         )
-        # Recorded on the second run against one operator storage, not the first: a one-shot solve
-        # (a verified fallback, a call that drops its factorization) runs its few refinement
-        # rounds directly, one four-byte read each, rather than paying a recording it never
-        # replays.
-        repeat = self.ran_for == identity
+        # Recorded on the second run against one operator storage, not the first, unless the
+        # factorization says it is solved many times: a one-shot solve (a verified fallback, a call
+        # that drops its factorization) runs its few refinement rounds directly, one four-byte
+        # read each, rather than paying a recording it never replays.
+        repeat = at_once or self.ran_for == identity
         self.ran_for = identity
         if device.is_cuda and wp.is_conditional_graph_supported() and repeat:
             if self.graph is None or self.recorded_for != identity:
