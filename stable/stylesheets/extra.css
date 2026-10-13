@@ -31,7 +31,7 @@
   font-size: 0.75rem;
   color: var(--md-default-fg-color--light);
 }
-.ordito-gallery.grid.cards > ul {
+.md-typeset .ordito-gallery.grid.cards {
   grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
 }
 .ordito-gallery.grid.cards > ul > li {
@@ -42,4 +42,61 @@
   display: block;
   margin: 0 auto 0.3rem;
   max-height: 9rem;
+}
+
+/* Layout width. Material's 61rem grid leaves the content column about 80 code characters wide,
+   so every 100-column line of the examples (ruff's width) scrolled sideways. 76rem fits them at
+   the code font size below without changing the prose measure much. */
+.md-grid {
+  max-width: 76rem;
+}
+.md-typeset pre > code {
+  font-size: 0.8em;
+}
+
+/* Collapsed backlinks (overrides/mkdocstrings/python/material/backlinks.html.jinja). */
+.md-typeset details.ordito-backlinks {
+  border: none;
+  box-shadow: none;
+  background: none;
+  margin: 0.4em 0 0.8em;
+  font-size: 0.7rem;
+}
+.md-typeset details.ordito-backlinks > summary {
+  padding: 0 0 0 1.4rem;
+  background: none;
+  font-weight: normal;
+  color: var(--md-default-fg-color--light);
+}
+.md-typeset details.ordito-backlinks > summary::before {
+  left: 0;
+  top: 0.15em;
+  background-color: var(--md-default-fg-color--light);
+}
+.md-typeset details.ordito-backlinks > summary::after {
+  display: none;
+}
+.md-typeset details.ordito-backlinks > p {
+  margin: 0.3em 0 0 1.4rem;
+}
+.ordito-backlinks-section {
+  font-weight: 600;
+  margin-right: 0.4em;
+}
+.ordito-backlinks-section::after {
+  content: ":";
+}
+
+/* Home-page strip of example thumbnails: one row of six on a wide screen, two rows of three
+   otherwise, never a row with one card left over. */
+.md-typeset .ordito-hero.grid.cards {
+  grid-template-columns: repeat(3, 1fr);
+}
+@media screen and (min-width: 60em) {
+  .md-typeset .ordito-hero.grid.cards {
+    grid-template-columns: repeat(6, 1fr);
+  }
+}
+.md-typeset .ordito-hero.grid.cards > ul > li {
+  padding: 0.4rem;
 }
