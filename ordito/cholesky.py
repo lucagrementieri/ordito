@@ -1320,216 +1320,181 @@ def _nested_dissection(
     makes no node, and its halves hang from the subset's parent. Each subset owns an interval of
     the elimination order -- its lower half's, its upper half's, then its separator's rows -- so a
     node's first position orders the tree in postorder.
+
+    The tree is kept on the device as it grows -- its nodes numbered by scans in the order a
+    host-side builder numbered them, this depth's separators in segment order and then its leaves
+    in child order -- and read back once, at the end. Every buffer has its largest size, so the
+    depths are issued back to back with nothing read between them: a segment's halves have at
+    most ``ceil(count / 2)`` rows, so the depth count is bounded before the first one runs, and a
+    depth past the last segment launches over empty slots.
     """
     device = coordinates.device
     node = _launch.empty(n, dtype=wp.int32, device=device)
-    nodes = _TreeBuilder()
     if n <= CHOLESKY_LEAF_ROWS:
+        # One leaf, rooting its own tree; an empty operator has no node at all.
+        rows = 1 if n else 0
         if n:
-            one = np.ones(1, np.int64)
-            nodes.add(0 * one, n * one, -one, 0 * one, -one)
             _launch.zero_(node)
-        return node, nodes.tree()
-    # The live vertices, grouped by segment (a subset of the current depth), and per segment its
-    # count, first position in the elimination order, parent node, that node's depth and root.
-    order = arange(n, device=device)
-    order_segment = _launch.zeros(n, dtype=wp.int32, device=device)
-    count = np.array([n], np.int64)
-    first = np.zeros(1, np.int64)
-    parent = np.full(1, -1, np.int64)
-    parent_depth = np.full(1, -1, np.int64)
-    root = np.full(1, -1, np.int64)
-    tag = _launch.full(n, -1, dtype=wp.int32, device=device)
-    lower_mark = _launch.zeros(n, dtype=wp.int32, device=device)
-    upper_mark = _launch.zeros(n, dtype=wp.int32, device=device)
+        leaf = [np.full(rows, value, np.int64) for value in (0, n, -1, 0, 0)]
+        return node, _Tree(*leaf)
+    depths = 0
+    largest = n
+    while largest > CHOLESKY_LEAF_ROWS:
+        depths += 1
+        largest -= largest // 2
     cuda = wp.get_device(device).is_cuda
     chunk = kernel_cholesky.DISSECTION_CHUNK_CUDA if cuda else kernel_cholesky.DISSECTION_CHUNK_CPU
     # Every depth's buffers, allocated once at their largest: a depth's live vertices are at most
     # ``n``, and its segments each hold more than ``CHOLESKY_LEAF_ROWS`` of them. The survivors are
     # compacted into ``order`` itself, which the depth has finished reading by then.
-    max_segments = max(1, n // (CHOLESKY_LEAF_ROWS + 1))
-    max_tasks = max_segments + n // chunk + 1
+    slots = max(1, n // (CHOLESKY_LEAF_ROWS + 1))
+    max_tasks = slots + n // chunk + 1
+    order = arange(n, device=device)
+    order_segment = _launch.zeros(n, dtype=wp.int32, device=device)
+    tag = _launch.full(n, -1, dtype=wp.int32, device=device)
+    lower_mark = _launch.zeros(n, dtype=wp.int32, device=device)
+    upper_mark = _launch.zeros(n, dtype=wp.int32, device=device)
     partials = _launch.empty(max_tasks, dtype=kernel_cholesky.moment_vector, device=device)
-    centre = _launch.empty(max_segments, dtype=wp.vec3d, device=device)
-    axis = _launch.empty(max_segments, dtype=wp.vec3d, device=device)
+    centre = _launch.empty(slots, dtype=wp.vec3d, device=device)
+    axis = _launch.empty(slots, dtype=wp.vec3d, device=device)
     keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
     vertices = _launch.empty(2 * n, dtype=wp.int32, device=device)
-    counts_all = _launch.empty(2 * max_segments, dtype=wp.int32, device=device)
+    counts = _launch.empty(2 * slots, dtype=wp.int32, device=device)
     keep = _launch.empty(n, dtype=wp.int32, device=device)
     next_segment = _launch.empty(n, dtype=wp.int32, device=device)
-    base = 0
-    stamp = 0
-    while count.size:
-        stamp += 1
-        n_segments = count.size
-        live = int(count.sum())
-        segment_start = np.r_[0, np.cumsum(count)]
-        tasks = -(-count // chunk)
-        task_offsets = np.r_[0, np.cumsum(tasks)]
-        task_segment = np.repeat(np.arange(n_segments), tasks)
-        task_begin = segment_start[task_segment] + chunk * (
-            np.arange(task_offsets[-1]) - task_offsets[task_segment]
+    task_offsets = _launch.zeros(slots + 1, dtype=wp.int32, device=device)
+    # Rank buffers: a leading zero, then the flags ``dissection_split_flags`` writes and the scan
+    # turns into exclusive ranks ending in their total.
+    has_ranks = _launch.zeros(slots + 1, dtype=wp.int32, device=device)
+    leaf_ranks = _launch.zeros(2 * slots + 1, dtype=wp.int32, device=device)
+    next_ranks = _launch.zeros(2 * slots + 1, dtype=wp.int32, device=device)
+    separator_side = _launch.empty(slots, dtype=wp.int32, device=device)
+    separator_node = _launch.empty(slots, dtype=wp.int32, device=device)
+    child_next = _launch.empty(2 * slots, dtype=wp.int32, device=device)
+    child_leaf = _launch.empty(2 * slots, dtype=wp.int32, device=device)
+    # Two generations of segment tables (starts, then first position, parent, its depth and root);
+    # the first depth's one segment is every vertex, with no parent.
+    starts = [_launch.zeros(slots + 1, dtype=wp.int32, device=device) for _ in range(2)]
+    segments = [odt.empty_2d((4, slots), wp.int32, device=device) for _ in range(2)]
+    _launch.launch(
+        kernel_cholesky.seed_dissection,
+        dim=1,
+        inputs=[wp.int32(n)],
+        outputs=[starts[0], segments[0]],
+        device=device,
+    )
+    # The tree has at most one node a row (every node holds at least one).
+    tree = odt.empty_2d((5, n), wp.int32, device=device)
+    node_count = _launch.zeros(1, dtype=wp.int32, device=device)
+    leaf_rows = wp.int32(CHOLESKY_LEAF_ROWS)
+    # The sentinel key past the live vertices carries segment ``slots + 1`` (above every real one).
+    sort_bits = 32 + _bits(slots + 1)
+    block_dim = 256 if cuda else 1
+    for depth in range(depths):
+        segment_start, segment = starts[depth % 2], segments[depth % 2]
+        next_start, next_segments = starts[(depth + 1) % 2], segments[(depth + 1) % 2]
+        # The sizes written into the tail become this depth's starts, ending in the live count.
+        _launch.array_scan(
+            _launch.view(segment_start, 1, slots + 1),
+            _launch.view(segment_start, 1, slots + 1),
+            inclusive=True,
         )
-        task_end = np.minimum(task_begin + chunk, segment_start[task_segment + 1])
-        table = _launch.array(
-            np.concatenate(
-                [segment_start, task_offsets, task_segment, task_begin, task_end]
-            ).astype(np.int32),
-            dtype=wp.int32,
+        _launch.launch(
+            kernel_cholesky.dissection_task_counts,
+            dim=slots,
+            inputs=[segment_start, wp.int32(chunk)],
+            outputs=[task_offsets],
             device=device,
         )
-        n_tasks = int(task_offsets[-1])
-        segment_start_d = _launch.view(table, 0, n_segments + 1)
-        task_offsets_d = _launch.view(table, n_segments + 1, 2 * n_segments + 2)
-        task_table = [
-            _launch.view(
-                table, 2 * n_segments + 2 + k * n_tasks, 2 * n_segments + 2 + (k + 1) * n_tasks
-            )
-            for k in range(3)
-        ]
+        _launch.array_scan(
+            _launch.view(task_offsets, 1, slots + 1),
+            _launch.view(task_offsets, 1, slots + 1),
+            inclusive=True,
+        )
         _launch.launch_tiled(
             kernel_cholesky.dissection_partials,
-            dim=[n_tasks],
-            inputs=[order, coordinates, segment_start_d, *task_table],
+            dim=[max_tasks],
+            inputs=[order, coordinates, segment_start, task_offsets, wp.int32(chunk)],
             outputs=[partials],
-            block_dim=256 if cuda else 1,
+            block_dim=block_dim,
             device=device,
         )
         _launch.launch(
             kernel_cholesky.dissection_axes,
-            dim=n_segments,
-            inputs=[order, coordinates, segment_start_d, task_offsets_d, partials],
+            dim=slots,
+            inputs=[order, coordinates, segment_start, task_offsets, partials],
             outputs=[centre, axis],
             device=device,
         )
         _launch.launch(
             kernel_cholesky.dissection_keys,
-            dim=live,
-            inputs=[order, order_segment, coordinates, centre, axis],
+            dim=n,
+            inputs=[order, order_segment, coordinates, centre, axis, segment_start],
             outputs=[keys, vertices],
             device=device,
         )
-        _launch.radix_sort_pairs(keys, vertices, live, end_bit=32 + _bits(n_segments - 1))
+        _launch.radix_sort_pairs(keys, vertices, n, end_bit=sort_bits)
         _launch.launch(
             kernel_cholesky.dissection_sides,
-            dim=live,
-            inputs=[keys, vertices, segment_start_d, wp.int32(base)],
+            dim=n,
+            inputs=[keys, vertices, segment_start, wp.int32(2 * slots * depth)],
             outputs=[tag],
             device=device,
         )
-        counts = _launch.view(counts_all, 0, 2 * n_segments)
         _launch.zero_(counts)
         _launch.launch(
             kernel_cholesky.dissection_crossings,
-            dim=live,
-            inputs=[keys, vertices, offsets, columns, tag, wp.int32(stamp)],
+            dim=n,
+            inputs=[keys, vertices, segment_start, offsets, columns, tag, wp.int32(depth + 1)],
             outputs=[lower_mark, upper_mark, counts],
             device=device,
         )
-        # Read back: the crossing endpoints per segment and side decide every separator, and the
-        # sizes they leave allocate the next depth.
-        crossing = counts.numpy().reshape(-1, 2).astype(np.int64)
-        take_lower = crossing[:, 0] <= crossing[:, 1]
-        separator = np.where(take_lower, crossing[:, 0], crossing[:, 1])
-        half = count // 2
-        lower = half - np.where(take_lower, separator, 0)
-        upper = count - half - np.where(take_lower, 0, separator)
-        has = separator > 0
-        separator_node = nodes.add(
-            (first + count - separator)[has],
-            separator[has],
-            parent[has],
-            parent_depth[has] + 1,
-            root[has],
+        _launch.launch(
+            kernel_cholesky.dissection_split_flags,
+            dim=slots,
+            inputs=[segment_start, counts, leaf_rows],
+            outputs=[has_ranks, leaf_ranks, next_ranks],
+            device=device,
         )
-        me = parent.copy()
-        me[has] = separator_node
-        me_depth = np.where(has, parent_depth + 1, parent_depth)
-        me_root = root.copy()
-        me_root[has] = np.where(root[has] >= 0, root[has], separator_node)
-        child_count = np.stack([lower, upper], 1).ravel()
-        child_first = np.stack([first, first + lower], 1).ravel()
-        child_parent = np.repeat(me, 2)
-        child_depth = np.repeat(me_depth, 2)
-        child_root = np.repeat(me_root, 2)
-        leaf = (child_count > 0) & (child_count <= CHOLESKY_LEAF_ROWS)
-        child_leaf = np.full(child_count.size, -1, np.int64)
-        child_leaf[leaf] = nodes.add(
-            child_first[leaf],
-            child_count[leaf],
-            child_parent[leaf],
-            child_depth[leaf] + 1,
-            child_root[leaf],
-        )
-        going_on = child_count > CHOLESKY_LEAF_ROWS
-        child_next = np.where(going_on, np.cumsum(going_on) - 1, -1)
-        separator_full = np.full(n_segments, -1, np.int64)
-        separator_full[has] = separator_node
-        relabel = _launch.array(
-            np.concatenate([
-                np.where(has, np.where(take_lower, 1, 2), 0), separator_full, child_next,
-                child_leaf,
-            ]).astype(np.int32),
-            dtype=wp.int32,
+        for ranks in (has_ranks, leaf_ranks, next_ranks):
+            tail = _launch.view(ranks, 1, ranks.size)
+            _launch.array_scan(tail, tail, inclusive=True)
+        _launch.zero_(next_start)
+        _launch.launch(
+            kernel_cholesky.dissection_link,
+            dim=slots,
+            inputs=[segment_start, counts, segment, has_ranks, leaf_ranks, next_ranks, node_count,
+                    leaf_rows],
+            outputs=[tree, separator_side, separator_node, child_next, child_leaf, next_start,
+                     next_segments],
             device=device,
         )  # fmt: skip
         _launch.launch(
+            kernel_cholesky.dissection_advance,
+            dim=1,
+            inputs=[has_ranks, leaf_ranks, node_count],
+            device=device,
+        )
+        _launch.launch(
             kernel_cholesky.dissection_relabel,
-            dim=live,
-            inputs=[keys, vertices, segment_start_d, _launch.view(relabel, 0, n_segments),
-                    _launch.view(relabel, n_segments, 2 * n_segments),
-                    _launch.view(relabel, 2 * n_segments, 4 * n_segments),
-                    _launch.view(relabel, 4 * n_segments, relabel.size),
-                    lower_mark, upper_mark, wp.int32(stamp)],
+            dim=n,
+            inputs=[keys, vertices, segment_start, separator_side, separator_node, child_next,
+                    child_leaf, lower_mark, upper_mark, wp.int32(depth + 1)],
             outputs=[node, keep, next_segment],
             device=device,
         )  # fmt: skip
-        count = child_count[going_on]
-        survivors = int(count.sum())
-        if survivors:
-            kept = odt.as_dense(keep[:live])
-            _launch.array_scan(kept, kept, inclusive=True)
-            _launch.launch(
-                kernel_cholesky.dissection_compact,
-                dim=live,
-                inputs=[vertices, kept, next_segment],
-                outputs=[order, order_segment],
-                device=device,
-            )
-        first = child_first[going_on]
-        parent = child_parent[going_on]
-        parent_depth = child_depth[going_on]
-        root = child_root[going_on]
-        base += 2 * n_segments
-    return node, nodes.tree()
-
-
-class _TreeBuilder:
-    """The dissection tree's nodes, appended a depth at a time."""
-
-    def __init__(self) -> None:
-        self.parts: list[tuple[npt.NDArray[np.int64], ...]] = []
-        self.count = 0
-
-    def add(
-        self,
-        start: npt.NDArray[np.int64],
-        size: npt.NDArray[np.int64],
-        parent: npt.NDArray[np.int64],
-        depth: npt.NDArray[np.int64],
-        root: npt.NDArray[np.int64],
-    ) -> npt.NDArray[np.int64]:
-        """Append nodes (a ``root`` of ``-1`` roots its own tree) and return their ids."""
-        ids = self.count + np.arange(start.size, dtype=np.int64)
-        root = np.where(root >= 0, root, ids)
-        self.parts.append((start, size, parent, depth, root))
-        self.count += start.size
-        return ids
-
-    def tree(self) -> _Tree:
-        if not self.parts:
-            return _Tree(*(np.zeros(0, np.int64) for _ in range(5)))
-        return _Tree(*(np.concatenate(p).astype(np.int64) for p in zip(*self.parts, strict=True)))
+        _launch.array_scan(keep, keep, inclusive=True)
+        _launch.launch(
+            kernel_cholesky.dissection_compact,
+            dim=n,
+            inputs=[vertices, keep, next_segment],
+            outputs=[order, order_segment],
+            device=device,
+        )
+    # Read back: the tree, once, for the host's bookkeeping over its nodes.
+    n_nodes = int(read_scalar(node_count))
+    table = tree.numpy()[:, :n_nodes].astype(np.int64)
+    return node, _Tree(*table)
 
 
 def _bits(value: int) -> int:
