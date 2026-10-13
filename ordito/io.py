@@ -31,6 +31,27 @@ class MeshData(TypedDict, total=False):
 
     A plain ``dict`` at runtime. ``vertices`` is always present; every other key only when the
     file carries that attribute.
+
+    Examples
+    --------
+    Only the attributes the file carries appear as keys:
+
+    ```python
+    import pathlib
+    import tempfile
+
+    import meshio
+    import numpy as np
+
+    import ordito as od
+
+    points = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    with tempfile.TemporaryDirectory() as folder:
+        path = pathlib.Path(folder) / "triangle.ply"
+        meshio.write(path, meshio.Mesh(points, [("triangle", np.array([[0, 1, 2]]))]))
+        data = od.io.load_mesh_data(path)
+    print(sorted(data))  # ['faces', 'vertices']
+    ```
     """
 
     vertices: Required[wp.array[wp.vec3]]
@@ -79,6 +100,33 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
     Only triangle cells are consumed; non-triangle cell blocks are ignored. ``meshio`` reads
     attributes verbatim and never computes them, so ``face_normals`` appears only when the
     file itself contained per-face normals.
+
+    Examples
+    --------
+    A box written to PLY with per-vertex normals reads back with them:
+
+    ```python
+    import pathlib
+    import tempfile
+
+    import meshio
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    normals = od.vertices.vertex_normals(vertices, faces).numpy()
+    mesh = meshio.Mesh(
+        vertices.numpy(),
+        [("triangle", faces.numpy().reshape(-1, 3))],
+        point_data={"nx": normals[:, 0], "ny": normals[:, 1], "nz": normals[:, 2]},
+    )
+    with tempfile.TemporaryDirectory() as folder:
+        path = pathlib.Path(folder) / "box.ply"
+        meshio.write(path, mesh)
+        data = od.io.load_mesh_data(path)
+    print(sorted(data))  # ['faces', 'vertex_normals', 'vertices']
+    print(data["faces"].shape, data["vertex_normals"].shape)  # (36,) (8,)
+    ```
     """
     meshio = _import_meshio()
     mesh = meshio.read(path)
@@ -193,6 +241,27 @@ def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
     See Also
     --------
     [`load_mesh_data`][ordito.io.load_mesh_data]
+
+    Examples
+    --------
+    Round-trip an icosphere through an OBJ file:
+
+    ```python
+    import pathlib
+    import tempfile
+
+    import meshio
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=1)
+    mesh = meshio.Mesh(vertices.numpy(), [("triangle", faces.numpy().reshape(-1, 3))])
+    with tempfile.TemporaryDirectory() as folder:
+        path = pathlib.Path(folder) / "sphere.obj"
+        meshio.write(path, mesh)
+        loaded = od.io.load_mesh(path)
+    print(loaded.points.shape, loaded.indices.shape)  # (42,) (240,)
+    ```
     """
     data = load_mesh_data(path, device=device)
     if "faces" not in data:
@@ -237,6 +306,22 @@ def mesh_from_numpy(
     See Also
     --------
     [`load_mesh`][ordito.io.load_mesh]
+
+    Examples
+    --------
+    ``(n_faces, 3)`` faces are flattened into ordito's ``(3 * n_faces,)`` layout:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]])
+    faces = np.array([[0, 1, 2], [0, 2, 3]])
+    mesh = od.io.mesh_from_numpy(vertices, faces)
+    print(mesh.n_vertices, mesh.n_faces, mesh.faces.shape)  # 4 2 (6,)
+    print(f"{mesh.area:.4f}")  # 1.0000
+    ```
     """
     vertices_wp = _launch.array(
         np.ascontiguousarray(vertices, dtype=np.float32), dtype=wp.vec3, device=device

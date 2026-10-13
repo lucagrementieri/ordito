@@ -365,6 +365,22 @@ def ensure_ndim(arr: ArrayT, ndim: int, *, dtype: type | None = None) -> ArrayT:
     ------
     TypeError
         If the rank or dtype does not match.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    points = wp.zeros((4, 3), dtype=wp.float32)
+    print(odt.ensure_ndim(points, 2, dtype=wp.float32).shape)  # (4, 3)
+    try:
+        odt.ensure_ndim(points, 1)
+    except TypeError as error:
+        message = str(error)
+    print(message)  # expected 1D array, got ndim=2
+    ```
     """
     if int(arr.ndim) != ndim:
         raise TypeError(f"expected {ndim}D array, got ndim={arr.ndim}")
@@ -377,11 +393,7 @@ def ensure_edge_pairs(arr: wp.array[T, Any], name: str) -> None:
     """
     Validate that ``arr`` is a rank-2 ``wp.int32`` array with exactly two columns.
 
-    The shared check every ``(k, 2)`` edge-list argument in the package runs before use, factored
-    because six call sites (``triangles.corner_normals``, ``seams.cut_along_edges``,
-    ``graph.connected_component_parity_from_edges`` and ``graph._validate_edge_list``,
-    ``proximity.closest_point_on_edges``, ``selection.contour_side_mask``) wrote it out by hand,
-    with the same two exceptions and only the parameter name differing between them.
+    The shared check every ``(k, 2)`` edge-list argument in the package runs before use.
 
     Parameters
     ----------
@@ -396,6 +408,22 @@ def ensure_edge_pairs(arr: wp.array[T, Any], name: str) -> None:
         If ``arr`` is not a rank-2 ``wp.int32`` array.
     ValueError
         If ``arr`` does not have exactly two columns.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    edges = wp.array([[0, 1], [1, 2], [2, 0]], dtype=wp.int32)
+    odt.ensure_edge_pairs(edges, "edges")  # passes silently
+    try:
+        odt.ensure_edge_pairs(wp.zeros((3, 3), dtype=wp.int32), "edges")
+    except ValueError as error:
+        message = str(error)
+    print(message)  # edges must have shape (k, 2), got (3, 3)
+    ```
     """
     ensure_ndim(arr, 2, dtype=wp.int32)
     if int(arr.shape[1]) != 2:
@@ -426,6 +454,22 @@ def as_array2d(arr: wp.array[T, Any], dtype: type[DType]) -> wp.array[DType, Lit
     ------
     TypeError
         If ``arr`` is not rank-2 with element type ``dtype``.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    table = odt.as_array2d(wp.zeros((5, 2), dtype=wp.int32), wp.int32)
+    print(table.shape)  # (5, 2)
+    try:
+        odt.as_array2d(wp.zeros(5, dtype=wp.int32), wp.int32)
+    except TypeError as error:
+        message = str(error)
+    print(message)  # expected 2D array, got ndim=1
+    ```
     """
     return _as_ranked(arr, 2, dtype)
 
@@ -452,6 +496,17 @@ def as_array3d(arr: wp.array[T, Any], dtype: type[DType]) -> wp.array[DType, Lit
     ------
     TypeError
         If ``arr`` is not rank-3 with scalar type ``dtype``.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    grid = odt.as_array3d(wp.zeros((2, 3, 4), dtype=wp.float32), wp.float32)
+    print(grid.shape)  # (2, 3, 4)
+    ```
     """
     return _as_ranked(arr, 3, dtype)
 
@@ -496,6 +551,24 @@ def as_dense(view: wp.array[DType, NDim] | wp.indexedarray[DType, NDim]) -> wp.a
     --------
     [`as_array2d`][ordito.typing.as_array2d]
     [`ordito.array.gather`][]
+
+    Examples
+    --------
+    A slice narrows to a dense array; a gather is refused:
+
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    values = wp.zeros(10, dtype=wp.float32)
+    print(odt.as_dense(values[2:5]).shape)  # (3,)
+    try:
+        odt.as_dense(values[wp.array([0, 2], dtype=wp.int32)])
+    except TypeError as error:
+        message = str(error)
+    print(message)  # expected a dense wp.array slice, got indexedarray
+    ```
     """
     if not isinstance(view, wp.array):
         raise TypeError(f"expected a dense wp.array slice, got {type(view).__name__}")
@@ -519,6 +592,17 @@ def vec3_floats(v: wp.vec3) -> tuple[float, float, float]:
     -------
     tuple[float, float, float]
         ``(v[0], v[1], v[2])``.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    x, y, z = odt.vec3_floats(wp.vec3(1.0, 2.0, 3.5))
+    print(x + y + z)  # 6.5
+    ```
     """
     return cast("tuple[float, float, float]", (v[0], v[1], v[2]))
 
@@ -543,6 +627,19 @@ def has_blocks(matrix: object, dtype: type[Block]) -> TypeIs[BsrMatrix[Block]]:
     bool
         ``True`` if ``matrix`` is a ``warp.sparse`` matrix and ``matrix.values.dtype`` is
         ``dtype``.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+    import warp.sparse as wps
+
+    import ordito.typing as odt
+
+    matrix = wps.bsr_zeros(3, 3, wp.float64)
+    print(odt.has_blocks(matrix, wp.float64))  # True
+    print(odt.has_blocks(matrix, wp.float32))  # False
+    ```
     """
     return isinstance(matrix, BsrMatrix) and matrix.values.dtype == dtype
 
@@ -565,6 +662,18 @@ def dtype_max(dtype: type[wp.Scalar]) -> int | float:
     int | float
         ``float("inf")`` for floating-point types; the maximum representable
         integer for integer types.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    print(odt.dtype_max(wp.int32))  # 2147483647
+    print(odt.dtype_max(wp.uint8))  # 255
+    print(odt.dtype_max(wp.float32))  # inf
+    ```
     """
     if not wp.types.type_is_int(dtype):
         return float("inf")
@@ -592,6 +701,18 @@ def dtype_min(dtype: type[wp.Scalar]) -> int | float:
     int | float
         ``float("-inf")`` for floating-point types; the minimum representable
         integer for integer types.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    print(odt.dtype_min(wp.int32))  # -2147483648
+    print(odt.dtype_min(wp.uint32))  # 0
+    print(odt.dtype_min(wp.float64))  # -inf
+    ```
     """
     if not wp.types.type_is_int(dtype):
         return float("-inf")
@@ -614,6 +735,17 @@ def dtype_zero(dtype: type[wp.Scalar]) -> int | float:
     -------
     int | float
         ``0`` for integer types, ``0.0`` for floating-point types.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    print(odt.dtype_zero(wp.int64))  # 0
+    print(odt.dtype_zero(wp.float32))  # 0.0
+    ```
     """
     if wp.types.type_is_int(dtype):
         return 0
@@ -653,6 +785,20 @@ def sortable_dtype(dtype: type[wp.Scalar]) -> SortableDType:
     --------
     [`sort_and_argsort`][ordito.array.sort_and_argsort]
     [`bitcast_to_int`][ordito.array.bitcast_to_int]
+
+    Examples
+    --------
+    Narrow types widen to 32 bits of the same kind; sortable types come back unchanged:
+
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    print(odt.sortable_dtype(wp.int8).__name__)  # int32
+    print(odt.sortable_dtype(wp.float16).__name__)  # float32
+    print(odt.sortable_dtype(wp.uint64).__name__)  # uint64
+    ```
     """
     wide = wp.types.type_size_in_bytes(dtype) > 4
     if wp.types.type_is_float(dtype):
@@ -700,6 +846,17 @@ def empty_1d(
     --------
     [`empty_2d`][ordito.typing.empty_2d]
     [`empty_3d`][ordito.typing.empty_3d]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    weights = odt.empty_1d(5, wp.float32)
+    print(weights.shape, weights.ndim)  # (5,) 1
+    ```
     """
     return _empty_ranked((n,), 1, dtype, device)
 
@@ -737,6 +894,17 @@ def empty_2d(
     --------
     [`empty_1d`][ordito.typing.empty_1d]
     [`empty_3d`][ordito.typing.empty_3d]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    segments = odt.empty_2d((4, 2), wp.vec3)
+    print(segments.shape, segments.ndim)  # (4, 2) 2
+    ```
     """
     return _empty_ranked(shape, 2, dtype, device)
 
@@ -773,6 +941,17 @@ def empty_3d(
     --------
     [`empty_1d`][ordito.typing.empty_1d]
     [`empty_2d`][ordito.typing.empty_2d]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito.typing as odt
+
+    field = odt.empty_3d((2, 3, 4), wp.float32)
+    print(field.shape, field.ndim)  # (2, 3, 4) 3
+    ```
     """
     return _empty_ranked(shape, 3, dtype, device)
 

@@ -110,13 +110,12 @@ def make_solid(
        mesh whose defect is a non-manifold *edge* comes back with the right Euler characteristic and
        one component and is still not watertight, because no later stage looks at edge manifoldness.
     1. ``keep_largest`` -> [`remove_small_components`][ordito.repair.remove_small_components], so
-      the
-       scan debris goes before anything expensive runs on it.
+       the scan debris goes before anything expensive runs on it.
     2. ``join_components`` ->
-      [`holes.join_closest_components`][ordito.holes.join_closest_components],
-       for an input whose pieces are meant to be one surface rather than a largest piece plus
-       rubbish. Mutually useful with ``keep_largest`` rather than exclusive: keep the big piece
-       *and* weld what is left.
+       [`holes.join_closest_components`][ordito.holes.join_closest_components], for an input
+       whose pieces are meant to be one surface rather than a largest piece plus rubbish. Mutually
+       useful with ``keep_largest`` rather than exclusive: keep the big piece *and* weld what is
+       left.
     3. [`holes.fill_min_weight`][ordito.holes.fill_min_weight] if any boundary remains.
     4. Up to ``max_iter`` rounds of
        [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces] and
@@ -185,6 +184,33 @@ def make_solid(
     [`holes.fill_min_weight`][ordito.holes.fill_min_weight]
     [`make_normals_outward`][ordito.repair.make_normals_outward]
         What to run afterwards if the winding has to face outward as well as be consistent.
+
+    Examples
+    --------
+    An icosphere with three faces missing and a speck of debris beside it comes back as one
+    closed sphere:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    debris_vertices, debris_faces = od.creation.tetrahedron()
+    broken_vertices = wp.array(
+        np.concatenate([vertices.numpy(), 0.1 * debris_vertices.numpy() + 3.0]), dtype=wp.vec3
+    )
+    broken_faces = wp.array(
+        np.concatenate([faces.numpy()[9:], debris_faces.numpy() + vertices.shape[0]]),
+        dtype=wp.int32,
+    )
+    print(od.validation.is_watertight(broken_vertices, broken_faces))  # False
+    print(len(od.boundary.boundary_loops(broken_vertices, broken_faces)))  # 1
+    solid_vertices, solid_faces = od.repair.make_solid(broken_vertices, broken_faces)
+    print(od.validation.is_watertight(solid_vertices, solid_faces))  # True
+    print(od.measures.euler_characteristic(solid_faces))  # 2
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if max_iter < 0 or inner_iter < 0:
@@ -294,6 +320,23 @@ def remove_unreferenced_vertices(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
+
+    Examples
+    --------
+    A stray vertex no face uses is dropped and maps to ``-1``:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    padded = wp.array(np.vstack([vertices.numpy(), [5.0, 5.0, 5.0]]), dtype=wp.vec3)
+    new_vertices, new_faces, remap = od.repair.remove_unreferenced_vertices(padded, faces)
+    print(padded.shape, new_vertices.shape)  # (9,) (8,)
+    print(remap.numpy().tolist())  # [0, 1, 2, 3, 4, 5, 6, 7, -1]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
@@ -389,6 +432,28 @@ def remove_duplicated_vertices(
     [`hash_vector_rows`][ordito.grouping.hash_vector_rows]
     [`ordito.seams.cut_along_edges`][ordito.seams.cut_along_edges]
         The inverse operation: welding coincident positions back together closes every cut it makes.
+
+    Examples
+    --------
+    A cube stored as a triangle soup, three private vertices per face, is not watertight until its
+    coincident corners are welded:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    soup_vertices = wp.array(vertices.numpy()[faces.numpy()], dtype=wp.vec3)
+    soup_faces = wp.array(np.arange(36), dtype=wp.int32)
+    print(od.validation.is_watertight(soup_vertices, soup_faces))  # False
+    welded, _, inverse, welded_faces = od.repair.remove_duplicated_vertices(
+        soup_vertices, soup_faces, epsilon=1e-6
+    )
+    print(soup_vertices.shape, welded.shape)  # (36,) (8,)
+    print(od.validation.is_watertight(welded, welded_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     # The class count comes with the inverse, so the representatives need no reduction to size them.
@@ -437,6 +502,21 @@ def duplicate_vertex_inverse(vertices: wp.array[wp.vec3], epsilon: float) -> wp.
     [`hash_vector_rows`][ordito.grouping.hash_vector_rows]
     [`grouping.first_occurrence_indices`][ordito.grouping.first_occurrence_indices]
         The geometry-free counterpart: the same class-to-representative reduction over any key.
+
+    Examples
+    --------
+    The 36 corners of a cube's triangle soup fall into 8 classes:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    soup_vertices = wp.array(vertices.numpy()[faces.numpy()], dtype=wp.vec3)
+    inverse = od.repair.duplicate_vertex_inverse(soup_vertices, 1e-6)
+    print(inverse.shape, int(inverse.numpy().max()) + 1)  # (36,) 8
+    ```
     """
     return _vertex_classes(vertices, epsilon)[1]
 
@@ -483,6 +563,27 @@ def resolve_duplicated_faces(
     ValueError
         If a duplicate group's signed count is not orientable, i.e. its positive and negative
         copies differ by more than one.
+
+    Examples
+    --------
+    A face and its reversed copy cancel, opening a hole; a third copy settles the pair in its own
+    orientation:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    rows = faces.numpy().reshape(-1, 3)
+    cancelled = wp.array(np.concatenate([rows, rows[:1, ::-1]]).ravel(), dtype=wp.int32)
+    resolved, kept = od.repair.resolve_duplicated_faces(cancelled)
+    print(resolved.shape[0] // 3, sorted(kept.numpy().tolist())[:3])  # 11 [1, 2, 3]
+    tripled = wp.array(np.concatenate([rows, rows[:1, ::-1], rows[:1]]).ravel(), dtype=wp.int32)
+    resolved, kept = od.repair.resolve_duplicated_faces(tripled)
+    print(resolved.shape[0] // 3)  # 12
+    ```
     """
     n_faces = faces.size // 3
     device = faces.device
@@ -596,6 +697,20 @@ def remove_degenerate_faces(
     [`collapse_small_triangles`][ordito.repair.collapse_small_triangles]
     [`face_nondegenerate_mask`][ordito.triangles.face_nondegenerate_mask]
     [`trimesh.triangles.nondegenerate`][]
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    with_sliver = wp.array(np.concatenate([faces.numpy(), [0, 1, 1]]), dtype=wp.int32)
+    new_vertices, new_faces = od.repair.remove_degenerate_faces(vertices, with_sliver)
+    print(with_sliver.shape[0] // 3, new_faces.shape[0] // 3)  # 13 12
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -644,6 +759,25 @@ def remove_non_manifold_faces(
     [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces]
     [`remove_degenerate_and_non_manifold_faces`][ordito.repair.remove_degenerate_and_non_manifold_faces]
     [`edge_manifold_mask`][ordito.validation.edge_manifold_mask]
+
+    Examples
+    --------
+    A fin glued to one edge of a cube gives that edge three faces; all three go:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    a, b = faces.numpy()[:2]
+    fin_vertices = wp.array(np.vstack([vertices.numpy(), [0.0, 0.0, 2.0]]), dtype=wp.vec3)
+    fin_faces = wp.array(np.concatenate([faces.numpy(), [a, b, 8]]), dtype=wp.int32)
+    print(od.validation.is_edge_manifold(fin_faces))  # False
+    new_vertices, new_faces = od.repair.remove_non_manifold_faces(fin_vertices, fin_faces)
+    print(new_faces.shape[0] // 3, od.validation.is_edge_manifold(new_faces))  # 10 True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     # The radix of the edge keys; any bound above every index groups the edges identically, so the
@@ -695,6 +829,27 @@ def remove_degenerate_and_non_manifold_faces(
     --------
     [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces]
     [`remove_non_manifold_faces`][ordito.repair.remove_non_manifold_faces]
+
+    Examples
+    --------
+    A cube with a fin on one edge and a zero-area face:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    a, b = faces.numpy()[:2]
+    broken_vertices = wp.array(np.vstack([vertices.numpy(), [0.0, 0.0, 2.0]]), dtype=wp.vec3)
+    broken_faces = wp.array(np.concatenate([faces.numpy(), [a, b, 8, 0, 1, 1]]), dtype=wp.int32)
+    new_vertices, new_faces = od.repair.remove_degenerate_and_non_manifold_faces(
+        broken_vertices, broken_faces
+    )
+    print(broken_faces.shape[0] // 3, new_faces.shape[0] // 3)  # 14 10
+    print(od.validation.is_edge_manifold(new_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if faces.size == 0:
@@ -827,6 +982,36 @@ def remove_small_components(
     per-component statistic is an ``n_faces``-long array of which only ``k`` slots are ever written.
     That is deliberate: densifying the labels first would cost a sort and a search per face to save
     an allocation, and it is the allocation that is cheap.
+
+    Examples
+    --------
+    A small tetrahedron floating beside a sphere is dropped, whether by keeping the largest
+    component or by a face-count threshold:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    debris_vertices, debris_faces = od.creation.tetrahedron()
+    noisy_vertices = wp.array(
+        np.concatenate([vertices.numpy(), 0.1 * debris_vertices.numpy() + 3.0]), dtype=wp.vec3
+    )
+    noisy_faces = wp.array(
+        np.concatenate([faces.numpy(), debris_faces.numpy() + vertices.shape[0]]), dtype=wp.int32
+    )
+    print(noisy_vertices.shape, noisy_faces.shape[0] // 3)  # (166,) 324
+    kept_vertices, kept_faces = od.repair.remove_small_components(
+        noisy_vertices, noisy_faces, keep_largest=True
+    )
+    print(kept_vertices.shape, kept_faces.shape[0] // 3)  # (162,) 320
+    kept_vertices, kept_faces = od.repair.remove_small_components(
+        noisy_vertices, noisy_faces, min_faces=10
+    )
+    print(kept_vertices.shape, kept_faces.shape[0] // 3)  # (162,) 320
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     given = (keep_largest, min_faces is not None, min_area is not None, min_diameter is not None)
@@ -991,6 +1176,28 @@ def split_non_manifold_vertices(
     [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces]
     [`is_edge_manifold`][ordito.validation.is_edge_manifold]
     ``igl.split_nonmanifold``
+
+    Examples
+    --------
+    Two cubes touching at one corner share a bowtie vertex; splitting it adds one vertex and keeps
+    all 24 faces:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    lower_vertices, lower_faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    upper_vertices, upper_faces = od.creation.box(bounds=[[1.0, 1.0, 1.0], [2.0, 2.0, 2.0]])
+    vertices = wp.array(np.vstack([lower_vertices.numpy(), upper_vertices.numpy()]), dtype=wp.vec3)
+    faces = wp.array(np.concatenate([lower_faces.numpy(), upper_faces.numpy() + 8]), dtype=wp.int32)
+    vertices, _, _, faces = od.repair.remove_duplicated_vertices(vertices, faces, epsilon=1e-6)
+    print(vertices.shape, od.validation.is_vertex_manifold(faces))  # (15,) False
+    new_vertices, new_faces, source = od.repair.split_non_manifold_vertices(vertices, faces)
+    print(new_vertices.shape, new_faces.shape[0] // 3)  # (16,) 24
+    print(od.validation.is_vertex_manifold(new_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
@@ -1102,6 +1309,25 @@ def collapse_small_triangles(
     sub-threshold triangles the two endpoints are close enough that the difference is negligible.
     The bounding-box diagonal is measured once on the input ``vertices`` so the threshold is fixed
     across iterations.
+
+    Examples
+    --------
+    Moving a grid vertex onto its neighbour crushes the two triangles between them; collapsing
+    merges the pair:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(4, 4))
+    positions = vertices.numpy()
+    positions[6] = positions[5] + [1e-5, 0.0, 0.0]
+    crushed = wp.array(positions, dtype=wp.vec3)
+    new_vertices, new_faces = od.repair.collapse_small_triangles(crushed, faces)
+    print(vertices.shape, faces.shape[0] // 3)  # (16,) 18
+    print(new_vertices.shape, new_faces.shape[0] // 3)  # (15,) 16
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
@@ -1258,6 +1484,22 @@ def straighten_boundary(
         Finds the faces with two rim edges, which is the dual situation -- an ear sticks out where a
         notch cuts in.
     [`boundary_loops`][ordito.boundary.boundary_loops]
+
+    Examples
+    --------
+    Deleting a rim triangle of a grid cuts a notch; one pass closes it again:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    notched = wp.array(np.delete(faces.numpy().reshape(-1, 3), 1, axis=0).ravel(), dtype=wp.int32)
+    straightened, added = od.repair.straighten_boundary(vertices, notched, return_count=True)
+    print(notched.shape[0] // 3, straightened.shape[0] // 3, added)  # 31 32 1
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if iterations < 0:
@@ -1426,6 +1668,30 @@ def remove_degree3_vertices(
         Removes faces by *geometry*; this one removes a vertex by its connectivity alone.
     [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]
         The whole fan of every vertex; this reads only the three faces of a candidate.
+
+    Examples
+    --------
+    A cube face split into a three-triangle fan around a raised apex loses the apex and gets its
+    triangle back:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    a, b, c = faces.numpy()[:3]
+    apex = vertices.numpy()[[a, b, c]].mean(axis=0) + [-0.2, 0.0, 0.0]
+    bumped_vertices = wp.array(np.vstack([vertices.numpy(), apex]), dtype=wp.vec3)
+    fan = [a, b, 8, b, c, 8, c, a, 8]
+    bumped_faces = wp.array(np.concatenate([fan, faces.numpy()[3:]]), dtype=wp.int32)
+    print(bumped_vertices.shape, bumped_faces.shape[0] // 3)  # (9,) 14
+    new_vertices, new_faces, removed = od.repair.remove_degree3_vertices(
+        bumped_vertices, bumped_faces, return_count=True
+    )
+    print(new_vertices.shape, new_faces.shape[0] // 3, removed)  # (8,) 12 1
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if max_iter < 0:
@@ -1634,6 +1900,29 @@ def flatten_degree3_vertices(
         The topological answer to the same defect: delete the vertex instead of moving it.
     [`equalize_triangle_areas`][ordito.smoothing.equalize_triangle_areas]
         Relaxes every vertex toward an area objective, where this hard-sets only the valence-3 ones.
+
+    Examples
+    --------
+    A cube face split into a three-triangle fan around a raised apex: the apex drops back into the
+    face, and the cube's volume returns to 1:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    a, b, c = faces.numpy()[:3]
+    apex = vertices.numpy()[[a, b, c]].mean(axis=0) + [-0.2, 0.0, 0.0]
+    bumped_vertices = wp.array(np.vstack([vertices.numpy(), apex]), dtype=wp.vec3)
+    fan = [a, b, 8, b, c, 8, c, a, 8]
+    bumped_faces = wp.array(np.concatenate([fan, faces.numpy()[3:]]), dtype=wp.int32)
+    flattened = od.repair.flatten_degree3_vertices(bumped_vertices, bumped_faces)
+    print(np.round(flattened.numpy()[8], 4))  # [-0.5    -0.1667  0.1667]
+    print(f"{od.measures.volume(bumped_vertices, bumped_faces):.4f}")  # 1.0333
+    print(f"{od.measures.volume(flattened, bumped_faces):.4f}")  # 1.0000
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region, rings=rings)
     if max_iter < 0:
@@ -1747,20 +2036,13 @@ def reverse_winding(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     Each face's signed volume negates *exactly* -- reversing a triangle's corners swaps two
     arguments of a scalar triple product, which negates the same floating-point products rather
     than recomputing them -- so the total negates bit-for-bit wherever the reduction visits faces
-    in a fixed order. The example below asserts only the sign, since that is what holds
+    in a fixed order. The example below prints the volumes rounded, since only that holds
     independently of the reduction.
 
     The corner that stays first is a convention, and this one matches ``np.fliplr`` -- which is
     what ``trimesh.Trimesh.invert`` applies, so the two agree elementwise rather than only up to a
     rotation of each row. ``kernels.repair.flip_faces_masked``, which the per-face flippers use,
     keeps corner 0 instead; both reverse orientation and they differ by a cyclic rotation.
-
-    Examples
-    --------
-    ```python
-    flipped = od.repair.reverse_winding(f)
-    assert od.measures.volume(v, flipped) < 0.0 < od.measures.volume(v, f)
-    ```
 
     See Also
     --------
@@ -1769,6 +2051,20 @@ def reverse_winding(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     [`make_winding_consistent`][ordito.repair.make_winding_consistent]
     [`make_normals_outward`][ordito.repair.make_normals_outward]
     [`ordito.validation.is_winding_consistent`][]
+
+    Examples
+    --------
+    Reversing a cube turns it inside out, and its signed volume negates:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    flipped = od.repair.reverse_winding(faces)
+    print(faces.numpy()[:3], flipped.numpy()[:3])  # [1 3 0] [0 3 1]
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 1.0000
+    print(f"{od.measures.volume(vertices, flipped):.4f}")  # -1.0000
+    ```
     """
     reversed_faces = _launch.empty(faces.size, dtype=wp.int32, device=faces.device)
     n_faces = faces.size // 3
@@ -1831,6 +2127,26 @@ def make_winding_consistent(
     seam. The seam can even end up with *more* inconsistent edges than before the pass ran, not
     merely the same ones — so treat the result as unrepaired rather than partly repaired, and test
     with [`is_orientable`][ordito.validation.is_orientable] first if that matters.
+
+    Examples
+    --------
+    Every seventh face of an icosphere flipped, face 0 among them: the whole mesh follows face 0,
+    so it comes out consistent but inside out:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    rows = faces.numpy().reshape(-1, 3)
+    rows[::7] = rows[::7, ::-1]
+    mixed = wp.array(rows.ravel(), dtype=wp.int32)
+    print(od.validation.is_winding_consistent(mixed))  # False
+    consistent = od.repair.make_winding_consistent(mixed)
+    print(od.validation.is_winding_consistent(consistent))  # True
+    print(f"{od.measures.volume(vertices, consistent):.3f}")  # -4.047
+    ```
     """
     n_faces = faces.size // 3
     device = faces.device
@@ -1897,6 +2213,19 @@ def make_volume(
     [`make_winding_consistent`][ordito.repair.make_winding_consistent] first (see
     [`make_normals_outward`][ordito.repair.make_normals_outward]) and reserve ``multibody``
     for meshes whose bodies are individually closed.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    inside_out = od.repair.reverse_winding(faces)
+    print(od.validation.is_volume(vertices, inside_out))  # False
+    fixed = od.repair.make_volume(vertices, inside_out)
+    print(od.validation.is_volume(vertices, fixed))  # True
+    print(f"{od.measures.volume(vertices, fixed):.3f}")  # 4.047
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -1981,6 +2310,25 @@ def make_normals_outward(
     [`make_winding_consistent`][ordito.repair.make_winding_consistent]
     [`make_volume`][ordito.repair.make_volume]
     [`is_volume`][ordito.validation.is_volume]
+
+    Examples
+    --------
+    Every seventh face of an icosphere flipped comes back consistent and facing out:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    rows = faces.numpy().reshape(-1, 3)
+    rows[::7] = rows[::7, ::-1]
+    mixed = wp.array(rows.ravel(), dtype=wp.int32)
+    print(od.validation.is_winding_consistent(mixed))  # False
+    outward = od.repair.make_normals_outward(vertices, mixed)
+    print(od.validation.is_winding_consistent(outward))  # True
+    print(f"{od.measures.volume(vertices, outward):.3f}")  # 4.047
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     wound = make_winding_consistent(faces, n_vertices=vertices.size)
@@ -2039,6 +2387,25 @@ def remove_folded_faces(
     [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces] and
     [`remove_non_manifold_faces`][ordito.repair.remove_non_manifold_faces]), and it leaves a hole
     that [`ordito.holes`][ordito.holes] can retriangulate properly.
+
+    Examples
+    --------
+    Dragging a grid vertex past its neighbour turns two triangles upside down; both are dropped:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    positions = vertices.numpy()
+    positions[6] += [0.3, 0.0, 0.0]
+    folded = wp.array(positions, dtype=wp.vec3)
+    normals, _ = od.triangles.face_normals_and_areas(folded, faces)
+    print(int((normals.numpy()[:, 2] < 0.0).sum()))  # 2
+    new_vertices, new_faces = od.repair.remove_folded_faces(folded, faces)
+    print(faces.shape[0] // 3, new_faces.shape[0] // 3)  # 32 30
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -2065,9 +2432,8 @@ def fix_self_intersections(
 
     Remove a mesh's self-intersections, either locally or by rebuilding it.
 
-    ordito could *detect* a self-intersection
-    ([`ordito.validation.face_self_intersecting_mask`][ordito.validation.face_self_intersecting_mask])
-    and not repair one. This is the repair, in the two forms that exist:
+    [`ordito.validation.face_self_intersecting_mask`][ordito.validation.face_self_intersecting_mask]
+    detects a self-intersection; this is the repair, in the two forms that exist:
 
     - ``"local"`` cuts the trouble out and rebuilds it. The intersecting faces are dilated by
       ``max_expand`` rings, that region is deleted, and the rims it opens are refilled by the
@@ -2111,12 +2477,6 @@ def fix_self_intersections(
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    clean_v, clean_f = od.repair.fix_self_intersections(v, f)
-    ```
-
     Notes
     -----
     **Success is not guaranteed by either method, and neither is asserted.** For ``"local"``: a
@@ -2155,6 +2515,48 @@ def fix_self_intersections(
         The cut-and-refill step each ``"local"`` pass runs.
     [`ordito.levelset.offset_mesh`][ordito.levelset.offset_mesh]
         The same level-set machinery at a non-zero distance.
+
+    Examples
+    --------
+    An icosphere with one vertex pulled through to the far side is cut and refilled locally:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    positions = vertices.numpy()
+    positions[0] *= -1.25
+    spiked = wp.array(positions, dtype=wp.vec3)
+    print(od.validation.is_self_intersecting(wp.Mesh(points=spiked, indices=faces)))  # True
+    clean_vertices, clean_faces = od.repair.fix_self_intersections(spiked, faces)
+    clean_mesh = wp.Mesh(points=clean_vertices, indices=clean_faces)
+    print(od.validation.is_self_intersecting(clean_mesh))  # False
+    print(od.validation.is_watertight(clean_vertices, clean_faces))  # True
+    ```
+
+    Two interpenetrating spheres need the ``"voxel"`` rebuild, which merges them into one shell:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    shifted = vertices.numpy() + [1.0, 0.0, 0.0]
+    pair_vertices = wp.array(np.vstack([vertices.numpy(), shifted]), dtype=wp.vec3)
+    pair_faces = wp.array(
+        np.concatenate([faces.numpy(), faces.numpy() + vertices.shape[0]]), dtype=wp.int32
+    )
+    pair_mesh = wp.Mesh(points=pair_vertices, indices=pair_faces)
+    print(od.validation.is_self_intersecting(pair_mesh))  # True
+    merged_vertices, merged_faces = od.repair.fix_self_intersections(
+        pair_vertices, pair_faces, method="voxel", voxel_size=0.1
+    )
+    print(od.validation.is_watertight(merged_vertices, merged_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if method not in ("local", "voxel"):
@@ -2405,6 +2807,23 @@ def remove_tunnels(
     [`homology_generators`][ordito.homology.homology_generators]
     [`fix_self_intersections`][ordito.repair.fix_self_intersections]
         The other topological repair here: that one removes crossings, this one removes genus.
+
+    Examples
+    --------
+    A thin torus has a short loop around its tube (length about 1.26) and a long one around its
+    hole; cutting the short one leaves a sphere:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.torus(1.0, 0.2, major_sections=24, minor_sections=8)
+    print(od.measures.euler_characteristic(faces))  # 0
+    new_vertices, new_faces, removed = od.repair.remove_tunnels(vertices, faces, max_length=2.0)
+    print(removed, od.measures.euler_characteristic(new_faces))  # 1 2
+    print(od.validation.is_watertight(new_vertices, new_faces))  # True
+    _, _, removed = od.repair.remove_tunnels(vertices, faces, max_length=0.5)
+    print(removed)  # 0
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if max_length < 0.0:
@@ -2693,6 +3112,27 @@ def flip_t_vertices(
     is no second triangle to flip against. MeshLab offers an edge *collapse* method for that case;
     here the equivalent is [`collapse_small_triangles`][ordito.repair.collapse_small_triangles],
     which removes the sliver by merging its short edge instead.
+
+    Examples
+    --------
+    Vertex 2 sits a hair above the edge ``(0, 1)`` of the triangle below it, making triangle
+    ``(0, 1, 2)`` a sliver; one flip replaces the edge by ``(2, 3)``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array(
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 0.01, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0]],
+        dtype=wp.vec3,
+    )
+    faces = wp.array([0, 3, 1, 0, 1, 2, 0, 2, 4, 2, 1, 4], dtype=wp.int32)
+    print(f"{od.triangles.face_quality(vertices, faces).numpy().max():.0f}")  # 5001
+    flipped = od.repair.flip_t_vertices(vertices, faces)
+    print(flipped.numpy().reshape(-1, 3).tolist())  # [[1, 2, 3], [0, 3, 2], [0, 2, 4], [2, 1, 4]]
+    print(f"{od.triangles.face_quality(vertices, flipped).numpy().max():.2f}")  # 1.22
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     return od.remesh.flip_by_objective(

@@ -308,6 +308,7 @@ def corner_vertex_check(
     faces: wp.array[wp.int32],
     labels: wp.array[wp.int32],
     min_label: wp.array[wp.int32],
+    require_referenced: wp.int32,
     out_mask: wp.array[wp.bool],
     out_violation: wp.array[wp.int32],
 ) -> None:
@@ -322,6 +323,8 @@ def corner_vertex_check(
     exactly when some unreferenced vertex is followed by a referenced one, and that referenced
     vertex has a corner here that sees its predecessor's ``min_label`` still at the ``int32``
     maximum it was seeded with. So the bound itself is never needed, and no vertex-sized pass is.
+    ``require_referenced == 0`` drops that half (Open3D's convention, which ``is_watertight``
+    follows: an unused vertex is not part of the surface).
     """
     c = wp.int32(wp.tid())
     v = faces[c]
@@ -330,7 +333,7 @@ def corner_vertex_check(
             out_mask[v] = False
         return
     violation = labels[c] != min_label[v]
-    if v > 0:
+    if require_referenced != 0 and v > 0:
         if min_label[v - 1] == INT32_MAX_CONSTANT:
             violation = True
     if violation:

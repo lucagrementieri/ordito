@@ -95,6 +95,18 @@ def crease_edges(
     [`cut_along_edges`][ordito.seams.cut_along_edges]
     [`ordito.adjacency.face_adjacency_angles`][ordito.adjacency.face_adjacency_angles]
     [`ordito.boundary.boundary_edges`][ordito.boundary.boundary_edges]
+
+    Examples
+    --------
+    The 12 edges of a box bend by 90 degrees; the 6 face diagonals are flat:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    creases = od.seams.crease_edges(vertices, faces, angle=30.0)
+    print(creases.shape)  # (12, 2)
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if not 0.0 <= angle <= 180.0:
@@ -230,6 +242,21 @@ def cut_along_edges(
     positions back together closes every cut this makes, which is a useful round-trip check and a
     warning — a cut mesh must not be passed through a position-based weld if the seams are meant to
     survive.
+
+    Examples
+    --------
+    Cutting a box along its creases separates its six sides, so each of the 8 corners becomes
+    3 vertices:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    creases = od.seams.crease_edges(vertices, faces)
+    cut_vertices, cut_faces = od.seams.cut_along_edges(vertices, faces, creases)
+    print(vertices.shape, cut_vertices.shape)  # (8,) (24,)
+    print(cut_faces.shape)  # (36,)
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, edges=edges, twins=twins)
     odt.ensure_edge_pairs(edges, "edges")
@@ -385,6 +412,24 @@ def uv_seam_edges(
     - **Precision.** The foldover orientation test runs in ``float32``; igl uses the input scalar
       type.
     - igl also takes ``V``, but reads only its row count — the ``n_vertices`` argument here.
+
+    Examples
+    --------
+    Two triangles of a square whose per-corner texcoords disagree along the shared diagonal ``0-2``
+    (the second triangle is shifted by 2 in ``u``):
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    corner_uv = [[0, 0], [1, 0], [1, 1], [2, 0], [3, 1], [2, 1]]
+    texcoords = wp.array(corner_uv, dtype=wp.vec2)
+    seams, boundaries, foldovers = od.seams.uv_seam_edges(faces, texcoords)
+    print(seams.numpy().tolist())  # [[1, 0, 0, 2]]
+    print(boundaries.shape, foldovers.shape)  # (4, 2) (0, 4)
+    ```
     """
     require_same_device(
         faces=faces, texcoords=texcoords, face_texcoords=face_texcoords, twins=twins
@@ -479,6 +524,23 @@ def seam_edge_vertices(
     --------
     [`uv_seam_edges`][ordito.seams.uv_seam_edges]
     [`cut_along_edges`][ordito.seams.cut_along_edges]
+
+    Examples
+    --------
+    Two triangles of a square whose per-corner texcoords disagree along the shared diagonal ``0-2``
+    (the second triangle is shifted by 2 in ``u``):
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    corner_uv = [[0, 0], [1, 0], [1, 1], [2, 0], [3, 1], [2, 1]]
+    texcoords = wp.array(corner_uv, dtype=wp.vec2)
+    seams, boundaries, foldovers = od.seams.uv_seam_edges(faces, texcoords)
+    print(od.seams.seam_edge_vertices(faces, seams).numpy().tolist())  # [[0, 2]]
+    ```
     """
     require_same_device(faces=faces, face_corners=face_corners)
     odt.ensure_ndim(face_corners, 2, dtype=wp.int32)
@@ -557,6 +619,25 @@ def uv_seam_vertex_mask(
     [`uv_seam_edges`][ordito.seams.uv_seam_edges]
     [`seam_edge_vertices`][ordito.seams.seam_edge_vertices]
     [`ordito.array.indices_to_mask`][ordito.array.indices_to_mask]
+
+    Examples
+    --------
+    Two triangles of a square whose per-corner texcoords disagree along the shared diagonal ``0-2``
+    (the second triangle is shifted by 2 in ``u``):
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    corner_uv = [[0, 0], [1, 0], [1, 1], [2, 0], [3, 1], [2, 1]]
+    texcoords = wp.array(corner_uv, dtype=wp.vec2)
+    mask = od.seams.uv_seam_vertex_mask(faces, texcoords)
+    print(mask.numpy().tolist())  # [True, True, True, True]
+    mask = od.seams.uv_seam_vertex_mask(faces, texcoords, include_boundary=False)
+    print(mask.numpy().tolist())  # [True, False, True, False]
+    ```
     """
     require_same_device(faces=faces, texcoords=texcoords, face_texcoords=face_texcoords)
     match_uv = _validate_uv_inputs(faces, texcoords, face_texcoords, match)

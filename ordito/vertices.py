@@ -50,7 +50,7 @@ def mean_vertex_normals(
     """
     Vertex normals as the (unnormalized) sum of incident face normals, then unit-length.
 
-    For each vertex, face normals sharing that corner are accumulated in ``float32`` on
+    For each vertex, face normals sharing that corner are accumulated in ``float64`` on
     ``faces.device``, cast to ``wp.vec3``, and L2-normalized. Vertices not referenced by
     any face remain zero.
 
@@ -84,6 +84,23 @@ def mean_vertex_normals(
         The same accumulator with a per-corner weight table; this is that with unit weights.
     [`vertex_normals`][ordito.vertices.vertex_normals]
         The geometry-aware entry point, which derives a weight table and calls one of these two.
+
+    Examples
+    --------
+    Each corner of a cube averages its incident face normals with unit weight; a corner with two
+    triangles in one side leans towards that side:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
+    normals = od.vertices.mean_vertex_normals(vertices.shape[0], faces, face_normals)
+    print(normals.shape)  # (8,)
+    print(np.round(normals.numpy()[0], 3))  # [-0.816 -0.408 -0.408]
+    ```
     """
     require_same_device(faces=faces, face_normals=face_normals)
     _require_face_rows(faces.size // 3, face_normals=face_normals)
@@ -102,7 +119,7 @@ def weighted_vertex_normals(
     Vertex normals from a weighted sum of incident face normals, then unit-length.
 
     Each face contributes its normal scaled by the per-corner weight in ``face_weights``;
-    contributions are summed per vertex in ``float32`` on ``faces.device``, cast to
+    contributions are summed per vertex in ``float64`` on ``faces.device``, cast to
     ``wp.vec3``, and L2-normalized.
 
     Parameters
@@ -136,6 +153,23 @@ def weighted_vertex_normals(
         This with unit weights.
     [`vertex_normals`][ordito.vertices.vertex_normals]
         The geometry-aware entry point, which derives a weight table and calls this.
+
+    Examples
+    --------
+    Weighting each corner by its interior angle makes every cube corner normal the diagonal,
+    whatever the triangulation of the sides:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
+    angles = od.triangles.face_angles(vertices, faces)
+    normals = od.vertices.weighted_vertex_normals(vertices.shape[0], faces, face_normals, angles)
+    print(np.round(normals.numpy()[0], 3))  # [-0.577 -0.577 -0.577]
+    ```
     """
     require_same_device(faces=faces, face_normals=face_normals, face_weights=face_weights)
     _require_face_rows(faces.size // 3, face_normals=face_normals, face_weights=face_weights)
@@ -292,6 +326,24 @@ def vertex_normals(
         Produces the ``face_normals`` / ``face_weights`` the ``"area"`` path derives.
     [`ordito.triangles.face_angles`][ordito.triangles.face_angles]
         Produces the ``"angle"`` path's weight table.
+
+    Examples
+    --------
+    The weighting matters at a cube corner, whose three sides carry different numbers of triangles
+    there; only ``"angle"`` returns the symmetric diagonal:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    by_area = od.vertices.vertex_normals(vertices, faces)
+    by_angle = od.vertices.vertex_normals(vertices, faces, weighting="angle")
+    print(by_area.shape)  # (8,)
+    print(np.round(by_area.numpy()[0], 3))  # [-0.816 -0.408 -0.408]
+    print(np.round(by_angle.numpy()[0], 3))  # [-0.577 -0.577 -0.577]
+    ```
     """
     require_same_device(
         vertices=vertices, faces=faces, face_normals=face_normals, face_weights=face_weights
@@ -404,6 +456,21 @@ def vertex_defects(
         measure is what converges under refinement; the pointwise defect does not.
     [`face_angles`][ordito.triangles.face_angles]
         The angles this sums.
+
+    Examples
+    --------
+    Each cube corner meets three right angles, so its defect is ``pi / 2``, and the defects sum to
+    ``4 * pi`` on any closed genus-0 surface (Gauss-Bonnet):
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    angles = od.triangles.face_angles(vertices, faces)
+    defects = od.vertices.vertex_defects(vertices.shape[0], faces, angles)
+    print(f"{defects.numpy()[0]:.4f}")  # 1.5708
+    print(f"{defects.numpy().sum():.4f}")  # 12.5664
+    ```
     """
     require_same_device(faces=faces, face_angles=face_angles)
     n_faces = faces.size // 3

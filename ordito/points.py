@@ -113,6 +113,21 @@ def point_plane_distance(
     -------
     wp.array[wp.float32]
         ``(n,)`` signed distances from each point to the plane on ``points.device``.
+
+    Examples
+    --------
+    The normal need not be unit length; the sign says which side a point is on:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.0, 0.0, 3.0], [1.0, 1.0, -0.5]], dtype=wp.vec3)
+    normal, origin = wp.vec3(0.0, 0.0, 2.0), wp.vec3(0.0, 0.0, 1.0)
+    distances = od.points.point_plane_distance(points, normal, origin)
+    print(distances.numpy().tolist())  # [2.0, -1.5]
+    ```
     """
     if plane_origin is None:
         plane_origin = wp.vec3(0.0, 0.0, 0.0)
@@ -151,13 +166,6 @@ def half_space_mask(
         ``(n,)`` mask on ``points.device``. ``True`` marks a point to **keep**, the same sense as
         [`point_finite_mask`][ordito.points.point_finite_mask].
 
-    Examples
-    --------
-    ```python
-    upper = od.points.half_space_mask(v, wp.vec3(0.0, 0.0, 1.0))
-    kept = od.array.gather(v, od.array.flatnonzero(upper))
-    ```
-
     Notes
     -----
     The test is **strict**, so a point exactly on the plane is excluded and the two masks for
@@ -172,6 +180,21 @@ def half_space_mask(
     [`ordito.neighbors.query_bvh_box`][ordito.neighbors.query_bvh_box]
         The bounded counterpart: selection by a box, through a BVH.
     [`ordito.array.flatnonzero`][ordito.array.flatnonzero]
+
+    Examples
+    --------
+    Keep the vertices of a sphere above the plane ``z = 0``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, _ = od.creation.icosphere(subdivisions=2)
+    upper = od.points.half_space_mask(vertices, wp.vec3(0.0, 0.0, 1.0))
+    kept = od.array.gather(vertices, od.array.flatnonzero(upper))
+    print(vertices.shape, kept.shape)  # (162,) (73,)
+    ```
     """
     if plane_origin is None:
         plane_origin = wp.vec3(0.0, 0.0, 0.0)
@@ -198,6 +221,17 @@ def centroid(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     wp.array[wp.vec3]
         ``(1,)`` device array holding the centroid on ``points.device``.
         All-zeros when ``points`` is empty.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, _ = od.creation.box(bounds=[[0.0, 0.0, 0.0], [2.0, 4.0, 6.0]])
+    center = od.points.centroid(vertices)
+    print(center.shape)  # (1,)
+    print(center.numpy()[0])  # [1. 2. 3.]
+    ```
     """
     n = points.size
     out = _point_sum(points)
@@ -221,6 +255,20 @@ def gram_matrix(points: wp.array[wp.vec3]) -> wp.array[wp.mat33]:
     wp.array[wp.mat33]
         ``(1,)`` device array holding the ``3x3`` Gram matrix on ``points.device``. All-zeros when
         ``points`` is empty.
+
+    Examples
+    --------
+    The diagonal holds the sums of squared coordinates, about the origin:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 0.0]], dtype=wp.vec3)
+    gram = od.points.gram_matrix(points)
+    print(gram.numpy()[0].diagonal())  # [1. 4. 0.]
+    ```
     """
     # The uncentred Gram matrix is the scatter matrix around a zero center, which the kernel
     # reads off a null center array.
@@ -264,6 +312,22 @@ def fit_line(points: wp.array[wp.vec3]) -> wp.vec3:
     [`fit_plane`][ordito.points.fit_plane]
         The complementary weakest direction.
     [`trimesh.points.major_axis`][]
+
+    Examples
+    --------
+    On points along one line the axis is that line's direction, up to sign:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    direction = np.array([1.0, 2.0, 2.0]) / 3.0
+    points = wp.array(np.outer(np.arange(1.0, 6.0), direction), dtype=wp.vec3)
+    axis = od.points.fit_line(points)
+    print(np.round(np.abs(np.array(axis)), 3))  # [0.333 0.667 0.667]
+    ```
     """
     device = points.device
     n = points.size
@@ -307,6 +371,20 @@ def centered_covariance(
     ------
     RuntimeError
         If ``points`` and ``center`` are not all on one device.
+
+    Examples
+    --------
+    Unlike [`covariance`][ordito.points.covariance], the sum is not divided by ``n - 1``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0]], dtype=wp.vec3)
+    scatter = od.points.centered_covariance(points)
+    print(scatter.numpy()[0][0, 0])  # 8.0
+    ```
     """
     require_same_device(points=points, center=center)
     if center is not None:
@@ -344,6 +422,18 @@ def fit_plane(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
         All three axes at once; this normal is its third row.
     [`plane_basis`][ordito.points.plane_basis]
         Two in-plane axes completing this normal into a frame.
+
+    Examples
+    --------
+    A flat grid in ``z = 0`` fits the plane with normal ``+z`` or ``-z``:
+
+    ```python
+    import ordito as od
+
+    vertices, _ = od.creation.grid(count=(8, 8))
+    normal, origin = od.points.fit_plane(vertices)
+    print(f"{abs(normal[2]):.3f}")  # 1.000
+    ```
     """
     device = points.device
     n = points.size
@@ -389,6 +479,20 @@ def plane_basis(normal: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
     tuple[wp.vec3, wp.vec3]
         ``(u, v)`` unit vectors perpendicular to each other and to ``normal``, such that
         ``(u, v, normalize(normal))`` is right-handed.
+
+    Examples
+    --------
+    The two axes complete the normal into a right-handed frame:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    u, v = od.points.plane_basis(wp.vec3(0.0, 0.0, 2.0))
+    print(f"{wp.dot(u, v):.3f}")  # 0.000
+    print(wp.cross(u, v))  # [0.0, 0.0, 1.0]
+    ```
     """
     # These four Warp builtins are Python-scope, so each pays builtin dispatch and the function --
     # which does no device work -- is entirely that. Both alternatives were measured and declined:
@@ -430,6 +534,18 @@ def covariance(points: wp.array[wp.vec3], ddof: int = 1) -> wp.array[wp.mat33]:
     ------
     ValueError
         If ``n - ddof <= 0``.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0]], dtype=wp.vec3)
+    print(od.points.covariance(points).numpy()[0][0, 0])  # 4.0
+    print(f"{od.points.covariance(points, ddof=0).numpy()[0][0, 0]:.4f}")  # 2.6667
+    ```
     """
     n = points.size
     if n - ddof <= 0:
@@ -471,12 +587,6 @@ def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec
     Matches ``pyvista.principal_axes`` up to the sign of the first two axes, which no
     eigendecomposition fixes.
 
-    Examples
-    --------
-    ```python
-    rotation, eigenvalues, centroid = od.points.principal_axes(v)
-    ```
-
     See Also
     --------
     [`fit_line`][ordito.points.fit_line]
@@ -485,6 +595,21 @@ def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec
     [`covariance`][ordito.points.covariance]
     [`ordito.bounds.oriented_bounding_box`][ordito.bounds.oriented_bounding_box]
         A searched box rather than a covariance fit, and tighter for it.
+
+    Examples
+    --------
+    The corners of a ``4 x 2 x 1`` box spread most along ``x``:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, _ = od.creation.box(extents=(4.0, 2.0, 1.0))
+    rotation, eigenvalues, centroid = od.points.principal_axes(vertices)
+    print(np.abs(np.array(rotation[0])).round(3))  # [1. 0. 0.]
+    print(np.array(eigenvalues).round(3))  # [32.  8.  2.]
+    ```
     """
     device = points.device
     n = points.size
@@ -568,6 +693,21 @@ def estimate_normals(
     --------
     [`ordito.points.fit_plane`][ordito.points.fit_plane]
     [`ordito.reconstruction.triangulate_point_cloud`][ordito.reconstruction.triangulate_point_cloud]
+
+    Examples
+    --------
+    On a sphere's vertices, the estimated normals point outward along the positions:
+
+    ```python
+    import ordito as od
+
+    vertices, _ = od.creation.icosphere(subdivisions=2)
+    neighbor_idx, _ = od.neighbors.query_nearest(vertices, vertices, 8)
+    normals = od.points.estimate_normals(vertices, neighbor_idx)
+    alignment = (normals.numpy() * vertices.numpy()).sum(axis=1)
+    print(normals.shape)  # (162,)
+    print(bool(alignment.min() > 0.99))  # True
+    ```
     """
     require_same_device(points=points, neighbor_idx=neighbor_idx)
     if orient_reference is not None and camera_location is not None:
@@ -671,12 +811,8 @@ def outlier_probability(
     tail.
 
     This is the measure behind MeshLab's ``compute_selection_point_cloud_outliers``, whose own
-    ``propthreshold`` default is ``0.8``; threshold the result to reproduce a selection:
-
-    ```python
-    probability = od.points.outlier_probability(neighbor_idx, neighbor_distance)
-    outliers = np.flatnonzero(probability.numpy() > 0.8)  # indices of the selected points
-    ```
+    ``propthreshold`` default is ``0.8``; threshold the result there to reproduce its selection
+    (see Examples).
 
     Parameters
     ----------
@@ -709,6 +845,23 @@ def outlier_probability(
     [`statistical_outlier_mask`][ordito.points.statistical_outlier_mask]
     [`estimate_normals`][ordito.points.estimate_normals]
     [`ordito.neighbors.query_nearest`][ordito.neighbors.query_nearest]
+
+    Examples
+    --------
+    A point far from a sphere's vertices scores near ``1``; threshold at MeshLab's ``0.8``:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    sphere, _ = od.creation.icosphere(subdivisions=2)
+    cloud = wp.array(np.vstack([sphere.numpy(), [[3.0, 0.0, 0.0]]]), dtype=wp.vec3)
+    neighbor_idx, neighbor_distance = od.neighbors.query_nearest(cloud, cloud, 8)
+    probability = od.points.outlier_probability(neighbor_idx, neighbor_distance)
+    print(np.flatnonzero(probability.numpy() > 0.8).tolist())  # [162]
+    ```
     """
     require_same_device(neighbor_idx=neighbor_idx, neighbor_distance=neighbor_distance)
     odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
@@ -793,6 +946,23 @@ def statistical_outlier_mask(
     --------
     [`outlier_probability`][ordito.points.outlier_probability]
     [`ordito.neighbors.query_nearest`][ordito.neighbors.query_nearest]
+
+    Examples
+    --------
+    The one point far from a sphere's vertices is flagged:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    sphere, _ = od.creation.icosphere(subdivisions=2)
+    cloud = wp.array(np.vstack([sphere.numpy(), [[3.0, 0.0, 0.0]]]), dtype=wp.vec3)
+    _, neighbor_distance = od.neighbors.query_nearest(cloud, cloud, 8)
+    outliers = od.points.statistical_outlier_mask(neighbor_distance)
+    print(od.array.flatnonzero(outliers).numpy().tolist())  # [162]
+    ```
     """
     odt.ensure_ndim(neighbor_distance, 2, dtype=wp.float32)
 
@@ -910,18 +1080,27 @@ def radius_outlier_mask(
     reproduces this function exactly. Expect a comparison against the filter to disagree on a
     handful of borderline points, and do not read that as a difference in the criterion.
 
-    Examples
-    --------
-    ```python
-    mask = od.points.radius_outlier_mask(v, 1.0, 3)
-    outlier_indices = od.array.flatnonzero(mask)
-    ```
-
     See Also
     --------
     [`statistical_outlier_mask`][ordito.points.statistical_outlier_mask]
     [`outlier_probability`][ordito.points.outlier_probability]
     [`ordito.neighbors.query_ball_count`][ordito.neighbors.query_ball_count]
+
+    Examples
+    --------
+    The one point with no neighbour within ``0.5`` is flagged:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    sphere, _ = od.creation.icosphere(subdivisions=2)
+    cloud = wp.array(np.vstack([sphere.numpy(), [[3.0, 0.0, 0.0]]]), dtype=wp.vec3)
+    outliers = od.points.radius_outlier_mask(cloud, 0.5, 3)
+    print(od.array.flatnonzero(outliers).numpy().tolist())  # [162]
+    ```
     """
     require_same_device(points=points, grid=grid)
     if radius <= 0.0:
@@ -968,19 +1147,29 @@ def point_finite_mask(points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
         opposite sense from the outlier and duplicate masks in this module — the name is the tell:
         this one is named for what it selects.
 
-    Examples
-    --------
-    ```python
-    finite = od.points.point_finite_mask(v)
-    cleaned = od.array.gather(v, od.array.flatnonzero(finite))
-    ```
-
     See Also
     --------
     [`point_duplicate_mask`][ordito.points.point_duplicate_mask]
         The other exact-predicate cleanup pass; run this one first, since a ``NaN`` position is
         never equal to itself under Open3D's rule.
     [`ordito.array.flatnonzero`][ordito.array.flatnonzero]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array(
+        [[0.0, 0.0, 0.0], [float("nan"), 0.0, 0.0], [1.0, float("inf"), 0.0], [1.0, 1.0, 1.0]],
+        dtype=wp.vec3,
+    )
+    finite = od.points.point_finite_mask(points)
+    print(finite.numpy().tolist())  # [True, False, False, True]
+    cleaned = od.array.gather(points, od.array.flatnonzero(finite))
+    print(cleaned.shape)  # (2,)
+    ```
     """
     device = points.device
     n = points.size
@@ -1028,19 +1217,30 @@ def point_duplicate_mask(points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
     question does not arise. Positions are compared at ``float32``, so two points that differ only
     below ``float32`` resolution are one position here and two for a ``float64`` reference.
 
-    Examples
-    --------
-    ```python
-    duplicates = od.points.point_duplicate_mask(v)
-    n_distinct = int(v.shape[0]) - int(od.reduce.sum(duplicates))
-    ```
-
     See Also
     --------
     [`point_finite_mask`][ordito.points.point_finite_mask]
     [`ordito.grouping.unique_rows`][ordito.grouping.unique_rows]
         The tolerance-bucketed sibling, and the right choice when exact equality is too strict.
     [`ordito.grouping.first_occurrence_indices`][ordito.grouping.first_occurrence_indices]
+
+    Examples
+    --------
+    Every occurrence but the first of a repeated position is flagged:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        dtype=wp.vec3,
+    )
+    duplicates = od.points.point_duplicate_mask(points)
+    print(duplicates.numpy().tolist())  # [False, False, True, True, True]
+    print(points.shape[0] - od.reduce.sum(duplicates))  # 2
+    ```
     """
     device = points.device
     n = points.size
@@ -1119,19 +1319,25 @@ def farthest_point_sample(
     diverge from that reference at the point where the tie is resolved — and then, being greedy, for
     the rest of the sequence.
 
-    Examples
-    --------
-    ```python
-    indices = od.points.farthest_point_sample(v, 4)
-    spread = od.array.gather(v, indices)
-    ```
-
     See Also
     --------
     [`ordito.sample.sample_surface_blue_noise`][ordito.sample.sample_surface_blue_noise]
         The same "well-spread points" goal from a *mesh*, by dart throwing rather than greedily.
     [`ordito.voxels.voxel_down_sample`][ordito.voxels.voxel_down_sample]
     [`ordito.neighbors.nearest_neighbor_distance`][ordito.neighbors.nearest_neighbor_distance]
+
+    Examples
+    --------
+    From a box corner, the farthest point is the opposite corner:
+
+    ```python
+    import ordito as od
+
+    vertices, _ = od.creation.box()
+    indices = od.points.farthest_point_sample(vertices, 2)
+    print(indices.numpy().tolist())  # [0, 7]
+    print(vertices.numpy()[indices.numpy()].tolist())  # [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]]
+    ```
     """
     device = points.device
     n = points.size
@@ -1240,6 +1446,23 @@ def convex_subset_mask(
     [`sample_fibonacci_hemisphere`][ordito.sample.sample_fibonacci_hemisphere]
     [`flatnonzero`][ordito.array.flatnonzero]
     [`scipy.spatial.ConvexHull`][]
+
+    Examples
+    --------
+    Of a cube's corners and points sampled inside it, only the corners are marked:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    inside = od.sample.sample_volume(vertices, faces, 200, seed=0)
+    cloud = wp.array(np.vstack([vertices.numpy(), inside.numpy()]), dtype=wp.vec3)
+    mask = od.points.convex_subset_mask(cloud)
+    print(od.array.flatnonzero(mask).numpy().tolist())  # [0, 1, 2, 3, 4, 5, 6, 7]
+    ```
     """
     device = points.device
     n_points = points.size
@@ -1304,6 +1527,23 @@ def convex_subset(
     [`convex_subset_mask`][ordito.points.convex_subset_mask]
     [`gather`][ordito.array.gather]
     [`scipy.spatial.ConvexHull`][]
+
+    Examples
+    --------
+    Of a cube's corners and points sampled inside it, the corners are returned:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    inside = od.sample.sample_volume(vertices, faces, 200, seed=0)
+    cloud = wp.array(np.vstack([vertices.numpy(), inside.numpy()]), dtype=wp.vec3)
+    hull_points = od.points.convex_subset(cloud)
+    print(hull_points.shape)  # (8,)
+    ```
     """
     mask = convex_subset_mask(points, n_directions=n_directions, tolerance=tolerance)
     indices = od.array.flatnonzero(mask)
@@ -1380,6 +1620,22 @@ def convex_superset_mask(
     [`icosphere`][ordito.creation.icosphere]
     [`flatnonzero`][ordito.array.flatnonzero]
     [`scipy.spatial.ConvexHull`][]
+
+    Examples
+    --------
+    Every vertex of a sphere is kept, and a point well inside it is discarded:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, _ = od.creation.icosphere(subdivisions=2)
+    cloud = wp.array(np.vstack([vertices.numpy(), [[0.2, 0.1, 0.3]]]), dtype=wp.vec3)
+    mask = od.points.convex_superset_mask(cloud).numpy()
+    print(int(mask.sum()), bool(mask[-1]))  # 162 False
+    ```
     """
     device = points.device
     n_points = points.size
@@ -1523,6 +1779,20 @@ def vector_angle(a: wp.array[wp.vec3], b: wp.array[wp.vec3]) -> wp.array[wp.floa
     See Also
     --------
     [`trimesh.geometry.vector_angle`][]
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    a = wp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3)
+    b = wp.array([[3.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]], dtype=wp.vec3)
+    angles = od.points.vector_angle(a, b)
+    print(np.round(np.degrees(angles.numpy()), 3).tolist())  # [0.0, 90.0, 180.0]
+    ```
     """
     require_same_device(a=a, b=b)
     device = a.device
@@ -1571,6 +1841,23 @@ def radial_sort(
     ------
     ValueError
         If ``start`` is provided and is (near-)parallel with ``normal``.
+
+    Examples
+    --------
+    Four points around the ``z`` axis come back in angular order:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array(
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]], dtype=wp.vec3
+    )
+    origin, normal = wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0)
+    ordered = od.points.radial_sort(points, origin, normal)
+    print(ordered.numpy()[:, :2].tolist())  # [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]]
+    ```
     """
     device = points.device
     n = points.size

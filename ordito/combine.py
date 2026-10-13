@@ -61,6 +61,21 @@ def concatenate(
         reindexing. Both names are required: this one mirrors
         [`trimesh.util.concatenate`][], that one [`numpy.concatenate`][].
     [`trimesh.util.concatenate`][]
+
+    Examples
+    --------
+    The second part's face indices are shifted past the first part's 8 vertices:
+
+    ```python
+    import ordito as od
+
+    box_vertices, box_faces = od.creation.box()
+    tet_vertices, tet_faces = od.creation.tetrahedron()
+    vertices, faces = od.combine.concatenate([(box_vertices, box_faces), (tet_vertices, tet_faces)])
+    print(vertices.shape, faces.shape)  # (12,) (48,)
+    print(faces.numpy()[36:39])  # [ 8  9 10]
+    print(len(od.combine.split(vertices, faces)))  # 2
+    ```
     """
     if len(meshes_data) == 0:
         return (_launch.empty(0, dtype=wp.vec3), _launch.empty(0, dtype=wp.int32))
@@ -143,6 +158,22 @@ def split(
         Keep a *subset* of the components in one mesh, rather than taking them all apart.
     [`submesh_from_face_indices`][ordito.selection.submesh_from_face_indices]
     [`trimesh.graph.split`][]
+
+    Examples
+    --------
+    Two disjoint boxes come back as two 8-vertex meshes:
+
+    ```python
+    import ordito as od
+
+    first = od.creation.box(bounds=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    second = od.creation.box(bounds=[[2.0, 0.0, 0.0], [3.0, 1.0, 1.0]])
+    vertices, faces = od.combine.concatenate([first, second])
+    parts = od.combine.split(vertices, faces)
+    print(len(parts))  # 2
+    part_vertices, part_faces = parts[1]
+    print(part_vertices.size, part_faces.size // 3)  # 8 12
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     vertices_all, vertex_offsets, faces_all, face_offsets = split_with_offsets(vertices, faces)
@@ -199,6 +230,21 @@ def split_with_offsets(
     [`split`][ordito.combine.split]
         The list form: [`array.split`][ordito.array.split] over these buffers.
     [`submeshes_from_face_groups`][ordito.selection.submeshes_from_face_groups]
+
+    Examples
+    --------
+    A box and a tetrahedron, packed: component ``g`` owns rows ``offsets[g]`` to ``offsets[g + 1]``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.combine.concatenate([od.creation.box(), od.creation.tetrahedron()])
+    vertices_all, vertex_offsets, faces_all, face_offsets = od.combine.split_with_offsets(
+        vertices, faces
+    )
+    print(sorted(vertex_offsets.numpy().tolist()))  # [0, 8, 12]
+    print(face_offsets.numpy())  # [ 0 12 16]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device

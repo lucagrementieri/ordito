@@ -178,6 +178,25 @@ def chamfer_points_to_points(
     [`chamfer_points_to_mesh`][ordito.metrics.chamfer_points_to_mesh]
     [`chamfer_mesh_to_mesh`][ordito.metrics.chamfer_mesh_to_mesh]
     [`query_nearest`][ordito.neighbors.query_nearest]
+
+    Examples
+    --------
+    The ``x -> y`` distances are ``[0, 1]`` and the ``y -> x`` ones ``[0, 3]``; the symmetric value
+    is the sum of the two means:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    x = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3)
+    y = wp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 3.0]], dtype=wp.vec3)
+    print(od.metrics.chamfer_points_to_points(x, y))  # 2.0
+    print(od.metrics.chamfer_points_to_points(x, y, single_directional=True))  # 0.5
+    print(od.metrics.chamfer_points_to_points(x, y, squared=True))  # 5.0
+    forward, backward = od.metrics.chamfer_points_to_points(x, y, point_reduction=None)
+    print(forward.numpy().tolist(), backward.numpy().tolist())  # [0.0, 1.0] [0.0, 3.0]
+    ```
     """
     require_same_device(x=x, y=y)
     _validate_point_reduction(point_reduction)
@@ -284,6 +303,23 @@ def chamfer_points_to_mesh(
     [`chamfer_points_to_points`][ordito.metrics.chamfer_points_to_points]
     [`chamfer_mesh_to_mesh`][ordito.metrics.chamfer_mesh_to_mesh]
     [`closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh]
+
+    Examples
+    --------
+    A point ``1.0`` outside a unit cube and one at its centre, ``0.5`` from every face. The backward
+    term adds the mean distance from the cube's corners to the cloud, ``sqrt(3) / 2``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    points = wp.array([[1.5, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=wp.vec3)
+    forward = od.metrics.chamfer_points_to_mesh(points, vertices, faces, single_directional=True)
+    print(forward)  # 0.75
+    print(f"{od.metrics.chamfer_points_to_mesh(points, vertices, faces):.4f}")  # 1.6160
+    ```
     """
     require_same_device(points=points, vertices=vertices, faces=faces)
     _validate_point_reduction(point_reduction)
@@ -391,6 +427,24 @@ def chamfer_mesh_to_mesh(
     [`chamfer_points_to_points`][ordito.metrics.chamfer_points_to_points]
     [`chamfer_points_to_mesh`][ordito.metrics.chamfer_points_to_mesh]
     [`hausdorff_mesh_to_mesh`][ordito.metrics.hausdorff_mesh_to_mesh]
+
+    Examples
+    --------
+    A unit cube inside a cube of side 2: each inner corner is ``0.5`` from the outer surface, each
+    outer corner ``sqrt(3) / 2`` from the inner one:
+
+    ```python
+    import ordito as od
+
+    vertices_a, faces_a = od.creation.box()
+    vertices_b, faces_b = od.creation.box(extents=(2.0, 2.0, 2.0))
+    forward = od.metrics.chamfer_mesh_to_mesh(
+        vertices_a, faces_a, vertices_b, faces_b, single_directional=True
+    )
+    print(forward)  # 0.5
+    symmetric = od.metrics.chamfer_mesh_to_mesh(vertices_a, faces_a, vertices_b, faces_b)
+    print(f"{symmetric:.4f}")  # 1.3660
+    ```
     """
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
@@ -491,6 +545,25 @@ def chamfer_points_to_points_loss(
     [`chamfer_points_to_points`][ordito.metrics.chamfer_points_to_points]
     [`chamfer_points_to_mesh_loss`][ordito.metrics.chamfer_points_to_mesh_loss]
     [`chamfer_mesh_to_mesh_loss`][ordito.metrics.chamfer_mesh_to_mesh_loss]
+
+    Examples
+    --------
+    The point ``(1, 0, 0)`` is 1 from its nearest neighbour at the origin, so the mean loss is
+    ``0.5`` and its gradient pushes it towards the origin with weight ``1 / 2``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    x = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3, requires_grad=True)
+    y = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 2.0]], dtype=wp.vec3)
+    tape = wp.Tape()
+    loss = od.metrics.chamfer_points_to_points_loss(x, y, tape=tape, single_directional=True)
+    tape.backward(loss=loss)
+    print(loss.numpy())  # [0.5]
+    print(x.grad.numpy()[1])  # [0.5 0.  0. ]
+    ```
     """
     require_same_device(x=x, y=y)
     _validate_diff_reduction(point_reduction)
@@ -576,6 +649,27 @@ def chamfer_points_to_mesh_loss(
     [`chamfer_points_to_mesh`][ordito.metrics.chamfer_points_to_mesh]
     [`chamfer_points_to_points_loss`][ordito.metrics.chamfer_points_to_points_loss]
     [`chamfer_mesh_to_mesh_loss`][ordito.metrics.chamfer_mesh_to_mesh_loss]
+
+    Examples
+    --------
+    A point ``1.0`` outside the ``x = 0.5`` face of a unit cube; the gradient of its distance points
+    away from the face:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    points = wp.array([[1.5, 0.1, 0.2]], dtype=wp.vec3, requires_grad=True)
+    tape = wp.Tape()
+    loss = od.metrics.chamfer_points_to_mesh_loss(
+        points, vertices, faces, tape=tape, single_directional=True
+    )
+    tape.backward(loss=loss)
+    print(loss.numpy())  # [1.]
+    print(points.grad.numpy()[0])  # [1. 0. 0.]
+    ```
     """
     require_same_device(points=points, vertices=vertices, faces=faces)
     _validate_diff_reduction(point_reduction)
@@ -672,6 +766,29 @@ def chamfer_mesh_to_mesh_loss(
     [`chamfer_mesh_to_mesh`][ordito.metrics.chamfer_mesh_to_mesh]
     [`chamfer_points_to_points_loss`][ordito.metrics.chamfer_points_to_points_loss]
     [`chamfer_points_to_mesh_loss`][ordito.metrics.chamfer_points_to_mesh_loss]
+
+    Examples
+    --------
+    A unit cube under a slab whose bottom face is the plane ``z = 1``: the cube's top corners are
+    ``0.5`` from it and the bottom ones ``1.5``, a mean of 1, and every corner is pulled up with
+    weight ``1 / 8``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices_a, faces_a = od.creation.box()
+    vertices_b, faces_b = od.creation.box(bounds=[[-2.0, -2.0, 1.0], [2.0, 2.0, 2.0]])
+    vertices_a.requires_grad = True
+    tape = wp.Tape()
+    loss = od.metrics.chamfer_mesh_to_mesh_loss(
+        vertices_a, faces_a, vertices_b, faces_b, tape=tape, single_directional=True
+    )
+    tape.backward(loss=loss)
+    print(loss.numpy())  # [1.]
+    print(set(vertices_a.grad.numpy()[:, 2].tolist()))  # {-0.125}
+    ```
     """
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
@@ -761,6 +878,21 @@ def hausdorff_points_to_points(
     [`hausdorff_points_to_mesh`][ordito.metrics.hausdorff_points_to_mesh]
     [`hausdorff_mesh_to_mesh`][ordito.metrics.hausdorff_mesh_to_mesh]
     [`scipy.spatial.distance.directed_hausdorff`][]
+
+    Examples
+    --------
+    Every point of ``x`` is within 1 of ``y``, but ``(3, 0, 0)`` is 2 from ``x``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    x = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3)
+    y = wp.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=wp.vec3)
+    print(od.metrics.hausdorff_points_to_points(x, y))  # 2.0
+    print(od.metrics.hausdorff_points_to_points(x, y, single_directional=True))  # 1.0
+    ```
     """
     require_same_device(x=x, y=y)
     distances = _distances_points_to_points(x, y, single_directional)
@@ -808,6 +940,23 @@ def hausdorff_points_to_mesh(
     --------
     [`hausdorff_points_to_points`][ordito.metrics.hausdorff_points_to_points]
     [`hausdorff_mesh_to_mesh`][ordito.metrics.hausdorff_mesh_to_mesh]
+
+    Examples
+    --------
+    A point ``1.0`` outside a unit cube and one at its centre. The farthest cube corner from the
+    cloud is ``sqrt(3) / 2`` from the centre point, so the symmetric value is still 1:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    points = wp.array([[1.5, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=wp.vec3)
+    directed = od.metrics.hausdorff_points_to_mesh(points, vertices, faces, single_directional=True)
+    print(directed)  # 1.0
+    print(f"{od.metrics.hausdorff_points_to_mesh(points, vertices, faces):.4f}")  # 1.0000
+    ```
     """
     require_same_device(points=points, vertices=vertices, faces=faces)
     distances = _distances_points_to_mesh(points, vertices, faces, single_directional)
@@ -855,6 +1004,24 @@ def hausdorff_mesh_to_mesh(
     --------
     [`chamfer_mesh_to_mesh`][ordito.metrics.chamfer_mesh_to_mesh]
     [`hausdorff_points_to_mesh`][ordito.metrics.hausdorff_points_to_mesh]
+
+    Examples
+    --------
+    A unit cube inside a cube of side 2: the inner corners are ``0.5`` from the outer surface, the
+    outer corners ``sqrt(3) / 2`` from the inner one:
+
+    ```python
+    import ordito as od
+
+    vertices_a, faces_a = od.creation.box()
+    vertices_b, faces_b = od.creation.box(extents=(2.0, 2.0, 2.0))
+    directed = od.metrics.hausdorff_mesh_to_mesh(
+        vertices_a, faces_a, vertices_b, faces_b, single_directional=True
+    )
+    print(directed)  # 0.5
+    symmetric = od.metrics.hausdorff_mesh_to_mesh(vertices_a, faces_a, vertices_b, faces_b)
+    print(f"{symmetric:.4f}")  # 0.8660
+    ```
     """
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b

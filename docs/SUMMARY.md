@@ -49,7 +49,7 @@ Shelving decisions that are not obvious from the section titles:
     * [PyTorch3D](migrating-from/pytorch3d.md)
 * [Performance](performance.md)
 * [Benchmarks](benchmarks.md)
-* API Reference
+* [API Reference](reference.md)
     * Primitives & creation
         * [creation](api/ordito/creation.md)
     * Mesh structure & topology

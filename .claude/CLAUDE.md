@@ -371,7 +371,7 @@ A move or rename of a public function carries everything derived from it in the 
 2. Its tests, into `tests/test_<destination>.py`, keeping §5 order.
 3. Its benchmark rows, into `benchmarks/test_<destination>.py`.
 4. Its `benchmark(group=...)` name and every `parity` / `noparity` marker citing it; `uv run python -m tests.parity` must show the same pair count.
-5. Its `docs/SUMMARY.md` entry (check 28) and every cross-reference (`zensical build --strict`).
+5. Its `docs/SUMMARY.md` and `docs/reference.md` entries (check 28) and every cross-reference (`zensical build --strict`).
 
 Renaming a keyword argument also needs a grep of the old name alone (`**splat` `TypedDict` fields) and of fenced docstring examples (check 12). After any rename re-derive the residual set and run the whole suite.
 
@@ -390,7 +390,7 @@ Thirty checks fail the default `pytest` run. Read an allowlist entry's reason be
 9. Comment or docstring blaming a Warp version older than installed (anchored `Warp 1.18` spelling).
 10. Allocation with no `device=` (§3.3).
 11. Public function that raises with no `Raises` block (§4.3).
-12. Fenced ```python docstring example that does not run.
+12. Fenced ```python docstring example that does not run on its own, or prints other than its trailing comment says (§6).
 13. Kernel `out_` prefix and position (§2.1).
 14. Non-subscript array annotations (§1.2).
 15. `wp.launch` with no `device=` (§3.9).
@@ -406,7 +406,7 @@ Thirty checks fail the default `pytest` run. Read an allowlist entry's reason be
 25. `!!!` admonition inside a numpydoc item-list section (§6).
 26. Warp-typed module constant used as a Python-scope operand or slice bound (§13.1).
 27. `bsr_from_triplets` / `bsr_set_from_triplets` under `ordito/` (§3.7).
-28. Public module missing from, duplicated in, or stale in `docs/SUMMARY.md` (§6).
+28. Public module missing from, duplicated in, or stale in `docs/SUMMARY.md` or `docs/reference.md` (§6).
 29. Array docstring entry opening with `Length-`, `Shape ``(`, `Flat` or `Rank-N ``(` (§6).
 30. `warp.utils.array_cast` under `ordito/` (§3.6).
 
@@ -437,7 +437,8 @@ uv run zensical build --strict --clean  # validate; --clean after docstring edit
 uv run zensical serve                   # preview; restart to see docstring changes
 ```
 
-- API pages come from `api-autonav`, one per public module. The nav is `docs/SUMMARY.md`; a new module needs a line (check 28). Never use `gen-files`: Zensical ignores unsupported plugins silently.
+- API pages come from `api-autonav`, one per public module. The nav is `docs/SUMMARY.md`; a new module needs a line there and in the API overview `docs/reference.md` (module table, and the task index when it answers a common task) (check 28). Never use `gen-files`: Zensical ignores unsupported plugins silently.
+- mkdocstrings templates are overridden in `overrides/mkdocstrings/` (backlinks render as one collapsed line); layout CSS is `docs/stylesheets/extra.css`. Check rendering changes in the built HTML, not only the build's exit status.
 - A build finishing in about 0.1 s with an empty `site/` is inotify exhaustion (exits 0); raise `fs.inotify.max_user_watches`.
 
 ### Docstring content
@@ -446,6 +447,7 @@ uv run zensical serve                   # preview; restart to see docstring chan
 - An array entry (every `Parameters` / `Returns` / `Yields` / `Attributes` entry, and a `Trimesh` property summary) opens with its shape as a code span, then its meaning: ``` ``(3 * n_faces,)`` flat triangle index buffer. ```
     - A rank-1 length is a 1-tuple (``` ``(n_vertices + 1,)`` ```); no `Length-`, `Shape`, `Flat`, `Rank-1`, or shape buried mid-sentence (check 29).
     - Spell sizes in full (`n_faces`); define a free size (`m`, `k`) on first use.
+- Every public function and class ends its docstring with an `Examples` section: one fenced ```` ```python ```` block (never `>>>`) that imports what it uses, builds its own input (`od.creation`, a small literal) and sets no `device=`. It runs in a fresh namespace on each device, and a top-level `print(x)  # value` must print exactly `value` (`tests/doc_examples.py`), so print shapes, counts, booleans and floats rounded to the digits CPU and CUDA agree on. The guide pages under `docs/` follow the same print rule (`tests/test_docs_examples.py`).
 - No measured timing (ms, ratios, launch or byte counts) in a public docstring; state the claim in caller terms.
 - No development-history narrative in `ordito/*.py` ("measured X, declined Y", "reverted", "round N", internal section references). Keep the behavioural fact and delete the rest; reasoning belongs in `kernels/`, `benchmarks/`, `tests/` or Part II.
 - `kernels/`, `benchmarks/` and `tests/` may state a ratio or crossover but not a wall-clock figure.
@@ -776,7 +778,7 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - Sum cross products about a point of the loop, never the origin (`predicates.newell_term`).
 - FMA fusion makes a degenerate triangle's area ~1e-8 on CUDA and 0 on CPU. Do not disable it; write degeneracy tests at small scale and never assume CPU/CUDA bit agreement.
 - Form area vectors and cotangents where they do not cancel (`predicates.triangle_area_vector` crosses at the largest angle); Heron needs sorted sides. Float32 lengths cannot represent a needle (the intrinsic path warns).
-- Never substitute an algebraic identity inside a sign test that feeds a branch; CUDA differs, CPU does not.
+- Never substitute an algebraic identity inside a sign test that feeds a branch; CUDA differs, CPU does not. Exactly coplanar float32 corners give float64 plane distances of ~1e-19 with mixed signs on CUDA (FMA) and exact zeros on CPU: snap a distance within its own rounding to zero before branching on its sign (`predicates.plane_distances_d`; without it two disjoint coplanar triangles "intersected" on CUDA).
 - `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
 - Float32 storage sets a noise floor no tolerance reaches; heat fields scale as 1/scale², so absolute tolerances on them are wrong.
 - The backward pass of an empty dynamic `range` runs one iteration past the array: a differentiated thread whose loop can draw nothing must return first.
@@ -881,7 +883,7 @@ The full per-component detail is in `reference/component-status.md`; read the co
 - **Never size anything off `matrix.nnz` or a Warp `*_count`**; both are capacities (§3.7). `fem.integrate` / `bsr_axpy` on stale `nnz` once exhausted memory and surfaced as CUDA error 700.
 - **Fail-silently families:** a wrong binary search on an argsort payload returns a valid index of the wrong element (§3.1); `NaN` poisons `side="right"` search; an `int32` scan of large triplet counts wraps (use `int64`); an out-of-bounds write on CPU corrupts the heap later.
 - **Heat method on obtuse-heavy meshes is wrong by the method's own error** (and so is potpourri3d's). `geodesic_path` strands on spurious minima and then finishes along mesh edges with a warning. `extend_scalar` warns when the field leaves the source range; `filter_mut_dif_laplacian` and `robust_laplacian` warn about ill-conditioned input. These warnings are the contract, not noise.
-- **A degenerate-face threshold that is absolute (`TOLERANCE_MERGE`) removes marching-cubes slivers and opens the mesh**; `marching_cubes(edge_margin=)` is the fix and `screened_poisson` passes it.
+- **A degenerate-face threshold that is absolute (`TOLERANCE_MERGE`) removes marching-cubes slivers and opens the mesh**; `marching_cubes(edge_margin=)` is the fix, and every reconstruction that extracts a level set passes `reconstruction._lattice_edge_margin` (`screened_poisson`, `resample_uniform` through `signed_distance_level_set(edge_margin=)`). Lattice nodes landing exactly on the level (a unit box on a 0.05 grid) is the trigger; Warp's `sparse_marching_cubes` has no margin, so a positive margin takes the dense path.
 - **`remove_tunnels` can still miss a short handle** whose short loop appears in every basis tried only inside a combination (3x3 slab at `max_length=5`: one edge bar of girth 4.13 survives). The basis is the greedy (Erickson-Whittlesey) system over a hop-count tree, re-rooted at basis-loop vertices when nothing is short enough; the complete fix is a length-weighted shortest-path tree per root over every basis-loop vertex.
 - **Mean-curvature flow pinches thin parts by design**; the plain flow's rebuilt cotangent system then needs orders of magnitude more CG iterations (bunny: 41 to 59 416). `filter_implicit_fairing(conformalized=True)` keeps the input's stiffness within one call (matches libigl's conformalized flow); repeated single-pass calls are always the plain flow.
 - **`principal_curvature` overestimating at the default `radius=5` is the quadric fit, not a defect**: it equals `igl.principal_curvature(..., useKring=False)` to 1e-6 (torus tube 3.22 vs exact 2.86; libigl's k-ring default reads 3.12).

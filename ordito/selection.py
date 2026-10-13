@@ -68,6 +68,23 @@ def region_boundary_edges(
     [`faces_left_of_contour`][ordito.selection.faces_left_of_contour]
         The inverse: turns this seam back into the region it bounds, given ``oriented=True``.
     [`expand_vertex_mask`][ordito.selection.expand_vertex_mask]
+
+    Examples
+    --------
+    One side of a cube (two triangles) is bounded by a seam of four edges; its shared diagonal is
+    interior to the region and is not part of the seam:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
+    side = wp.array(normals.numpy()[:, 0] < -0.5, dtype=wp.bool)  # the two faces facing -x
+    seam = od.selection.region_boundary_edges(faces, side)
+    print(seam.shape)  # (4, 2)
+    ```
     """
     require_same_device(faces=faces, face_mask=face_mask)
     device = faces.device
@@ -168,14 +185,6 @@ def faces_left_of_contour(
     RuntimeError
         If ``faces``, ``contour_edges`` and ``twins`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    seam = od.selection.region_boundary_edges(f, face_mask, oriented=True)
-    left = od.selection.faces_left_of_contour(f, seam)
-    assert np.array_equal(left.numpy(), face_mask.numpy())
-    ```
-
     See Also
     --------
     [`region_boundary_edges`][ordito.selection.region_boundary_edges]
@@ -184,6 +193,28 @@ def faces_left_of_contour(
         Splits the mesh along the same kind of edge set instead of labelling its sides.
     [`submesh_from_face_mask`][ordito.selection.submesh_from_face_mask]
         Turns the returned mask into a mesh.
+
+    Examples
+    --------
+    The oriented seam of a region floods back to exactly that region; reversing the seam selects the
+    complement:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
+    side = wp.array(normals.numpy()[:, 0] < -0.5, dtype=wp.bool)  # the two faces facing -x
+    seam = od.selection.region_boundary_edges(faces, side, oriented=True)
+    left = od.selection.faces_left_of_contour(faces, seam)
+    print(np.array_equal(left.numpy(), side.numpy()))  # True
+    reversed_seam = wp.array(seam.numpy()[:, ::-1].copy(), dtype=wp.int32)
+    right = od.selection.faces_left_of_contour(faces, reversed_seam)
+    print(int(right.numpy().sum()))  # 10
+    ```
     """
     require_same_device(faces=faces, contour_edges=contour_edges, twins=twins)
     require_matching_twins(faces, twins)
@@ -291,6 +322,23 @@ def exclude_fully_selected_components(
         If ``mask`` does not have one entry per vertex.
     RuntimeError
         If ``faces``, ``mask`` and ``unique_edges`` are not all on one device.
+
+    Examples
+    --------
+    Two separate triangles: the first is selected whole and is dropped, the second keeps its one
+    selected vertex:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 3, 4, 5], dtype=wp.int32)
+    mask = wp.array([True, True, True, True, False, False], dtype=wp.bool)
+    kept = od.selection.exclude_fully_selected_components(faces, mask, 6)
+    print(np.flatnonzero(kept.numpy()).tolist())  # [3]
+    ```
     """
     require_same_device(faces=faces, mask=mask, unique_edges=unique_edges)
     if mask.size != n_vertices:
@@ -438,6 +486,24 @@ def submesh_from_face_indices(
     [`submesh_from_vertex_indices`][ordito.selection.submesh_from_vertex_indices]
     [`concatenate`][ordito.combine.concatenate]
     [`trimesh.util.submesh`][]
+
+    Examples
+    --------
+    Two cube faces sharing a diagonal span four of the eight vertices:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    face_indices = wp.array([0, 1], dtype=wp.int32)
+    sub_vertices, sub_faces, vertex_index = od.selection.submesh_from_face_indices(
+        vertices, faces, face_indices, return_index=True
+    )
+    print(sub_vertices.shape, sub_faces.shape)  # (4,) (6,)
+    print(vertex_index.numpy().tolist())  # [0, 1, 3, 4]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, face_indices=face_indices)
     device = vertices.device
@@ -541,6 +607,25 @@ def submeshes_from_face_groups(
     [`submesh_from_face_indices`][ordito.selection.submesh_from_face_indices]
     [`split_with_offsets`][ordito.combine.split_with_offsets]
     [`unique_1d`][ordito.grouping.unique_1d]
+
+    Examples
+    --------
+    Two groups of cube faces, ``[0, 1]`` and ``[2, 3, 4]``, extracted in one call:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    group_face_indices = wp.array([0, 1, 2, 3, 4], dtype=wp.int32)
+    group_offsets = wp.array([0, 2, 5], dtype=wp.int32)
+    vertices_all, vertex_offsets, faces_all = od.selection.submeshes_from_face_groups(
+        vertices, faces, group_face_indices, group_offsets
+    )
+    print(vertex_offsets.numpy().tolist())  # [0, 4, 10]
+    print(faces_all.shape)  # (15,)
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -663,6 +748,20 @@ def submesh_from_face_mask(
     [`submesh_from_face_indices`][ordito.selection.submesh_from_face_indices]
     [`delete_region_keep_boundary`][ordito.selection.delete_region_keep_boundary]
         The complement: keep everything *outside* a region, and report the rims that opens.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
+    side = wp.array(normals.numpy()[:, 0] < -0.5, dtype=wp.bool)  # the two faces facing -x
+    sub_vertices, sub_faces = od.selection.submesh_from_face_mask(vertices, faces, side)
+    print(sub_vertices.shape, sub_faces.shape)  # (4,) (6,)
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, face_mask=face_mask)
     n_faces = faces.size // 3
@@ -720,13 +819,6 @@ def delete_region_keep_boundary(
     RuntimeError
         If ``vertices``, ``faces`` and ``face_mask`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    doomed = od.validation.face_self_intersecting_mask(v, f)
-    kept_v, kept_f, rims = od.selection.delete_region_keep_boundary(v, f, doomed)
-    ```
-
     Notes
     -----
     A loop counts as pre-existing when **every** one of its edges was already a boundary edge of the
@@ -752,6 +844,25 @@ def delete_region_keep_boundary(
         The same extraction with the mask's polarity reversed and no loop report.
     [`ordito.holes.refill_region`][ordito.holes.refill_region]
         Delete and immediately fill, which is what this is usually the first half of.
+
+    Examples
+    --------
+    Deleting one side of a cube leaves an open box with one new square rim:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
+    side = wp.array(normals.numpy()[:, 0] < -0.5, dtype=wp.bool)  # the two faces facing -x
+    kept_vertices, kept_faces, new_loops = od.selection.delete_region_keep_boundary(
+        vertices, faces, side
+    )
+    print(kept_vertices.shape, kept_faces.shape)  # (8,) (30,)
+    print([loop.shape for loop in new_loops])  # [(4,)]
+    ```
     """
     kept_vertices, kept_faces, _, _, views = _delete_region_loops(
         vertices, faces, face_mask, host_bounds=True
@@ -815,6 +926,23 @@ def delete_region_keep_boundary_with_offsets(
     [`delete_region_keep_boundary`][ordito.selection.delete_region_keep_boundary]
         The same, with one array per new loop.
     [`ordito.boundary.boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
+    side = wp.array(normals.numpy()[:, 0] < -0.5, dtype=wp.bool)  # the two faces facing -x
+    kept_vertices, kept_faces, loops, loop_offsets = (
+        od.selection.delete_region_keep_boundary_with_offsets(vertices, faces, side)
+    )
+    print(kept_faces.shape)  # (30,)
+    print(loop_offsets.numpy().tolist())  # [0, 4]
+    ```
     """
     kept_vertices, kept_faces, loops, loop_offsets, _ = _delete_region_loops(
         vertices, faces, face_mask, host_bounds=False
@@ -1049,6 +1177,28 @@ def submesh_from_vertex_indices(
     [`face_indices_from_vertex_indices`][ordito.selection.face_indices_from_vertex_indices]
     [`submesh_from_vertex_mask`][ordito.selection.submesh_from_vertex_mask]
     [`submesh_from_face_indices`][ordito.selection.submesh_from_face_indices]
+
+    Examples
+    --------
+    On a 3 x 3 vertex grid the four vertices of the lower-left cell hold its two triangles under
+    ``"all"``; under ``"any"`` every face touching one of them is taken:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    vertex_indices = wp.array([0, 1, 3, 4], dtype=wp.int32)
+    _sub_vertices, sub_faces = od.selection.submesh_from_vertex_indices(
+        vertices, faces, vertex_indices
+    )
+    print(sub_faces.shape[0] // 3)  # 2
+    _sub_vertices, sub_faces = od.selection.submesh_from_vertex_indices(
+        vertices, faces, vertex_indices, face_mode="any"
+    )
+    print(sub_faces.shape[0] // 3)  # 8
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, vertex_indices=vertex_indices)
     face_indices = face_indices_from_vertex_indices(
@@ -1107,6 +1257,20 @@ def submesh_from_vertex_mask(
         The index form, for a caller that holds a list rather than a mask.
     [`submesh_from_face_mask`][ordito.selection.submesh_from_face_mask]
         The per-face selection this reduces onto.
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    vertex_mask = wp.array(np.isin(np.arange(9), [0, 1, 3, 4]), dtype=wp.bool)
+    sub_vertices, sub_faces = od.selection.submesh_from_vertex_mask(vertices, faces, vertex_mask)
+    print(sub_vertices.shape, sub_faces.shape)  # (4,) (6,)
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, vertex_mask=vertex_mask)
     n_vertices = vertices.size
@@ -1191,6 +1355,25 @@ def expand_vertex_mask(
     triangle mesh two vertices are one-ring neighbours exactly when they share a face, so a round
     marks the corners of every face with a selected corner and no edge table is built. Vertices no
     face references are neither reached nor removed.
+
+    Examples
+    --------
+    On a 3 x 3 vertex grid one hop from corner vertex 0 reaches its three neighbours, and two hops
+    the whole grid:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    corner = wp.array(np.arange(9) == 0, dtype=wp.bool)
+    one_hop = od.selection.expand_vertex_mask(faces, corner, 1)
+    print(np.flatnonzero(one_hop.numpy()).tolist())  # [0, 1, 3, 4]
+    two_hops = od.selection.expand_vertex_mask(faces, corner, 2)
+    print(int(two_hops.numpy().sum()))  # 9
+    ```
     """
     require_same_device(faces=faces, mask=mask)
     n = mask.size
@@ -1235,6 +1418,23 @@ def shrink_vertex_mask(
     -----
     Erosion here is vertex-based: a vertex survives when every 1-ring neighbour is also in the
     mask. MeshLab's Erode Selection is a *face*-based operation and gives a different answer.
+
+    Examples
+    --------
+    Unselecting corner vertex 0 of a 3 x 3 vertex grid and eroding by one hop also drops its
+    neighbours:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    mask = wp.array(np.arange(9) != 0, dtype=wp.bool)
+    eroded = od.selection.shrink_vertex_mask(faces, mask, 1)
+    print(np.flatnonzero(eroded.numpy()).tolist())  # [2, 5, 6, 7, 8]
+    ```
     """
     require_same_device(faces=faces, mask=mask)
     n = mask.size
@@ -1317,6 +1517,21 @@ def face_indices_from_vertex_indices(
         If ``face_mode`` is not ``"all"`` or ``"any"``.
     RuntimeError
         If ``faces`` and ``vertex_indices`` are not all on one device.
+
+    Examples
+    --------
+    The faces of a 3 x 3 vertex grid that touch its centre vertex 4:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    centre = wp.array([4], dtype=wp.int32)
+    face_indices = od.selection.face_indices_from_vertex_indices(faces, centre, face_mode="any")
+    print(face_indices.numpy().tolist())  # [0, 1, 2, 5, 6, 7]
+    ```
     """
     require_same_device(faces=faces, vertex_indices=vertex_indices)
     if face_mode not in ("all", "any"):

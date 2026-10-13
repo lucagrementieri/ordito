@@ -83,6 +83,21 @@ def arange(
     [`arange_repeat`][ordito.array.arange_repeat]
         The same range with each value repeated a fixed number of times.
     [`numpy.arange`][]
+
+    Examples
+    --------
+    Mirrors [`numpy.arange`][], with one, two or three positional arguments:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    device = wp.get_device()
+    print(od.array.arange(5, device=device).numpy().tolist())  # [0, 1, 2, 3, 4]
+    print(od.array.arange(2, 11, 3, device=device).numpy().tolist())  # [2, 5, 8]
+    print(od.array.arange(3, 0, -1, device=device).numpy().tolist())  # [3, 2, 1]
+    ```
     """
     if stop is None:
         start, stop = 0, start
@@ -138,6 +153,19 @@ def arange_repeat(count: int, repeats: int, device: wp.DeviceLike) -> wp.array[w
     [`arange`][ordito.array.arange]
         The range this repeats, and whose ``Notes`` explain why neither takes a ``dtype``.
     [`numpy.repeat`][]
+
+    Examples
+    --------
+    The first ``count`` entries of ``numpy.repeat(numpy.arange(n), repeats)``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    indices = od.array.arange_repeat(7, 3, wp.get_device())
+    print(indices.numpy().tolist())  # [0, 0, 0, 1, 1, 1, 2]
+    ```
     """
     if count < 0:
         raise ValueError(f"count must be non-negative, got {count}")
@@ -187,6 +215,17 @@ def sort_pair_indices(n: int, fill_value: int, device: wp.DeviceLike) -> wp.arra
     [`sort_and_argsort`][ordito.array.sort_and_argsort]
     [`arange`][ordito.array.arange]
         Whose ``Notes`` explain why neither takes a ``dtype``.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    payload = od.array.sort_pair_indices(3, -1, wp.get_device())
+    print(payload.numpy().tolist())  # [0, 1, 2, -1, -1, -1]
+    ```
     """
     if n < 0:
         raise ValueError(f"n must be non-negative, got {n}")
@@ -266,6 +305,25 @@ def pack_1d_arrays(
     [`split`][ordito.array.split]
         The inverse: recovers the per-segment arrays from ``(flat, offsets)``.
     [`concatenate`][ordito.array.concatenate]
+
+    Examples
+    --------
+    Three segments of lengths 2, 1 and 3 pack into six values and four offsets:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    segments = [
+        wp.array([1, 2], dtype=wp.int32),
+        wp.array([3], dtype=wp.int32),
+        wp.array([4, 5, 6], dtype=wp.int32),
+    ]
+    flat, offsets = od.array.pack_1d_arrays(segments)
+    print(flat.numpy().tolist())  # [1, 2, 3, 4, 5, 6]
+    print(offsets.numpy().tolist())  # [0, 2, 3, 6]
+    ```
     """
     flat, offsets = _pack_segments(arrays, caller="pack_1d_arrays", copy=copy)
     return flat, _launch.array([*offsets, flat.size], dtype=wp.int32, device=flat.device)
@@ -306,6 +364,20 @@ def concatenate(arrays: Sequence[wp.array[DType]], *, copy: bool = True) -> wp.a
         reindexes as it goes. Both names are required: this one mirrors
         [`numpy.concatenate`][], that one [`trimesh.util.concatenate`][].
     [`numpy.concatenate`][]
+
+    Examples
+    --------
+    Mirrors [`numpy.concatenate`][] for rank-1 arrays:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    first = wp.array([1.0, 2.0], dtype=wp.float32)
+    second = wp.array([3.0], dtype=wp.float32)
+    print(od.array.concatenate([first, second]).numpy().tolist())  # [1.0, 2.0, 3.0]
+    ```
     """
     if len(arrays) == 0:
         raise ValueError("arrays must be non-empty")
@@ -376,6 +448,21 @@ def split(
         components. Both names are required: this one mirrors [`numpy.split`][], that one
         ``trimesh.Trimesh.split``.
     [`numpy.split`][]
+
+    Examples
+    --------
+    Unlike [`numpy.split`][], the bounds are total-terminated offsets rather than split points:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([1, 2, 3, 4, 5, 6], dtype=wp.int32)
+    offsets = wp.array([0, 2, 3, 6], dtype=wp.int32)
+    segments = od.array.split(values, offsets)
+    print([segment.numpy().tolist() for segment in segments])  # [[1, 2], [3], [4, 5, 6]]
+    ```
     """
     require_same_device(array=array, offsets=offsets)
     if int(array.ndim) != 1:
@@ -774,6 +861,20 @@ def allclose(
         If ``a`` and ``b`` have different lengths or dtypes.
     RuntimeError
         If ``a`` and ``b`` are not all on one device.
+
+    Examples
+    --------
+    Mirrors [`numpy.allclose`][] with its default tolerances:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    a = wp.array([1.0, 2.0, 3.0], dtype=wp.float32)
+    print(od.array.allclose(a, wp.array([1.0, 2.0, 3.000001], dtype=wp.float32)))  # True
+    print(od.array.allclose(a, wp.array([1.0, 2.0, 3.1], dtype=wp.float32)))  # False
+    ```
     """
     require_same_device(a=a, b=b)
     if a.dtype != b.dtype:
@@ -847,6 +948,22 @@ def sort_and_argsort(
     [`sort_rows`][ordito.array.sort_rows]
     [`sort_pair_indices`][ordito.array.sort_pair_indices]
     [`sortable_dtype`][ordito.typing.sortable_dtype]
+
+    Examples
+    --------
+    [`numpy.sort`][] and ``numpy.argsort(kind="stable")`` in one call; the two equal keys keep
+    their input order:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    keys = wp.array([3, 1, 2, 1], dtype=wp.int32)
+    sorted_keys, order = od.array.sort_and_argsort(keys)
+    print(sorted_keys.numpy().tolist())  # [1, 1, 2, 3]
+    print(order.numpy().tolist())  # [1, 3, 2, 0]
+    ```
     """
     device = keys.device
     n = keys.size
@@ -886,6 +1003,20 @@ def sort_rows(data: odt.Array2dInt32 | odt.Array2dFloat32) -> None:
     The dtype restriction comes from that fallback -- ``warp.utils.segmented_sort_pairs`` takes
     ``int32`` or ``float32`` keys and nothing else -- and it is checked up front rather than left
     to whichever path a row width happens to select, so the accepted dtypes do not depend on ``w``.
+
+    Examples
+    --------
+    ``numpy.sort(rows, axis=1)``, in place:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    rows = wp.array([[3, 1, 2], [9, 7, 8]], dtype=wp.int32)
+    od.array.sort_rows(rows)
+    print(rows.numpy().tolist())  # [[1, 2, 3], [7, 8, 9]]
+    ```
     """
     # The narrow path's margin, for whoever considers deleting it: a fixed per-segment cost in
     # ``segmented_sort_pairs`` dominates the comparison work for rows this narrow, where a plain
@@ -963,6 +1094,24 @@ def triplet_buffers(
     See Also
     --------
     [`index_sparse`][ordito.array.index_sparse]
+
+    Examples
+    --------
+    Fill the three buffers, then assemble them; the two ``(0, 0)`` triplets sum:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    rows, cols, values = od.array.triplet_buffers(3, wp.float32, wp.get_device())
+    wp.copy(rows, wp.array([0, 1, 0], dtype=wp.int32))
+    wp.copy(cols, wp.array([0, 1, 0], dtype=wp.int32))
+    wp.copy(values, wp.array([1.0, 3.0, 1.0], dtype=wp.float32))
+    matrix = od.array.csr_from_triplets(2, 2, rows, cols, values)
+    print(matrix.nnz_sync())  # 2
+    print(matrix.values.numpy()[:2].tolist())  # [2.0, 3.0]
+    ```
     """
     rows = _launch.empty(n_triplets, dtype=wp.int32, device=device)
     cols = _launch.empty(n_triplets, dtype=wp.int32, device=device)
@@ -1001,6 +1150,18 @@ def empty_square_bsr(
     See Also
     --------
     [`bsr_from_csr`][ordito.array.bsr_from_csr]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    matrix = od.array.empty_square_bsr(4, wp.float32, wp.get_device())
+    print(matrix.shape)  # (4, 4)
+    print(matrix.nnz)  # 0
+    ```
     """
     return bsr_from_csr(
         n_rows,
@@ -1058,6 +1219,25 @@ def bsr_from_csr(
     --------
     [`csr_from_keys`][ordito.array.csr_from_keys]
     [`csr_from_triplets`][ordito.array.csr_from_triplets]
+
+    Examples
+    --------
+    The matrix ``[[1, 0], [2, 3]]`` from its compressed rows, applied to ``[1, 1]``:
+
+    ```python
+    import warp as wp
+    import warp.sparse as wps
+
+    import ordito as od
+
+    offsets = wp.array([0, 1, 3], dtype=wp.int32)
+    columns = wp.array([0, 0, 1], dtype=wp.int32)
+    values = wp.array([1.0, 2.0, 3.0], dtype=wp.float32)
+    matrix = od.array.bsr_from_csr(2, 2, offsets, columns, values, nnz=3)
+    print(matrix.shape)  # (2, 2)
+    ones = wp.ones(2, dtype=wp.float32)
+    print(wps.bsr_mv(matrix, ones).numpy().tolist())  # [1.0, 5.0]
+    ```
     """
     if offsets.size != n_rows + 1:
         raise ValueError(f"offsets must have n_rows + 1 = {n_rows + 1} entries, got {offsets.size}")
@@ -1106,6 +1286,17 @@ def csr_key_buffers(
     See Also
     --------
     [`csr_from_keys`][ordito.array.csr_from_keys]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    keys, order = od.array.csr_key_buffers(3, wp.get_device())
+    print(keys.shape, order.shape)  # (6,) (6,)
+    ```
     """
     keys = _launch.empty(2 * count, dtype=wp.uint64, device=device)
     order = _launch.empty(2 * count, dtype=wp.int32, device=device)
@@ -1151,6 +1342,26 @@ def csr_from_keys(
     --------
     [`csr_from_triplets`][ordito.array.csr_from_triplets]
     [`bsr_from_csr`][ordito.array.bsr_from_csr]
+
+    Examples
+    --------
+    Four keys of a 2 x 3 matrix: ``(0, 1)`` twice, ``(1, 2)`` once, and the sentinel ``6``, which
+    is dropped. Entry 0 collects payloads 0 and 2:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    keys, order = od.array.csr_key_buffers(4, wp.get_device())
+    wp.copy(keys, wp.array([1, 5, 1, 6], dtype=wp.uint64))
+    wp.copy(order, wp.array([0, 1, 2, 3], dtype=wp.int32))
+    offsets, columns, starts = od.array.csr_from_keys(keys, order, 4, 2, 3)
+    print(offsets.numpy().tolist())  # [0, 1, 2]
+    print(columns.numpy()[:2].tolist())  # [1, 2]
+    print(starts.numpy()[:3].tolist())  # [0, 2, 3]
+    print(order.numpy()[:3].tolist())  # [0, 2, 1]
+    ```
     """
     device = keys.device
     offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
@@ -1239,6 +1450,25 @@ def csr_from_triplets(
     --------
     [`csr_from_keys`][ordito.array.csr_from_keys]
     [`triplet_buffers`][ordito.array.triplet_buffers]
+
+    Examples
+    --------
+    The matrix ``[[2, 0], [2, 3]]``, whose ``(0, 0)`` entry is given as two triplets:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    rows = wp.array([0, 1, 0, 1], dtype=wp.int32)
+    cols = wp.array([0, 1, 0, 0], dtype=wp.int32)
+    values = wp.array([1.0, 3.0, 1.0, 2.0], dtype=wp.float32)
+    matrix = od.array.csr_from_triplets(2, 2, rows, cols, values)
+    print(matrix.nnz_sync())  # 3
+    print(matrix.offsets.numpy().tolist())  # [0, 1, 3]
+    print(matrix.columns.numpy()[:3].tolist())  # [0, 0, 1]
+    print(matrix.values.numpy()[:3].tolist())  # [2.0, 2.0, 3.0]
+    ```
     """
     require_same_device(rows=rows, cols=cols, values=values)
     count = rows.size
@@ -1313,6 +1543,24 @@ def csr_transpose(matrix: odt.BsrMatrix[odt.Block]) -> odt.BsrMatrix[odt.Block]:
     See Also
     --------
     [`csr_from_triplets`][ordito.array.csr_from_triplets]
+
+    Examples
+    --------
+    The transpose of ``[[1, 0], [2, 3]]`` is ``[[1, 2], [0, 3]]``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    rows = wp.array([0, 1, 1], dtype=wp.int32)
+    cols = wp.array([0, 0, 1], dtype=wp.int32)
+    values = wp.array([1.0, 2.0, 3.0], dtype=wp.float32)
+    transpose = od.array.csr_transpose(od.array.csr_from_triplets(2, 2, rows, cols, values))
+    print(transpose.offsets.numpy().tolist())  # [0, 2, 3]
+    print(transpose.columns.numpy()[:3].tolist())  # [0, 1, 1]
+    print(transpose.values.numpy()[:3].tolist())  # [1.0, 2.0, 3.0]
+    ```
     """
     if matrix.block_shape != (1, 1):
         raise ValueError(f"csr_transpose takes 1x1 blocks, got {matrix.block_shape}")
@@ -1441,6 +1689,23 @@ def index_sparse(
         If ``data`` is given and its size differs from ``indices.size``.
     RuntimeError
         If ``indices`` and ``data`` are not all on one device.
+
+    Examples
+    --------
+    The vertex-face incidence of two triangles; multiplying by ones counts each vertex's faces:
+
+    ```python
+    import warp as wp
+    import warp.sparse as wps
+
+    import ordito as od
+
+    faces = wp.array([[0, 1, 2], [2, 1, 3]], dtype=wp.int32)
+    incidence = od.array.index_sparse(4, faces)
+    print(incidence.shape)  # (4, 2)
+    ones = wp.ones(2, dtype=wp.float32)
+    print(wps.bsr_mv(incidence, ones).numpy().tolist())  # [1.0, 2.0, 2.0, 1.0]
+    ```
     """
     require_same_device(indices=indices, data=data)
     prune_numerical_zeros = prune_numerical_zeros and data is not None
@@ -1477,7 +1742,6 @@ def isin(
     elements: odt.ArrayNd, test_elements: wp.array[wp.Int], *, max_index: int | None = None
 ) -> wp.array[wp.bool]:
     """
-
     Test whether each element appears in ``test_elements`` (``numpy.isin`` for integers).
 
     Works for every Warp integer dtype -- ``int8`` through ``int64``, ``uint8`` through ``uint64``
@@ -1488,7 +1752,6 @@ def isin(
     indexed by ``value - min`` (fast for dense mesh indices). Otherwise ``test_elements`` is sorted
     and each query is a binary search, which keeps memory bounded when the values are sparse in
     their dtype.
-
 
     Parameters
     ----------
@@ -1547,6 +1810,21 @@ def isin(
 
     Without ``max_index``: two host readbacks, one min/max reduction per input, which is what
     selects the strategy and anchors the table.
+
+    Examples
+    --------
+    Mirrors [`numpy.isin`][], negative values included:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    elements = wp.array([0, 3, 5, 7, -2], dtype=wp.int32)
+    test_elements = wp.array([7, 0, -2], dtype=wp.int32)
+    mask = od.array.isin(elements, test_elements)
+    print(mask.numpy().tolist())  # [True, False, False, True, True]
+    ```
     """
     device = elements.device
     dtype = elements.dtype
@@ -1711,6 +1989,21 @@ def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.
     [`indices_to_mask`][ordito.array.indices_to_mask]
     [`mask_to_compact_ranks`][ordito.array.mask_to_compact_ranks]
     [`numpy.flatnonzero`][]
+
+    Examples
+    --------
+    Mirrors [`numpy.flatnonzero`][], for a mask or any scalar array:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    mask = wp.array([False, True, True, False], dtype=wp.bool)
+    print(od.array.flatnonzero(mask).numpy().tolist())  # [1, 2]
+    values = wp.array([0, 2, 0, -1, 5], dtype=wp.int32)
+    print(od.array.flatnonzero(values).numpy().tolist())  # [1, 3, 4]
+    ```
     """
     if int(values.ndim) != 1:
         raise ValueError(f"flatnonzero requires a 1D array, got ndim={values.ndim}")
@@ -1793,6 +2086,22 @@ def gather(
     [`index_sparse`][ordito.array.index_sparse]
     [`remap_indices`][ordito.array.remap_indices]
         The sentinel-preserving variant for index buffers that may carry ``-1`` entries.
+
+    Examples
+    --------
+    ``numpy.take(src, indices, axis=0)``, for values and for rows:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    indices = wp.array([3, 0, 3], dtype=wp.int32)
+    values = wp.array([10, 20, 30, 40], dtype=wp.int32)
+    print(od.array.gather(values, indices).numpy().tolist())  # [40, 10, 40]
+    rows = wp.array([[0, 1], [2, 3], [4, 5], [6, 7]], dtype=wp.int32)
+    print(od.array.gather(rows, indices).numpy().tolist())  # [[6, 7], [0, 1], [6, 7]]
+    ```
     """
     require_same_device(src=src, indices=indices)
     k = indices.size
@@ -1841,6 +2150,19 @@ def astype(values: odt.ArrayNd, dtype: type[DType]) -> wp.array[DType, Any]:
         The same conversion into a buffer the caller already holds.
     [`bitcast_to_int`][ordito.array.bitcast_to_int]
         Reinterpret the *bits* rather than convert the value.
+
+    Examples
+    --------
+    Mirrors ``numpy.ndarray.astype``; a float converts to an integer by truncation toward zero:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([1.5, -2.5, 3.0], dtype=wp.float32)
+    print(od.array.astype(values, wp.int32).numpy().tolist())  # [1, -2, 3]
+    ```
     """
     out = _launch.empty(values.shape, dtype=dtype, device=values.device)
     copyto(out, values)
@@ -1876,6 +2198,20 @@ def copyto(dst: odt.ArrayNd, src: odt.ArrayNd) -> None:
     --------
     [`astype`][ordito.array.astype]
         The same conversion into a new array.
+
+    Examples
+    --------
+    Mirrors [`numpy.copyto`][], converting ``float64`` into an ``int32`` buffer:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    destination = wp.zeros(3, dtype=wp.int32)
+    od.array.copyto(destination, wp.array([1.9, 2.0, -0.5], dtype=wp.float64))
+    print(destination.numpy().tolist())  # [1, 2, 0]
+    ```
     """
     require_same_device(dst=dst, src=src)
     if tuple(dst.shape) != tuple(src.shape):
@@ -1933,6 +2269,17 @@ def index_bound(indices: odt.ArrayNdInt, *, require_non_negative: bool = False) 
     ------
     ValueError
         If ``require_non_negative`` is set and any index is negative.
+
+    Examples
+    --------
+    A cube's faces reference all eight corners, so the bound is the vertex count:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(od.array.index_bound(faces, require_non_negative=True))  # 8
+    ```
     """
     if int(indices.size) == 0:
         return 0
@@ -1972,6 +2319,19 @@ def indices_to_mask(
     --------
     [`flatnonzero`][ordito.array.flatnonzero]
     [`isin`][ordito.array.isin]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    indices = wp.array([3, 1], dtype=wp.int32)
+    mask = od.array.indices_to_mask(indices, 5)
+    print(mask.numpy().tolist())  # [False, True, False, True, False]
+    print(od.array.flatnonzero(mask).numpy().tolist())  # [1, 3]
+    ```
     """
     device = device if device is not None else indices.device
     mask = _launch.zeros(n, dtype=wp.bool, device=device)
@@ -2014,6 +2374,23 @@ def mask_to_compact_ranks(
         entries at or before it (meaningful only where element ``i`` is itself selected).
     count : int
         Total number of selected entries in ``mask``.
+
+    Examples
+    --------
+    The selected entries 0, 2 and 3 are renumbered 0, 1 and 2; with ``invert=True`` the
+    unselected entries 1 and 4 are renumbered 0 and 1:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    mask = wp.array([True, False, True, True, False], dtype=wp.bool)
+    ranks, count = od.array.mask_to_compact_ranks(mask)
+    print(ranks.numpy().tolist(), count)  # [0, 1, 1, 2, 3] 3
+    ranks, count = od.array.mask_to_compact_ranks(mask, invert=True)
+    print(ranks.numpy().tolist(), count)  # [0, 0, 1, 1, 1] 2
+    ```
     """
     device = mask.device
     n = mask.size
@@ -2070,6 +2447,19 @@ def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], i
     --------
     [`flatnonzero`][ordito.array.flatnonzero]
     [`mask_to_compact_ranks`][ordito.array.mask_to_compact_ranks]
+
+    Examples
+    --------
+    Element 1 owns no entries, so its range ``[2, 2)`` is empty:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    offsets, total = od.array.counts_to_offsets(wp.array([2, 0, 3], dtype=wp.int32))
+    print(offsets.numpy().tolist(), total)  # [0, 2, 2, 5] 5
+    ```
     """
     # The unconditional readback of ``total`` is a host synchronization -- which is why the Notes
     # section advises open-coding the scan when only the offsets are wanted.
@@ -2131,6 +2521,18 @@ def remap_indices(indices: wp.array[wp.int32], remap: wp.array[wp.int32]) -> wp.
     --------
     [`gather`][ordito.array.gather]
         The sentinel-free form: a dense first-axis gather for index buffers known to be in range.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    indices = wp.array([2, -1, 0], dtype=wp.int32)
+    remap = wp.array([10, 11, 12], dtype=wp.int32)
+    print(od.array.remap_indices(indices, remap).numpy().tolist())  # [12, -1, 10]
+    ```
     """
     require_same_device(indices=indices, remap=remap)
     n = indices.size
@@ -2176,6 +2578,22 @@ def trim_to_count(
     trimmed : list[wp.array]
         One contiguous ``(n_out, *buffer.shape[1:])`` copy per input buffer, in order, each on
         its buffer's device.
+
+    Examples
+    --------
+    A kernel appended two results into buffers sized for four:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    counter = wp.array([2], dtype=wp.int32)
+    values = wp.array([7, 9, 0, 0], dtype=wp.int32)
+    points = wp.zeros(4, dtype=wp.vec3)
+    n_out, (values, points) = od.array.trim_to_count(counter, values, points)
+    print(n_out, values.numpy().tolist(), points.shape)  # 2 [7, 9] (2,)
+    ```
     """
     n_out = int(read_scalar(counter, 0))
     trimmed = []
@@ -2219,6 +2637,19 @@ def bitcast_to_int(
     See Also
     --------
     [`bitcast_from_int`][ordito.array.bitcast_from_int]
+
+    Examples
+    --------
+    The IEEE-754 bits of ``1.0`` and ``-0.0`` as ``int32``; ``float64`` would give ``int64``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    bits = od.array.bitcast_to_int(wp.array([1.0, -0.0], dtype=wp.float32))
+    print(bits.dtype is wp.int32, bits.numpy().tolist())  # True [1065353216, -2147483648]
+    ```
     """
     n_bits = wp.types.type_size_in_bytes(data.dtype) * 8
     n = data.size
@@ -2287,6 +2718,19 @@ def bitcast_from_int(
     See Also
     --------
     [`bitcast_to_int`][ordito.array.bitcast_to_int]
+
+    Examples
+    --------
+    The round trip restores the values bit for bit, the sign of ``-0.0`` included:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    bits = od.array.bitcast_to_int(wp.array([1.0, -0.0], dtype=wp.float32))
+    print(od.array.bitcast_from_int(bits, wp.float32).numpy().tolist())  # [1.0, -0.0]
+    ```
     """
     n_bits = wp.types.type_size_in_bytes(data.dtype) * 8
     n_target_bits = wp.types.type_size_in_bytes(dtype) * 8

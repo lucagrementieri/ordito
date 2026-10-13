@@ -64,6 +64,19 @@ def boundary_edges(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> od
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+
+    Examples
+    --------
+    A 3 x 3 vertex grid has 8 boundary edges around its rim; a closed cube has none:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    print(od.boundary.boundary_edges(vertices, faces).shape)  # (8, 2)
+    vertices, faces = od.creation.box()
+    print(od.boundary.boundary_edges(vertices, faces).shape)  # (0, 2)
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     return _boundary_edges_impl(faces, vertices.size, oriented=False)
@@ -96,6 +109,21 @@ def oriented_boundary_edges(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+
+    Examples
+    --------
+    The single triangle ``(0, 1, 2)`` is its own boundary, with its edges in winding order:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+    faces = wp.array([0, 1, 2], dtype=wp.int32)
+    edges = od.boundary.oriented_boundary_edges(vertices, faces)
+    print(sorted(edges.numpy().tolist()))  # [[0, 1], [1, 2], [2, 0]]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     return _boundary_edges_impl(faces, vertices.size, oriented=True)
@@ -183,6 +211,25 @@ def boundary_loops(
     [`longest_boundary_loop`][ordito.boundary.longest_boundary_loop]
     [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]
     ``igl.boundary_loop_all``
+
+    Examples
+    --------
+    Two separate triangles have two boundary loops; each starts at its smallest vertex index:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [3.0, 0.0, 0.0], [4.0, 0.0, 0.0],
+         [3.0, 1.0, 0.0]],
+        dtype=wp.vec3,
+    )
+    faces = wp.array([0, 1, 2, 5, 3, 4], dtype=wp.int32)
+    loops = od.boundary.boundary_loops(vertices, faces)
+    print([loop.numpy().tolist() for loop in loops])  # [[0, 1, 2], [3, 4, 5]]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     flat_loops, offsets = boundary_loops_with_offsets(vertices, faces)
@@ -233,6 +280,26 @@ def boundary_loops_with_offsets(
         The list form: [`split`][ordito.array.split] over this result.
     [`longest_boundary_loop`][ordito.boundary.longest_boundary_loop]
     [`successor_cycles`][ordito.graph.successor_cycles]
+
+    Examples
+    --------
+    The same loops as [`boundary_loops`][ordito.boundary.boundary_loops], packed into one buffer:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [3.0, 0.0, 0.0], [4.0, 0.0, 0.0],
+         [3.0, 1.0, 0.0]],
+        dtype=wp.vec3,
+    )
+    faces = wp.array([0, 1, 2, 5, 3, 4], dtype=wp.int32)
+    flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
+    print(flat_loops.numpy().tolist())  # [0, 1, 2, 3, 4, 5]
+    print(offsets.numpy().tolist())  # [0, 3, 6]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -506,6 +573,19 @@ def loop_perimeters(
         Produces the loops.
     [`polyline_length`][ordito.polyline.polyline_length]
         The single-loop form, over positions rather than indices.
+
+    Examples
+    --------
+    The rim of a unit grid has perimeter 4:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    loops = od.boundary.boundary_loops(vertices, faces)
+    perimeters = od.boundary.loop_perimeters(vertices, loops)
+    print(f"{perimeters.numpy()[0]:.4f}")  # 4.0000
+    ```
     """
     require_same_device(vertices=vertices, loops=loops)
     packed = _pack_loop_segments(vertices, loops)
@@ -574,6 +654,18 @@ def loop_perimeters_from_offsets(
         The list form, which packs and then launches the same kernel.
     [`loop_directed_areas_from_offsets`][ordito.boundary.loop_directed_areas_from_offsets]
         The vector measure of the same packed loops.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
+    perimeters = od.boundary.loop_perimeters_from_offsets(vertices, flat_loops, offsets)
+    print(perimeters.shape)  # (1,)
+    print(f"{perimeters.numpy()[0]:.4f}")  # 4.0000
+    ```
     """
     require_same_device(vertices=vertices, flat_loops=flat_loops, offsets=offsets, loop_id=loop_id)
     if validate:
@@ -629,6 +721,22 @@ def loop_directed_areas(
         The scalar measure of the same loops.
     [`polyline_normal`][ordito.polyline.polyline_normal]
         The single-loop direction, normalized and over positions.
+
+    Examples
+    --------
+    The rim of a unit grid in the ``z = 0`` plane spans area 1; reversing the loop flips the vector:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    loop = od.boundary.boundary_loops(vertices, faces)[0]
+    reversed_loop = wp.array(loop.numpy()[::-1].copy(), dtype=wp.int32)
+    areas = od.boundary.loop_directed_areas(vertices, [loop, reversed_loop])
+    print(areas.numpy().round(4).tolist())  # [[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]]
+    ```
     """
     require_same_device(vertices=vertices, loops=loops)
     packed = _pack_loop_segments(vertices, loops)
@@ -695,6 +803,17 @@ def loop_directed_areas_from_offsets(
         The list form, which packs and then launches the same kernel.
     [`loop_perimeters_from_offsets`][ordito.boundary.loop_perimeters_from_offsets]
         The scalar measure of the same packed loops.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
+    areas = od.boundary.loop_directed_areas_from_offsets(vertices, flat_loops, offsets)
+    print(areas.numpy().round(4).tolist())  # [[0.0, 0.0, 1.0]]
+    ```
     """
     require_same_device(vertices=vertices, flat_loops=flat_loops, offsets=offsets, loop_id=loop_id)
     if validate:
@@ -826,6 +945,9 @@ def longest_boundary_loop(
     """
     Ordered vertex-index loop along the longest mesh boundary.
 
+    *Longest* counts vertices, not perimeter, as ``igl::boundary_loop`` does; of loops with equal
+    vertex counts the one whose smallest vertex index is lowest wins.
+
     The name carries the *longest*, because the plural
     [`boundary_loops`][ordito.boundary.boundary_loops] returns every one and two public names
     differing by a single character are a defect even when both are correct.
@@ -853,6 +975,25 @@ def longest_boundary_loop(
         Every loop, not only the longest.
     [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]
     ``igl.boundary_loop``
+
+    Examples
+    --------
+    A unit square made of two triangles has a four-vertex rim; a much larger single triangle has
+    the longer perimeter but only three rim vertices:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [5.0, 0.0, 0.0],
+         [9.0, 0.0, 0.0], [5.0, 4.0, 0.0]],
+        dtype=wp.vec3,
+    )
+    faces = wp.array([0, 1, 2, 2, 1, 3, 4, 5, 6], dtype=wp.int32)
+    print(od.boundary.longest_boundary_loop(vertices, faces).numpy().tolist())  # [0, 1, 3, 2]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
@@ -904,6 +1045,18 @@ def boundary_vertex_indices(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+
+    Examples
+    --------
+    Every vertex of a 3 x 3 grid except the centre one (index 4) is on the rim:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    rim = od.boundary.boundary_vertex_indices(vertices, faces)
+    print(rim.numpy().tolist())  # [0, 1, 2, 3, 5, 6, 7, 8]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if faces.size // 3 == 0:
@@ -935,6 +1088,17 @@ def boundary_vertices(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    rim = od.boundary.boundary_vertices(vertices, faces)
+    print(rim.shape)  # (8,)
+    print(rim.numpy()[0])  # [-0.5 -0.5  0. ]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     indices = boundary_vertex_indices(vertices, faces)
@@ -973,6 +1137,20 @@ def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int
     See Also
     --------
     ``igl.ears``
+
+    Examples
+    --------
+    A 2 x 2 vertex grid is two triangles, and each has two edges on the boundary:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(2, 2))
+    ear, ear_opp = od.boundary.ears(faces)
+    print(ear.numpy().tolist())  # [0, 1]
+    print(ear_opp.numpy().tolist())  # [2, 0]
+    print(faces.numpy().tolist())  # [0, 2, 3, 0, 3, 1]
+    ```
     """
     n_faces = faces.size // 3
     device = faces.device

@@ -327,6 +327,20 @@ def box(
     [`icosahedron`][ordito.creation.icosahedron]
     [`cylinder`][ordito.creation.cylinder]
     [`trimesh.creation.box`][]
+
+    Examples
+    --------
+    A unit cube centered on the origin, and a box given by its corners:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(vertices.shape, faces.shape)  # (8,) (36,)
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 1.0000
+    vertices, faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [2.0, 3.0, 4.0]])
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 24.0000
+    ```
     """
     vertices_np = _BOX_VERTICES.copy()
 
@@ -408,6 +422,19 @@ def grid(
     ``float64`` before the ``float32`` store, and phrases each sample as ``extent * (k / (n - 1))``
     so the far edge lands on the extent exactly, matching what ``numpy.linspace`` needs its
     endpoint special case for.
+
+    Examples
+    --------
+    A 4 x 3 vertex patch: 6 quad cells, 12 triangles, one boundary loop through all 10 rim vertices:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(4, 3), extents=(3.0, 2.0))
+    print(vertices.shape, faces.size // 3)  # (12,) 12
+    print(od.boundary.boundary_vertex_indices(vertices, faces).size)  # 10
+    print(vertices.numpy()[0])  # [-1.5 -1.   0. ]
+    ```
     """
     nx, ny = int(count[0]), int(count[1])
     if nx < 2 or ny < 2:
@@ -453,6 +480,18 @@ def icosahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.arr
     --------
     [`icosphere`][ordito.creation.icosphere]
     [`trimesh.creation.icosahedron`][]
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosahedron()
+    print(vertices.shape, faces.size // 3)  # (12,) 20
+    print(np.allclose(np.linalg.norm(vertices.numpy(), axis=1), 1.0))  # True
+    ```
     """
     vertices = _upload_points(_ICOSAHEDRON_VERTICES, wp.vec3, device)
     faces = _launch.array(_ICOSAHEDRON_FACES, dtype=wp.int32, device=device)
@@ -482,6 +521,16 @@ def tetrahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.arr
     --------
     [`octahedron`][ordito.creation.octahedron]
     [`icosahedron`][ordito.creation.icosahedron]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.tetrahedron()
+    print(vertices.shape, faces.size // 3)  # (4,) 4
+    print(od.measures.euler_characteristic(faces))  # 2
+    ```
     """
     return (
         _upload_points(_TETRAHEDRON_VERTICES, wp.vec3, device),
@@ -511,6 +560,16 @@ def octahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.arra
     --------
     [`tetrahedron`][ordito.creation.tetrahedron]
     [`icosahedron`][ordito.creation.icosahedron]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.octahedron()
+    print(vertices.shape, faces.size // 3)  # (6,) 8
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 1.3333
+    ```
     """
     return (
         _upload_points(_OCTAHEDRON_VERTICES, wp.vec3, device),
@@ -545,6 +604,16 @@ def dodecahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.ar
     --------
     [`icosahedron`][ordito.creation.icosahedron]
     [`octahedron`][ordito.creation.octahedron]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.dodecahedron()
+    print(vertices.shape, faces.size // 3)  # (20,) 36
+    print(od.measures.euler_characteristic(faces))  # 2
+    ```
     """
     return (
         _upload_points(_DODECAHEDRON_VERTICES, wp.vec3, device),
@@ -603,6 +672,19 @@ def icosphere(
     [`uv_sphere`][ordito.creation.uv_sphere]
     [`subdivide`][ordito.remesh.subdivide]
     [`trimesh.creation.icosphere`][]
+
+    Examples
+    --------
+    Two levels of refinement give ``20 * 4 ** 2`` faces, with an area approaching ``4 * pi``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    print(vertices.shape, faces.size // 3)  # (162,) 320
+    _, areas = od.triangles.face_normals_and_areas(vertices, faces)
+    print(f"{areas.numpy().sum():.3f}")  # 12.330
+    ```
     """
     levels = max(0, int(subdivisions))
     n = 1 << levels
@@ -694,6 +776,17 @@ def uv_sphere(
     [`capsule`][ordito.creation.capsule]
     [`revolve`][ordito.creation.revolve]
     [`trimesh.creation.uv_sphere`][]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.uv_sphere(radius=2.0, count=(8, 16))
+    print(vertices.shape, faces.size // 3)  # (98,) 192
+    print(od.validation.is_watertight(vertices, faces))  # True
+    print(f"{od.measures.volume(vertices, faces):.3f}")  # 31.039
+    ```
     """
     counts = np.array([32, 64], dtype=np.int64) if count is None else np.asanyarray(count, np.int64)
     if counts.shape != (2,):
@@ -764,6 +857,21 @@ def sphere_cap(
     --------
     [`icosphere`][ordito.creation.icosphere]
     [`uv_sphere`][ordito.creation.uv_sphere]
+
+    Examples
+    --------
+    With ``subdivisions=1`` the cap has two rings, and its rim is the last 12 vertices:
+
+    ```python
+    import math
+
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=math.pi / 4, subdivisions=1)
+    print(vertices.shape, faces.size // 3)  # (19,) 24
+    rim = sorted(od.boundary.boundary_vertex_indices(vertices, faces).numpy().tolist())
+    print(len(rim), rim[0], rim[-1])  # 12 7 18
+    ```
     """
     if not 0.0 < angle < math.pi:
         raise ValueError(f"angle must be in (0, pi) radians, got {angle}")
@@ -854,6 +962,19 @@ def capsule(
     [`uv_sphere`][ordito.creation.uv_sphere]
     [`cylinder`][ordito.creation.cylinder]
     [`trimesh.creation.capsule`][]
+
+    Examples
+    --------
+    The capsule spans ``height + 2 * radius`` along Z:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.capsule(height=2.0, radius=0.5, count=(8, 16))
+    z = vertices.numpy()[:, 2]
+    print(f"{z.min():.3f} {z.max():.3f}")  # -1.500 1.500
+    print(od.validation.is_watertight(vertices, faces))  # True
+    ```
     """
     counts = np.array([32, 64], dtype=np.int64) if count is None else np.asanyarray(count, np.int64)
     if counts.shape != (2,):
@@ -932,6 +1053,21 @@ def cylinder(
     [`cone`][ordito.creation.cone]
     [`capsule`][ordito.creation.capsule]
     [`trimesh.creation.cylinder`][]
+
+    Examples
+    --------
+    Along Z by default, or between two points with ``segment``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.cylinder(radius=1.0, height=2.0, sections=8)
+    print(vertices.shape, faces.size // 3)  # (18,) 32
+    segment = [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]
+    vertices, faces = od.creation.cylinder(radius=0.5, segment=segment, sections=8)
+    x = vertices.numpy()[:, 0]
+    print(f"{x.min():.3f} {x.max():.3f}")  # 0.000 3.000
+    ```
     """
     transform, half = _resolve_cylinder_axis(height, segment, transform)
     n_sections = _resolve_sections(sections)
@@ -992,6 +1128,17 @@ def cone(
     --------
     [`cylinder`][ordito.creation.cylinder]
     [`trimesh.creation.cone`][]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.cone(radius=1.0, height=2.0, sections=16)
+    print(vertices.shape, faces.size // 3)  # (18,) 32
+    z = vertices.numpy()[:, 2]
+    print(f"{z.min():.3f} {z.max():.3f}")  # 0.000 2.000
+    ```
     """
     n_sections = _resolve_sections(sections)
     profile = np.array([[0.0, 0.0], [float(radius), 0.0], [0.0, float(height)]], dtype=np.float64)
@@ -1060,6 +1207,19 @@ def annulus(
     [`cylinder`][ordito.creation.cylinder]
     [`torus`][ordito.creation.torus]
     [`trimesh.creation.annulus`][]
+
+    Examples
+    --------
+    A tube is closed but has genus 1, so its Euler characteristic is 0:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.annulus(r_min=0.5, r_max=1.0, height=1.0, sections=16)
+    print(vertices.shape, faces.size // 3)  # (64,) 128
+    print(od.measures.euler_characteristic(faces))  # 0
+    print(od.validation.is_watertight(vertices, faces))  # True
+    ```
     """
     transform, half = _resolve_cylinder_axis(height, segment, transform)
     r_min_f = abs(float(r_min))
@@ -1126,6 +1286,16 @@ def torus(
     [`annulus`][ordito.creation.annulus]
     [`revolve`][ordito.creation.revolve]
     [`trimesh.creation.torus`][]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.torus(2.0, 0.5, major_sections=16, minor_sections=8)
+    print(vertices.shape, faces.size // 3)  # (128,) 256
+    print(od.measures.euler_characteristic(faces))  # 0
+    ```
     """
     minor_f = float(minor_radius)
     phi = np.linspace(0.0, 2.0 * math.pi, int(minor_sections) + 1, endpoint=True)
@@ -1220,6 +1390,24 @@ def revolve(
     [`torus`][ordito.creation.torus]
     [`extrude_triangulation`][ordito.creation.extrude_triangulation]
     [`trimesh.creation.revolve`][]
+
+    Examples
+    --------
+    Revolving a segment parallel to the axis gives an open tube; a closed square profile gives a
+    solid ring:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    segment = wp.array([[1.0, 0.0], [1.0, 1.0]], dtype=wp.vec2)
+    vertices, faces = od.creation.revolve(segment, sections=8)
+    print(vertices.shape, faces.size // 3)  # (16,) 16
+    square = wp.array([[1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 0.0]], dtype=wp.vec2)
+    vertices, faces = od.creation.revolve(square, sections=16)
+    print(od.validation.is_watertight(vertices, faces))  # True
+    ```
     """
     odt.ensure_ndim(linestring, 1, dtype=wp.vec2)
     device = linestring.device
@@ -1454,6 +1642,22 @@ def extrude_triangulation(
     [`sweep_polygon`][ordito.creation.sweep_polygon]
     [`revolve`][ordito.creation.revolve]
     [`trimesh.creation.extrude_triangulation`][]
+
+    Examples
+    --------
+    A unit square in two triangles becomes a closed unit cube:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=wp.vec2)
+    triangles = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    vertices, faces = od.creation.extrude_triangulation(square, triangles, height=1.0)
+    print(vertices.shape, faces.size // 3)  # (8,) 12
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 1.0000
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     return _extrude(vertices, faces, height, transform, ring_walls=False)
@@ -1495,6 +1699,22 @@ def extrude_polygon(
     [`extrude_triangulation`][ordito.creation.extrude_triangulation]
     [`sweep_polygon`][ordito.creation.sweep_polygon]
     [`trimesh.creation.extrude_polygon`][]
+
+    Examples
+    --------
+    An L-shaped outline of area 3 extruded by 2:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    outline = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]]
+    polygon = wp.array(outline, dtype=wp.vec2)
+    vertices, faces = od.creation.extrude_polygon(polygon, height=2.0)
+    print(vertices.shape, faces.size // 3)  # (12,) 20
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 6.0000
+    ```
     """
     ring, faces = od.polyline.triangulate_polygon(polygon)
     if mid_plane:
@@ -1623,6 +1843,22 @@ def sweep_polygon(
     [`extrude_polygon`][ordito.creation.extrude_polygon]
     [`revolve`][ordito.creation.revolve]
     [`trimesh.creation.sweep_polygon`][]
+
+    Examples
+    --------
+    A unit square swept along a straight path of length 3 is a capped prism:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array([[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]], dtype=wp.vec2)
+    path = wp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 3.0]], dtype=wp.vec3)
+    vertices, faces = od.creation.sweep_polygon(square, path)
+    print(vertices.shape, faces.size // 3)  # (12,) 20
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 3.0000
+    ```
     """
     require_same_device(polygon=polygon, path=path, angles=angles)
     odt.ensure_ndim(path, 1, dtype=wp.vec3)
@@ -1733,6 +1969,22 @@ def truncated_prisms(
     --------
     [`extrude_triangulation`][ordito.creation.extrude_triangulation]
     [`trimesh.creation.truncated_prisms`][]
+
+    Examples
+    --------
+    A unit right triangle at height 2 becomes one prism of volume ``0.5 * 2``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array([[0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0]], dtype=wp.vec3)
+    faces = wp.array([0, 1, 2], dtype=wp.int32)
+    prism_vertices, prism_faces = od.creation.truncated_prisms(vertices, faces)
+    print(prism_vertices.shape, prism_faces.size // 3)  # (6,) 8
+    print(f"{od.measures.volume(prism_vertices, prism_faces):.4f}")  # 1.0000
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     odt.ensure_ndim(faces, 1, dtype=wp.int32)
@@ -1819,6 +2071,17 @@ def axis(
     [`cylinder`][ordito.creation.cylinder]
     [`concatenate`][ordito.combine.concatenate]
     [`trimesh.creation.axis`][]
+
+    Examples
+    --------
+    A ball and three cylinders: four connected components:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.axis(origin_size=0.05)
+    print(len(od.combine.split(vertices, faces)))  # 4
+    ```
     """
     origin_size_f = float(origin_size)
     if axis_radius is None:
@@ -1936,19 +2199,23 @@ def parametric_surface(
     stay separate: on Catalan's minimal surface VTK merges 40 lattice points that the
     parameterization does not identify, and drops the 2 triangles that thereby became degenerate.
 
-    Examples
-    --------
-    ```python
-    vertices, faces = od.creation.parametric_surface("boy")
-    print(od.measures.euler_characteristic(faces), od.validation.is_orientable(faces))
-    ```
-
     See Also
     --------
     [`super_ellipsoid`][ordito.creation.super_ellipsoid]
     [`super_toroid`][ordito.creation.super_toroid]
     [`random_hills`][ordito.creation.random_hills]
     [`grid`][ordito.creation.grid]
+
+    Examples
+    --------
+    Boy's surface is closed and non-orientable, with Euler characteristic 1:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.parametric_surface("boy", u_resolution=20, v_resolution=20)
+    print(od.measures.euler_characteristic(faces), od.validation.is_orientable(faces))  # 1 False
+    ```
     """
     if kind not in _PARAMETRIC_SPECS:
         raise ValueError(f"unknown kind {kind!r}, expected one of {sorted(_PARAMETRIC_SPECS)}")
@@ -2012,6 +2279,18 @@ def super_ellipsoid(
     [`uv_sphere`][ordito.creation.uv_sphere]
     [`super_toroid`][ordito.creation.super_toroid]
     [`parametric_surface`][ordito.creation.parametric_surface]
+
+    Examples
+    --------
+    Exponents near 0 square the sphere off towards the cube ``[-1, 1] ** 3``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.super_ellipsoid(n1=0.1, n2=0.1, u_resolution=20, v_resolution=20)
+    print(od.measures.euler_characteristic(faces))  # 2
+    print(f"{od.measures.volume(vertices, faces):.2f}")  # 7.87
+    ```
     """
     radii_np = np.asanyarray(radii, dtype=np.float64)
     if radii_np.shape != (3,):
@@ -2073,6 +2352,16 @@ def super_toroid(
     [`torus`][ordito.creation.torus]
     [`super_ellipsoid`][ordito.creation.super_ellipsoid]
     [`parametric_surface`][ordito.creation.parametric_surface]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.super_toroid(n1=0.5, n2=1.0, u_resolution=24, v_resolution=12)
+    print(vertices.shape, faces.size // 3)  # (253,) 506
+    print(od.measures.euler_characteristic(faces))  # 0
+    ```
     """
     return _parametric_surface(_SUPER_TOROID_SPEC, u_resolution, v_resolution, device, n1=n1, n2=n2)
 
@@ -2134,6 +2423,21 @@ def random_hills(
     [`grid`][ordito.creation.grid]
     [`random_soup`][ordito.creation.random_soup]
     [`parametric_surface`][ordito.creation.parametric_surface]
+
+    Examples
+    --------
+    The same seed rebuilds the same height field:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.random_hills(seed=7, u_resolution=16, v_resolution=16)
+    print(vertices.shape, faces.size // 3)  # (256,) 450
+    again, _ = od.creation.random_hills(seed=7, u_resolution=16, v_resolution=16)
+    print(np.array_equal(vertices.numpy(), again.numpy()))  # True
+    ```
     """
     if float(x_variance) <= 0.0 or float(y_variance) <= 0.0:
         raise ValueError(f"variances must be positive, got {(x_variance, y_variance)}")
@@ -2197,6 +2501,18 @@ def random_soup(
     See Also
     --------
     [`trimesh.creation.random_soup`][]
+
+    Examples
+    --------
+    Every triangle owns its three vertices, so a soup of 50 faces has 50 components:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.random_soup(face_count=50, seed=0)
+    print(vertices.shape, faces.shape)  # (150,) (150,)
+    print(len(od.combine.split(vertices, faces)))  # 50
+    ```
     """
     n = 3 * max(int(face_count), 0)
     vertices = _launch.empty(n, dtype=wp.vec3, device=device)

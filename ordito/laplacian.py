@@ -119,6 +119,23 @@ def face_gradients(
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]
     ``igl.grad``
+
+    Examples
+    --------
+    The field ``u = x`` on a flat grid has the gradient ``(1, 0, 0)`` in every face:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    x = wp.array(vertices.numpy()[:, 0], dtype=wp.float64)
+    gradients = od.laplacian.face_gradients(vertices, faces, x)
+    print(gradients.shape)  # (32,)
+    print(np.allclose(gradients.numpy(), [1.0, 0.0, 0.0]))  # True
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -190,6 +207,20 @@ def cotmatrix_entries(
     Notes
     -----
     Matches ``igl::cotmatrix_entries``, column order included.
+
+    Examples
+    --------
+    A unit square split into two right isosceles triangles: the right angle's weight is
+    ``cot(90°) / 2 = 0`` and each 45° angle's ``cot(45°) / 2 = 0.5``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(2, 2))
+    weights = od.laplacian.cotmatrix_entries(vertices, faces)
+    print(weights.shape)  # (2, 3)
+    print(weights.numpy().round(4).tolist())  # [[0.5, 0.0, 0.5], [0.5, 0.5, 0.0]]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -247,6 +278,22 @@ def cotmatrix_entries_intrinsic(
     --------
     [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries]
     [`cotmatrix`][ordito.laplacian.cotmatrix]
+
+    Examples
+    --------
+    An equilateral triangle weighs every edge ``cot(60°) / 2``; the 3-4-5 right triangle gives its
+    hypotenuse, opposite the right angle, no weight:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    lengths = wp.array([[1.0, 1.0, 1.0], [5.0, 4.0, 3.0]], dtype=wp.float32)
+    weights = od.laplacian.cotmatrix_entries_intrinsic(lengths)
+    print(weights.numpy()[0].round(4))  # [0.2887 0.2887 0.2887]
+    print(weights.numpy()[1].round(4))  # [0.     0.375  0.6667]
+    ```
     """
     odt.ensure_ndim(edge_lengths, 2, dtype=wp.float32)
     n_faces = int(edge_lengths.shape[0])
@@ -355,6 +402,30 @@ def cotmatrix(
     Notes
     -----
     Matches ``igl::cotmatrix``, sign convention included; asserted in ``tests/test_laplacian.py``.
+
+    Examples
+    --------
+    Every row sums to zero, so constants are in the kernel; on a flat grid the operator also
+    annihilates a linear function at every interior vertex (linear precision):
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    L = od.laplacian.cotmatrix(vertices, faces)
+    print(L.shape)  # (162, 162)
+    ones = wp.full(L.shape[0], 1.0, dtype=wp.float32)
+    print(np.abs((L @ ones).numpy()).max() < 1e-5)  # True
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    L = od.laplacian.cotmatrix(vertices, faces)
+    x = wp.array(vertices.numpy()[:, 0], dtype=wp.float32)
+    interior = (L @ x).numpy().reshape(5, 5)[1:-1, 1:-1]
+    print(np.abs(interior).max() < 1e-6)  # True
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -481,6 +552,25 @@ def robust_laplacian(
     [`mollify_intrinsic`][ordito.laplacian.mollify_intrinsic]
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`heat_geodesic`][ordito.heat.heat_geodesic]
+
+    Examples
+    --------
+    An icosphere is already intrinsically Delaunay and has no degenerate face, so the robust
+    operator is the plain cotangent one:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    robust = od.laplacian.robust_laplacian(vertices, faces)
+    plain = od.laplacian.cotmatrix(vertices, faces)
+    print(robust.shape)  # (162, 162)
+    x = wp.array(vertices.numpy()[:, 0], dtype=wp.float32)
+    print(np.allclose((robust @ x).numpy(), (plain @ x).numpy(), atol=1e-5))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if use_intrinsic_delaunay:
@@ -584,6 +674,26 @@ def mollify_intrinsic(
     [`robust_laplacian`][ordito.laplacian.robust_laplacian]
     [`face_edge_lengths`][ordito.edges.face_edge_lengths]
     [`cotmatrix_entries_intrinsic`][ordito.laplacian.cotmatrix_entries_intrinsic]
+
+    Examples
+    --------
+    A cube needs no repair; a collinear triangle gets every length lengthened by the same
+    ``delta``, which is the margin ``1e-5`` times the mean edge length ``4 / 3``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    lengths, delta = od.laplacian.mollify_intrinsic(vertices, faces)
+    print(lengths.shape, delta)  # (12, 3) 0.0
+
+    vertices = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3)
+    faces = wp.array([0, 1, 2], dtype=wp.int32)
+    lengths, delta = od.laplacian.mollify_intrinsic(vertices, faces)
+    print(f"{delta:.2e}")  # 1.33e-05
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -679,6 +789,25 @@ def connection_laplacian(
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`halfedge_transport_angles`][ordito.tangent_space.halfedge_transport_angles]
     [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]
+
+    Examples
+    --------
+    One ``2 x 2`` block per vertex pair, and a positive energy for any tangent field that is not
+    parallel:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    L = od.laplacian.connection_laplacian(vertices, faces)
+    print(L.nrow, L.block_shape)  # 162 (2, 2)
+    rng = np.random.default_rng(0)
+    field = wp.array(rng.standard_normal((L.nrow, 2)), dtype=wp.vec2d)
+    print(np.sum(field.numpy() * (L @ field).numpy()) > 0.0)  # True
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -743,6 +872,16 @@ class MeshOperatorPattern(NamedTuple):
     [`laplacian`][ordito.laplacian.laplacian], so a caller that assembles an operator repeatedly
     over fixed connectivity -- only the geometry moving -- builds the pattern once. Every matrix
     built from one pattern shares its ``offsets`` and ``columns`` arrays.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    pattern = od.laplacian.mesh_operator_pattern(faces, vertices.shape[0])
+    print(pattern.operator, pattern.n_vertices)  # cotmatrix 162
+    ```
     """
 
     operator: str
@@ -814,6 +953,25 @@ def mesh_operator_pattern(
     --------
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`laplacian`][ordito.laplacian.laplacian]
+
+    Examples
+    --------
+    Build the pattern once, then assemble the operator on moving geometry for the values alone:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    pattern = od.laplacian.mesh_operator_pattern(faces, vertices.shape[0])
+    L = od.laplacian.cotmatrix(vertices, faces, pattern=pattern)
+    print(L.offsets is pattern.offsets)  # True
+    x = wp.array(vertices.numpy()[:, 0], dtype=wp.float32)
+    plain = od.laplacian.cotmatrix(vertices, faces)
+    print(np.allclose((L @ x).numpy(), (plain @ x).numpy()))  # True
+    ```
     """
     if operator not in _PATTERN_BUILDS:
         raise ValueError(f"operator must be one of {list(_PATTERN_BUILDS)}, got {operator!r}")
@@ -1057,6 +1215,20 @@ def laplacian_entries(
     [`laplacian`][ordito.laplacian.laplacian]
     [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries]
     [`edges_unique`][ordito.edges.edges_unique]
+
+    Examples
+    --------
+    A 3 x 3 grid has 8 triangles (24 directed edges) and 16 unique edges (32 directed pairs):
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    rows, cols, weights = od.laplacian.laplacian_entries(vertices, faces)
+    print(rows.shape)  # (24,)
+    rows, cols, weights = od.laplacian.laplacian_entries(vertices, faces, symmetric=True)
+    print(rows.shape)  # (32,)
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, edges=edges)
     if symmetric is None:
@@ -1178,6 +1350,23 @@ def laplacian(
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`edges_unique`][ordito.edges.edges_unique]
     [`trimesh.smoothing.laplacian_calculation`][]
+
+    Examples
+    --------
+    Each row averages the 1-ring, so it sums to one:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    A = od.laplacian.laplacian(vertices, faces)
+    print(A.shape)  # (162, 162)
+    ones = wp.full(A.shape[0], 1.0, dtype=wp.float32)
+    print(np.allclose((A @ ones).numpy(), 1.0))  # True
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -1283,6 +1472,23 @@ def graph_laplacian(
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`laplacian`][ordito.laplacian.laplacian]
     [`tutte`][ordito.parametrization.tutte]
+
+    Examples
+    --------
+    A cube's 8 vertices and 18 edges give ``8 + 2 * 18`` stored entries, and every row sums to zero:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    L = od.laplacian.graph_laplacian(vertices, faces)
+    print(L.shape, L.nnz_sync())  # (8, 8) 44
+    ones = wp.full(L.shape[0], 1.0, dtype=wp.float32)
+    print(np.abs((L @ ones).numpy()).max())  # 0.0
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_vertices = vertices.size
@@ -1380,6 +1586,22 @@ def mass_matrix_entries(
     ``float32``: each vertex sums its faces' ``float32`` areas exactly in ``float64`` -- whatever
     order the device commits them in -- and is divided by three once. Given ``float64`` areas, no
     sum is exact and the result is reproducible only to rounding on CUDA.
+
+    Examples
+    --------
+    The lumped masses sum to the surface area: 6 for the unit cube, close to ``4 * pi`` for a unit
+    icosphere:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mass = od.laplacian.mass_matrix_entries(vertices, faces)
+    print(mass.shape, mass.numpy().sum())  # (8,) 6.0
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    mass = od.laplacian.mass_matrix_entries(vertices, faces)
+    print(f"{mass.numpy().sum():.4f}")  # 12.5065
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, face_areas=face_areas)
     n_vertices = vertices.size
@@ -1462,6 +1684,22 @@ def mass_matrix(
     Notes
     -----
     Matches ``igl::massmatrix`` under ``MASSMATRIX_TYPE_BARYCENTRIC``.
+
+    Examples
+    --------
+    One diagonal entry per vertex, summing to the surface area:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    M = od.laplacian.mass_matrix(vertices, faces)
+    print(M.shape, M.nnz_sync())  # (642, 642) 642
+    ones = wp.full(M.shape[0], 1.0, dtype=wp.float32)
+    print(f"{(M @ ones).numpy().sum():.4f}")  # 12.5065
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, face_areas=face_areas)
     # ``mass_matrix_entries`` resolves its return by overload, which a ``Block`` cannot select.

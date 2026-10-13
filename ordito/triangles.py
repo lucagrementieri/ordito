@@ -54,6 +54,20 @@ def face_normals_and_areas(
     --------
     [`trimesh.Trimesh.face_normals`][]
     [`trimesh.Trimesh.area_faces`][]
+
+    Examples
+    --------
+    The faces of a unit cube have area 0.5 each, and each normal is an axis direction:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    normals, areas = od.triangles.face_normals_and_areas(vertices, faces)
+    print(areas.shape)  # (12,)
+    print(areas.numpy().sum())  # 6.0
+    print(normals.numpy()[0])  # [-1.  0.  0.]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     f = faces.size // 3
@@ -93,6 +107,23 @@ def face_angles(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> odt.A
     See Also
     --------
     [`trimesh.triangles.angles`][]
+
+    Examples
+    --------
+    Every triangle of a cube is a right isosceles triangle, and the angles of any triangle sum to
+    ``pi``:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    angles = od.triangles.face_angles(vertices, faces)
+    print(angles.shape)  # (12, 3)
+    print(np.degrees(np.sort(angles.numpy()[0])).round(1))  # [45. 45. 90.]
+    print(f"{angles.numpy().sum(axis=1).max():.4f}")  # 3.1416
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     f = faces.size // 3
@@ -197,14 +228,6 @@ def corner_normals(
         If ``vertices``, ``faces``, ``crease_edges``, ``twins``, ``face_normals`` and
         ``face_areas`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    creases = od.seams.crease_edges(v, f, angle=0.5)
-    normals = od.triangles.corner_normals(v, f, creases)
-    assert normals.shape == (f.shape[0] // 3, 3)
-    ```
-
     See Also
     --------
     [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]
@@ -213,6 +236,26 @@ def corner_normals(
         The smooth weighting this reduces to when there are no creases.
     [`crease_edges`][ordito.seams.crease_edges]
         Produces the hard-edge set.
+
+    Examples
+    --------
+    With the cube's sides as creases each corner takes its own face's normal, so one cube vertex
+    carries three different normals; with no creases every corner gets the smooth vertex normal:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    creases = od.seams.crease_edges(vertices, faces, angle=30.0)
+    print(creases.shape)  # (12, 2)
+    hard = od.triangles.corner_normals(vertices, faces, creases)
+    smooth = od.triangles.corner_normals(vertices, faces)
+    print(hard.shape)  # (12, 3)
+    print(hard.numpy()[0, 0])  # [-1.  0.  0.]
+    print(np.round(smooth.numpy()[0, 0], 3))  # [-0.577 -0.577  0.577]
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -334,6 +377,20 @@ def face_quality(
     [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]
     [`face_nondegenerate_mask`][ordito.triangles.face_nondegenerate_mask]
     [`ordito.remesh.isotropic_remesh`][ordito.remesh.isotropic_remesh]
+
+    Examples
+    --------
+    An equilateral triangle has aspect ratio 1, the cube's right isosceles triangles about 1.21:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosahedron()
+    print(f"{od.triangles.face_quality(vertices, faces).numpy().max():.4f}")  # 1.0000
+    vertices, faces = od.creation.box()
+    print(f"{od.triangles.face_quality(vertices, faces).numpy()[0]:.4f}")  # 1.2071
+    print(f"{od.triangles.face_quality(vertices, faces, 'mean_ratio').numpy()[0]:.4f}")  # 0.8660
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if metric not in _QUALITY_METRICS:
@@ -379,6 +436,18 @@ def face_centroids(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> wp
     [`centroid`][ordito.measures.surface_centroid]
     [`moments`][ordito.measures.moments]
     ``igl.barycenter``
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [0.0, 3.0, 0.0]], dtype=wp.vec3)
+    faces = wp.array([0, 1, 2], dtype=wp.int32)
+    print(od.triangles.face_centroids(vertices, faces).numpy()[0])  # [1. 1. 0.]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -439,6 +508,21 @@ def face_signed_volumes(
     [`is_volume`][ordito.validation.is_volume]
         Whether that sum is a meaningful volume at all.
     [`face_centroids`][ordito.triangles.face_centroids]
+
+    Examples
+    --------
+    Over a closed, outward-wound mesh the signed volumes sum to the enclosed volume; seen from the
+    centre of the unit cube each of its 12 faces bounds a tetrahedron of volume ``1 / 12``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    volumes = od.triangles.face_signed_volumes(vertices, faces)
+    print(volumes.shape)  # (12,)
+    print(f"{volumes.numpy().sum():.4f}")  # 1.0000
+    print(f"{volumes.numpy().min():.4f}")  # 0.0833
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -487,6 +571,22 @@ def face_nondegenerate_mask(
     See Also
     --------
     [`trimesh.triangles.nondegenerate`][]
+
+    Examples
+    --------
+    The second triangle has three collinear corners, so it has no area:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3
+    )
+    faces = wp.array([0, 1, 2, 0, 1, 3], dtype=wp.int32)
+    print(od.triangles.face_nondegenerate_mask(vertices, faces).numpy().tolist())  # [True, False]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     f = faces.size // 3
@@ -535,6 +635,22 @@ def barycentric_to_points(
     [`points_to_barycentric`][ordito.triangles.points_to_barycentric]
         The inverse: recovers barycentric coordinates from Cartesian points.
     [`trimesh.triangles.barycentric_to_points`][]
+
+    Examples
+    --------
+    Row ``i`` of the coordinates is evaluated on triangle ``i``; equal weights give the centroid:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0], [0.0, 3.0, 0.0]], dtype=wp.vec3)
+    faces = wp.array([0, 1, 2, 0, 1, 2], dtype=wp.int32)
+    barycentric = wp.array([[1.0, 0.0, 0.0], [1 / 3, 1 / 3, 1 / 3]], dtype=wp.vec3)
+    points = od.triangles.barycentric_to_points(vertices, faces, barycentric)
+    print(points.numpy().round(4).tolist())  # [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, barycentric=barycentric)
     f = faces.size // 3
@@ -594,6 +710,20 @@ def points_to_barycentric(
     the slivers an ordinary decimated mesh carries. The two also cost the same, both being
     launch-bound, so there was nothing to trade. The measured table is in
     ``ordito.kernels.triangles.point_barycentric``.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0]], dtype=wp.vec3)
+    faces = wp.array([0, 1, 2], dtype=wp.int32)
+    points = wp.array([[1.0, 0.5, 0.0]], dtype=wp.vec3)
+    barycentric = od.triangles.points_to_barycentric(vertices, faces, points)
+    print(barycentric.numpy()[0])  # [0.25 0.5  0.25]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
     f = faces.size // 3
@@ -640,6 +770,22 @@ def closest_point(
     See Also
     --------
     [`trimesh.triangles.closest_point`][]
+
+    Examples
+    --------
+    A point above the triangle projects straight down; one beyond a corner snaps to that corner:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+    faces = wp.array([0, 1, 2, 0, 1, 2], dtype=wp.int32)
+    points = wp.array([[0.25, 0.25, 2.0], [3.0, -1.0, 0.0]], dtype=wp.vec3)
+    closest = od.triangles.closest_point(vertices, faces, points)
+    print(closest.numpy().tolist())  # [[0.25, 0.25, 0.0], [1.0, 0.0, 0.0]]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
     f = faces.size // 3

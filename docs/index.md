@@ -9,6 +9,34 @@ and falls back to CPU otherwise, with the same code.
 *Ordito* (or-DEE-toh) is Italian for the **warp** of a fabric, and an anagram of
 **toroid**: a fitting name for a mesh library built on Warp.
 
+<div class="grid cards ordito-gallery ordito-hero" markdown>
+
+-   [![Curvature](assets/examples/d1-thumb.webp)](examples/differential.md#d1)
+
+    [Curvature](examples/differential.md#d1)
+
+-   [![Geodesic distance](assets/examples/g1-thumb.webp)](examples/geodesics.md#g1)
+
+    [Geodesic distance](examples/geodesics.md#g1)
+
+-   [![Hole filling](assets/examples/h1-thumb.webp)](examples/repair.md#h1)
+
+    [Hole filling](examples/repair.md#h1)
+
+-   [![Isotropic remeshing](assets/examples/r4-thumb.webp)](examples/remesh.md#r4)
+
+    [Isotropic remeshing](examples/remesh.md#r4)
+
+-   [![Parametrization](assets/examples/p1-thumb.webp)](examples/parametrization.md#p1)
+
+    [Parametrization](examples/parametrization.md#p1)
+
+-   [![Surface reconstruction](assets/examples/rr1-thumb.webp)](examples/reconstruction.md#rr1)
+
+    [Surface reconstruction](examples/reconstruction.md#rr1)
+
+</div>
+
 ## Highlights
 
 - **One dependency.** The runtime depends on `warp-lang` alone; NumPy comes with Warp; nothing else
@@ -27,15 +55,17 @@ and falls back to CPU otherwise, with the same code.
 
 ## Install
 
-```bash
-uv add ordito
-```
+=== "pip"
 
-or with `pip`:
+    ```bash
+    pip install ordito
+    ```
 
-```bash
-pip install ordito
-```
+=== "uv"
+
+    ```bash
+    uv add ordito
+    ```
 
 Requires Python ≥ 3.11 and `warp-lang` ≥ 1.18. A CUDA-capable GPU is recommended but not required.
 Mesh file I/O via [meshio](https://github.com/nschloe/meshio) is an optional extra:
@@ -51,7 +81,7 @@ vertices, faces = od.creation.icosphere(subdivisions=4)
 
 # Optional object API: derived quantities are computed on first access and cached.
 mesh = od.Trimesh(vertices, faces)
-print(mesh.area)  # 12.551353454589844
+print(f"{mesh.area:.4f}")  # 12.5514
 print(mesh.is_watertight)  # True
 print(mesh.euler_characteristic)  # 2
 

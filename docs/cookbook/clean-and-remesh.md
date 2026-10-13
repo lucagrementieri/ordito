@@ -30,18 +30,16 @@ broken_vertices, broken_faces = od.combine.concatenate(
     [(holed_vertices, holed_faces), (debris_vertices, debris_faces)]
 )
 
-print("faces before repair:", broken_faces.shape[0] // 3)  # 1222
-print("watertight before:  ", od.validation.is_watertight(broken_vertices, broken_faces))  # False
+print("faces before repair:", broken_faces.shape[0] // 3)  # faces before repair: 1222
+print(od.validation.is_watertight(broken_vertices, broken_faces))  # False
 
 # One call: drop the small disconnected component, close the remaining hole, and clean up
 # whatever degeneracies or self-intersections that leaves behind.
 repaired_vertices, repaired_faces = od.repair.make_solid(
     broken_vertices, broken_faces, keep_largest=True
 )
-print("faces after repair: ", repaired_faces.shape[0] // 3)  # 1242
-print(
-    "watertight after:   ", od.validation.is_watertight(repaired_vertices, repaired_faces)
-)  # True
+print("faces after repair:", repaired_faces.shape[0] // 3)  # faces after repair: 1242
+print(od.validation.is_watertight(repaired_vertices, repaired_faces))  # True
 
 # Now that the surface is solid, drive every edge length toward a uniform target -- splitting
 # long edges, collapsing short ones, flipping toward ideal vertex valence, and tangentially
@@ -49,10 +47,9 @@ print(
 remeshed_vertices, remeshed_faces = od.remesh.isotropic_remesh(
     repaired_vertices, repaired_faces, target_length=0.2
 )
-print("faces after remesh: ", remeshed_faces.shape[0] // 3)  # ~700 (varies slightly on CUDA)
-print(
-    "watertight remeshed:", od.validation.is_watertight(remeshed_vertices, remeshed_faces)
-)  # True
+# About 700 faces; the exact count varies slightly between CUDA runs.
+print("faces after remesh:", remeshed_faces.shape[0] // 3)
+print(od.validation.is_watertight(remeshed_vertices, remeshed_faces))  # True
 ```
 
 ## What `make_solid` actually does

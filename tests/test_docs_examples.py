@@ -5,11 +5,11 @@ The fenced ``python`` blocks in docstrings are executed by ``tests/test_api_conv
 (check 12); the hand-written pages under ``docs/`` and the README had no such gate, and two of
 their examples called functions that did not exist or names that were never imported. Each page
 is run the way a reader would type it: its blocks in order, in one namespace, with later blocks
-seeing what earlier ones defined. Blocks nested in a list item are dedented first.
+seeing what earlier ones defined. Blocks nested in a list item are dedented first. A top-level
+``print(...)  # value`` is checked against its comment (``tests/doc_examples.py``), so a printed
+float on a page is shown rounded to the digits CPU and CUDA agree on.
 
-Not a library comparison: this checks that the examples run and what their own asserts say, not
-the values they print (those are approximate in the prose, and several vary in their last digits
-between CUDA runs).
+Not a library comparison: this checks that the examples run and print what the page says.
 """
 
 from __future__ import annotations
@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 import warp as wp
+
+from tests.doc_examples import run_example
 
 _ROOT = Path(__file__).resolve().parent.parent
 # ``docs/examples/`` is the gallery: each block there is an excerpt of a script under ``examples/``,
@@ -51,4 +53,4 @@ def test_page_examples_run(device: str, page: str) -> None:
     namespace: dict[str, object] = {"__name__": "__docs_example__"}
     with wp.ScopedDevice(device):
         for block in _blocks(page):
-            exec(compile(block, page, "exec"), namespace)
+            run_example(block, page, namespace)

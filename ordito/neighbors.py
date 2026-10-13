@@ -129,6 +129,25 @@ def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
     --------
     [`query_ball`][ordito.neighbors.query_ball]
     [`query_nearest`][ordito.neighbors.query_nearest]
+
+    Examples
+    --------
+    One tree over a 5 x 5 grid of unit spacing, shared by a ball count and a nearest query. The
+    centre has four neighbours at distance 1, a corner two:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    bvh = od.neighbors.bvh_from_points(points)
+    queries = wp.array([[0.0, 0.0, 0.0], [-2.0, -2.0, 0.0]], dtype=wp.vec3)
+    counts = od.neighbors.query_ball_count(points, queries, 1.0, accelerator=bvh)
+    print(counts.numpy().tolist())  # [5, 3]
+    indices, distances = od.neighbors.query_nearest(points, queries, k=2, accelerator=bvh)
+    print(distances.numpy().tolist())  # [[0.0, 1.0], [0.0, 1.0]]
+    ```
     """
     return wp.Bvh(points, points, leaf_size=leaf_size)
 
@@ -139,7 +158,10 @@ def mesh_from_points(points: wp.array[wp.vec3]) -> wp.Mesh:
 
     Its closest-face query is then a nearest-point query: the closest point of a triangle whose
     three corners coincide is that corner, so ``wp.mesh_query_point_no_sign`` returns the nearest
-    point's index as its face. This is the tree
+    point's index as its face. (Only this point-shaped degeneracy is found: a triangle collapsed
+    onto a segment, ``(a, b, b)``, is never returned by that query, which is why
+    [`closest_point_on_edges`][ordito.proximity.closest_point_on_edges] builds its own tree.)
+    This is the tree
     [`query_nearest`][ordito.neighbors.query_nearest] answers ``k = 1`` with under
     ``backend="bvh"``, and its cost follows the tree's depth rather than how far a query sits from
     the cloud.
@@ -163,6 +185,26 @@ def mesh_from_points(points: wp.array[wp.vec3]) -> wp.Mesh:
     See Also
     --------
     [`bvh_from_points`][ordito.neighbors.bvh_from_points]
+
+    Examples
+    --------
+    The closest face of the collapsed mesh is the nearest point, here the grid's centre (index 12):
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    mesh = od.neighbors.mesh_from_points(points)
+    print(mesh.indices.shape)  # (75,)
+    queries = wp.array([[0.1, 0.2, 0.0]], dtype=wp.vec3)
+    _, distances, nearest = od.proximity.closest_point_on_mesh(
+        points, mesh.indices, queries, mesh=mesh
+    )
+    print(nearest.numpy().tolist())  # [12]
+    print(f"{distances.numpy()[0]:.4f}")  # 0.2236
+    ```
     """
     n = points.size
     if n == 0:
@@ -212,6 +254,21 @@ def hashgrid_from_points(
     [`query_ball_count`][ordito.neighbors.query_ball_count]
     [`query_ball`][ordito.neighbors.query_ball]
     [`query_nearest`][ordito.neighbors.query_nearest]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    grid = od.neighbors.hashgrid_from_points(points, radius=1.0)
+    print(grid.cell_width)  # 1.0
+    queries = wp.array([[0.0, 0.0, 0.0], [-2.0, -2.0, 0.0]], dtype=wp.vec3)
+    counts = od.neighbors.query_ball_count(points, queries, 1.0, accelerator=grid)
+    print(counts.numpy().tolist())  # [5, 3]
+    ```
     """
     n = points.size
     bins = _resolve_grid_bins(grid_bins, n)
@@ -253,6 +310,23 @@ def bvh_from_bounds(
     ------
     RuntimeError
         If ``lower`` and ``upper`` are not all on one device.
+
+    Examples
+    --------
+    Three unit boxes in a row along ``x``; a ball between the first two reaches both:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    lower = wp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0]], dtype=wp.vec3)
+    upper = wp.array([[1.0, 1.0, 1.0], [3.0, 1.0, 1.0], [5.0, 1.0, 1.0]], dtype=wp.vec3)
+    bvh = od.neighbors.bvh_from_bounds(lower, upper)
+    queries = wp.array([[1.5, 0.5, 0.5]], dtype=wp.vec3)
+    hits, offsets = od.neighbors.query_bvh_ball(bvh, queries, 0.6)
+    print(sorted(hits.numpy().tolist()))  # [0, 1]
+    ```
     """
     require_same_device(lower=lower, upper=upper)
     return wp.Bvh(lower, upper, leaf_size=leaf_size)
@@ -310,6 +384,25 @@ def query_bvh_ball(
         when the neighbourhood really is axis-aligned, and for this when it is a ball.
     [`query_ball_with_offsets`][ordito.neighbors.query_ball_with_offsets]
         The same ball, over a **point** cloud and with a narrow-phase distance filter.
+
+    Examples
+    --------
+    Three unit boxes in a row along ``x``. The first query sits in the gap between the first two,
+    ``0.5`` from each; the second is ``2.5`` from the nearest box and finds nothing:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    lower = wp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [4.0, 0.0, 0.0]], dtype=wp.vec3)
+    upper = wp.array([[1.0, 1.0, 1.0], [3.0, 1.0, 1.0], [5.0, 1.0, 1.0]], dtype=wp.vec3)
+    bvh = od.neighbors.bvh_from_bounds(lower, upper)
+    queries = wp.array([[1.5, 0.5, 0.5], [3.5, 3.5, 0.5]], dtype=wp.vec3)
+    hits, offsets = od.neighbors.query_bvh_ball(bvh, queries, 1.0)
+    print(offsets.numpy().tolist())  # [0, 2, 2]
+    print(sorted(hits.numpy().tolist()))  # [0, 1]
+    ```
     """
     require_same_device(bvh=bvh, queries=queries)
     device = queries.device
@@ -406,6 +499,25 @@ def query_bvh_box(
         how many candidates come back.
     [`ordito.points.half_space_mask`][ordito.points.half_space_mask]
         The unbounded counterpart: selection by one plane rather than by a box.
+
+    Examples
+    --------
+    On a point tree a hit means the point lies inside the box, faces included: the second box has
+    the four grid points ``(-2..-1, -2..-1)`` on its corners:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    bvh = od.neighbors.bvh_from_points(points)
+    query_lower = wp.array([[-0.5, -0.5, -1.0], [-2.0, -2.0, 0.0]], dtype=wp.vec3)
+    query_upper = wp.array([[1.5, 0.5, 1.0], [-1.0, -1.0, 0.0]], dtype=wp.vec3)
+    hits, offsets = od.neighbors.query_bvh_box(bvh, query_lower, query_upper)
+    print(offsets.numpy().tolist())  # [0, 2, 6]
+    print(sorted(hits.numpy()[:2].tolist()))  # [12, 17]
+    ```
     """
     require_same_device(bvh=bvh, query_lower=query_lower, query_upper=query_upper)
     device = query_lower.device
@@ -578,6 +690,38 @@ def query_ball(
     [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points]
     [`bvh_from_points`][ordito.neighbors.bvh_from_points]
     [`scipy.spatial.KDTree.query_ball_point`][]
+
+    Examples
+    --------
+    On a 5 x 5 grid of unit spacing the ball of radius 1 (inclusive) about the centre, index 12,
+    holds it and its four axis neighbours; about a corner, three points:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    queries = wp.array([[0.0, 0.0, 0.0], [-2.0, -2.0, 0.0]], dtype=wp.vec3)
+    indices, distances = od.neighbors.query_ball(points, queries, 1.0)
+    print(len(indices))  # 2
+    print(sorted(indices[0].numpy().tolist()))  # [7, 11, 12, 13, 17]
+    print(sorted(indices[1].numpy().tolist()))  # [0, 1, 5]
+    ```
+
+    A single ``wp.vec3`` query returns its arrays directly, here sorted by distance:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    query = wp.vec3(0.0, 0.0, 0.0)
+    indices, distances = od.neighbors.query_ball(points, query, 1.0, return_sorted=True)
+    print(indices.numpy()[0])  # 12
+    print(distances.numpy().tolist())  # [0.0, 1.0, 1.0, 1.0, 1.0]
+    ```
     """
     require_same_device(points=points, queries=queries, accelerator=accelerator)
     device = points.device
@@ -654,6 +798,22 @@ def query_ball_count(
     [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points]
     [`bvh_from_points`][ordito.neighbors.bvh_from_points]
     [`scipy.spatial.KDTree.query_ball_point`][]
+
+    Examples
+    --------
+    The centre, a corner and a point above the grid; the counts do not depend on the backend:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    queries = wp.array([[0.0, 0.0, 0.0], [-2.0, -2.0, 0.0], [0.0, 0.0, 5.0]], dtype=wp.vec3)
+    print(od.neighbors.query_ball_count(points, queries, 1.0).numpy().tolist())  # [5, 3, 0]
+    counts = od.neighbors.query_ball_count(points, queries, 1.5, backend="bvh")
+    print(counts.numpy().tolist())  # [9, 4, 0]
+    ```
     """
     require_same_device(points=points, queries=queries, accelerator=accelerator)
     kind, accelerator = _resolve_accelerator(accelerator, backend)
@@ -754,6 +914,24 @@ def query_ball_with_offsets(
     [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points]
     [`bvh_from_points`][ordito.neighbors.bvh_from_points]
     [`scipy.spatial.KDTree.query_ball_point`][]
+
+    Examples
+    --------
+    The centre's five neighbours come first, then the corner's three:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    queries = wp.array([[0.0, 0.0, 0.0], [-2.0, -2.0, 0.0]], dtype=wp.vec3)
+    indices, distances, offsets = od.neighbors.query_ball_with_offsets(
+        points, queries, 1.0, return_sorted=True
+    )
+    print(offsets.numpy().tolist())  # [0, 5, 8]
+    print(distances.numpy()[5:8].tolist())  # [0.0, 1.0, 1.0]
+    ```
     """
     require_same_device(points=points, queries=queries, accelerator=accelerator)
     kind, resolved = _resolve_accelerator(accelerator, backend)
@@ -909,6 +1087,19 @@ def knn_initial_radius(
     --------
     [`query_nearest`][ordito.neighbors.query_nearest]
     [`aabb`][ordito.bounds.aabb]
+
+    Examples
+    --------
+    The grid is flat, so the 2-D formula applies: ``sqrt((4 / 25) * 16 / pi)``. Asking for every
+    point gives ``inf``, one complete scan:
+
+    ```python
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    print(f"{od.neighbors.knn_initial_radius(points, 4):.3f}")  # 0.903
+    print(od.neighbors.knn_initial_radius(points, 25))  # inf
+    ```
     """
     n = points.size
     if n == 0 or k >= n:
@@ -1095,6 +1286,37 @@ def query_nearest(
     [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points]
     [`bvh_from_points`][ordito.neighbors.bvh_from_points]
     [`scipy.spatial.KDTree.query`][]
+
+    Examples
+    --------
+    At ``k == 1`` the result is ``(m,)``; the grid's centre is index 12 and its far corner 24:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    queries = wp.array([[0.1, 0.2, 0.0], [2.0, 2.0, 1.0]], dtype=wp.vec3)
+    indices, distances = od.neighbors.query_nearest(points, queries)
+    print(indices.numpy().tolist())  # [12, 24]
+    print(f"{distances.numpy()[0]:.4f}")  # 0.2236
+    ```
+
+    A larger ``k`` adds a trailing axis, and ``max_radius`` leaves the slots it cannot fill at
+    ``-1`` and ``inf``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
+    queries = wp.array([[0.1, 0.2, 0.0], [2.0, 2.0, 1.0]], dtype=wp.vec3)
+    indices, distances = od.neighbors.query_nearest(points, queries, k=3, max_radius=1.2)
+    print(indices.shape)  # (2, 3)
+    print(distances.numpy()[1].tolist())  # [1.0, inf, inf]
+    ```
     """
     require_same_device(points=points, queries=queries, accelerator=accelerator)
     kind, resolved = _resolve_accelerator(accelerator, backend)
@@ -1496,6 +1718,25 @@ def query_weighted_nearest(
     [`query_nearest`][ordito.neighbors.query_nearest]
         The unweighted query, and the ``k > 1`` form. This one answers ``k = 1`` only, because no
         caller has needed more.
+
+    Examples
+    --------
+    The site at ``x = 3`` has weight ``2.5``, so from ``x = 1`` it scores ``2 - 2.5 = -0.5`` and
+    beats the unweighted site at distance 1; from ``x = -1`` it does not:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=wp.vec3)
+    weights = wp.array([0.0, 2.5], dtype=wp.float32)
+    queries = wp.array([[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]], dtype=wp.vec3)
+    index, weighted_distance = od.neighbors.query_weighted_nearest(points, weights, queries)
+    print(index.numpy().tolist())  # [1, 0]
+    print(weighted_distance.numpy().tolist())  # [-0.5, 1.0]
+    print(od.neighbors.query_nearest(points, queries)[0].numpy().tolist())  # [0, 0]
+    ```
     """
     require_same_device(points=points, weights=weights, queries=queries, accelerator=accelerator)
     device = points.device
@@ -1593,6 +1834,21 @@ def nearest_neighbor_distance(points: wp.array[wp.vec3]) -> wp.array[wp.float32]
     [`query_nearest`][ordito.neighbors.query_nearest]
         The underlying query; call it directly to reuse a BVH across several queries of one cloud.
     [`ordito.points.farthest_point_sample`][ordito.points.farthest_point_sample]
+
+    Examples
+    --------
+    Two pairs of points, one unit and one half unit apart:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 0.0, 0.5]], dtype=wp.vec3
+    )
+    print(od.neighbors.nearest_neighbor_distance(points).numpy().tolist())  # [1.0, 1.0, 0.5, 0.5]
+    ```
     """
     device = points.device
     n = points.size
@@ -1653,6 +1909,19 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
         The per-point form, when every distance is wanted rather than the smallest.
     [`ordito.points.point_duplicate_mask`][ordito.points.point_duplicate_mask]
         Exact coincidence rather than proximity, and a mask rather than one pair.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [3.0, 0.0, 0.0], [3.0, 0.0, 0.5]], dtype=wp.vec3
+    )
+    print(od.neighbors.closest_pair(points))  # (2, 3, 0.5)
+    ```
     """
     n = points.size
     if n < 2:
@@ -1743,6 +2012,23 @@ def geodesic_ball(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
+
+    Examples
+    --------
+    On an icosahedron inscribed in the unit sphere the edges are about ``1.05`` long, so a radius of
+    ``1.1`` reaches each vertex's five edge neighbours and the ball holds six vertices, the centre
+    included. At ``1.8`` it holds every vertex but the antipode:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosahedron()
+    neighbors, offsets, reference = od.neighbors.geodesic_ball(vertices, faces, radius=1.1)
+    print(offsets.numpy()[:4].tolist())  # [0, 6, 12, 18]
+    print(sorted(neighbors.numpy()[:6].tolist()))  # [0, 1, 5, 7, 10, 11]
+    _, offsets, _ = od.neighbors.geodesic_ball(vertices, faces, radius=1.8)
+    print(offsets.numpy()[:4].tolist())  # [0, 11, 22, 33]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device

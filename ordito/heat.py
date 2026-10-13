@@ -249,6 +249,18 @@ def heat_operators(
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries]
     [`Trimesh.heat_operators`][ordito.mesh.Trimesh.heat_operators]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    operators = od.heat.heat_operators(vertices, faces)
+    heat_system, _, laplacian, poisson_system, *_ = operators
+    print(len(operators))  # 8
+    print(heat_system.nrow == vertices.shape[0])  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, cot_entries=cot_entries)
     if cot_entries is not None and use_robust:
@@ -353,6 +365,25 @@ def heat_geodesic(
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`mean_unique_edge_length`][ordito.edges.mean_unique_edge_length]
     [`marching_triangles`][ordito.intersection.marching_triangles]
+
+    Examples
+    --------
+    Pole to pole on a unit sphere the true geodesic distance is ``pi``; the heat method is within a
+    few per cent of it:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    heights = vertices.numpy()[:, 2]
+    north, south = int(np.argmax(heights)), int(np.argmin(heights))
+    distance = od.heat.heat_geodesic(vertices, faces, wp.array([north], dtype=wp.int32))
+    print(distance.numpy()[north])  # 0.0
+    print(f"{distance.numpy()[south]:.2f}")  # 3.09
+    ```
     """
     bound, owned, arguments = mesh_arguments(
         "heat_geodesic", mesh, vertices, faces, (sources, t), 1
@@ -513,6 +544,30 @@ def heat_signed_distance(
     [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]
     [`homology_generators`][ordito.homology.homology_generators]
     [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh]
+
+    Examples
+    --------
+    A counter-clockwise square of side 0.6 on a flat unit grid: the centre lies 0.3 inside it, and
+    the grid's corner lies outside:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(11, 11), extents=(1.0, 1.0))
+    side = range(2, 8)  # vertex (i, j) sits at x = -0.5 + 0.1 * i, y = -0.5 + 0.1 * j
+    square = (
+        [(i, 2) for i in side]
+        + [(8, j) for j in side]
+        + [(i, 8) for i in range(8, 2, -1)]
+        + [(2, j) for j in range(8, 2, -1)]
+    )
+    curve = wp.array([11 * i + j for i, j in square], dtype=wp.int32)
+    distance = od.heat.heat_signed_distance(vertices, faces, curve).numpy()
+    print(f"{distance[60]:.2f}")  # 0.30
+    print(distance[0] < 0.0)  # True
+    ```
     """
     bound, owned, arguments = mesh_arguments(
         "heat_signed_distance", mesh, vertices, faces, (curve_vertices, curve_offsets, t), 1
@@ -820,6 +875,17 @@ def vector_heat_operators(
     [`log_map`][ordito.heat.log_map]
     [`heat_signed_distance`][ordito.heat.heat_signed_distance]
     [`Trimesh.vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    vector_system, scalar, frames, preconditioner = od.heat.vector_heat_operators(vertices, faces)
+    print(vector_system.nrow, vector_system.values.dtype.__name__)  # 162 mat22d
+    print(len(scalar), len(frames))  # 8 3
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, frames=frames)
     device = vertices.device
@@ -1078,6 +1144,26 @@ def extend_scalar(
     --------
     [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]
     [`heat_geodesic`][ordito.heat.heat_geodesic]
+
+    Examples
+    --------
+    Value ``1`` at the north pole and ``-1`` at the south pole: each hemisphere takes its nearest
+    pole's value, away from the equator where the two blend:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    heights = vertices.numpy()[:, 2]
+    poles = wp.array([np.argmax(heights), np.argmin(heights)], dtype=wp.int32)
+    values = wp.array([1.0, -1.0], dtype=wp.float64)
+    extended = od.heat.extend_scalar(vertices, faces, poles, values).numpy()
+    print(f"{extended[heights > 0.5].min():.2f}")  # 1.00
+    print(f"{extended[heights < -0.5].max():.2f}")  # -1.00
+    ```
     """
     bound, owned, arguments = mesh_arguments(
         "extend_scalar", mesh, vertices, faces, (sources, values, t), 2
@@ -1267,6 +1353,27 @@ def transport_tangent_vectors(
 
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop, as [`heat_geodesic`][ordito.heat.heat_geodesic] does.
+
+    Examples
+    --------
+    On a flat grid parallel transport keeps a vector's direction in space, so the vector carried
+    from the centre to an interior vertex is the source vector again:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(11, 11), extents=(1.0, 1.0))
+    sources = wp.array([60], dtype=wp.int32)  # the vertex at the origin
+    vectors = wp.array([wp.vec2(1.0, 0.0)], dtype=wp.vec2)
+    transported, resolved = od.heat.transport_tangent_vectors(vertices, faces, sources, vectors)
+    basis_x, basis_y, _ = od.tangent_space.vertex_tangent_frames(vertices, faces)
+    world = od.heat.tangent_to_world(transported, basis_x, basis_y).numpy()
+    print(resolved.numpy().all())  # True
+    print(np.allclose(world[12], world[60], atol=1e-2))  # True
+    ```
     """
     bound, owned, arguments = mesh_arguments(
         "transport_tangent_vectors", mesh, vertices, faces, (sources, vectors, t), 2
@@ -1412,6 +1519,24 @@ def log_map(
     --------
     [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]
     [`trace_from_vertex`][ordito.geodesic_walk.trace_from_vertex]
+
+    Examples
+    --------
+    On a flat grid the log map centred on the origin returns each vertex's own position, expressed
+    in the centre's tangent frame:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(11, 11), extents=(1.0, 1.0))
+    coordinates = od.heat.log_map(vertices, faces, 60)  # centred on the vertex at the origin
+    basis_x, basis_y, _ = od.tangent_space.vertex_tangent_frames(vertices, faces)
+    x, y = coordinates.numpy()[108]  # the vertex at (0.4, 0.4)
+    world = x * basis_x.numpy()[60] + y * basis_y.numpy()[60]
+    print(np.round(world[:2], 2))  # [0.41 0.41]
+    ```
     """
     bound, owned, arguments = mesh_arguments("log_map", mesh, vertices, faces, (source, t), 1)
     return _log_map(bound, owned, cast("int", arguments[0]), cast("float | None", arguments[1]))
@@ -1571,6 +1696,24 @@ def tangent_to_world(
     See Also
     --------
     [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames]
+
+    Examples
+    --------
+    A tangent vector of length 5 at every vertex of a flat grid stays length 5 and in the plane:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    basis_x, basis_y, _ = od.tangent_space.vertex_tangent_frames(vertices, faces)
+    tangent = wp.full(vertices.shape[0], wp.vec2(3.0, 4.0), dtype=wp.vec2)
+    world = od.heat.tangent_to_world(tangent, basis_x, basis_y).numpy()
+    print(f"{np.linalg.norm(world, axis=1).max():.3f}")  # 5.000
+    print(np.abs(world[:, 2]).max())  # 0.0
+    ```
     """
     require_same_device(tangent=tangent, basis_x=basis_x, basis_y=basis_y)
     world = _launch.empty(tangent.size, dtype=wp.vec3, device=tangent.device)
@@ -1651,6 +1794,25 @@ def diffuse_tangent_field(
     --------
     [`vector_heat_operators`][ordito.heat.vector_heat_operators]
     [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]
+
+    Examples
+    --------
+    A single vector at the centre of a grid spreads out, staying largest where it started:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(11, 11), extents=(1.0, 1.0))
+    mesh = od.mesh.Trimesh(vertices, faces)
+    source = np.zeros((vertices.shape[0], 2))
+    source[60] = (1.0, 0.0)
+    diffused = od.heat.diffuse_tangent_field(mesh, wp.array(source, dtype=wp.vec2d))
+    print(diffused.shape)  # (121,)
+    print(np.argmax(np.linalg.norm(diffused.numpy(), axis=1)))  # 60
+    ```
     """
     if source is None:
         raise TypeError("diffuse_tangent_field: source is required")
@@ -1748,6 +1910,26 @@ class HeatSolver:
     --------
     [`Trimesh.heat_solver`][ordito.mesh.Trimesh.heat_solver]
     [`heat_geodesic`][ordito.heat.heat_geodesic]
+
+    Examples
+    --------
+    A mesh's solver factors a system on its second solve and keeps the factorization until released:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    mesh = od.mesh.Trimesh(vertices, faces)
+    solver = mesh.heat_solver()
+    print(solver.nbytes)  # 0
+    for source in (0, 1):
+        od.heat.heat_geodesic(mesh, sources=wp.array([source], dtype=wp.int32))
+    print(solver.nbytes > 0)  # True
+    solver.release()
+    print(solver.nbytes)  # 0
+    ```
     """
 
     def __init__(self, mesh: Trimesh, t: float | None = None, *, use_robust: bool = False) -> None:

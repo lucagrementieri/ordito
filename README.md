@@ -108,7 +108,7 @@ vertices, faces = od.creation.icosphere(subdivisions=4)
 
 # Optional object API: derived quantities are computed on first access and cached.
 mesh = od.Trimesh(vertices, faces)
-print(mesh.area)  # 12.551...
+print(f"{mesh.area:.4f}")  # 12.5514
 print(mesh.is_watertight)  # True
 print(mesh.euler_characteristic)  # 2
 ```

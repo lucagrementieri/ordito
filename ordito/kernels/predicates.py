@@ -41,6 +41,13 @@ wp.set_module_options({"enable_backward": False})
 # ``float32`` that is bit-identical to ``2 * wp.PI`` (verified on both devices, Warp 1.18).
 TWO_PI_F64 = wp.constant(wp.float64(2.0 * math.pi))
 
+# Relative rounding allowance of a float64 plane distance ``dot(n, p - a)`` over float32 corners,
+# in units of ``|n| * |p - a|``: 64 float64 ulps. The exact distance of a float32 point to the plane
+# of three others is either zero or far above this (a float32 offset is ~1e-7 of the coordinates);
+# what lands below it is rounding -- and on CUDA, where the dot products fuse into FMAs, an exactly
+# coplanar pair reads distances of ~1e-19 with mixed signs instead of zeros.
+PLANE_DISTANCE_ROUNDING = wp.float64(64.0 * 2.0**-52)
+
 
 @wp.func
 def float_inf(sample: wp.Float) -> wp.Float:
@@ -696,6 +703,27 @@ def plane_crossing_span(distance: wp.vec3d, coordinate: wp.vec3d) -> tuple[wp.bo
 
 
 @wp.func
+def plane_distances_d(
+    normal: wp.vec3d, origin: wp.vec3d, p0: wp.vec3d, p1: wp.vec3d, p2: wp.vec3d
+) -> wp.vec3d:
+    # Signed distances (scaled by ``|normal|``) of three points to the plane through ``origin``,
+    # with every one inside the rounding of its own computation snapped to exactly zero. Without
+    # the snap a coplanar pair is decided by FMA contraction: CUDA reads mixed signs of ~1e-19,
+    # the pair "straddles", and the interval test then runs on a vanishing line direction and
+    # reports an intersection between two disjoint triangles. CPU happens to read exact zeros.
+    distances = wp.vec3d()
+    scale = wp.length(normal) * PLANE_DISTANCE_ROUNDING
+    points = wp.mat33d(p0[0], p0[1], p0[2], p1[0], p1[1], p1[2], p2[0], p2[1], p2[2])
+    for i in range(3):
+        offset = points[i] - origin
+        distance = wp.dot(normal, offset)
+        if wp.abs(distance) <= scale * wp.length(offset):
+            distance = wp.float64(0.0)
+        distances[i] = distance
+    return distances
+
+
+@wp.func
 def _triangles_intersect_d(
     da0: wp.vec3d, da1: wp.vec3d, da2: wp.vec3d, db0: wp.vec3d, db1: wp.vec3d, db2: wp.vec3d
 ) -> wp.bool:
@@ -706,17 +734,13 @@ def _triangles_intersect_d(
     zero = wp.float64(0.0)
 
     normal_a = wp.cross(da1 - da0, da2 - da0)
-    distance_b = wp.vec3d(
-        wp.dot(normal_a, db0 - da0), wp.dot(normal_a, db1 - da0), wp.dot(normal_a, db2 - da0)
-    )
+    distance_b = plane_distances_d(normal_a, da0, db0, db1, db2)
     # Entirely in one closed half-space of A's plane: separated, coplanar, or touching at most.
     if wp.min(distance_b) >= zero or wp.max(distance_b) <= zero:
         return False
 
     normal_b = wp.cross(db1 - db0, db2 - db0)
-    distance_a = wp.vec3d(
-        wp.dot(normal_b, da0 - db0), wp.dot(normal_b, da1 - db0), wp.dot(normal_b, da2 - db0)
-    )
+    distance_a = plane_distances_d(normal_b, db0, da0, da1, da2)
     if wp.min(distance_a) >= zero or wp.max(distance_a) <= zero:
         return False
 

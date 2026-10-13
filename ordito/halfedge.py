@@ -105,6 +105,23 @@ def halfedge_twins(
     [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]
     [`face_adjacency`][ordito.adjacency.face_adjacency]
     [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]
+
+    Examples
+    --------
+    Two triangles sharing the edge ``(1, 2)``: halfedge 1 runs ``1 -> 2`` and halfedge 3 runs back
+    ``2 -> 1``, and the other four lie on the boundary. A closed cube has no boundary halfedge:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    print(od.halfedge.halfedge_twins(faces).numpy().tolist())  # [-1, 3, -1, 1, -1, -1]
+    vertices, faces = od.creation.box()
+    twins = od.halfedge.halfedge_twins(faces, n_vertices=vertices.shape[0])
+    print(int((twins.numpy() == -1).sum()))  # 0
+    ```
     """
     defect_counts = _launch.zeros(2, dtype=wp.int32, device=faces.device)
     twins = _pair_halfedges(faces, n_vertices, defect_counts)
@@ -167,6 +184,26 @@ def require_matching_twins(faces: wp.array[wp.int32], twins: wp.array[wp.int32] 
     [`halfedge_twins`][ordito.halfedge.halfedge_twins]
         Produces the table.
     [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]
+
+    Examples
+    --------
+    A table built by [`halfedge_twins`][ordito.halfedge.halfedge_twins] passes; one pairing
+    halfedge 0 (``0 -> 1``) with halfedge 1 (``1 -> 2``) is rejected:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    od.halfedge.require_matching_twins(faces, od.halfedge.halfedge_twins(faces))
+    try:
+        od.halfedge.require_matching_twins(faces, wp.array([1, 0, -1, -1, -1, -1], dtype=wp.int32))
+        rejected = False
+    except ValueError:
+        rejected = True
+    print(rejected)  # True
+    ```
     """
     if twins is None:
         return
@@ -265,6 +302,25 @@ def vertex_one_rings(
     [`halfedge_twins`][ordito.halfedge.halfedge_twins]
     [`require_matching_twins`][ordito.halfedge.require_matching_twins]
     [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles]
+
+    Examples
+    --------
+    Every vertex of an octahedron has four incident faces and none is on a boundary; the ring of
+    vertex 0 lists its four outgoing halfedges, whose far ends circle it counter-clockwise:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.octahedron()
+    ring_halfedges, offsets, is_boundary = od.halfedge.vertex_one_rings(faces, n_vertices=6)
+    print(np.diff(offsets.numpy()).tolist())  # [4, 4, 4, 4, 4, 4]
+    print(bool(is_boundary.numpy().any()))  # False
+    ring = ring_halfedges.numpy()[offsets.numpy()[0] : offsets.numpy()[1]]
+    far_ends = faces.numpy()[3 * (ring // 3) + (ring + 1) % 3]
+    print(far_ends.tolist())  # [1, 2, 4, 5]
+    ```
     """
     require_same_device(faces=faces, twins=twins)
     require_matching_twins(faces, twins)
@@ -394,6 +450,24 @@ def halfedge_mates(
     [`halfedge_twins`][ordito.halfedge.halfedge_twins]
     [`key_ordered_halfedges`][ordito.halfedge.key_ordered_halfedges]
     [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys]
+
+    Examples
+    --------
+    Faces 0 and 1 run their shared edge ``(0, 1)`` the same way, which
+    [`halfedge_twins`][ordito.halfedge.halfedge_twins] would reject but which still pairs here.
+    Adding a third face on that edge makes it non-manifold, and all three halfedges then read
+    ``-2 - 0``, naming the lowest halfedge on the edge:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 0, 1, 3], dtype=wp.int32)
+    print(od.halfedge.halfedge_mates(faces).numpy().tolist())  # [3, -1, -1, 0, -1, -1]
+    faces = wp.array([0, 1, 2, 0, 1, 3, 1, 0, 4], dtype=wp.int32)
+    print(od.halfedge.halfedge_mates(faces).numpy()[[0, 3, 6]].tolist())  # [-2, -2, -2]
+    ```
     """
     device = faces.device
     n_halfedges = faces.size // 3 * 3
@@ -477,6 +551,27 @@ def key_ordered_halfedges(
     --------
     [`halfedge_mates`][ordito.halfedge.halfedge_mates]
     [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys]
+
+    Examples
+    --------
+    Flag the boundary halfedges of two triangles, scan the flags, and read the flagged halfedges
+    back in the row order of [`edges_unique`][ordito.edges.edges_unique]:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([2, 1, 3, 0, 1, 2], dtype=wp.int32)
+    mates = od.halfedge.halfedge_mates(faces)
+    inclusive_np = np.cumsum(mates.numpy() == -1).astype(np.int32)
+    inclusive = wp.array(inclusive_np, dtype=wp.int32)
+    halfedges = od.halfedge.key_ordered_halfedges(faces, inclusive, int(inclusive_np[-1]))
+    print(halfedges.numpy().tolist())  # [3, 5, 1, 2]
+    unique_edges, _inverse = od.edges.edges_unique(faces)
+    print(unique_edges.numpy().tolist())  # [[0, 1], [0, 2], [1, 2], [1, 3], [2, 3]]
+    ```
     """
     device = faces.device
     n = faces.size // 3 * 3

@@ -74,6 +74,25 @@ class NotPositiveDefiniteError(ValueError):
     caller catching that sees it too. Distinct from the operator being too large to factor, which
     an iteration may still solve: a symmetric operator this cannot factor either way round is past
     what conjugate gradient converges on as well.
+
+    Examples
+    --------
+    A cotangent Laplacian is negative semi-definite, so factoring it as given fails:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    try:
+        od.cholesky.sparse_cholesky(L)
+        outcome = "factored"
+    except od.cholesky.NotPositiveDefiniteError:
+        outcome = "not positive definite"
+    print(outcome)  # not positive definite
+    ```
     """
 
 
@@ -97,6 +116,17 @@ class SparseCholesky:
         Whether a solve records its refinement graph on its first run (a factorization solved many
         times), rather than on its second against the same operator storage (the default: a
         one-shot solve then runs its rounds directly and records nothing).
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    factor = od.cholesky.sparse_cholesky(system, vertices)
+    print(factor.n, factor.negated, factor.nbytes > 0)  # 162 False True
+    ```
     """
 
     def __init__(self, plan: _Plan, matrix: odt.BsrMatrix[wp.float64], *, negated: bool) -> None:
@@ -138,6 +168,24 @@ class SparseCholesky:
             is not positive).
         RuntimeError
             If ``matrix`` is not on this factorization's device.
+
+        Examples
+        --------
+        The heat system at another diffusion time has the same pattern, so the analysis is reused:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.icosphere(subdivisions=2)
+        factor = od.cholesky.sparse_cholesky(od.heat.heat_operators(vertices, faces, t=0.01)[0])
+        factor.refactor(od.heat.heat_operators(vertices, faces, t=0.1)[0])
+        mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+        solution = wp.zeros_like(mass)
+        factor.solve(mass, solution)  # (M - t L) 1 = M 1
+        print(f"{solution.numpy().min():.6f} {solution.numpy().max():.6f}")  # 1.000000 1.000000
+        ```
         """
         require_same_device(matrix=matrix, factor=self)
         plan = self._plan
@@ -218,6 +266,19 @@ class SparseCholesky:
             If the operator (with ``negated=None``: either sign of it) is not positive definite.
         RuntimeError
             If ``matrix`` is not on this factorization's device.
+
+        Examples
+        --------
+        Two diffusion times, one analysis, two independent factorizations:
+
+        ```python
+        import ordito as od
+
+        vertices, faces = od.creation.icosphere(subdivisions=2)
+        short = od.cholesky.sparse_cholesky(od.heat.heat_operators(vertices, faces, t=0.01)[0])
+        long = short.with_operator(od.heat.heat_operators(vertices, faces, t=0.1)[0])
+        print(long is short, long.n)  # False 162
+        ```
         """
         require_same_device(matrix=matrix, factor=self)
         return _factored(self._plan, matrix, negated)
@@ -254,6 +315,25 @@ class SparseCholesky:
             If ``rhs`` or ``solution`` is not ``float64`` of a matching shape.
         RuntimeError
             If ``rhs`` and ``solution`` are not on this factorization's device.
+
+        Examples
+        --------
+        Two right-hand sides solved together: ``(M - t L) c = c M 1`` for a constant ``c``:
+
+        ```python
+        import numpy as np
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.icosphere(subdivisions=2)
+        factor = od.cholesky.sparse_cholesky(od.heat.heat_operators(vertices, faces)[0], vertices)
+        mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64).numpy()
+        rhs = wp.array(np.stack([mass, 2.0 * mass]), dtype=wp.float64)
+        solution = wp.zeros_like(rhs)
+        factor.solve(rhs, solution)
+        print(solution.numpy().mean(axis=1).round(6))  # [1. 2.]
+        ```
         """
         require_same_device(rhs=rhs, solution=solution, factor=self)
         if rhs.dtype != wp.float64 or solution.dtype != wp.float64 or rhs.shape != solution.shape:
@@ -334,14 +414,40 @@ def sparse_cholesky(
 
     Examples
     --------
+    The heat method's system ``M - t L`` maps the constant ``1`` to the lumped masses, since every
+    row of ``L`` sums to zero; solving against the masses recovers it:
+
     ```python
+    import warp as wp
+
     import ordito as od
 
-    system = od.heat.heat_operators(v, f)[0]  # the heat method's M - t L
-    factor = od.cholesky.sparse_cholesky(system, v)
-    rhs = wp.ones(system.nrow, dtype=wp.float64, device=v.device)
-    solution = wp.zeros_like(rhs)
-    factor.solve(rhs, solution)
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    factor = od.cholesky.sparse_cholesky(system, vertices)
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    solution = wp.zeros_like(mass)
+    factor.solve(mass, solution)
+    print(f"{solution.numpy().min():.6f} {solution.numpy().max():.6f}")  # 1.000000 1.000000
+    ```
+
+    A cotangent Laplacian is negative semi-definite: ``negated=None`` finds the sign, and the
+    singular constant component is solved up to a constant:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(6, 6))
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    factor = od.cholesky.sparse_cholesky(L, vertices, negated=None)
+    print(factor.negated)  # True
+    x = wp.array(vertices.numpy()[:, 0], dtype=wp.float64)
+    solution = wp.zeros_like(x)
+    factor.solve(L @ x, solution)
+    print(np.ptp(solution.numpy() - x.numpy()) < 1e-9)  # True
     ```
     """
     require_same_device(matrix=matrix, coordinates=coordinates)

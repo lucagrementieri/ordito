@@ -44,7 +44,7 @@ Three things worth knowing before diving into a specific mapping:
   array in ordito.
 
 These pages name the closest ordito equivalent for each function; they are not exhaustive.
-The full picture is the [API Reference](../api/ordito/creation.md). Most rows are backed by a
+The full picture is the [API Reference](../reference.md). Most rows are backed by a
 test that compares the two functions' outputs directly; where a row says the two differ (a
 convention, a sign, a different algorithm), that difference is measured and documented in the
 ordito function's docstring.

@@ -334,18 +334,28 @@ class Trimesh:
         If a rank-2 ``faces`` array does not have shape ``(n_faces, 3)``, or the flattened
         face buffer's size is not a multiple of 3.
 
-    Examples
-    --------
-    ```python
-    mesh = od.Trimesh.from_warp_mesh(warp_mesh)
-    mesh.face_normals  # computed once, cached
-    mesh.face_areas  # already cached as a by-product of face_normals
-    hits = od.ray.intersects_any(mesh.warp_mesh, origins, directions)
-    ```
-
     See Also
     --------
     [`trimesh.Trimesh`][]
+
+    Examples
+    --------
+    Derived quantities are computed on first access and cached; methods return new meshes:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mesh = od.Trimesh(vertices, faces)
+    print(mesh.n_vertices, mesh.n_faces)  # 8 12
+    print(f"{mesh.area:.4f} {mesh.volume:.4f}")  # 6.0000 1.0000
+    print(mesh.is_watertight, mesh.euler_characteristic, mesh.edges_unique.shape)  # True 2 (18, 2)
+    print(mesh.face_normals is mesh.face_normals)  # True
+    points = wp.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3)
+    print(mesh.contains(points).numpy())  # [ True False]
+    ```
     """
 
     # ``__weakref__``: a ``HeatSolver`` kept in the cache refers back to its mesh weakly, so the two
@@ -388,6 +398,21 @@ class Trimesh:
         -------
         Trimesh
             New instance whose `warp_mesh` property is `mesh` itself.
+
+        Examples
+        --------
+        The wrapped ``warp.Mesh`` becomes the cached BVH, so it is not rebuilt:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.icosphere(subdivisions=1)
+        warp_mesh = wp.Mesh(points=vertices, indices=faces)
+        mesh = od.Trimesh.from_warp_mesh(warp_mesh)
+        print(mesh.warp_mesh is warp_mesh, mesh.n_faces)  # True 80
+        ```
         """
         return cls(mesh.points, mesh.indices, initial_cache={"warp_mesh": mesh})
 
@@ -503,12 +528,17 @@ class Trimesh:
 
         Examples
         --------
+        A small ray count goes through `warp_mesh`, whose BVH is the cheap one to build:
+
         ```python
-        mesh = od.Trimesh(v, f)
-        rays = 64
-        occlusion = od.visibility.ambient_occlusion(
-            mesh.mesh_for_rays(mesh.n_vertices * rays), mesh.vertices, n_rays=rays
-        )
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=2))
+        rays = 16
+        traced = mesh.mesh_for_rays(mesh.n_vertices * rays)
+        print(traced is mesh.warp_mesh)  # True
+        occlusion = od.visibility.ambient_occlusion(traced, mesh.vertices, n_rays=rays)
+        print(occlusion.shape)  # (162,)
         ```
         """
         if n_rays < 0:
@@ -647,6 +677,17 @@ class Trimesh:
         [`is_volume`][ordito.mesh.Trimesh.is_volume]
             The check for the precondition this quantity needs.
         [`trimesh.Trimesh.volume`][]
+
+        Examples
+        --------
+        Positive for outward-facing normals, negative once the winding is reversed:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box(extents=(1.0, 2.0, 3.0)))
+        print(f"{mesh.volume:.4f} {mesh.invert().volume:.4f}")  # 6.0000 -6.0000
+        ```
         """
         return od.measures.volume(self._vertices, self._faces)
 
@@ -698,6 +739,18 @@ class Trimesh:
         [`ordito.measures.moments`][]
         [`center_mass`][ordito.mesh.Trimesh.center_mass]
         [`trimesh.Trimesh.moment_inertia`][]
+
+        Examples
+        --------
+        A unit cube's tensor has ``1 / 6`` on each diagonal entry:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        inertia = mesh.moment_inertia
+        print(f"{float(inertia[0, 0]):.4f} {float(inertia[2, 2]):.4f}")  # 0.1667 0.1667
+        ```
         """
         _volume, center, inertia = od.measures.moments(self._vertices, self._faces)
         self._cache.setdefault("center_mass", center)
@@ -805,6 +858,17 @@ class Trimesh:
         See Also
         --------
         [`ordito.vertices.vertex_defects`][]
+
+        Examples
+        --------
+        By Gauss-Bonnet the defects of a closed genus-0 surface sum to ``4 * pi``:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        print(f"{mesh.vertex_defects.numpy().sum():.4f}")  # 12.5664
+        ```
         """
         return od.vertices.vertex_defects(self.n_vertices, self._faces, self.face_angles)
 
@@ -890,6 +954,17 @@ class Trimesh:
         --------
         [`ordito.edges.edges_unique`][]
         [`trimesh.Trimesh.edges_unique`][]
+
+        Examples
+        --------
+        A cube's 12 triangles have 36 directed edges but 18 undirected ones:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        print(mesh.edges.shape, mesh.edges_unique.shape)  # (36, 2) (18, 2)
+        ```
         """
         unique, inverse = od.edges.edges_unique(self._faces, n_vertices=self.n_vertices)
         self._cache.setdefault("edges_unique_inverse", inverse)
@@ -1050,6 +1125,18 @@ class Trimesh:
         [`ordito.adjacency.face_adjacency_convex`][]
         [`face_adjacency_projections`][ordito.mesh.Trimesh.face_adjacency_projections]
         [`trimesh.Trimesh.face_adjacency_convex`][]
+
+        Examples
+        --------
+        Every face pair on a convex solid meets convexly:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=1))
+        print(mesh.face_adjacency.shape)  # (120, 2)
+        print(bool(mesh.face_adjacency_convex.numpy().all()))  # True
+        ```
         """
         return od.adjacency.face_adjacency_convex(
             self._vertices,
@@ -1106,6 +1193,15 @@ class Trimesh:
         [`ordito.combine.split`][]
             Materializes the bodies this counts.
         [`trimesh.Trimesh.body_count`][]
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box()) + od.Trimesh(*od.creation.tetrahedron())
+        print(mesh.body_count)  # 2
+        ```
         """
         if self.n_faces == 0:
             return 0
@@ -1210,6 +1306,21 @@ class Trimesh:
         See Also
         --------
         [`ordito.boundary.boundary_loops`][]
+
+        Examples
+        --------
+        A tube has two boundary loops; a closed solid has none:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        profile = wp.array([[1.0, 0.0], [1.0, 1.0]], dtype=wp.vec2)
+        tube = od.Trimesh(*od.creation.revolve(profile, sections=8))
+        print([loop.size for loop in tube.boundary_loops])  # [8, 8]
+        print(od.Trimesh(*od.creation.box()).boundary_loops)  # []
+        ```
         """
         return od.boundary.boundary_loops(self._vertices, self._faces)
 
@@ -1440,6 +1551,23 @@ class Trimesh:
         [`mass_matrix_entries`][ordito.mesh.Trimesh.mass_matrix_entries]
         [`ordito.energies.k_harmonic`][]
             Takes this operator and `mass_matrix_entries` as its two arguments.
+
+        Examples
+        --------
+        Each row of the cotangent matrix sums to zero:
+
+        ```python
+        import numpy as np
+        import warp as wp
+
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=1))
+        ones = wp.full(mesh.n_vertices, 1.0, dtype=wp.float32)
+        row_sums = wp.zeros(mesh.n_vertices, dtype=wp.float32)
+        wp.sparse.bsr_mv(mesh.cotmatrix, ones, row_sums)
+        print(mesh.cotmatrix.shape, bool(np.abs(row_sums.numpy()).max() < 1e-5))  # (42, 42) True
+        ```
         """
         return od.laplacian.cotmatrix(
             self._vertices, self._faces, cot_entries=self.cotmatrix_entries
@@ -1463,6 +1591,17 @@ class Trimesh:
         --------
         [`ordito.laplacian.mass_matrix_entries`][]
         [`cotmatrix`][ordito.mesh.Trimesh.cotmatrix]
+
+        Examples
+        --------
+        The lumped masses add up to the surface area:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        print(f"{mesh.mass_matrix_entries.numpy().sum():.4f} {mesh.area:.4f}")  # 6.0000 6.0000
+        ```
         """
         return od.laplacian.mass_matrix_entries(
             self._vertices, self._faces, face_areas=self.face_areas
@@ -1619,6 +1758,22 @@ class Trimesh:
         --------
         [`ordito.heat.HeatSolver`][]
         [`release_factorizations`][ordito.mesh.Trimesh.release_factorizations]
+
+        Examples
+        --------
+        The solver is kept on the mesh, so repeated distance queries share its operators:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=3))
+        solver = mesh.heat_solver()
+        print(mesh.heat_solver() is solver)  # True
+        distances = od.heat.heat_geodesic(mesh, wp.array([0], dtype=wp.int32))
+        print(f"{distances.numpy().max():.1f}")  # 3.1
+        ```
         """
         solvers = cast(
             "dict[tuple[float | None, bool], od.heat.HeatSolver]",
@@ -1638,18 +1793,7 @@ class Trimesh:
         ([`harmonic`][ordito.parametrization.harmonic], [`tutte`][ordito.parametrization.tutte],
         [`lscm`][ordito.parametrization.lscm]) live there, so a call given this mesh that fixes the
         same vertices as a kept factorization runs no iteration. Build one ahead of the calls with
-        its [`factor`][ordito.parametrization.FixedVertexSolver.factor]:
-
-        ```python
-        import ordito as od
-
-        mesh = od.mesh.Trimesh(open_v, open_f)
-        loop = od.boundary.longest_boundary_loop(open_v, open_f)
-        mesh.fixed_vertex_solver().factor("harmonic", loop, k=2)
-        circle = od.parametrization.map_vertices_to_circle(open_v, loop)
-        uv = od.parametrization.harmonic(mesh, loop, circle, k=2)  # no iteration
-        uv_half = od.parametrization.harmonic(mesh, loop, circle, k=2)  # nor here
-        ```
+        its [`factor`][ordito.parametrization.FixedVertexSolver.factor], as the example shows.
 
         Returns
         -------
@@ -1667,6 +1811,23 @@ class Trimesh:
         --------
         [`heat_solver`][ordito.mesh.Trimesh.heat_solver]
         [`release_factorizations`][ordito.mesh.Trimesh.release_factorizations]
+
+        Examples
+        --------
+        Factor the harmonic system once; later maps fixing the same boundary reuse it:
+
+        ```python
+        import ordito as od
+
+        vertices, faces = od.creation.grid(count=(8, 8))
+        mesh = od.Trimesh(vertices, faces)
+        loop = od.boundary.longest_boundary_loop(vertices, faces)
+        print(mesh.fixed_vertex_solver().factor("harmonic", loop, k=2))  # True
+        circle = od.parametrization.map_vertices_to_circle(vertices, loop)
+        uv = od.parametrization.harmonic(mesh, loop, circle, k=2)
+        print(uv.shape)  # (64,)
+        uv_again = od.parametrization.harmonic(mesh, loop, circle, k=2)  # no iteration either
+        ```
         """
         solver = self._cache.get("_fixed_vertex_solver")
         if solver is None:
@@ -1707,6 +1868,18 @@ class Trimesh:
         [`ordito.proximity.signed_distance_on_mesh`][]
             A signed distance rather than a bit, from the same BVH.
         [`trimesh.Trimesh.contains`][]
+
+        Examples
+        --------
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=2))
+        points = wp.array([[0.0, 0.0, 0.0], [0.5, 0.5, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3)
+        print(mesh.contains(points).numpy())  # [ True  True False]
+        ```
         """
         return od.ray.contains_points(self.warp_mesh, points)
 
@@ -1742,6 +1915,17 @@ class Trimesh:
         [`ordito.sample.sample_surface_blue_noise`][]
             Sampling with a minimum separation rather than independently.
         [`trimesh.Trimesh.sample`][]
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        points, face_indices = mesh.sample(100, seed=0)
+        print(points.shape, face_indices.shape)  # (100,) (100,)
+        print(bool((abs(points.numpy()) <= 0.5 + 1e-6).all()))  # True
+        ```
         """
         return od.sample.sample_surface(
             self._vertices, self._faces, count, face_weight=self.face_areas, seed=seed
@@ -1814,20 +1998,29 @@ class Trimesh:
         [`transform_points`][ordito.transform.transform_points] with ``out=`` for in-place work on
         raw buffers.
 
-        Examples
-        --------
-        ```python
-        mesh = od.Trimesh(v, f)
-        spun = mesh.transform(od.transform.rotation_matrix((0.0, 0.0, 1.0), 0.5, mesh.centroid))
-        spun.cotmatrix  # carried from `mesh`, not reassembled
-        ```
-
         See Also
         --------
         [`ordito.transform.transform_mesh`][]
             The buffer-level form, without the cache.
         [`with_vertices`][ordito.mesh.Trimesh.with_vertices]
         [`invalidate`][ordito.mesh.Trimesh.invalidate]
+
+        Examples
+        --------
+        A rotation is rigid, so the assembled cotangent matrix is carried over, not rebuilt:
+
+        ```python
+        import math
+
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=2))
+        cotmatrix = mesh.cotmatrix
+        spun = mesh.transform(od.transform.rotation_matrix((0.0, 0.0, 1.0), math.pi / 3))
+        print(spun.cotmatrix is cotmatrix)  # True
+        moved = mesh.transform(od.transform.translation_matrix((0.0, 0.0, 5.0)))
+        print(f"{moved.bounds[0][2]:.4f} {moved.bounds[1][2]:.4f}")  # 4.0000 6.0000
+        ```
         """
         kind = str(
             od.transform.TransformKind(assume)
@@ -1980,14 +2173,6 @@ class Trimesh:
         decides per connected component and leaves an already-outward mesh alone; this flips
         unconditionally, so it turns a solid inside out.
 
-        Examples
-        --------
-        ```python
-        mesh = od.Trimesh(v, f)
-        flipped = mesh.invert()
-        assert flipped.volume < 0.0 < mesh.volume  # what was the outside is now the inside
-        ```
-
         See Also
         --------
         [`ordito.repair.reverse_winding`][]
@@ -1998,6 +2183,19 @@ class Trimesh:
         ``trimesh.Trimesh.invert``
             The same operation under trimesh's name for it, which mutates in place (no Sphinx
             inventory entry to link).
+
+        Examples
+        --------
+        What was the outside is now the inside:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        flipped = mesh.invert()
+        print(f"{mesh.volume:.4f} {flipped.volume:.4f}")  # 1.0000 -1.0000
+        print(flipped.vertices is mesh.vertices)  # True
+        ```
         """
         survived = {key: value for key, value in self._cache.items() if key in _INVERT_CARRY}
         for key in ("face_normals", "vertex_normals"):
@@ -2038,6 +2236,21 @@ class Trimesh:
         ------
         ValueError
             If ``new_vertices`` has a different vertex count than the current mesh.
+
+        Examples
+        --------
+        Scaling the positions keeps the topology caches and recomputes the geometry:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        edges = mesh.edges_unique
+        doubled = od.transform.transform_points(mesh.vertices, od.transform.scale_matrix(2.0))
+        bigger = mesh.with_vertices(doubled)
+        print(bigger.edges_unique is edges)  # True
+        print(f"{bigger.area:.4f}")  # 24.0000
+        ```
         """
         if new_vertices.size != self.n_vertices:
             raise ValueError(
@@ -2060,6 +2273,18 @@ class Trimesh:
         -------
         Trimesh
             New instance sharing `vertices` with an empty cache.
+
+        Examples
+        --------
+        Keeping only the first two triangles of a box; the vertex buffer is kept whole:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        front = mesh.with_faces(mesh.faces[:6])
+        print(front.n_vertices, front.n_faces, len(front.boundary_loops))  # 8 2 1
+        ```
         """
         return Trimesh(self._vertices, new_faces)
 
@@ -2090,6 +2315,20 @@ class Trimesh:
         [`ordito.selection.submesh_from_face_mask`][]
         [`split`][ordito.mesh.Trimesh.split]
         [`trimesh.Trimesh.submesh`][]
+
+        Examples
+        --------
+        Select faces by index or by mask; unused vertices are dropped:
+
+        ```python
+        import warp as wp
+
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        piece = mesh.submesh(wp.array([0, 1], dtype=wp.int32))
+        print(piece.n_vertices, piece.n_faces)  # 4 2
+        ```
         """
         if faces.dtype is wp.bool:
             parts = od.selection.submesh_from_face_mask(
@@ -2126,6 +2365,17 @@ class Trimesh:
         [`body_count`][ordito.mesh.Trimesh.body_count]
             The same number without materializing the bodies.
         [`trimesh.Trimesh.split`][]
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        first = od.Trimesh(*od.creation.box())
+        second = od.Trimesh(*od.creation.box(bounds=[[2.0, 0.0, 0.0], [3.0, 1.0, 1.0]]))
+        parts = (first + second).split()
+        print([part.n_faces for part in parts])  # [12, 12]
+        ```
         """
         return [
             Trimesh(vertices, faces)
@@ -2153,6 +2403,16 @@ class Trimesh:
         [`with_vertices`][ordito.mesh.Trimesh.with_vertices]
         [`invalidate`][ordito.mesh.Trimesh.invalidate]
         [`trimesh.Trimesh.copy`][]
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        duplicate = mesh.copy()
+        print(duplicate.vertices is mesh.vertices, duplicate.n_faces)  # False 12
+        ```
         """
         return Trimesh(_launch.clone(self._vertices), _launch.clone(self._faces))
 
@@ -2179,6 +2439,15 @@ class Trimesh:
             The inverse, up to ordering.
         ``trimesh.Trimesh.__add__``
             The same operator under trimesh's name for it (no Sphinx inventory entry to link).
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        combined = od.Trimesh(*od.creation.box()) + od.Trimesh(*od.creation.tetrahedron())
+        print(combined.n_vertices, combined.n_faces, combined.body_count)  # 12 16 2
+        ```
         """
         return Trimesh(
             *od.combine.concatenate([(self._vertices, self._faces), (other.vertices, other.faces)])
@@ -2198,6 +2467,19 @@ class Trimesh:
         [`heat_solver`][ordito.mesh.Trimesh.heat_solver]
         [`fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver]
         [`invalidate`][ordito.mesh.Trimesh.invalidate]
+
+        Examples
+        --------
+        The kept solver is forgotten, so the next call builds a fresh one:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=2))
+        solver = mesh.heat_solver()
+        mesh.release_factorizations()
+        print(mesh.heat_solver() is solver)  # False
+        ```
         """
         solvers = cast(
             "dict[tuple[float | None, bool], od.heat.HeatSolver]",
@@ -2216,6 +2498,21 @@ class Trimesh:
         Call this after mutating `vertices` or `faces` in place from a kernel — `Trimesh` has
         no way to detect such an edit on its own, so cached values would otherwise silently
         go stale.
+
+        Examples
+        --------
+        After an in-place edit of the vertex buffer, drop the stale cache:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.box())
+        print(f"{mesh.area:.4f}")  # 6.0000
+        double = od.transform.scale_matrix(2.0)
+        od.transform.transform_points(mesh.vertices, double, out=mesh.vertices)
+        mesh.invalidate()
+        print(f"{mesh.area:.4f}")  # 24.0000
+        ```
         """
         self._cache.clear()
 
@@ -2270,6 +2567,21 @@ def mesh_arguments(
         If neither a `Trimesh` nor both ``vertices`` and ``faces`` are given, if a `Trimesh` comes
         with ``vertices``, or if a `Trimesh` comes with more than ``n_positional`` arguments by
         position.
+
+    Examples
+    --------
+    Both calling forms resolve to a `Trimesh` and the arguments in one order:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mesh = od.Trimesh(vertices, faces)
+    resolved, owned, arguments = od.mesh.mesh_arguments("f", mesh, None, 0.5, (None,), 1)
+    print(resolved is mesh, owned, arguments)  # True True (0.5,)
+    resolved, owned, arguments = od.mesh.mesh_arguments("f", vertices, None, faces, (0.5,), 1)
+    print(resolved.n_faces, owned, arguments)  # 12 False (0.5,)
+    ```
     """
     if isinstance(mesh, Trimesh):
         if vertices is not None:

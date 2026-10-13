@@ -77,6 +77,16 @@ def aabb(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
     [`points_in_aabb`][ordito.bounds.points_in_aabb]
         The other direction: which points a box already in hand contains.
     [`ordito.reduce.minmax`][ordito.reduce.minmax]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    min_bound, max_bound = od.bounds.aabb(vertices)
+    print(min_bound, max_bound)  # [-1.0, -1.0, -1.0] [1.0, 1.0, 1.0]
+    ```
     """
     if points.size == 0:
         return (wp.vec3(math.inf, math.inf, math.inf), wp.vec3(-math.inf, -math.inf, -math.inf))
@@ -105,6 +115,19 @@ def aabb_union(
     --------
     [`aabb`][ordito.bounds.aabb]
     [`enclosing_diagonal`][ordito.bounds.enclosing_diagonal]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    a_min, a_max = wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0)
+    b_min, b_max = wp.vec3(-1.0, 0.5, 0.5), wp.vec3(0.5, 2.0, 0.5)
+    min_bound, max_bound = od.bounds.aabb_union(a_min, a_max, b_min, b_max)
+    print(min_bound, max_bound)  # [-1.0, 0.0, 0.0] [1.0, 2.0, 1.0]
+    ```
     """
     # Componentwise ``min`` / ``max`` in plain Python rather than ``wp.min`` / ``wp.max``: this
     # function does no device work at all, so Warp's Python-scope builtin dispatch was its entire
@@ -153,6 +176,21 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     --------
     [`aabb`][ordito.bounds.aabb]
     [`aabb_union`][ordito.bounds.aabb_union]
+
+    Examples
+    --------
+    A unit cube's diagonal is ``sqrt(3)``; a query point outside the cube stretches the box:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(f"{od.bounds.enclosing_diagonal(vertices):.4f}")  # 1.7321
+    queries = wp.array([[3.0, 0.0, 0.0]], dtype=wp.vec3)
+    print(f"{od.bounds.enclosing_diagonal(vertices, queries):.4f}")  # 3.7749
+    ```
     """
     require_same_device(points=points, other=other)
     # Both clouds reduce into **one** corner buffer, so the union costs one readback rather than
@@ -207,12 +245,6 @@ def points_in_aabb(
         ``(m,)`` ascending indices into ``points`` on ``points.device``, ``m`` the number inside.
         Empty when nothing is inside.
 
-    Examples
-    --------
-    ```python
-    inside = od.bounds.points_in_aabb(pts, wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0))
-    ```
-
     Notes
     -----
     Containment is **inclusive**: a point exactly on a face, edge or corner of the box is selected.
@@ -229,6 +261,22 @@ def points_in_aabb(
     [`crop_points`][ordito.bounds.crop_points]
         This plus the gather, when the points themselves are wanted.
     [`aabb`][ordito.bounds.aabb]
+
+    Examples
+    --------
+    The point on the box's corner is selected, the one past it is not:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array(
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.5, -0.5, 0.0]], dtype=wp.vec3
+    )
+    inside = od.bounds.points_in_aabb(points, wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0))
+    print(inside.numpy().tolist())  # [0, 2, 3]
+    ```
     """
     return _box_indices(points, min_bound, max_bound, None)
 
@@ -262,6 +310,20 @@ def points_in_aabb_mask(
         The index form, and where the boundary and ``nan`` conventions are documented.
     [`points_in_obb_mask`][ordito.bounds.points_in_obb_mask]
     [`ordito.array.flatnonzero`][ordito.array.flatnonzero]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array(
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.5, -0.5, 0.0]], dtype=wp.vec3
+    )
+    mask = od.bounds.points_in_aabb_mask(points, wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0))
+    print(mask.numpy().tolist())  # [True, False, True, True]
+    ```
     """
     out_mask = _launch.empty(points.size, dtype=wp.bool, device=points.device)
     if points.size == 0:
@@ -296,13 +358,6 @@ def points_in_obb(
         ``(m,)`` ascending indices into ``points`` on ``points.device``, ``m`` the number inside.
         Empty when nothing is inside.
 
-    Examples
-    --------
-    ```python
-    rotation, lower, upper = od.bounds.oriented_bounding_box(v, 256)
-    inside = od.bounds.points_in_obb(v, rotation, lower, upper)
-    ```
-
     Notes
     -----
     One rotated point per thread, then the identical six comparisons
@@ -321,6 +376,28 @@ def points_in_obb(
         The axis-aligned counterpart, and the shared conventions.
     [`oriented_bounding_box`][ordito.bounds.oriented_bounding_box]
         Where the ``(rotation, min_bound, max_bound)`` triple comes from.
+
+    Examples
+    --------
+    A ``1 x 2 x 4`` box turned 30 degrees about ``z``: the point at ``x = 0.9`` lies inside the
+    axis-aligned box but outside the oriented one:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    c, s = math.cos(math.pi / 6), math.sin(math.pi / 6)
+    spin = wp.mat44(c, -s, 0.0, 0.0, s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+    vertices, faces = od.creation.box(extents=(1.0, 2.0, 4.0), transform=spin)
+    rotation, lower, upper = od.bounds.oriented_bounding_box(vertices)
+    points = wp.array([[0.0, 0.0, 0.0], [0.9, 0.0, 0.0]], dtype=wp.vec3)
+    print(od.bounds.points_in_obb(points, rotation, lower, upper).numpy().tolist())  # [0]
+    min_bound, max_bound = od.bounds.aabb(vertices)
+    print(od.bounds.points_in_aabb(points, min_bound, max_bound).numpy().tolist())  # [0, 1]
+    ```
     """
     return _box_indices(points, min_bound, max_bound, rotation)
 
@@ -354,6 +431,24 @@ def points_in_obb_mask(
     [`points_in_obb`][ordito.bounds.points_in_obb]
         The index form, and where the conventions are documented.
     [`points_in_aabb_mask`][ordito.bounds.points_in_aabb_mask]
+
+    Examples
+    --------
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    c, s = math.cos(math.pi / 6), math.sin(math.pi / 6)
+    spin = wp.mat44(c, -s, 0.0, 0.0, s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+    vertices, faces = od.creation.box(extents=(1.0, 2.0, 4.0), transform=spin)
+    rotation, lower, upper = od.bounds.oriented_bounding_box(vertices)
+    points = wp.array([[0.0, 0.0, 0.0], [0.9, 0.0, 0.0]], dtype=wp.vec3)
+    mask = od.bounds.points_in_obb_mask(points, rotation, lower, upper)
+    print(mask.numpy().tolist())  # [True, False]
+    ```
     """
     out_mask = _launch.empty(points.size, dtype=wp.bool, device=points.device)
     if points.size == 0:
@@ -396,12 +491,6 @@ def crop_points(
         with [`ordito.array.gather`][ordito.array.gather] instead of re-running the test. This is
         the second return rather than an option because the compaction has already computed it.
 
-    Examples
-    --------
-    ```python
-    kept, indices = od.bounds.crop_points(pts, wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0))
-    ```
-
     See Also
     --------
     [`crop_mesh`][ordito.bounds.crop_mesh]
@@ -409,6 +498,23 @@ def crop_points(
     [`points_in_aabb`][ordito.bounds.points_in_aabb]
         The selection alone, when the points are not needed.
     [`ordito.array.gather`][ordito.array.gather]
+
+    Examples
+    --------
+    Cropping a unit icosphere to its ``x >= 0`` half keeps 89 of its 162 vertices:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    kept, indices = od.bounds.crop_points(
+        vertices, wp.vec3(0.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)
+    )
+    print(kept.shape, indices.shape)  # (89,) (89,)
+    print(f"{kept.numpy()[:, 0].min():.4f}")  # 0.0000
+    ```
     """
     device = points.device
     inclusive, n_kept = _scanned_box_flags(points, min_bound, max_bound, rotation)
@@ -460,13 +566,6 @@ def crop_mesh(
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    rotation, lower, upper = od.bounds.oriented_bounding_box(v, 256)
-    sub_v, sub_f = od.bounds.crop_mesh(v, f, lower, upper, rotation=rotation)
-    ```
-
     Notes
     -----
     A face straddling the box boundary is **dropped**, not clipped: the result is a subset of the
@@ -475,18 +574,44 @@ def crop_mesh(
     a boolean -- for a flush cut, intersect the mesh with the box as a solid instead.
 
     To keep the straddling faces instead, take the mask and pass it on directly, which is the
-    ``face_mode="any"`` rule:
-
-    ```python
-    mask = od.bounds.points_in_aabb_mask(v, wp.vec3(-1.0, -1.0, 0.0), wp.vec3(1.0, 1.0, 3.0))
-    sub_v, sub_f = od.selection.submesh_from_vertex_mask(v, f, mask, face_mode="any")
-    ```
+    ``face_mode="any"`` rule; the second example below shows it.
 
     See Also
     --------
     [`crop_points`][ordito.bounds.crop_points]
     [`ordito.selection.submesh_from_vertex_mask`][ordito.selection.submesh_from_vertex_mask]
         The face selection this delegates to, where ``face_mode`` is exposed.
+
+    Examples
+    --------
+    Cropping a unit icosphere to its ``x >= 0`` half keeps only the faces wholly inside:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    lower, upper = wp.vec3(0.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)
+    sub_vertices, sub_faces = od.bounds.crop_mesh(vertices, faces, lower, upper)
+    print(sub_vertices.shape, sub_faces.shape[0] // 3)  # (89,) 152
+    ```
+
+    Keeping the faces that straddle the box as well, with the vertex mask:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    lower, upper = wp.vec3(0.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)
+    mask = od.bounds.points_in_aabb_mask(vertices, lower, upper)
+    sub_vertices, sub_faces = od.selection.submesh_from_vertex_mask(
+        vertices, faces, mask, face_mode="any"
+    )
+    print(sub_vertices.shape, sub_faces.shape[0] // 3)  # (111,) 198
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     vertex_mask = _box_mask(vertices, min_bound, max_bound, rotation)
@@ -644,6 +769,29 @@ def oriented_bounding_box(
         Takes this triple as returned, to select the points a box contains.
     [`trimesh.bounds.oriented_bounds`][]
     ``igl.oriented_bounding_box``
+
+    Examples
+    --------
+    The oriented box recovers a turned ``1 x 2 x 4`` box exactly, at half the volume of its
+    axis-aligned box:
+
+    ```python
+    import math
+
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    c, s = math.cos(math.pi / 6), math.sin(math.pi / 6)
+    spin = wp.mat44(c, -s, 0.0, 0.0, s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+    vertices, faces = od.creation.box(extents=(1.0, 2.0, 4.0), transform=spin)
+    rotation, lower, upper = od.bounds.oriented_bounding_box(vertices)
+    print(sorted(round(float(side), 2) for side in upper - lower))  # [1.0, 2.0, 4.0]
+    print(f"{np.prod(upper - lower):.2f}")  # 8.00
+    min_bound, max_bound = od.bounds.aabb(vertices)
+    print(f"{np.prod(max_bound - min_bound):.2f}")  # 16.66
+    ```
     """
     if rotations < 1:
         raise ValueError(f"rotations must be >= 1, got {rotations}")

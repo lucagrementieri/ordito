@@ -98,6 +98,23 @@ def principal_curvature(
     precision moves the returned value there by a large *relative* amount, while barely moving it
     anywhere the surface actually curves. Compare a small ``PV`` against the mesh's own curvature
     scale rather than against zero.
+
+    Examples
+    --------
+    Both principal curvatures of a sphere of radius 2 are ``1 / 2``, and the two directions are
+    orthogonal:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3, radius=2.0)
+    pd1, pd2, pv1, pv2 = od.curvature.principal_curvature(vertices, faces, radius=2)
+    print(pv1.shape)  # (642,)
+    print(f"{np.median(pv1.numpy()):.2f} {np.median(pv2.numpy()):.2f}")  # 0.51 0.51
+    print(f"{np.abs((pd1.numpy() * pd2.numpy()).sum(axis=1)).max():.4f}")  # 0.0000
+    ```
     """
     require_same_device(
         vertices=vertices, faces=faces, face_normals=face_normals, face_areas=face_areas
@@ -205,6 +222,23 @@ def discrete_gaussian_curvature(
         pointwise defect that converges under refinement.
     [`discrete_mean_curvature`][ordito.curvature.discrete_mean_curvature]
         The mean-curvature measure over the same ball.
+
+    Examples
+    --------
+    A ball containing a whole closed sphere measures its total Gaussian curvature, ``4 * pi``
+    (Gauss-Bonnet):
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    angles = od.triangles.face_angles(vertices, faces)
+    points = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3)
+    gauss = od.curvature.discrete_gaussian_curvature(points, vertices, faces, angles, 2.0)
+    print(f"{gauss.numpy()[0]:.4f}")  # 12.5663
+    ```
     """
     require_same_device(points=points, vertices=vertices, faces=faces, face_angles=face_angles)
     device = points.device
@@ -285,6 +319,24 @@ def discrete_mean_curvature(
     --------
     [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature]
     [`trimesh.curvature.discrete_mean_curvature_measure`][]
+
+    Examples
+    --------
+    A ball containing the whole unit sphere measures close to ``4 * pi``; a ball that reaches no
+    edge measures zero:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    points = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3)
+    mean = od.curvature.discrete_mean_curvature(points, vertices, faces, 2.0)
+    print(f"{mean.numpy()[0]:.3f}")  # 12.487
+    mean = od.curvature.discrete_mean_curvature(points, vertices, faces, 0.5)
+    print(f"{mean.numpy()[0]:.3f}")  # 0.000
+    ```
     """
     require_same_device(
         points=points,

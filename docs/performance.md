@@ -1,11 +1,37 @@
 # Performance
 
-ordito exists because mesh processing is embarrassingly parallel and almost every CPU-bound
-geometry library leaves that parallelism on the table. This page explains *why* the GPU path is
-fast in the shapes that matter, and how to reproduce every number this project publishes —
-it deliberately does not repeat this project's own internal, hardware-pinned engineering notes
-verbatim: a number is only worth quoting here alongside the mesh, the library, and the hardware it
-was measured against, and it is kept current rather than copied once and left to go stale.
+This page starts with what to do in your own code to get the speed ordito is built for, then
+explains where that speed comes from and how to reproduce the published comparisons.
+
+## Practical tips
+
+**The first call into a module compiles its kernels.** Warp compiles each kernel module to
+native code the first time a function needs it on a device, and caches the result on disk
+(`~/.cache/warp` by default; `wp.config.kernel_cache_dir` moves it). Right after installing or
+upgrading, the first call of a function takes about a second for each kernel module it touches
+that has not been compiled yet, a few seconds for a pipeline such as remeshing. Every later call,
+in this process or any later one, loads the cached binary in milliseconds. When you time something, time the second call. In a service or a container, warm
+the cache once at build time by running the pipeline on a small input, and keep the cache
+directory.
+
+**Keep data on the device between calls.** Every function returns arrays on the device its
+inputs came from, so a chain of calls never leaves the GPU. A `.numpy()`, `float(...)` or
+`print(...)` in the middle of a loop makes the host wait for the GPU each time; move it after the
+loop.
+
+**Pass what you already know.** Some functions read a value back from the device only to size an
+output (the vertex count, from the largest face index). Where you know it, pass it: many
+topology functions take `n_vertices=` (see [Concepts](concepts.md#host-syncs-are-budgeted)).
+
+**Reuse a [`Trimesh`][ordito.mesh.Trimesh] for repeated work on one mesh.** Its derived
+quantities are computed once and cached. The sparse operators behind the heat method and the
+parametrizations are kept on the mesh too, and from the second solve on a sparse Cholesky
+factorization of them, so a loop over many source sets on one mesh pays the setup once (see
+[Geodesic distance fields](cookbook/geodesic-distance.md#many-source-sets-on-one-mesh)).
+
+**Small meshes do not need a GPU.** Each call costs tens of microseconds of launch overhead
+whatever the mesh size, so on a mesh of a few hundred triangles the CPU device can be as fast.
+The GPU wins as soon as there is enough work to fill it, from tens of thousands of elements up.
 
 ## Why the GPU path is fast
 
@@ -53,20 +79,11 @@ expose — every exclusion is written down at the point it's made, not left impl
 See [Benchmarks](benchmarks.md) for a curated set of these comparisons rendered as charts, each
 library named by its own logo.
 
-## What "fast" means here
-
-A speed claim on this project is only meaningful next to three things: **which library** it beats,
-**on what mesh** (size and shape both matter — connected-component count, boundary length, and
-triangle aspect ratio move the needle as often as raw triangle count does), and **on what
-hardware**. A bare "GPU-accelerated" adjective is not a number, and a number with no mesh or
-hardware attached is not reproducible. Every claim in this project's own documentation follows
-that discipline; hold any number quoted elsewhere about ordito to the same standard before
-trusting it.
-
 ## Where ordito is not the fastest option
 
-Not every operation benefits from a GPU. A handful of ordito's own functions are launch-bound
-rather than compute-bound at realistic mesh sizes — a short, sequential DP over one small
-boundary loop, or a per-mesh CPU seed step a parallel algorithm can't usefully replace — and lose
-to a fast single-threaded C++ implementation there. This isn't hidden: where it's true, it's
-measured and stated rather than smoothed over, exactly like every other number on this page.
+A speed claim means something only next to the library it is compared with, the mesh (its size,
+but also its number of components, its boundary length and its triangle shapes) and the hardware.
+Not every operation benefits from a GPU. A few functions have little parallel work at realistic
+sizes, such as a sequential dynamic program over one small boundary loop, and a fast
+single-threaded C++ implementation beats them. The [Benchmarks](benchmarks.md) page shows those
+cases alongside the others.

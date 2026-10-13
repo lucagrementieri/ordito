@@ -1356,6 +1356,34 @@ def test_resample_uniform_coarser_is_smaller(sphere_irregular: tuple[tm.Trimesh,
     assert counts == sorted(counts, reverse=True)
 
 
+@pytest.mark.parametrize(
+    ("primitive", "voxel_size"), [("box", 0.05), ("box", 0.07), ("icosphere", None)]
+)
+def test_resample_uniform_is_watertight_when_nodes_land_on_the_surface(
+    device: str, primitive: str, voxel_size: float | None
+) -> None:
+    """
+    Not a library comparison: the docstring's "always closed", on lattices that test it.
+
+    A unit box on a ``0.05`` grid puts whole planes of lattice nodes exactly on its faces, where
+    the distance is zero. Without an edge margin the extracted vertices land on those nodes, the
+    slivers around them are deleted as degenerate, and the surface opens (non-manifold on CUDA,
+    five components on CPU). ``0.07`` is the control arm: no node lands on a face. The icosphere at
+    the default voxel size is the case that read as self-intersecting on CUDA alone.
+    """
+    if primitive == "box":
+        vertices_wp, faces_wp = od.creation.box(device=device)
+    else:
+        vertices_wp, faces_wp = od.creation.icosphere(subdivisions=2, device=device)
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
+        vertices_wp, faces_wp, voxel_size=voxel_size
+    )
+    assert od.validation.is_watertight(out_vertices_wp, out_faces_wp)
+    labels_np = od.adjacency.face_connected_component_labels(out_faces_wp).numpy()
+    assert np.unique(labels_np).shape[0] == 1
+    assert not (~od.triangles.face_nondegenerate_mask(out_vertices_wp, out_faces_wp).numpy()).any()
+
+
 def test_resample_uniform_invalid(device: str) -> None:
     sphere_tm = tm.creation.icosphere(subdivisions=1, radius=1.0)
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)

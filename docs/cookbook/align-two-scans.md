@@ -53,14 +53,16 @@ def report(name, matrix):
 #    fit a uniform scale and allow a mirror image.
 matrix, _, cost = od.registration.procrustes(scan, scan_clean, scale=False, reflection=False)
 report("procrustes", matrix)  # ~2e-4 rad: only the noise limits it
-print("  mean squared residual:", cost)  # ~1.2e-5 = 3 * 0.002**2, the noise variance
+# The mean squared residual sits at the noise variance, 3 * 0.002**2 = 1.2e-5.
+print(f"mean squared residual: {cost:.1e}")  # mean squared residual: 1.2e-05
 
 # 2. No correspondences: point-to-point ICP against the surface, from the identity.
 matrix, _, cost = od.registration.icp(scan, vertices, faces)
 report("icp, default stop", matrix)  # ~9e-2 rad (5 degrees): stopped too early, see below
 matrix, _, cost = od.registration.icp(scan, vertices, faces, max_iterations=200, threshold=1e-9)
 report("icp, tighter stop", matrix)  # ~5e-4 rad
-print("  rms distance to surface:", np.sqrt(cost))  # ~0.002: down to the noise level
+# Down to the 2 mm noise level.
+print(f"rms distance to surface: {np.sqrt(cost):.3f}")  # rms distance to surface: 0.002
 
 # 3. Point-to-plane ICP: same inputs, converges in far fewer iterations on a smooth surface.
 matrix, _, cost = od.registration.icp_point_to_plane(scan, vertices, faces)

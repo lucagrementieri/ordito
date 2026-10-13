@@ -96,6 +96,23 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
     **CPU** device and only the flips run on ``points.device`` -- a sequential sweep is genuinely
     faster on the CPU than as a single CUDA thread. A float64 in-circle determinant is used rather
     than exact predicates, so near-cocircular inputs may resolve either ambiguous diagonal.
+
+    Examples
+    --------
+    The corners of a square and its centre triangulate into four triangles, each using the centre:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5]], dtype=wp.vec2
+    )
+    faces = od.reconstruction.delaunay_triangulation(points)
+    print(faces.shape[0] // 3)  # 4
+    print(bool((faces.numpy().reshape(-1, 3) == 4).any(axis=1).all()))  # True
+    ```
     """
     device = points.device
     n = points.size
@@ -276,6 +293,22 @@ def triangulate_point_cloud(
     --------
     [`fill_min_weight`][ordito.holes.fill_min_weight]
     [`ordito.repair.remove_degenerate_faces`][]
+
+    Examples
+    --------
+    The vertices of a sphere, with their positions as normals, reconnect into one closed surface:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    points, _ = od.creation.icosphere(subdivisions=3)
+    vertices, faces = od.reconstruction.triangulate_point_cloud(points, points)
+    print(od.validation.is_watertight(vertices, faces))  # True
+    labels = od.adjacency.face_connected_component_labels(faces).numpy()
+    print(np.unique(labels).shape[0])  # 1
+    ```
     """
     require_same_device(points=points, normals=normals)
     if num_neighbours > 0 and radius > 0.0:
@@ -540,6 +573,22 @@ def screened_poisson(
     level set is genuinely uncertain and can move between runs on the same input. So ``0`` is for
     comparing *against* a screened reconstruction, not for producing one -- and do not pin a count
     taken from it.
+
+    Examples
+    --------
+    A closed surface from the oriented vertices of a sphere, on a coarse lattice:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    points, _ = od.creation.icosphere(subdivisions=3)
+    vertices, faces = od.reconstruction.screened_poisson(points, points, depth=5, full_depth=4)
+    print(od.validation.is_watertight(vertices, faces))  # True
+    labels = od.adjacency.face_connected_component_labels(faces).numpy()
+    print(np.unique(labels).shape[0])  # 1
+    ```
     """
     require_same_device(points=points, normals=normals)
     if not (3 <= full_depth <= depth <= 10):
@@ -605,10 +654,10 @@ def screened_poisson(
             odt.as_array3d(solution.reshape((res, res, res)), wp.float32),
             iso,
             bounds=(cube_lower, cube_upper),
-            edge_margin=_poisson_edge_margin(cube_size, res),
+            edge_margin=_lattice_edge_margin(cube_size / float(res - 1)),
         )
 
-    # Both extractions keep every vertex ``_poisson_edge_margin`` of an edge off the lattice nodes,
+    # Both extractions keep every vertex ``_lattice_edge_margin`` of an edge off the lattice nodes,
     # which is what makes the surface free of degenerate faces: without it a vertex lands within
     # rounding of a node wherever the level set grazes one, and the slivers around it fall under
     # ``face_nondegenerate_mask``'s absolute tolerance -- dozens a call at depth 9, and removing
@@ -1383,7 +1432,7 @@ def _screened_poisson_band(
                 *composite,
                 cube_lower,
                 wp.vec3(spacing, spacing, spacing),
-                wp.float32(_poisson_edge_margin(cube_size, res_f)),
+                wp.float32(_lattice_edge_margin(cube_size / float(res_f - 1))),
                 table,
                 counts,
             ],
@@ -1640,20 +1689,6 @@ def _marching_cubes_table(device: str) -> wp.array[wp.int32]:
     return _launch.array(kernel_levelset.MARCHING_CUBES_TABLE, dtype=wp.int32, device=device)
 
 
-def _poisson_edge_margin(cube_size: float, res: int) -> float:
-    """
-    ``levelset.marching_cubes``' ``edge_margin`` for a ``res``-node lattice over the Poisson cube.
-
-    A margin ``m`` bounds every triangle's altitudes below by about ``0.7 * m`` lattice spacings
-    (the worst triangle of the case table at ``m = 0.1``), and ``face_nondegenerate_mask`` rejects
-    an altitude under ``TOLERANCE_MERGE``, an absolute length. So the margin is the smallest of
-    ``1e-3`` of an edge and what clears that tolerance sixteen-fold, capped at ``0.1``: a vertex
-    moves at most a thousandth of a cell at every ordinary scale.
-    """
-    spacing = cube_size / float(res - 1)
-    return min(0.1, max(1e-3, 16.0 * TOLERANCE_MERGE / spacing))
-
-
 def resample_uniform(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1721,6 +1756,24 @@ def resample_uniform(
     The grid is padded by three voxels beyond the bounding box *plus* ``offset``, so a dilated level
     set is never clipped by the lattice boundary and the extracted surface is always closed. That
     padding is why the memory cost is a little above ``(extent / voxel_size) ** 3``.
+
+    Examples
+    --------
+    Re-extract a unit cube on a ``0.07`` grid, and a shell offset ``0.1`` outside it:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    cube, cube_faces = od.creation.box()
+    vertices, faces = od.reconstruction.resample_uniform(cube, cube_faces, voxel_size=0.07)
+    print(od.validation.is_watertight(vertices, faces))  # True
+    labels = od.adjacency.face_connected_component_labels(faces).numpy()
+    print(np.unique(labels).shape[0])  # 1
+    shell, _ = od.reconstruction.resample_uniform(cube, cube_faces, voxel_size=0.07, offset=0.1)
+    print(f"{shell.numpy()[:, 0].max():.1f}")  # 0.6
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -1759,12 +1812,29 @@ def resample_uniform(
         (n_x, n_y, n_z),
         bounds=(grid_lower, grid_upper),
         sign_mode=sign_mode,
+        edge_margin=_lattice_edge_margin(voxel_size),
     )
-    # Warp's extractor emits a vertex per crossing per cell, so coincident duplicates are normal
-    # rather than exceptional; welding them is what makes the result a closed surface. Hole filling
-    # is off (``crit_hole_length=0``): a level set of a signed field is already closed, so any hole
-    # here would be a symptom worth surfacing rather than patching over.
+    # The margin keeps every vertex off the lattice nodes. Without it a node landing on the level
+    # set (a unit cube on a 0.05 grid puts whole planes of nodes on its faces) leaves slivers the
+    # cleanup's degenerate-face filter deletes, and deleting them opens the surface, since their
+    # neighbours do not share their vertices. Hole filling is off (``crit_hole_length=0``): a level
+    # set of a signed field is already closed, so any hole here would be a symptom worth surfacing
+    # rather than patching over.
     return _clean_reconstruction(out_vertices, out_faces, 0.0)
+
+
+def _lattice_edge_margin(spacing: float) -> float:
+    """
+    ``levelset.marching_cubes``' ``edge_margin`` for a lattice of the given node ``spacing``.
+
+    A margin ``m`` bounds every triangle's altitudes below by about ``0.7 * m`` lattice spacings
+    (the worst triangle of the case table at ``m = 0.1``), and ``face_nondegenerate_mask`` rejects
+    an altitude under ``TOLERANCE_MERGE``, an absolute length. So the margin is the smallest of
+    ``1e-3`` of an edge and what clears that tolerance sixteen-fold, capped at ``0.1``: a vertex
+    moves at most a thousandth of a cell at every ordinary scale. Shared by the Poisson
+    extractions and ``resample_uniform``, the reconstructions that extract a level set.
+    """
+    return min(0.1, max(1e-3, 16.0 * TOLERANCE_MERGE / spacing))
 
 
 def ball_pivoting(
@@ -1877,6 +1947,22 @@ def ball_pivoting(
     can still leave a seam. Regions sampled too sparsely for the ball to rest are left as holes by
     construction (widen ``radius`` or set ``crit_hole_length``); for an implicit surface that is
     watertight by construction use [`screened_poisson`][ordito.reconstruction.screened_poisson].
+
+    Examples
+    --------
+    A ball a little wider than the spacing of a sphere's vertices rolls over all of them:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    points, _ = od.creation.icosphere(subdivisions=3)
+    vertices, faces = od.reconstruction.ball_pivoting(points, points, radius=0.15)
+    print(od.validation.is_watertight(vertices, faces))  # True
+    labels = od.adjacency.face_connected_component_labels(faces).numpy()
+    print(np.unique(labels).shape[0])  # 1
+    ```
     """
     require_same_device(points=points, normals=normals)
     device = points.device

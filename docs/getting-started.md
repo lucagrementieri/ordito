@@ -2,15 +2,17 @@
 
 ## Install
 
-```bash
-uv add ordito
-```
+=== "pip"
 
-or with `pip`:
+    ```bash
+    pip install ordito
+    ```
 
-```bash
-pip install ordito
-```
+=== "uv"
+
+    ```bash
+    uv add ordito
+    ```
 
 Requires Python ≥ 3.11 and `warp-lang` ≥ 1.18. A CUDA-capable GPU is recommended but not required —
 every function also runs on Warp's CPU backend, with the same code. Warp's PyPI wheels are
@@ -62,7 +64,7 @@ each is asked for:
 
 ```python
 mesh = od.Trimesh(vertices, faces)
-print(mesh.area)  # 12.551353454589844
+print(f"{mesh.area:.4f}")  # 12.5514
 print(mesh.is_watertight)  # True
 print(mesh.euler_characteristic)  # 2
 ```
@@ -119,6 +121,69 @@ one is present) — nothing crossed back to the host between `submesh_from_face_
 `concatenate`, `make_solid`, and `isotropic_remesh`. That's the "device follows the data" design
 principle in practice; see [Concepts](concepts.md) for the rest of it.
 
+## Getting data in and out
+
+ordito computes on Warp arrays, and everything else in Python speaks NumPy, files or PyTorch
+tensors. The conversions happen at the edges of a pipeline, once each way.
+
+**From NumPy, or any library that hands you NumPy arrays** (trimesh, Open3D, libigl, PyVista):
+[`io.mesh_from_numpy`][ordito.io.mesh_from_numpy] accepts `(n_vertices, 3)` positions and
+`(n_faces, 3)` faces of any dtype and returns a [`Trimesh`][ordito.mesh.Trimesh]. Going back,
+`.numpy()` copies an array to the host, and `reshape(-1, 3)` restores the row layout of faces:
+
+```python
+import numpy as np
+import trimesh
+
+import ordito as od
+
+mesh_tm = trimesh.creation.icosphere(subdivisions=2)
+mesh = od.io.mesh_from_numpy(mesh_tm.vertices, mesh_tm.faces)
+print(mesh.n_vertices, mesh.n_faces)  # 162 320
+
+faces_rows = mesh.faces.numpy().reshape(-1, 3)  # (n_faces, 3), as trimesh stores them
+print(np.array_equal(faces_rows, mesh_tm.faces))  # True
+```
+
+**From a file**: install the I/O extra (`pip install "ordito[io]"`) and call
+[`io.load_mesh_data`][ordito.io.load_mesh_data], which reads any format
+[meshio](https://github.com/nschloe/meshio) does (OBJ, PLY, STL, OFF, VTK, glTF, ...) and returns
+the vertices, faces and whatever per-vertex attributes the file carries. ordito has no writer of
+its own; meshio writes the arrays back out:
+
+```python
+import pathlib
+import tempfile
+
+import meshio
+
+import ordito as od
+
+vertices, faces = od.creation.torus(major_radius=1.0, minor_radius=0.3)
+with tempfile.TemporaryDirectory() as folder:
+    path = pathlib.Path(folder) / "torus.ply"
+    cells = [("triangle", faces.numpy().reshape(-1, 3))]
+    meshio.write(path, meshio.Mesh(vertices.numpy(), cells))
+    data = od.io.load_mesh_data(path)
+print(data["vertices"].shape == vertices.shape, data["faces"].shape == faces.shape)  # True True
+```
+
+**From and to PyTorch**, without a copy: `wp.from_torch` wraps a tensor's memory as a Warp array,
+and `wp.to_torch` does the reverse. The two views share storage, so a training loop can call
+ordito on its tensors directly:
+
+```python
+import torch
+import warp as wp
+
+import ordito as od
+
+points_torch = torch.rand(1_000, 3, device=str(wp.get_device()))
+points = wp.from_torch(points_torch, dtype=wp.vec3)  # no copy: shape (1_000,) of vec3
+lower, upper = od.bounds.aabb(points)
+print(all(0.0 <= value <= 1.0 for value in (*lower, *upper)))  # True
+```
+
 ## Where to next
 
 - **[Concepts](concepts.md)** — the four ideas worth understanding before writing anything
@@ -128,4 +193,5 @@ principle in practice; see [Concepts](concepts.md) for the rest of it.
   watertight surfaces, geodesic distance fields, aligning two scans.
 - **[Migrating from another library](migrating-from/index.md)** — already know trimesh, libigl,
   Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here for a function-by-function map.
-- **[API Reference](api/ordito/creation.md)** — every public module, generated from its own docstrings.
+- **[API Reference](reference.md)** — a task index and a map of every module; each module page
+  documents every function with a runnable example.

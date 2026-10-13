@@ -128,6 +128,25 @@ def procrustes(
     **The returned matrix is column-vector, which is the transpose of pytorch3d's.**
     ``pytorch3d.ops.corresponding_points_alignment`` solves the row-vector form ``s X R + T = Y``,
     so its ``R`` is this matrix's linear block divided by the scale and *transposed*.
+
+    Examples
+    --------
+    Recover a known rigid motion from corresponding points:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box(extents=(3.0, 2.0, 1.0))
+    source, _ = od.sample.sample_surface(vertices, faces, 1000, seed=0)
+    motion = od.transform.rotation_matrix((0.0, 0.0, 1.0), 0.1, center=(0.2, 0.1, 0.0))
+    target = od.transform.transform_points(source, motion)
+    matrix, transformed, cost = od.registration.procrustes(source, target, scale=False)
+    error = od.transform.matrix_to_numpy(matrix) - od.transform.matrix_to_numpy(motion)
+    print(bool(np.abs(error).max() < 1e-3))  # True
+    print(f"{cost:.6f}")  # 0.000000
+    ```
     """
     require_same_device(a=a, b=b, weights=weights)
     n = a.size
@@ -338,6 +357,28 @@ def icp(
     [`procrustes`][ordito.registration.procrustes]
     [`icp_point_to_plane`][ordito.registration.icp_point_to_plane]
     [`trimesh.registration.icp`][]
+
+    Examples
+    --------
+    Recover a small rigid motion of a box from points sampled on the unmoved box; no
+    correspondences are given:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box(extents=(3.0, 2.0, 1.0))
+    source, _ = od.sample.sample_surface(vertices, faces, 1000, seed=0)
+    motion = od.transform.rotation_matrix((0.0, 0.0, 1.0), 0.1, center=(0.2, 0.1, 0.0))
+    moved = od.transform.transform_points(vertices, motion)
+    matrix, aligned, cost = od.registration.icp(
+        source, moved, faces, max_iterations=50, threshold=1e-9
+    )
+    error = od.transform.matrix_to_numpy(matrix) - od.transform.matrix_to_numpy(motion)
+    print(bool(np.abs(error).max() < 1e-3))  # True
+    print(f"{cost:.6f}")  # 0.000000
+    ```
     """
     require_same_device(
         a=a, target_vertices=target_vertices, target_faces=target_faces, initial=initial
@@ -572,6 +613,25 @@ def icp_point_to_plane(
     [`icp`][ordito.registration.icp]
     [`estimate_normals`][ordito.points.estimate_normals]
     [`normals_at_closest_faces`][ordito.proximity.normals_at_closest_faces]
+
+    Examples
+    --------
+    Recover a small rigid motion of a box from points sampled on the unmoved box:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box(extents=(3.0, 2.0, 1.0))
+    source, _ = od.sample.sample_surface(vertices, faces, 1000, seed=0)
+    motion = od.transform.rotation_matrix((0.0, 0.0, 1.0), 0.1, center=(0.2, 0.1, 0.0))
+    moved = od.transform.transform_points(vertices, motion)
+    matrix, aligned, cost = od.registration.icp_point_to_plane(source, moved, faces)
+    error = od.transform.matrix_to_numpy(matrix) - od.transform.matrix_to_numpy(motion)
+    print(bool(np.abs(error).max() < 1e-3))  # True
+    print(f"{cost:.6f}")  # 0.000000
+    ```
     """
     require_same_device(
         a=a,

@@ -72,6 +72,21 @@ def sample_fibonacci_sphere(count: int, device: wp.DeviceLike = None) -> wp.arra
     See Also
     --------
     [`sample_fibonacci_hemisphere`][ordito.sample.sample_fibonacci_hemisphere]
+
+    Examples
+    --------
+    The directions are unit vectors whose mean is close to zero:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    directions = od.sample.sample_fibonacci_sphere(1000).numpy()
+    print(directions.shape)  # (1000, 3)
+    print(f"{np.linalg.norm(directions, axis=1).max():.4f}")  # 1.0000
+    print(f"{np.linalg.norm(directions.mean(axis=0)):.2f}")  # 0.00
+    ```
     """
     return _fibonacci_lattice(count, 2.0, device)
 
@@ -104,6 +119,16 @@ def sample_fibonacci_hemisphere(count: int, device: wp.DeviceLike = None) -> wp.
     See Also
     --------
     [`sample_fibonacci_sphere`][ordito.sample.sample_fibonacci_sphere]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    directions = od.sample.sample_fibonacci_hemisphere(500).numpy()
+    print(directions.shape)  # (500, 3)
+    print(bool((directions[:, 2] > 0.0).all()))  # True
+    ```
     """
     return _fibonacci_lattice(count, 1.0, device)
 
@@ -147,6 +172,20 @@ def sample_fibonacci_cone(
     --------
     [`sample_fibonacci_hemisphere`][ordito.sample.sample_fibonacci_hemisphere]
     [`ordito.visibility.shape_diameter`][ordito.visibility.shape_diameter]
+
+    Examples
+    --------
+    Every direction is within ``30`` degrees of ``+z``:
+
+    ```python
+    import math
+
+    import ordito as od
+
+    directions = od.sample.sample_fibonacci_cone(200, math.radians(30.0)).numpy()
+    print(directions.shape)  # (200, 3)
+    print(bool((directions[:, 2] >= math.cos(math.radians(30.0)) - 1e-6).all()))  # True
+    ```
     """
     if not 0.0 < half_angle <= math.pi:
         raise ValueError(f"half_angle must be in (0, pi] radians, got {half_angle}")
@@ -230,6 +269,22 @@ def sample_surface(
         faces and ``count > 0``, or if the total face weight is not positive.
     RuntimeError
         If ``vertices``, ``faces`` and ``face_weight`` are not all on one device.
+
+    Examples
+    --------
+    Every sample lies on the unit cube's surface, on the face it reports:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    samples, face_index = od.sample.sample_surface(vertices, faces, 1000, seed=0)
+    print(samples.shape, face_index.shape)  # (1000,) (1000,)
+    print(np.abs(samples.numpy()).max(axis=1).round(4).min())  # 0.5
+    print(0 <= face_index.numpy().min() and face_index.numpy().max() < 12)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, face_weight=face_weight)
     n_faces = faces.size // 3
@@ -334,6 +389,18 @@ def sample_surface_poisson_disk(
         If ``init_factor < 1`` or if the mesh has no faces.
     RuntimeError
         If ``vertices``, ``faces`` and ``face_weight`` are not all on one device.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    samples, face_index = od.sample.sample_surface_poisson_disk(vertices, faces, 200, seed=0)
+    print(samples.shape)  # (200,)
+    _, spacing = od.neighbors.query_nearest(samples, samples, 2)
+    print(f"{spacing.numpy()[:, 1].min():.1f}")  # 0.2
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, face_weight=face_weight)
     device = vertices.device
@@ -540,6 +607,20 @@ def sample_surface_blue_noise(
     [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk] instead.
 
     A mesh with no faces returns two empty arrays rather than raising.
+
+    Examples
+    --------
+    No two samples are closer than ``radius``; the count follows from the area:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    samples, face_index = od.sample.sample_surface_blue_noise(vertices, faces, 0.2, seed=0)
+    _, spacing = od.neighbors.query_nearest(samples, samples, 2)
+    print(bool(spacing.numpy()[:, 1].min() >= 0.2))  # True
+    print(150 < samples.shape[0] < 300)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -852,6 +933,21 @@ def sample_volume(
         e.g. a torus), or the mesh has no faces and ``count > 0``.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
+
+    Examples
+    --------
+    Every sample lies inside the unit cube:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    samples = od.sample.sample_volume(vertices, faces, 1000, seed=0)
+    print(samples.shape)  # (1000,)
+    print(bool((np.abs(samples.numpy()) <= 0.5).all()))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -950,6 +1046,15 @@ def resolve_seed(seed: int | None) -> int:
         only the *pairing rule* is worth sharing and
         [`adjacency.require_paired_adjacency`][ordito.adjacency.require_paired_adjacency] is that
         rule on its own.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    print(od.sample.resolve_seed(7))  # 7
+    print(0 <= od.sample.resolve_seed(None) < 2**31)  # True
+    ```
     """
     if seed is None:
         return secrets.randbelow(2**31)

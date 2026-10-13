@@ -72,6 +72,18 @@ def average_onto_faces(
     ------
     RuntimeError
         If ``faces`` and ``vertex_values`` are not all on one device.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 1, 3, 2], dtype=wp.int32)
+    values = wp.array([0.0, 3.0, 6.0, 9.0], dtype=wp.float32)
+    print(od.interpolation.average_onto_faces(faces, values).numpy())  # [3. 6.]
+    ```
     """
     require_same_device(faces=faces, vertex_values=vertex_values)
     n_faces = faces.size // 3
@@ -126,6 +138,22 @@ def average_onto_vertices(
         The same scatter-sum-then-divide over edges instead of faces. The two disagree on a
         **zero-valence** vertex on purpose, each mirroring its own igl function: this one divides
         unguarded and yields ``nan``, that one guards and yields ``0``.
+
+    Examples
+    --------
+    Vertices 1 and 2 are shared by both faces and take the mean of their values; vertex 4 is in no
+    face and is ``nan``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 1, 3, 2], dtype=wp.int32)
+    face_values = wp.array([2.0, 4.0], dtype=wp.float32)
+    values = od.interpolation.average_onto_vertices(5, faces, face_values)
+    print(values.numpy())  # [ 2.  3.  3.  4. nan]
+    ```
     """
     require_same_device(faces=faces, face_values=face_values)
     device = faces.device
@@ -199,6 +227,26 @@ def average_from_edges_onto_vertices(
         The same scatter-sum-then-divide over faces instead of edges. The two disagree on a
         **zero-valence** vertex on purpose, each mirroring its own igl function: this one guards
         the division and yields ``0``, that one divides unguarded and yields ``nan``.
+
+    Examples
+    --------
+    One triangle whose edge ``j`` is opposite corner ``j``: each corner averages the two edges it
+    touches, and the unreferenced vertex 3 stays ``0``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2], dtype=wp.int32)
+    edges = wp.array([[0, 1, 2]], dtype=wp.int32)
+    orientation = wp.array([[1, 1, 1]], dtype=wp.int32)
+    edge_values = wp.array([1.0, 2.0, 3.0], dtype=wp.float32)
+    values = od.interpolation.average_from_edges_onto_vertices(
+        4, faces, edges, orientation, edge_values
+    )
+    print(values.numpy())  # [2.5 2.  1.5 0. ]
+    ```
     """
     require_same_device(
         faces=faces, edges=edges, edges_orientation=edges_orientation, edge_values=edge_values
@@ -289,6 +337,27 @@ def transfer_onto_vertices(
     [`average_onto_vertices`][ordito.interpolation.average_onto_vertices]
     [`ordito.proximity.closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh]
     [`ordito.triangles.barycentric_to_points`][ordito.triangles.barycentric_to_points]
+
+    Examples
+    --------
+    A field linear on the source triangles transfers exactly onto a finer grid over the same square:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    source_vertices, source_faces = od.creation.grid(count=(3, 3))
+    target_vertices, _ = od.creation.grid(count=(9, 9))
+    x = wp.array(source_vertices.numpy()[:, 0], dtype=wp.float32)
+    values, distance = od.interpolation.transfer_onto_vertices(
+        source_vertices, source_faces, x, target_vertices
+    )
+    print(values.shape)  # (81,)
+    print(np.allclose(values.numpy(), target_vertices.numpy()[:, 0]))  # True
+    print(distance.numpy().max())  # 0.0
+    ```
     """
     require_same_device(
         source_vertices=source_vertices,
@@ -369,14 +438,6 @@ def transfer_through_operator(
     RuntimeError
         If ``values`` and ``operator`` are not on one device.
 
-    Examples
-    --------
-    ```python
-    field = od.vertices.vertex_normals(v, f)  # per-vertex field
-    fine_v, fine_f, prolongation = od.remesh.subdivide_loop(v, f, return_operator=True)
-    fine_field = od.interpolation.transfer_through_operator(field, prolongation)
-    ```
-
     Notes
     -----
     An output row the operator leaves empty gets the dtype's zero rather than uninitialized memory,
@@ -402,6 +463,25 @@ def transfer_through_operator(
     [`ordito.array.gather`][ordito.array.gather]
         What to use instead where the edit *can* report an index map -- ``split_edges`` and
         ``subdivide_to_size`` both do, and a gather through their ``index`` is the whole transfer.
+
+    Examples
+    --------
+    Carrying the vertex positions through Loop subdivision's operator reproduces the subdivided
+    vertices:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=1)
+    fine_vertices, fine_faces, prolongation = od.remesh.subdivide_loop(
+        vertices, faces, return_operator=True
+    )
+    print(prolongation.shape)  # (162, 42)
+    moved = od.interpolation.transfer_through_operator(vertices, prolongation)
+    print(np.allclose(moved.numpy(), fine_vertices.numpy(), atol=1e-6))  # True
+    ```
     """
     require_same_device(values=values, operator=operator)
     device = values.device
@@ -504,6 +584,27 @@ def interpolate_from_points(
     [`transfer_onto_vertices`][ordito.interpolation.transfer_onto_vertices]
     [`query_ball_with_offsets`][ordito.neighbors.query_ball_with_offsets]
     [`query_nearest`][ordito.neighbors.query_nearest]
+
+    Examples
+    --------
+    A query on a source takes its value, one in between blends the two, one out of reach gets
+    ``null_value``; with ``k=1`` every query takes its nearest source's value:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    sources = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3)
+    values = wp.array([0.0, 10.0], dtype=wp.float32)
+    queries = wp.array([[0.0, 0.0, 0.0], [0.4, 0.0, 0.0], [5.0, 0.0, 0.0]], dtype=wp.vec3)
+    blended = od.interpolation.interpolate_from_points(
+        sources, values, queries, radius=1.0, null_value=-1.0
+    )
+    print(blended.numpy().round(2))  # [ 0.   3.1 -1. ]
+    nearest = od.interpolation.interpolate_from_points(sources, values, queries, radius=1.0, k=1)
+    print(nearest.numpy().round(2))  # [ 0.  0. 10.]
+    ```
     """
     require_same_device(
         source_points=source_points, source_values=source_values, query_points=query_points

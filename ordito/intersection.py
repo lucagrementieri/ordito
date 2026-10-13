@@ -96,6 +96,28 @@ def segments_with_plane(
         If ``start_points`` and ``end_points`` do not have the same shape.
     RuntimeError
         If ``start_points`` and ``end_points`` are not all on one device.
+
+    Examples
+    --------
+    The plane ``z = 0`` against a segment crossing it and one wholly above it, whose line still
+    meets the plane once ``line_segments=False``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    starts = wp.array([[0.0, 0.0, -1.0], [1.0, 0.0, 1.0]], dtype=wp.vec3)
+    ends = wp.array([[0.0, 0.0, 3.0], [1.0, 0.0, 2.0]], dtype=wp.vec3)
+    normal, origin = wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)
+    points, valid = od.intersection.segments_with_plane(starts, ends, normal, origin)
+    print(valid.numpy().tolist())  # [True, False]
+    print(points.numpy()[0])  # [0. 0. 0.]
+    _, valid = od.intersection.segments_with_plane(
+        starts, ends, normal, origin, line_segments=False
+    )
+    print(valid.numpy().tolist())  # [True, True]
+    ```
     """
     require_same_device(start_points=start_points, end_points=end_points)
     if start_points.shape != end_points.shape:
@@ -176,6 +198,26 @@ def mesh_with_plane(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
+
+    Examples
+    --------
+    A horizontal plane through a unit cube cuts each of its four sides, two triangles each, and the
+    section is the unit square of perimeter 4:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    lines, face_index = od.intersection.mesh_with_plane(
+        vertices, faces, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.1), return_faces=True
+    )
+    print(lines.shape, face_index.shape)  # (8, 2) (8,)
+    segments = lines.numpy()
+    print(f"{np.linalg.norm(segments[:, 1] - segments[:, 0], axis=1).sum():.4f}")  # 4.0000
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -273,6 +315,23 @@ def marching_triangles(
     [`heat_geodesic`][ordito.heat.heat_geodesic]
     [`polyline_length`][ordito.polyline.polyline_length]
     ``potpourri3d.MarchingTrianglesSolver``
+
+    Examples
+    --------
+    The height field ``z`` on a unit sphere: its zero level set is the equator, one closed curve of
+    length close to ``2 * pi``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    heights = wp.array(vertices.numpy()[:, 2], dtype=wp.float32)
+    curves, closed = od.intersection.marching_triangles(vertices, faces, heights, 0.0)
+    print(len(curves), closed)  # 1 [True]
+    print(f"{od.polyline.polyline_length(curves[0], closed=True):.2f}")  # 6.27
+    ```
     """
     linked = _marching_curves(vertices, faces, values, isovalue, n_vertices)
     if linked is None:
@@ -356,6 +415,24 @@ def marching_triangles_with_offsets(
     [`heat_geodesic`][ordito.heat.heat_geodesic]
     [`polyline_length`][ordito.polyline.polyline_length]
     ``potpourri3d.MarchingTrianglesSolver``
+
+    Examples
+    --------
+    The equator of a unit sphere as one packed closed curve:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    heights = wp.array(vertices.numpy()[:, 2], dtype=wp.float32)
+    points, offsets, closed = od.intersection.marching_triangles_with_offsets(
+        vertices, faces, heights
+    )
+    print(offsets.numpy().tolist(), closed.numpy().tolist())  # [0, 94] [True]
+    print(points.shape)  # (94,)
+    ```
     """
     device = vertices.device
     linked = _marching_curves(vertices, faces, values, isovalue, n_vertices)
@@ -766,6 +843,23 @@ def mesh_with_mesh(
         If ``max_triangle_collisions`` is less than 1.
     RuntimeError
         If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+
+    Examples
+    --------
+    Two overlapping unit cubes; the intersection curve has total length 4:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices_a, faces_a = od.creation.box()
+    vertices_b, faces_b = od.creation.box(bounds=[[0.0, -0.2, -0.3], [1.0, 0.8, 0.7]])
+    lines = od.intersection.mesh_with_mesh(vertices_a, faces_a, vertices_b, faces_b)
+    print(lines.shape)  # (14, 2)
+    segments = lines.numpy()
+    print(f"{np.linalg.norm(segments[:, 1] - segments[:, 0], axis=1).sum():.4f}")  # 4.0000
+    ```
     """
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
@@ -841,19 +935,6 @@ def mesh_collision_pairs(
         If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mesh_a`` and ``mesh_b`` are
         not all on one device.
 
-    Examples
-    --------
-    ```python
-    pairs = od.intersection.mesh_collision_pairs(v, f, v, f)
-    ```
-
-    A mesh queried repeatedly keeps its BVH in an [`ordito.Trimesh`][ordito.mesh.Trimesh]:
-
-    ```python
-    mesh = od.Trimesh(v, f)
-    pairs = od.intersection.mesh_collision_pairs(v, f, v, f, mesh_a=mesh.warp_mesh)
-    ```
-
     See Also
     --------
     [`collision_masks`][ordito.intersection.collision_masks]
@@ -862,6 +943,35 @@ def mesh_collision_pairs(
         The intersection curve, when the contact geometry is wanted and not just its existence.
     [`ordito.proximity.closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh]
         What to reach for when the meshes do *not* touch and the clearance is the question.
+
+    Examples
+    --------
+    Two overlapping unit cubes cross; a third, apart from the first, does not:
+
+    ```python
+    import ordito as od
+
+    vertices_a, faces_a = od.creation.box()
+    vertices_b, faces_b = od.creation.box(bounds=[[0.0, -0.2, -0.3], [1.0, 0.8, 0.7]])
+    pairs = od.intersection.mesh_collision_pairs(vertices_a, faces_a, vertices_b, faces_b)
+    print(pairs.shape)  # (15, 2)
+    vertices_c, faces_c = od.creation.box(bounds=[[2.0, 0.0, 0.0], [3.0, 1.0, 1.0]])
+    apart = od.intersection.mesh_collision_pairs(vertices_a, faces_a, vertices_c, faces_c)
+    print(apart.shape)  # (0, 2)
+    ```
+
+    A mesh queried repeatedly keeps its BVH in an [`ordito.Trimesh`][ordito.mesh.Trimesh]:
+
+    ```python
+    import ordito as od
+
+    mesh_a = od.Trimesh(*od.creation.box())
+    vertices_b, faces_b = od.creation.box(bounds=[[0.0, -0.2, -0.3], [1.0, 0.8, 0.7]])
+    pairs = od.intersection.mesh_collision_pairs(
+        mesh_a.vertices, mesh_a.faces, vertices_b, faces_b, mesh_a=mesh_a.warp_mesh
+    )
+    print(pairs.shape)  # (15, 2)
+    ```
     """
     require_same_device(
         vertices_a=vertices_a,
@@ -1013,6 +1123,20 @@ def collision_masks(
     --------
     [`mesh_collision_pairs`][ordito.intersection.mesh_collision_pairs]
         The pair list this reduces, when *which* faces meet matters.
+
+    Examples
+    --------
+    Two overlapping unit cubes: six of the twelve faces of each cross the other:
+
+    ```python
+    import ordito as od
+
+    vertices_a, faces_a = od.creation.box()
+    vertices_b, faces_b = od.creation.box(bounds=[[0.0, -0.2, -0.3], [1.0, 0.8, 0.7]])
+    mask_a, mask_b = od.intersection.collision_masks(vertices_a, faces_a, vertices_b, faces_b)
+    print(mask_a.shape)  # (12,)
+    print(int(mask_a.numpy().sum()), int(mask_b.numpy().sum()))  # 6 6
+    ```
     """
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
@@ -1218,6 +1342,25 @@ def face_box_candidates(
     --------
     [`mesh_collision_pairs`][ordito.intersection.mesh_collision_pairs]
     [`ordito.validation.face_self_intersecting_mask`][ordito.validation.face_self_intersecting_mask]
+
+    Examples
+    --------
+    The faces of one cube against a BVH over an overlapping one. No face has more than four
+    candidates, so the default stride of 16 stands, while ``capacity=2`` grows to 4:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices_a, faces_a = od.creation.box()
+    vertices_b, faces_b = od.creation.box(bounds=[[0.0, -0.2, -0.3], [1.0, 0.8, 0.7]])
+    target = wp.Mesh(points=vertices_b, indices=faces_b)
+    targets, counts, stride = od.intersection.face_box_candidates(vertices_a, faces_a, target)
+    print(targets.shape, counts.shape, stride)  # (192,) (12,) 16
+    _, _, stride = od.intersection.face_box_candidates(vertices_a, faces_a, target, capacity=2)
+    print(stride)  # 4
+    ```
     """
     require_same_device(
         query_vertices=query_vertices, query_faces=query_faces, target_mesh=target_mesh
@@ -1312,6 +1455,24 @@ def slice_mesh_with_plane(
     [`clip_mesh_with_field`][ordito.intersection.clip_mesh_with_field]
     [`mesh_with_plane`][ordito.intersection.mesh_with_plane]
     [`trimesh.intersections.slice_faces_plane`][]
+
+    Examples
+    --------
+    The upper half of a unit cube: its top face and half of each side, area ``1 + 4 * 0.5``, left
+    open along the cut:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    kept_vertices, kept_faces = od.intersection.slice_mesh_with_plane(
+        vertices, faces, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)
+    )
+    _, areas = od.triangles.face_normals_and_areas(kept_vertices, kept_faces)
+    print(f"{areas.numpy().sum():.4f}")  # 3.0000
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -1418,18 +1579,6 @@ def split_mesh_with_plane(
     Equivalent to VTK's ``vtkClipPolyData`` with ``GenerateClippedOutput``, which pyvista exposes as
     ``PolyData.clip(..., return_clipped=True)``.
 
-    Examples
-    --------
-    Split at ``z = 0`` and confirm both halves are non-empty and together account for every face:
-
-    ```python
-    split_v, split_f, above = od.intersection.split_mesh_with_plane(
-        v, f, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)
-    )
-    n_above = int(od.array.flatnonzero(above).shape[0])
-    print(0 < n_above < int(above.shape[0]))
-    ```
-
     See Also
     --------
     [`slice_mesh_with_plane`][ordito.intersection.slice_mesh_with_plane]
@@ -1437,6 +1586,25 @@ def split_mesh_with_plane(
     [`ordito.remesh.split_edges`][ordito.remesh.split_edges]
     [`ordito.remesh.subdivide_to_size`][ordito.remesh.subdivide_to_size]
     [`ordito.selection.submesh_from_face_mask`][ordito.selection.submesh_from_face_mask]
+
+    Examples
+    --------
+    A horizontal plane crosses a unit cube's four vertical edges and the diagonals of its four
+    sides, adding eight vertices; the refined cube stays watertight, with both halves in it:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    split_vertices, split_faces, above = od.intersection.split_mesh_with_plane(
+        vertices, faces, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.1)
+    )
+    print(split_vertices.shape)  # (16,)
+    print(above.shape, int(above.numpy().sum()))  # (28,) 14
+    print(od.validation.is_watertight(split_vertices, split_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -1615,26 +1783,50 @@ def clip_mesh_with_field(
     ``scalar >= value`` as this does, and its capped clip likewise closes only the cut and leaves
     the input's points unmerged.
 
-    Examples
-    --------
-    Keep the geodesic disk of radius 1 around vertex 0, sealed into a solid. The field is the
-    ``float64`` one [`heat_geodesic`][ordito.heat.heat_geodesic] returns, and the region
-    wanted is the *near* side, so the field enters negated:
-
-    ```python
-    source = wp.array([0], dtype=wp.int32, device=v.device)
-    distance = od.heat.heat_geodesic(v, f, source)
-    negated = wp.empty_like(distance)
-    wp.map(wp.neg, distance, out=negated)
-    disk_v, disk_f = od.intersection.clip_mesh_with_field(v, f, negated, -1.0, cap=True)
-    print(od.validation.is_edge_manifold(disk_f, allow_boundary_edges=False))
-    ```
-
     See Also
     --------
     [`marching_triangles`][ordito.intersection.marching_triangles]
     [`slice_mesh_with_plane`][ordito.intersection.slice_mesh_with_plane]
     [`fill_min_weight`][ordito.holes.fill_min_weight]
+
+    Examples
+    --------
+    Keep the part of a unit sphere above ``z = 0.1``; with ``cap=True`` the cut is sealed and the
+    result is closed:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    heights = wp.array(vertices.numpy()[:, 2], dtype=wp.float32)
+    kept_vertices, kept_faces = od.intersection.clip_mesh_with_field(vertices, faces, heights, 0.1)
+    print(od.validation.is_watertight(kept_vertices, kept_faces))  # False
+    kept_vertices, kept_faces = od.intersection.clip_mesh_with_field(
+        vertices, faces, heights, 0.1, cap=True
+    )
+    print(od.validation.is_watertight(kept_vertices, kept_faces))  # True
+    ```
+
+    Keep the geodesic disk of radius 1 around vertex 0, sealed into a solid. The field is the
+    ``float64`` one [`heat_geodesic`][ordito.heat.heat_geodesic] returns, and the region wanted is
+    the *near* side, so the field enters negated:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    distance = od.heat.heat_geodesic(vertices, faces, wp.array([0], dtype=wp.int32))
+    negated = wp.empty_like(distance)
+    wp.map(wp.neg, distance, out=negated)
+    disk_vertices, disk_faces = od.intersection.clip_mesh_with_field(
+        vertices, faces, negated, -1.0, cap=True
+    )
+    print(od.validation.is_edge_manifold(disk_faces, allow_boundary_edges=False))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, values=values)
     device = vertices.device
@@ -1856,6 +2048,26 @@ def split_faces_along_field(
         The plane special case of the clip.
     [`faces_left_of_contour`][ordito.selection.faces_left_of_contour]
         The mask this returns for free, for a contour that was *given* rather than just created.
+
+    Examples
+    --------
+    Cut a unit sphere along ``z = 0.1``: the crossings are appended to the vertices, and the
+    result is as watertight as the input:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    heights = wp.array(vertices.numpy()[:, 2], dtype=wp.float32)
+    new_vertices, new_faces, positive = od.intersection.split_faces_along_field(
+        vertices, faces, heights, 0.1
+    )
+    print(vertices.shape, new_vertices.shape)  # (162,) (208,)
+    print(positive.shape, int(positive.numpy().sum()))  # (412,) 190
+    print(od.validation.is_watertight(new_vertices, new_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, values=values)
     device = vertices.device

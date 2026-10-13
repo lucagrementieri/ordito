@@ -94,6 +94,22 @@ def is_closed(polyline: wp.array[wp.vec3]) -> bool:
     --------
     [`polyline_open`][ordito.polyline.polyline_open]
     [`polyline_close`][ordito.polyline.polyline_close]
+
+    Examples
+    --------
+    Four corners of a unit square are open until the first point is repeated at the end:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    print(od.polyline.is_closed(square))  # False
+    print(od.polyline.is_closed(od.polyline.polyline_close(square)))  # True
+    ```
     """
     n = polyline.size
     if n < 2:
@@ -140,6 +156,20 @@ def polyline_open(polyline: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     See Also
     --------
     [`polyline_close`][ordito.polyline.polyline_close]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    closed = od.polyline.polyline_close(square)
+    print(closed.shape, od.polyline.polyline_open(closed).shape)  # (5,) (4,)
+    ```
     """
     n = polyline.size
     if not is_closed(polyline):
@@ -165,6 +195,21 @@ def polyline_close(polyline: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     See Also
     --------
     [`polyline_open`][ordito.polyline.polyline_open]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    closed = od.polyline.polyline_close(square)
+    print(closed.shape)  # (5,)
+    print(closed.numpy()[-1])  # [0. 0. 0.]
+    ```
     """
     n = polyline.size
     if n < 2 or is_closed(polyline):
@@ -208,6 +253,22 @@ def polyline_length(polyline: wp.array[wp.vec3], *, closed: bool = False) -> flo
     --------
     [`cumulative_arc_length`][ordito.polyline.cumulative_arc_length]
         The same lengths, unreduced.
+
+    Examples
+    --------
+    The open square has three unit sides; closing it adds the fourth:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    print(od.polyline.polyline_length(square))  # 3.0
+    print(od.polyline.polyline_length(square, closed=True))  # 4.0
+    ```
     """
     device = polyline.device
     n_points = polyline.size
@@ -263,6 +324,19 @@ def polyline_centroid(polyline: wp.array[wp.vec3], *, closed: bool = False) -> w
     [`polyline_normal`][ordito.polyline.polyline_normal]
     [`polyline_radius`][ordito.polyline.polyline_radius]
         Both default their plane to this centroid.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    print(od.polyline.polyline_centroid(square, closed=True))  # [0.5, 0.5, 0.0]
+    ```
     """
     n_points = polyline.size
     # ``closed`` is the wrap-around segment, which the kernel reaches by index rather than by a
@@ -303,6 +377,21 @@ def polyline_normal(polyline: wp.array[wp.vec3]) -> wp.vec3:
     ------
     ValueError
         If the polyline has fewer than three points.
+
+    Examples
+    --------
+    A counter-clockwise loop in the ``xy`` plane has the ``+z`` normal:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    print(od.polyline.polyline_normal(square))  # [0.0, 0.0, 1.0]
+    ```
     """
     n = polyline.size
     # A non-degenerate loop normal needs three distinct vertices, and a polyline whose last vertex
@@ -356,6 +445,21 @@ def polyline_point_distance(
     ------
     RuntimeError
         If ``points`` and ``polyline`` are not all on one device.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    points = wp.array([[0.5, 0.5, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3)
+    distances = od.polyline.polyline_point_distance(points, square, closed=True)
+    print(distances.numpy())  # [0.5 1. ]
+    ```
     """
     require_same_device(points=points, polyline=polyline)
     device = points.device
@@ -438,6 +542,23 @@ def polyline_upsample(
         The same subdivision with the new points placed on a fitted arc instead of the chord.
     [`polyline_downsample`][ordito.polyline.polyline_downsample]
     [`polyline_resample`][ordito.polyline.polyline_resample]
+
+    Examples
+    --------
+    Each unit side of the closed square is split into four pieces:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    upsampled = od.polyline.polyline_upsample(square, 0.25, closed=True)
+    print(upsampled.shape)  # (16,)
+    print(upsampled.numpy()[1])  # [0.25 0.   0.  ]
+    ```
     """
     return _upsample(polyline, step_size, closed, kernel_polyline.upsample_gather, [])
 
@@ -481,6 +602,24 @@ def polyline_smooth_upsample(
     --------
     [`polyline_upsample`][ordito.polyline.polyline_upsample]
         The straight-chord version, which is what this reduces to on the end segments.
+
+    Examples
+    --------
+    The inserted points bulge outward from the square's sides, following the corners' turn:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    straight = od.polyline.polyline_upsample(square, 0.25, closed=True)
+    rounded = od.polyline.polyline_smooth_upsample(square, 0.25, closed=True)
+    print(rounded.shape)  # (16,)
+    print(f"{straight.numpy()[2, 1]:.3f} {rounded.numpy()[2, 1]:.3f}")  # 0.000 -0.207
+    ```
     """
     # An *explicitly* closed input (last point already equal to the first) is smoothed as a loop
     # too, per the module docstring -- so a caller does not have to pass ``closed=True`` for a ring
@@ -557,6 +696,19 @@ def cumulative_arc_length(polyline: wp.array[wp.vec3]) -> wp.array[wp.float32]:
     [`polyline_length`][ordito.polyline.polyline_length]
     [`polyline_downsample`][ordito.polyline.polyline_downsample]
     [`polyline_resample`][ordito.polyline.polyline_resample]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    print(od.polyline.cumulative_arc_length(square).numpy())  # [0. 1. 2. 3.]
+    ```
     """
     n_points = polyline.size
     if n_points < 2:
@@ -596,6 +748,19 @@ def polyline_downsample(
     [`polyline_simplify`][ordito.polyline.polyline_simplify]
         Drops points by *shape* error rather than by spacing.
     [`polyline_upsample`][ordito.polyline.polyline_upsample]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    line = wp.array([[0.1 * i, 0.0, 0.0] for i in range(11)], dtype=wp.vec3)
+    kept = od.polyline.polyline_downsample(line, 0.25)
+    print(kept.shape)  # (4,)
+    print(kept.numpy()[:, 0].round(2))  # [0.  0.3 0.6 0.9]
+    ```
     """
     device = polyline.device
     if polyline.size < 2:
@@ -722,6 +887,23 @@ def polyline_simplify(
     --------
     [`polyline_downsample`][ordito.polyline.polyline_downsample]
         Drops points by *spacing* rather than by shape error.
+
+    Examples
+    --------
+    The near-collinear point ``1`` is within ``tol`` of the chord and is dropped; the peak is kept:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    polyline = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.01, 0.0], [2.0, 0.0, 0.0], [3.0, 1.0, 0.0], [4.0, 0.0, 0.0]],
+        dtype=wp.vec3,
+    )
+    simplified, indices = od.polyline.polyline_simplify(polyline, 0.1)
+    print(indices.numpy().tolist())  # [0, 2, 3, 4]
+    ```
     """
     device = polyline.device
     n = polyline.size
@@ -860,6 +1042,23 @@ def polyline_resample(
     --------
     [`polyline_upsample`][ordito.polyline.polyline_upsample]
         Targets a step size instead of a point count.
+
+    Examples
+    --------
+    Seven points evenly spaced along the open square's arc length of 3:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    resampled = od.polyline.polyline_resample(square, 7)
+    print(resampled.shape)  # (7,)
+    print(resampled.numpy()[1])  # [0.5 0.  0. ]
+    ```
     """
     device = polyline.device
     n = polyline.size
@@ -977,6 +1176,23 @@ def polyline_radius(
     [`polyline_normal`][ordito.polyline.polyline_normal]
         The two defaults for the plane.
     [`median`][ordito.reduce.median]
+
+    Examples
+    --------
+    Each side of a 4 x 2 rectangle contributes its point nearest the centre, so the smallest
+    radius reaches the long sides and the largest the short ones:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    rectangle = wp.array(
+        [[-2.0, -1.0, 0.0], [2.0, -1.0, 0.0], [2.0, 1.0, 0.0], [-2.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    print(od.polyline.polyline_radius(rectangle, "min", closed=True))  # 1.0
+    print(od.polyline.polyline_radius(rectangle, "max", closed=True))  # 2.0
+    ```
     """
     if reduction not in ("min", "max", "mean", "median"):
         # Before the closure test, which is device work and a readback: a rejected argument
@@ -1110,6 +1326,23 @@ def polyline_angles(polyline: wp.array[wp.vec3], *, closed: bool = False) -> wp.
     --------
     [`is_closed`][ordito.polyline.is_closed]
         What decides the wrap-around when ``closed`` is left ``False``.
+
+    Examples
+    --------
+    An open polyline's endpoints get ``0``; closing the square turns every corner by ``pi / 2``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    square = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3
+    )
+    print(od.polyline.polyline_angles(square).numpy().round(4))  # [0.     1.5708 1.5708 0.    ]
+    angles = od.polyline.polyline_angles(square, closed=True)
+    print(angles.numpy().round(4))  # [1.5708 1.5708 1.5708 1.5708]
+    ```
     """
     device = polyline.device
     n = polyline.size
@@ -1193,6 +1426,22 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
     --------
     [`polyline_normal`][ordito.polyline.polyline_normal]
     [`polyline_close`][ordito.polyline.polyline_close]
+
+    Examples
+    --------
+    An L-shaped hexagon is filled with ``6 - 2 = 4`` triangles over its own vertices:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    l_shape = wp.array(
+        [[0, 0, 0], [2, 0, 0], [2, 1, 0], [1, 1, 0], [1, 2, 0], [0, 2, 0]], dtype=wp.vec3
+    )
+    faces = od.polyline.polyline_triangulate(l_shape)
+    print(faces.shape)  # (4, 3)
+    ```
     """
     device = polyline.device
     n = polyline.size
@@ -1262,6 +1511,25 @@ def polyline_triangulate_from_offsets(
     See Also
     --------
     [`polyline_triangulate`][ordito.polyline.polyline_triangulate]
+
+    Examples
+    --------
+    A square and a triangle packed into one buffer give two triangles and one:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    polylines = wp.array(
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [3, 0, 0], [4, 0, 0], [3, 1, 0]], dtype=wp.vec3
+    )
+    offsets = wp.array([0, 4, 7], dtype=wp.int32)
+    faces, face_offsets = od.polyline.polyline_triangulate_from_offsets(polylines, offsets)
+    print(faces.shape)  # (3, 3)
+    print(face_offsets.numpy().tolist())  # [0, 2, 3]
+    print(sorted(faces.numpy()[2].tolist()))  # [4, 5, 6]
+    ```
     """
     require_same_device(polylines=polylines, offsets=offsets)
     device = polylines.device
@@ -1373,6 +1641,20 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
     [`polyline_triangulate`][ordito.polyline.polyline_triangulate]
     [`extrude_polygon`][ordito.creation.extrude_polygon]
     [`trimesh.creation.triangulate_polygon`][]
+
+    Examples
+    --------
+    The repeated closing point of a square ring is dropped, and the square is split in two:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    polygon = wp.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]], dtype=wp.vec2)
+    ring, faces = od.polyline.triangulate_polygon(polygon)
+    print(ring.shape, faces.shape)  # (4,) (6,)
+    ```
     """
     odt.ensure_ndim(polygon, 1, dtype=wp.vec2)
     device = polygon.device

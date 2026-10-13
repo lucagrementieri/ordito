@@ -211,6 +211,25 @@ def fill_fan(
     -----
     Fill winding is consistent with the adjacent faces only when the input mesh is consistently
     wound (see [`make_winding_consistent`][ordito.repair.make_winding_consistent]).
+
+    Examples
+    --------
+    Deleting the five faces around one vertex of an icosphere opens a hole with a five-vertex
+    rim; a fan of three triangles closes it:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    keep = wp.array((faces.numpy().reshape(-1, 3) != 0).all(axis=1), dtype=wp.bool)
+    vertices, faces = od.selection.submesh_from_face_mask(vertices, faces, keep)
+    print(od.validation.is_watertight(vertices, faces))  # False
+    filled = od.holes.fill_fan(vertices, faces)
+    print(faces.shape[0] // 3, filled.shape[0] // 3)  # 315 318
+    print(od.validation.is_watertight(vertices, filled))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
@@ -283,6 +302,25 @@ def fill_cone(
     -----
     Fill winding is consistent with the adjacent faces only when the input mesh is consistently
     wound (see [`make_winding_consistent`][ordito.repair.make_winding_consistent]).
+
+    Examples
+    --------
+    Deleting the five faces around one vertex of an icosphere opens a hole with a five-vertex
+    rim; the cone adds one vertex at its centre and five triangles:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    keep = wp.array((faces.numpy().reshape(-1, 3) != 0).all(axis=1), dtype=wp.bool)
+    vertices, faces = od.selection.submesh_from_face_mask(vertices, faces, keep)
+    filled_vertices, filled_faces = od.holes.fill_cone(vertices, faces)
+    print(vertices.shape, filled_vertices.shape)  # (161,) (162,)
+    print(filled_faces.shape[0] // 3)  # 320
+    print(od.validation.is_watertight(filled_vertices, filled_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
@@ -525,6 +563,24 @@ def fill_min_weight(
     -----
     Fill winding is consistent with the adjacent faces only when the input mesh is consistently
     wound (see [`make_winding_consistent`][ordito.repair.make_winding_consistent]).
+
+    Examples
+    --------
+    Deleting the five faces around one vertex of an icosphere opens a hole with a five-vertex rim:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    keep = wp.array((faces.numpy().reshape(-1, 3) != 0).all(axis=1), dtype=wp.bool)
+    vertices, faces = od.selection.submesh_from_face_mask(vertices, faces, keep)
+    print(len(od.boundary.boundary_loops(vertices, faces)))  # 1
+    filled = od.holes.fill_min_weight(vertices, faces)
+    print(filled.shape[0] // 3, len(od.boundary.boundary_loops(vertices, filled)))  # 318 0
+    print(od.validation.is_watertight(vertices, filled))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     _check_fill_metric(metric)
@@ -591,6 +647,28 @@ def fill_loops_min_weight(
     See Also
     --------
     [`fill_min_weight`][ordito.holes.fill_min_weight]
+
+    Examples
+    --------
+    An icosphere with its top cut off (a 16-vertex rim) and the six faces around one vertex
+    deleted (a 6-vertex rim): only the loop passed in is filled:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    rows = faces.numpy().reshape(-1, 3)
+    centroid_z = vertices.numpy()[rows].mean(axis=1)[:, 2]
+    keep = wp.array((centroid_z <= 0.7) & (rows != 100).all(axis=1), dtype=wp.bool)
+    vertices, faces = od.selection.submesh_from_face_mask(vertices, faces, keep)
+    loops = od.boundary.boundary_loops(vertices, faces)
+    print([loop.size for loop in loops])  # [16, 6]
+    small = [loop for loop in loops if loop.size < 10]
+    filled = od.holes.fill_loops_min_weight(vertices, faces, small, "plane_normalized", True)
+    print(len(od.boundary.boundary_loops(vertices, filled)))  # 1
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, loops=loops)
     _check_fill_metric(metric)
@@ -1025,6 +1103,30 @@ def fill_small(
     [`fill_loops_min_weight`][ordito.holes.fill_loops_min_weight]
     [`fillable_loop_mask`][ordito.holes.fillable_loop_mask]
         Which loops the DP can fill at all, a separate question from which are small.
+
+    Examples
+    --------
+    An icosphere with its top cut off (a 16-vertex rim) and the six faces around one vertex
+    deleted (a 6-vertex rim): either bound fills the small hole and leaves the large one open:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    rows = faces.numpy().reshape(-1, 3)
+    centroid_z = vertices.numpy()[rows].mean(axis=1)[:, 2]
+    keep = wp.array((centroid_z <= 0.7) & (rows != 100).all(axis=1), dtype=wp.bool)
+    vertices, faces = od.selection.submesh_from_face_mask(vertices, faces, keep)
+    loops = od.boundary.boundary_loops(vertices, faces)
+    print([loop.size for loop in loops])  # [16, 6]
+    print(od.boundary.loop_perimeters(vertices, loops).numpy().round(2))  # [4.78 1.79]
+    filled = od.holes.fill_small(vertices, faces, max_perimeter=2.0)
+    print(len(od.boundary.boundary_loops(vertices, filled)))  # 1
+    filled = od.holes.fill_small(vertices, faces, max_edges=6)
+    print(len(od.boundary.boundary_loops(vertices, filled)))  # 1
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if (max_perimeter is None) == (max_edges is None):
@@ -1193,6 +1295,28 @@ def fill_smooth(
     smooth its new interior vertices into the surrounding surface.
 
     Winding is consistent with the surrounding faces only for a consistently wound input.
+
+    Examples
+    --------
+    An icosphere with its top cut off (a 16-vertex rim) and the six faces around one vertex
+    deleted (a 6-vertex rim): both are patched, and the patches gain interior vertices:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    rows = faces.numpy().reshape(-1, 3)
+    centroid_z = vertices.numpy()[rows].mean(axis=1)[:, 2]
+    keep = wp.array((centroid_z <= 0.7) & (rows != 100).all(axis=1), dtype=wp.bool)
+    vertices, faces = od.selection.submesh_from_face_mask(vertices, faces, keep)
+    loops = od.boundary.boundary_loops(vertices, faces)
+    print([loop.size for loop in loops])  # [16, 6]
+    filled_vertices, filled_faces = od.holes.fill_smooth(vertices, faces)
+    print(vertices.shape, filled_vertices.shape)  # (146,) (198,)
+    print(od.validation.is_watertight(filled_vertices, filled_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     _check_fill_metric(metric)
@@ -1335,13 +1459,6 @@ def refill_region(
     RuntimeError
         If ``vertices``, ``faces`` and ``face_mask`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    bad = od.validation.face_self_intersecting_mask(v, f)
-    patched_v, patched_f = od.holes.refill_region(v, f, bad)
-    ```
-
     See Also
     --------
     [`fill_smooth`][ordito.holes.fill_smooth]
@@ -1350,6 +1467,27 @@ def refill_region(
         The first half, when the rims are wanted rather than filled.
     [`ordito.repair.remove_folded_faces`][ordito.repair.remove_folded_faces]
         One of several ways to produce the mask this takes.
+
+    Examples
+    --------
+    Rebuilding the top of an icosphere: the region is deleted and refilled with a patch at the
+    surrounding resolution:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    centroid_z = vertices.numpy()[faces.numpy().reshape(-1, 3)].mean(axis=1)[:, 2]
+    region = wp.array(centroid_z > 0.7, dtype=wp.bool)
+    print(int(region.numpy().sum()))  # 44
+    new_vertices, new_faces, patch = od.holes.refill_region(
+        vertices, faces, region, return_patch=True
+    )
+    print(new_faces.shape[0] // 3, int(patch.numpy().sum()))  # 380 96
+    print(od.validation.is_watertight(new_vertices, new_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, face_mask=face_mask)
     _check_fill_metric(metric)
@@ -1458,6 +1596,29 @@ def extend_hole(
         extension that folds through the plane, which is geometrically what "project each vertex"
         means and is almost never wanted -- place the plane clear of the rim, and check with
         [`bounds.aabb`][ordito.bounds.aabb] if the input is not yours.
+
+    Examples
+    --------
+    A spherical cap whose rim sits at ``z = 0.5``, extended down to the ``z = 0`` plane and then
+    closed flat:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=math.pi / 3, subdivisions=2)
+    extended_vertices, extended_faces = od.holes.extend_hole(
+        vertices, faces, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)
+    )
+    print(vertices.shape, extended_vertices.shape)  # (61,) (85,)
+    lower, upper = od.bounds.aabb(extended_vertices)
+    print(f"{lower[2]:.3f}")  # 0.000
+    closed = od.holes.fill_min_weight(extended_vertices, extended_faces)
+    print(od.validation.is_watertight(extended_vertices, closed))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, loops=loops)
     packed = _packed_rims(vertices, faces, loops)
@@ -1527,6 +1688,25 @@ def build_bottom(
         The general form, where the plane is yours to place.
     [`fill_min_weight`][ordito.holes.fill_min_weight]
         Closes the flat rim this leaves.
+
+    Examples
+    --------
+    A spherical cap whose rim sits at ``z = 0.5``, extended to a base half a unit below it:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=math.pi / 3, subdivisions=2)
+    based_vertices, based_faces = od.holes.build_bottom(
+        vertices, faces, wp.vec3(0.0, 0.0, 1.0), hole_extension=0.5
+    )
+    lower, upper = od.bounds.aabb(based_vertices)
+    print(based_vertices.shape, f"{lower[2]:.3f}")  # (85,) 0.000
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, loops=loops)
     device = faces.device
@@ -1696,6 +1876,22 @@ def fillable_loop_mask(
         Produces the loops, in the order this mask indexes.
     [`loop_perimeters`][ordito.boundary.loop_perimeters]
         Ranks the same loops by size, which is the other question a caller asks about a rim.
+
+    Examples
+    --------
+    Deleting the five faces around one vertex of an icosphere opens a hole with a five-vertex
+    rim, which the fill can close:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    keep = wp.array((faces.numpy().reshape(-1, 3) != 0).all(axis=1), dtype=wp.bool)
+    vertices, faces = od.selection.submesh_from_face_mask(vertices, faces, keep)
+    print(od.holes.fillable_loop_mask(vertices, faces).numpy().tolist())  # [True]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, loops=loops)
     device = faces.device
@@ -1786,6 +1982,26 @@ def stitch(
     [`stitch_loops`][ordito.holes.stitch_loops]
     [`stitch_min_weight`][ordito.holes.stitch_min_weight]
     [`boundary_loops`][ordito.boundary.boundary_loops]
+
+    Examples
+    --------
+    Two spherical caps facing away from each other, their rims a unit apart, joined into one
+    closed body:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    top_vertices, top_faces = od.creation.sphere_cap(angle=math.pi / 3, subdivisions=2)
+    bottom_vertices = wp.array(top_vertices.numpy() * [1.0, 1.0, -1.0], dtype=wp.vec3)
+    bottom_faces = od.repair.reverse_winding(top_faces)
+    vertices, faces = od.holes.stitch(top_vertices, top_faces, bottom_vertices, bottom_faces)
+    print(vertices.shape, faces.shape[0] // 3)  # (122,) 240
+    print(od.validation.is_watertight(vertices, faces))  # True
+    ```
     """
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
@@ -1846,7 +2062,29 @@ def stitch_min_weight(
     Notes
     -----
     The band is the minimum-weight two-loop stitch; see
-    [`stitch_min_weight`][ordito.holes.stitch_min_weight] for the metrics.
+    [`stitch_loops_min_weight`][ordito.holes.stitch_loops_min_weight] for the metrics.
+
+    Examples
+    --------
+    Two spherical caps facing away from each other, their rims a unit apart, joined into one
+    closed body:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    top_vertices, top_faces = od.creation.sphere_cap(angle=math.pi / 3, subdivisions=2)
+    bottom_vertices = wp.array(top_vertices.numpy() * [1.0, 1.0, -1.0], dtype=wp.vec3)
+    bottom_faces = od.repair.reverse_winding(top_faces)
+    vertices, faces = od.holes.stitch_min_weight(
+        top_vertices, top_faces, bottom_vertices, bottom_faces
+    )
+    print(vertices.shape, faces.shape[0] // 3)  # (122,) 240
+    print(od.validation.is_watertight(vertices, faces))  # True
+    ```
     """
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
@@ -1983,6 +2221,27 @@ def stitch_smooth(
     -----
     The three stages are: minimum-weight stitch, refine the band to the target edge length, then
     smooth its new interior vertices into both surrounding surfaces.
+
+    Examples
+    --------
+    Two spherical caps facing away from each other, their rims a unit apart, joined into one
+    closed body; the band gains vertices and bulges to continue both caps:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    top_vertices, top_faces = od.creation.sphere_cap(angle=math.pi / 3, subdivisions=2)
+    bottom_vertices = wp.array(top_vertices.numpy() * [1.0, 1.0, -1.0], dtype=wp.vec3)
+    bottom_faces = od.repair.reverse_winding(top_faces)
+    vertices, faces = od.holes.stitch_smooth(top_vertices, top_faces, bottom_vertices, bottom_faces)
+    print(vertices.shape)  # (746,)
+    print(od.validation.is_watertight(vertices, faces))  # True
+    print(f"{od.measures.volume(vertices, faces):.2f}")  # 4.46
+    ```
     """
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
@@ -2194,6 +2453,30 @@ def stitch_loops(
     [`stitch_loops_min_weight`][ordito.holes.stitch_loops_min_weight] has to fill the same size
     table under a dependency that makes it ``N + M`` sequential steps. The DP is never the cheaper
     option -- prefer it for the seam it produces, not for speed.
+
+    Examples
+    --------
+    Two spherical caps facing away from each other, their rims a unit apart, joined into one
+    closed body, naming the two rims:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    top_vertices, top_faces = od.creation.sphere_cap(angle=math.pi / 3, subdivisions=2)
+    bottom_vertices = wp.array(top_vertices.numpy() * [1.0, 1.0, -1.0], dtype=wp.vec3)
+    bottom_faces = od.repair.reverse_winding(top_faces)
+    loop_top = od.boundary.boundary_loops(top_vertices, top_faces)[0]
+    loop_bottom = od.boundary.boundary_loops(bottom_vertices, bottom_faces)[0]
+    vertices, faces = od.holes.stitch_loops(
+        top_vertices, top_faces, loop_top, bottom_vertices, bottom_faces, loop_bottom
+    )
+    print(loop_top.shape, faces.shape[0] // 3)  # (24,) 240
+    print(od.validation.is_watertight(vertices, faces))  # True
+    ```
     """
     require_same_device(
         vertices_a=vertices_a,
@@ -2436,6 +2719,30 @@ def stitch_loops_min_weight(
     --------
     [`stitch_loops`][ordito.holes.stitch_loops]
     [`stitch_min_weight`][ordito.holes.stitch_min_weight]
+
+    Examples
+    --------
+    Two spherical caps facing away from each other, their rims a unit apart, joined into one
+    closed body, naming the two rims:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    top_vertices, top_faces = od.creation.sphere_cap(angle=math.pi / 3, subdivisions=2)
+    bottom_vertices = wp.array(top_vertices.numpy() * [1.0, 1.0, -1.0], dtype=wp.vec3)
+    bottom_faces = od.repair.reverse_winding(top_faces)
+    loop_top = od.boundary.boundary_loops(top_vertices, top_faces)[0]
+    loop_bottom = od.boundary.boundary_loops(bottom_vertices, bottom_faces)[0]
+    vertices, faces = od.holes.stitch_loops_min_weight(
+        top_vertices, top_faces, loop_top, bottom_vertices, bottom_faces, loop_bottom
+    )
+    print(faces.shape[0] // 3)  # 240
+    print(od.validation.is_watertight(vertices, faces))  # True
+    ```
     """
     require_same_device(
         vertices_a=vertices_a,
@@ -2682,15 +2989,6 @@ def bridge_edges(
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    edges_np = od.boundary.oriented_boundary_edges(open_v, open_f).numpy()
-    bridged_f = od.holes.bridge_edges(
-        open_v, open_f, tuple(edges_np[0]), tuple(edges_np[len(edges_np) // 2])
-    )
-    ```
-
     See Also
     --------
     [`bridge_edges_smooth`][ordito.holes.bridge_edges_smooth]
@@ -2701,6 +2999,31 @@ def bridge_edges(
         Joins two rims completely, where this joins one edge of each.
     [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]
         Produces the edges this takes, already in the right direction.
+
+    Examples
+    --------
+    Two parallel ``3 x 3`` grids a unit apart, facing away from each other, so each has its own rim.
+    Bridging edge ``(0, 1)`` of the lower grid to the edge ``(10, 9)`` above it merges the two
+    rims into one:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    grid_vertices, grid_faces = od.creation.grid(count=(3, 3))
+    lower = grid_vertices.numpy()
+    vertices = wp.array(np.vstack([lower, lower + [0.0, 0.0, 1.0]]), dtype=wp.vec3)
+    faces = wp.array(
+        np.concatenate([od.repair.reverse_winding(grid_faces).numpy(), grid_faces.numpy() + 9]),
+        dtype=wp.int32,
+    )
+    print(len(od.boundary.boundary_loops(vertices, faces)))  # 2
+    bridged = od.holes.bridge_edges(vertices, faces, (0, 1), (10, 9))
+    print(bridged.numpy()[-6:].tolist())  # [1, 0, 10, 0, 9, 10]
+    print(len(od.boundary.boundary_loops(vertices, bridged)))  # 1
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     edge_a = (int(edge_a[0]), int(edge_a[1]))
@@ -2821,6 +3144,31 @@ def bridge_edges_smooth(
         run opposite ways the interpolation passes through a half turn whose axis is arbitrary, and
         the strip twists through it at one sample rather than curving smoothly. Reversing one of
         the two edges is what removes the twist.
+
+    Examples
+    --------
+    Two parallel ``3 x 3`` grids a unit apart, facing away from each other, so each has its own rim.
+    The strip between edge ``(0, 1)`` and the edge ``(10, 9)`` above it gets new vertices every
+    quarter unit:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    grid_vertices, grid_faces = od.creation.grid(count=(3, 3))
+    lower = grid_vertices.numpy()
+    vertices = wp.array(np.vstack([lower, lower + [0.0, 0.0, 1.0]]), dtype=wp.vec3)
+    faces = wp.array(
+        np.concatenate([od.repair.reverse_winding(grid_faces).numpy(), grid_faces.numpy() + 9]),
+        dtype=wp.int32,
+    )
+    new_vertices, new_faces = od.holes.bridge_edges_smooth(vertices, faces, (0, 1), (10, 9), 0.25)
+    print(vertices.shape, new_vertices.shape)  # (18,) (26,)
+    print(len(od.boundary.boundary_loops(new_vertices, new_faces)))  # 1
+    print(od.validation.is_winding_consistent(new_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if sampling_step <= 0.0:
@@ -3067,6 +3415,31 @@ def join_closest_components(
 
     A component with no boundary -- a closed shell -- has nothing to bridge to and is left alone, so
     an input of closed shells comes back unchanged rather than raising.
+
+    Examples
+    --------
+    Two parallel ``3 x 3`` grids a unit apart, facing away from each other, so each has its own rim;
+    one bridge welds them into a single component:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    grid_vertices, grid_faces = od.creation.grid(count=(3, 3))
+    lower = grid_vertices.numpy()
+    vertices = wp.array(np.vstack([lower, lower + [0.0, 0.0, 1.0]]), dtype=wp.vec3)
+    faces = wp.array(
+        np.concatenate([od.repair.reverse_winding(grid_faces).numpy(), grid_faces.numpy() + 9]),
+        dtype=wp.int32,
+    )
+    labels = od.adjacency.face_connected_component_labels(faces)
+    print(np.unique(labels.numpy()).size)  # 2
+    joined = od.holes.join_closest_components(vertices, faces)
+    labels = od.adjacency.face_connected_component_labels(joined)
+    print(np.unique(labels.numpy()).size, joined.shape[0] // 3)  # 1 18
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if max_joins is not None and max_joins < 0:

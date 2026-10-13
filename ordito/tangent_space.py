@@ -87,6 +87,23 @@ def vertex_tangent_frames(
     [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles]
     [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``
     [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]
+
+    Examples
+    --------
+    Each frame is orthonormal and right-handed, with ``basis_x`` in the tangent plane:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    basis_x, basis_y, normal = od.tangent_space.vertex_tangent_frames(vertices, faces)
+    print(basis_x.shape)  # (162,)
+    right_handed = np.cross(normal.numpy(), basis_x.numpy())
+    print(np.allclose(right_handed, basis_y.numpy(), atol=1e-6))  # True
+    print(f"{np.abs((basis_x.numpy() * normal.numpy()).sum(axis=1)).max():.4f}")  # 0.0000
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, normals=normals, rings=rings)
     device = vertices.device
@@ -153,6 +170,20 @@ def face_tangent_frames(
     [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames]
     [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]
     ``igl.local_basis``
+
+    Examples
+    --------
+    The first face of a box faces ``-x``, and its first edge runs along ``+y``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    basis_x, basis_y, normal = od.tangent_space.face_tangent_frames(vertices, faces)
+    print(normal.numpy()[0])  # [-1.  0.  0.]
+    print(basis_x.numpy()[0])  # [0. 1. 0.]
+    print(basis_y.numpy()[0])  # [ 0.  0. -1.]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, normals=normals)
     device = vertices.device
@@ -231,6 +262,21 @@ def halfedge_tangent_angles(
     [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames]
     [`halfedge_transport_angles`][ordito.tangent_space.halfedge_transport_angles]
     [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]
+
+    Examples
+    --------
+    Every vertex's first ring halfedge sits at angle ``0``, so a closed mesh has one zero per
+    vertex, and every angle stays below a full turn:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    angles = od.tangent_space.halfedge_tangent_angles(vertices, faces)
+    print(angles.shape)  # (960,)
+    print(int((angles.numpy() == 0.0).sum()), vertices.shape[0])  # 162 162
+    print(f"{angles.numpy().max():.4f}")  # 5.3224
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, face_angles=face_angles, rings=rings)
     device = vertices.device
@@ -312,6 +358,23 @@ def halfedge_transport_angles(
     [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles]
     [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames]
     [`require_matching_twins`][ordito.halfedge.require_matching_twins]
+
+    Examples
+    --------
+    Crossing an edge and coming back is the identity: a halfedge's rotation and its twin's cancel
+    modulo a full turn:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    rho = od.tangent_space.halfedge_transport_angles(vertices, faces).numpy()
+    twins = od.halfedge.halfedge_twins(faces).numpy()
+    print(rho.shape)  # (960,)
+    print(np.allclose(np.cos(rho[twins] + rho), 1.0, atol=1e-5))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, twins=twins, tangent_angles=tangent_angles)
     require_matching_twins(faces, twins)

@@ -121,6 +121,23 @@ def face_adjacency(
     [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
     [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels]
     [`trimesh.graph.face_adjacency`][]
+
+    Examples
+    --------
+    Two triangles sharing the edge ``(1, 2)`` give one row; on the closed cube every one of the 18
+    edges joins two faces, so there are 18 rows:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    adjacency, shared_edges = od.adjacency.face_adjacency(faces, return_edges=True)
+    print(adjacency.numpy().tolist(), shared_edges.numpy().tolist())  # [[0, 1]] [[1, 2]]
+    vertices, faces = od.creation.box()
+    print(od.adjacency.face_adjacency(faces).shape)  # (18, 2)
+    ```
     """
     device = faces.device
     n_faces = faces.size // 3
@@ -200,6 +217,25 @@ def require_paired_adjacency(
     [`face_adjacency_unshared`][ordito.adjacency.face_adjacency_unshared]
     [`face_adjacency_projections`][ordito.adjacency.face_adjacency_projections]
     [`face_adjacency_convex`][ordito.adjacency.face_adjacency_convex]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    adjacency, shared_edges = od.adjacency.face_adjacency(faces, return_edges=True)
+    od.adjacency.require_paired_adjacency(adjacency, shared_edges)
+    od.adjacency.require_paired_adjacency(None, None)
+    try:
+        od.adjacency.require_paired_adjacency(adjacency, None)
+        rejected = False
+    except ValueError:
+        rejected = True
+    print(rejected)  # True
+    ```
     """
     require_same_device(face_adjacency=face_adjacency, face_adjacency_edges=face_adjacency_edges)
     if (face_adjacency is None) != (face_adjacency_edges is None):
@@ -294,6 +330,21 @@ def vertex_face_adjacency(
     [`face_adjacency`][ordito.adjacency.face_adjacency]
     [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]
     ``igl.vertex_triangle_adjacency``
+
+    Examples
+    --------
+    Vertices 1 and 2 lie on the shared edge of two triangles, so they touch both faces:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=4)
+    print(offsets.numpy().tolist())  # [0, 1, 3, 5, 6]
+    print(sorted(vertex_faces.numpy()[offsets.numpy()[1] : offsets.numpy()[2]].tolist()))  # [0, 1]
+    ```
     """
     device = faces.device
     n_faces = faces.size // 3
@@ -392,6 +443,20 @@ def face_adjacency_unshared(
     --------
     [`face_adjacency`][ordito.adjacency.face_adjacency]
     [`trimesh.graph.face_adjacency_unshared`][]
+
+    Examples
+    --------
+    The two triangles share the edge ``(1, 2)``; vertex 0 is off it on the first and vertex 3 on the
+    second:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    print(od.adjacency.face_adjacency_unshared(faces).numpy().tolist())  # [[0, 3]]
+    ```
     """
     require_same_device(
         faces=faces, face_adjacency=face_adjacency, face_adjacency_edges=face_adjacency_edges
@@ -481,6 +546,23 @@ def face_adjacency_angles(
         The sign this magnitude omits: convex or concave, per adjacency row.
     [`vector_angle`][ordito.points.vector_angle]
     [`trimesh.Trimesh.face_adjacency_angles`][]
+
+    Examples
+    --------
+    Of the cube's 18 adjacent face pairs, the 6 split by a face diagonal are flat and the 12 across
+    a side meet at a right angle:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    angles = od.adjacency.face_adjacency_angles(vertices, faces)
+    print(angles.shape)  # (18,)
+    degrees = np.degrees(angles.numpy()).round(1)
+    print(int((degrees == 90.0).sum()), int((degrees == 0.0).sum()))  # 12 6
+    ```
     """
     require_same_device(
         vertices=vertices, faces=faces, face_adjacency=face_adjacency, face_normals=face_normals
@@ -570,6 +652,24 @@ def face_adjacency_projections(
     --------
     [`face_adjacency_convex`][ordito.adjacency.face_adjacency_convex]
     [`trimesh.Trimesh.face_adjacency_projections`][]
+
+    Examples
+    --------
+    Folding the second triangle below the first face's plane gives a negative projection (a
+    convex pair), folding it above a positive one:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    flat = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    down = wp.array([*flat, [1.0, 1.0, -0.5]], dtype=wp.vec3)
+    up = wp.array([*flat, [1.0, 1.0, 0.5]], dtype=wp.vec3)
+    print(f"{od.adjacency.face_adjacency_projections(down, faces).numpy()[0]:.4f}")  # -0.5000
+    print(f"{od.adjacency.face_adjacency_projections(up, faces).numpy()[0]:.4f}")  # 0.5000
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -603,7 +703,7 @@ def face_adjacency_convex(
     face_normals: wp.array[wp.vec3] | None = None,
 ) -> wp.array[wp.bool]:
     """
-    Return face pairs that are adjacent and locally convex.
+    Whether each adjacent face pair is locally convex, one flag per adjacency row.
 
     A pair is locally convex when the unshared vertex of the second face,
     projected onto the plane of the first face, has a projection less than
@@ -647,6 +747,25 @@ def face_adjacency_convex(
     --------
     [`face_adjacency_projections`][ordito.adjacency.face_adjacency_projections]
     [`trimesh.Trimesh.face_adjacency_convex`][]
+
+    Examples
+    --------
+    A pair folded below the first face's plane is convex; folded above it, concave:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    flat = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    down = wp.array([*flat, [1.0, 1.0, -0.5]], dtype=wp.vec3)
+    up = wp.array([*flat, [1.0, 1.0, 0.5]], dtype=wp.vec3)
+    print(od.adjacency.face_adjacency_convex(down, faces).numpy().tolist())  # [True]
+    print(od.adjacency.face_adjacency_convex(up, faces).numpy().tolist())  # [False]
+    vertices, faces = od.creation.box()
+    print(bool(od.adjacency.face_adjacency_convex(vertices, faces).numpy().all()))  # True
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -760,6 +879,20 @@ def face_connected_component_labels(
     [`connected_component_labels`][ordito.graph.connected_component_labels]
     [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
     [`face_adjacency`][ordito.adjacency.face_adjacency]
+
+    Examples
+    --------
+    The first two triangles share an edge and the third stands alone; each component is named by its
+    smallest face index:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3, 4, 5, 6], dtype=wp.int32)
+    print(od.adjacency.face_connected_component_labels(faces).numpy().tolist())  # [0, 0, 2]
+    ```
     """
     n_faces = faces.size // 3
     if n_faces == 0:
@@ -826,6 +959,22 @@ def sorted_face_edge_keys(
     ------
     ValueError
         If ``n_vertices`` is not positive.
+
+    Examples
+    --------
+    With ``n_vertices=4`` an edge ``(lo, hi)`` packs as ``lo + 4 * hi``; the two halfedges of the
+    shared edge ``(1, 2)`` (halfedges 1 and 3) sort next to each other:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    sorted_keys, order = od.adjacency.sorted_face_edge_keys(faces, n_vertices=4)
+    print(sorted_keys.numpy().tolist())  # [4, 8, 9, 9, 13, 14]
+    print(order.numpy().tolist())  # [0, 2, 1, 3, 4, 5]
+    ```
     """
     keys, order, n = _sorted_face_edge_buffers(faces, n_vertices)
     return odt.as_dense(keys[:n]), odt.as_dense(order[:n])

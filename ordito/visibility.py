@@ -150,6 +150,26 @@ def ambient_occlusion(
     its number is roughly ``(1 - occlusion) * n_rays / 4`` for a cosine-weighted bundle over
     ``n_rays`` whole-sphere directions. Its direction set is also its own, so the two agree in
     distribution and in ranking rather than value by value.
+
+    Examples
+    --------
+    A convex mesh never occludes its own surface, while a point at the centre of a sphere sees
+    nothing but the sphere:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    occlusion = od.visibility.ambient_occlusion(mesh, vertices)
+    print(occlusion.shape, float(occlusion.numpy().max()))  # (642,) 0.0
+
+    center = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3)
+    up = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3)
+    print(od.visibility.ambient_occlusion(mesh, center, normals=up).numpy())  # [1.]
+    ```
     """
     require_same_device(mesh=mesh, points=points, normals=normals)
     return _occlusion_bundle(mesh, points, normals, n_rays, weight, 0.0, max_t, "ambient_occlusion")
@@ -216,6 +236,25 @@ def volumetric_obscurance(
     See Also
     --------
     [`ambient_occlusion`][ordito.visibility.ambient_occlusion]
+
+    Examples
+    --------
+    From the centre of a unit sphere every ray is blocked at distance 1, so the obscurance falls
+    from about ``exp(-0.1)`` to ``exp(-1)`` as ``tau`` grows:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    center = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3)
+    up = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3)
+    near = od.visibility.volumetric_obscurance(mesh, center, normals=up, tau=0.1)
+    far = od.visibility.volumetric_obscurance(mesh, center, normals=up, tau=1.0)
+    print(f"{near.numpy()[0]:.3f} {far.numpy()[0]:.3f}")  # 0.905 0.369
+    ```
     """
     require_same_device(mesh=mesh, points=points, normals=normals)
     if tau <= 0.0:
@@ -399,8 +438,29 @@ def shape_diameter(
     byte-identical at ``90`` and ``120`` degrees — and its trimming rule is not the one documented
     in the paper, so its values differ from these by a roughly constant factor on a given mesh.
     Compare against it by rank rather than by value; the exactly-checkable statements are the
-    reduction to [`thickness`][ordito.visibility.thickness] at ``n_rays=1`` and the analytic
-    ``2 R`` on a sphere.
+    reduction to [`thickness`][ordito.visibility.thickness] at ``n_rays=1`` and the sphere. There a
+    ray at angle ``theta`` from the inward normal crosses a chord of ``2 R cos(theta)``, so the
+    result tends to the diameter ``2 R`` only as ``cone_angle`` goes to zero; the default cone
+    reads the weighted, trimmed mean of those chords, about ``1.5 R``.
+
+    Examples
+    --------
+    A narrow cone through a unit sphere measures its diameter; the default wide cone averages
+    shorter chords:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    normals = od.vertices.vertex_normals(vertices, faces)
+    diameter = od.visibility.shape_diameter(mesh, vertices, normals=normals, cone_angle=0.1)
+    print(f"{diameter.numpy().min():.2f} {diameter.numpy().max():.2f}")  # 1.99 1.99
+    diameter = od.visibility.shape_diameter(mesh, vertices, normals=normals)
+    print(f"{diameter.numpy().mean():.2f}")  # 1.51
+    ```
     """
     require_same_device(mesh=mesh, points=points, normals=normals)
     if n_rays < 1:
@@ -498,6 +558,25 @@ def thickness(
     [`shape_diameter`][ordito.visibility.shape_diameter]
         The stable many-ray generalization of ``method="ray"``.
     [`longest_ray`][ordito.ray.longest_ray]
+
+    Examples
+    --------
+    At the centre of the top face of a ``1 x 2 x 4`` box, the largest inscribed sphere is bounded
+    by the narrow side, while the ray along the normal crosses the full height:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box(extents=(1.0, 2.0, 4.0))
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    points = wp.array([[0.0, 0.0, 2.0]], dtype=wp.vec3)
+    normals = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3)
+    sphere = od.visibility.thickness(mesh, points, normals=normals)
+    ray = od.visibility.thickness(mesh, points, normals=normals, method="ray")
+    print(f"{sphere.numpy()[0]:.3f} {ray.numpy()[0]:.3f}")  # 1.000 4.000
+    ```
     """
     require_same_device(mesh=mesh, points=points, normals=normals)
     if method not in _THICKNESS_METHODS:
@@ -567,6 +646,26 @@ def max_tangent_sphere(
         If ``normals`` has a different length from ``points``.
     RuntimeError
         If ``mesh``, ``points`` and ``normals`` are not all on one device.
+
+    Examples
+    --------
+    The sphere touching the top face of a ``1 x 2 x 4`` box from inside has the box's half-width as
+    its radius; outwards nothing stops it:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box(extents=(1.0, 2.0, 4.0))
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    points = wp.array([[0.0, 0.0, 2.0]], dtype=wp.vec3)
+    normals = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3)
+    centers, radii = od.visibility.max_tangent_sphere(mesh, points, normals=normals)
+    print(f"{radii.numpy()[0]:.3f}", centers.numpy()[0].round(3))  # 0.500 [0.  0.  1.5]
+    _, radii = od.visibility.max_tangent_sphere(mesh, points, normals=normals, inwards=False)
+    print(radii.numpy())  # [inf]
+    ```
     """
     require_same_device(mesh=mesh, points=points, normals=normals)
     device = points.device

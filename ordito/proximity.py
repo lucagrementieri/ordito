@@ -182,6 +182,25 @@ def closest_point_on_mesh(
     ------
     RuntimeError
         If ``vertices``, ``faces``, ``points`` and ``mesh`` are not all on one device.
+
+    Examples
+    --------
+    From a point ``1.5`` outside a unit cube the closest surface point is straight across on the
+    ``x = 0.5`` face; from the centre every face is ``0.5`` away:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    points = wp.array([[2.0, 0.1, 0.2], [0.0, 0.0, 0.0]], dtype=wp.vec3)
+    closest, distances, triangle_ids = od.proximity.closest_point_on_mesh(vertices, faces, points)
+    print(closest.numpy()[0].round(3))  # [0.5 0.1 0.2]
+    print(distances.numpy().tolist())  # [1.5, 0.5]
+    _, _, triangle_ids = od.proximity.closest_point_on_mesh(vertices, faces, points, max_dist=1.0)
+    print(triangle_ids.numpy()[0])  # -1
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, points=points, mesh=mesh)
     device = vertices.device
@@ -286,8 +305,11 @@ def closest_point_on_edges(
     approximation: a scan of the cube of half-extent ``r`` about a query enumerates every edge whose
     closest point lies within ``r``, so a best distance under ``r`` certifies the answer. The
     tempting shortcut -- one degenerate ``(a, b, b)`` triangle per edge, queried with
-    ``wp.mesh_query_point_no_sign`` -- does **not** work: Warp's mesh BVH rejects a zero-area
-    triangle outright, on both devices.
+    ``wp.mesh_query_point_no_sign`` -- does **not** work: Warp's closest-point query never returns
+    a triangle collapsed onto a segment, on either device. A triangle collapsed onto a single
+    point ``(a, a, a)`` *is* returned, which is the case
+    [`neighbors.mesh_from_points`][ordito.neighbors.mesh_from_points] builds on; only the segment
+    shape is lost.
 
     See Also
     --------
@@ -296,6 +318,25 @@ def closest_point_on_edges(
     [`ordito.polyline.polyline_point_distance`][ordito.polyline.polyline_point_distance]
         The same computation for an *ordered* chain, where the segments are consecutive vertices and
         no index structure is built.
+
+    Examples
+    --------
+    The four sides of a unit square, queried from above it and from its right:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    corners = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]]
+    vertices = wp.array(corners, dtype=wp.vec3)
+    edges = wp.array([[0, 1], [1, 2], [2, 3], [3, 0]], dtype=wp.int32)
+    queries = wp.array([[0.5, 2.0, 0.0], [3.0, 0.5, 0.0]], dtype=wp.vec3)
+    closest, distances, edge_ids = od.proximity.closest_point_on_edges(vertices, edges, queries)
+    print(edge_ids.numpy().tolist())  # [2, 1]
+    print(distances.numpy().tolist())  # [1.0, 2.0]
+    print(closest.numpy()[0])  # [0.5 1.  0. ]
+    ```
     """
     require_same_device(vertices=vertices, edges=edges, queries=queries, bvh=bvh)
     device = vertices.device
@@ -437,6 +478,21 @@ def mesh_to_mesh_distance(
         attaining it, and which one comes back can differ between runs of the identical input even
         though the squared distance is bit-identical. Compare *distances* against another
         implementation, and faces only where the configuration is generic.
+
+    Examples
+    --------
+    Two unit cubes whose facing sides are ``2`` apart:
+
+    ```python
+    import ordito as od
+
+    vertices_a, faces_a = od.creation.box()
+    vertices_b, faces_b = od.creation.box(bounds=[[2.5, -0.5, -0.5], [3.5, 0.5, 0.5]])
+    distance, face_a, face_b = od.proximity.mesh_to_mesh_distance(
+        vertices_a, faces_a, vertices_b, faces_b
+    )
+    print(f"{distance:.4f}")  # 2.0000
+    ```
     """
     require_same_device(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
@@ -654,6 +710,22 @@ def normals_at_closest_faces(
     See Also
     --------
     [`closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh]
+
+    Examples
+    --------
+    A point beside the ``+x`` face of a unit cube and one below its ``-z`` face:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    points = wp.array([[2.0, 0.1, 0.2], [0.1, 0.2, -3.0]], dtype=wp.vec3)
+    normals = od.proximity.normals_at_closest_faces(mesh, points)
+    print(normals.numpy()[0, 0], normals.numpy()[1, 2])  # 1.0 -1.0
+    ```
     """
     require_same_device(mesh=mesh, points=points, face_normals=face_normals)
     device = points.device
@@ -794,6 +866,23 @@ def signed_distance_on_mesh(
     --------
     [`winding_number`][ordito.proximity.winding_number]
     [`contains_points`][ordito.ray.contains_points]
+
+    Examples
+    --------
+    Negative inside a unit cube, positive outside; both sign modes agree on a closed mesh:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    points = wp.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]], dtype=wp.vec3)
+    signed = od.proximity.signed_distance_on_mesh(vertices, faces, points)
+    print(signed.numpy().tolist())  # [-0.5, 1.0]
+    winding = od.proximity.signed_distance_on_mesh(vertices, faces, points, sign_mode="winding")
+    print(winding.numpy().tolist())  # [-0.5, 1.0]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, points=points, mesh=mesh)
     if sign_mode not in ("parity", "winding"):
@@ -926,13 +1015,6 @@ def signed_distance_grid(
     RuntimeError
         If ``vertices``, ``faces`` and ``mesh`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    field, box = od.proximity.signed_distance_grid(v, f, voxel_size=0.05, pad=4)
-    shell_v, shell_f = od.levelset.marching_cubes(field, 0.1, bounds=box)
-    ```
-
     Notes
     -----
     **The whole lattice is sampled, so size it deliberately**: the field costs
@@ -955,6 +1037,24 @@ def signed_distance_grid(
         What to call instead when the answer wanted is the offset surface rather than the field.
     [`ordito.voxels.to_field`][ordito.voxels.to_field]
         The occupancy lattice, when a binary inside test is all that is needed.
+
+    Examples
+    --------
+    A unit cube sampled every ``0.25`` with two cells of margin spans ``[-1, 1]`` in 9 samples per
+    axis, and the centre sample sits ``0.5`` inside. Its ``0.2`` level set is the cube offset
+    outward, closed:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    field, bounds = od.proximity.signed_distance_grid(vertices, faces, voxel_size=0.25, pad=2)
+    print(field.shape)  # (9, 9, 9)
+    print(bounds[0])  # [-1.0, -1.0, -1.0]
+    print(f"{field.numpy()[4, 4, 4]:.2f}")  # -0.50
+    shell_vertices, shell_faces = od.levelset.marching_cubes(field, 0.2, bounds=bounds)
+    print(od.validation.is_watertight(shell_vertices, shell_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, mesh=mesh)
     if faces.size == 0:
@@ -1001,6 +1101,20 @@ def signed_distance_lattice(
     ------
     ValueError
         If ``voxel_size`` is not positive or ``pad`` is negative.
+
+    Examples
+    --------
+    The lattice of the [`signed_distance_grid`][ordito.proximity.signed_distance_grid] example,
+    without sampling it:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    shape, (lower, upper) = od.proximity.signed_distance_lattice(vertices, voxel_size=0.25, pad=2)
+    print(shape)  # (9, 9, 9)
+    print(lower, upper)  # [-1.0, -1.0, -1.0] [1.0, 1.0, 1.0]
+    ```
     """
     if pad < 0:
         raise ValueError("pad must be non-negative")
@@ -1075,6 +1189,22 @@ def winding_number(
     ------
     RuntimeError
         If ``vertices``, ``faces`` and ``points`` are not all on one device.
+
+    Examples
+    --------
+    About ``1`` at the centre of a closed sphere and about ``0`` outside it:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    points = wp.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=wp.vec3)
+    winding = od.proximity.winding_number(vertices, faces, points)
+    print(f"{winding.numpy()[0]:.3f}")  # 1.000
+    print((winding.numpy() > 0.5).tolist())  # [True, False]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
     device = points.device
@@ -1310,6 +1440,25 @@ def query_mesh_aabb_with_offsets(
         If ``query_lower`` and ``query_upper`` have different lengths, or ``max_hits < 1``.
     RuntimeError
         If ``mesh``, ``query_lower`` and ``query_upper`` are not all on one device.
+
+    Examples
+    --------
+    A small box around a corner of a unit cube overlaps the bounding boxes of the six triangles on
+    the three sides meeting there; a box away from the cube overlaps none:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    lower = wp.array([[0.45, 0.45, 0.45], [2.0, 2.0, 2.0]], dtype=wp.vec3)
+    upper = wp.array([[0.55, 0.55, 0.55], [3.0, 3.0, 3.0]], dtype=wp.vec3)
+    candidates, offsets = od.proximity.query_mesh_aabb_with_offsets(mesh, lower, upper)
+    print(offsets.numpy().tolist())  # [0, 6, 6]
+    print(sorted(candidates.numpy().tolist()))  # [4, 6, 7, 9, 10, 11]
+    ```
     """
     require_same_device(mesh=mesh, query_lower=query_lower, query_upper=query_upper)
     device = query_lower.device
@@ -1419,6 +1568,21 @@ def containing_faces_2d(
     [`closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh]
     [`points_to_barycentric`][ordito.triangles.points_to_barycentric]
     [`remap_attribute_from_uv`][ordito.texture.remap_attribute_from_uv]
+
+    Examples
+    --------
+    A unit square split along its diagonal into two triangles:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=wp.vec2)
+    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    points = wp.array([[0.8, 0.2], [0.2, 0.8], [2.0, 2.0]], dtype=wp.vec2)
+    print(od.proximity.containing_faces_2d(vertices, faces, points).numpy().tolist())  # [0, 1, -1]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
     device = vertices.device

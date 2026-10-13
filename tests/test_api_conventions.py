@@ -25,9 +25,7 @@ import sys
 import textwrap
 from collections.abc import Mapping
 
-import numpy as np
 import pytest
-import trimesh as tm
 import warp as wp
 
 import ordito as od
@@ -78,6 +76,7 @@ from tests.api_conventions import (
     warp_version_problems,
 )
 from tests.conversions import warp_empty
+from tests.doc_examples import run_example
 
 # Static scans of the source tree: the CPU pass of ``python -m tests.devices`` deselects them.
 pytestmark = pytest.mark.device_agnostic
@@ -528,63 +527,17 @@ def test_public_functions_document_what_they_raise() -> None:
     _fail("public function(s) raising without a Raises block:", undocumented_raise_problems())
 
 
-@pytest.fixture
-def example_namespace(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], hemisphere: tuple[tm.Trimesh, wp.Mesh]
-) -> dict[str, object]:
-    """
-    Bind every name the package's docstring examples use to a real object on the fixture's device.
-
-    Every free name an example needs lives here. A new example that reaches for a name this
-    namespace does not carry fails with a ``NameError``, which is the intended outcome: an example
-    the suite cannot run is exactly the state that let two broken ones survive.
-    """
-    _, mesh_wp = icosahedron
-    device = mesh_wp.device
-    vertices, faces = mesh_wp.points, mesh_wp.indices
-    # A second, *open* mesh: an example about boundaries has nothing to show on the closed fixture.
-    _, open_mesh_wp = hemisphere
-    queries = wp.array(
-        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.5, 0.0]], dtype=wp.vec3, device=device
-    )
-    neighbor_idx, neighbor_distance = od.neighbors.query_nearest(
-        vertices, vertices, 4, backend="bvh"
-    )
-    # Thresholded against its own mean, not against zero: the fixture is translated to z + 2, so
-    # ``> 0.0`` selects every face and leaves a region with no seam around it.
-    centroids_np = od.triangles.face_centroids(vertices, faces).numpy()
-    face_mask = wp.array(
-        centroids_np[:, 2] > centroids_np[:, 2].mean(), dtype=wp.bool, device=device
-    )
-    return {
-        "od": od,
-        "wp": wp,
-        "np": np,
-        "face_mask": face_mask,
-        "warp_mesh": mesh_wp,
-        "v": vertices,
-        "f": faces,
-        "open_v": open_mesh_wp.points,
-        "open_f": open_mesh_wp.indices,
-        "pts": queries,
-        "origins": queries,
-        "directions": wp.array([[1.0, 0.0, 0.0]] * queries.size, dtype=wp.vec3, device=device),
-        "neighbor_idx": neighbor_idx,
-        "neighbor_distance": neighbor_distance,
-    }
-
-
 @pytest.mark.parametrize(
     "example", [pytest.param(item, id=item.site) for item in docstring_examples()]
 )
-def test_docstring_examples_run(
-    example: DocstringExample, example_namespace: dict[str, object]
-) -> None:
+def test_docstring_examples_run(example: DocstringExample, device: str) -> None:
     """
-    Every fenced ``python`` block in a docstring executes against a real mesh.
+    Every fenced ``python`` block in a docstring runs on its own, and prints what it says it does.
 
-    An example is the one piece of documentation that can be checked by running it, and both
-    failures this test was written for were runtime ones invisible to ``ast.parse``:
+    Each block runs in a fresh namespace with ``device`` as Warp's current device, so an example
+    is exactly what a reader can paste: it imports what it uses and builds its own input. A
+    top-level ``print(...)  # value`` is checked against its comment (``tests/doc_examples.py``).
+    Both failures this test was first written for were runtime ones invisible to ``ast.parse``:
     ``points.outlier_probability`` fed a NumPy bool array to ``array.flatnonzero``, and
     ``ray.contains_points`` compared a ``wp.array`` with ``0.0``, which Warp's Python-scope arrays
     do not support. Blocks containing a bare ``...`` are deliberate outlines and are skipped.
@@ -592,7 +545,8 @@ def test_docstring_examples_run(
     if example.is_sketch:
         pytest.skip(f"{example.site} is a deliberate sketch (bare ...), not runnable code")
     try:
-        exec(compile(example.code, example.site, "exec"), dict(example_namespace))
+        with wp.ScopedDevice(device):
+            run_example(example.code, example.site, {"__name__": "__docstring_example__"})
     except Exception as error:  # noqa: BLE001
         pytest.fail(
             f"{example.site}: the documented example raises "
@@ -972,10 +926,10 @@ def test_no_warp_sparse_triplet_builds_in_the_package() -> None:
 
 def test_every_public_module_is_in_the_docs_nav() -> None:
     """
-    ``docs/SUMMARY.md`` shelves every public module exactly once.
+    ``docs/SUMMARY.md`` and ``docs/reference.md`` list every public module exactly once.
 
     Not a library comparison: this is a property of the docs source. Check 28. The probe that
-    shows it bites: deleting the ``voxels`` line from the nav reports one problem.
+    shows it bites: deleting the ``voxels`` line from either file reports one problem.
     """
     _fail("docs nav out of sync with ordito/:", docs_nav_problems())
 

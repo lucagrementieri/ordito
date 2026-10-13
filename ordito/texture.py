@@ -80,6 +80,24 @@ def rasterize_attribute(
     --------
     [`remap_attribute_from_uv`][ordito.texture.remap_attribute_from_uv]
     [`rasterize_discrete_attribute`][ordito.texture.rasterize_discrete_attribute]
+
+    Examples
+    --------
+    Bake the ``u`` coordinate of a unit-square grid into an 8 x 8 texture; the top-right
+    pixel centre sits at ``u = 7.5 / 8``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5), center=False)
+    uv = wp.array(vertices.numpy()[:, :2], dtype=wp.vec2)
+    attribute = wp.array(vertices.numpy()[:, :1], dtype=wp.float32)
+    image = od.texture.rasterize_attribute(uv, faces, attribute, 8)
+    print(image.shape)  # (8, 8, 1)
+    print(f"{image.numpy()[0, 7, 0]:.4f}")  # 0.9375
+    ```
     """
     require_same_device(uv=uv, faces=faces, attribute=attribute)
     odt.ensure_ndim(attribute, 2, dtype=wp.float32)
@@ -144,6 +162,24 @@ def rasterize_discrete_attribute(
     --------
     [`remap_discrete_attribute_from_uv`][ordito.texture.remap_discrete_attribute_from_uv]
     [`rasterize_attribute`][ordito.texture.rasterize_attribute]
+
+    Examples
+    --------
+    Label the grid vertices right of ``x = 0.5`` ``1`` and the rest ``0``; a pixel takes the label
+    with the greater interpolated weight:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5), center=False)
+    uv = wp.array(vertices.numpy()[:, :2], dtype=wp.vec2)
+    labels = wp.array((vertices.numpy()[:, 0] > 0.5).astype("int32"), dtype=wp.int32)
+    class_image = od.texture.rasterize_discrete_attribute(uv, faces, labels, 8)
+    print(class_image.shape)  # (8, 8)
+    print(class_image.numpy()[0].tolist())  # [0, 0, 0, 0, 0, 1, 1, 1]
+    ```
     """
     require_same_device(uv=uv, faces=faces, attribute=attribute)
     odt.ensure_ndim(attribute, 1, dtype=wp.int32)
@@ -297,6 +333,24 @@ def remap_attribute_from_uv(
     See Also
     --------
     [`rasterize_attribute`][ordito.texture.rasterize_attribute]
+
+    Examples
+    --------
+    A texture baked from a per-vertex value samples back to nearly the same value:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5), center=False)
+    uv = wp.array(vertices.numpy()[:, :2], dtype=wp.vec2)
+    attribute = wp.array(vertices.numpy()[:, :1], dtype=wp.float32)
+    image = od.texture.rasterize_attribute(uv, faces, attribute, 64)
+    values = od.texture.remap_attribute_from_uv(uv, image)
+    print(values.shape)  # (25, 1)
+    print(abs(values.numpy() - attribute.numpy()).max() < 0.01)  # True
+    ```
     """
     require_same_device(uv=uv, image=image)
     if order not in (0, 1):
@@ -366,6 +420,23 @@ def remap_discrete_attribute_from_uv(
     --------
     [`rasterize_discrete_attribute`][ordito.texture.rasterize_discrete_attribute]
     [`remap_attribute_from_uv`][ordito.texture.remap_attribute_from_uv]
+
+    Examples
+    --------
+    A class image baked from per-vertex labels samples back to the same labels:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5), center=False)
+    uv = wp.array(vertices.numpy()[:, :2], dtype=wp.vec2)
+    labels = wp.array((vertices.numpy()[:, 0] > 0.5).astype("int32"), dtype=wp.int32)
+    class_image = od.texture.rasterize_discrete_attribute(uv, faces, labels, 64)
+    remapped = od.texture.remap_discrete_attribute_from_uv(uv, class_image)
+    print((remapped.numpy() == labels.numpy()).all())  # True
+    ```
     """
     require_same_device(uv=uv, class_image=class_image)
     odt.ensure_ndim(class_image, 2, dtype=wp.int32)

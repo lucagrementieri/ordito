@@ -55,6 +55,21 @@ def edges_to_csr(
     --------
     [`connected_component_labels`][ordito.graph.connected_component_labels]
     [`shortest_path_envelope`][ordito.graph.shortest_path_envelope]
+
+    Examples
+    --------
+    Three edges become six directed entries; node 5 has no edge and an empty row:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    edges = wp.array([[0, 1], [1, 2], [3, 4]], dtype=wp.int32)
+    adjacency = od.graph.edges_to_csr(6, edges)
+    print(adjacency.nrow, adjacency.nnz_sync())  # 6 6
+    print(adjacency.offsets.numpy().tolist())  # [0, 1, 3, 4, 5, 6, 6]
+    ```
     """
     require_same_device(edges=edges, weights=weights)
     device = edges.device
@@ -178,6 +193,21 @@ def edges_to_neighbor_lists(
     [`ordito.adjacency.vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency]
         The same counting-sort fill for the vertex-to-face relation.
     ``igl.adjacency_list``
+
+    Examples
+    --------
+    Node ``v``'s neighbours are ``neighbors[offsets[v] : offsets[v + 1]]``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    edges = wp.array([[0, 1], [1, 2], [3, 4]], dtype=wp.int32)
+    neighbors, offsets = od.graph.edges_to_neighbor_lists(6, edges, sort_rows=True)
+    print(neighbors.numpy().tolist())  # [1, 0, 2, 1, 4, 3]
+    print(offsets.numpy().tolist())  # [0, 1, 3, 4, 5, 6, 6]
+    ```
     """
     node_count = _validate_edge_list(edges, node_count, validate=validate)
     device = edges.device
@@ -248,6 +278,21 @@ def connected_component_labels(adjacency: odt.BsrMatrix[wp.Scalar]) -> wp.array[
     [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
     [`edges_to_csr`][ordito.graph.edges_to_csr]
     [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels]
+
+    Examples
+    --------
+    Each label is the smallest node of its component; the isolated node 5 labels itself:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    edges = wp.array([[0, 1], [1, 2], [3, 4]], dtype=wp.int32)
+    adjacency = od.graph.edges_to_csr(6, edges)
+    labels = od.graph.connected_component_labels(adjacency)
+    print(labels.numpy().tolist())  # [0, 0, 0, 3, 3, 5]
+    ```
     """
     node_count, offsets, indices = _validate_square_csr(adjacency)
 
@@ -336,6 +381,18 @@ def connected_component_labels_from_edges(
     [`connected_component_parity_from_edges`][ordito.graph.connected_component_parity_from_edges]
     [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels]
     [`trimesh.graph.connected_component_labels`][]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    edges = wp.array([[0, 1], [1, 2], [3, 4]], dtype=wp.int32)
+    labels = od.graph.connected_component_labels_from_edges(edges, node_count=6)
+    print(labels.numpy().tolist())  # [0, 0, 0, 3, 3, 5]
+    ```
     """
     node_count = _validate_edge_list(edges, node_count, validate=validate)
 
@@ -453,6 +510,22 @@ def connected_component_parity_from_edges(
     --------
     [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
     [`face_orientation_bits`][ordito.validation.face_orientation_bits]
+
+    Examples
+    --------
+    Edges ``0-1`` and ``1-2`` demand opposite bits, ``2-0`` equal bits, which is consistent:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    edges = wp.array([[0, 1], [1, 2], [2, 0], [3, 4]], dtype=wp.int32)
+    signs = wp.array([1, 1, 0, 1], dtype=wp.int32)
+    labels, parity = od.graph.connected_component_parity_from_edges(edges, signs, 5)
+    print(labels.numpy().tolist())  # [0, 0, 0, 3, 3]
+    print(parity.numpy().tolist())  # [0, 1, 0, 0, 1]
+    ```
     """
     require_same_device(edges=edges, signs=signs)
     odt.ensure_edge_pairs(edges, "edges")
@@ -561,6 +634,21 @@ def successor_cycles(
     --------
     [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
     [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]
+
+    Examples
+    --------
+    Two cycles, ``1 -> 2 -> 3 -> 1`` and ``4 -> 5 -> 4``; the chain ``6 -> 7`` is no cycle:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    edges = wp.array([[2, 3], [1, 2], [5, 4], [3, 1], [4, 5], [6, 7]], dtype=wp.int32)
+    flat_cycles, offsets = od.graph.successor_cycles(edges, 8)
+    print(flat_cycles.numpy().tolist())  # [1, 2, 3, 4, 5]
+    print(offsets.numpy().tolist())  # [0, 3, 5]
+    ```
     """
     # The range check must run BEFORE ``scatter_successor`` below, not be deferred to the
     # ``connected_component_labels_from_edges`` call: that kernel indexes ``next_node`` by the raw
@@ -738,23 +826,6 @@ def shortest_path_envelope(
     RuntimeError
         If ``adjacency`` and ``values`` are not on the same device.
 
-    Examples
-    --------
-    Shortest-path distance from vertex 0 along the mesh's edges, weighted by edge length (an
-    upper bound on the geodesic distance, since paths may only follow edges):
-
-    ```python
-    n_vertices = int(v.shape[0])
-    edges = od.edges.edges_unique(f, n_vertices=n_vertices, validate=False)[0]
-    lengths = od.edges.edges_unique_length(v, f, edges)
-    adjacency = od.graph.edges_to_csr(n_vertices, edges, lengths)
-
-    seed = wp.full(n_vertices, 1.0e6, dtype=wp.float32, device=v.device)  # "unreached"
-    seed[:1].fill_(0.0)  # the source: vertex 0 at distance 0
-    distance = od.graph.shortest_path_envelope(adjacency, seed)
-    print(float(od.reduce.max(distance)))  # the farthest vertex's path length
-    ```
-
     Notes
     -----
     **The answer is Dijkstra's; the method is Bellman-Ford.** A priority queue is inherently serial
@@ -781,6 +852,41 @@ def shortest_path_envelope(
     [`heat_geodesic`][ordito.heat.heat_geodesic]
     [`ordito.remesh.isotropic_remesh`][ordito.remesh.isotropic_remesh]
     [`scipy.sparse.csgraph.dijkstra`][]
+
+    Examples
+    --------
+    Shortest-path distance from one corner of a unit grid, along its edges weighted by length. The
+    grid's diagonals run corner to corner, so the far corner is at distance ``sqrt(2)``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(11, 11), extents=(1.0, 1.0))
+    n_vertices = vertices.shape[0]
+    edges, _ = od.edges.edges_unique(faces)
+    lengths = od.edges.edges_unique_length(vertices, faces, edges)
+    adjacency = od.graph.edges_to_csr(n_vertices, edges, lengths)
+    seed = wp.full(n_vertices, 1.0e6, dtype=wp.float32)  # "unreached"
+    seed[:1].fill_(0.0)  # the source: vertex 0 at distance 0
+    distance = od.graph.shortest_path_envelope(adjacency, seed)
+    print(f"{distance.numpy()[-1]:.4f}")  # 1.4142
+    ```
+
+    As a Lipschitz cap on a path graph with unit weights, a step of 5 is lowered to a slope of 1:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    edges = wp.array([[0, 1], [1, 2], [2, 3], [3, 4]], dtype=wp.int32)
+    adjacency = od.graph.edges_to_csr(5, edges)
+    values = wp.array([0.0, 5.0, 5.0, 5.0, 5.0], dtype=wp.float32)
+    capped = od.graph.shortest_path_envelope(adjacency, values)
+    print(capped.numpy().tolist())  # [0.0, 1.0, 2.0, 3.0, 4.0]
+    ```
     """
     require_same_device(adjacency=adjacency, values=values)
     node_count, offsets, columns = _validate_square_csr(adjacency)

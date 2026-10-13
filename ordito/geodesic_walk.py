@@ -123,6 +123,23 @@ def trace_from_vertex(
     [`trace_from_face`][ordito.geodesic_walk.trace_from_face]
     [`split`][ordito.array.split]
     [`heat_geodesic`][ordito.heat.heat_geodesic]
+
+    Examples
+    --------
+    On a flat grid a straightest geodesic is a straight line, as long as its direction:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(11, 11), extents=(1.0, 1.0))
+    center = wp.array([60], dtype=wp.int32)  # the vertex at the origin
+    directions = wp.array([wp.vec3(0.3, 0.2, 0.0)], dtype=wp.vec3)
+    points, offsets = od.geodesic_walk.trace_from_vertex(vertices, faces, center, directions)
+    print(offsets.numpy().tolist())  # [0, 6]
+    print(points.numpy()[-1].round(3))  # [0.3 0.2 0. ]
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -229,6 +246,25 @@ def trace_from_face(
     --------
     [`trace_from_vertex`][ordito.geodesic_walk.trace_from_vertex]
     [`barycentric_to_points`][ordito.triangles.barycentric_to_points]
+
+    Examples
+    --------
+    A ray from the centroid of face 0 of a flat grid, walking 0.5 along X:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(11, 11), extents=(1.0, 1.0))
+    start_faces = wp.array([0], dtype=wp.int32)
+    centroid = wp.array([wp.vec3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)], dtype=wp.vec3)
+    directions = wp.array([wp.vec3(0.5, 0.0, 0.0)], dtype=wp.vec3)
+    points, offsets = od.geodesic_walk.trace_from_face(
+        vertices, faces, start_faces, centroid, directions
+    )
+    print(f"{od.polyline.polyline_length(points):.4f}")  # 0.5000
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -356,6 +392,26 @@ def descend_field(
     [`trace_from_vertex`][ordito.geodesic_walk.trace_from_vertex]
         The direction-driven walk, for a *straightest* geodesic rather than a shortest one.
     [`ordito.laplacian.face_gradients`][ordito.laplacian.face_gradients]
+
+    Examples
+    --------
+    Descending the distance to the grid's corner vertex 0 runs straight back to it, from the far
+    corner along the diagonal and from vertex 10 along the edge:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(11, 11), extents=(1.0, 1.0))
+    positions = vertices.numpy()
+    values = wp.array(np.linalg.norm(positions - positions[0], axis=1), dtype=wp.float64)
+    starts = wp.array([120, 10], dtype=wp.int32)
+    points, offsets = od.geodesic_walk.descend_field(vertices, faces, values, starts)
+    paths = od.array.split(points, offsets)
+    print([f"{od.polyline.polyline_length(path):.4f}" for path in paths])  # ['1.4142', '1.0000']
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -469,14 +525,6 @@ def geodesic_path(
         When a path stopped short of the source on the heat distance and was finished along mesh
         edges (see Notes); the message counts them.
 
-    Examples
-    --------
-    ```python
-    source = od.array.arange(1, device=v.device)
-    targets = od.array.arange(int(v.shape[0]), device=v.device)
-    points, offsets = od.geodesic_walk.geodesic_path(v, f, source, targets)
-    ```
-
     Notes
     -----
     **The path is as accurate as the field it descends, and no more.** The heat method's distance is
@@ -500,6 +548,24 @@ def geodesic_path(
         The walk itself, for descending any other scalar field.
     [`ordito.heat.heat_geodesic`][ordito.heat.heat_geodesic]
         The field, when the distance is wanted and not the path.
+
+    Examples
+    --------
+    Pole to pole on a unit sphere, whose true geodesic is half a great circle, of length ``pi``:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    heights = vertices.numpy()[:, 2]
+    source = wp.array([np.argmax(heights)], dtype=wp.int32)
+    targets = wp.array([np.argmin(heights)], dtype=wp.int32)
+    points, offsets = od.geodesic_walk.geodesic_path(vertices, faces, source, targets)
+    print(f"{od.polyline.polyline_length(points):.2f}")  # 3.14
+    ```
     """
     bound, owned, arguments = mesh_arguments(
         "geodesic_path", mesh, vertices, faces, (source, targets), 2
@@ -745,6 +811,26 @@ def shorten_loop(
         Measures the result, after gathering the positions.
     [`geodesic_path`][ordito.geodesic_walk.geodesic_path]
         The open, endpoint-to-endpoint problem, solved by descending a heat field instead.
+
+    Examples
+    --------
+    A loop around a torus with a bump in it slides onto the shortest nearby ring of edges:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.torus(2.0, 0.5, major_sections=16, minor_sections=8)
+    bumpy = [0, 1, 2, 3, 19, 35, 36, 37, 21, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    (loop,), sweeps = od.geodesic_walk.shorten_loop(
+        vertices, faces, [wp.array(bumpy, dtype=wp.int32)]
+    )
+    ring = vertices.numpy()[loop.numpy()]
+    length = np.linalg.norm(ring - np.roll(ring, 1, axis=0), axis=1).sum()
+    print(loop.size, f"{length:.3f}")  # 16 12.486
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, loops=loops, twins=twins, rings=rings)
     loops = list(loops)
@@ -836,6 +922,23 @@ def shorten_loop_with_offsets(
         The same, on one array per loop.
     [`homology_generators_with_offsets`][ordito.homology.homology_generators_with_offsets]
         Produces the loops this shortens, in this form.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.torus(2.0, 0.5, major_sections=16, minor_sections=8)
+    bumpy = [0, 1, 2, 3, 19, 35, 36, 37, 21, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    loops = wp.array(bumpy, dtype=wp.int32)
+    loop_offsets = wp.array([0, len(bumpy)], dtype=wp.int32)
+    loops, loop_offsets, sweeps = od.geodesic_walk.shorten_loop_with_offsets(
+        vertices, faces, loops, loop_offsets
+    )
+    print(loop_offsets.numpy().tolist())  # [0, 16]
+    ```
     """
     require_same_device(
         vertices=vertices,

@@ -83,6 +83,21 @@ def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.
     [`filter_laplacian`][ordito.smoothing.filter_laplacian]
         The ``float64`` consumer: its volume constraint rescales the mesh to hold this fixed.
     [`trimesh.Trimesh.volume`][]
+
+    Examples
+    --------
+    A unit cube encloses volume 1; an icosphere approaches the unit ball's ``4 * pi / 3`` from
+    below:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(f"{od.measures.volume(vertices, faces):.4f}")  # 1.0000
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    print(f"{od.measures.volume(vertices, faces):.3f}")  # 4.153
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -142,6 +157,15 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
     [`centroid`][ordito.points.centroid]
         The unweighted mean of a point cloud, and the only other ``centroid`` in the package.
     [`trimesh.Trimesh.centroid`][]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [2.0, 4.0, 6.0]])
+    print(od.measures.surface_centroid(vertices, faces))  # [1.0, 2.0, 3.0]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     f = faces.size // 3
@@ -237,6 +261,21 @@ def moments(
     [`is_volume`][ordito.validation.is_volume]
     [`trimesh.Trimesh.moment_inertia`][]
     ``igl.moments``
+
+    Examples
+    --------
+    A ``2 x 4 x 6`` box of unit density has mass 48 and principal moments
+    ``48 * (b**2 + c**2) / 12`` about its centre:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box(bounds=[[0.0, 0.0, 0.0], [2.0, 4.0, 6.0]])
+    volume, center, inertia = od.measures.moments(vertices, faces)
+    print(f"{volume:.3f}")  # 48.000
+    print(center)  # [1.0, 2.0, 3.0]
+    print([round(float(inertia[i, i]), 3) for i in range(3)])  # [208.0, 160.0, 80.0]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -305,6 +344,20 @@ def euler_characteristic(faces: wp.array[wp.int32]) -> int:
     --------
     [`edges_unique`][ordito.edges.edges_unique]
     [`trimesh.Trimesh.euler_number`][]
+
+    Examples
+    --------
+    A sphere has ``chi = 2`` and a torus ``chi = 0``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    print(od.measures.euler_characteristic(faces))  # 2
+
+    vertices, faces = od.creation.torus(1.0, 0.3, major_sections=16, minor_sections=8)
+    print(od.measures.euler_characteristic(faces))  # 0
+    ```
     """
     n_faces = faces.size // 3
     if n_faces == 0:

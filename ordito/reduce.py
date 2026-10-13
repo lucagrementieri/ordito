@@ -62,6 +62,21 @@ def min(
     ValueError
         If ``array`` is empty, its rank is not 1 or 2, ``axis`` is not ``None`` for a
         rank-1 input, or ``axis`` is not ``0``, ``1``, or ``None`` for a rank-2 input.
+
+    Examples
+    --------
+    Like [`numpy.min`][]: a Python scalar for the whole array, an array along an axis:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([[3, 1], [4, 1], [5, 9]], dtype=wp.int32)
+    print(od.reduce.min(values))  # 1
+    print(od.reduce.min(values, axis=0).numpy().tolist())  # [3, 1]
+    print(od.reduce.min(values, axis=1).numpy().tolist())  # [1, 1, 5]
+    ```
     """
     return cast(float | int | odt.Array1dScalar, _reduce_scalar(array, axis, _SCALAR_REDUCE["min"]))
 
@@ -104,6 +119,21 @@ def max(
     ValueError
         If ``array`` is empty, its rank is not 1 or 2, ``axis`` is not ``None`` for a
         rank-1 input, or ``axis`` is not ``0``, ``1``, or ``None`` for a rank-2 input.
+
+    Examples
+    --------
+    Like [`numpy.max`][]: a Python scalar for the whole array, an array along an axis:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([[3.0, 1.0], [4.0, 1.0], [5.0, 9.0]], dtype=wp.float32)
+    print(od.reduce.max(values))  # 9.0
+    print(od.reduce.max(values, axis=0).numpy().tolist())  # [5.0, 9.0]
+    print(od.reduce.max(values, axis=1).numpy().tolist())  # [3.0, 4.0, 9.0]
+    ```
     """
     return cast(float | int | odt.Array1dScalar, _reduce_scalar(array, axis, _SCALAR_REDUCE["max"]))
 
@@ -171,6 +201,22 @@ def minmax(
     [`aabb`][ordito.bounds.aabb]
         The mesh-facing spelling of the ``wp.vec3`` reduction, with the empty-input
         ``(+inf, -inf)`` convention instead of a raise.
+
+    Examples
+    --------
+    Both extremes from one pass; a ``wp.vec3`` array gives its bounding-box corners:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([3, -1, 4, 1, 5], dtype=wp.int32)
+    print(od.reduce.minmax(values))  # (-1, 5)
+    points = wp.array([[0.0, 1.0, 2.0], [3.0, -1.0, 5.0]], dtype=wp.vec3)
+    low, high = od.reduce.minmax(points)
+    print(low, high)  # [0.0, -1.0, 2.0] [3.0, 1.0, 5.0]
+    ```
     """
     if array.dtype == wp.vec3:
         if axis is not None:
@@ -214,6 +260,20 @@ def any(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.ar
     ValueError
         If ``array`` is empty, its rank is not 1 or 2, or ``axis`` is not
         ``0``, ``1``, or ``None`` for rank-2 input.
+
+    Examples
+    --------
+    Like [`numpy.any`][]:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    mask = wp.array([[False, False], [False, True]], dtype=wp.bool)
+    print(od.reduce.any(mask))  # True
+    print(od.reduce.any(mask, axis=1).numpy().tolist())  # [False, True]
+    ```
     """
     return _reduce_bool(array, axis, _BOOL_REDUCE["any"])
 
@@ -271,6 +331,23 @@ def sum(
     ValueError
         If ``array`` is empty, its rank is not 1 or 2, ``axis`` is not ``None`` for a
         rank-1 input, or ``axis`` is not ``0``, ``1``, or ``None`` for a rank-2 input.
+
+    Examples
+    --------
+    Like [`numpy.sum`][]; a mask sums to its ``True`` count and a ``wp.vec3`` array to a vector:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([[1, 2], [3, 4], [5, 6]], dtype=wp.int32)
+    print(od.reduce.sum(values))  # 21
+    print(od.reduce.sum(values, axis=0).numpy().tolist())  # [9, 12]
+    print(od.reduce.sum(wp.array([True, False, True], dtype=wp.bool)))  # 2
+    points = wp.array([[1.0, 0.0, 0.0], [0.0, 2.0, 0.5]], dtype=wp.vec3)
+    print(od.reduce.sum(points))  # [1.0, 2.0, 0.5]
+    ```
     """
     if array.dtype in _VECTOR_SUM_PARTIALS:
         name = array.dtype.__name__
@@ -358,6 +435,21 @@ def mean(
         If ``array`` is empty, its rank is not 1 or 2, ``axis`` is not ``None`` for a
         rank-1 (or ``wp.vec3``) input, or ``axis`` is not ``0``, ``1``, or ``None`` for a
         rank-2 input.
+
+    Examples
+    --------
+    Like [`numpy.mean`][]; the mean of a mask is the fraction of ``True`` entries:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([[1, 2], [3, 5]], dtype=wp.int32)
+    print(od.reduce.mean(values))  # 2.75
+    print(od.reduce.mean(values, axis=1).numpy().tolist())  # [1.5, 4.0]
+    print(od.reduce.mean(wp.array([True, False, True, True], dtype=wp.bool)))  # 0.75
+    ```
     """
     # ``axis`` is narrowed before ``sum`` is called: each of its overloads pins ``axis`` to one
     # side, so the union cannot resolve against any of them. The axis path below casts to
@@ -405,6 +497,22 @@ def weighted_sum(
         If either array is not rank-1, either is empty, or their lengths differ.
     RuntimeError
         If ``values`` and ``weights`` are not all on one device.
+
+    Examples
+    --------
+    ``numpy.dot(weights, values)``, for scalars or ``wp.vec3`` rows:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    weights = wp.array([0.5, 0.25, 0.25], dtype=wp.float32)
+    values = wp.array([1.0, 2.0, 3.0], dtype=wp.float32)
+    print(od.reduce.weighted_sum(values, weights))  # 1.75
+    points = wp.array([[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]], dtype=wp.vec3)
+    print(od.reduce.weighted_sum(points, weights))  # [1.0, 1.0, 0.0]
+    ```
     """
     require_same_device(values=values, weights=weights)
     if values.ndim != 1 or weights.ndim != 1:
@@ -459,6 +567,20 @@ def all(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.ar
     ValueError
         If ``array`` is empty, its rank is not 1 or 2, or ``axis`` is not
         ``0``, ``1``, or ``None`` for rank-2 input.
+
+    Examples
+    --------
+    Like [`numpy.all`][]:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    mask = wp.array([[True, True], [False, True]], dtype=wp.bool)
+    print(od.reduce.all(mask))  # False
+    print(od.reduce.all(mask, axis=0).numpy().tolist())  # [False, True]
+    ```
     """
     return _reduce_bool(array, axis, _BOOL_REDUCE["all"])
 
@@ -487,6 +609,19 @@ def median(array: odt.ArrayNdScalar) -> float:
     ------
     ValueError
         If ``array`` is empty or not rank-1.
+
+    Examples
+    --------
+    Mirrors [`numpy.median`][]: an even length averages the two middle values:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    print(od.reduce.median(wp.array([3, 1, 4, 1, 5], dtype=wp.int32)))  # 3.0
+    print(od.reduce.median(wp.array([3, 1, 4, 1], dtype=wp.int32)))  # 2.0
+    ```
     """
     if array.ndim != 1:
         raise ValueError("median requires a 1D array.")

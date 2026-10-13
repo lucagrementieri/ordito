@@ -247,6 +247,20 @@ def isotropic_remesh(
     region-restricted refinement is
     [`subdivide_region_to_size`][ordito.remesh.subdivide_region_to_size] rather than a mode of this
     function.
+
+    Examples
+    --------
+    Remeshing a sphere toward edges of length 0.2 keeps it closed and lands its mean edge length
+    near the target:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    new_vertices, new_faces = od.remesh.isotropic_remesh(vertices, faces, target_length=0.2)
+    print(od.validation.is_watertight(new_vertices, new_faces))  # True
+    print(abs(od.edges.mean_edge_length(new_vertices, new_faces) - 0.2) < 0.05)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, target_length=target_length)
     n_faces = faces.size // 3
@@ -1395,6 +1409,18 @@ def cluster_decimate(
     [`ordito.grouping.unique_1d`][ordito.grouping.unique_1d] would sort them in -- rather than a
     NanoVDB grid's leaf-major order, and the faces come out in
     [`ordito.grouping.unique_faces`][ordito.grouping.unique_faces]' order over them.
+
+    Examples
+    --------
+    Welding a sphere's vertices into cells of width 0.25 leaves far fewer faces:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    new_vertices, new_faces = od.remesh.cluster_decimate(vertices, faces, voxel_size=0.25)
+    print(faces.size // 3, new_faces.size // 3)  # 1280 464
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if contraction not in ("average", "closest"):
@@ -1803,6 +1829,19 @@ def quadric_decimate(
       where three or more boundary edges meet, whose sums take whatever order the pass's atomics
       produced. The CPU and CUDA devices need not agree with each other: the GPU contracts
       floating-point expressions differently.
+
+    Examples
+    --------
+    Decimating a sphere of 1 280 faces to a budget of 200:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    new_vertices, new_faces = od.remesh.quadric_decimate(vertices, faces, target_faces=200)
+    print(new_faces.size // 3 <= 200)  # True
+    print(od.validation.is_watertight(new_vertices, new_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -2527,6 +2566,25 @@ def flip_to_delaunay(
     [`subdivide_region_to_size`][ordito.remesh.subdivide_region_to_size]
     [`delaunay_triangulation`][ordito.reconstruction.delaunay_triangulation]
     [`face_adjacency`][ordito.adjacency.face_adjacency]
+
+    Examples
+    --------
+    A flat rhombus split along its long diagonal ``0-2`` into two obtuse triangles; the flip
+    moves the diagonal to the short one, ``1-3``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array(
+        [[-1.0, 0.0, 0.0], [0.0, -0.3, 0.0], [1.0, 0.0, 0.0], [0.0, 0.3, 0.0]], dtype=wp.vec3
+    )
+    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    new_faces = od.remesh.flip_to_delaunay(vertices, faces)
+    rows = new_faces.numpy().reshape(-1, 3).tolist()
+    print(sorted(sorted(row) for row in rows))  # [[0, 1, 3], [1, 2, 3]]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     device = faces.device
@@ -2669,6 +2727,25 @@ def flip_by_objective(
     forth forever, one pass each way, so a flip must beat the incumbent by a relative ``1e-6``
     rather than merely tie it. That margin is what makes ``max_iter`` a safety net rather than the
     normal stopping condition.
+
+    Examples
+    --------
+    A flat rhombus split along its long diagonal ``0-2`` into two obtuse triangles; the flip
+    moves the diagonal to the short one, ``1-3``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array(
+        [[-1.0, 0.0, 0.0], [0.0, -0.3, 0.0], [1.0, 0.0, 0.0], [0.0, 0.3, 0.0]], dtype=wp.vec3
+    )
+    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    new_faces = od.remesh.flip_by_objective(vertices, faces, objective="planarity")
+    rows = new_faces.numpy().reshape(-1, 3).tolist()
+    print(sorted(sorted(row) for row in rows))  # [[0, 1, 3], [1, 2, 3]]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     if objective not in ("planarity", "curvature", "t_vertex"):
@@ -2847,6 +2924,25 @@ def intrinsic_delaunay(
     [`robust_laplacian`][ordito.laplacian.robust_laplacian]
     [`mollify_intrinsic`][ordito.laplacian.mollify_intrinsic]
     [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay]
+
+    Examples
+    --------
+    A flat rhombus split along its long diagonal ``0-2`` into two obtuse triangles; the flip
+    moves the diagonal to the short one, ``1-3``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array(
+        [[-1.0, 0.0, 0.0], [0.0, -0.3, 0.0], [1.0, 0.0, 0.0], [0.0, 0.3, 0.0]], dtype=wp.vec3
+    )
+    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+    intrinsic_faces, edge_lengths, n_flips = od.remesh.intrinsic_delaunay(vertices, faces)
+    print(n_flips)  # 1
+    print(edge_lengths.shape)  # (2, 3)
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -2957,6 +3053,18 @@ def subdivide(
     See Also
     --------
     [`trimesh.remesh.subdivide`][]
+
+    Examples
+    --------
+    A box's 12 faces become 48, with one new vertex on each of its 18 edges:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    new_vertices, new_faces = od.remesh.subdivide(vertices, faces)
+    print(new_vertices.shape, new_faces.shape)  # (26,) (144,)
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -3086,6 +3194,23 @@ def subdivide_loop(
     [`subdivide`][ordito.remesh.subdivide]
     [`subdivide_to_size`][ordito.remesh.subdivide_to_size]
     ``igl.loop``
+
+    Examples
+    --------
+    One Loop pass over an icosahedron adds a vertex per edge and pulls the surface inward,
+    toward its smooth limit; the operator maps the 12 input vertices to the 42 output ones:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosahedron()
+    new_vertices, new_faces, operator = od.remesh.subdivide_loop(
+        vertices, faces, return_operator=True
+    )
+    print(new_vertices.shape, new_faces.shape)  # (42,) (240,)
+    print(operator.shape)  # (42, 12)
+    print(od.measures.volume(new_vertices, new_faces) < od.measures.volume(vertices, faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -3333,6 +3458,19 @@ def subdivide_to_size(
     --------
     [`subdivide`][ordito.remesh.subdivide]
     [`trimesh.remesh.subdivide_to_size`][]
+
+    Examples
+    --------
+    Refining a unit box until no edge is longer than 0.5:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    new_vertices, new_faces = od.remesh.subdivide_to_size(vertices, faces, 0.5)
+    print(od.edges.edges_unique_length(new_vertices, new_faces).numpy().max() <= 0.5)  # True
+    print(od.validation.is_watertight(new_vertices, new_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, max_edge=max_edge)
     new_vertices, new_faces, index, _grouping = _subdivide_to_size(
@@ -3557,6 +3695,26 @@ def subdivide_region_to_size(
     [`subdivide_to_size`][ordito.remesh.subdivide_to_size]
     [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay]
     [`fill_smooth`][ordito.holes.fill_smooth]
+
+    Examples
+    --------
+    Refine only the left half of a grid to edges of at most 0.1. The right half is split only where
+    it borders a refined edge, which keeps the mesh free of cracks:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    corners = vertices.numpy()[faces.numpy().reshape(-1, 3)]
+    region = wp.array(corners.mean(axis=1)[:, 0] < 0.0, dtype=wp.bool)
+    new_vertices, new_faces, new_region = od.remesh.subdivide_region_to_size(
+        vertices, faces, region, 0.1
+    )
+    print(int(region.numpy().sum()), int(new_region.numpy().sum()))  # 16 256
+    print(int((~new_region.numpy()).sum()))  # 28
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     device = vertices.device
@@ -3810,6 +3968,27 @@ def refine_region_to_density(
     vertices are added -- a centroid inherits the mean of its parents'. That is the point of it: it
     carries the surrounding sampling inward across the patch instead of being re-measured from the
     increasingly fine triangles it is producing, which would never converge.
+
+    Examples
+    --------
+    A coarse patch in the middle of a finely refined grid (whose rim faces the outer refinement
+    already split) is refined until it matches its surroundings:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    corners = vertices.numpy()[faces.numpy().reshape(-1, 3)]
+    inner = (abs(corners.mean(axis=1)[:, :2]) < 0.25).all(axis=1)
+    vertices, faces, outer = od.remesh.subdivide_region_to_size(
+        vertices, faces, wp.array(~inner, dtype=wp.bool), 0.07
+    )
+    patch = wp.array(~outer.numpy(), dtype=wp.bool)
+    new_vertices, new_faces, new_patch = od.remesh.refine_region_to_density(vertices, faces, patch)
+    print(int(patch.numpy().sum()), int(new_patch.numpy().sum()))  # 32 60
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     device = vertices.device
@@ -4085,12 +4264,36 @@ def split_edges(
     Splitting *every* edge is the regular 1-to-4 subdivision, so the face count quadruples:
 
     ```python
-    unique_edges, inverse = od.edges.edges_unique(f)
-    every_edge = wp.full(int(unique_edges.shape[0]), True, dtype=wp.bool, device=f.device)
-    fine_v, fine_f = od.remesh.split_edges(
-        v, f, every_edge, unique_edges=unique_edges, inverse=inverse
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    unique_edges, inverse = od.edges.edges_unique(faces)
+    every_edge = wp.full(unique_edges.shape[0], True, dtype=wp.bool)
+    new_vertices, new_faces = od.remesh.split_edges(
+        vertices, faces, every_edge, unique_edges=unique_edges, inverse=inverse
     )
-    print(int(fine_f.shape[0]) // 3 == 4 * (int(f.shape[0]) // 3))
+    print(faces.size // 3, new_faces.size // 3)  # 12 48
+    ```
+
+    A mask over a single edge, with the new vertex placed at a chosen point instead of the midpoint,
+    splits just the two faces sharing that edge:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    unique_edges, inverse = od.edges.edges_unique(faces)
+    split_mask = wp.array([True] + [False] * (unique_edges.shape[0] - 1), dtype=wp.bool)
+    edge = unique_edges.numpy()[0]
+    point = 0.25 * vertices.numpy()[edge[0]] + 0.75 * vertices.numpy()[edge[1]]
+    new_vertices, new_faces = od.remesh.split_edges(
+        vertices, faces, split_mask, wp.array([point], dtype=wp.vec3)
+    )
+    print(new_vertices.shape, new_faces.size // 3)  # (9,) 14
     ```
     """
     require_same_device(

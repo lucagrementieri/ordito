@@ -410,6 +410,31 @@ def min_quad_with_fixed(
     [`free_partition`][ordito.linalg.free_partition]
     [`assemble_interior_system`][ordito.linalg.assemble_interior_system]
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
+
+    Examples
+    --------
+    Minimizing the Dirichlet energy ``-L`` with the boundary of a flat grid fixed to its ``x``
+    coordinates: the harmonic interpolant is linear, so the free values are the interior ``x``
+    coordinates:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(8, 8))
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    Q = od.energies.k_harmonic(L, k=1)  # -L
+    mask = np.zeros(vertices.shape[0], dtype=bool)
+    mask[od.boundary.longest_boundary_loop(vertices, faces).numpy()] = True
+    x = vertices.numpy()[:, 0].astype(np.float64)
+    solution, free_map, n_free = od.linalg.min_quad_with_fixed(
+        Q, wp.array(mask, dtype=wp.bool), wp.array(x[None, :], dtype=wp.float64)
+    )
+    print(solution.shape, n_free)  # (1, 36) 36
+    print(np.allclose(solution.numpy()[0], x[~mask]))  # True
+    ```
     """
     require_same_device(fixed_mask=fixed_mask, fixed_values=fixed_values, coordinates=coordinates)
     odt.ensure_ndim(fixed_values, 2, dtype=wp.float64)
@@ -465,6 +490,29 @@ def min_quad_with_fixed_precompute(
     --------
     [`MinQuadWithFixedData`][ordito.linalg.MinQuadWithFixedData]
     [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]
+
+    Examples
+    --------
+    Factor once, then solve for both coordinates of a flat grid's boundary at once:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(8, 8))
+    Q = od.energies.k_harmonic(od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64), k=1)
+    mask = np.zeros(vertices.shape[0], dtype=bool)
+    mask[od.boundary.longest_boundary_loop(vertices, faces).numpy()] = True
+    data = od.linalg.min_quad_with_fixed_precompute(
+        Q, wp.array(mask, dtype=wp.bool), coordinates=vertices
+    )
+    print(data.factored, data.n_free)  # True 36
+    xy = vertices.numpy()[:, :2].T.astype(np.float64)
+    solution, free_map, n_free = data.solve(wp.array(xy, dtype=wp.float64))
+    print(solution.shape, np.allclose(solution.numpy(), xy[:, ~mask]))  # (2, 36) True
+    ```
     """
     require_same_device(fixed_mask=fixed_mask, coordinates=coordinates)
     system = MinQuadWithFixedData(q, fixed_mask, coordinates, factor=True)
@@ -505,6 +553,28 @@ class MinQuadWithFixedData:
     See Also
     --------
     [`min_quad_with_fixed_precompute`][ordito.linalg.min_quad_with_fixed_precompute]
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(8, 8))
+    Q = od.energies.k_harmonic(od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64), k=1)
+    mask = np.zeros(vertices.shape[0], dtype=bool)
+    mask[od.boundary.longest_boundary_loop(vertices, faces).numpy()] = True
+    fixed_mask = wp.array(mask, dtype=wp.bool)
+    data = od.linalg.min_quad_with_fixed_precompute(Q, fixed_mask)
+    print(data.matches(fixed_mask), data.nbytes > 0)  # True True
+    y = vertices.numpy()[:, 1].astype(np.float64)
+    solution, free_map, n_free = data.solve(wp.array(y[None, :], dtype=wp.float64))
+    print(np.allclose(solution.numpy()[0], y[~mask]))  # True
+    data.release()
+    print(data.factored)  # False
+    ```
     """
 
     def __init__(
@@ -721,6 +791,22 @@ def free_partition(fixed_mask: wp.array[wp.bool]) -> tuple[wp.array[wp.int32], i
     See Also
     --------
     [`mask_to_compact_ranks`][ordito.array.mask_to_compact_ranks]
+
+    Examples
+    --------
+    Degrees of freedom 1, 2 and 4 are free and become rows 0, 1 and 2 of the reduced system; the
+    entries at the pinned 0 and 3 are not meaningful:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    fixed_mask = wp.array([True, False, False, True, False], dtype=wp.bool)
+    free_map, n_free = od.linalg.free_partition(fixed_mask)
+    print(n_free)  # 3
+    print(free_map.numpy())  # [0 0 1 2 2]
+    ```
     """
     return od.array.mask_to_compact_ranks(fixed_mask, invert=True)
 
@@ -761,6 +847,23 @@ def free_coordinates(
     --------
     [`OperatorFactorization`][ordito.linalg.OperatorFactorization]
     [`free_partition`][ordito.linalg.free_partition]
+
+    Examples
+    --------
+    Two components per point (``u`` then ``v``) over three points; the free degrees of freedom 1, 2,
+    3 and 5 sit at points 1, 2, 0 and 2:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3)
+    fixed_mask = wp.array([True, False, False, False, True, False], dtype=wp.bool)
+    free_map, n_free = od.linalg.free_partition(fixed_mask)
+    coordinates = od.linalg.free_coordinates(points, fixed_mask, free_map, n_free)
+    print(coordinates.numpy()[:, 0])  # [1. 2. 0. 2.]
+    ```
     """
     require_same_device(coordinates=coordinates, fixed_mask=fixed_mask, free_map=free_map)
     if coordinates is None or coordinates.size == 0:
@@ -847,6 +950,33 @@ def assemble_interior_system(
     See Also
     --------
     [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]
+
+    Examples
+    --------
+    The interior block of ``-L`` on a flat grid, with the boundary fixed to its ``x`` coordinates:
+    the interior ``x`` coordinates solve it exactly:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(8, 8))
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    mask = np.zeros(vertices.shape[0], dtype=bool)
+    mask[od.boundary.longest_boundary_loop(vertices, faces).numpy()] = True
+    fixed_mask = wp.array(mask, dtype=wp.bool)
+    free_map, n_free = od.linalg.free_partition(fixed_mask)
+    x = vertices.numpy()[:, 0].astype(np.float64)
+    fixed_values = wp.array(x[None, :], dtype=wp.float64)
+    q_uu, rhs = od.linalg.assemble_interior_system(
+        L, fixed_mask, free_map, fixed_values, n_free, scale=-1.0
+    )
+    print(q_uu.shape, rhs.shape)  # (36, 36) (1, 36)
+    interior = wp.array(x[~mask], dtype=wp.float64)
+    print(np.allclose((q_uu @ interior).numpy(), rhs.numpy()[0]))  # True
+    ```
     """
     require_same_device(
         fixed_mask=fixed_mask, free_map=free_map, fixed_values=fixed_values, load=load
@@ -994,6 +1124,25 @@ def solve_spd(
     --------
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     [`spd_column_solver`][ordito.linalg.spd_column_solver]
+
+    Examples
+    --------
+    ``(M - t L) 1 = M 1``, since every row of ``L`` sums to zero, so solving the heat system
+    against the lumped masses recovers the constant:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    solution = wp.zeros_like(mass)
+    iterations, residual, tolerance = od.linalg.solve_spd(system, mass, solution)
+    print(residual <= tolerance)  # True
+    print(f"{solution.numpy().min():.4f} {solution.numpy().max():.4f}")  # 1.0000 1.0000
+    ```
     """
     require_same_device(rhs=rhs, solution=solution)
     n_rows = int(rhs.shape[0])
@@ -1193,6 +1342,23 @@ def jacobi_preconditioner(matrix: odt.SparseMatrix) -> wpl.LinearOperator:
     --------
     [`chebyshev_preconditioner`][ordito.linalg.chebyshev_preconditioner]
     [`solve_spd`][ordito.linalg.solve_spd]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    jacobi = od.linalg.jacobi_preconditioner(system)
+    print(jacobi.shape)  # (162, 162)
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    solution = wp.zeros_like(mass)
+    od.linalg.solve_spd(system, mass, solution, preconditioner=jacobi)
+    print(f"{solution.numpy().min():.4f} {solution.numpy().max():.4f}")  # 1.0000 1.0000
+    ```
     """
     # Built on the first apply rather than here: every solve that recognizes the tag reads the
     # diagonal itself, so the inverse diagonal ``warp.optim.linear`` would extract -- a diagonal
@@ -1358,6 +1524,29 @@ def solve_spd_columns(
     --------
     [`spd_column_solver`][ordito.linalg.spd_column_solver]
     [`replicated_operator`][ordito.linalg.replicated_operator]
+
+    Examples
+    --------
+    Two right-hand sides, the lumped masses and twice them, solve the heat system to the constants
+    ``1`` and ``2``:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64).numpy()
+    rhs = wp.array(np.stack([mass, 2.0 * mass]), dtype=wp.float64)
+    solution = wp.zeros_like(rhs)
+    iterations, residual, tolerance = od.linalg.solve_spd_columns(
+        system, rhs, solution, check_every=1
+    )
+    print(residual <= tolerance)  # True
+    print(solution.numpy().mean(axis=1).round(4))  # [1. 2.]
+    ```
     """
     require_same_device(rhs=rhs, solution=solution)
     if factorization is not None:
@@ -1584,19 +1773,35 @@ def spd_column_solver(
     The factorization lives as long as the returned state, and holds device memory of the order
     of the operator's fill-in until the state is dropped.
 
-    Examples
-    --------
-    ```python
-    solver = spd_column_solver(q_uu, rhs, solution, tol=1e-10)
-    for _ in range(max_iterations):
-        ...  # rewrite rhs in place
-        solver()
-    ```
-
     See Also
     --------
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     [`OperatorFactorization`][ordito.linalg.OperatorFactorization]
+
+    Examples
+    --------
+    Build the state once and call it after each in-place rewrite of ``rhs``; from the second call on
+    it solves by its own factorization:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64).numpy()
+    rhs = wp.array(mass[None, :], dtype=wp.float64)
+    solution = wp.zeros_like(rhs)
+    solver = od.linalg.spd_column_solver(system, rhs, solution, check_every=1)
+    means = []
+    for scale in (1.0, 2.0, 3.0):
+        wp.copy(rhs, wp.array(scale * mass[None, :], dtype=wp.float64))
+        solver()
+        means.append(round(float(solution.numpy().mean()), 4))
+    print(means)  # [1.0, 2.0, 3.0]
+    ```
     """
     require_same_device(rhs=rhs, solution=solution, coordinates=coordinates)
     state = _cg_columns(
@@ -1701,6 +1906,26 @@ class OperatorFactorization:
     --------
     [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]
     [`solve_spd_settled`][ordito.linalg.solve_spd_settled]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    holder = od.linalg.OperatorFactorization(system, vertices)
+    print(holder.factorization is None)  # True
+    print(holder.factor(), holder.nbytes > 0)  # True True
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    solution = wp.zeros_like(mass)
+    holder.solve(mass, solution, tol=1e-12)
+    print(f"{solution.numpy().min():.6f} {solution.numpy().max():.6f}")  # 1.000000 1.000000
+    holder.release()
+    print(holder.nbytes)  # 0
+    ```
     """
 
     def __init__(
@@ -1930,6 +2155,24 @@ def solve_spd_settled(
     [`solve_spd`][ordito.linalg.solve_spd]
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     [`OperatorFactorization`][ordito.linalg.OperatorFactorization]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    solution = wp.zeros_like(mass)
+    rounds = od.linalg.solve_spd_settled(
+        system, mass, solution, check_rounds=4, change_tolerance=1e-8, settle_rounds=64
+    )
+    print(rounds.shape)  # (1,)
+    print(f"{solution.numpy().min():.6f} {solution.numpy().max():.6f}")  # 1.000000 1.000000
+    ```
     """
     require_same_device(rhs=rhs, solution=solution)
     if factorization is not None and factorization.matrix is not matrix:
@@ -3394,8 +3637,10 @@ def bsr_with_values(
         ``(n_rows, n_cols)`` operator, in blocks, whose pattern the result takes. Rewriting that
         pattern in place afterwards rewrites the result's too.
     values
-        ``(nnz,)`` one block per stored entry of ``matrix``, laid out as ``matrix.values`` is; its
-        dtype is the result's block type.
+        ``(matrix.values.shape[0],)`` one block per storage slot of ``matrix``, laid out as
+        ``matrix.values`` is; its dtype is the result's block type. A matrix assembled from keys
+        can hold more slots than stored entries (its ``nnz``): the entries come first, in
+        ``columns`` order, and the slots past them are carried along but never read.
 
     Returns
     -------
@@ -3405,16 +3650,38 @@ def bsr_with_values(
     Raises
     ------
     ValueError
-        If ``values`` does not hold one block per stored entry of ``matrix``.
+        If ``values`` does not hold one block per storage slot of ``matrix``
+        (``matrix.values.shape[0]``).
 
     See Also
     --------
     [`replicated_operator`][ordito.linalg.replicated_operator]
+
+    Examples
+    --------
+    All-one values on a cotangent Laplacian's pattern: each row then sums to its stored count, a
+    vertex's degree plus its diagonal (5 or 6 neighbours on an icosphere). ``values`` is sized
+    like ``L.values``, which here holds more slots than ``L``'s 1122 stored entries:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    L = od.laplacian.cotmatrix(vertices, faces)
+    print(L.nnz_sync(), L.values.shape[0])  # 1122 2082
+    ones = wp.full(L.values.shape[0], 1.0, dtype=wp.float32)
+    counts = od.linalg.bsr_with_values(L, ones)
+    print(counts.offsets is L.offsets)  # True
+    row_sums = (counts @ wp.full(counts.shape[0], 1.0, dtype=wp.float32)).numpy()
+    print(row_sums.min(), row_sums.max())  # 6.0 7.0
+    ```
     """
     if values.shape[0] != matrix.values.size:
         raise ValueError(
-            f"values must hold one block per stored entry ({matrix.values.shape[0]}), got "
-            f"{values.shape[0]}"
+            f"values must hold one block per storage slot of matrix.values "
+            f"({matrix.values.shape[0]}), got {values.shape[0]}"
         )
     return _bsr_over(
         int(matrix.nrow),
@@ -3478,6 +3745,19 @@ def block_diag(matrices: Sequence[odt.SparseMatrix]) -> odt.BsrMatrix[wp.float64
     --------
     [`solve_spd_settled`][ordito.linalg.solve_spd_settled]
     [`replicated_operator`][ordito.linalg.replicated_operator]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    sphere_vertices, sphere_faces = od.creation.icosphere(subdivisions=1)
+    box_vertices, box_faces = od.creation.box()
+    sphere_system = od.heat.heat_operators(sphere_vertices, sphere_faces)[0]
+    box_system = od.heat.heat_operators(box_vertices, box_faces)[0]
+    stacked = od.linalg.block_diag([sphere_system, box_system])
+    print(sphere_system.shape, box_system.shape, stacked.shape)  # (42, 42) (8, 8) (50, 50)
+    ```
     """
     require_same_device(matrices=list(matrices))
     if len(matrices) == 0:
@@ -3575,6 +3855,28 @@ def replicated_operator(
     See Also
     --------
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
+
+    Examples
+    --------
+    Three copies of the heat system applied to three constant columns give three copies of the
+    lumped masses:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    batched = od.linalg.replicated_operator(system, 3)
+    print(batched.shape)  # (486, 486)
+    x = wp.full(batched.shape[0], 1.0, dtype=wp.float64)
+    y = wp.zeros_like(x)
+    batched.matvec(x, y, y, 1.0, 0.0)
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64).numpy()
+    print(np.allclose(y.numpy().reshape(3, -1), mass))  # True
+    ```
     """
     base = wpl.aslinearoperator(matrix)
     if n_columns == 1:
@@ -3694,6 +3996,23 @@ def multigrid_preconditioner(
     [`solve_spd`][ordito.linalg.solve_spd]
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     [`replicated_operator`][ordito.linalg.replicated_operator]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    cycle = od.linalg.multigrid_preconditioner(system)
+    print(cycle.shape)  # (642, 642)
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    solution = wp.zeros_like(mass)
+    od.linalg.solve_spd(system, mass, solution, preconditioner=cycle)
+    print(f"{solution.numpy().min():.4f} {solution.numpy().max():.4f}")  # 1.0000 1.0000
+    ```
     """
     base = wpl.aslinearoperator(matrix)
     n = int(matrix.nrow)
@@ -3776,6 +4095,23 @@ def chebyshev_preconditioner(
     [`solve_spd`][ordito.linalg.solve_spd]
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     [`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    system = od.heat.heat_operators(vertices, faces)[0]  # M - t L, float64
+    polynomial = od.linalg.chebyshev_preconditioner(system)
+    print(polynomial.shape)  # (642, 642)
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    solution = wp.zeros_like(mass)
+    od.linalg.solve_spd(system, mass, solution, preconditioner=polynomial)
+    print(f"{solution.numpy().min():.4f} {solution.numpy().max():.4f}")  # 1.0000 1.0000
+    ```
     """
     n = int(matrix.nrow)
     # Built on the first apply rather than here, so an operator handed out and never applied costs
@@ -3848,6 +4184,36 @@ def squared_laplacian_preconditioner(
     --------
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]
+
+    Examples
+    --------
+    The biharmonic system ``L L`` of a flat grid with its boundary fixed, preconditioned by the
+    square of its interior Laplacian block (``D = 1``), agrees with a direct solve:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(12, 12))
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    Q = od.energies.k_harmonic(L, k=2)
+    mask = np.zeros(vertices.shape[0], dtype=bool)
+    mask[od.boundary.longest_boundary_loop(vertices, faces).numpy()] = True
+    fixed_mask = wp.array(mask, dtype=wp.bool)
+    free_map, n_free = od.linalg.free_partition(fixed_mask)
+    values = wp.array(vertices.numpy()[None, :, 0] ** 2, dtype=wp.float64)
+    q_uu, rhs = od.linalg.assemble_interior_system(Q, fixed_mask, free_map, values, n_free)
+    none = wp.zeros((0, vertices.shape[0]), dtype=wp.float64)
+    l_ff, _ = od.linalg.assemble_interior_system(L, fixed_mask, free_map, none, n_free, scale=-1.0)
+    ones = wp.full(n_free, 1.0, dtype=wp.float64)
+    preconditioner = od.linalg.squared_laplacian_preconditioner(l_ff, ones)
+    solution = wp.zeros_like(rhs)
+    od.linalg.solve_spd_columns(q_uu, rhs, solution, preconditioner=preconditioner)
+    direct, _, _ = od.linalg.min_quad_with_fixed(Q, fixed_mask, values, solver="direct")
+    print(np.allclose(solution.numpy(), direct.numpy(), atol=1e-6))  # True
+    ```
     """
     require_same_device(laplacian=laplacian.values, weight_sums=weight_sums)
     return SquaredLaplacianPreconditioner(laplacian, weight_sums)
@@ -3883,6 +4249,27 @@ class SquaredLaplacianPreconditioner:
 
     Holds the square block ``M_ff = D⁻¹ L``, its transpose and the polynomial's coefficients, and
     binds a set of working vectors to the column layout of each solve that uses it.
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(8, 8))
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    mask = np.zeros(vertices.shape[0], dtype=bool)
+    mask[od.boundary.longest_boundary_loop(vertices, faces).numpy()] = True
+    fixed_mask = wp.array(mask, dtype=wp.bool)
+    free_map, n_free = od.linalg.free_partition(fixed_mask)
+    none = wp.zeros((0, vertices.shape[0]), dtype=wp.float64)
+    l_ff, _ = od.linalg.assemble_interior_system(L, fixed_mask, free_map, none, n_free, scale=-1.0)
+    ones = wp.full(n_free, 1.0, dtype=wp.float64)
+    preconditioner = od.linalg.squared_laplacian_preconditioner(l_ff, ones)
+    print(type(preconditioner).__name__)  # SquaredLaplacianPreconditioner
+    ```
     """
 
     def __init__(

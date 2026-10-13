@@ -99,6 +99,19 @@ def edge_length_loss(
     -----
     Matches ``pytorch3d.loss.mesh_edge_loss``. Its per-mesh ``1 / E`` weighting collapses to a
     plain mean for one mesh, which is ordito's only case, so there is no batch weighting to port.
+
+    Examples
+    --------
+    A unit cube has 12 unit edges and 6 face diagonals of length ``sqrt(2)``, so its mean squared
+    edge length is ``(12 + 6 * 2) / 18``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(f"{od.energies.edge_length_loss(vertices, faces):.4f}")  # 1.3333
+    print(f"{od.energies.edge_length_loss(vertices, faces, target_length=1.0):.4f}")  # 0.0572
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     # The bound is supplied and the range check skipped: both are host readbacks that
@@ -154,6 +167,20 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
     edge, so an edge with ``k`` incident faces contributes ``C(k, 2)`` terms where
     [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles] reports one pair per
     adjacency. The two coincide exactly wherever every edge has at most two faces.
+
+    Examples
+    --------
+    A cube's 12 edges meet at right angles (``1`` each) and its 6 face diagonals are flat (``0``);
+    a flat grid has no fold at all:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(f"{od.energies.normal_consistency_loss(vertices, faces):.4f}")  # 0.6667
+    vertices, faces = od.creation.grid(count=(4, 4))
+    print(f"{od.energies.normal_consistency_loss(vertices, faces):.4f}")  # 0.0000
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     angles = od.adjacency.face_adjacency_angles(vertices, faces)
@@ -224,6 +251,23 @@ def laplacian_smoothing_loss(
     ordito's half-cotangent table and whose diagonal is identically zero, which cancels out of
     both ratios above -- and where a vertex's row sum is not positive its averaging is undefined,
     so ``"cot"`` falls back to ``|| v_i ||`` there, matching the reference's ``norm_w = 0`` branch.
+
+    Examples
+    --------
+    ``"cotcurv"`` is a curvature, so doubling a sphere's radius halves it, where the ``"uniform"``
+    residual, a length, doubles:
+
+    ```python
+    import ordito as od
+
+    loss = od.energies.laplacian_smoothing_loss
+    unit_vertices, unit_faces = od.creation.icosphere(subdivisions=3)
+    big_vertices, big_faces = od.creation.icosphere(subdivisions=3, radius=2.0)
+    unit, big = loss(unit_vertices, unit_faces, "cotcurv"), loss(big_vertices, big_faces, "cotcurv")
+    print(f"{unit:.4f} {big:.4f}")  # 0.3335 0.1668
+    unit, big = loss(unit_vertices, unit_faces), loss(big_vertices, big_faces)
+    print(f"{unit:.4f} {big:.4f}")  # 0.0139 0.0279
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if method not in ("uniform", "cot", "cotcurv"):
@@ -319,6 +363,28 @@ def k_harmonic(
     [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries]
     [`hessian_energy`][ordito.energies.hessian_energy]
     [`harmonic`][ordito.parametrization.harmonic]
+
+    Examples
+    --------
+    ``k == 1`` is ``-L`` itself; the biharmonic ``k == 2`` keeps constants in its kernel:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    x = wp.array(vertices.numpy()[:, 0], dtype=wp.float64)
+    dirichlet = od.energies.k_harmonic(L, k=1)
+    print(np.allclose((dirichlet @ x).numpy(), -(L @ x).numpy()))  # True
+    biharmonic = od.energies.k_harmonic(L, mass, k=2)
+    print(biharmonic.shape)  # (162, 162)
+    ones = wp.full(biharmonic.shape[0], 1.0, dtype=wp.float64)
+    print(np.abs((biharmonic @ ones).numpy()).max() < 1e-8)  # True
+    ```
     """
     require_same_device(laplacian=laplacian, mass=mass)
     if k < 1:
@@ -456,6 +522,29 @@ def hessian_energy(
     -----
     Matches ``igl::hessian_energy`` except on degenerate faces, which contribute nothing here and
     ``NaN`` there.
+
+    Examples
+    --------
+    A linear function costs nothing under the Hessian energy, boundary included, where the clamped
+    biharmonic operator penalizes it at the boundary:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(6, 6))
+    x = wp.array(vertices.numpy()[:, 0], dtype=wp.float64)
+    hessian = od.energies.hessian_energy(vertices, faces)
+    print(hessian.shape)  # (36, 36)
+    print(np.abs((hessian @ x).numpy()).max() < 1e-8)  # True
+
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
+    biharmonic = od.energies.k_harmonic(L, mass, k=2)
+    print(np.abs((biharmonic @ x).numpy()).max() < 1e-8)  # False
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, vertex_faces=vertex_faces)
     n_vertices = vertices.size
@@ -563,6 +652,23 @@ def curved_hessian_energy(
     [`hessian_energy`][ordito.energies.hessian_energy]
     [`crouzeix_raviart_cotmatrix`][ordito.energies.crouzeix_raviart_cotmatrix]
     [`vertex_defects`][ordito.vertices.vertex_defects]
+
+    Examples
+    --------
+    Constants are in the kernel on a curved surface:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    energy = od.energies.curved_hessian_energy(vertices, faces)
+    print(energy.shape)  # (162, 162)
+    ones = wp.full(energy.shape[0], 1.0, dtype=wp.float64)
+    print(np.abs((energy @ ones).numpy()).max() < 1e-8)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_vertices = vertices.size
@@ -704,6 +810,24 @@ def crouzeix_raviart_cotmatrix(
     -----
     Matches ``igl::crouzeix_raviart_cotmatrix`` up to the edge numbering, which follows
     [`edges_unique`][ordito.edges.edges_unique] rather than ``igl::unique_edge_map``.
+
+    Examples
+    --------
+    One row per edge (an icosphere at two subdivisions has 480) and, like the vertex operator, rows
+    that sum to zero:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    L = od.energies.crouzeix_raviart_cotmatrix(vertices, faces)
+    print(L.shape)  # (480, 480)
+    ones = wp.full(L.shape[0], 1.0, dtype=wp.float32)
+    print(np.abs((L @ ones).numpy()).max() < 1e-5)  # True
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -790,6 +914,21 @@ def crouzeix_raviart_massmatrix(
     Notes
     -----
     Matches ``igl::crouzeix_raviart_massmatrix`` up to the edge numbering, as above.
+
+    Examples
+    --------
+    One entry per edge of the cube, summing to its surface area:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    M = od.energies.crouzeix_raviart_massmatrix(vertices, faces)
+    ones = wp.full(M.shape[0], 1.0, dtype=wp.float32)
+    print(M.shape, f"{(M @ ones).numpy().sum():.4f}")  # (18, 18) 6.0000
+    ```
     """
     require_same_device(
         vertices=vertices, faces=faces, unique_edges=unique_edges, edge_map=edge_map
@@ -871,6 +1010,24 @@ def lscm_hessian(
     Notes
     -----
     Matches ``igl::lscm_hessian``.
+
+    Examples
+    --------
+    A flat patch's identity map is conformal, so its LSCM energy is zero:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(4, 4))
+    Q = od.energies.lscm_hessian(vertices, faces)
+    print(Q.shape)  # (32, 32)
+    uv = np.concatenate([vertices.numpy()[:, 0], vertices.numpy()[:, 1]])
+    energy = np.dot(uv, (Q @ wp.array(uv, dtype=wp.float64)).numpy())
+    print(abs(energy) < 1e-6)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n = vertices.size
@@ -940,6 +1097,27 @@ def vector_area_matrix(
     Notes
     -----
     Matches ``igl::vector_area_matrix``.
+
+    Examples
+    --------
+    The quadratic form of the identity map is the area of a ``2 x 3`` rectangle; a closed cube has
+    no boundary and an empty matrix:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(4, 4), extents=(2.0, 3.0))
+    A = od.energies.vector_area_matrix(vertices, faces)
+    print(A.shape)  # (32, 32)
+    uv = np.concatenate([vertices.numpy()[:, 0], vertices.numpy()[:, 1]])
+    print(f"{np.dot(uv, (A @ wp.array(uv, dtype=wp.float64)).numpy()):.4f}")  # 6.0000
+
+    vertices, faces = od.creation.box()
+    print(od.energies.vector_area_matrix(vertices, faces).nnz_sync())  # 0
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n = vertices.size

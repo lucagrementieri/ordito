@@ -176,6 +176,19 @@ def voxelize_mesh(
     trimesh's ``voxelize_subdivide`` is a *different* algorithm -- subdivide until every edge is
     under half a pitch, then round each vertex to a cell -- and its result neither contains nor is
     contained in this one.
+
+    Examples
+    --------
+    The surface of a unit cube at quarter-unit cells, and the same cube filled:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    surface = od.voxels.voxelize_mesh(vertices, faces, 0.25)
+    solid = od.voxels.voxelize_mesh(vertices, faces, 0.25, mode="solid")
+    print(od.voxels.cells(surface).shape[0], od.voxels.cells(solid).shape[0])  # 98 125
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if mode not in ("surface", "solid"):
@@ -275,6 +288,20 @@ def voxelize_points(
     [`voxelize_mesh`][ordito.voxels.voxelize_mesh]
     [`voxel_down_sample`][ordito.voxels.voxel_down_sample]
     [`cell_indices`][ordito.voxels.cell_indices]
+
+    Examples
+    --------
+    Two of the three points share a unit cell:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.2, 0.2, 0.2], [0.7, 0.4, 0.9], [2.5, 0.5, 0.5]], dtype=wp.vec3)
+    grid = od.voxels.voxelize_points(points, 1.0, origin=wp.vec3(0.0, 0.0, 0.0))
+    print(od.voxels.cells(grid, order="sorted").numpy().tolist())  # [[0, 0, 0], [2, 0, 0]]
+    ```
     """
     device = points.device
     voxel_size, origin = resolve_voxel_grid(points, voxel_size, origin, caller="voxelize_points")
@@ -359,6 +386,23 @@ def voxel_down_sample(
     reduce each segment in index order rather than accumulating with float atomics, whose ordering
     varies between launches. That costs one radix sort over the point count. ``"min"`` and ``"max"``
     use atomics directly, since those are order-independent for floats.
+
+    Examples
+    --------
+    The two points sharing a unit cell are averaged into one:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.25, 0.25, 0.25], [0.75, 0.25, 0.75], [2.5, 0.5, 0.5]], dtype=wp.vec3)
+    pooled, inverse = od.voxels.voxel_down_sample(
+        points, 1.0, origin=wp.vec3(0.0, 0.0, 0.0), return_inverse=True
+    )
+    print(sorted(pooled.numpy().tolist()))  # [[0.5, 0.25, 0.5], [2.5, 0.5, 0.5]]
+    print(inverse.numpy()[0] == inverse.numpy()[1])  # True
+    ```
     """
     device = points.device
     n_points = points.size
@@ -544,6 +588,22 @@ def pool_by_voxel(
     --------
     [`voxel_down_sample`][ordito.voxels.voxel_down_sample]
     [`cell_centers`][ordito.voxels.cell_centers]
+
+    Examples
+    --------
+    Sum a per-point payload over the voxels of a grid built from the same points:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.2, 0.2, 0.2], [0.6, 0.4, 0.8], [2.5, 0.5, 0.5]], dtype=wp.vec3)
+    values = wp.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=wp.vec3)
+    grid = od.voxels.voxelize_points(points, 1.0, origin=wp.vec3(0.0, 0.0, 0.0))
+    pooled = od.voxels.pool_by_voxel(grid, points, values, pooling="sum")
+    print(sorted(pooled.numpy().tolist()))  # [[0.0, 0.0, 1.0], [1.0, 1.0, 0.0]]
+    ```
     """
     require_same_device(grid=grid, points=points, values=values)
     return _pool_by_voxel(grid, points, values, pooling, return_slots=False)[0]
@@ -695,6 +755,19 @@ def cells(grid: wp.Volume, *, order: Literal["grid", "sorted"] = "grid") -> odt.
     The length comes from ``Volume.get_active_stats``, never from ``get_voxel_count``: on a
     *rebuildable* grid the latter reports the reserved **capacity**, and the trailing rows of
     ``get_voxels`` are padding at ``[0, 0, 0]`` that would read as real voxels.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    cells = wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 1.0, origin)
+    print(od.voxels.cells(grid, order="sorted").numpy().tolist())  # [[0, 0, 0], [1, 0, 0]]
+    ```
     """
     if order not in ("grid", "sorted"):
         raise ValueError(f"order must be 'grid' or 'sorted', got {order!r}")
@@ -752,6 +825,20 @@ def from_cells(cells: odt.Array2dInt32, voxel_size: float, origin: wp.vec3) -> w
     --------
     [`cells`][ordito.voxels.cells]
     [`from_dense`][ordito.voxels.from_dense]
+
+    Examples
+    --------
+    Repeated rows collapse into one voxel:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    cells = wp.array([[0, 0, 0], [0, 0, 0], [-1, 2, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 0.5, wp.vec3(0.0, 0.0, 0.0))
+    print(od.voxels.cells(grid).shape)  # (2, 3)
+    ```
     """
     odt.ensure_ndim(cells, 2, dtype=wp.int32)
     if int(cells.shape[1]) != 3:
@@ -799,6 +886,19 @@ def grid_transform(grid: wp.Volume) -> tuple[float, wp.vec3]:
     --------
     [`from_cells`][ordito.voxels.from_cells]
     [`cell_centers`][ordito.voxels.cell_centers]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    cells = wp.array([[0, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 0.5, wp.vec3(1.0, 2.0, 3.0))
+    voxel_size, origin = od.voxels.grid_transform(grid)
+    print(voxel_size, origin)  # 0.5 [1.0, 2.0, 3.0]
+    ```
     """
     _require_index_grid(grid)
     voxel_size = float(grid.get_voxel_size()[0])
@@ -902,6 +1002,19 @@ def resolve_voxel_grid(
         only the *pairing rule* is worth sharing and
         [`adjacency.require_paired_adjacency`][ordito.adjacency.require_paired_adjacency] is that
         rule on its own.
+
+    Examples
+    --------
+    The default cell is ``1 %`` of the unit cube's diagonal, anchored half a cell below it:
+
+    ```python
+    import ordito as od
+
+    vertices, _ = od.creation.box()
+    voxel_size, origin = od.voxels.resolve_voxel_grid(vertices)
+    print(f"{voxel_size:.5f}")  # 0.01732
+    print(f"{origin[0]:.5f}")  # -0.50866
+    ```
     """
     upper = wp.vec3(0.0, 0.0, 0.0)
     if voxel_size is None or origin is None or return_cell_bound:
@@ -977,6 +1090,18 @@ def cell_indices(
     --------
     [`occupancy_at_points`][ordito.voxels.occupancy_at_points]
     [`voxelize_points`][ordito.voxels.voxelize_points]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.2, 0.2, 0.2], [1.7, 0.4, -0.3]], dtype=wp.vec3)
+    indices = od.voxels.cell_indices(points, 1.0, origin=wp.vec3(0.0, 0.0, 0.0))
+    print(indices.numpy().tolist())  # [[0, 0, 0], [1, 0, -1]]
+    ```
     """
     if voxel_size <= 0.0:
         raise ValueError(f"cell_indices requires voxel_size > 0, got {voxel_size}")
@@ -1016,6 +1141,18 @@ def cell_centers(grid: wp.Volume) -> wp.array[wp.vec3]:
     --------
     [`cells`][ordito.voxels.cells]
     [`to_boxes`][ordito.voxels.to_boxes]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    cells = wp.array([[0, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 0.5, wp.vec3(1.0, 2.0, 3.0))
+    print(od.voxels.cell_centers(grid).numpy().tolist())  # [[1.25, 2.25, 3.25]]
+    ```
     """
     _require_index_grid(grid)
     voxels = cells(grid)
@@ -1063,6 +1200,20 @@ def occupancy_at_points(grid: wp.Volume, points: wp.array[wp.vec3]) -> wp.array[
     --------
     [`occupancy_at_cells`][ordito.voxels.occupancy_at_cells]
     [`cell_indices`][ordito.voxels.cell_indices]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    cells = wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 1.0, origin)
+    queries = wp.array([[1.5, 0.5, 0.5], [2.5, 0.5, 0.5]], dtype=wp.vec3)
+    print(od.voxels.occupancy_at_points(grid, queries).numpy().tolist())  # [True, False]
+    ```
     """
     require_same_device(grid=grid, points=points)
     _require_index_grid(grid)
@@ -1113,6 +1264,20 @@ def occupancy_at_cells(grid: wp.Volume, cells: odt.Array2dInt32) -> wp.array[wp.
     --------
     [`occupancy_at_points`][ordito.voxels.occupancy_at_points]
     [`cells`][ordito.voxels.cells]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    cells = wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 1.0, origin)
+    queries = wp.array([[1, 0, 0], [0, 1, 0]], dtype=wp.int32)
+    print(od.voxels.occupancy_at_cells(grid, queries).numpy().tolist())  # [True, False]
+    ```
     """
     require_same_device(grid=grid, cells=cells)
     _require_index_grid(grid)
@@ -1223,6 +1388,22 @@ def splat_onto_grid(
     - A **constant** field comes back as that constant everywhere some point was reached. Off the
       lattice the round trip is a smoothing rather than the identity, and the residual comes from
       the corners no point reached: a query whose stencil touches one averages a zero in.
+
+    Examples
+    --------
+    A point halfway between two corners contributes half a point to each, and the field is a mean:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.5, 0.0, 0.0]], dtype=wp.vec3)
+    values = wp.array([2.0], dtype=wp.float32)
+    field, density = od.voxels.splat_onto_grid(points, values, (2, 2, 2))
+    print(field.numpy()[:, 0, 0].tolist())  # [2.0, 2.0]
+    print(density.numpy()[:, 0, 0].tolist())  # [0.5, 0.5]
+    ```
     """
     require_same_device(points=points, values=values)
     if len(shape) != 3 or min(int(n) for n in shape) < 1:
@@ -1316,6 +1497,22 @@ def sample_grid_trilinear(
     wants and is the convention the Poisson sampler in
     [`ordito.reconstruction`][ordito.reconstruction] already had. Clamp or mask the query set
     yourself if an outside position should be an error.
+
+    Examples
+    --------
+    A field that is linear in ``x`` is read back exactly between the corners:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    field = wp.array(np.broadcast_to(np.arange(4.0)[:, None, None], (4, 4, 4)), dtype=wp.float32)
+    points = wp.array([[1.5, 0.2, 2.7], [0.25, 3.0, 0.0]], dtype=wp.vec3)
+    samples = od.voxels.sample_grid_trilinear(field, points)
+    print(np.round(samples.numpy(), 4).tolist())  # [1.5, 0.25]
+    ```
     """
     require_same_device(field=field, points=points)
     if field.ndim != 3:
@@ -1414,6 +1611,19 @@ def grid_points(
     ``igl.voxel_grid`` produces this same lattice up to its own transform: ``s`` cells along the
     longest side, ``pad_count`` cells beyond the box, then an isotropic rescale re-centred on the
     box centre.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    bounds = (wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 2.0))
+    points = od.voxels.grid_points((2, 2, 3), bounds=bounds)
+    print(points.shape)  # (12,)
+    print(points.numpy()[:3].tolist())  # [[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]]
+    ```
     """
     if len(shape) != 3 or min(int(n) for n in shape) < 1:
         raise ValueError(f"shape must be three positive integers, got {shape!r}")
@@ -1468,6 +1678,20 @@ def union(a: wp.Volume, b: wp.Volume) -> wp.Volume:
     [`resolve_voxel_grid`][ordito.voxels.resolve_voxel_grid] is what a caller resolves once and
     passes to both builds; [`revoxelize`][ordito.voxels.revoxelize] moves an existing grid onto
     another lattice.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    a = od.voxels.from_cells(wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32), 1.0, origin)
+    b = od.voxels.from_cells(wp.array([[1, 0, 0], [2, 0, 0]], dtype=wp.int32), 1.0, origin)
+    merged = od.voxels.cells(od.voxels.union(a, b), order="sorted")
+    print(merged.numpy().tolist())  # [[0, 0, 0], [1, 0, 0], [2, 0, 0]]
+    ```
     """
     require_same_device(a=a, b=b)
     voxel_size, origin = _require_same_lattice(a, b, caller="union")
@@ -1517,6 +1741,19 @@ def intersection(a: wp.Volume, b: wp.Volume) -> wp.Volume:
     [`union`][ordito.voxels.union]
     [`difference`][ordito.voxels.difference]
     [`occupancy_at_cells`][ordito.voxels.occupancy_at_cells]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    a = od.voxels.from_cells(wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32), 1.0, origin)
+    b = od.voxels.from_cells(wp.array([[1, 0, 0], [2, 0, 0]], dtype=wp.int32), 1.0, origin)
+    print(od.voxels.cells(od.voxels.intersection(a, b)).numpy().tolist())  # [[1, 0, 0]]
+    ```
     """
     require_same_device(a=a, b=b)
     voxel_size, origin = _require_same_lattice(a, b, caller="intersection")
@@ -1558,6 +1795,20 @@ def difference(a: wp.Volume, b: wp.Volume) -> wp.Volume:
     [`intersection`][ordito.voxels.intersection]
     [`surface_voxels`][ordito.voxels.surface_voxels]
         The shell, which is this operation against the grid's own erosion.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    a = od.voxels.from_cells(wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32), 1.0, origin)
+    b = od.voxels.from_cells(wp.array([[1, 0, 0], [2, 0, 0]], dtype=wp.int32), 1.0, origin)
+    print(od.voxels.cells(od.voxels.difference(a, b)).numpy().tolist())  # [[0, 0, 0]]
+    print(od.voxels.cells(od.voxels.difference(b, a)).numpy().tolist())  # [[2, 0, 0]]
+    ```
     """
     require_same_device(a=a, b=b)
     voxel_size, origin = _require_same_lattice(a, b, caller="difference")
@@ -1626,6 +1877,22 @@ def revoxelize(
     neighbouring cells answers is decided by float32 rounding. Pass an ``origin`` displaced by a
     fraction of a cell where that matters; odd and fractional factors sample strictly inside an old
     cell and are exact.
+
+    Examples
+    --------
+    Halving the cell width splits each voxel into eight:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    cells = wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 1.0, origin)
+    finer = od.voxels.revoxelize(grid, 0.5)
+    print(od.voxels.cells(finer).shape[0])  # 16
+    ```
     """
     old_size, old_origin = grid_transform(grid)
     if voxel_size <= 0.0:
@@ -1735,6 +2002,24 @@ def fill_cavities(grid: wp.Volume, *, max_cells: int = 1 << 28) -> wp.Volume:
     ``3 * n_empty`` rows, which is why the connected-component pass is written against the stencil
     rather than against
     [`ordito.graph.connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges].
+
+    Examples
+    --------
+    A ``3 x 3 x 3`` shell has one enclosed empty cell, which the fill adds:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    shell = np.ones((3, 3, 3), dtype=bool)
+    shell[1, 1, 1] = False
+    grid = od.voxels.from_dense(wp.array(shell, dtype=wp.bool), 1.0, origin)
+    print(od.voxels.cells(grid).shape[0])  # 26
+    print(od.voxels.cells(od.voxels.fill_cavities(grid)).shape[0])  # 27
+    ```
     """
     if max_cells <= 0:
         raise ValueError(f"max_cells must be positive, got {max_cells}")
@@ -1814,6 +2099,24 @@ def fill_orthographic(grid: wp.Volume, *, max_cells: int = 1 << 28) -> wp.Volume
     --------
     [`fill_cavities`][ordito.voxels.fill_cavities]
         The exact fill, with the same budget for the same reason.
+
+    Examples
+    --------
+    A ``3 x 3 x 3`` shell has one enclosed empty cell, which the fill adds:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    shell = np.ones((3, 3, 3), dtype=bool)
+    shell[1, 1, 1] = False
+    grid = od.voxels.from_dense(wp.array(shell, dtype=wp.bool), 1.0, origin)
+    print(od.voxels.cells(grid).shape[0])  # 26
+    print(od.voxels.cells(od.voxels.fill_orthographic(grid)).shape[0])  # 27
+    ```
     """
     if max_cells <= 0:
         raise ValueError(f"max_cells must be positive, got {max_cells}")
@@ -1885,6 +2188,21 @@ def dilate(
     Binary closing is ``erode(dilate(g))`` and opening ``dilate(erode(g))``; both are wrapped, as
     [`closing`][ordito.voxels.closing] and [`opening`][ordito.voxels.opening], because the order
     is the whole operation and each name is the other one's mistake.
+
+    Examples
+    --------
+    A single voxel grows into its face neighbours, or into the full ``3 x 3 x 3`` block:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    cells = wp.array([[0, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 1.0, wp.vec3(0.0, 0.0, 0.0))
+    print(od.voxels.cells(od.voxels.dilate(grid)).shape[0])  # 7
+    print(od.voxels.cells(od.voxels.dilate(grid, connectivity=26)).shape[0])  # 27
+    ```
     """
     voxel_size, origin = grid_transform(grid)
     _check_iterations(connectivity, iterations)
@@ -1949,6 +2267,21 @@ def erode(
     Cells outside the grid are empty by definition, so a voxel on the boundary of the occupied
     region always erodes away — the same convention ``scipy.ndimage.binary_erosion`` takes with
     ``border_value=0``.
+
+    Examples
+    --------
+    Only the centre of a ``3 x 3 x 3`` block has its whole neighbourhood occupied:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    block = od.voxels.from_dense(wp.array(np.ones((3, 3, 3)), dtype=wp.bool), 1.0, origin)
+    print(od.voxels.cells(od.voxels.erode(block)).numpy().tolist())  # [[1, 1, 1]]
+    ```
     """
     voxel_size, origin = grid_transform(grid)
     _check_iterations(connectivity, iterations)
@@ -2006,6 +2339,24 @@ def closing(
     Nothing is clipped here, which is the one way this differs from the dense reference: the
     intermediate dilation grows onto whatever cells it needs, where ``scipy.ndimage``'s runs inside
     the array it was handed and erodes a shell off every face of it unless the caller padded first.
+
+    Examples
+    --------
+    Closing a ``3 x 3 x 3`` shell fills its one-cell hole:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    shell = np.ones((3, 3, 3), dtype=bool)
+    shell[1, 1, 1] = False
+    grid = od.voxels.from_dense(wp.array(shell, dtype=wp.bool), 1.0, origin)
+    print(od.voxels.cells(grid).shape[0])  # 26
+    print(od.voxels.cells(od.voxels.closing(grid)).shape[0])  # 27
+    ```
     """
     return erode(
         dilate(grid, connectivity=connectivity, iterations=iterations),
@@ -2056,6 +2407,23 @@ def opening(
     A component narrower than the element vanishes entirely rather than shrinking, which is what
     makes this the speck filter of a noisy voxelization; the surviving components keep their
     extent but lose their corners.
+
+    Examples
+    --------
+    Opening drops a lone voxel; the ``3 x 3 x 3`` block survives but loses its edges and corners:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    block = od.voxels.from_dense(wp.array(np.ones((3, 3, 3)), dtype=wp.bool), 1.0, origin)
+    speck = od.voxels.from_cells(wp.array([[9, 9, 9]], dtype=wp.int32), 1.0, origin)
+    opened = od.voxels.opening(od.voxels.union(block, speck))
+    print(od.voxels.cells(opened).shape[0])  # 7
+    ```
     """
     return dilate(
         erode(grid, connectivity=connectivity, iterations=iterations),
@@ -2099,6 +2467,21 @@ def surface_voxels(grid: wp.Volume, *, connectivity: Literal[6, 18, 26] = 6) -> 
     -----
     A voxel on the edge of the grid's occupied region counts as surface, since everything outside
     the set is empty by definition.
+
+    Examples
+    --------
+    All of a ``3 x 3 x 3`` block but its centre touches the outside:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    block = od.voxels.from_dense(wp.array(np.ones((3, 3, 3)), dtype=wp.bool), 1.0, origin)
+    print(od.voxels.cells(od.voxels.surface_voxels(block)).shape[0])  # 26
+    ```
     """
     voxel_size, origin = grid_transform(grid)
     # ``interior=False`` asks the neighbourhood kernel for the complement it already computes,
@@ -2152,6 +2535,22 @@ def to_dense(
     --------
     [`from_dense`][ordito.voxels.from_dense]
     [`to_field`][ordito.voxels.to_field]
+
+    Examples
+    --------
+    The tight box starts at the lowest occupied cell, which may be negative:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    cells = wp.array([[-1, 0, 0], [1, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 1.0, wp.vec3(0.0, 0.0, 0.0))
+    occupancy, origin_cell = od.voxels.to_dense(grid)
+    print(occupancy.shape, origin_cell)  # (3, 1, 1) (-1, 0, 0)
+    print(occupancy.numpy()[:, 0, 0].tolist())  # [True, False, True]
+    ```
     """
     _require_index_grid(grid)
     if origin_cell is None or shape is None:
@@ -2217,6 +2616,22 @@ def from_dense(
     --------
     [`to_dense`][ordito.voxels.to_dense]
     [`from_cells`][ordito.voxels.from_cells]
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    occupancy = np.zeros((2, 2, 2), dtype=bool)
+    occupancy[0, 0, 0] = occupancy[1, 1, 1] = True
+    grid = od.voxels.from_dense(
+        wp.array(occupancy, dtype=wp.bool), 1.0, wp.vec3(0.0, 0.0, 0.0), origin_cell=(-1, 0, 0)
+    )
+    print(od.voxels.cells(grid, order="sorted").numpy().tolist())  # [[-1, 0, 0], [0, 1, 1]]
+    ```
     """
     occupancy = odt.as_array3d(occupancy, wp.bool)
     if voxel_size <= 0.0:
@@ -2245,9 +2660,10 @@ def to_field(
     Occupancy as a padded ``float32`` lattice on the cell centres, with the box it spans.
 
     The bridge to [`ordito.levelset.marching_cubes`][ordito.levelset.marching_cubes]:
-    ``marching_cubes(*to_field(grid), 0.5)`` reproduces trimesh's ``ops.matrix_to_marching_cubes``,
-    ``VoxelGrid.marching_cubes`` and ``ops.points_to_marching_cubes``, which are all the same recipe
-    (pad by one, threshold at ``0.5``). The padding is what closes the surface: without it a voxel
+    ``marching_cubes(field, 0.5, bounds=bounds)`` over ``field, bounds = to_field(grid)``
+    reproduces trimesh's ``ops.matrix_to_marching_cubes``, ``VoxelGrid.marching_cubes`` and
+    ``ops.points_to_marching_cubes``, which are all the same recipe (pad by one, threshold at
+    ``0.5``). The padding is what closes the surface: without it a voxel
     on the lattice boundary has no zero outside it to cross.
 
     Parameters
@@ -2283,6 +2699,24 @@ def to_field(
     -----
     Because the samples sit on cell *centres*, the extracted surface runs half a voxel inside the
     occupied cells' outer faces — the same half-voxel offset trimesh's marching-cubes path has.
+
+    Examples
+    --------
+    Two voxels, padded by one empty cell on every side, ready for marching cubes:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    cells = wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 1.0, origin)
+    field, bounds = od.voxels.to_field(grid)
+    print(field.shape, field.numpy().sum())  # (4, 3, 3) 2.0
+    vertices, faces = od.levelset.marching_cubes(field, 0.5, bounds=bounds)
+    print(od.validation.is_watertight(vertices, faces))  # True
+    ```
     """
     if pad < 0:
         raise ValueError(f"pad must be non-negative, got {pad}")
@@ -2353,6 +2787,24 @@ def to_boxes(
     are compacted away before returning, which is a change worth knowing about if a caller was
     relying on an index into the full lattice: it was not, since the lattice itself is
     [`voxel_corners`][ordito.voxels.voxel_corners] and that is where an index into it comes from.
+
+    Examples
+    --------
+    Two face-adjacent voxels share a face, which culling removes:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    cells = wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 1.0, origin)
+    vertices, faces = od.voxels.to_boxes(grid)
+    print(vertices.shape, faces.shape[0] // 3)  # (12,) 20
+    vertices, faces = od.voxels.to_boxes(grid, cull_internal=False)
+    print(vertices.shape, faces.shape[0] // 3)  # (12,) 24
+    ```
     """
     _require_index_grid(grid)
     device = grid.device
@@ -2441,6 +2893,22 @@ def voxel_corners(grid: wp.Volume) -> tuple[odt.Array2dInt32, odt.Array2dInt32]:
 
     ``warp.fem`` is imported inside this function, not at module scope, since nothing else in this
     module needs it.
+
+    Examples
+    --------
+    Two face-adjacent voxels share four of their sixteen corners:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    origin = wp.vec3(0.0, 0.0, 0.0)
+    cells = wp.array([[0, 0, 0], [1, 0, 0]], dtype=wp.int32)
+    grid = od.voxels.from_cells(cells, 1.0, origin)
+    corners, cell_corners = od.voxels.voxel_corners(grid)
+    print(corners.shape, cell_corners.shape)  # (12, 3) (2, 8)
+    ```
     """
     _require_index_grid(grid)
     device = grid.device

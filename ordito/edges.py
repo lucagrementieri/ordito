@@ -53,6 +53,22 @@ def faces_to_edges(
     See Also
     --------
     [`trimesh.geometry.faces_to_edges`][]
+
+    Examples
+    --------
+    Three directed edges per face, in corner order; ``sorted=True`` puts the smaller index first:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    directed = od.edges.faces_to_edges(faces)
+    print(directed.numpy().tolist())  # [[0, 1], [1, 2], [2, 0], [2, 1], [1, 3], [3, 2]]
+    undirected = od.edges.faces_to_edges(faces, sorted=True)
+    print(undirected.numpy().tolist())  # [[0, 1], [1, 2], [0, 2], [1, 2], [1, 3], [2, 3]]
+    ```
     """
     n_faces = faces.size // 3
     edges = odt.empty_2d((n_faces * 3, 2), wp.int32, device=faces.device)
@@ -85,6 +101,17 @@ def edges_face(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     See Also
     --------
     [`trimesh.Trimesh.edges_face`][]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    print(od.edges.edges_face(faces).numpy().tolist())  # [0, 0, 0, 1, 1, 1]
+    ```
     """
     n_faces = faces.size // 3
     return arange_repeat(n_faces * 3, 3, faces.device)
@@ -148,6 +175,23 @@ def edges_unique(
     --------
     [`trimesh.Trimesh.edges_unique`][]
     [`trimesh.Trimesh.edges_unique_inverse`][]
+
+    Examples
+    --------
+    A cube has 12 triangles, 36 corner edges and 18 unique edges (12 sides and 6 face diagonals);
+    each unique edge of a closed mesh is reached from exactly two corners:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    unique_edges, inverse = od.edges.edges_unique(faces)
+    print(unique_edges.shape)  # (18, 2)
+    print(inverse.shape)  # (36,)
+    print(np.bincount(inverse.numpy()).tolist() == [2] * 18)  # True
+    ```
     """
     require_same_device(faces=faces, edges_sorted=edges_sorted)
     if edges_sorted is not None:
@@ -326,6 +370,22 @@ def edges_unique_inverse(
     See Also
     --------
     [`trimesh.Trimesh.edges_unique_inverse`][]
+
+    Examples
+    --------
+    Indexing the unique edges with the inverse reproduces the sorted corner edges:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    unique_edges, _inverse = od.edges.edges_unique(faces)
+    inverse = od.edges.edges_unique_inverse(faces)
+    corner_edges = od.edges.faces_to_edges(faces, sorted=True)
+    print(np.array_equal(unique_edges.numpy()[inverse.numpy()], corner_edges.numpy()))  # True
+    ```
     """
     require_same_device(faces=faces, edges_sorted=edges_sorted)
     return edges_unique(faces, edges_sorted=edges_sorted, n_vertices=n_vertices)[1]
@@ -378,6 +438,20 @@ def edges_unique_length(
     See Also
     --------
     [`trimesh.Trimesh.edges_unique_length`][]
+
+    Examples
+    --------
+    The unit cube's 18 unique edges are 12 sides of length 1 and 6 diagonals of length ``sqrt(2)``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    lengths = od.edges.edges_unique_length(vertices, faces)
+    print(lengths.shape)  # (18,)
+    print(f"{lengths.numpy().min():.4f} {lengths.numpy().max():.4f}")  # 1.0000 1.4142
+    print(int((lengths.numpy() > 1.1).sum()))  # 6
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, unique_edges=unique_edges)
     if unique_edges is None:
@@ -421,6 +495,19 @@ def edges_length(
         If ``edges_in`` does not have exactly two columns.
     RuntimeError
         If ``vertices``, ``faces`` and ``edges_in`` are not all on one device.
+
+    Examples
+    --------
+    One length per corner edge, so a shared edge appears once from each of its faces:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    lengths = od.edges.edges_length(vertices, faces)
+    print(lengths.shape)  # (36,)
+    print(f"{lengths.numpy().sum():.4f}")  # 40.9706
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, edges_in=edges_in)
     if edges_in is not None:
@@ -497,6 +584,22 @@ def face_edge_lengths(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     --------
     [`mollify_intrinsic`][ordito.laplacian.mollify_intrinsic]
     [`edges_unique_length`][ordito.edges.edges_unique_length]
+
+    Examples
+    --------
+    Column ``k`` is the edge opposite corner ``k``; on a cube every face has two sides of length 1
+    and one diagonal:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    lengths = od.edges.face_edge_lengths(vertices, faces)
+    print(lengths.shape)  # (12, 3)
+    print(np.sort(lengths.numpy()[0]).round(4))  # [1.     1.     1.4142]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -558,6 +661,21 @@ def mean_edge_length(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
         The same average taken over the unique edges instead.
     [`edges_length`][ordito.edges.edges_length]
         The per-face lengths this averages.
+
+    Examples
+    --------
+    On a closed mesh this equals the unique-edge mean; on an open grid the boundary edges count once
+    and the interior ones twice, so the two averages differ:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(f"{od.edges.mean_edge_length(vertices, faces):.4f}")  # 1.1381
+    vertices, faces = od.creation.grid(count=(2, 2))
+    print(f"{od.edges.mean_edge_length(vertices, faces):.4f}")  # 1.1381
+    print(f"{od.edges.mean_unique_edge_length(vertices, faces):.4f}")  # 1.0828
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -609,6 +727,17 @@ def mean_unique_edge_length(
         The same average taken over the per-face edges instead.
     [`edges_unique_length`][ordito.edges.edges_unique_length]
         The per-edge lengths this averages.
+
+    Examples
+    --------
+    The cube's 18 unique edges average ``(12 + 6 * sqrt(2)) / 18``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(f"{od.edges.mean_unique_edge_length(vertices, faces):.4f}")  # 1.1381
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3

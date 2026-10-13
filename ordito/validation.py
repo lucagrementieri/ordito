@@ -80,6 +80,24 @@ def is_edge_manifold(
     pairs here: this counts the edges in a hash table and reads it in place, where the mask needs
     each halfedge's own count and so pairs every halfedge. Delegating would add the pairing to the
     cheap path.
+
+    Examples
+    --------
+    An open grid is edge-manifold only while boundary edges are allowed; a fin makes an edge with
+    three faces, which is never manifold:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, grid_faces = od.creation.grid(count=(3, 3))
+    print(od.validation.is_edge_manifold(grid_faces))  # True
+    print(od.validation.is_edge_manifold(grid_faces, allow_boundary_edges=False))  # False
+    # A strip of three triangles with a fourth "fin" on the edge (1, 2): three faces share it.
+    faces = wp.array([0, 1, 2, 2, 1, 3, 2, 3, 4, 1, 2, 5], dtype=wp.int32)
+    print(od.validation.is_edge_manifold(faces))  # False
+    ```
     """
     n_faces = faces.size // 3
     if n_faces == 0:
@@ -170,6 +188,20 @@ def edge_manifold_mask(
     --------
     [`is_edge_manifold`][ordito.validation.is_edge_manifold]
     [`vertex_manifold_mask`][ordito.validation.vertex_manifold_mask]
+
+    Examples
+    --------
+    The three faces on the over-shared edge are flagged ``False``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    # A strip of three triangles with a fourth "fin" on the edge (1, 2): three faces share it.
+    faces = wp.array([0, 1, 2, 2, 1, 3, 2, 3, 4, 1, 2, 5], dtype=wp.int32)
+    print(od.validation.edge_manifold_mask(faces).numpy().tolist())  # [False, False, True, False]
+    ```
     """
     n_faces = faces.size // 3
     device = faces.device
@@ -217,12 +249,13 @@ def is_vertex_manifold(
     n_vertices: int | None = None,
 ) -> bool:
     """
-    Whether every referenced vertex has a single edge-connected fan of faces.
+    Whether every vertex up to ``max(faces)`` is used and has a single edge-connected fan of faces.
 
     A vertex is manifold when the faces incident to it form one connected group under
     "shares an edge through this vertex" adjacency; two fans meeting only at the vertex (a bow-tie)
     are non-manifold. Unreferenced vertices in ``[0, max(faces)]`` are treated as non-manifold,
-    matching libigl's ``is_vertex_manifold`` and Open3D's ``IsVertexManifold``.
+    matching libigl's ``is_vertex_manifold``; Open3D's ``is_vertex_manifold`` skips them, and so
+    does [`is_watertight`][ordito.validation.is_watertight].
 
     The check builds the corner graph (node ``3 * f + k`` per face corner), links the corresponding
     corners of edge-adjacent faces, and requires all corners of each vertex to fall in one connected
@@ -248,7 +281,8 @@ def is_vertex_manifold(
     Returns
     -------
     bool
-        ``True`` when every referenced vertex is manifold. Vacuously ``True`` for an empty mesh.
+        ``True`` when every vertex in ``[0, max(faces)]`` is referenced and manifold. Vacuously
+        ``True`` for an empty mesh.
 
     Raises
     ------
@@ -273,6 +307,21 @@ def is_vertex_manifold(
     vertices in that range count as non-manifold; use
     [`vertex_manifold_mask`][ordito.validation.vertex_manifold_mask] for a per-vertex flag
     sized to a caller-provided vertex buffer.
+
+    Examples
+    --------
+    Two triangles meeting only at vertex 0 form a bow-tie, whose vertex 0 has two separate fans:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(od.validation.is_vertex_manifold(faces))  # True
+    bow_tie = wp.array([0, 1, 2, 0, 3, 4], dtype=wp.int32)
+    print(od.validation.is_vertex_manifold(bow_tie))  # False
+    ```
     """
     require_same_device(
         faces=faces, face_adjacency=face_adjacency, face_adjacency_edges=face_adjacency_edges
@@ -372,6 +421,21 @@ def vertex_manifold_mask(
     --------
     [`is_vertex_manifold`][ordito.validation.is_vertex_manifold]
     [`edge_manifold_mask`][ordito.validation.edge_manifold_mask]
+
+    Examples
+    --------
+    In a bow-tie only the shared vertex is non-manifold; a vertex no face uses is flagged too:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.zeros(6, dtype=wp.vec3)
+    faces = wp.array([0, 1, 2, 0, 3, 4], dtype=wp.int32)
+    mask = od.validation.vertex_manifold_mask(vertices, faces)
+    print(mask.numpy().tolist())  # [False, True, True, True, True, False]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     n_vertices = vertices.size
@@ -422,6 +486,25 @@ def is_self_intersecting(mesh: wp.Mesh, *, max_triangle_collisions: int = 32) ->
     Notes
     -----
     Equivalent to ``open3d.geometry.TriangleMesh.is_self_intersecting``.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    # Two triangles piercing each other, which share no vertex.
+    vertices = wp.array(
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0],
+         [0.5, 0.5, -1.0], [0.5, 0.5, 1.0], [1.5, 0.5, 1.0]],
+        dtype=wp.vec3,
+    )
+    faces = wp.array([0, 1, 2, 3, 4, 5], dtype=wp.int32)
+    print(od.validation.is_self_intersecting(wp.Mesh(points=vertices, indices=faces)))  # True
+    vertices, faces = od.creation.box()
+    print(od.validation.is_self_intersecting(wp.Mesh(points=vertices, indices=faces)))  # False
+    ```
     """
     found = _launch.zeros(1, dtype=wp.bool, device=mesh.points.device)
     _mark_self_intersections(mesh, mesh.points, mesh.indices, max_triangle_collisions, False, found)
@@ -488,6 +571,26 @@ def face_self_intersecting_mask(
     See Also
     --------
     [`is_self_intersecting`][ordito.validation.is_self_intersecting]
+
+    Examples
+    --------
+    Both faces of an intersecting pair are flagged:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    # Two triangles piercing each other, which share no vertex.
+    vertices = wp.array(
+        [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 2.0, 0.0],
+         [0.5, 0.5, -1.0], [0.5, 0.5, 1.0], [1.5, 0.5, 1.0]],
+        dtype=wp.vec3,
+    )
+    faces = wp.array([0, 1, 2, 3, 4, 5], dtype=wp.int32)
+    mask = od.validation.face_self_intersecting_mask(vertices, faces)
+    print(mask.numpy().tolist())  # [True, True]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, mesh=mesh)
     device = vertices.device
@@ -585,6 +688,24 @@ def is_winding_consistent(faces: wp.array[wp.int32], *, n_vertices: int | None =
     [`is_orientable`][ordito.validation.is_orientable]
     [`is_volume`][ordito.validation.is_volume]
     [`trimesh.Trimesh.is_winding_consistent`][]
+
+    Examples
+    --------
+    The cube is consistently wound; two triangles running their shared edge the same way are not,
+    although flipping one would fix them (see [`is_orientable`][ordito.validation.is_orientable]):
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, box_faces = od.creation.box()
+    print(od.validation.is_winding_consistent(box_faces))  # True
+    # Two triangles sharing the edge (1, 2), the second wound against the first.
+    faces = wp.array([0, 1, 2, 1, 2, 3], dtype=wp.int32)
+    print(od.validation.is_winding_consistent(faces))  # False
+    print(od.validation.is_orientable(faces))  # True
+    ```
     """
     n_faces = faces.size // 3
     if n_faces == 0:
@@ -638,6 +759,22 @@ def edge_winding_consistent_mask(
     --------
     [`is_winding_consistent`][ordito.validation.is_winding_consistent]
     [`face_flip_mask`][ordito.validation.face_flip_mask]
+
+    Examples
+    --------
+    One entry per edge shared by two faces; the cube's 18 are all consistent:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, box_faces = od.creation.box()
+    print(od.validation.edge_winding_consistent_mask(box_faces).shape)  # (18,)
+    # Two triangles sharing the edge (1, 2), the second wound against the first.
+    faces = wp.array([0, 1, 2, 1, 2, 3], dtype=wp.int32)
+    print(od.validation.edge_winding_consistent_mask(faces).numpy().tolist())  # [False]
+    ```
     """
     require_same_device(faces=faces, edges=edges)
     n_faces = faces.size // 3
@@ -707,6 +844,22 @@ def face_orientation_bits(
     --------
     [`is_orientable`][ordito.validation.is_orientable]
     [`face_flip_mask`][ordito.validation.face_flip_mask]
+
+    Examples
+    --------
+    The second face disagrees with the first, its component's seed:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    # Two triangles sharing the edge (1, 2), the second wound against the first.
+    faces = wp.array([0, 1, 2, 1, 2, 3], dtype=wp.int32)
+    orient, signed_edges, signs, m = od.validation.face_orientation_bits(faces)
+    print(orient.numpy().tolist())  # [0, 1]
+    print(signed_edges.numpy().tolist(), m)  # [[0, 1]] 1
+    ```
     """
     device = faces.device
     n_faces = faces.size // 3
@@ -782,6 +935,22 @@ def is_orientable(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -
     [`is_winding_consistent`][ordito.validation.is_winding_consistent], orientability allows
     individual faces to be flipped, so a consistently-orientable mesh with inconsistent winding
     still returns ``True``.
+
+    Examples
+    --------
+    A Mobius strip, three quads joined with a half twist, cannot be wound consistently whichever
+    faces are flipped:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(od.validation.is_orientable(faces))  # True
+    mobius = wp.array([0, 3, 4, 0, 4, 1, 1, 4, 5, 1, 5, 2, 2, 5, 0, 2, 0, 3], dtype=wp.int32)
+    print(od.validation.is_orientable(mobius))  # False
+    ```
     """
     n_faces = faces.size // 3
     if n_faces == 0:
@@ -845,6 +1014,25 @@ def face_flip_mask(
     domain*: this mask flags a triangle whose index order must be reversed to agree with its patch,
     a property of the 3D connectivity that ignores geometry entirely, while that one flags a
     triangle whose UV image has negative signed area. Neither implies the other.
+
+    Examples
+    --------
+    Reversing one cube face makes it disagree with all the others. The mask keeps the winding of
+    the lowest-indexed face, so here it flags the eleven faces that were *not* changed; flipping
+    them gives a consistent, inward-facing cube:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    rows = faces.numpy().reshape(-1, 3)
+    rows[0] = rows[0][::-1]
+    faces = wp.array(rows.ravel(), dtype=wp.int32)
+    flips = od.validation.face_flip_mask(faces).numpy()
+    print(int(flips.sum()), bool(flips[0]))  # 11 False
+    ```
     """
     n_faces = faces.size // 3
     device = faces.device
@@ -929,7 +1117,10 @@ def is_watertight(
     Whether the mesh bounds a closed volume with no self-intersections.
 
     Follows Open3D's ``IsWatertight``: the mesh must be edge-manifold with no boundary edges,
-    vertex-manifold, and free of self-intersections.
+    vertex-manifold, and free of self-intersections. Vertices no face uses are ignored, as in
+    Open3D: they are not part of the surface. (The stricter
+    [`is_vertex_manifold`][ordito.validation.is_vertex_manifold] counts one below ``max(faces)``
+    as non-manifold, as libigl does.)
 
     Parameters
     ----------
@@ -975,6 +1166,19 @@ def is_watertight(
     mask is trimesh's per-face edge test, while this is Open3D's three-part composition, so
     ``all(face_watertight_mask(faces))`` is the *first* of the three conditions and not this
     function. Every other ``is_*`` / ``*_mask`` pair in this module does relate that way.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(od.validation.is_watertight(vertices, faces))  # True
+    open_box = wp.array(faces.numpy()[3:], dtype=wp.int32)  # face 0 removed
+    print(od.validation.is_watertight(vertices, open_box))  # False
+    ```
     """
     require_same_device(
         vertices=vertices, faces=faces, mesh=mesh if isinstance(mesh, wp.Mesh) else None
@@ -995,7 +1199,7 @@ def is_watertight(
     parents = _corner_parents_from_mates(
         faces, od.halfedge.halfedge_mates(faces, n_vertices), True, violation
     )
-    _vertex_manifold_check(faces, n_vertices, parents, None, violation)
+    _vertex_manifold_check(faces, n_vertices, parents, None, violation, require_referenced=False)
     if int(read_scalar(violation)) != 0:
         return False
     if mesh is None:
@@ -1039,6 +1243,23 @@ def face_watertight_mask(
     --------
     [`is_watertight`][ordito.validation.is_watertight]
     [`edge_manifold_mask`][ordito.validation.edge_manifold_mask]
+
+    Examples
+    --------
+    Removing one face of a cube opens a hole whose rim runs through the faces next to it:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    open_box = wp.array(faces.numpy()[3:], dtype=wp.int32)  # face 0 removed
+    mask = od.validation.face_watertight_mask(open_box)
+    print(mask.shape)  # (11,)
+    print(np.flatnonzero(~mask.numpy()).tolist())  # [0, 1, 3]
+    ```
     """
     return edge_manifold_mask(faces, allow_boundary_edges=False, n_vertices=n_vertices)
 
@@ -1094,6 +1315,21 @@ def is_volume(
     every shared edge to be reversed. The signed volume is the sum of per-face signed tetrahedron
     volumes ``dot(v0, cross(v1, v2)) / 6`` measured from the origin; for a closed surface this is
     independent of the reference point and its sign encodes the normal orientation.
+
+    Examples
+    --------
+    Reversing every face keeps the cube watertight and consistent but turns its normals inward:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(od.validation.is_volume(vertices, faces))  # True
+    inverted = wp.array(faces.numpy().reshape(-1, 3)[:, ::-1].ravel(), dtype=wp.int32)
+    print(od.validation.is_volume(vertices, inverted))  # False
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, edges=edges)
     n_faces = faces.size // 3
@@ -1149,8 +1385,8 @@ def face_defective_mask(
     max_normal_angle
         Flag a face whose normal is more than this many **degrees** from the direction of the sum of
         its edge-neighbours' normals — the local consensus. This catches a single face inserted the
-        wrong way round in an otherwise consistent patch. MeshLab's ``nfratio`` (default ``60``,
-        off by default). ``None`` disables it.
+        wrong way round in an otherwise consistent patch. Same default (``60``) as MeshLab's
+        ``nfratio`` but not the same test (see Notes). ``None`` disables it.
     max_fold_angle
         Flag a face that meets *some* neighbour at more than this many **degrees** — a fold, where
         the two triangles lie almost on top of each other with opposing normals. Of the two faces at
@@ -1180,8 +1416,14 @@ def face_defective_mask(
 
     Notes
     -----
-    Matches MeshLab's ``compute_selection_bad_faces``; the three parameters are its ``aratio``,
-    ``nfratio`` and ``folded_faces_angle_threshold``.
+    The thinness and fold criteria match MeshLab's ``compute_selection_bad_faces`` (its ``aratio``
+    and ``folded_faces_angle_threshold``). The normal criterion does not match its ``nfratio``:
+    MeshLab selects *both* faces of every edge whose normals differ by more than the angle, so it
+    flags a reversed face together with all its neighbours, and every face of a cube at ``60``.
+    Comparing each face with its neighbours' consensus instead flags the reversed face alone on a
+    smooth surface. The consensus needs neighbours that mostly agree: on a coarse mesh, where a
+    face has three neighbours and they meet at sharp angles, a correct face next to a reversed one
+    can fail it too (a cube with one triangle reversed flags that triangle and one neighbour).
 
     See Also
     --------
@@ -1193,6 +1435,38 @@ def face_defective_mask(
         Deletes the fully degenerate ones, on an exact test rather than a threshold.
     [`ordito.triangles.face_quality`][ordito.triangles.face_quality]
         The thinness measure ``min_quality`` gates on.
+
+    Examples
+    --------
+    The second triangle is a sliver, far below the default thinness gate:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices = wp.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.001, 0.0]], dtype=wp.vec3
+    )
+    faces = wp.array([0, 1, 2, 1, 3, 2], dtype=wp.int32)
+    print(od.validation.face_defective_mask(vertices, faces).numpy().tolist())  # [False, True]
+    ```
+
+    One face of a sphere reversed against its neighbours is caught by the normal criterion:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    rows = faces.numpy().reshape(-1, 3)
+    rows[5] = rows[5][::-1]
+    faces = wp.array(rows.ravel(), dtype=wp.int32)
+    mask = od.validation.face_defective_mask(vertices, faces, max_normal_angle=60.0)
+    print(np.flatnonzero(mask.numpy()).tolist())  # [5]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, face_normals=face_normals)
     for name, angle in (("max_normal_angle", max_normal_angle), ("max_fold_angle", max_fold_angle)):
@@ -1296,6 +1570,8 @@ def _vertex_manifold_check(
     parents: wp.array[wp.int32],
     mask: wp.array[wp.bool] | None,
     violation: wp.array[wp.int32] | None,
+    *,
+    require_referenced: bool = True,
 ) -> None:
     """
     Per-vertex manifold test over a hooked corner-graph forest, shared by the predicate and mask.
@@ -1306,8 +1582,10 @@ def _vertex_manifold_check(
     at every referenced vertex whose corners share one component. A ``violation`` flag is raised
     unless every vertex in ``[0, max(faces)]`` is referenced and manifold -- libigl's predicate --
     which holds over any ``n_vertices`` at least ``max(faces) + 1``, so a caller's vertex count
-    serves as well as the bound. The flag is the caller's, so it can already carry another test's
-    verdict and be read back once for both.
+    serves as well as the bound. ``require_referenced=False`` drops the "referenced" half, which is
+    Open3D's predicate and the one [`is_watertight`][ordito.validation.is_watertight] composes.
+    The flag is the caller's, so it can already carry another test's verdict and be read back once
+    for both.
 
     ``n_vertices`` is a parameter rather than derived because the two public callers size their
     answer differently on purpose:
@@ -1329,7 +1607,7 @@ def _vertex_manifold_check(
     _launch.launch(
         kernel_validation.corner_vertex_check,
         dim=n_corners,
-        inputs=[faces, labels, min_label, mask, violation],
+        inputs=[faces, labels, min_label, wp.int32(require_referenced), mask, violation],
         device=device,
     )
 

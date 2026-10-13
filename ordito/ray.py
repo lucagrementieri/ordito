@@ -66,6 +66,25 @@ def intersects_location(
         If ``ray_origins`` and ``ray_directions`` do not have the same shape.
     RuntimeError
         If ``mesh``, ``ray_origins`` and ``ray_directions`` are not all on one device.
+
+    Examples
+    --------
+    Two rays along ``+x`` towards a unit cube: the first enters through the ``x = -0.5`` face, the
+    second passes above the cube and is left out of the result:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    origins = wp.array([[-2.0, 0.1, 0.2], [-2.0, 3.0, 0.0]], dtype=wp.vec3)
+    directions = wp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3)
+    locations, index_ray, index_tri = od.ray.intersects_location(mesh, origins, directions)
+    print(index_ray.numpy().tolist())  # [0]
+    print(locations.numpy()[0].round(3))  # [-0.5  0.1  0.2]
+    ```
     """
     require_same_device(mesh=mesh, ray_origins=ray_origins, ray_directions=ray_directions)
     _validate_ray_inputs(ray_origins, ray_directions)
@@ -147,6 +166,23 @@ def intersects_first(
         If ``ray_origins`` and ``ray_directions`` do not have the same shape.
     RuntimeError
         If ``mesh``, ``ray_origins`` and ``ray_directions`` are not all on one device.
+
+    Examples
+    --------
+    The same two rays as in [`intersects_location`][ordito.ray.intersects_location], with one row
+    per ray and ``-1`` for the miss:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    origins = wp.array([[-2.0, 0.1, 0.2], [-2.0, 3.0, 0.0]], dtype=wp.vec3)
+    directions = wp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3)
+    print(od.ray.intersects_first(mesh, origins, directions).numpy().tolist())  # [0, -1]
+    ```
     """
     require_same_device(mesh=mesh, ray_origins=ray_origins, ray_directions=ray_directions)
     _validate_ray_inputs(ray_origins, ray_directions)
@@ -210,6 +246,25 @@ def intersects_any(
         If ``ray_origins`` and ``ray_directions`` do not have the same shape.
     RuntimeError
         If ``mesh``, ``ray_origins`` and ``ray_directions`` are not all on one device.
+
+    Examples
+    --------
+    A ray towards a unit cube, one passing above it and one pointing away. The cube is ``1.5``
+    away along the first ray, so ``max_t=1.0`` stops short of it:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    origins = wp.array([[-2.0, 0.1, 0.2], [-2.0, 3.0, 0.0], [-2.0, 0.1, 0.2]], dtype=wp.vec3)
+    directions = wp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]], dtype=wp.vec3)
+    print(od.ray.intersects_any(mesh, origins, directions).numpy().tolist())  # [True, False, False]
+    hits = od.ray.intersects_any(mesh, origins, directions, max_t=1.0)
+    print(hits.numpy().tolist())  # [False, False, False]
+    ```
     """
     require_same_device(mesh=mesh, ray_origins=ray_origins, ray_directions=ray_directions)
     _validate_ray_inputs(ray_origins, ray_directions)
@@ -275,6 +330,23 @@ def longest_ray(
         If ``ray_origins`` and ``ray_directions`` do not have the same shape.
     RuntimeError
         If ``mesh``, ``ray_origins`` and ``ray_directions`` are not all on one device.
+
+    Examples
+    --------
+    From the centre of a unit cube the free path along ``+x`` ends on the face at ``x = 0.5``; from
+    outside, pointing away, it never ends:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    origins = wp.array([[0.0, 0.1, 0.2], [2.0, 0.1, 0.2]], dtype=wp.vec3)
+    directions = wp.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3)
+    print(od.ray.longest_ray(mesh, origins, directions).numpy().tolist())  # [0.5, inf]
+    ```
     """
     require_same_device(mesh=mesh, ray_origins=ray_origins, ray_directions=ray_directions)
     _validate_ray_inputs(ray_origins, ray_directions)
@@ -324,12 +396,9 @@ def contains_points(
     !!! note "Non-watertight meshes"
 
         Ray parity has no principled answer on an open or holed surface. For those, use the
-        generalized winding-number sign instead:
-
-        ```python
-        signed = od.proximity.signed_distance_on_mesh(v, f, pts, sign_mode="winding")
-        inside = signed.numpy() < 0.0  # negative inside, as for a closed mesh
-        ```
+        generalized winding-number sign of
+        [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh] instead
+        (``sign_mode="winding"``, negative inside; see the second example below).
 
         That mode needs a ``wp.Mesh`` built with ``support_winding_number=True``; without the flag
         Warp's winding query silently falls back to ray parity.
@@ -360,6 +429,34 @@ def contains_points(
     See Also
     --------
     [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    points = wp.array([[0.0, 0.0, 0.0], [0.5, 0.5, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3)
+    print(od.ray.contains_points(mesh, points).numpy().tolist())  # [True, True, False]
+    ```
+
+    On an open surface, here a sphere with a hole around its ``-z`` pole, the winding-number sign
+    still separates the inside from the outside:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=2.5)
+    print(od.validation.is_watertight(vertices, faces))  # False
+    points = wp.array([[0.0, 0.0, 0.0], [0.0, 0.0, 3.0]], dtype=wp.vec3)
+    signed = od.proximity.signed_distance_on_mesh(vertices, faces, points, sign_mode="winding")
+    print((signed.numpy() < 0.0).tolist())  # [True, False]
+    ```
     """
     require_same_device(mesh=mesh, points=points)
     n = points.size

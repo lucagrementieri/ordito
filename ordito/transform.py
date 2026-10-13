@@ -98,6 +98,23 @@ class TransformKind(StrEnum):
         Not an invertible affine map: a rank-deficient linear block, or a bottom row that makes
         the matrix projective rather than affine. Flattens the mesh, so even the predicates a
         bijection would preserve are gone and only connectivity survives.
+
+    Examples
+    --------
+    A rotation is rigid; adding a uniform scale demotes it to a similarity:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    rotation = od.transform.rotation_matrix((0.0, 0.0, 1.0), math.pi / 2)
+    print(od.transform.classify_transform(rotation) is od.transform.TransformKind.RIGID)  # True
+    scaled = wp.mul(od.transform.scale_matrix(2.0), rotation)
+    print(od.transform.classify_transform(scaled).value)  # similarity
+    ```
     """
 
     IDENTITY = "identity"
@@ -151,6 +168,19 @@ def transform_points(
     [`transform_vectors`][ordito.transform.transform_vectors]
     [`transform_normals`][ordito.transform.transform_normals]
     [`transform_mesh`][ordito.transform.transform_mesh]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3)
+    matrix = od.transform.translation_matrix((0.0, 0.0, 2.0))
+    moved = od.transform.transform_points(points, matrix)
+    print(moved.numpy()[1])  # [1. 0. 2.]
+    ```
     """
     require_same_device(points=points, matrix=matrix, out=out)
     result = _alloc_or_out(out, points.size, wp.vec3, points.device)
@@ -221,6 +251,24 @@ def transform_vectors(
     --------
     [`transform_points`][ordito.transform.transform_points]
     [`transform_normals`][ordito.transform.transform_normals]
+
+    Examples
+    --------
+    A direction ignores the translation and only turns with the rotation:
+
+    ```python
+    import math
+
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    directions = wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3)
+    quarter_turn = od.transform.rotation_matrix((0.0, 0.0, 1.0), math.pi / 2, center=(5.0, 0, 0))
+    rotated = od.transform.transform_vectors(directions, quarter_turn)
+    print(np.round(rotated.numpy()[0], 4) + 0.0)  # [0. 1. 0.]
+    ```
     """
     require_same_device(vectors=vectors, matrix=matrix, out=out)
     result = _alloc_or_out(out, vectors.size, wp.vec3, vectors.device)
@@ -279,6 +327,22 @@ def transform_normals(
     --------
     [`normal_matrix`][ordito.transform.normal_matrix]
     [`transform_vectors`][ordito.transform.transform_vectors]
+
+    Examples
+    --------
+    Stretching a surface along X tilts its normals away from X, not towards it:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    normals = wp.array([[0.6, 0.0, 0.8]], dtype=wp.vec3)
+    stretch = od.transform.scale_matrix((4.0, 1.0, 1.0))
+    mapped = od.transform.transform_normals(normals, stretch)
+    print(np.round(mapped.numpy()[0], 4))  # [0.1843 0.     0.9829]
+    ```
     """
     require_same_device(normals=normals, matrix=matrix, out=out)
     # Computed before the empty-input early return: the matrix's own invertibility is a property
@@ -342,6 +406,20 @@ def transform_mesh(
     [`transform_points`][ordito.transform.transform_points]
     [`Trimesh.transform`][ordito.mesh.Trimesh.transform]
         The cached-mesh entry point, which carries derived quantities forward.
+
+    Examples
+    --------
+    A mirror flips the face winding, so the box still encloses a positive volume:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    mirror = od.transform.reflection_matrix((1.0, 0.0, 0.0))
+    mirrored_vertices, mirrored_faces = od.transform.transform_mesh(vertices, faces, mirror)
+    print(faces.numpy()[:3], mirrored_faces.numpy()[:3])  # [1 3 0] [0 3 1]
+    print(f"{od.measures.volume(mirrored_vertices, mirrored_faces):.4f}")  # 1.0000
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -384,18 +462,24 @@ def translation_matrix(offset: wp.vec3 | Sequence[float]) -> wp.mat44:
     wp.mat44
         A `TransformKind.TRANSLATION` matrix.
 
-    Examples
-    --------
-    ```python
-    up = od.transform.translation_matrix((0.0, 0.0, 1.0))
-    moved = od.transform.transform_points(v, up)
-    ```
-
     See Also
     --------
     [`rotation_matrix`][ordito.transform.rotation_matrix]
     [`scale_matrix`][ordito.transform.scale_matrix]
     [`reflection_matrix`][ordito.transform.reflection_matrix]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[1.0, 2.0, 3.0]], dtype=wp.vec3)
+    up = od.transform.translation_matrix((0.0, 0.0, 1.0))
+    print(od.transform.transform_points(points, up).numpy()[0])  # [1. 2. 4.]
+    print(od.transform.classify_transform(up).value)  # translation
+    ```
     """
     return _compose(np.eye(3), _vec3_host(offset, "offset"))
 
@@ -429,6 +513,24 @@ def rotation_matrix(
     --------
     [`translation_matrix`][ordito.transform.translation_matrix]
     [`scale_matrix`][ordito.transform.scale_matrix]
+
+    Examples
+    --------
+    A quarter turn about Z through ``(1, 0, 0)`` keeps that point fixed:
+
+    ```python
+    import math
+
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0]], dtype=wp.vec3)
+    matrix = od.transform.rotation_matrix((0.0, 0.0, 1.0), math.pi / 2, center=(1.0, 0.0, 0.0))
+    rotated = od.transform.transform_points(points, matrix).numpy()
+    print(np.round(rotated[0], 4) + 0.0, np.round(rotated[1], 4) + 0.0)  # [1. 0. 0.] [1. 1. 0.]
+    ```
     """
     direction = _vec3_host(axis, "axis")
     norm = float(np.linalg.norm(direction))
@@ -482,6 +584,21 @@ def scale_matrix(
     --------
     [`translation_matrix`][ordito.transform.translation_matrix]
     [`rotation_matrix`][ordito.transform.rotation_matrix]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[2.0, 1.0, 1.0]], dtype=wp.vec3)
+    double = od.transform.scale_matrix(2.0)
+    print(od.transform.transform_points(points, double).numpy()[0])  # [4. 2. 2.]
+    stretch = od.transform.scale_matrix((2.0, 1.0, 1.0), center=(1.0, 0.0, 0.0))
+    print(od.transform.transform_points(points, stretch).numpy()[0])  # [3. 1. 1.]
+    print(od.transform.classify_transform(stretch).value)  # affine
+    ```
     """
     factors = np.asanyarray(factor, dtype=np.float64).reshape(-1)
     if factors.size == 1:
@@ -521,6 +638,21 @@ def reflection_matrix(
     --------
     [`rotation_matrix`][ordito.transform.rotation_matrix]
     [`ordito.points.half_space_mask`][]
+
+    Examples
+    --------
+    Mirroring through the plane ``x = 1``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[3.0, 2.0, 0.0]], dtype=wp.vec3)
+    mirror = od.transform.reflection_matrix((1.0, 0.0, 0.0), center=(1.0, 0.0, 0.0))
+    print(od.transform.transform_points(points, mirror).numpy()[0])  # [-1.  2.  0.]
+    print(od.transform.reverses_orientation(mirror))  # True
+    ```
     """
     direction = _vec3_host(normal, "normal")
     norm = float(np.linalg.norm(direction))
@@ -559,6 +691,17 @@ def normal_matrix(matrix: wp.mat44 | wp.array[wp.mat44]) -> wp.mat33:
     --------
     [`transform_normals`][ordito.transform.transform_normals]
     [`classify_transform`][ordito.transform.classify_transform]
+
+    Examples
+    --------
+    For a non-uniform scale the normal map is the reciprocal scale:
+
+    ```python
+    import ordito as od
+
+    normal_map = od.transform.normal_matrix(od.transform.scale_matrix((2.0, 4.0, 1.0)))
+    print(normal_map[0, 0], normal_map[1, 1], normal_map[2, 2])  # 0.5 0.25 1.0
+    ```
     """
     linear = matrix_to_numpy(matrix)[:3, :3]
     if _is_singular(linear, ORTHOGONALITY_RTOL):
@@ -609,16 +752,23 @@ def classify_transform(
     know whether winding flips must read ``det`` of the linear block rather than switching on this
     result.
 
-    Examples
-    --------
-    ```python
-    kind = od.transform.classify_transform(od.transform.rotation_matrix((0.0, 0.0, 1.0), 0.5))
-    ```
-
     See Also
     --------
     [`TransformKind`][ordito.transform.TransformKind]
     [`Trimesh.transform`][ordito.mesh.Trimesh.transform]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    rotation = od.transform.rotation_matrix((0.0, 0.0, 1.0), 0.5)
+    mirror_scale = od.transform.scale_matrix(-2.0)
+    flatten = od.transform.scale_matrix((1.0, 1.0, 0.0))
+    print(od.transform.classify_transform(rotation).value)  # rigid
+    print(od.transform.classify_transform(mirror_scale).value)  # similarity
+    print(od.transform.classify_transform(flatten).value)  # singular
+    ```
     """
     host = matrix_to_numpy(matrix)
     linear, offset = host[:3, :3], host[:3, 3]
@@ -672,6 +822,20 @@ def transform_scale(matrix: wp.mat44 | wp.array[wp.mat44]) -> float:
     See Also
     --------
     [`classify_transform`][ordito.transform.classify_transform]
+
+    Examples
+    --------
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    rotation = od.transform.rotation_matrix((1.0, 0.0, 0.0), math.pi / 3)
+    similarity = wp.mul(od.transform.scale_matrix(3.0), rotation)
+    print(f"{od.transform.transform_scale(similarity):.4f}")  # 3.0000
+    ```
     """
     linear = matrix_to_numpy(matrix)[:3, :3]
     return float(math.sqrt(_scale_sq_from_gram(linear @ linear.T)))
@@ -714,6 +878,20 @@ def as_mat44(matrix: wp.mat44 | wp.array[wp.mat44]) -> wp.mat44:
     See Also
     --------
     [`classify_transform`][ordito.transform.classify_transform]
+
+    Examples
+    --------
+    A ``(1,)`` device array and a host matrix read back as the same value:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    matrix = od.transform.translation_matrix((1.0, 2.0, 3.0))
+    on_device = wp.array([matrix], dtype=wp.mat44)
+    print(od.transform.as_mat44(on_device) == matrix)  # True
+    ```
     """
     if not isinstance(matrix, wp.array):
         return matrix
@@ -752,6 +930,16 @@ def matrix_to_numpy(matrix: wp.mat44 | wp.array[wp.mat44]) -> np.ndarray:
     See Also
     --------
     [`as_mat44`][ordito.transform.as_mat44]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    host = od.transform.matrix_to_numpy(od.transform.translation_matrix((1.0, 2.0, 3.0)))
+    print(host.shape, host.dtype)  # (4, 4) float64
+    print(host[:3, 3])  # [1. 2. 3.]
+    ```
     """
     return np.array(as_mat44(matrix), dtype=np.float64).reshape(4, 4)
 
@@ -781,6 +969,19 @@ def reverses_orientation(matrix: wp.mat44 | wp.array[wp.mat44]) -> bool:
     --------
     [`transform_mesh`][ordito.transform.transform_mesh]
     [`classify_transform`][ordito.transform.classify_transform]
+
+    Examples
+    --------
+    A mirroring scale is a similarity, yet it still reverses winding:
+
+    ```python
+    import ordito as od
+
+    mirror_scale = od.transform.scale_matrix(-2.0)
+    print(od.transform.classify_transform(mirror_scale).value)  # similarity
+    print(od.transform.reverses_orientation(mirror_scale))  # True
+    print(od.transform.reverses_orientation(od.transform.scale_matrix(2.0)))  # False
+    ```
     """
     return float(np.linalg.det(matrix_to_numpy(matrix)[:3, :3])) < 0.0
 

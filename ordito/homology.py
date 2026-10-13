@@ -101,6 +101,23 @@ def homology_generators(
     [`euler_characteristic`][ordito.measures.euler_characteristic]
         Fixes how many loops there are: ``2 * g == 2 - chi``.
     [`boundary_loops`][ordito.boundary.boundary_loops]
+
+    Examples
+    --------
+    A torus has genus 1, so two loops: one around the tube and one around the hole. A sphere has
+    none:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.torus(1.0, 0.3, major_sections=16, minor_sections=8)
+    loops = od.homology.homology_generators(vertices, faces)
+    print(len(loops))  # 2
+    print(sorted(loop.size for loop in loops))  # [8, 16]
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    print(len(od.homology.homology_generators(vertices, faces)))  # 0
+    ```
     """
     loops, offsets = homology_generators_with_offsets(vertices, faces, root=root)
     return od.array.split(loops, offsets, copy=copy)
@@ -150,6 +167,17 @@ def homology_generators_with_offsets(
         The same loops, one array each.
     [`shorten_loop_with_offsets`][ordito.geodesic_walk.shorten_loop_with_offsets]
         Shortens them in the packed form.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.torus(1.0, 0.3, major_sections=16, minor_sections=8)
+    loops, offsets = od.homology.homology_generators_with_offsets(vertices, faces)
+    print(offsets.numpy().tolist())  # [0, 8, 24]
+    print(loops.shape)  # (24,)
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device

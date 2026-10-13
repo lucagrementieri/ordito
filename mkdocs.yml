@@ -64,12 +64,17 @@ markdown_extensions:
   - pymdownx.details
   - pymdownx.superfences
   - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
 
 plugins:
   - search
   - literate-nav:
       nav_file: SUMMARY.md
   - section-index
+  # Click-to-zoom on images: the example figures are rendered wider than the content column.
+  - glightbox
   # `ordito` itself is excluded: its docstring is about the lazy-import mechanism, not a page for
   # a caller. Private `_*.py` modules are excluded by the plugin's default.
   - api-autonav:
@@ -82,6 +87,8 @@ plugins:
         "ordito\\.typing":
           backlinks: false
   - mkdocstrings:
+      # `backlinks.html.jinja` here replaces the stock breadcrumb tree with one collapsed line.
+      custom_templates: overrides/mkdocstrings
       handlers:
         python:
           inventories:
@@ -102,3 +109,10 @@ plugins:
             # "Referenced by": every docstring that cross-links an object, grouped by nav path.
             # It is the consumer list a hub function's See Also deliberately does not carry.
             backlinks: tree
+            # A table of the module's functions and classes, each with its summary line, opens
+            # every API page -- the index trimesh's and libigl's references open with.
+            summary:
+              classes: true
+              functions: true
+              attributes: false
+              modules: false

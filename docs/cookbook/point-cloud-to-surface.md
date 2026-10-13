@@ -36,12 +36,14 @@ normals = estimate_normals(points)
 # This is a simulation, so the estimate can be checked against the true face normals.
 true_normals = od.Trimesh(vertices, faces).face_normals.numpy()[face_index.numpy()]
 agreement = np.sum(normals.numpy() * true_normals, axis=1)  # cosine of the angle between them
-print(f"median cosine: {np.median(agreement):.4f}, flipped: {np.sum(agreement < 0)}")  # ~0.9996, 0
+median, flipped = np.median(agreement), np.sum(agreement < 0)
+print(f"median cosine {median:.3f}, {flipped} flipped")  # median cosine 1.000, 0 flipped
 
 # Screened Poisson: closed whatever the sampling looks like.
 poisson_vertices, poisson_faces = od.reconstruction.screened_poisson(points, normals, depth=7)
-print("screened Poisson:", poisson_faces.shape[0] // 3, "faces")  # ~127 000
-print("  watertight:", od.validation.is_watertight(poisson_vertices, poisson_faces))  # True
+# About 127 000 faces; the exact count is device-dependent.
+print(f"screened Poisson: {poisson_faces.shape[0] // 3} faces")
+print(od.validation.is_watertight(poisson_vertices, poisson_faces))  # True
 
 
 def ball_pivot(points, normals):

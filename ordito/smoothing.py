@@ -147,6 +147,22 @@ def filter_laplacian(
     [`filter_humphrey`][ordito.smoothing.filter_humphrey]
     [`filter_implicit_fairing`][ordito.smoothing.filter_implicit_fairing]
     [`trimesh.smoothing.filter_laplacian`][]
+
+    Examples
+    --------
+    Plain Laplacian smoothing shrinks a closed surface; the default volume constraint rescales
+    it back:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    shrunk = od.smoothing.filter_laplacian(vertices, faces, volume_constraint=False)
+    print(od.measures.volume(shrunk, faces) < od.measures.volume(vertices, faces))  # True
+    kept = od.smoothing.filter_laplacian(vertices, faces)
+    print(f"{od.measures.volume(vertices, faces):.3f}")  # 4.153
+    print(f"{od.measures.volume(kept, faces):.3f}")  # 4.153
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     # This six-line prologue is shared by five of the filters (here, ``filter_humphrey``,
@@ -407,6 +423,18 @@ def inflate(
         The relaxation half of each pass.
     [`thicken_mesh`][ordito.levelset.thicken_mesh]
         Turns a surface into a solid shell, which is the other way to give it thickness.
+
+    Examples
+    --------
+    A positive pressure grows a sphere:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    inflated = od.smoothing.inflate(vertices, faces, 0.05)
+    print(od.measures.volume(inflated, faces) > od.measures.volume(vertices, faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if iterations < 0:
@@ -511,6 +539,19 @@ def filter_humphrey(
     --------
     [`filter_laplacian`][ordito.smoothing.filter_laplacian]
     [`trimesh.smoothing.filter_humphrey`][]
+
+    Examples
+    --------
+    HC smoothing loses less volume than the plain Laplacian filter it corrects:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    humphrey = od.smoothing.filter_humphrey(vertices, faces)
+    laplacian = od.smoothing.filter_laplacian(vertices, faces, volume_constraint=False)
+    print(od.measures.volume(humphrey, faces) > od.measures.volume(laplacian, faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -634,6 +675,30 @@ def filter_spikes(
         ``2 * pi`` minus the same angle sum, which is what the threshold is read against.
     [`validation.face_defective_mask`][ordito.validation.face_defective_mask]
         Flags the *faces* a spike produces, where this flags the vertex itself.
+
+    Examples
+    --------
+    A vertex of a sphere pulled out to three times the radius is a spike; it is moved to the
+    average of its closed 1-ring, and no other vertex moves:
+
+    ```python
+    import math
+
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    spiky = vertices.numpy()
+    spiky[0] *= 3.0
+    spiky = wp.array(spiky, dtype=wp.vec3)
+    repaired, flattened = od.smoothing.filter_spikes(
+        spiky, faces, 0.5 * math.pi, return_count=True
+    )
+    print(flattened)  # 1
+    print(f"{float((repaired.numpy()[0] ** 2).sum() ** 0.5):.2f}")  # 1.30
+    print((repaired.numpy()[1:] == spiky.numpy()[1:]).all())  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if max_iter < 0:
@@ -859,6 +924,26 @@ def equalize_triangle_areas(
         right area. For shape, flip the triangulation
         ([`flip_by_objective`][ordito.remesh.flip_by_objective]) or remesh
         ([`isotropic_remesh`][ordito.remesh.isotropic_remesh]); this moves vertices only.
+
+    Examples
+    --------
+    Moving the centre vertex of a 3 x 3 grid off-centre makes its eight triangles uneven;
+    equalizing moves it back to the centre, where all eight have the same area:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    shifted = vertices.numpy()
+    shifted[4] += [0.3, 0.2, 0.0]
+    shifted = wp.array(shifted, dtype=wp.vec3)
+    equalized = od.smoothing.equalize_triangle_areas(shifted, faces, iterations=20)
+    print(f"{abs(equalized.numpy()[4]).max():.3f}")  # 0.000
+    _, areas = od.triangles.face_normals_and_areas(equalized, faces)
+    print(f"{areas.numpy().std():.3f}")  # 0.000
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region, vertex_faces=vertex_faces)
     device = vertices.device
@@ -998,6 +1083,26 @@ def relax_keep_volume(
     [`filter_taubin`][ordito.smoothing.filter_taubin]
         The other anti-shrinkage answer: alternate a shrinking pass with an inflating one.
     [`equalize_triangle_areas`][ordito.smoothing.equalize_triangle_areas]
+
+    Examples
+    --------
+    Smoothing a unit sphere whose radii were jittered by up to 3 % removes most of the jitter, and
+    unlike a plain relaxation it keeps the volume:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    noise = np.random.default_rng(0).uniform(0.97, 1.03, (vertices.shape[0], 1))
+    noisy = wp.array(vertices.numpy() * noise, dtype=wp.vec3)
+    smoothed = od.smoothing.relax_keep_volume(noisy, faces, iterations=10)
+    print(np.linalg.norm(smoothed.numpy(), axis=1).std() < 0.5 * noise.std())  # True
+    ratio = od.measures.volume(smoothed, faces) / od.measures.volume(noisy, faces)
+    print(abs(ratio - 1.0) < 0.01)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     device = vertices.device
@@ -1117,6 +1222,24 @@ def relax_approx(
         fewer than six vertices is left exactly where it is rather than fitted to whatever it has.
         On a mesh whose edges are longer than ``dilate_radius`` that is *every* vertex and the call
         returns the input -- check the result moved before concluding the parameters were right.
+
+    Examples
+    --------
+    A plane fitted over a ball of radius 0.2 flattens noise on a flat grid in a few passes:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(17, 17))
+    noisy = vertices.numpy()
+    noisy[:, 2] = np.random.default_rng(0).uniform(-0.01, 0.01, noisy.shape[0])
+    noisy = wp.array(noisy, dtype=wp.vec3)
+    smoothed = od.smoothing.relax_approx(noisy, faces, 0.2, iterations=3, fit="planar")
+    print(smoothed.numpy()[:, 2].std() < 0.5 * noisy.numpy()[:, 2].std())  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     if fit not in ("planar", "quadric"):
@@ -1268,6 +1391,22 @@ def filter_taubin(
     expensive; the connectivity never changes, though, so every pass shares one
     [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern] and only rewrites the
     weights.
+
+    Examples
+    --------
+    Alternating a shrinking and an inflating step loses far less volume than plain Laplacian
+    smoothing:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    volume = od.measures.volume(vertices, faces)
+    taubin = od.smoothing.filter_taubin(vertices, faces)
+    laplacian = od.smoothing.filter_laplacian(vertices, faces, volume_constraint=False)
+    print(od.measures.volume(taubin, faces) > od.measures.volume(laplacian, faces))  # True
+    print(abs(od.measures.volume(taubin, faces) / volume - 1) < 0.01)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if recompute and laplacian_operator is not None:
@@ -1358,6 +1497,23 @@ def filter_neighborhood_average(
     --------
     [`filter_laplacian`][ordito.smoothing.filter_laplacian]
     [`filter_taubin`][ordito.smoothing.filter_taubin]
+
+    Examples
+    --------
+    Smoothing a unit sphere whose radii were jittered by up to 3 % removes most of the jitter:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    noise = np.random.default_rng(0).uniform(0.97, 1.03, (vertices.shape[0], 1))
+    noisy = wp.array(vertices.numpy() * noise, dtype=wp.vec3)
+    smoothed = od.smoothing.filter_neighborhood_average(noisy, faces, iterations=5)
+    print(np.linalg.norm(smoothed.numpy(), axis=1).std() < 0.5 * noise.std())  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -1472,6 +1628,22 @@ def filter_mut_dif_laplacian(
     [`filter_humphrey`][ordito.smoothing.filter_humphrey]
     [`filter_taubin`][ordito.smoothing.filter_taubin]
     [`trimesh.smoothing.filter_mut_dif_laplacian`][]
+
+    Examples
+    --------
+    The volume constraint inflates along the vertex normals after each pass, so a sphere keeps its
+    volume instead of shrinking:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    volume = od.measures.volume(vertices, faces)
+    kept = od.smoothing.filter_mut_dif_laplacian(vertices, faces)
+    print(f"{od.measures.volume(kept, faces) / volume:.3f}")  # 1.000
+    shrunk = od.smoothing.filter_mut_dif_laplacian(vertices, faces, volume_constraint=False)
+    print(od.measures.volume(shrunk, faces) < volume)  # True
+    ```
     """
     require_same_device(
         vertices=vertices, faces=faces, face_normals=face_normals, face_areas=face_areas
@@ -1774,6 +1946,24 @@ def filter_implicit_fairing(
     [`filter_laplacian`][ordito.smoothing.filter_laplacian]
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`mass_matrix`][ordito.laplacian.mass_matrix]
+
+    Examples
+    --------
+    Mean-curvature flow contracts a closed surface, and keeps the pinned rim of an open one in
+    place:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    faired = od.smoothing.filter_implicit_fairing(vertices, faces, iterations=5)
+    print(od.measures.volume(faired, faces) < od.measures.volume(vertices, faces))  # True
+
+    cap_vertices, cap_faces = od.creation.sphere_cap(subdivisions=2)
+    faired_cap = od.smoothing.filter_implicit_fairing(cap_vertices, cap_faces, iterations=5)
+    rim = od.boundary.boundary_vertex_indices(cap_vertices, cap_faces).numpy()
+    print((faired_cap.numpy()[rim] == cap_vertices.numpy()[rim]).all())  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -2083,6 +2273,27 @@ def smooth_region_fixed_rim(
     A free vertex that no face refers to contributes no row, so the solve does not constrain it
     and it is returned where it was. That is what the ``solution`` seed decides rather than the
     system: it is seeded with the current positions, not with zeros.
+
+    Examples
+    --------
+    The 9 interior vertices of a flat grid are lifted at random; with the flat rim held fixed, the
+    smooth solution is the plane again:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    bumpy = vertices.numpy()
+    interior = (np.abs(bumpy[:, :2]) < 0.4).all(axis=1)
+    bumpy[interior, 2] = np.random.default_rng(0).uniform(-0.2, 0.2, int(interior.sum()))
+    bumpy = wp.array(bumpy, dtype=wp.vec3)
+    free_mask = wp.array(interior, dtype=wp.bool)
+    smoothed = od.smoothing.smooth_region_fixed_rim(bumpy, faces, free_mask)
+    print(np.abs(smoothed.numpy()[:, 2]).max() < 1e-5)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, free_mask=free_mask)
     region = _region_topology(vertices, faces, free_mask)
@@ -2142,6 +2353,27 @@ def smooth_region(
     A free vertex that no face refers to contributes no row, so the least-squares system does not
     constrain it and it is returned where it was. That is what the ``solution`` seed decides rather
     than the system: it is seeded with the current positions, not with zeros.
+
+    Examples
+    --------
+    The 9 interior vertices of a flat grid are lifted at random; with the flat rim held fixed, the
+    smooth solution is the plane again:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    bumpy = vertices.numpy()
+    interior = (np.abs(bumpy[:, :2]) < 0.4).all(axis=1)
+    bumpy[interior, 2] = np.random.default_rng(0).uniform(-0.2, 0.2, int(interior.sum()))
+    bumpy = wp.array(bumpy, dtype=wp.vec3)
+    free_mask = wp.array(interior, dtype=wp.bool)
+    smoothed = od.smoothing.smooth_region(bumpy, faces, free_mask, edge_weights="unit")
+    print(np.abs(smoothed.numpy()[:, 2]).max() < 1e-5)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, free_mask=free_mask)
     region = _region_topology(vertices, faces, free_mask)
@@ -2227,6 +2459,39 @@ def refine_and_smooth_region(
         If ``refine`` is neither ``"max_edge"`` nor ``"density"``.
     RuntimeError
         If ``vertices``, ``faces`` and ``patch_face_mask`` are not all on one device.
+
+    Examples
+    --------
+    Refine the four central cells of a flat grid to edges of at most 0.1, smoothing the inserted
+    vertices; a flat patch stays flat:
+
+    ```python
+    import math
+
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    corners = vertices.numpy()[faces.numpy().reshape(-1, 3)]
+    patch = wp.array((np.abs(corners.mean(axis=1)[:, :2]) < 0.25).all(axis=1), dtype=wp.bool)
+    new_vertices, new_faces, new_patch = od.smoothing.refine_and_smooth_region(
+        vertices,
+        faces,
+        vertices.shape[0],
+        patch,
+        max_edge=0.1,
+        max_edge_splits=1000,
+        max_angle_change_after_flip=math.radians(30.0),
+        smooth_curvature=True,
+        smooth_boundary=False,
+        natural_smooth=False,
+        edge_weights="cotan",
+    )
+    print(int(patch.numpy().sum()), int(new_patch.numpy().sum()))  # 8 128
+    print(np.abs(new_vertices.numpy()[:, 2]).max() < 1e-5)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, patch_face_mask=patch_face_mask)
     device = faces.device
@@ -2769,6 +3034,25 @@ def smooth_region_boundary(
         [`split_faces_along_field`][ordito.intersection.split_faces_along_field] to cut along the
         level set outright) is the way to get past that, and is deliberately not folded in here --
         it changes the face buffer, which this promises not to.
+
+    Examples
+    --------
+    The rim of a face selection on a flat grid follows a staircase of triangle edges; smoothing
+    slides its vertices within the plane:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(9, 9))
+    centroids = vertices.numpy()[faces.numpy().reshape(-1, 3)].mean(axis=1)
+    region = wp.array(centroids[:, 0] + 0.5 * centroids[:, 1] < 0.0, dtype=wp.bool)
+    smoothed = od.smoothing.smooth_region_boundary(vertices, faces, region)
+    print(bool((smoothed.numpy() != vertices.numpy()).any()))  # True
+    print(np.abs(smoothed.numpy()[:, 2]).max() < 1e-6)  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region, vertex_faces=vertex_faces)
     if iterations < 0:
@@ -3000,6 +3284,24 @@ def filter_scalar_laplacian(
     [`shortest_path_envelope`][ordito.graph.shortest_path_envelope]
     [`filter_laplacian`][ordito.smoothing.filter_laplacian]
     [`ordito.laplacian.laplacian`][ordito.laplacian.laplacian]
+
+    Examples
+    --------
+    One full step (``lamb=1``) of a field that is 1 at one icosahedron vertex and 0 elsewhere
+    spreads it evenly over that vertex's five neighbours:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosahedron()
+    values = wp.array([1.0] + [0.0] * 11, dtype=wp.float32)
+    smoothed = od.smoothing.filter_scalar_laplacian(values, vertices, faces, lamb=1.0, iterations=1)
+    print(int((smoothed.numpy() > 0.0).sum()))  # 5
+    print(smoothed.numpy()[0], smoothed.numpy().max().round(4))  # 0.0 0.2
+    print(f"{smoothed.numpy().sum():.4f}")  # 1.0000
+    ```
     """
     require_same_device(values=values, vertices=vertices, faces=faces)
     device = values.device
@@ -3094,6 +3396,24 @@ def filter_normals(
     --------
     [`filter_two_step`][ordito.smoothing.filter_two_step]
     [`ordito.triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas]
+
+    Examples
+    --------
+    The creases of a box are sharper than the default 60 degree threshold, so its face normals
+    survive unchanged; at 180 degrees every normal averages with its neighbours:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    normals, _ = od.triangles.face_normals_and_areas(vertices, faces)
+    filtered = od.smoothing.filter_normals(vertices, faces)
+    print(np.allclose(filtered.numpy(), normals.numpy()))  # True
+    blurred = od.smoothing.filter_normals(vertices, faces, threshold=180.0)
+    print(np.allclose(blurred.numpy(), normals.numpy()))  # False
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -3231,6 +3551,28 @@ def filter_two_step(
     filtered normals rather than toward its neighbours' mean, so the systematic inward drift that
     [`filter_laplacian`][ordito.smoothing.filter_laplacian] has to correct for does not arise. A
     flat region is already a fixed point of both halves.
+
+    Examples
+    --------
+    Noise on a finely subdivided cube is removed while its edges stay sharp, so the volume stays
+    close to 1:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    for _ in range(3):
+        vertices, faces = od.remesh.subdivide(vertices, faces)
+    noise = np.random.default_rng(0).normal(0.0, 0.005, (vertices.shape[0], 3))
+    noisy = wp.array(vertices.numpy() + noise, dtype=wp.vec3)
+    smoothed = od.smoothing.filter_two_step(noisy, faces)
+    print(f"{od.measures.volume(smoothed, faces):.2f}")  # 1.00
+    off_surface = np.abs(np.abs(smoothed.numpy()) - 0.5).min(axis=1)
+    print(off_surface.mean() < np.abs(np.abs(noisy.numpy()) - 0.5).min(axis=1).mean())  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -3327,6 +3669,19 @@ def filter_sharpen(
     --------
     [`filter_laplacian`][ordito.smoothing.filter_laplacian]
     [`filter_two_step`][ordito.smoothing.filter_two_step]
+
+    Examples
+    --------
+    Sharpening exaggerates what smoothing removes; on a sphere that is its curvature, so the
+    sphere grows:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    sharpened = od.smoothing.filter_sharpen(vertices, faces)
+    print(od.measures.volume(sharpened, faces) > od.measures.volume(vertices, faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device

@@ -190,6 +190,25 @@ def marching_cubes(
     ambiguous cell, and can carry duplicate vertices where two cells agree on a crossing —
     [`reconstruction.resample_uniform`][ordito.reconstruction.resample_uniform] runs
     [`ordito.repair`][ordito.repair] over it for exactly that reason.
+
+    Examples
+    --------
+    The zero level set of a sphere's signed distance, radius 0.8, encloses close to
+    ``4 / 3 * pi * 0.8**3 = 2.14``:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    coordinates = np.linspace(-1.0, 1.0, 21)
+    x, y, z = np.meshgrid(coordinates, coordinates, coordinates, indexing="ij")
+    field = wp.array(np.sqrt(x**2 + y**2 + z**2) - 0.8, dtype=wp.float32)
+    bounds = (wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0))
+    vertices, faces = od.levelset.marching_cubes(field, bounds=bounds)
+    print(f"{od.measures.volume(vertices, faces):.2f}")  # 2.12
+    ```
     """
     field = odt.as_array3d(field, wp.float32)
     shape = tuple(int(dim) for dim in field.shape)
@@ -304,12 +323,6 @@ def offset_mesh(
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    grown_v, grown_f = od.levelset.offset_mesh(v, f, 0.1)
-    ```
-
     Notes
     -----
     **The defaults are the whole value of this function over composing the two calls it makes.** The
@@ -340,6 +353,20 @@ def offset_mesh(
         The field this extracts a level set from, when the field itself is wanted.
     [`ordito.levelset.marching_cubes`][ordito.levelset.marching_cubes]
         The extraction, and where the triangulation's own caveats live.
+
+    Examples
+    --------
+    Growing a unit cube by 0.1 rounds its edges and corners; the volume becomes
+    ``1 + 6 * 0.1 + 3 * pi * 0.1**2 + 4 / 3 * pi * 0.1**3 = 1.70``:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    grown_vertices, grown_faces = od.levelset.offset_mesh(vertices, faces, 0.1)
+    print(f"{od.measures.volume(grown_vertices, grown_faces):.2f}")  # 1.70
+    print(od.validation.is_watertight(grown_vertices, grown_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if distance == 0.0:
@@ -385,6 +412,7 @@ def signed_distance_level_set(
     *,
     bounds: tuple[wp.vec3, wp.vec3],
     sign_mode: Literal["parity", "winding"] = "winding",
+    edge_margin: float = 0.0,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Extract the ``iso`` level set of a mesh's signed distance, sampled on a corner lattice.
@@ -413,6 +441,12 @@ def signed_distance_level_set(
     sign_mode
         How the distance is signed, as in
         [`ordito.proximity.signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh].
+    edge_margin
+        Keep every vertex at least this fraction of a lattice edge away from the edge's ends, as
+        in [`marching_cubes`][ordito.levelset.marching_cubes] (``0 <= edge_margin < 0.5``). A
+        positive margin keeps the triangles from degenerating where lattice nodes fall on the
+        level set. It is honoured on every input, so a positive margin samples the lattice node
+        by node where ``0`` would take the octree path described in the Notes.
 
     Returns
     -------
@@ -424,7 +458,8 @@ def signed_distance_level_set(
     Raises
     ------
     ValueError
-        If ``faces`` is empty or any of ``shape`` is below 2.
+        If ``faces`` is empty, any of ``shape`` is below 2, or ``edge_margin`` is outside
+        ``[0, 0.5)``.
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
 
@@ -456,6 +491,25 @@ def signed_distance_level_set(
     node: there the sign of its distance can jump away from the surface, across the region a hole
     spans, and such a field is not bounded by the distance travelled, so the octree could discard
     cells the dense extraction keeps.
+
+    Examples
+    --------
+    The level set 0.2 outside a unit icosphere is close to a sphere of radius 1.2, of volume
+    about ``4 / 3 * pi * 1.2**3 = 7.2`` (a little less, the icosphere being inscribed in the unit
+    sphere):
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    bounds = (wp.vec3(-1.5, -1.5, -1.5), wp.vec3(1.5, 1.5, 1.5))
+    level_vertices, level_faces = od.levelset.signed_distance_level_set(
+        vertices, faces, 0.2, (32, 32, 32), bounds=bounds
+    )
+    print(f"{od.measures.volume(level_vertices, level_faces):.1f}")  # 7.0
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if faces.size == 0:
@@ -467,8 +521,13 @@ def signed_distance_level_set(
     if sign_mode == "winding" and n_nodes < _LATTICE_WINDING_BELOW_NODES:
         field = _winding_band_field(vertices, faces, iso, shape, bounds)
         if field is not None:
-            return od.levelset.marching_cubes(field, iso, bounds=bounds)
-    if n_nodes >= _SPARSE_LEVEL_SET_FROM_NODES and _is_closed_and_consistent(vertices, faces):
+            return od.levelset.marching_cubes(field, iso, bounds=bounds, edge_margin=edge_margin)
+    # Warp's sparse extractor has no edge margin, so a positive one takes the dense path below.
+    if (
+        edge_margin == 0.0
+        and n_nodes >= _SPARSE_LEVEL_SET_FROM_NODES
+        and _is_closed_and_consistent(vertices, faces)
+    ):
         mesh = wp.Mesh(
             points=vertices, indices=faces, support_winding_number=sign_mode == "winding"
         )
@@ -494,7 +553,7 @@ def signed_distance_level_set(
     samples = od.voxels.grid_points(shape, bounds=bounds, device=vertices.device)
     distances = od.proximity.signed_distance_on_mesh(vertices, faces, samples, sign_mode=sign_mode)
     field = odt.as_array3d(distances.reshape(shape), wp.float32)
-    return od.levelset.marching_cubes(field, iso, bounds=bounds)
+    return od.levelset.marching_cubes(field, iso, bounds=bounds, edge_margin=edge_margin)
 
 
 def _winding_band_field(
@@ -829,12 +888,6 @@ def thicken_mesh(
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
-    Examples
-    --------
-    ```python
-    shell_v, shell_f = od.levelset.thicken_mesh(v, f, 0.05)
-    ```
-
     Notes
     -----
     **It can self-intersect, and it does not check.** Displacing along vertex normals folds the
@@ -860,6 +913,21 @@ def thicken_mesh(
         The displacement direction.
     [`ordito.boundary.oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]
         Where the band's orientation comes from.
+
+    Examples
+    --------
+    A 5 x 5 vertex grid becomes a closed slab: two copies of its 32 triangles and a band of two
+    triangles over each of its 16 boundary edges:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(5, 5))
+    shell_vertices, shell_faces = od.levelset.thicken_mesh(vertices, faces, 0.05)
+    print(shell_vertices.shape)  # (50,)
+    print(shell_faces.size // 3)  # 96
+    print(od.validation.is_watertight(shell_vertices, shell_faces))  # True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     if thickness <= 0.0:

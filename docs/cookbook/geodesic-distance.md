@@ -30,8 +30,9 @@ points = vertices.numpy()
 exact = np.arccos(np.clip(points @ points[0], -1.0, 1.0))
 
 error = np.abs(distance.numpy() - exact)
-print(f"farthest vertex: {distance.numpy().max():.3f} (exact {exact.max():.3f}, pi = {np.pi:.3f})")
-print(f"mean error: {error.mean():.4f}, worst: {error.max():.4f}")  # ~0.013 and ~0.03
+farthest = distance.numpy().max()
+print(f"farthest: {farthest:.2f}, exact {exact.max():.2f}")  # farthest: 3.11, exact 3.14
+print(f"mean error: {error.mean():.2f}, worst: {error.max():.2f}")  # mean error: 0.01, worst: 0.03
 ```
 
 The heat method is an *approximation*: its accuracy depends on the mesh resolution and on the

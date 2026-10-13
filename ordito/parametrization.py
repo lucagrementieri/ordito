@@ -98,6 +98,20 @@ def face_flipped_mask(vertices: wp.array[wp.vec2], faces: wp.array[wp.int32]) ->
     says nothing about the surface, while that one flags a triangle whose index order must be
     reversed to agree with its patch. A mesh can be consistently wound and still have flipped UVs,
     and vice versa.
+
+    Examples
+    --------
+    Two triangles sharing an edge, the second wound clockwise in the plane:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    uv = wp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=wp.vec2)
+    faces = wp.array([0, 1, 2, 1, 2, 3], dtype=wp.int32)
+    print(od.parametrization.face_flipped_mask(uv, faces).numpy())  # [False  True]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
@@ -149,6 +163,18 @@ def face_flipped_indices(
     --------
     [`face_flipped_mask`][ordito.parametrization.face_flipped_mask]
     [`flatnonzero`][ordito.array.flatnonzero]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    uv = wp.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=wp.vec2)
+    faces = wp.array([0, 1, 2, 1, 2, 3], dtype=wp.int32)
+    print(od.parametrization.face_flipped_indices(uv, faces).numpy())  # [1]
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
     return od.array.flatnonzero(face_flipped_mask(vertices, faces))
@@ -194,6 +220,23 @@ def map_vertices_to_circle(
     [`longest_boundary_loop`][ordito.boundary.longest_boundary_loop]
     [`tutte`][ordito.parametrization.tutte]
     [`harmonic`][ordito.parametrization.harmonic]
+
+    Examples
+    --------
+    The boundary of a 3 x 3 grid, eight vertices at equal spacing, lands at multiples of 45°:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(3, 3))
+    boundary = od.boundary.longest_boundary_loop(vertices, faces)
+    circle = od.parametrization.map_vertices_to_circle(vertices, boundary)
+    print(circle.shape)  # (8,)
+    print(np.allclose(np.linalg.norm(circle.numpy(), axis=1), 1.0))  # True
+    print(circle.numpy()[1].round(4))  # [0.7071 0.7071]
+    ```
     """
     require_same_device(vertices=vertices, boundary=boundary)
     device = vertices.device
@@ -349,6 +392,41 @@ def harmonic(
     On such an ill-conditioned system the answer itself is determined only to the system's own
     precision: direct solvers under different orderings agree to about a percent of the UV range
     there, as this one does with them.
+
+    Examples
+    --------
+    A disk-topology cap mapped onto the unit disk, with no flipped triangle:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=1.0, subdivisions=3)
+    boundary = od.boundary.longest_boundary_loop(vertices, faces)
+    circle = od.parametrization.map_vertices_to_circle(vertices, boundary)
+    uv = od.parametrization.harmonic(
+        vertices=vertices, faces=faces, boundary_indices=boundary, boundary_uv=circle
+    )
+    print(uv.shape)  # (217,)
+    print(od.parametrization.face_flipped_indices(uv, faces).shape)  # (0,)
+    ```
+
+    On a flat grid pinned to its own boundary positions, the harmonic map interpolates them
+    linearly, so it reproduces the grid:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(8, 8))
+    boundary = od.boundary.longest_boundary_loop(vertices, faces)
+    boundary_uv = wp.array(vertices.numpy()[boundary.numpy(), :2], dtype=wp.vec2)
+    uv = od.parametrization.harmonic(
+        vertices=vertices, faces=faces, boundary_indices=boundary, boundary_uv=boundary_uv
+    )
+    print(np.allclose(uv.numpy(), vertices.numpy()[:, :2], atol=1e-5))  # True
+    ```
     """
     bound, owned, arguments = mesh_arguments(
         "harmonic", mesh, vertices, faces, (boundary_indices, boundary_uv, k), 2
@@ -452,6 +530,23 @@ def tutte(
     [`harmonic`][ordito.parametrization.harmonic]
     [`graph_laplacian`][ordito.laplacian.graph_laplacian]
     [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle]
+
+    Examples
+    --------
+    Even a cap curved almost into a sphere embeds without a fold onto the convex unit disk:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=2.5, subdivisions=3)
+    boundary = od.boundary.longest_boundary_loop(vertices, faces)
+    circle = od.parametrization.map_vertices_to_circle(vertices, boundary)
+    uv = od.parametrization.tutte(
+        vertices=vertices, faces=faces, boundary_indices=boundary, boundary_uv=circle
+    )
+    print(uv.shape)  # (217,)
+    print(od.parametrization.face_flipped_indices(uv, faces).shape)  # (0,)
+    ```
     """
     bound, owned, arguments = mesh_arguments(
         "tutte", mesh, vertices, faces, (boundary_indices, boundary_uv, k), 2
@@ -612,6 +707,27 @@ def arap(
     iteration, so solving more accurately than the outer iteration's own truncation error wastes
     work without changing the result. Pass ``tolerance=1e-8`` for stricter per-iteration solves;
     going looser risks the inner error exceeding the outer truncation error on large meshes.
+
+    Examples
+    --------
+    Started from a Tutte embedding, the result stays flip-free and keeps the pinned boundary
+    exactly:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=1.0, subdivisions=3)
+    boundary = od.boundary.longest_boundary_loop(vertices, faces)
+    circle = od.parametrization.map_vertices_to_circle(vertices, boundary)
+    uv_init = od.parametrization.tutte(
+        vertices=vertices, faces=faces, boundary_indices=boundary, boundary_uv=circle
+    )
+    uv = od.parametrization.arap(vertices, faces, boundary, circle, uv_init)
+    print(od.parametrization.face_flipped_indices(uv, faces).shape)  # (0,)
+    print(np.array_equal(uv.numpy()[boundary.numpy()], circle.numpy()))  # True
+    ```
     """
     require_same_device(
         vertices=vertices,
@@ -887,6 +1003,27 @@ def lscm(
     ``lscm``: pin ``i`` fixes DOF ``i`` (``u``) and DOF ``i + n_vertices`` (``v``). The returned
     ``Q`` of ``igl.lscm`` equals ``-repdiag(L, 2) - 2 A`` exactly (see
     [`lscm_hessian`][ordito.energies.lscm_hessian]).
+
+    Examples
+    --------
+    A flat grid with two opposite corners pinned where they are: the identity map is conformal, so
+    LSCM recovers it:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(6, 6))
+    pinned = wp.array([0, 35], dtype=wp.int32)
+    pinned_uv = wp.array(vertices.numpy()[[0, 35], :2], dtype=wp.vec2)
+    uv = od.parametrization.lscm(
+        vertices=vertices, faces=faces, pinned_indices=pinned, pinned_uv=pinned_uv
+    )
+    print(uv.shape)  # (36,)
+    print(np.allclose(uv.numpy(), vertices.numpy()[:, :2], atol=1e-5))  # True
+    ```
     """
     bound, owned, arguments = mesh_arguments(
         "lscm", mesh, vertices, faces, (pinned_indices, pinned_uv), 2
@@ -962,6 +1099,25 @@ class FixedVertexSolver:
     --------
     [`Trimesh.fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver]
     [`MinQuadWithFixedData`][ordito.linalg.MinQuadWithFixedData]
+
+    Examples
+    --------
+    Factor once for a boundary, then every harmonic map of that mesh fixing it is a direct solve:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.sphere_cap(angle=1.0, subdivisions=3)
+    mesh = od.mesh.Trimesh(vertices, faces)
+    boundary = od.boundary.longest_boundary_loop(vertices, faces)
+    solver = mesh.fixed_vertex_solver()
+    print(solver.factor("harmonic", boundary))  # True
+    circle = od.parametrization.map_vertices_to_circle(vertices, boundary)
+    uv = od.parametrization.harmonic(mesh, boundary_indices=boundary, boundary_uv=circle)
+    print(uv.shape, solver.nbytes > 0)  # (217,) True
+    solver.release()
+    print(solver.nbytes)  # 0
+    ```
     """
 
     def __init__(self, mesh: Trimesh) -> None:
@@ -1009,6 +1165,17 @@ class FixedVertexSolver:
             If ``method`` is not one of the three, if ``k < 1``, or if ``k != 1`` for ``"lscm"``.
         RuntimeError
             If ``fixed_indices`` is not on the mesh's device.
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        vertices, faces = od.creation.sphere_cap(angle=1.0, subdivisions=3)
+        mesh = od.mesh.Trimesh(vertices, faces)
+        boundary = od.boundary.longest_boundary_loop(vertices, faces)
+        print(mesh.fixed_vertex_solver().factor("tutte", boundary, k=2))  # True
+        ```
         """
         _require_fixed_vertex_method(method, k, "FixedVertexSolver.factor")
         mesh = self._bound_mesh()
@@ -1078,6 +1245,30 @@ class FixedVertexSolver:
         UserWarning
             When no verified solution is reached (see
             [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]).
+
+        Examples
+        --------
+        The harmonic system with the boundary of a flat grid fixed to its ``x`` coordinates: the
+        free values are the interior ``x`` coordinates:
+
+        ```python
+        import numpy as np
+        import warp as wp
+
+        import ordito as od
+
+        vertices, faces = od.creation.grid(count=(5, 5))
+        mesh = od.mesh.Trimesh(vertices, faces)
+        boundary = od.boundary.longest_boundary_loop(vertices, faces).numpy()
+        mask = np.zeros(vertices.shape[0], dtype=bool)
+        mask[boundary] = True
+        x = vertices.numpy()[:, 0].astype(np.float64)
+        solution, free_map = mesh.fixed_vertex_solver().solve(
+            "harmonic", wp.array(mask, dtype=wp.bool), wp.array(x[None, :], dtype=wp.float64)
+        )
+        print(solution.shape)  # (1, 9)
+        print(np.allclose(solution.numpy()[0], x[~mask]))  # True
+        ```
         """
         _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve")
         _require_solver_name(solver, "FixedVertexSolver.solve")

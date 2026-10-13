@@ -49,7 +49,8 @@ the function's input arrays:
 ```python
 cpu_vertices, cpu_faces = od.creation.icosphere(subdivisions=2, device="cpu")
 _, cpu_areas = od.triangles.face_normals_and_areas(cpu_vertices, cpu_faces)
-print(cpu_areas.device)  # cpu: the kernel ran on the CPU because its inputs live there
+# The kernel ran on the CPU because its inputs live there.
+print(cpu_areas.device)  # cpu
 
 if wp.is_cuda_available():
     gpu_vertices, gpu_faces = od.creation.icosphere(subdivisions=2, device="cuda:0")

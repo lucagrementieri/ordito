@@ -47,6 +47,20 @@ def group(values: wp.array[wp.Int], length: int) -> odt.Array2dInt32:
     See Also
     --------
     [`group_int_rows`][ordito.grouping.group_int_rows]
+
+    Examples
+    --------
+    ``3`` occurs twice and ``5`` three times, so each length finds exactly one group:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([5, 3, 5, 7, 3, 5], dtype=wp.int32)
+    print(od.grouping.group(values, 2).numpy().tolist())  # [[1, 4]]
+    print(od.grouping.group(values, 3).numpy().tolist())  # [[0, 2, 5]]
+    ```
     """
     n = values.size
     device = values.device
@@ -132,6 +146,17 @@ def group_int_rows(
     See Also
     --------
     [`group`][ordito.grouping.group]
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    rows = wp.array([[1, 2], [3, 4], [1, 2]], dtype=wp.int32)
+    print(od.grouping.group_int_rows(rows, 2).numpy().tolist())  # [[0, 2]]
+    ```
     """
     odt.ensure_ndim(data, 2)
     hashed_rows = hash_indices_rows(data, max_value, validate=validate)
@@ -222,6 +247,22 @@ def unique_1d(
     ValueError
         If ``data`` is not rank-1 or length is ``> 2**30``, or if ``max_value`` is negative or
         given for a floating-point ``data``.
+
+    Examples
+    --------
+    Mirrors ``numpy.unique(data, return_inverse=True, return_counts=True)``:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    data = wp.array([3, 1, 2, 3, 1], dtype=wp.int32)
+    unique, inverse, counts = od.grouping.unique_1d(data, return_inverse=True, return_counts=True)
+    print(unique.numpy().tolist())  # [1, 2, 3]
+    print(inverse.numpy().tolist())  # [2, 0, 1, 2, 0]
+    print(counts.numpy().tolist())  # [2, 1, 2]
+    ```
     """
     if int(data.ndim) != 1:
         raise ValueError(f"unique_1d expects a rank-1 array, got ndim={data.ndim}")
@@ -429,6 +470,20 @@ def hashed_occurrence_counts(keys: wp.array[wp.uint64] | wp.array[wp.int64]) -> 
     See Also
     --------
     [`unique_1d`][ordito.grouping.unique_1d]
+
+    Examples
+    --------
+    Key ``7`` occurs three times and key ``9`` once; the slots are unordered, so sort them:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    keys = wp.array([7, 7, 9, 7], dtype=wp.uint64)
+    counts = od.grouping.hashed_occurrence_counts(keys)
+    print(sorted(count for count in counts.numpy().tolist() if count))  # [1, 3]
+    ```
     """
     n = keys.size
     return _hash_insert(keys.view(wp.int64), n, wp.int32(kernel_grouping.hash_table_mask(n)))[1]
@@ -565,6 +620,22 @@ def unique_rows(
     ------
     ValueError
         If ``data`` is not rank-2 ``int32``/``float32`` or rank-1 ``wp.vec3``.
+
+    Examples
+    --------
+    Like ``numpy.unique(data, axis=0)``, except for the order of the unique rows:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    rows = wp.array([[1, 2], [3, 4], [1, 2]], dtype=wp.int32)
+    unique, inverse, counts = od.grouping.unique_rows(rows, return_inverse=True, return_counts=True)
+    print(unique.numpy().tolist())  # [[1, 2], [3, 4]]
+    print(inverse.numpy().tolist())  # [0, 1, 0]
+    print(counts.numpy().tolist())  # [2, 1]
+    ```
     """
     device = data.device
     n = int(data.shape[0])
@@ -651,6 +722,21 @@ def unique_faces(
     ValueError
         If ``max_index`` is not positive, or -- when it is ``None`` -- if ``faces`` holds a negative
         index.
+
+    Examples
+    --------
+    The second face is the first with its corners rotated, and the first keeps its winding:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 0, 1, 1, 2, 3], dtype=wp.int32)
+    unique, inverse = od.grouping.unique_faces(faces, return_inverse=True)
+    print(unique.numpy().tolist())  # [0, 1, 2, 1, 2, 3]
+    print(inverse.numpy().tolist())  # [0, 0, 1]
+    ```
     """
     if max_index is not None and max_index <= 0:
         raise ValueError(f"max_index must be positive, got {max_index}")
@@ -814,6 +900,18 @@ def first_occurrence_indices(
     [`unique_1d`][ordito.grouping.unique_1d]
     [`gather`][ordito.array.gather]
         The companion step: gather the payload by these indices to get the representatives.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    inverse = wp.array([2, 0, 1, 2, 0], dtype=wp.int32)
+    first = od.grouping.first_occurrence_indices(inverse, n_unique=3)
+    print(first.numpy().tolist())  # [1, 2, 0]
+    ```
     """
     device = inverse.device
     n = inverse.size
@@ -857,6 +955,20 @@ def hash_rows(
     ------
     ValueError
         If ``data`` has an unsupported dtype or shape.
+
+    Examples
+    --------
+    Equal rows pack to equal keys:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    rows = wp.array([[1, 2], [3, 4], [1, 2]], dtype=wp.int32)
+    keys = od.grouping.hash_rows(rows).numpy().tolist()
+    print(keys[0] == keys[2], keys[0] == keys[1])  # True False
+    ```
     """
     if data.dtype == wp.vec3:
         return hash_vector_rows(cast("wp.array[wp.vec3]", data))
@@ -931,6 +1043,22 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
     --------
     [`hash_indices_rows`][ordito.grouping.hash_indices_rows]
     [`hash_rows`][ordito.grouping.hash_rows]
+
+    Examples
+    --------
+    With ``epsilon=0.01`` the first two points share a grid cell; without it they do not:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    points = wp.array([[0.0, 0.0, 0.0], [0.001, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3)
+    keys = od.grouping.hash_vector_rows(points, epsilon=0.01).numpy().tolist()
+    print(keys[0] == keys[1], keys[1] == keys[2])  # True False
+    keys = od.grouping.hash_vector_rows(points).numpy().tolist()
+    print(keys[0] == keys[1])  # False
+    ```
     """
     if data.dtype != wp.vec3:
         raise ValueError(f"data must be a wp.array[wp.vec3], got wp.array[{data.dtype}]")
@@ -1037,6 +1165,20 @@ def hash_indices_rows(
     --------
     [`hash_vector_rows`][ordito.grouping.hash_vector_rows]
     [`hash_rows`][ordito.grouping.hash_rows]
+
+    Examples
+    --------
+    Each row is the digits of its key in base ``max_index``, first column lowest
+    (``1 + 2 * 3 == 7``), so a reversed row packs to a different key:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    rows = wp.array([[1, 2], [2, 1], [1, 2]], dtype=wp.int32)
+    print(od.grouping.hash_indices_rows(rows, 3).numpy().tolist())  # [7, 5, 7]
+    ```
     """
     odt.ensure_ndim(data, 2, dtype=wp.int32)
     if max_index is not None and max_index <= 0:
@@ -1100,6 +1242,22 @@ def sorted_undirected_edge_keys(edges: odt.Array2dInt32, n_vertices: int) -> wp.
     -------
     wp.array[wp.uint64]
         ``(k,)`` sorted keys on ``edges.device``. Empty when ``edges`` is empty.
+
+    Examples
+    --------
+    Each edge packs as ``min + max * n_vertices``, so ``[2, 0]`` and ``[0, 2]`` share a key:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    edges = wp.array([[2, 0], [0, 1], [1, 2]], dtype=wp.int32)
+    keys = od.grouping.sorted_undirected_edge_keys(edges, 3)
+    reversed_keys = od.grouping.sorted_undirected_edge_keys(wp.array([[0, 2]], dtype=wp.int32), 3)
+    print(keys.numpy().tolist())  # [3, 6, 7]
+    print(reversed_keys.numpy().tolist())  # [6]
+    ```
     """
     device = edges.device
     n_edges = int(edges.shape[0])

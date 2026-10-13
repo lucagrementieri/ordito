@@ -862,6 +862,44 @@ def test_face_self_intersecting_mask_on_an_interpenetrating_torus(
     assert od.validation.is_self_intersecting(mesh_wp) is True
 
 
+# Two coplanar triangles from a marching-cubes surface: no shared vertex, and disjoint in the
+# plane they share (a gap of about 15 % of an edge). Their corners are exactly coplanar in float32.
+_COPLANAR_DISJOINT_PAIR = np.array(
+    [
+        [0.49388575553894043, 0.5519615411758423, -0.6554543375968933],
+        [0.4829663634300232, 0.5628809332847595, -0.6554543375968933],
+        [0.49388575553894043, 0.5864591598510742, -0.6209567189216614],
+        [0.4593881368637085, 0.5864591598510742, -0.6554543375968933],
+        [0.4829663634300232, 0.5973785519599915, -0.6209567189216614],
+        [0.4829663634300232, 0.5864591598510742, -0.6318761110305786],
+    ],
+    dtype=np.float32,
+)
+
+
+def test_face_self_intersecting_mask_coplanar_disjoint_pair(device: str) -> None:
+    """
+    Not a library comparison: a coplanar, disjoint pair does not intersect, on either device.
+
+    The pair is disjoint by construction (checked here in float64: no edge of one crosses an edge
+    of the other, and no corner lies inside the other triangle). It was a CUDA-only false
+    positive: the plane distances of exactly coplanar corners came out as ~1e-19 of mixed sign
+    under FMA contraction, so the pair "straddled" the plane and reached the interval test along a
+    vanishing line direction. It made ``resample_uniform(icosphere(2))`` read as not watertight on
+    CUDA alone. The shuffled-corner arm keeps the verdict from depending on which vertex the plane
+    distances are measured from.
+    """
+    first, second = _COPLANAR_DISJOINT_PAIR[:3].astype(np.float64), _COPLANAR_DISJOINT_PAIR[3:]
+    normal = np.cross(first[1] - first[0], first[2] - first[0])
+    assert np.abs((second.astype(np.float64) - first[0]) @ normal).max() < 1e-15
+
+    for order in ([0, 1, 2, 3, 4, 5], [2, 0, 1, 5, 3, 4]):
+        vertices_wp = wp.array(_COPLANAR_DISJOINT_PAIR[order], dtype=wp.vec3, device=device)
+        faces_wp = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
+        mask_wp = od.validation.face_self_intersecting_mask(vertices_wp, faces_wp).numpy()
+        assert mask_wp.tolist() == [False, False]
+
+
 def test_face_self_intersecting_mask_tangential_contact_divergence(
     bohemian_dome: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -1225,6 +1263,35 @@ def test_is_watertight_rejects_self_intersection_like_open3d(device: str) -> Non
     assert bool(tangled_tm.is_watertight) is True
 
 
+@pytest.mark.parity("is_watertight", "open3d")
+@pytest.mark.parity("is_vertex_manifold", "igl")
+def test_is_watertight_ignores_an_unreferenced_vertex_like_open3d(device: str) -> None:
+    """
+    Class A: a closed box carrying one vertex no face uses, inside ``[0, max(faces)]``.
+
+    The two references split on it and ordito follows each where its docstring says: Open3D calls
+    the mesh watertight (an unused vertex is not part of the surface), and so must
+    ``is_watertight``; libigl calls that vertex non-manifold, and so does ``is_vertex_manifold``.
+    The case a caller meets is a hole filled in place without compacting the vertex buffer. The
+    control arm (the same box without the extra vertex) answers ``True`` for both, so the split is
+    the extra vertex and nothing else.
+    """
+    box_tm = tm.creation.box()
+    vertices_np = np.insert(box_tm.vertices, 3, [5.0, 5.0, 5.0], axis=0)
+    faces_np = np.where(box_tm.faces >= 3, box_tm.faces + 1, box_tm.faces)
+    loose_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+
+    assert trimesh_to_open3d(loose_tm).is_watertight() is True
+    assert od.validation.is_watertight(vertices_wp, faces_wp) is True
+    assert bool(np.asarray(igl.is_vertex_manifold(faces_np.astype(np.int64))).all()) is False
+    assert od.validation.is_vertex_manifold(faces_wp) is False
+
+    box_vertices_wp, box_faces_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
+    assert od.validation.is_watertight(box_vertices_wp, box_faces_wp) is True
+    assert od.validation.is_vertex_manifold(box_faces_wp) is True
+
+
 @pytest.mark.parametrize("mesh_name", ["bohemian_dome", "boy_surface"])
 @pytest.mark.parity("is_watertight", "open3d")
 def test_is_watertight_rejects_a_connected_surface_that_intersects_itself(
@@ -1526,6 +1593,35 @@ def test_face_defective_mask_matches_pymeshlab_on_folds(
     ).numpy()
     assert np.array_equal(folded_np.astype(bool), np.array([False, False, True]))
     assert np.array_equal(folded_np.astype(bool), selected_pml.astype(bool))
+
+
+def test_face_defective_mask_normal_criterion_diverges_from_meshlab(device: str) -> None:
+    """
+    Class D (a different algorithm, measured): MeshLab's ``nfratio`` against the consensus test.
+
+    One face of an icosphere is reversed. MeshLab selects both faces of every edge whose normals
+    differ by more than the angle -- the culprit and its three neighbours -- at every threshold
+    tried; the consensus criterion selects the culprit alone. Pinned from both sides, as the
+    docstring states it: ordito's selection is MeshLab's minus the innocent neighbours, so a
+    change on either side (MeshLab adopting a consensus, or ordito a pairwise test) fails here.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=3)
+    faces_np = sphere_tm.faces.copy()
+    faces_np[7] = faces_np[7][::-1]
+    vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, faces_np, device)
+    for angle in (30.0, 60.0, 90.0):
+        meshset_pml = ml.MeshSet()
+        meshset_pml.add_mesh(ml.Mesh(sphere_tm.vertices, np.ascontiguousarray(faces_np)))
+        meshset_pml.compute_selection_bad_faces(usear=False, usenf=True, nfratio=angle)
+        selected_pml = np.flatnonzero(meshset_pml.current_mesh().face_selection_array())
+        selected_wp = np.flatnonzero(
+            od.validation.face_defective_mask(
+                vertices_wp, faces_wp, min_quality=None, max_normal_angle=angle
+            ).numpy()
+        )
+        assert selected_wp.tolist() == [7]
+        assert selected_pml.shape[0] == 4
+        assert set(selected_wp.tolist()) < set(selected_pml.tolist())
 
 
 def _hinge_fan_np(angles_deg: tuple[float, ...]) -> tuple[np.ndarray, np.ndarray]:
