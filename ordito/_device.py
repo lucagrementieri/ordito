@@ -448,7 +448,7 @@ def read_scalar(arr: odt.ArrayNd, index: int = -1) -> Any:
 
 def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
     """
-    ``count`` consecutive elements of a scalar ``arr`` from ``start``, read back in one copy.
+    ``count`` consecutive elements of ``arr`` from ``start``, read back in one copy.
 
     The several-value counterpart of [`read_scalar`][ordito._device.read_scalar], for a function
     that writes a few small device values side by side and reads them once: a cached pageable
@@ -460,7 +460,8 @@ def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
     Parameters
     ----------
     arr
-        Contiguous rank-1 Warp array of a scalar dtype.
+        Contiguous rank-1 Warp array of a scalar or vector dtype; a vector element is read
+        back as a list.
     start
         First element to read.
     count

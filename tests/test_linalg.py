@@ -287,6 +287,87 @@ def test_min_quad_with_fixed_rejects_values_of_another_rank_or_dtype(device: str
     assert solution_wp.shape == (values_wp.shape[0], n_free)
 
 
+def test_min_quad_with_fixed_rejects_values_or_an_operator_of_another_size(device: str) -> None:
+    """
+    Not a library comparison: a size mismatch is refused before any kernel reads past a buffer.
+
+    ``fixed_values`` one column short is refused by the one-shot solve and by a precomputed
+    system's ``solve``, which used to skip the check and index past the buffer; a rank-1 buffer is
+    refused there too. A mask of another length than the operator is refused where the two meet.
+    """
+    matrix_wp, fixed_wp, values_wp, _ = _pinned_grid(device)
+    short_wp = wp.array(values_wp.numpy()[:, :-1], dtype=wp.float64, device=device)
+    with pytest.raises(ValueError, match="fixed_values has 575 columns"):
+        od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, short_wp)
+    data = od.linalg.min_quad_with_fixed_precompute(matrix_wp, fixed_wp)
+    with pytest.raises(ValueError, match="fixed_values has 575 columns"):
+        data.solve(short_wp)
+    with pytest.raises(TypeError, match="expected 2D array"):
+        data.solve(values_wp.flatten())
+    short_mask_wp = wp.array(fixed_wp.numpy()[:-1], dtype=wp.bool, device=device)
+    with pytest.raises(ValueError, match="fixed_mask has 575 entries"):
+        od.linalg.min_quad_with_fixed(matrix_wp, short_mask_wp, short_wp)
+    with pytest.raises(ValueError, match="fixed_mask has 575 entries"):
+        od.linalg.min_quad_with_fixed_precompute(matrix_wp, short_mask_wp)
+
+
+@pytest.mark.parametrize("solver", ["iterative", "direct"])
+def test_min_quad_with_fixed_solves_no_right_hand_side(device: str, solver: str) -> None:
+    """
+    Not a library comparison: no right-hand side is a ``(0, n_free)`` answer, not an error.
+
+    The batched solver cannot be built over zero columns, so an empty ``fixed_values`` returns the
+    documented shape without a solve, through the one-shot call and a precomputed system alike.
+    """
+    matrix_wp, fixed_wp, values_wp, expected_np = _pinned_grid(device)
+    empty_wp = odt.empty_2d((0, int(values_wp.shape[1])), wp.float64, device=device)
+    solution_wp, _, n_free = od.linalg.min_quad_with_fixed(
+        matrix_wp, fixed_wp, empty_wp, solver=solver
+    )
+    assert n_free == expected_np.shape[1]
+    assert solution_wp.shape == (0, n_free)
+    data = od.linalg.min_quad_with_fixed_precompute(matrix_wp, fixed_wp)
+    solution_wp, _, n_free = data.solve(empty_wp)
+    assert solution_wp.shape == (0, n_free)
+
+
+def test_operator_entry_points_reject_an_operator_on_another_device() -> None:
+    """
+    Not a library comparison: an operator on another device than its operands raises.
+
+    Every public function taking an operator and arrays passes the operator to the device check,
+    since a launch mixing a CPU operator with CUDA vectors segfaults rather than raising.
+    """
+    if not wp.is_cuda_available():
+        pytest.skip("needs both devices to construct a mismatch")
+    matrix_wp, _, _, _ = _grid_laplacian_system("cpu", k=6, n_rhs=1)
+    n = int(matrix_wp.nrow)
+    cuda = "cuda:0"
+    rhs_wp = wp.ones(n, dtype=wp.float64, device=cuda)
+    solution_wp = wp.zeros(n, dtype=wp.float64, device=cuda)
+    rhs_2d = odt.as_array2d(wp.ones((1, n), dtype=wp.float64, device=cuda), wp.float64)
+    solution_2d = odt.as_array2d(wp.zeros((1, n), dtype=wp.float64, device=cuda), wp.float64)
+    mask_wp = wp.array(np.arange(n) % 3 == 0, dtype=wp.bool, device=cuda)
+    free_map_wp, n_free = od.linalg.free_partition(mask_wp)
+    calls = [
+        lambda: od.linalg.solve_spd(matrix_wp, rhs_wp, solution_wp),
+        lambda: od.linalg.solve_spd_columns(matrix_wp, rhs_2d, solution_2d, check_every=1),
+        lambda: od.linalg.spd_column_solver(matrix_wp, rhs_2d, solution_2d),
+        lambda: od.linalg.solve_spd_settled(
+            matrix_wp, rhs_wp, solution_wp, check_rounds=4, change_tolerance=1e-8, settle_rounds=64
+        ),
+        lambda: od.linalg.min_quad_with_fixed(matrix_wp, mask_wp, rhs_2d),
+        lambda: od.linalg.min_quad_with_fixed_precompute(matrix_wp, mask_wp),
+        lambda: od.linalg.assemble_interior_system(matrix_wp, mask_wp, free_map_wp, rhs_2d, n_free),
+        lambda: od.linalg.bsr_with_values(
+            matrix_wp, wp.zeros(matrix_wp.values.size, dtype=wp.float64, device=cuda)
+        ),
+    ]
+    for call in calls:
+        with pytest.raises(RuntimeError, match="one device"):
+            call()
+
+
 # --- free_partition / assemble_interior_system ---------------------------------------------
 
 
@@ -476,6 +557,31 @@ def test_solve_spd_columns_agrees_across_column_counts(device: str, n_rhs: int) 
     )
 
 
+@pytest.mark.parametrize("check_every", [0, 1])
+def test_solve_spd_columns_solves_no_column(device: str, check_every: int) -> None:
+    """
+    Not a library comparison: an empty batch has no answer to compare, only a report to return.
+
+    Zero right-hand-side columns used to fail inside the solver's slicing; the report must be a
+    converged zero-iteration solve in the form ``check_every`` selects.
+    """
+    matrix_wp, rhs_wp, _, _ = _spd_system(device, n_rhs=1)
+    shape = (0, rhs_wp.shape[1])
+    empty_wp = odt.as_array2d(wp.zeros(shape, dtype=wp.float64, device=device), wp.float64)
+    solution_wp = odt.as_array2d(wp.zeros(shape, dtype=wp.float64, device=device), wp.float64)
+    report: Any = od.linalg.solve_spd_columns(
+        matrix_wp, empty_wp, solution_wp, check_every=check_every
+    )
+    iterations, residual, tolerance = report
+    if check_every == 0:
+        iterations, residual, tolerance = (
+            int(iterations.numpy()[0]),
+            float(residual.numpy()[0]),
+            float(tolerance.numpy()[0]),
+        )
+    assert (iterations, residual, tolerance) == (0, 0.0, 0.0)
+
+
 def test_solve_spd_columns_two_columns_uses_batched_cg(device: str) -> None:
     """
     Ordito against ordito: the dispatch itself, not just the answer it produces.
@@ -585,6 +691,49 @@ def test_solve_spd_columns_check_every_is_solution_invariant(device: str, check_
     )
     solution_np = np.linalg.solve(dense_np, rhs_np.T).T
     assert np.allclose(solution_wp.numpy(), solution_np, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("check_every", [1, 0])
+@pytest.mark.parametrize("engine", ["one_block", "batched"])
+def test_solve_spd_columns_reports_the_worst_column_against_its_own_tolerance(
+    device: str, engine: str, check_every: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against NumPy's residual of the returned iterate: the report is one column's own pair.
+
+    Column 0 starts from zero and cannot converge in five rounds; column 1 is warm-started at its
+    exact solution at a scale of ``1e12``, so its tolerance sits twelve orders above column 0's
+    residual. The report is column 0's residual against column 0's tolerance -- unconverged, and
+    under a host cadence a warning -- where a residual and a tolerance each maximized over the
+    columns would pair column 0's residual with column 1's tolerance and read as converged. The
+    residual is the one the returned iterate has, after the round at the cap, not the one that
+    round started from.
+    """
+    if engine == "batched":
+        monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+    matrix_wp, _, dense_np, rhs_np = _grid_laplacian_system(device, n_rhs=1)
+    exact_np = 1e12 * np.random.default_rng(2).standard_normal(dense_np.shape[0])
+    rhs_np = np.stack([rhs_np[0], dense_np @ exact_np])
+    rhs_wp = odt.as_array2d(wp.array(rhs_np, dtype=wp.float64, device=device), wp.float64)
+    initial_np = np.stack([np.zeros_like(exact_np), exact_np])
+    solution_wp = odt.as_array2d(wp.array(initial_np, dtype=wp.float64, device=device), wp.float64)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = od.linalg.solve_spd_columns(
+            matrix_wp, rhs_wp, solution_wp, tol=1e-10, maxiter=5, check_every=check_every
+        )
+    residual, tolerance = od.linalg._cg_residual_and_tolerance(result)
+    iterations = result[0]
+    if isinstance(iterations, wp.array):
+        iterations = int(iterations.numpy()[0])
+    solution_np = solution_wp.numpy()
+    true_np = np.linalg.norm(rhs_np[0] - dense_np @ solution_np[0])
+    assert iterations == 5
+    assert residual > tolerance
+    assert np.isclose(tolerance, 1e-10 * np.linalg.norm(rhs_np[0]), rtol=1e-9)
+    assert np.isclose(residual, true_np, rtol=1e-6)
+    cap_warnings = [w for w in caught if "iteration cap" in str(w.message)]
+    assert len(cap_warnings) == (1 if check_every > 0 else 0)
 
 
 @pytest.mark.parity(
@@ -719,6 +868,41 @@ def test_solve_spd_columns_warns_when_no_verified_solution_exists(
         od.linalg.solve_spd_columns(
             matrix_wp, rhs_wp, solution_wp, maxiter=4, check_every=0, factorization=held
         )
+
+
+def test_verified_solve_rejects_a_nan_iterate(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: a ``NaN`` iterate fails verification and is factored.
+
+    A ``NaN`` initial guess makes every residual ``NaN``, which stops the iteration at once and
+    fails ``residual > threshold`` as surely as ``<=``; the verification must read it as outside
+    its threshold, so the factorization answers. Under a host cadence, whose convergence half is
+    tested on the host.
+    """
+    matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device)
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    solution_wp = odt.as_array2d(
+        wp.full(rhs_wp.shape, np.nan, dtype=wp.float64, device=device), wp.float64
+    )
+    od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, check_every=1, factorization=held)
+    assert held.factorization is not None
+    expected_np = np.linalg.solve(dense_np, rhs_np.T).T
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
+    # The convergence half alone: the exact solution passes the backward-error half, so only a
+    # ``NaN`` residual read as outside its threshold rejects it.
+    assert od.linalg._verified(matrix_wp, rhs_wp, solution_wp, (1, 0.0, 1.0), 1e-10, held)
+    assert not od.linalg._verified(matrix_wp, rhs_wp, solution_wp, (1, np.nan, 1.0), 1e-10, held)
+
+
+def test_solve_spd_columns_warns_on_a_nan_iterate(device: str) -> None:
+    """A solve stopped on a ``NaN`` residual, well inside its cap, warns rather than passing."""
+    matrix_wp, rhs_wp, _, _ = _grid_laplacian_system(device)
+    solution_wp = odt.as_array2d(
+        wp.full(rhs_wp.shape, np.nan, dtype=wp.float64, device=device), wp.float64
+    )
+    with pytest.warns(UserWarning, match="non-finite residual"):
+        _, residual, _ = od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, check_every=1)
+    assert np.isnan(residual)
 
 
 def test_solve_spd_columns_does_not_iterate_on_past_an_indefinite_operator(
@@ -1015,8 +1199,22 @@ def test_solve_spd_block_operator_matches_numpy(device: str) -> None:
     the ``float64`` view of the ``wp.vec2d`` right-hand side; a wrong interleaving convention would
     still converge, to the solution of a permuted system.
     """
-    n_blocks = 40
-    rng = np.random.default_rng(17)
+    matrix_wp, dense_np, rhs_np = _block_system(device)
+    n_blocks = rhs_np.shape[0]
+    rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.vec2d, device=device)
+    solution_wp = wp.zeros(n_blocks, dtype=wp.vec2d, device=device)
+    od.linalg.solve_spd(
+        matrix_wp, rhs_wp, solution_wp, preconditioner=od.linalg.jacobi_preconditioner(matrix_wp)
+    )
+    expected_np = np.linalg.solve(dense_np, rhs_np.ravel()).reshape(n_blocks, 2)
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+
+
+def _block_system(
+    device: str, n_blocks: int = 40, seed: int = 17
+) -> tuple[odt.BsrMatrix[wp.mat22d], np.ndarray, np.ndarray]:
+    """Build a dense SPD ``wp.mat22d`` operator, its scalar form and a ``(n_blocks, 2)`` rhs."""
+    rng = np.random.default_rng(seed)
     dense_np = rng.standard_normal((2 * n_blocks, 2 * n_blocks))
     dense_np = dense_np @ dense_np.T + 2 * n_blocks * np.eye(2 * n_blocks)
     blocks_np = dense_np.reshape(n_blocks, 2, n_blocks, 2).transpose(0, 2, 1, 3)
@@ -1029,14 +1227,32 @@ def test_solve_spd_block_operator_matches_numpy(device: str) -> None:
         wp.array(np.ascontiguousarray(blocks_np.reshape(-1, 2, 2)), dtype=wp.mat22d, device=device),
     )
     assert odt.has_blocks(matrix_wp, wp.mat22d)
-    rhs_np = rng.standard_normal((n_blocks, 2))
+    return matrix_wp, dense_np, rng.standard_normal((n_blocks, 2))
+
+
+@pytest.mark.parametrize("engine", ["one_block", "batched"])
+def test_solve_spd_block_operator_reads_values_rewritten_in_place(
+    device: str, engine: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve`` of the rewritten operator.
+
+    A ``wp.mat22d`` operator is solved through a scalar expansion kept per operator; rewriting the
+    block values in place between two solves must reach the second, as it does for a scalar
+    operator, so doubling them halves the answer. Both engines, since they share the expansion.
+    """
+    if engine == "batched":
+        monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+    matrix_wp, dense_np, rhs_np = _block_system(device)
+    n_blocks = rhs_np.shape[0]
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.vec2d, device=device)
-    solution_wp = wp.zeros(n_blocks, dtype=wp.vec2d, device=device)
-    od.linalg.solve_spd(
-        matrix_wp, rhs_wp, solution_wp, preconditioner=od.linalg.jacobi_preconditioner(matrix_wp)
-    )
     expected_np = np.linalg.solve(dense_np, rhs_np.ravel()).reshape(n_blocks, 2)
-    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+    for scale in (1.0, 2.0):
+        if scale != 1.0:
+            matrix_wp.values.assign(matrix_wp.values.numpy() * scale)
+        solution_wp = wp.zeros(n_blocks, dtype=wp.vec2d, device=device)
+        od.linalg.solve_spd(matrix_wp, rhs_wp, solution_wp)
+        assert np.allclose(solution_wp.numpy(), expected_np / scale, rtol=1e-5, atol=1e-5)
 
 
 def test_jacobi_preconditioner_applies_the_inverse_diagonal(device: str) -> None:

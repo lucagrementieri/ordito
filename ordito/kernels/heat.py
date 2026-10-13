@@ -80,11 +80,31 @@ def tangent_to_world(tangent: wp.vec2, basis_x: wp.vec3, basis_y: wp.vec3) -> wp
 # --------------------------------------------------------------------------------------
 
 
+@wp.func
+def flag_out_of_range(
+    v: wp.int32, n_vertices: wp.int32, out_invalid: wp.array[wp.int32]
+) -> wp.bool:
+    # Whether vertex index ``v`` falls outside ``[0, n_vertices)``, raising ``out_invalid[0]`` when
+    # it does. The guard every seeding kernel below runs before it writes at a caller's index: the
+    # write is skipped, so a bad index cannot reach memory, and the wrapper reads the one flag back
+    # to raise. Concurrent threads only ever store ``1``, so the race between them is benign.
+    if v < 0 or v >= n_vertices:
+        out_invalid[0] = 1
+        return True
+    return False
+
+
 @wp.kernel
-def seed_source_indicator(sources: wp.array[wp.int32], out_u0: wp.array[wp.float64]) -> None:
-    # Set the initial heat to 1 at each source vertex (out_u0 pre-zeroed by the caller).
+def seed_source_indicator(
+    sources: wp.array[wp.int32], out_u0: wp.array[wp.float64], out_invalid: wp.array[wp.int32]
+) -> None:
+    # Set the initial heat to 1 at each source vertex (out_u0 pre-zeroed by the caller); an
+    # out-of-range source writes nothing and raises ``out_invalid[0]``.
     t = wp.int32(wp.tid())
-    out_u0[sources[t]] = wp.float64(1.0)
+    v = sources[t]
+    if flag_out_of_range(v, out_u0.shape[0], out_invalid):
+        return
+    out_u0[v] = wp.float64(1.0)
 
 
 @wp.func
@@ -201,6 +221,7 @@ def splat_curve_normals(
     basis_x: wp.array[wp.vec3],
     basis_y: wp.array[wp.vec3],
     out_field: wp.array[wp.vec2d],
+    out_invalid: wp.array[wp.int32],
 ) -> None:
     # The signed heat method's source term: each curve segment contributes its own *normal* -- the
     # tangent direction perpendicular to it -- to the two vertices it connects, weighted by half the
@@ -213,7 +234,14 @@ def splat_curve_normals(
     # whole buffer with ``single_curve`` set, when ``curve_offsets`` may be ``None``); an entry in
     # no row starts nothing. So the segment list is never built, and the offsets are never read
     # back to build it; on the CPU device the threads run in the order that list had.
+    #
+    # Every entry is range-checked by its own thread before anything else (raising
+    # ``out_invalid[0]``), and a segment's far end again before it is read, so an out-of-range
+    # curve vertex reads and writes nothing.
     k = wp.int32(wp.tid())
+    n_vertices = out_field.shape[0]
+    if flag_out_of_range(curve_vertices[k], n_vertices, out_invalid):
+        return
     begin = wp.int32(0)
     end = curve_vertices.shape[0]
     if single_curve == 0:
@@ -230,6 +258,8 @@ def splat_curve_normals(
     elif closed != 0 and end - begin >= 2:
         b = curve_vertices[begin]
     else:
+        return
+    if flag_out_of_range(b, n_vertices, out_invalid):
         return
     edge = vertices[b] - vertices[a]
     length = wp.length(edge)
@@ -321,13 +351,16 @@ def seed_source_scalars(
     out_indicator: wp.array[wp.float64],
     out_weighted: wp.array[wp.float64],
     out_range: wp.array[wp.float64],
+    out_invalid: wp.array[wp.int32],
 ) -> None:
     # Scalar extension needs two right-hand sides: where the sources are, and what they carry.
     # ``out_range`` (seeded ``+inf``) also collects the source values' range for
     # ``extend_from_ratio``'s overshoot check, stored as ``(min, -max)`` so both ends are one
-    # ``atomic_min`` from one ``wp.full``.
+    # ``atomic_min`` from one ``wp.full``. An out-of-range source raises ``out_invalid[0]``.
     s = wp.int32(wp.tid())
     v = sources[s]
+    if flag_out_of_range(v, out_indicator.shape[0], out_invalid):
+        return
     wp.atomic_add(out_indicator, v, wp.float64(1.0))
     wp.atomic_add(out_weighted, v, values[s])
     wp.atomic_min(out_range, 0, values[s])
@@ -341,12 +374,16 @@ def seed_transport_sources(
     out_field: wp.array[wp.vec2d],
     out_indicator: wp.array[wp.float64],
     out_magnitude: wp.array[wp.float64],
+    out_invalid: wp.array[wp.int32],
 ) -> None:
     # ``transport_tangent_vectors``' three right-hand sides from one pass over the sources: the
     # widened vector, where the sources are, and the length each carries -- the vector heat seed and
-    # ``seed_source_scalars``' pair, which a caller of both used to write in four launches.
+    # ``seed_source_scalars``' pair, which a caller of both used to write in four launches. An
+    # out-of-range source raises ``out_invalid[0]``.
     s = wp.int32(wp.tid())
     v = sources[s]
+    if flag_out_of_range(v, out_field.shape[0], out_invalid):
+        return
     vector = to_vec2d(vectors[s])
     wp.atomic_add(out_field, v, vector)
     wp.atomic_add(out_indicator, v, wp.float64(1.0))

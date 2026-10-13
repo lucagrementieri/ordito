@@ -381,12 +381,14 @@ def min_quad_with_fixed(
     Raises
     ------
     ValueError
-        If ``solver`` is not ``"iterative"`` or ``"direct"``, or ``preconditioner`` is not a name
-        [`solve_spd_columns`][ordito.linalg.solve_spd_columns] accepts.
+        If ``solver`` is not ``"iterative"`` or ``"direct"``, ``preconditioner`` is not a name
+        [`solve_spd_columns`][ordito.linalg.solve_spd_columns] accepts, ``q`` is not
+        ``(n_dofs, n_dofs)`` for ``fixed_mask``'s ``n_dofs``, or ``fixed_values`` does not have
+        ``n_dofs`` columns.
     TypeError
         If ``fixed_values`` is not a rank-2 ``wp.float64`` array.
     RuntimeError
-        If ``fixed_mask``, ``fixed_values`` and ``coordinates`` are not all on one device.
+        If ``q``, ``fixed_mask``, ``fixed_values`` and ``coordinates`` are not all on one device.
 
     Warns
     -----
@@ -436,8 +438,10 @@ def min_quad_with_fixed(
     print(np.allclose(solution.numpy()[0], x[~mask]))  # True
     ```
     """
-    require_same_device(fixed_mask=fixed_mask, fixed_values=fixed_values, coordinates=coordinates)
-    odt.ensure_ndim(fixed_values, 2, dtype=wp.float64)
+    require_same_device(
+        q=q, fixed_mask=fixed_mask, fixed_values=fixed_values, coordinates=coordinates
+    )
+    _require_fixed_values(fixed_values, fixed_mask.size, "min_quad_with_fixed")
     if solver not in ("iterative", "direct"):
         raise ValueError(
             f'min_quad_with_fixed: unknown solver {solver!r}, expected "iterative" or "direct".'
@@ -483,8 +487,10 @@ def min_quad_with_fixed_precompute(
 
     Raises
     ------
+    ValueError
+        If ``q`` is not ``(n_dofs, n_dofs)`` for ``fixed_mask``'s ``n_dofs``.
     RuntimeError
-        If ``fixed_mask`` and ``coordinates`` are not on one device.
+        If ``q``, ``fixed_mask`` and ``coordinates`` are not all on one device.
 
     See Also
     --------
@@ -514,7 +520,7 @@ def min_quad_with_fixed_precompute(
     print(solution.shape, np.allclose(solution.numpy(), xy[:, ~mask]))  # (2, 36) True
     ```
     """
-    require_same_device(fixed_mask=fixed_mask, coordinates=coordinates)
+    require_same_device(q=q, fixed_mask=fixed_mask, coordinates=coordinates)
     system = MinQuadWithFixedData(q, fixed_mask, coordinates, factor=True)
     if system.factorization is not None:
         _solved_repeatedly(system.factorization)
@@ -590,7 +596,20 @@ class MinQuadWithFixedData:
 
         Unfactored, the first [`solve`][ordito.linalg.MinQuadWithFixedData.solve] iterates and
         builds the factorization only when the iteration's result fails its verification.
+
+        Raises
+        ------
+        ValueError
+            If ``q`` is not ``(n_dofs, n_dofs)`` for ``fixed_mask``'s ``n_dofs``.
+        RuntimeError
+            If ``q``, ``fixed_mask`` and ``coordinates`` are not all on one device.
         """
+        require_same_device(q=q, fixed_mask=fixed_mask, coordinates=coordinates)
+        if int(q.nrow) != fixed_mask.size or int(q.ncol) != fixed_mask.size:
+            raise ValueError(
+                f"min_quad_with_fixed: q is {int(q.nrow)} x {int(q.ncol)} but fixed_mask has "
+                f"{fixed_mask.size} entries"
+            )
         self.q = q
         self.fixed_mask = _launch.clone(fixed_mask)
         self.free_map, self.n_free = free_partition(self.fixed_mask)
@@ -665,7 +684,7 @@ class MinQuadWithFixedData:
 
     def solve(
         self,
-        fixed_values: odt.Array2dFloat,
+        fixed_values: odt.ArrayNdFloat64,
         *,
         tol: float = CG_TOLERANCE,
         check_every: int = CG_CHECK_EVERY,
@@ -703,7 +722,10 @@ class MinQuadWithFixedData:
         Raises
         ------
         ValueError
-            If ``preconditioner`` is a name outside the menu.
+            If ``preconditioner`` is a name outside the menu, or ``fixed_values`` does not have
+            ``n_dofs`` columns.
+        TypeError
+            If ``fixed_values`` is not a rank-2 ``wp.float64`` array.
         RuntimeError
             If ``fixed_values`` is not on this system's device.
 
@@ -714,6 +736,7 @@ class MinQuadWithFixedData:
             could be factored and the iteration does not reach a verified solution.
         """
         require_same_device(fixed_values=fixed_values, own=self.fixed_mask)
+        _require_fixed_values(fixed_values, self.fixed_mask.size, "MinQuadWithFixedData.solve")
         if isinstance(preconditioner, str):
             _require_preconditioner_name(preconditioner, "MinQuadWithFixedData.solve")
         device = self.fixed_mask.device
@@ -721,7 +744,8 @@ class MinQuadWithFixedData:
         solution = odt.as_array2d(
             _launch.zeros((n_rhs, self.n_free), dtype=wp.float64, device=device), wp.float64
         )
-        if self.factorization is None:
+        # Nothing free, or no right-hand side: the empty answer needs no solve.
+        if self.factorization is None or n_rhs == 0:
             return solution, self.free_map, self.n_free
         # Only the right-hand side changes with the values: the extraction's first pass forms
         # every free row of it.
@@ -765,6 +789,16 @@ class MinQuadWithFixedData:
         """Drop the factorization; later solves iterate, verified, until it is built again."""
         if self.factorization is not None:
             self.factorization.release()
+
+
+def _require_fixed_values(fixed_values: odt.ArrayNd, n_dofs: int, caller: str) -> None:
+    """Raise unless ``fixed_values`` is a rank-2 ``float64`` array with ``n_dofs`` columns."""
+    odt.ensure_ndim(fixed_values, 2, dtype=wp.float64)
+    if int(fixed_values.shape[1]) != n_dofs:
+        raise ValueError(
+            f"{caller}: fixed_values has {int(fixed_values.shape[1])} columns, expected one per "
+            f"degree of freedom ({n_dofs})"
+        )
 
 
 def free_partition(fixed_mask: wp.array[wp.bool]) -> tuple[wp.array[wp.int32], int]:
@@ -943,7 +977,8 @@ def assemble_interior_system(
     Raises
     ------
     RuntimeError
-        If ``fixed_mask``, ``free_map``, ``fixed_values`` and ``load`` are not all on one device.
+        If ``q``, ``fixed_mask``, ``free_map``, ``fixed_values`` and ``load`` are not all on one
+        device.
     ValueError
         If ``load`` and ``fixed_values`` both have rows and their row counts differ.
 
@@ -979,7 +1014,7 @@ def assemble_interior_system(
     ```
     """
     require_same_device(
-        fixed_mask=fixed_mask, free_map=free_map, fixed_values=fixed_values, load=load
+        q=q, fixed_mask=fixed_mask, free_map=free_map, fixed_values=fixed_values, load=load
     )
     device = fixed_mask.device
     n_dofs = fixed_mask.size
@@ -1109,14 +1144,15 @@ def solve_spd(
     Raises
     ------
     RuntimeError
-        If ``rhs`` and ``solution`` are not all on one device.
+        If ``matrix``, ``rhs``, ``solution`` and ``preconditioner`` are not all on one device.
 
     Warns
     -----
     UserWarning
-        When the solve exhausts ``maxiter`` without reaching ``tol``. The returned ``solution`` is
-        then whatever the last iterate happened to be, not an answer -- silence here is how a
-        diverging solve reaches a caller looking like a converged one. Only detectable when
+        When the solve exhausts ``maxiter`` without reaching ``tol``, or stops on a non-finite
+        residual. The returned ``solution`` is then whatever the last iterate happened to be, not
+        an answer -- silence here is how a diverging solve reaches a caller looking like a
+        converged one. Only detectable when
         ``check_every > 0``; under ``check_every=0`` the counts stay on device and testing them
         would reintroduce the readback that setting exists to avoid.
 
@@ -1144,7 +1180,7 @@ def solve_spd(
     print(f"{solution.numpy().min():.4f} {solution.numpy().max():.4f}")  # 1.0000 1.0000
     ```
     """
-    require_same_device(rhs=rhs, solution=solution)
+    require_same_device(matrix=matrix, rhs=rhs, solution=solution, preconditioner=preconditioner)
     n_rows = int(rhs.shape[0])
     iteration_cap = CG_MAXITER_FACTOR * n_rows if maxiter is None else maxiter
     kind = _batched_preconditioner_kind(matrix, rhs, preconditioner)
@@ -1275,40 +1311,47 @@ _EXPANSION_CACHE: weakref.WeakKeyDictionary[
 
 def _scalar_expansion(matrix: odt.SparseMatrix) -> odt.BsrMatrix[wp.float64]:
     """
-    Expand a compact ``wp.mat22d`` operator into its ``float64`` CSR, once per operator.
+    Expand a compact ``wp.mat22d`` operator into its ``float64`` CSR, allocated once per operator.
 
     The key carries the block arrays' identities, as ``_cached_solver``'s does, and the entry holds
-    them, so a matrix whose storage is replaced is expanded again. Sized off the ``values``
-    capacity rather than ``nnz``: the row offsets alone bound every row, so a stale capacity's
-    tail is allocated and never read.
+    them, so a matrix whose storage is replaced is expanded into new storage. The expansion itself
+    is rewritten on every call -- one launch -- into the storage kept for the operator, so values
+    rewritten in place are what the next solve reads, as they are for a scalar operator; the
+    expanded matrix keeps its identity, so the solver state kept for it is reused. Sized off the
+    ``values`` capacity rather than ``nnz``: the row offsets alone bound every row, so a stale
+    capacity's tail is allocated and never read.
     """
     identity = (id(matrix.offsets), id(matrix.columns), id(matrix.values))
-    cached = _EXPANSION_CACHE.get(matrix)
-    if cached is not None and cached[0][0] == identity:
-        return cached[1]
     device = matrix.device
     n_rows = int(matrix.nrow)
-    capacity = 4 * matrix.values.size
-    offsets = _launch.empty(2 * n_rows + 1, dtype=wp.int32, device=device)
-    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
-    values = _launch.empty(capacity, dtype=wp.float64, device=device)
-    if n_rows == 0:
-        _launch.zero_(offsets)
+    cached = _EXPANSION_CACHE.get(matrix)
+    if cached is not None and cached[0][0] == identity:
+        expanded = cached[1]
     else:
+        capacity = 4 * matrix.values.size
+        offsets = _launch.empty(2 * n_rows + 1, dtype=wp.int32, device=device)
+        if n_rows == 0:
+            _launch.zero_(offsets)
+        expanded = _bsr_over(
+            2 * n_rows,
+            2 * int(matrix.ncol),
+            offsets,
+            _launch.empty(capacity, dtype=wp.int32, device=device),
+            _launch.empty(capacity, dtype=wp.float64, device=device),
+            4 * int(matrix.nnz),
+        )
+        _EXPANSION_CACHE[matrix] = (
+            (identity, (matrix.offsets, matrix.columns, matrix.values)),
+            expanded,
+        )
+    if n_rows > 0:
         _launch.launch(
             kernel_linalg.expand_block_csr_2x2,
             dim=n_rows,
             inputs=[matrix.offsets, matrix.columns, matrix.values],
-            outputs=[offsets, columns, values],
+            outputs=[expanded.offsets, expanded.columns, expanded.values],
             device=device,
         )
-    expanded = _bsr_over(
-        2 * n_rows, 2 * int(matrix.ncol), offsets, columns, values, 4 * int(matrix.nnz)
-    )
-    _EXPANSION_CACHE[matrix] = (
-        (identity, (matrix.offsets, matrix.columns, matrix.values)),
-        expanded,
-    )
     return expanded
 
 
@@ -1396,11 +1439,11 @@ def solve_spd_columns(
 
     !!! warning "``check_every=0`` returns device arrays, not host scalars"
         Under the default ``check_every=0`` nothing is ever read back, so the three returned values
-        are 1-element **device arrays** — and the second and third are the *squared* residual norm
-        and *squared* absolute tolerance, matching ``warp.optim.linear.cg``. Code that formats or
-        compares them must call ``.numpy()`` first, which reintroduces the host sync the setting
-        exists to avoid. Pass a positive ``check_every`` to get host scalars back. ``solution`` is
-        unaffected either way.
+        are **device arrays** — a 1-element iteration count, then one entry per column of the
+        *squared* residual norm and *squared* absolute tolerance, matching
+        ``warp.optim.linear.cg``. Code that formats or compares them must call ``.numpy()``
+        first, which reintroduces the host sync the setting exists to avoid. Pass a positive
+        ``check_every`` to get host scalars back. ``solution`` is unaffected either way.
 
         On a device without conditional CUDA graphs there is nowhere to put the device-side test,
         so ``check_every=0`` is replaced by
@@ -1465,9 +1508,10 @@ def solve_spd_columns(
     -------
     tuple[int, float, float]
         ``(iterations, residual_norm, absolute_tolerance)`` on ``warp.optim.linear.cg``'s terms,
-        with the residual taken over the worst column. Device arrays rather than host scalars under
-        ``check_every=0``; see the warning above. Those arrays belong to the solver state kept for
-        ``matrix`` and are overwritten by the next solve against it, so read them before then.
+        with the residual and tolerance both those of the column furthest outside its own
+        tolerance. Device arrays rather than host scalars under ``check_every=0``, one entry per
+        column; see the warning above. Those arrays belong to the solver state kept for ``matrix``
+        and are overwritten by the next solve against it, so read them before then.
 
     Raises
     ------
@@ -1476,7 +1520,7 @@ def solve_spd_columns(
         treated as ``"diag"``, so a misspelling cannot turn into a silently slower solve. Or if
         ``factorization`` holds another operator than ``matrix``.
     RuntimeError
-        If ``rhs`` and ``solution`` are not all on one device.
+        If ``matrix``, ``rhs`` and ``solution`` are not all on one device.
 
     Warns
     -----
@@ -1548,10 +1592,21 @@ def solve_spd_columns(
     print(solution.numpy().mean(axis=1).round(4))  # [1. 2.]
     ```
     """
-    require_same_device(rhs=rhs, solution=solution)
+    require_same_device(matrix=matrix, rhs=rhs, solution=solution)
+    if factorization is not None and factorization.matrix is not matrix:
+        raise ValueError("solve_spd_columns: factorization holds another operator than matrix")
+    if rhs.shape[0] == 0:
+        # No column to solve: report a converged zero-iteration solve in the form ``check_every``
+        # asks for, without building a solver state for an empty batch.
+        if check_every > 0:
+            return (0, 0.0, 0.0)
+        report: tuple[Any, Any, Any] = (
+            _launch.zeros(1, dtype=wp.int32, device=rhs.device),
+            _launch.zeros(1, dtype=wp.float64, device=rhs.device),
+            _launch.zeros(1, dtype=wp.float64, device=rhs.device),
+        )
+        return report
     if factorization is not None:
-        if factorization.matrix is not matrix:
-            raise ValueError("solve_spd_columns: factorization holds another operator than matrix")
         return _solve_columns_verified(
             matrix,
             rhs,
@@ -1622,7 +1677,7 @@ def _solve_columns_verified(
         run=True,
         caller="solve_spd_columns",
     )
-    if _verified(matrix, rhs, solution, result, tol):
+    if _verified(matrix, rhs, solution, result, tol, factorization):
         return result
     if factorization.factor():
         # From zero, not from the rejected iterate: refinement corrects an initial guess through
@@ -1646,7 +1701,7 @@ def _solve_columns_verified(
             run=True,
             caller="solve_spd_columns",
         )
-        if _verified(matrix, rhs, solution, result, tol):
+        if _verified(matrix, rhs, solution, result, tol, factorization):
             return result
     warnings.warn(
         "solve_spd_columns: conjugate gradient did not reach a verified solution in "
@@ -1664,6 +1719,7 @@ def _verified(
     solution: odt.Array2dFloat,
     result: tuple[Any, Any, Any],
     tol: float,
+    factorization: OperatorFactorization,
 ) -> bool:
     """
     Whether a conjugate-gradient result converged and its solution passes the backward-error test.
@@ -1671,14 +1727,15 @@ def _verified(
     The convergence half reads the solver's own residual against its threshold; the other half
     recomputes the residual from ``matrix``, entry by entry against ``(|A| |x| + |b|)_i``, which a
     recurrence residual drifting from the true one -- an operator ill-conditioned in places --
-    cannot fool. Both write one device flag, read back once.
+    cannot fool. Both write one device flag, held by ``factorization``, read back once.
     """
     _iterations, residual, threshold = result
-    if not isinstance(residual, wp.array) and float(residual) > float(threshold):
+    # Spelled as the negation of "inside": a ``NaN`` residual is outside every threshold.
+    if not isinstance(residual, wp.array) and not float(residual) <= float(threshold):
         return False
     device = rhs.device
     n_columns, n = int(rhs.shape[0]), int(rhs.shape[1])
-    flag = _launch.zeros(1, dtype=wp.int32, device=device)
+    flag = factorization._flag = _cleared_flag(factorization._flag, device)  # pyright: ignore[reportPrivateUsage]
     on_device = isinstance(residual, wp.array)
     _launch.launch(
         kernel_cholesky.backward_error_exceeds,
@@ -1766,7 +1823,7 @@ def spd_column_solver(
         If ``preconditioner`` is ``"auto"``, for the reason above, or is not one of the four names
         this accepts.
     RuntimeError
-        If ``rhs``, ``solution`` and ``coordinates`` are not all on one device.
+        If ``matrix``, ``rhs``, ``solution`` and ``coordinates`` are not all on one device.
 
     Notes
     -----
@@ -1803,7 +1860,7 @@ def spd_column_solver(
     print(means)  # [1.0, 2.0, 3.0]
     ```
     """
-    require_same_device(rhs=rhs, solution=solution, coordinates=coordinates)
+    require_same_device(matrix=matrix, rhs=rhs, solution=solution, coordinates=coordinates)
     state = _cg_columns(
         matrix,
         rhs,
@@ -1947,6 +2004,8 @@ class OperatorFactorization:
         # A factored solve's device report per tolerance (``_direct_result``), built once: three
         # one-element arrays a call is three allocations on a path that costs a few launches.
         self._reports: dict[float, tuple[Any, Any, Any]] = {}
+        # The verified solve's one-word backward-error flag (``_verified``), kept across solves.
+        self._flag: wp.array[wp.int32] | None = None
 
     @property
     def matrix(self) -> odt.SparseMatrix:
@@ -2141,7 +2200,7 @@ def solve_spd_settled(
         not ``None`` or ``matrix``'s own Jacobi preconditioner, or ``factorization`` is not
         ``matrix``'s.
     RuntimeError
-        If ``rhs`` and ``solution`` are not all on one device.
+        If ``matrix``, ``rhs``, ``solution`` and ``preconditioner`` are not all on one device.
 
     Warns
     -----
@@ -2174,7 +2233,7 @@ def solve_spd_settled(
     print(f"{solution.numpy().min():.6f} {solution.numpy().max():.6f}")  # 1.000000 1.000000
     ```
     """
-    require_same_device(rhs=rhs, solution=solution)
+    require_same_device(matrix=matrix, rhs=rhs, solution=solution, preconditioner=preconditioner)
     if factorization is not None and factorization.matrix is not matrix:
         raise ValueError("solve_spd_settled: factorization holds another operator than matrix")
     columns = rhs.ndim == 2
@@ -2234,7 +2293,7 @@ def solve_spd_settled(
     # exactly (a settled solve sits orders of magnitude below the bar, a failed one at 1), and the
     # direct factorization -- which reaches every entry with its own relative precision -- takes
     # over. One four-byte read: the decision to factor is the host's.
-    flag = _launch.zeros(1, dtype=wp.int32, device=rhs.device)
+    flag = solver.flag = _cleared_flag(solver.flag, rhs.device)
     _launch.launch(
         kernel_cholesky.backward_error_exceeds,
         dim=(int(scalar.nrow), n_columns),
@@ -2260,6 +2319,14 @@ def solve_spd_settled(
         tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,
     )  # fmt: skip
     return solver.iterations
+
+
+def _cleared_flag(flag: wp.array[wp.int32] | None, device: wp.DeviceLike) -> wp.array[wp.int32]:
+    """Return ``flag`` cleared, or a new cleared one-word flag on ``device`` when there is none."""
+    if flag is None:
+        return _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.zero_(flag)
+    return flag
 
 
 def _direct_result(
@@ -2541,11 +2608,10 @@ def _cg_one_block(
     if device_result:
         return iterations, residual, threshold
     results_np = results.numpy()
-    return (
-        int(results_np[2 * n_columns :].max()),
-        math.sqrt(float(results_np[:n_columns].max())),
-        math.sqrt(float(results_np[n_columns : 2 * n_columns].max())),
+    residual_norm, threshold_norm = _worst_column(
+        results_np[:n_columns], results_np[n_columns : 2 * n_columns]
     )
+    return int(results_np[2 * n_columns :].max()), residual_norm, threshold_norm
 
 
 def _cg_columns_auto(
@@ -2673,18 +2739,17 @@ def _cg_residual_and_tolerance(result: tuple[Any, ...]) -> tuple[float, float]:
     """
     Unwrap a conjugate-gradient result's worst-column residual norm and tolerance as host floats.
 
-    ``check_every=0`` returns 1-element *device* arrays holding the **squared** residual norm and
-    squared absolute tolerance, one entry per column, and a positive cadence returns their square
-    roots as host scalars already reduced over the columns -- so the unwrapping differs and the
-    quantity does not. One readback in the device case when the two arrays are adjacent views of
-    one buffer -- both of this module's solvers lay them out so -- and two otherwise.
+    ``check_every=0`` returns *device* arrays holding the **squared** residual norm and squared
+    absolute tolerance, one entry per column, and a positive cadence returns their square
+    roots as host scalars already reduced to the worst column (``_worst_column``) -- so the
+    unwrapping differs and the quantity does not. One readback in the device case when the two
+    arrays are adjacent views of one buffer -- both of this module's solvers lay them out so -- and
+    two otherwise.
     """
     _iterations, residual, tolerance = result
     if not isinstance(residual, wp.array):
         return float(residual), float(tolerance)
-    residual_np, tolerance_np = _read_pair(residual, tolerance)
-    worst = int(np.argmax(residual_np / np.maximum(tolerance_np, 1e-300)))
-    return math.sqrt(float(residual_np[worst])), math.sqrt(float(tolerance_np[worst]))
+    return _worst_column(*_read_pair(residual, tolerance))
 
 
 def _read_pair(
@@ -2857,6 +2922,7 @@ class _BatchedCg:
         settle: tuple[int, float, int] | None = None,
         narrow_values: bool = False,
         own_storage: bool = False,
+        row_path: tuple[bool, int] | None = None,
     ) -> None:
         device = matrix.device
         self._device = device
@@ -2885,8 +2951,11 @@ class _BatchedCg:
         # the true entry count -- ``nnz`` is a capacity -- and only for a column too long to fold:
         # below that a round is bound by its launches, and one ``bsr_mv`` a column plus a dots
         # launch lose to the one fused launch (measured 0.91-0.94x on ``smooth_region``'s
-        # three-column, twenty-entry-a-row systems). One four-byte read per state.
-        self._heavy, self._mv_tile = _row_path(matrix, self._n, self._fold)
+        # three-column, twenty-entry-a-row systems). One four-byte read per state, unless the caller
+        # has made it already (``row_path``).
+        self._heavy, self._mv_tile = (
+            _row_path(matrix, self._n, self._fold) if row_path is None else row_path
+        )
         self._stride = self._blocks * self._span
         self._dofs = self._n_columns * self._stride
         # The values the fused mat-vec reads: the operator's own, or -- ``narrow_values``, taken by
@@ -3022,6 +3091,8 @@ class _BatchedCg:
         # every launch in the body, plus the graph instantiation, for an identical graph. Only
         # ``_initialize``, which reads the caller's operands, is issued per call.
         self._graph = None
+        # ``solve_spd_settled``'s one-word backward-error flag, kept across its solves.
+        self.flag: wp.array[wp.int32] | None = None
 
         # The settle monitor ``solve_spd_settled`` runs (``check_rounds``, ``change_tolerance``,
         # ``settle_rounds``): every ``check_rounds`` rounds ``cg_settle_change`` compares the
@@ -3338,6 +3409,7 @@ class _BatchedCg:
             with wp.ScopedCapture(self._device) as capture:
                 self._seed()
                 wp.capture_while(cast("wp.array[int]", condition), body)
+                self._capped_residual()
             self._graph = capture.graph
         assert self._graph is not None
         wp.capture_launch(self._graph)
@@ -3372,7 +3444,7 @@ class _BatchedCg:
         The block is trimmed against ``maxiter``, so no more than ``maxiter`` rounds are issued.
 
         Returns ``warp.optim.linear.cg``'s three host scalars. The count is the rounds that took a
-        step, and the residual is the one the last round measured.
+        step, and the residual is the one the last step left.
         """
         if self._settle is not None:
             # The monitor's check is the cadence: it is what can stop the loop early.
@@ -3391,7 +3463,32 @@ class _BatchedCg:
             head = self._head.numpy()
             if not int(_head_ints(head)[int(kernel_array.LOOP_CONDITION)]):
                 break
+        if (
+            head is not None
+            and int(_head_ints(head)[kernel_array.LOOP_STATE_SIZE]) >= self._maxiter
+        ):
+            # Stopped by the cap after a round that stepped: re-measure the residual it left.
+            self._capped_residual()
+            head = self._head.numpy()
         return self.host_result(head)
+
+    def _capped_residual(self) -> None:
+        """
+        Publish the residual the last round left when the solve ran to its cap.
+
+        A round reports the ``r.r`` it starts from, so a solve whose round at the cap stepped would
+        report the residual of the step before. One launch (``cg_capped_residual``), a no-op
+        unless every round stepped, rewrites the published residual from ``r``.
+        """
+        _launch.launch_tiled(
+            kernel_cg.CG_CAPPED_RESIDUAL[self._dtype],
+            dim=(self._n_columns,),
+            inputs=[wp.int32(self._n), wp.int32(self._stride), wp.int32(self._maxiter), self._r,
+                    self.iterations],
+            outputs=[self._dots],
+            block_dim=int(kernel_cg.CG_TILE),
+            device=self._device,
+        )  # fmt: skip
 
     def host_result(self, head: npt.NDArray[np.float64] | None = None) -> tuple[int, float, float]:
         """
@@ -3399,16 +3496,14 @@ class _BatchedCg:
 
         One readback of the span holding the integer state and the two scalar rows, where reading
         the three returned device arrays one at a time takes three; ``head`` is a read of that span
-        the caller already holds, which saves it.
+        the caller already holds, which saves it. The residual and tolerance are the worst
+        column's own pair (``_worst_column``).
         """
         if head is None:
             head = self._head.numpy()
         rows = np.asarray(head[_INT_WORDS:]).reshape((2, self._n_columns))
-        return (
-            int(_head_ints(head)[kernel_array.LOOP_STATE_SIZE]),
-            math.sqrt(float(rows[1].max())),
-            math.sqrt(float(rows[0].max())),
-        )
+        residual, threshold = _worst_column(rows[1], rows[0])
+        return int(_head_ints(head)[kernel_array.LOOP_STATE_SIZE]), residual, threshold
 
 
 # ``float64`` words at the head of a ``_BatchedCg``'s scalar buffer that hold its ``int32`` loop
@@ -3419,6 +3514,24 @@ _INT_WORDS = (kernel_array.LOOP_STATE_SIZE + 2) // 2
 def _head_ints(head: npt.NDArray[np.float64]) -> npt.NDArray[np.int32]:
     """Reinterpret the head of a host read of a ``_BatchedCg``'s scalars as its ``int32`` words."""
     return np.ascontiguousarray(head[:_INT_WORDS]).view(np.int32)
+
+
+def _worst_column(
+    residual_sq: npt.NDArray[np.float64], threshold_sq: npt.NDArray[np.float64]
+) -> tuple[float, float]:
+    """
+    Return the residual norm and threshold of the column furthest outside its own threshold.
+
+    Both are read from the *same* column, the one with the largest squared ratio: reducing each
+    over the columns separately would pair one column's small residual with another's large
+    threshold and report an unconverged column as converged. A ``NaN`` residual or threshold
+    ranks first (``numpy.argmax``), so a poisoned column is the one reported, and it fails every
+    ``residual <= threshold`` test downstream.
+    """
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        ratio = residual_sq / np.maximum(threshold_sq, 1e-300)
+    worst = int(np.argmax(ratio))
+    return math.sqrt(float(residual_sq[worst])), math.sqrt(float(threshold_sq[worst]))
 
 
 # ``_cached_solver``'s states, keyed weakly by the operator they solve, so a state -- its buffers,
@@ -3455,7 +3568,12 @@ def _cached_solver(
     a matrix whose storage is replaced gets a new state. **Values rewritten in place are not
     detected**, and need not be for correctness: the mat-vec reads them live, so the solve still
     converges to the new system's answer, and only the preconditioner -- derived from the values at
-    construction -- goes stale, which changes the rate and not the fixed point.
+    construction -- goes stale, which changes the rate and not the fixed point. (A ``wp.mat22d``
+    operator's state reads the scalar expansion ``_scalar_expansion`` rewrites on every solve, so
+    the same holds for it.) The exception is ``narrow_values``: such a state's mat-vec reads a
+    ``float32`` copy taken at construction, so it solves the old values -- which
+    ``solve_spd_settled``, its one user, then catches in its backward-error check against the
+    operator as stored, and answers by factorization.
 
     **A fresh operator of a shape already seen takes a pooled state instead** (``pooled``, for a
     caller that runs the state at once and keeps nothing of it). A recorded graph holds pointers
@@ -3487,6 +3605,7 @@ def _cached_solver(
     key = (*config, id(matrix.offsets), id(matrix.columns), id(matrix.values))
     entries = {} if squared else _SOLVER_CACHE.setdefault(matrix, {})
     state = entries.pop(key, None)
+    row_path = None
     # Pooled only where ``_BatchedCg.refresh`` can rebuild everything the state derives from
     # ``matrix``.
     if (
@@ -3501,13 +3620,14 @@ def _cached_solver(
     ):
         n = int(matrix.nrow)
         fold = kernel_cg.cg_layout(n, CG_FOLD_MAX_BLOCKS)[2]
+        row_path = _row_path(matrix, n, fold)
         shape = (
             *config,
             n,
             matrix.offsets.size,
             matrix.columns.size,
             matrix.values.size,
-            _row_path(matrix, n, fold),
+            row_path,
             str(matrix.device),
         )
         if shape in _SHAPES_SEEN:
@@ -3525,6 +3645,7 @@ def _cached_solver(
                     settle=settle,
                     narrow_values=narrow_values,
                     own_storage=True,
+                    row_path=row_path,
                 )
             else:
                 pooled_state.refresh(matrix, preconditioner)
@@ -3548,6 +3669,7 @@ def _cached_solver(
             preconditioner=preconditioner,
             settle=settle,
             narrow_values=narrow_values,
+            row_path=row_path,
         )
         while len(entries) >= _SOLVER_CACHE_ENTRIES:
             entries.pop(next(iter(entries)))
@@ -3652,6 +3774,8 @@ def bsr_with_values(
     ValueError
         If ``values`` does not hold one block per storage slot of ``matrix``
         (``matrix.values.shape[0]``).
+    RuntimeError
+        If ``matrix`` and ``values`` are not on one device.
 
     See Also
     --------
@@ -3678,6 +3802,7 @@ def bsr_with_values(
     print(row_sums.min(), row_sums.max())  # 6.0 7.0
     ```
     """
+    require_same_device(matrix=matrix, values=values)
     if values.shape[0] != matrix.values.size:
         raise ValueError(
             f"values must hold one block per storage slot of matrix.values "
@@ -5424,9 +5549,9 @@ class _MultigridCycle:
 
 def _warn_if_not_converged(result: tuple[int, float, float], iteration_cap: int, name: str) -> None:
     """
-    Warn when conjugate gradient stopped because it ran out of iterations, not because it converged.
+    Warn when conjugate gradient stopped unconverged: at its cap, or on a non-finite residual.
 
-    Skipped under ``check_every=0``, where the three values are 1-element *device* arrays and
+    Skipped under ``check_every=0``, where the three values are *device* arrays and
     inspecting them would cost the host sync that setting exists to avoid.
 
     That early return is also why the message says "residual norm" and not "squared residual": the
@@ -5437,10 +5562,19 @@ def _warn_if_not_converged(result: tuple[int, float, float], iteration_cap: int,
     iterations, residual, atol = result
     if isinstance(iterations, wp.array):
         return
-    if int(iterations) >= iteration_cap and float(residual) > float(atol):
+    residual_norm = float(residual)
+    # Spelled as the negation of "inside", so a ``NaN`` residual counts as unsolved.
+    if not residual_norm <= float(atol) and not math.isfinite(residual_norm):
+        warnings.warn(
+            f"{name}: conjugate gradient stopped on a non-finite residual norm "
+            f"({residual_norm}); the result is not a solution. The operator or right-hand side "
+            f"holds a non-finite value, or the operator is singular.",
+            stacklevel=3,
+        )
+    elif not residual_norm <= float(atol) and int(iterations) >= iteration_cap:
         warnings.warn(
             f"{name}: conjugate gradient hit its {iteration_cap}-iteration cap with residual norm "
-            f"{float(residual):.3e} against tolerance {float(atol):.3e}; the result is "
+            f"{residual_norm:.3e} against tolerance {float(atol):.3e}; the result is "
             f"the last iterate, not a solution. The operator is likely ill-conditioned or "
             f"singular — consider ordito.laplacian.robust_laplacian, or a smaller step.",
             stacklevel=3,

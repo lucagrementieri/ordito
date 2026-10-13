@@ -789,8 +789,9 @@ def residual_test(
     if componentwise == 0:
         scale = wp.max(scale, rhs_scale[column])
     # A dropped row (a singular component's pin) holds whatever the right-hand side's own
-    # inconsistency left there, which no refinement removes.
-    if dropped[i] == 0 and wp.abs(total) > tolerance * scale:
+    # inconsistency left there, which no refinement removes. Spelled as "not within": a NaN
+    # residual or scale fails the test rather than passing it.
+    if dropped[i] == 0 and not (wp.abs(total) <= tolerance * scale):
         state[REFINE_PENDING] = 1
 
 
@@ -830,7 +831,7 @@ def null_space_partials(
     # A singular component's constant offset, first half: the solve held one row at zero, so the
     # component is shifted to the initial guess's mean, the answer conjugate gradient returns from
     # it. One block per ``NULL_SPACE_CHUNK`` of a component's rows sums its ``solution - initial``;
-    # ``null_space_shift`` adds a component's chunks in order, so the shift is reproducible.
+    # ``null_space_means`` adds a component's chunks in order, so the shift is reproducible.
     b, lane = wp.tid()
     chunk = b % chunk_bound
     column = b // chunk_bound
@@ -854,29 +855,44 @@ def null_space_partials(
 
 
 @wp.kernel
-def null_space_shift(
+def null_space_means(
     component_offsets: wp.array[wp.int32],
-    component_rows: wp.array[wp.int32],
     component_label: wp.array[wp.int32],
     chunk_offsets: wp.array[wp.int32],
     chunk_bound: wp.int32,
     singular: wp.array[wp.int32],
     partials: wp.array[wp.float64],
-    n: wp.int32,
-    solution: wp.array[wp.float64],
+    out_means: wp.array[wp.float64],
 ) -> None:
-    # Second half: each row of a singular component subtracts its component's mean offset, the
-    # chunk partials summed in chunk order.
-    p, column = wp.tid()
-    component = binary_search_index(component_offsets, p) - 1
+    # Second step: a singular component's mean offset, its chunk partials summed in chunk order by
+    # one thread a component and column (a non-singular component's is never read).
+    component, column = wp.tid()
     if singular[component_label[component]] == 0:
         return
     total = wp.float64(0.0)
     for k in range(chunk_offsets[component], chunk_offsets[component + 1]):
         total += partials[column * chunk_bound + k]
     count = component_offsets[component + 1] - component_offsets[component]
+    out_means[column * component_label.shape[0] + component] = total / wp.float64(count)
+
+
+@wp.kernel
+def null_space_shift(
+    component_offsets: wp.array[wp.int32],
+    component_rows: wp.array[wp.int32],
+    component_label: wp.array[wp.int32],
+    singular: wp.array[wp.int32],
+    means: wp.array[wp.float64],
+    n: wp.int32,
+    solution: wp.array[wp.float64],
+) -> None:
+    # Last step: each row of a singular component subtracts its component's mean offset.
+    p, column = wp.tid()
+    component = binary_search_index(component_offsets, p) - 1
+    if singular[component_label[component]] == 0:
+        return
     r = column * n + component_rows[p]
-    solution[r] = solution[r] - total / wp.float64(count)
+    solution[r] = solution[r] - means[column * component_label.shape[0] + component]
 
 
 @wp.kernel
@@ -896,14 +912,15 @@ def backward_error_exceeds(
     # ``(|A| |x| + |b|)_i``. Above ``tolerance`` anywhere, the solution is not the system's to
     # within its own entries' size, whatever its residual norm says. Given a conjugate-gradient
     # result's per-column ``residual`` and ``threshold`` (or ``None``), row 0 of each column also
-    # flags a column that did not converge, so one four-byte read answers both questions.
+    # flags a column that did not converge, so one four-byte read answers both questions. Both
+    # tests are spelled "not within", so a NaN anywhere flags.
     i, column = wp.tid()
     offset = column * n
     total, scale = residual_and_scale(offsets, columns, values, solution, rhs, offset, i)
-    if wp.abs(total) > tolerance * scale:
+    if not (wp.abs(total) <= tolerance * scale):
         out_flag[0] = 1
     if i == 0 and residual.shape[0] > 0:
-        if residual[column] > threshold[column]:
+        if not (residual[column] <= threshold[column]):
             out_flag[0] = 1
 
 
@@ -1081,6 +1098,20 @@ def dissection_keys(
     out_vertices[p] = v
 
 
+@wp.func
+def lower_half_rows(count: wp.int32) -> wp.int32:
+    # The rows of a ``count``-row segment below its median: the first half of its sorted order.
+    return count // 2
+
+
+@wp.func
+def median_side(p: wp.int32, start: wp.int32, count: wp.int32) -> wp.int32:
+    # Which half of its segment (``count`` rows from ``start``) sorted position ``p`` falls in:
+    # ``0`` the lower, ``1`` the upper. ``dissection_sides``, ``dissection_relabel`` and
+    # ``dissection_children`` split by this one rule.
+    return wp.where(p - start >= lower_half_rows(count), 1, 0)
+
+
 @wp.kernel
 def dissection_sides(
     keys: wp.array[wp.uint64],
@@ -1098,8 +1129,7 @@ def dissection_sides(
     base = 2 * (segment_start.shape[0] - 1) * state[DISSECTION_DEPTH]
     s = sorted_segment(keys, p)
     start = segment_start[s]
-    count = segment_start[s + 1] - start
-    upper = wp.where(p - start >= count // 2, 1, 0)
+    upper = median_side(p, start, segment_start[s + 1] - start)
     out_tag[vertices[p]] = base + 2 * s + upper
 
 
@@ -1169,7 +1199,7 @@ def dissection_relabel(
     s = sorted_segment(keys, p)
     v = vertices[p]
     start = segment_start[s]
-    upper = wp.where(p - start >= (segment_start[s + 1] - start) // 2, 1, 0)
+    upper = median_side(p, start, segment_start[s + 1] - start)
     side = separator_side[s]
     separator = (side == 1 and upper == 0 and lower_mark[v] == stamp) or (
         side == 2 and upper == 1 and upper_mark[v] == stamp
@@ -1220,7 +1250,7 @@ def dissection_children(
     upper_ends = counts[2 * s + 1]
     take_lower = lower_ends <= upper_ends
     separator = wp.where(take_lower, lower_ends, upper_ends)
-    half = count // 2
+    half = lower_half_rows(count)
     lower = half - wp.where(take_lower, separator, 0)
     upper = count - half - wp.where(take_lower, 0, separator)
     side = wp.where(separator > 0, wp.where(take_lower, 1, 2), 0)
@@ -1468,9 +1498,17 @@ def dissection_compact(
 # --------------------------------------------------------------------------------------
 
 
-# ``analysis_header`` slots, the counts the analysis reads back at its first sync.
+# ``analysis_header`` slots, read back together at the analysis' first sync: the supernode and
+# level counts, the structure pairs, the operator's lower entries, the components, the stored
+# entries (``offsets[n]``) and whether some stored entry's transpose is not stored.
 HEADER_SUPERNODES = wp.constant(0)
 HEADER_LEVELS = wp.constant(1)
+HEADER_PAIRS = wp.constant(2)
+HEADER_ENTRIES = wp.constant(3)
+HEADER_COMPONENTS = wp.constant(4)
+HEADER_STORED = wp.constant(5)
+HEADER_ASYMMETRIC = wp.constant(6)
+HEADER_SLOTS = 7
 
 
 @wp.kernel
@@ -1625,13 +1663,39 @@ def supernode_heights(
 # forward and backward chunk slots, forward and backward tasks.
 front_terms = wp.types.vector(length=6, dtype=wp.int64)
 # ``analysis_schedule`` layout: a header (``SCHEDULE_ROWS``, ``SCHEDULE_GROUPS``,
-# ``SCHEDULE_PANELS``), one row of ``LEVEL_FIELDS`` per level and a closing row, every level's panel
-# work, then four entries per extend-add group.
+# ``SCHEDULE_PANELS``, the terms' totals from ``SCHEDULE_TERMS``), one row of ``LEVEL_FIELDS`` per
+# level and a closing row, every level's panel work, then four entries per extend-add group.
 SCHEDULE_ROWS = wp.constant(0)
 SCHEDULE_GROUPS = wp.constant(1)
 SCHEDULE_PANELS = wp.constant(2)
-SCHEDULE_HEADER = wp.constant(3)
+# The ``front_terms`` totals, each as two ``int32`` digits in base ``2^31`` (high, then low).
+SCHEDULE_TERMS = wp.constant(3)
+SCHEDULE_HEADER = wp.constant(15)
 LEVEL_FIELDS = wp.constant(10)
+
+
+@wp.func
+def forward_chunk_start(c: wp.Int, size: wp.Int) -> wp.Int:
+    # Tasks before chunk ``c`` of a supernode's forward product: chunk ``c'`` keeps its rows from
+    # ``CHUNK c'`` (the diagonal block's rows above it are zero in ``L11^-1``). Generic: the task
+    # maps index in ``int32``, the totals ``solve_task_counts`` forms (its value at the chunk
+    # count) in ``int64``.
+    one = type(c)(1)
+    half = type(c)(CHUNK) // type(c)(2)
+    return c * size - half * c * (c - one)
+
+
+@wp.func
+def backward_chunk_start(c: wp.Int, width: wp.Int) -> wp.Int:
+    # Tasks before chunk ``c`` of a supernode's backward product: chunk ``c'`` keeps the columns
+    # below ``CHUNK (c' + 1)``. Generic as ``forward_chunk_start`` is.
+    one = type(c)(1)
+    chunk = type(c)(CHUNK)
+    half = chunk // type(c)(2)
+    full = width // chunk
+    if c <= full:
+        return half * c * (c + one)
+    return half * full * (full + one) + (c - full) * width
 
 
 @wp.func
@@ -1640,14 +1704,13 @@ def solve_task_counts(
 ) -> tuple[wp.int64, wp.int64, wp.int64, wp.int64]:
     # A supernode's forward and backward chunk counts and task counts: a forward task is a solve
     # block row times ``CHUNK`` of its columns, a backward one ``CHUNK`` of a column's rows; a
-    # chunk skips the rows (forward) or columns (backward) where ``L11^-1`` is zero.
+    # chunk skips the rows (forward) or columns (backward) where ``L11^-1`` is zero. The task
+    # counts are the chunk-start rules at the chunk counts, so the maps and the totals agree.
     chunk = wp.int64(CHUNK)
-    half = chunk // wp.int64(2)
     f_chunks = (ncol + chunk - wp.int64(1)) // chunk
     b_chunks = (size + chunk - wp.int64(1)) // chunk
-    full = ncol // chunk
-    f_count = f_chunks * size - half * f_chunks * (f_chunks - wp.int64(1))
-    b_count = half * full * (full + wp.int64(1)) + (b_chunks - full) * ncol
+    f_count = forward_chunk_start(f_chunks, size)
+    b_count = backward_chunk_start(b_chunks, ncol)
     return f_chunks, b_chunks, f_count, b_count
 
 
@@ -1825,12 +1888,19 @@ def schedule_levels(
     level_offsets: wp.array2d[wp.int32],
     row_ends: wp.array[wp.int32],
     group_ends: wp.array[wp.int32],
+    terms: wp.array[front_terms],
     out_schedule: wp.array[wp.int32],
 ) -> None:
     # One thread: each level's row of the schedule -- its first supernode in level order, its
     # front count, panel count, most rows below a first panel, widest column count, the four
     # level-major starts and its first panel's slot -- then a closing row with the totals, and
-    # every panel's work seeded at one.
+    # every panel's work seeded at one. The header also carries the scanned terms' totals, split
+    # into base-``2^31`` digits, so the header's one read returns them too.
+    totals = terms[terms.shape[0] - 1]
+    radix = wp.int64(1) << wp.int64(31)
+    for k in range(6):
+        out_schedule[SCHEDULE_TERMS + 2 * k] = wp.int32(totals[k] // radix)
+        out_schedule[SCHEDULE_TERMS + 2 * k + 1] = wp.int32(totals[k] % radix)
     n_levels = level_stats.shape[0]
     start = wp.int32(0)
     panels = wp.int32(0)
@@ -2062,20 +2132,71 @@ def front_local(
     return width + low - row_offsets[k]
 
 
+@wp.func
+def permuted_lower(pos: wp.array[wp.int32], r: wp.int32, column: wp.int32) -> wp.int32:
+    # The permuted column of an operator entry of permuted row ``r`` when the entry lies in the
+    # permuted lower triangle (diagonal included), ``-1`` otherwise: the one rule that picks the
+    # entries the factorization scatters.
+    c = pos[column]
+    return wp.where(r >= c, c, -1)
+
+
+@wp.func
+def stores_entry(
+    offsets: wp.array[wp.int32], columns: wp.array[wp.int32], row: wp.int32, column: wp.int32
+) -> wp.int32:
+    # Whether row ``row`` stores column ``column`` (``1`` or ``0``): a binary search of the row's
+    # columns, sorted in every ``warp.sparse`` matrix, then a scan of the row should it not be.
+    begin = offsets[row]
+    end = offsets[row + 1]
+    if begin >= end:
+        return 0
+    if columns[wp.lower_bound(columns, begin, end, column)] == column:
+        return 1
+    for e in range(begin, end):
+        if columns[e] == column:
+            return 1
+    return 0
+
+
 @wp.kernel
 def count_lower_entries(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     pos: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
+    out_header: wp.array[wp.int32],
 ) -> None:
+    # Row ``i``'s entries in the permuted lower triangle, and the pattern's structural symmetry:
+    # every stored ``(i, j)`` must have its ``(j, i)`` stored too. The ordering, the row structure
+    # and the entry maps read one triangle each, so a one-sided entry would leave the factor's
+    # fill short of it and its extend-add out of its parent's front.
     i = wp.int32(wp.tid())
     count = wp.int32(0)
     r = pos[i]
     for e in range(offsets[i], offsets[i + 1]):
-        if r >= pos[columns[e]]:
+        j = columns[e]
+        if permuted_lower(pos, r, j) >= 0:
             count += 1
+        if j != i and stores_entry(offsets, columns, j, i) == 0:
+            out_header[HEADER_ASYMMETRIC] = 1
     out_counts[i] = count
+
+
+@wp.kernel
+def structure_counts(
+    path_ends: wp.array[wp.int32],
+    lower_ends: wp.array[wp.int32],
+    component_ends: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_header: wp.array[wp.int32],
+) -> None:
+    # One thread: the scanned totals into the analysis header, for its one read.
+    n = lower_ends.shape[0]
+    out_header[HEADER_PAIRS] = path_ends[n - 1]
+    out_header[HEADER_ENTRIES] = lower_ends[n - 1]
+    out_header[HEADER_COMPONENTS] = component_ends[n - 1]
+    out_header[HEADER_STORED] = offsets[n]
 
 
 @wp.kernel
@@ -2101,8 +2222,8 @@ def write_lower_entries(
     q = wp.where(i > 0, ends[wp.max(i - 1, 0)], 0)
     r = pos[i]
     for e in range(offsets[i], offsets[i + 1]):
-        c = pos[columns[e]]
-        if r >= c:
+        c = permuted_lower(pos, r, columns[e])
+        if c >= 0:
             k = owner[c]
             local = front_local(k, r, c0, ncol, front_size, row_offsets, rows)
             out_source[q] = e
@@ -2137,13 +2258,6 @@ def level_item(offsets: wp.array[wp.int32], t: wp.int32) -> wp.int32:
     # The supernode (index into the level-major order) whose run of items holds item
     # ``t < offsets[-1]``: the last ``j`` with ``offsets[j] <= t``, so empty runs are skipped.
     return binary_search_index(offsets, t) - 1
-
-
-@wp.func
-def forward_chunk_start(c: wp.int32, size: wp.int32) -> wp.int32:
-    # Tasks before chunk ``c`` of a supernode's forward product: chunk ``c'`` keeps its rows from
-    # ``CHUNK c'`` (the diagonal block's rows above it are zero in ``L11^-1``).
-    return c * size - (CHUNK // 2) * c * (c - 1)
 
 
 @wp.kernel
@@ -2217,16 +2331,6 @@ def forward_row_map(
     else:
         out_count[t] = r // CHUNK + 1
         out_target[t] = c0[k] + r
-
-
-@wp.func
-def backward_chunk_start(c: wp.int32, width: wp.int32) -> wp.int32:
-    # Tasks before chunk ``c`` of a supernode's backward product: chunk ``c'`` keeps the columns
-    # below ``CHUNK (c' + 1)``.
-    full = width // CHUNK
-    if c <= full:
-        return (CHUNK // 2) * c * (c + 1)
-    return (CHUNK // 2) * full * (full + 1) + (c - full) * width
 
 
 @wp.kernel

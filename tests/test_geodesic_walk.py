@@ -667,6 +667,126 @@ def test_geodesic_path_finishes_short_paths_along_mesh_edges(
     assert completed == n_completed
 
 
+@pytest.mark.parametrize("n_sources", [1, 3, 8])
+def test_geodesic_path_arrives_on_any_of_several_sources(
+    sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh], n_sources: int
+) -> None:
+    """
+    Not a library comparison: a path ends on a source vertex, whatever the heat field reads there.
+
+    [`heat_geodesic`][ordito.heat.heat_geodesic] shifts its field to a zero *mean* over the
+    sources, so with several of them each reads a little above or below zero (asserted below). The
+    walk used to stop on the field value ``0``, so a descent reaching a positive-valued source was
+    taken for one stopped short: finished along mesh edges (adding nothing) and counted in the
+    warning -- 2007 of 2562 paths on ``icosphere(4)`` with three sources. ``sphere_well_shaped``
+    has no spurious minimum, so no path is completed and the call is silent at every source count,
+    and every path ends exactly on one of the sources.
+
+    The single source guards a second defect: from target 62 a face's descent exited within
+    rounding of the vertex it left, the walk landed back on it and chose the same face again until
+    ``max_steps`` ran out -- 2049 copies of one point, ending 2.6 from the source with no warning.
+    """
+    mesh_tm, mesh_wp = sphere_well_shaped
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    n_vertices = vertices_np.shape[0]
+    device = mesh_wp.points.device
+    rng = np.random.default_rng(5)
+    source_np = rng.choice(n_vertices, n_sources, replace=False).astype(np.int32)
+    source_wp = wp.array(source_np, dtype=wp.int32, device=device)
+    targets_np = np.arange(n_vertices, dtype=np.int32)
+
+    distance_np = od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, source_wp).numpy()
+    if n_sources > 1:
+        assert distance_np[source_np].max() > 0.0  # the premise: some source reads above zero
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        points_wp, offsets_wp = od.geodesic_walk.geodesic_path(
+            mesh_wp.points,
+            mesh_wp.indices,
+            source_wp,
+            wp.array(targets_np, dtype=wp.int32, device=device),
+        )
+    assert [str(w.message) for w in caught if "geodesic_path:" in str(w.message)] == []
+
+    points_np = points_wp.numpy().astype(np.float64)
+    offsets_np = offsets_wp.numpy()
+    ends_np = points_np[offsets_np[1:] - 1]
+    to_sources = np.linalg.norm(ends_np[:, None, :] - vertices_np[source_np][None], axis=2)
+    assert to_sources.min(axis=1).max() < 1e-6
+    # A source's own path is the one point.
+    assert np.array_equal(np.diff(offsets_np)[source_np], np.ones(n_sources, dtype=np.int32))
+
+
+def test_geodesic_path_repeats_no_point(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: no path holds two consecutive coincident points.
+
+    An edge crossing that lands on a corner was written, and then the corner itself when it is the
+    source; finishing a path stopped on a face wrote that face's corner even when the walk already
+    stood on it. Both left zero-length segments: 16 over every target of ``icosphere(4)`` to vertex
+    0 on CUDA, 42 on CPU. An icosphere's symmetry routes descents through vertices often enough
+    that this fixture held them too.
+    """
+    mesh_tm, mesh_wp = icosphere
+    n_vertices = int(np.asarray(mesh_tm.vertices).shape[0])
+    device = mesh_wp.points.device
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        points_wp, offsets_wp = od.geodesic_walk.geodesic_path(
+            mesh_wp.points,
+            mesh_wp.indices,
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array(np.arange(n_vertices, dtype=np.int32), dtype=wp.int32, device=device),
+        )
+    points_np = points_wp.numpy()
+    offsets_np = offsets_wp.numpy()
+    assert offsets_np[-1] > 2 * n_vertices  # non-vacuity: the paths have interior points
+    segments = np.linalg.norm(np.diff(points_np, axis=0), axis=1)
+    within = np.ones(segments.shape[0], dtype=bool)
+    within[offsets_np[1:-1] - 1] = False  # the step from one path's end to the next path's start
+    epsilon = 1e-6 * float(mesh_tm.edges_unique_length.mean())
+    assert segments[within].min() > epsilon
+
+
+def test_geodesic_path_does_not_count_targets_no_source_reaches(
+    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the warning counts only paths the edge-graph completion finished.
+
+    Two disjoint spheres, the source on the first. A descent on the second cannot reach it, and
+    the shortest-edge-path tree has nothing to offer there, so such a path stays as the walk left
+    it and is not counted; the first sphere's paths all arrive and the call is silent. The warning
+    used to count every path that stopped short, these included, as "finished".
+    """
+    mesh_tm, mesh_wp = icosphere_coarse
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int32)
+    n_vertices = vertices_np.shape[0]
+    device = mesh_wp.points.device
+    both_vertices, both_faces = numpy_to_warp(
+        np.vstack([vertices_np, vertices_np + np.float32(3.0)]),
+        np.concatenate([faces_np, faces_np + n_vertices]),
+        device,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        points_wp, offsets_wp = od.geodesic_walk.geodesic_path(
+            both_vertices,
+            both_faces,
+            wp.array([0], dtype=wp.int32, device=device),
+            wp.array(np.arange(2 * n_vertices, dtype=np.int32), dtype=wp.int32, device=device),
+        )
+    assert [str(w.message) for w in caught if "geodesic_path:" in str(w.message)] == []
+    points_np = points_wp.numpy()
+    offsets_np = offsets_wp.numpy()
+    ends_np = points_np[offsets_np[1:] - 1]
+    assert np.allclose(ends_np[:n_vertices], vertices_np[0], atol=1e-6)
+    # Non-vacuity: no path on the second sphere reaches the source.
+    assert np.linalg.norm(ends_np[n_vertices:] - vertices_np[0], axis=1).min() > 1.0
+
+
 @pytest.mark.parity("geodesic_path", "potpourri3d")
 def test_geodesic_path_matches_potpourri3d_on_a_sphere(
     sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh],

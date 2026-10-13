@@ -53,6 +53,10 @@ _LINK_ON_DEVICE_FROM = 1024
 # plane to ``float32`` interpolation error, orders of magnitude below this.
 _CAP_PLANAR_TOLERANCE = 1e-5
 
+# Most broad-phase candidate slots: slot indices, launch dimensions and the narrow phase's flag
+# scan are all ``int32``.
+_MAX_CANDIDATE_SLOTS = 2**31 - 1
+
 
 def segments_with_plane(
     start_points: wp.array[wp.vec3],
@@ -829,8 +833,8 @@ def mesh_with_mesh(
     vertices_b, faces_b
         ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` second indexed triangle mesh.
     max_triangle_collisions
-        Broad-phase slots reserved per query triangle at first. Not a cap: a triangle with more
-        candidates grows the table, so the answer does not depend on it.
+        Broad-phase slots reserved per query triangle. Not a cap: the candidates of a triangle with
+        more go to an overflow list, so the answer does not depend on it.
 
     Returns
     -------
@@ -903,8 +907,8 @@ def mesh_collision_pairs(
     vertices_b, faces_b
         ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` second mesh, in the same form.
     max_triangle_collisions
-        Broad-phase slots reserved per query triangle at first. Not a cap: a triangle with more
-        candidates grows the table, so the answer does not depend on it.
+        Broad-phase slots reserved per query triangle. Not a cap: the candidates of a triangle with
+        more go to an overflow list, so the answer does not depend on it.
     mesh_a, mesh_b
         A ``wp.Mesh`` already built over ``vertices_a`` / ``faces_a`` (respectively ``vertices_b``
         / ``faces_b``), to spare the BVH build this otherwise pays on every call. Only the mesh with
@@ -1052,7 +1056,7 @@ def _compact_crossing_candidates(candidates: _Candidates, *, segments: bool) -> 
     _launch.launch(
         kernel_intersections.crossing_slot_flags,
         dim=n_slots,
-        inputs=[*candidates.narrow_phase_inputs(), segments, flags],
+        inputs=[*candidates.narrow_phase_inputs(), candidates.tail_queries, segments, flags],
         device=device,
     )
     _launch.array_scan(flags, out_array=flags, inclusive=True)
@@ -1070,7 +1074,9 @@ def _compact_crossing_candidates(candidates: _Candidates, *, segments: bool) -> 
             candidates.target_vertices,
             candidates.target_faces,
             candidates.targets,
+            candidates.counts,
             candidates.max_hits,
+            candidates.tail_queries,
             flags,
             candidates.swapped,
             out_pairs,
@@ -1150,7 +1156,8 @@ def collision_masks(
     # The narrow phase runs inside the marking kernel, over the broad-phase slots: the masks need
     # no compacted pair list, so the verdict flags, their scan and readback and the compaction
     # ``mesh_collision_pairs`` pays for are all skipped; an overflowing face is walked again on the
-    # device rather than growing the table, so nothing is read back. The candidates
+    # device and tested inline rather than collected into an overflow tail, so nothing is read
+    # back. The candidates
     # are ``(query, target)``, so ``swapped`` only decides which mask is which.
     candidates = _candidate_face_pairs(
         vertices_a,
@@ -1195,12 +1202,13 @@ def _mark_crossing_faces(
 
 
 class _Candidates(NamedTuple):
-    """``_candidate_face_pairs``' broad phase: fixed-stride candidate slots and the two meshes."""
+    """``_candidate_face_pairs``' broad phase: candidate slots, their overflow and the meshes."""
 
     target_mesh: wp.Mesh
     targets: wp.array[wp.int32]
     counts: wp.array[wp.int32]
     max_hits: int
+    tail_queries: wp.array[wp.int32] | None
     query_vertices: wp.array[wp.vec3]
     query_faces: wp.array[wp.int32]
     target_vertices: wp.array[wp.vec3]
@@ -1233,13 +1241,15 @@ def _candidate_face_pairs(
     """
     Broad phase alone for two meshes: every candidate ``(query, target)`` pair, or ``None``.
 
-    The candidates are a fixed-stride table: query face ``q`` owns slots
-    ``[q * max_hits, (q + 1) * max_hits)`` of ``targets``, the first ``counts[q]`` of them live, in
-    BVH traversal order. The fixed stride is what spares a count pass, its scan, the host read of
-    the total and a second traversal to fill a packed list; a dead slot is skipped by every
-    consumer. ``swapped`` says whether the query is mesh **b**: the smaller mesh supplies the BVH,
-    so which input is the query depends on the face counts. Every caller runs its narrow phase in
-    the kernel that consumes the slots. ``None`` only when a mesh has no faces. A prebuilt
+    The candidates are a fixed-stride table: query face ``q`` owns slots ``[q * max_hits, (q + 1) *
+    max_hits)`` of ``targets``, the first ``counts[q]`` of them live, in BVH traversal order. The
+    fixed stride is what spares a count pass, its scan, the host read of the total and a second
+    traversal to fill a packed list; a dead slot is skipped by every consumer. With ``grow`` the
+    candidates past a face's block follow the table in ``targets``, tail slot ``j`` owned by
+    ``tail_queries[j]``; without it ``tail_queries`` is ``None`` and the caller walks an overflowing
+    face again itself. ``swapped`` says whether the query is mesh **b**: the smaller mesh supplies
+    the BVH, so which input is the query depends on the face counts. Every caller runs its narrow
+    phase in the kernel that consumes the slots. ``None`` only when a mesh has no faces. A prebuilt
     ``mesh_a`` / ``mesh_b`` is used when it is the side that supplies the BVH, and built otherwise.
 
     Raises
@@ -1270,14 +1280,15 @@ def _candidate_face_pairs(
         require_nonempty_mesh(target_faces, caller)
         target_mesh = wp.Mesh(points=target_vertices, indices=target_faces)
 
-    targets, counts, stride = face_box_candidates(
-        query_vertices, query_faces, target_mesh, capacity=max_triangle_collisions, grow=grow
+    targets, counts, stride, tail_queries = _face_box_candidates(
+        query_vertices, query_faces, target_mesh, max_triangle_collisions, grow
     )
     return _Candidates(
         target_mesh,
         targets,
         counts,
         stride,
+        tail_queries,
         query_vertices,
         query_faces,
         target_vertices,
@@ -1300,13 +1311,13 @@ def face_box_candidates(
     The broad phase of every triangle-pair test in the package (two-mesh intersection and
     collision, self-intersection): one walk of ``target_mesh``'s BVH per query face over that
     face's bounding box. Query face ``q`` owns slots ``[q * stride, (q + 1) * stride)`` of
-    ``targets``, the first ``counts[q]`` of them live, in BVH traversal order. A fixed stride
-    spares the scan and second walk a packed list needs.
+    ``targets``, the first ``min(counts[q], stride)`` of them live, in BVH traversal order. A fixed
+    stride spares the scan and second walk a packed list needs.
 
-    The answer is complete whatever ``capacity`` is: when any face has more candidates than
-    ``capacity``, the walk is repeated at a stride equal to the largest count, so ``capacity`` is
-    only the first guess at the stride. Costs one host read of the largest count -- unless
-    ``grow`` is off, for a caller that handles the overflow on the device itself.
+    The answer is complete whatever ``capacity`` is: a face with more than ``stride`` candidates
+    keeps the rest in an overflow tail after the table, packed in query-face order, so the
+    table's size does not follow the most crowded face. Costs one host read of the overflow's size
+    -- unless ``grow`` is off, for a caller that handles the overflow on the device itself.
 
     Parameters
     ----------
@@ -1315,26 +1326,32 @@ def face_box_candidates(
     target_mesh
         BVH over the target faces.
     capacity
-        First stride tried, in slots per query face.
+        Slots per query face in the table. Lowered when ``n_query * capacity`` would not fit in
+        ``int32`` slot indices; the overflow tail keeps the answer complete either way.
     grow
-        Re-walk at a wider stride when a face overflows (default). When ``False`` the stride is
-        ``capacity`` and nothing is read back: a face whose count exceeds it holds its first
-        ``capacity`` candidates, in traversal order, and the rest are the caller's to walk again.
+        Collect the candidates past a face's block into the overflow tail (default). When
+        ``False`` nothing is read back and there is no tail: a face whose count exceeds ``stride``
+        holds its first ``stride`` candidates, in traversal order, and the rest are the caller's to
+        walk again.
 
     Returns
     -------
     targets
-        ``(n_query * stride,)`` candidate target face indices; slots past a face's count are
+        ``(n_query * stride + n_overflow,)`` candidate target face indices: the table, then (with
+        ``grow``) the overflow tail, where face ``q``'s ``max(counts[q] - stride, 0)`` further
+        candidates follow those of every lower-numbered face, in traversal order. ``n_overflow``
+        is the sum of those excesses, 0 without ``grow``. Table slots past a face's count are
         unwritten.
     counts
-        ``(n_query,)`` candidates per query face, each at most ``stride`` when ``grow`` is on.
+        ``(n_query,)`` candidates per query face, table and tail together; may exceed ``stride``.
     stride
-        Slots per query face.
+        Slots per query face in the table.
 
     Raises
     ------
     ValueError
-        If ``capacity`` is less than 1.
+        If ``capacity`` is less than 1, or if the table and its overflow together exceed
+        ``2**31 - 1`` slots.
     RuntimeError
         If ``query_vertices``, ``query_faces`` and ``target_mesh`` are not all on one device.
 
@@ -1346,7 +1363,8 @@ def face_box_candidates(
     Examples
     --------
     The faces of one cube against a BVH over an overlapping one. No face has more than four
-    candidates, so the default stride of 16 stands, while ``capacity=2`` grows to 4:
+    candidates, so the default stride of 16 holds all 24; at ``capacity=2`` the six faces with four
+    each keep two in the table and two in the overflow tail, 24 + 12 slots:
 
     ```python
     import warp as wp
@@ -1358,8 +1376,9 @@ def face_box_candidates(
     target = wp.Mesh(points=vertices_b, indices=faces_b)
     targets, counts, stride = od.intersection.face_box_candidates(vertices_a, faces_a, target)
     print(targets.shape, counts.shape, stride)  # (192,) (12,) 16
-    _, _, stride = od.intersection.face_box_candidates(vertices_a, faces_a, target, capacity=2)
-    print(stride)  # 4
+    print(int(counts.numpy().sum()))  # 24
+    narrow, _, stride = od.intersection.face_box_candidates(vertices_a, faces_a, target, capacity=2)
+    print(narrow.shape, stride)  # (36,) 2
     ```
     """
     require_same_device(
@@ -1367,8 +1386,36 @@ def face_box_candidates(
     )
     if capacity < 1:
         raise ValueError(f"capacity must be >= 1, got {capacity}")
+    targets, counts, stride, _ = _face_box_candidates(
+        query_vertices, query_faces, target_mesh, capacity, grow
+    )
+    return targets, counts, stride
+
+
+def _face_box_candidates(
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_mesh: wp.Mesh,
+    capacity: int,
+    grow: bool,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int, wp.array[wp.int32] | None]:
+    """
+    ``face_box_candidates``, plus the owning query face of each overflow-tail slot.
+
+    The fourth return is ``(n_overflow,)``, or ``None`` when there is no tail (nothing overflowed,
+    or ``grow`` is off). The overflow is collected by walking only the overflowing faces again and
+    skipping the candidates their block holds, so the table stays ``n_query * capacity`` and the
+    tail holds exactly the excess.
+
+    Raises
+    ------
+    ValueError
+        If the table and its overflow together exceed ``2**31 - 1`` slots.
+    """
     device = query_vertices.device
     n_query = query_faces.size // 3
+    stride = min(capacity, max(1, _MAX_CANDIDATE_SLOTS // max(n_query, 1)))
+    n_table = n_query * stride
     lower = _launch.empty(n_query, dtype=wp.vec3, device=device)
     upper = _launch.empty(n_query, dtype=wp.vec3, device=device)
     _launch.launch(
@@ -1378,24 +1425,39 @@ def face_box_candidates(
         device=device,
     )
     counts = _launch.empty(n_query, dtype=wp.int32, device=device)
-    overflow = _launch.zeros(1, dtype=wp.int32, device=device)
-    stride = capacity
-    while True:
-        targets = _launch.empty(n_query * stride, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_intersections.collect_face_box_candidates,
-            dim=n_query,
-            inputs=[target_mesh.id, lower, upper, stride],
-            outputs=[targets, counts, overflow],
-            device=device,
+    extras = _launch.empty(n_query, dtype=wp.int32, device=device) if grow else None
+    overflow = _launch.zeros(1, dtype=wp.int64, device=device)
+    targets = _launch.empty(n_table, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_intersections.collect_face_box_candidates,
+        dim=n_query,
+        inputs=[target_mesh.id, lower, upper, stride],
+        outputs=[targets, counts, extras, overflow],
+        device=device,
+    )
+    if extras is None:
+        return targets, counts, stride, None
+    # The one read: the candidates the table could not hold, which sizes the tail.
+    n_tail = int(read_scalar(overflow))
+    if n_tail == 0:
+        return targets, counts, stride, None
+    if n_table + n_tail > _MAX_CANDIDATE_SLOTS:
+        raise ValueError(
+            f"{n_table + n_tail} broad-phase candidate slots exceed the int32 limit "
+            f"{_MAX_CANDIDATE_SLOTS}"
         )
-        if not grow:
-            return targets, counts, stride
-        # The one read: the largest count of a face the stride could not hold, or 0.
-        peak = int(read_scalar(overflow))
-        if peak <= stride:
-            return targets, counts, stride
-        stride = peak
+    _launch.array_scan(extras, out_array=extras, inclusive=False)
+    with_tail = _launch.empty(n_table + n_tail, dtype=wp.int32, device=device)
+    _launch.copy(with_tail, targets, count=n_table)
+    tail_queries = _launch.empty(n_tail, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_intersections.collect_overflow_candidates,
+        dim=n_query,
+        inputs=[target_mesh.id, lower, upper, counts, stride, extras],
+        outputs=[with_tail, tail_queries],
+        device=device,
+    )
+    return with_tail, counts, stride, tail_queries
 
 
 def slice_mesh_with_plane(
@@ -1850,13 +1912,13 @@ def clip_mesh_with_field(
     assert source is not None
     if new_faces.size == 0:
         return new_vertices, new_faces
-    # The cap closes the section and nothing else, as VTK caps the cut's own polylines: the
-    # boundary edges with both ends on the level set (a crossing point, or an input vertex whose
-    # shifted value is exactly zero), chained into cycles. Any other boundary edge was the input's
-    # and stays open, and a section that runs into one is a chain, not a cycle, and stays open too.
-    # An edge with both ends on the section lies only in faces with two corners on it, so its
-    # boundary status is decided among those faces: the rim is taken over them alone, not the whole
-    # mesh, and only its section edges are kept.
+    # The cap closes the section and nothing else, as VTK caps the cut's own polylines: the boundary
+    # edges with both ends on the level set (a crossing point, or an input vertex the classifier
+    # reads as on it, within its tolerance), chained into cycles. Any other boundary edge was the
+    # input's and stays open, and a section that runs into one is a chain, not a cycle, and stays
+    # open too. An edge with both ends on the section lies only in faces with two corners on it, so
+    # its boundary status is decided among those faces: the rim is taken over them alone, not the
+    # whole mesh, and only its section edges are kept.
     n_faces = new_faces.size // 3
     scanned = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(

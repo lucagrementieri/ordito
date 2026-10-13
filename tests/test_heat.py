@@ -1790,6 +1790,70 @@ def test_diffuse_tangent_field_solves_its_own_system(
     assert (np.abs(residual_np) / scale_np).max() < od.linalg.SETTLE_BACKWARD_ERROR
 
 
+def test_diffuse_tangent_field_rejects_a_source_of_the_wrong_length(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: a source not sized to the mesh raises before the solver counts it.
+
+    Both forms raise ``ValueError`` -- the solve would otherwise index the source past its end. The
+    rejected `Trimesh` call must not count as one of its ``HeatSolver``'s solves: the next valid
+    call is then still the first, which iterates and builds nothing, and the one after it is the
+    second, which factors the vector system (its scalar expansion, ``2 * n_vertices`` rows).
+    """
+    mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=2), device)
+    n_vertices = mesh_wp.points.size
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    built = _count_factorizations(monkeypatch)
+    short_wp = wp.zeros(n_vertices - 1, dtype=wp.vec2d, device=device)
+    with pytest.raises(ValueError, match="source"):
+        od.heat.diffuse_tangent_field(mesh, short_wp)
+    with pytest.raises(ValueError, match="source"):
+        od.heat.diffuse_tangent_field(mesh.vector_heat_operators[0], short_wp)
+    source_np = np.zeros((n_vertices, 2))
+    source_np[0] = (1.0, 0.0)
+    source_wp = wp.array(source_np, dtype=wp.vec2d, device=device)
+    for expected in ([], [2 * n_vertices]):
+        od.heat.diffuse_tangent_field(mesh, source_wp)
+        assert built == expected
+
+
+def test_heat_solves_reject_a_field_on_another_device() -> None:
+    """
+    Not a library comparison: a field on another device than the mesh raises ``RuntimeError``.
+
+    No reference library shares Warp's device model. ``diffuse_tangent_field`` (both forms) and the
+    public ``HeatSolver`` solves launch on the mesh's device, so a CPU field against a CUDA mesh
+    would be read through a host pointer by a CUDA kernel -- a segfault, or a corrupted heap later
+    -- rather than an exception.
+    """
+    if not wp.is_cuda_available():
+        pytest.skip("needs both devices to construct a mismatch")
+    mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=2), "cuda:0")
+    n_vertices = mesh_wp.points.size
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    vector_system, _, _, preconditioner = mesh.vector_heat_operators
+    tangent_cpu = wp.zeros(n_vertices, dtype=wp.vec2d, device="cpu")
+    tangent_cuda = wp.zeros(n_vertices, dtype=wp.vec2d, device="cuda:0")
+    scalar_cpu = wp.zeros(n_vertices, dtype=wp.float64, device="cpu")
+    scalar_cuda = wp.zeros(n_vertices, dtype=wp.float64, device="cuda:0")
+    solver = mesh.heat_solver()
+    calls: list[Callable[[], object]] = [
+        lambda: od.heat.diffuse_tangent_field(mesh, tangent_cpu),
+        lambda: od.heat.diffuse_tangent_field(vector_system, tangent_cpu),
+        lambda: od.heat.diffuse_tangent_field(
+            vector_system, tangent_cpu, preconditioner=preconditioner
+        ),
+        lambda: solver.diffuse(scalar_cpu, scalar_cuda),
+        lambda: solver.diffuse(scalar_cuda, scalar_cpu),
+        lambda: solver.diffuse_tangent(tangent_cpu, tangent_cuda),
+        lambda: solver.solve_poisson(scalar_cuda, scalar_cpu),
+    ]
+    for call in calls:
+        with pytest.raises(RuntimeError, match="one device"):
+            call()
+
+
 # ---------------------------------------------------------------------------
 # HeatSolver: what a Trimesh keeps between calls
 # ---------------------------------------------------------------------------
@@ -2050,7 +2114,9 @@ def _empty_tangent_source(device: str) -> list[_Sized]:
         mesh_wp.points, mesh_wp.indices
     )
     diffused_wp = od.heat.diffuse_tangent_field(vector_system, warp_empty(0, wp.vec2d, device))
-    return [(diffused_wp, 0)]
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    on_mesh_wp = od.heat.diffuse_tangent_field(mesh, warp_empty(0, wp.vec2d, device))
+    return [(diffused_wp, 0), (on_mesh_wp, 0)]
 
 
 _EMPTY_CASES: list[tuple[str, Callable[[str], list[_Sized]]]] = [
@@ -2074,3 +2140,107 @@ def test_empty_inputs_return_zero_fields(device: str, case: Callable[[str], list
     for result_wp, n_values in case(device):
         assert result_wp.shape == (n_values,)
         assert not result_wp.numpy().any()
+
+
+def _shifted(indices_np: np.ndarray, n_vertices: int, device: str) -> wp.array[wp.int32]:
+    """``indices_np`` with its last entry moved to ``n_vertices``, one past the last vertex."""
+    shifted_np = np.array(indices_np, dtype=np.int32)
+    shifted_np[-1] = n_vertices
+    return wp.array(shifted_np, dtype=wp.int32, device=device)
+
+
+_OUT_OF_RANGE_CASES: list[tuple[str, Callable[[wp.Mesh, str], object]]] = [
+    (
+        "heat_geodesic",
+        lambda m, d: od.heat.heat_geodesic(
+            m.points, m.indices, _shifted(np.array([0, 1]), m.points.size, d)
+        ),
+    ),
+    (
+        "heat_geodesic_negative",
+        lambda m, d: od.heat.heat_geodesic(
+            m.points, m.indices, wp.array([-1], dtype=wp.int32, device=d)
+        ),
+    ),
+    (
+        "heat_signed_distance",
+        lambda m, d: od.heat.heat_signed_distance(
+            m.points, m.indices, _shifted(np.array([0, 1, 2]), m.points.size, d)
+        ),
+    ),
+    (
+        "extend_scalar",
+        lambda m, d: od.heat.extend_scalar(
+            m.points,
+            m.indices,
+            _shifted(np.array([0, 1]), m.points.size, d),
+            wp.array([1.0, 2.0], dtype=wp.float64, device=d),
+        ),
+    ),
+    (
+        "transport_tangent_vectors",
+        lambda m, d: od.heat.transport_tangent_vectors(
+            m.points,
+            m.indices,
+            _shifted(np.array([0, 1]), m.points.size, d),
+            wp.array([[1.0, 0.0], [0.0, 1.0]], dtype=wp.vec2, device=d),
+        ),
+    ),
+    ("log_map", lambda m, _d: od.heat.log_map(m.points, m.indices, m.points.size)),
+]
+
+
+@pytest.mark.parametrize(
+    "call", [pytest.param(call, id=case_id) for case_id, call in _OUT_OF_RANGE_CASES]
+)
+def test_vertex_indices_out_of_range_raise(
+    device: str, call: Callable[[wp.Mesh, str], object]
+) -> None:
+    """
+    Not a library comparison: a source or curve vertex outside the mesh raises ``ValueError``.
+
+    The seeding kernels skip such an index rather than write past the field, and the call refuses
+    instead of returning the distance to the sources that remained.
+    """
+    mesh_wp = _icosahedron_wp(device)
+    with pytest.raises(ValueError, match="vertex index"):
+        call(mesh_wp, device)
+
+
+def test_rejected_sources_do_not_count_as_a_solve(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: a rejected ``heat_geodesic`` leaves its `Trimesh`'s solver untouched.
+
+    The sources are checked before the heat solve, so the next valid call is the solver's first --
+    it iterates and builds nothing -- and the one after factors both systems, as
+    ``test_trimesh_factors_on_the_second_solve_and_reuses_it`` pins without the rejected call.
+    """
+    mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=2), device)
+    n_vertices = mesh_wp.points.size
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    built = _count_factorizations(monkeypatch)
+    with pytest.raises(ValueError, match="vertex index"):
+        od.heat.heat_geodesic(mesh, wp.array([n_vertices], dtype=wp.int32, device=device))
+    sources_wp = wp.array([0], dtype=wp.int32, device=device)
+    for expected in ([], [n_vertices] * 2):
+        od.heat.heat_geodesic(mesh, sources_wp)
+        assert built == expected
+
+
+def test_extend_scalar_and_transport_reject_mismatched_lengths(device: str) -> None:
+    """Not a library comparison: one value or vector per source, or ``ValueError``."""
+    mesh_wp = _icosahedron_wp(device)
+    sources_wp = wp.array([0, 1], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="values"):
+        od.heat.extend_scalar(
+            mesh_wp.points,
+            mesh_wp.indices,
+            sources_wp,
+            wp.zeros(1, dtype=wp.float64, device=device),
+        )
+    with pytest.raises(ValueError, match="vectors"):
+        od.heat.transport_tangent_vectors(
+            mesh_wp.points, mesh_wp.indices, sources_wp, wp.zeros(1, dtype=wp.vec2, device=device)
+        )

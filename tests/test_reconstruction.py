@@ -912,6 +912,27 @@ def test_poisson_rejects_invalid_arguments(
         od.reconstruction.screened_poisson(points_wp, normals_wp, **arguments)  # pyright: ignore[reportArgumentType]
 
 
+@pytest.mark.parametrize("method", ["dense", "adaptive"])
+@pytest.mark.parametrize("n_normals", [10, 161, 163])
+def test_poisson_rejects_one_normal_per_point_mismatch(
+    device: str, method: Literal["dense", "adaptive"], n_normals: int
+) -> None:
+    """
+    Not a library comparison: a ``normals`` array not one per point raises ``ValueError``.
+
+    Every splat and sampling kernel reads ``normals[i]`` for each point, so a shorter array would
+    read past its end; the boundary values one short and one long of ``n`` both raise.
+    """
+    points_np, normals_np = _sphere_cloud(2)
+    normals_np = np.resize(normals_np, (n_normals, 3))
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    assert points_wp.size == 162
+    with pytest.raises(ValueError, match="one normal per point"):
+        od.reconstruction.screened_poisson(
+            points_wp, normals_wp, depth=5, full_depth=4, method=method
+        )
+
+
 def test_poisson_cpu_matches_cuda():
     """Class A: the CPU cascadic solve reconstructs the CUDA surface, vertex for vertex."""
     if not wp.is_cuda_available():
@@ -1068,31 +1089,49 @@ def test_poisson_band_nests_and_extracts_closed(device: str) -> None:
 
     ``_screened_poisson_band`` counts, on the device, every coarse node a restriction or a
     Dirichlet ghost found missing from the coarser band, and every crossing cell its extraction
-    band could not own; both are impossible by the bands' nesting, so both must be zero. The raw
-    extraction, before ``screened_poisson``'s cleanup, must already be watertight and free of
-    degenerate faces -- the property the band's composite field and edge margin are for.
+    band could not own, and warns when either is nonzero; on a sphere cloud both are impossible by
+    the bands' nesting, so it must not warn (``test_poisson_adaptive_warns_on_extraction_holes``
+    shows the warning fires). The raw extraction, before ``screened_poisson``'s cleanup, must
+    already be watertight and free of degenerate faces -- the property the band's composite field
+    and edge margin are for.
     """
     points_np, normals_np = _sphere_cloud(4)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
     lower, _upper, size = od.reconstruction._poisson_cube(points_wp, 1.1)  # pyright: ignore[reportPrivateUsage]
-    diagnostics = wp.zeros(2, dtype=wp.int32, device=device)
-    vertices_wp, faces_wp = od.reconstruction._screened_poisson_band(  # pyright: ignore[reportPrivateUsage]
-        points_wp,
-        normals_wp,
-        lower,
-        size,
-        depth=_poisson_depth(device) + 1,
-        full_depth=4,
-        screen=4.0,
-        solver_iterations=100,
-        solver_tolerance=1e-5,
-        confidence=False,
-        diagnostics=diagnostics,
-    )
-    assert np.array_equal(diagnostics.numpy(), [0, 0])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        vertices_wp, faces_wp = od.reconstruction._screened_poisson_band(  # pyright: ignore[reportPrivateUsage]
+            points_wp,
+            normals_wp,
+            lower,
+            size,
+            depth=_poisson_depth(device) + 1,
+            full_depth=4,
+            screen=4.0,
+            solver_iterations=100,
+            solver_tolerance=1e-5,
+            confidence=False,
+        )
     assert faces_wp.size > 0
     assert np.all(od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp).numpy())
     assert od.validation.is_watertight(vertices_wp, faces_wp)
+
+
+def test_poisson_adaptive_warns_on_extraction_holes(device: str) -> None:
+    """
+    Not a library comparison: the adaptive extraction warns when it drops crossing cells.
+
+    Three coplanar samples make a base surface whose crossing cells the extraction band cannot own
+    (over a hundred at depth 6); each is a hole in the output, and the warning is the only sign of
+    it. ``test_poisson_band_nests_and_extracts_closed`` pins the silent case on a sphere cloud.
+    """
+    points_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    normals_np = np.array([[0.0, 0.0, 1.0]] * 3)
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    with pytest.warns(UserWarning, match=r"dropped [1-9]\d* crossing cell"):
+        od.reconstruction.screened_poisson(
+            points_wp, normals_wp, depth=6, full_depth=4, method="adaptive"
+        )
 
 
 def test_poisson_adaptive_confidence_runs(device: str):

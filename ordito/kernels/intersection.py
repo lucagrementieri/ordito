@@ -420,7 +420,8 @@ def collect_face_box_candidates(
     max_hits: wp.int32,
     out_targets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
-    out_overflow: wp.array[wp.int32],
+    out_extras: wp.array[wp.int32],
+    out_overflow: wp.array[wp.int64],
 ) -> None:
     """
     Face-box broad phase against a mesh: query face ``f``'s candidates at ``f * max_hits``.
@@ -437,11 +438,16 @@ def collect_face_box_candidates(
 
     The walk does **not** stop at ``max_hits``: it writes the first ``max_hits`` candidates and
     counts the rest, so ``out_counts[f]`` is the face's true candidate count and may exceed the
-    block, and a face that overflows raises ``out_overflow[0]`` to its count (a conditional atomic:
-    only overflowing faces contend). A wrapper reads that one value and re-collects at that stride
-    when any face overflowed (``intersection.face_box_candidates``); stopping at the cap returned a
-    silent subset (48 of 189 crossing pairs lost between two ``sphere_irregular`` copies at a cap of
-    16, whose needle triangles' boxes overlap up to 81 faces). Consumers read a slot as live through
+    block. An overflowing face adds its excess to ``out_overflow[0]`` (a conditional ``int64``
+    atomic: only overflowing faces contend, and the total cannot wrap) and, when ``out_extras`` is
+    passed, every face writes its excess (0 if none) there for the tail's scan. The excess is
+    either collected into a packed tail by ``collect_overflow_candidates``
+    (``intersection.face_box_candidates``) or walked again and tested inline by
+    ``mark_overflow_crossings``; stopping at the cap returned a silent subset (48 of 189 crossing
+    pairs lost between two ``sphere_irregular`` copies at a cap of 16, whose needle triangles'
+    boxes overlap up to 81 faces). Growing the stride to the largest count instead made the table
+    ``n_query`` times the worst face's count: one large triangle among small ones multiplied the
+    table and the narrow phase's threads ~95x. Consumers read a slot as live through
     ``candidate_slot_query``, which is already bounded by the block, so a count past it is safe.
     """
     f = wp.int32(wp.tid())
@@ -453,8 +459,42 @@ def collect_face_box_candidates(
             out_targets[f * max_hits + c] = face_idx
         c = c + 1
     out_counts[f] = c
+    if out_extras.shape[0] > 0:
+        out_extras[f] = wp.max(c - max_hits, wp.int32(0))
     if c > max_hits:
-        wp.atomic_max(out_overflow, 0, c)
+        wp.atomic_add(out_overflow, 0, wp.int64(c - max_hits))
+
+
+@wp.kernel
+def collect_overflow_candidates(
+    mesh_id: wp.uint64,
+    face_lower: wp.array[wp.vec3],
+    face_upper: wp.array[wp.vec3],
+    counts: wp.array[wp.int32],
+    max_hits: wp.int32,
+    tail_offsets: wp.array[wp.int32],
+    out_targets: wp.array[wp.int32],
+    out_tail_queries: wp.array[wp.int32],
+) -> None:
+    # The candidates a query face's block could not hold, packed after the fixed-stride table: an
+    # overflowing face walks its stored box again (the same walk as ``collect_face_box_candidates``,
+    # so the same traversal order), skips the ``max_hits`` its block holds and writes the rest at
+    # its exclusive-scan offset past the table, recording itself as each tail slot's owner. Every
+    # other face returns at once. ``mark_overflow_crossings`` is the same skip with the narrow phase
+    # inline instead of a write, for the callers that need no pair list.
+    q = wp.int32(wp.tid())
+    if counts[q] <= max_hits:
+        return
+    base = tail_offsets[q] - max_hits
+    n_table = counts.shape[0] * max_hits
+    query = wp.mesh_query_aabb(mesh_id, face_lower[q], face_upper[q])
+    t = wp.int32(0)
+    c = wp.int32(0)
+    while wp.mesh_query_next(query, t):
+        if c >= max_hits:
+            out_targets[n_table + base + c] = t
+            out_tail_queries[base + c] = q
+        c = c + 1
 
 
 @wp.func
@@ -465,6 +505,19 @@ def candidate_slot_query(counts: wp.array[wp.int32], max_hits: wp.int32, s: wp.i
     # count. A sentinel rather than a boolean, so each caller keeps its own ``< 0`` test.
     q = s // max_hits
     return wp.where(s % max_hits < counts[q], q, wp.int32(-1))
+
+
+@wp.func
+def candidate_slot_owner(
+    counts: wp.array[wp.int32], max_hits: wp.int32, tail_queries: wp.array[wp.int32], s: wp.int32
+) -> wp.int32:
+    # ``candidate_slot_query`` over a table followed by ``collect_overflow_candidates``' packed
+    # tail, every tail slot live and owned by ``tail_queries[s - n_table]``. ``tail_queries`` is
+    # ``None`` when nothing overflowed, and then no slot reaches the tail.
+    n_table = counts.shape[0] * max_hits
+    if s >= n_table:
+        return tail_queries[s - n_table]
+    return candidate_slot_query(counts, max_hits, s)
 
 
 @wp.kernel
@@ -538,10 +591,12 @@ def crossing_slot_flags(
     targets: wp.array[wp.int32],
     counts: wp.array[wp.int32],
     max_hits: wp.int32,
+    tail_queries: wp.array[wp.int32],
     with_segment: wp.bool,
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # The narrow-phase verdict of every fixed-stride broad-phase slot, as the ``0`` / ``1``
+    # The narrow-phase verdict of every broad-phase slot, the table's and the overflow tail's, as
+    # the ``0`` / ``1``
     # ``int32`` flag ``compact_crossing_slots`` scans in place, so the verdict buffer is also the
     # scan buffer. ``with_segment`` (warp-uniform) additionally rejects a pair whose intersection
     # segment is degenerate, which is ``mesh_with_mesh``'s question; ``mesh_collision_pairs`` asks
@@ -552,7 +607,7 @@ def crossing_slot_flags(
     # need the segment extraction's ordering and division threaded through the predicate, which
     # the verdict-only callers never want.
     s = wp.int32(wp.tid())
-    q = candidate_slot_query(counts, max_hits, s)
+    q = candidate_slot_owner(counts, max_hits, tail_queries, s)
     if q < 0:
         out_flags[s] = 0
         return
@@ -572,17 +627,20 @@ def compact_crossing_slots(
     target_vertices: wp.array[wp.vec3],
     target_faces: wp.array[wp.int32],
     targets: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
     max_hits: wp.int32,
+    tail_queries: wp.array[wp.int32],
     inclusive: wp.array[wp.int32],
     swapped: wp.bool,
     out_pairs: wp.array2d[wp.int32],
     out_segments: wp.array2d[wp.vec3],
 ) -> None:
-    # One thread per kept slot, ``k``-th in slot order -- which is candidate order, query face by
-    # query face -- found in the in-place inclusive scan of ``crossing_slot_flags``' flags as the
-    # first slot whose running total reaches ``k + 1``. Launched over the kept count rather than
-    # over every slot, since the kept slots are a small, scattered fraction of the table. Exactly
-    # one of the two outputs is live; the other is ``None``, whose shape reads 0.
+    # One thread per kept slot, ``k``-th in slot order -- query face by query face over the table,
+    # then the overflow tail's in the same order -- found in the in-place inclusive scan of
+    # ``crossing_slot_flags``' flags as the first slot whose running total reaches ``k + 1``.
+    # Launched over the kept count rather than over every slot, since the kept slots are a small,
+    # scattered fraction of the table. Exactly one of the two outputs is live; the other is
+    # ``None``, whose shape reads 0.
     #
     # ``out_pairs`` rows are in the caller's ``(a, b)`` column order: the broad phase queries the
     # *larger* mesh's faces against the smaller one's BVH, so ``swapped`` says the query is mesh b
@@ -591,7 +649,7 @@ def compact_crossing_slots(
     # ``max_hits`` segments per query face, and allocating it measured dearer than the recompute.
     k = wp.int32(wp.tid())
     i = wp.lower_bound(inclusive, k + 1)
-    q = i // max_hits
+    q = candidate_slot_owner(counts, max_hits, tail_queries, i)
     t = targets[i]
     if out_pairs.shape[0] > 0:
         out_pairs[k, 0] = wp.where(swapped, t, q)
@@ -631,6 +689,17 @@ SLICE_CLASSES = 3
 
 
 @wp.func
+def level_set_sign(value: wp.float32) -> wp.int32:
+    # A vertex's side of the level set from its re-zeroed field value: ``SLICE_SIGN_INSIDE`` (-1)
+    # for the ``>= isovalue`` side, so the tolerance sign is negated, and 0 within
+    # ``TOLERANCE_MERGE_CONSTANT`` of the level. The one spelling of "on the level set": the face
+    # classifiers (``face_level_set_signs``) and the cap's section test (``on_level_set``) must
+    # agree, or a vertex the classifier kept as on the level set (no crossing point emitted) is
+    # missing from the section and its loop is left open.
+    return -kernel_array.sign_with_tolerance(value, TOLERANCE_MERGE_CONSTANT)
+
+
+@wp.func
 def face_level_set_signs(
     faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
@@ -639,8 +708,8 @@ def face_level_set_signs(
 ) -> tuple[wp.int32, wp.int32]:
     # One face's three level-set signs, stored, plus the two sums every classifier decides on.
     #
-    # ``SLICE_SIGN_INSIDE`` (-1) is the ``>= isovalue`` side, so the tolerance sign is negated and a
-    # value on the level set counts as positive. ``signs_sum`` separates "all one side" from "cut"
+    # Each sign is ``level_set_sign``'s (-1 on the kept side, 0 on the level set). ``signs_sum``
+    # separates "all one side" from "cut"
     # and ``signs_asum`` counts the corners strictly off the plane; between them they name every
     # case both classifiers below distinguish.
     #
@@ -650,9 +719,9 @@ def face_level_set_signs(
     # because it writes an output array: that module holds pure predicates, and both callers of this
     # one are in this file.
     i0, i1, i2 = kernel_triangles.corner_triple(faces, f)
-    s0 = -kernel_array.sign_with_tolerance(vertex_dots[i0], TOLERANCE_MERGE_CONSTANT)
-    s1 = -kernel_array.sign_with_tolerance(vertex_dots[i1], TOLERANCE_MERGE_CONSTANT)
-    s2 = -kernel_array.sign_with_tolerance(vertex_dots[i2], TOLERANCE_MERGE_CONSTANT)
+    s0 = level_set_sign(vertex_dots[i0])
+    s1 = level_set_sign(vertex_dots[i1])
+    s2 = level_set_sign(vertex_dots[i2])
     out_signs[f, 0] = s0
     out_signs[f, 1] = s1
     out_signs[f, 2] = s2
@@ -1374,11 +1443,12 @@ def remap_to_first_crossing(
 @wp.func
 def on_level_set(source: wp.array[wp.int32], shifted: wp.array[wp.float32], v: wp.int32) -> wp.bool:
     # Whether a clipped mesh's vertex lies on the level set: a crossing point (its source is past
-    # the input's vertices) or an input vertex whose re-zeroed value is exactly zero. Evaluated at
-    # each read rather than tabulated per vertex: its two readers touch only the section's faces
-    # and rim, and a table cost a launch and a mesh-sized allocation for them.
+    # the input's vertices) or an input vertex the classifiers read as on it (``level_set_sign``
+    # is 0, the same dead zone, so the section holds exactly the vertices the cut did not cross
+    # at). Evaluated at each read rather than tabulated per vertex: its two readers touch only the
+    # section's faces and rim, and a table cost a launch and a mesh-sized allocation for them.
     origin = source[v]
-    return origin >= shifted.shape[0] or shifted[origin] == wp.float32(0.0)
+    return origin >= shifted.shape[0] or level_set_sign(shifted[origin]) == wp.int32(0)
 
 
 @wp.kernel

@@ -1,8 +1,24 @@
 import warp as wp
 from warp.geometry import IsoSurfaceMarchingCubes
 
-from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE_CONSTANT
+from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels.array import ravel_index
+
+
+def lattice_edge_margin(spacing: float) -> float:
+    """
+    ``levelset.marching_cubes``' ``edge_margin`` for a lattice of the given node ``spacing``.
+
+    A margin ``m`` bounds every triangle's altitudes below by about ``0.7 * m`` lattice spacings
+    (the worst triangle of the case table at ``m = 0.1``), and ``face_nondegenerate_mask`` rejects
+    an altitude under ``TOLERANCE_MERGE``, an absolute length. So the margin is the smallest of
+    ``1e-3`` of an edge and what clears that tolerance sixteen-fold, capped at ``0.1``: a vertex
+    moves at most a thousandth of a cell at every ordinary scale. Host-side; shared by every
+    extraction that keeps its vertices off the lattice nodes (``levelset.offset_mesh``, the
+    Poisson extractions, ``reconstruction.resample_uniform``).
+    """
+    return min(0.1, max(1e-3, 16.0 * TOLERANCE_MERGE / spacing))
+
 
 wp.set_module_options({"enable_backward": False})
 
@@ -219,6 +235,13 @@ def directed_edge_function(
 
 
 @wp.func
+def lattice_clamp(x: wp.float32, n: wp.int32) -> wp.float32:
+    # A lattice coordinate along an axis of ``n`` nodes, clamped to ``[-1, n]``: every rounding of
+    # it then fits ``int32``, and lands outside ``[0, n - 1]`` exactly when the unclamped one does.
+    return wp.clamp(x, -1.0, wp.float32(n))
+
+
+@wp.func
 def rasterize_crossings(
     ia: wp.int32,
     ib: wp.int32,
@@ -243,10 +266,13 @@ def rasterize_crossings(
     a = lattice_coordinates(pa, lower, inv_step, axis)
     b = lattice_coordinates(pb, lower, inv_step, axis)
     c = lattice_coordinates(pc, lower, inv_step, axis)
-    u0 = wp.max(wp.int32(wp.ceil(wp.min(a[0], wp.min(b[0], c[0])))), 0)
-    u1 = wp.min(wp.int32(wp.floor(wp.max(a[0], wp.max(b[0], c[0])))), n_u - 1)
-    v0 = wp.max(wp.int32(wp.ceil(wp.min(a[1], wp.min(b[1], c[1])))), 0)
-    v1 = wp.min(wp.int32(wp.floor(wp.max(a[1], wp.max(b[1], c[1])))), n_v - 1)
+    # Every float -> int conversion below reads a coordinate first clamped to one cell past the
+    # lattice, so a vertex far outside it cannot overflow ``int32`` (undefined behaviour, on x86
+    # ``INT_MIN``, which ``- 1`` wraps into a positive index); inside the range the clamp is exact.
+    u0 = wp.max(wp.int32(wp.ceil(lattice_clamp(wp.min(a[0], wp.min(b[0], c[0])), n_u))), 0)
+    u1 = wp.min(wp.int32(wp.floor(lattice_clamp(wp.max(a[0], wp.max(b[0], c[0])), n_u))), n_u - 1)
+    v0 = wp.max(wp.int32(wp.ceil(lattice_clamp(wp.min(a[1], wp.min(b[1], c[1])), n_v))), 0)
+    v1 = wp.min(wp.int32(wp.floor(lattice_clamp(wp.max(a[1], wp.max(b[1], c[1])), n_v))), n_v - 1)
     if u0 > u1 or v0 > v1:
         return
     area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
@@ -272,8 +298,11 @@ def rasterize_crossings(
                 # interpolates badly, and the column it then miscounts disagrees with the other
                 # direction's count, which leaves its nodes undecided.
                 total = side_ab + side_bc + side_ca
-                height = wp.clamp(
-                    (side_bc * a[2] + side_ca * b[2] + side_ab * c[2]) / total, w_low, w_high
+                height = lattice_clamp(
+                    wp.clamp(
+                        (side_bc * a[2] + side_ca * b[2] + side_ab * c[2]) / total, w_low, w_high
+                    ),
+                    n_w,
                 )
                 nearest = wp.int32(wp.round(height))
                 if (
@@ -472,6 +501,15 @@ def lattice_winding_numbers(
     i, j, k = wp.tid()
     p = points[i, j, k]
     base = wp.float32(crossings_z[i, j, k])
+    d = distance[i, j, k]
+    if d < sign_irrelevant_below:
+        # Within ``|iso|`` less a cell diagonal of the surface, either sign leaves the node on the
+        # same side of ``iso``, and so does every axis neighbour (its distance is at most one edge
+        # more): no edge marching cubes interpolates ends here, so the column count stands in for
+        # the winding number and the cones are not summed.
+        out_winding[i, j, k] = base
+        out_slots[i, j, k] = 0
+        return
     near = wp.float32(0.0)
     far_bound = wp.float32(0.0)
     on_cone = wp.float32(0.0)
@@ -498,7 +536,6 @@ def lattice_winding_numbers(
                 winding = winding + term[0]
                 on_cone = wp.max(on_cone, term[1])
     out_winding[i, j, k] = winding
-    d = distance[i, j, k]
     doubtful = (
         wp.abs(winding - 0.5) < delta
         or ambiguous[i, j, k] != 0
@@ -507,7 +544,7 @@ def lattice_winding_numbers(
         or d <= surface_tie
     )
     slot = wp.int32(0)
-    if doubtful and d >= sign_irrelevant_below and d > TOLERANCE_MERGE_CONSTANT:
+    if doubtful and d > TOLERANCE_MERGE_CONSTANT:
         slot = wp.atomic_add(out_count, 0, 1) + 1
         if slot <= out_undecided.shape[0]:
             out_undecided[slot - 1] = p
@@ -676,16 +713,18 @@ def resolve_crossing_endpoints(
 # A port of ``warp.geometry.IsoSurfaceMarchingCubes.extract``'s algorithm (Apache-2.0): the same
 # case tables, the same vertex numbering -- one vertex per crossing lattice edge, edges ordered by
 # their lower node row-major and then by axis -- the same per-cell triangle order and the same
-# interpolation arithmetic, so its output is Warp's bit for bit, vertex and face order included.
-# What changed is the bookkeeping. Warp counts and emits vertices over a ``(nx, ny, nz, 3)`` edge
-# grid and faces over the cell grid, with two zeroed ``3 * n_nodes`` int32 buffers, a scan of
-# each count buffer and a ``(nx, ny, nz, 3)`` edge-to-vertex table the face pass reads back -- 44
-# bytes of scratch a node, eleven times the field, and two scans and two host reads. Here one
-# thread per node counts both its crossing edges and its cell's triangles into one ``vec2i``, one
-# scan turns the counts into both offsets, and the emit pass finds an edge's vertex from its
-# owner node's scanned count, recomputing which of that node's edges cross: 8 bytes a node, one
-# scan, one read. The tables are Warp's public ``IsoSurfaceMarchingCubes`` attributes, packed into
-# one array by ``levelset._marching_cubes_table``; the edge-owner layout is derived from them.
+# interpolation arithmetic, so its output is Warp's bit for bit, vertex and face order included, on
+# any field without NaN. A cell with a NaN corner emits no triangles here, where Warp's triangulates
+# it with that corner below ``iso`` and gives the edges from it, which never cross, vertex ``-1``
+# (``mc_case_code``). What changed besides is the bookkeeping. Warp counts and emits vertices over a
+# ``(nx, ny, nz, 3)`` edge grid and faces over the cell grid, with two zeroed ``3 * n_nodes`` int32
+# buffers, a scan of each count buffer and a ``(nx, ny, nz, 3)`` edge-to-vertex table the face pass
+# reads back -- 44 bytes of scratch a node, eleven times the field, and two scans and two host
+# reads. Here one thread per node counts both its crossing edges and its cell's triangles into one
+# ``vec2i``, one scan turns the counts into both offsets, and the emit pass finds an edge's vertex
+# from its owner node's scanned count, recomputing which of that node's edges cross: 8 bytes a node,
+# one scan, one read. The tables are Warp's public ``IsoSurfaceMarchingCubes`` attributes, packed
+# into one array by ``levelset._marching_cubes_table``; the edge-owner layout is derived from them.
 
 # Offsets into that packed table: the case-to-triangle ranges first (257 entries), then the
 # triangles' local edge indices, then one packed entry per cube edge -- its owner corner's offset
@@ -716,11 +755,26 @@ MARCHING_CUBES_TABLE = (
 
 
 @wp.func
+def mc_side(value: wp.float32, iso: wp.float32) -> wp.int32:
+    # A lattice value's side of ``iso``: 1 at or above it, 0 below, -1 for NaN, which is on
+    # neither. The one classification both the edge test and the case code read, so a cell's case
+    # names exactly the edges that cross and every triangle finds its vertices.
+    side = wp.int32(-1)
+    if value >= iso:
+        side = 1
+    elif value < iso:
+        side = 0
+    return side
+
+
+@wp.func
 def mc_values_cross(here: wp.float32, there: wp.float32, iso: wp.float32) -> wp.int32:
     # 1 when an edge whose ends hold ``here`` and ``there`` straddles ``iso`` (``>=`` on one end,
     # ``<`` on the other: Warp's test, so a NaN end never crosses). Shared with the narrow-band
     # extraction in ``kernels/algorithms/poisson_band``, which reads a composite field.
-    return wp.where((here >= iso and there < iso) or (here < iso and there >= iso), 1, 0)
+    here_side = mc_side(here, iso)
+    there_side = mc_side(there, iso)
+    return wp.where(here_side >= 0 and there_side >= 0 and here_side != there_side, 1, 0)
 
 
 @wp.func
@@ -783,21 +837,47 @@ def mc_edge_crosses(
 
 
 @wp.func
+def mc_case_corner(code: wp.int32, value: wp.float32, iso: wp.float32, bit: wp.int32) -> wp.int32:
+    # Fold one corner into a running case code: ``bit`` added at or above ``iso``, nothing below,
+    # and a NaN corner (on neither side, ``mc_side``) poisons the code negative for good -- the
+    # eight additions reach at most 255. ``mc_case_final`` turns a poisoned code into case 0. The
+    # one rule both extractors (this module's and ``poisson_band``'s) apply.
+    side = mc_side(value, iso)
+    folded = code
+    if side > 0:
+        folded = code + bit
+    elif side < 0:
+        folded = wp.int32(-512)
+    return folded
+
+
+@wp.func
+def mc_case_final(code: wp.int32) -> wp.int32:
+    # A case code folded by ``mc_case_corner``: a cell with a NaN corner is case 0 and emits
+    # nothing, since no edge from that corner crosses (``mc_values_cross``) and a case reading it
+    # as below ``iso`` -- Warp's -- would name edges with no vertex.
+    return wp.max(code, wp.int32(0))
+
+
+@wp.func
 def mc_case_code(
     field: wp.array3d[wp.float32], iso: wp.float32, i: wp.int32, j: wp.int32, k: wp.int32
 ) -> wp.int32:
     # The cell at node ``(i, j, k)``'s 8-bit case: bit ``c`` set when corner ``c`` is at or above
-    # ``iso``, corners in ``CUBE_CORNER_OFFSETS`` order.
+    # ``iso``, corners in ``CUBE_CORNER_OFFSETS`` order; case 0 with a NaN corner.
     code = wp.int32(0)
     for c in range(8):
-        value = field[
-            i + wp.static(MC_CORNERS[c][0]),
-            j + wp.static(MC_CORNERS[c][1]),
-            k + wp.static(MC_CORNERS[c][2]),
-        ]
-        if value >= iso:
-            code += wp.static(1 << c)
-    return code
+        code = mc_case_corner(
+            code,
+            field[
+                i + wp.static(MC_CORNERS[c][0]),
+                j + wp.static(MC_CORNERS[c][1]),
+                k + wp.static(MC_CORNERS[c][2]),
+            ],
+            iso,
+            wp.static(1 << c),
+        )
+    return mc_case_final(code)
 
 
 @wp.func
@@ -884,14 +964,12 @@ def marching_cubes_emit(
             ok = k + edge[2]
             axis = edge[3]
             # The owner's vertices sit at the end of its scanned count, in axis order, so this
-            # edge's is its total less one less each crossing edge on a higher axis. An edge the
-            # case table names but the crossing test rejects -- only possible with a NaN corner,
-            # which the case code reads as below ``iso`` -- has no vertex, and gets Warp's ``-1``.
-            vertex = wp.int32(-1)
-            if mc_edge_crosses(field, iso, oi, oj, ok, axis) != 0:
-                vertex = offsets[ravel_index(oi, oj, ok, ny, nz)][0] - 1
-                for higher in range(axis + 1, 3):
-                    vertex -= mc_edge_crosses(field, iso, oi, oj, ok, higher)
+            # edge's is its total less one less each crossing edge on a higher axis. The case
+            # table names only crossing edges, a cell with a NaN corner having no case
+            # (``mc_case_code``), so the edge always has its vertex.
+            vertex = offsets[ravel_index(oi, oj, ok, ny, nz)][0] - 1
+            for higher in range(axis + 1, 3):
+                vertex -= mc_edge_crosses(field, iso, oi, oj, ok, higher)
             out_faces[3 * (first_face + tri) + s] = vertex
 
 

@@ -1998,7 +1998,10 @@ def filter_implicit_fairing(
         if conformalized
         else None
     )
-    fairing = _FairingSolver(vertices, dirichlet)
+    # The ordinary flow's conditioning changes as the surface moves, so its solver decides again
+    # after every iterated pass; the conformalized flow's stiffness is the input's, so its first
+    # pass speaks for every later one.
+    fairing = _FairingSolver(vertices, dirichlet, redecide=not conformalized)
     for _ in range(iterations):
         current = _as_vec3(positions)
         # Otherwise rebuilt every pass: the cotangent weights depend on ``current``, which the
@@ -2099,16 +2102,35 @@ class _FairingSolver:
     Solve ``filter_implicit_fairing``'s passes by iteration, or by a refactored sparse Cholesky.
 
     Every pass's system has the first one's pattern (the connectivity and the pinned set are fixed),
-    so a factorization's analysis is done once and each later pass refactors the new values. The
-    first pass's Jacobi-Chebyshev iteration count decides, with one read: at or above
-    ``_FAIRING_FACTOR_ITERATIONS`` a refactor and one refined solve cost less than the iteration.
-    Held for one call only; nothing outlives it.
+    so a factorization's analysis is done once and each later pass refactors the new values. An
+    iterated pass's Jacobi-Chebyshev round count decides, with one read: at or above
+    ``_FAIRING_FACTOR_ITERATIONS`` a refactor and one refined solve cost less than the iteration,
+    and the later passes take them.
+
+    With ``redecide`` (the ordinary flow) every iterated pass decides again until one reaches the
+    threshold: as the surface pinches, its rebuilt cotangent system's iteration grows by orders of
+    magnitude within a few passes, from a first pass that may be well under the threshold (a
+    well-shaped torus at ``lamb=1``: 12, 17, 41, then 136 rounds). Without it (the conformalized
+    flow, whose stiffness stays the input's) the first pass decides for the call. A factorization
+    that fails to build (over the memory budget, or its pass's system not definite in ``float64``)
+    is not attempted again. A later refactor that fails -- a pinched pass's system can be singular
+    to ``float64``, with a zero row and a condition number near 1e17, while the iteration still
+    converges on it -- leaves that pass to the iteration, and the next pass refactors again once an
+    iterated pass is long enough. Held for one call only; nothing outlives it.
     """
 
-    def __init__(self, vertices: wp.array[wp.vec3], dirichlet: _Dirichlet | None) -> None:
+    def __init__(
+        self, vertices: wp.array[wp.vec3], dirichlet: _Dirichlet | None, *, redecide: bool
+    ) -> None:
         self._vertices = vertices
         self._dirichlet = dirichlet
+        self._redecide = redecide
         self._factor: SparseCholesky | None = None
+        # Whether the next pass refactors ``_factor``: cleared for the passes after a refactor
+        # failed, until an iterated pass is again long enough to make another attempt pay.
+        self._refactor = False
+        # Set once no later pass decides: the first pass did without ``redecide``, or the analysis
+        # itself failed.
         self._decided = False
 
     def solve(
@@ -2120,11 +2142,13 @@ class _FairingSolver:
         maxiter: int,
     ) -> None:
         """Solve one pass's system for the three coordinate columns."""
-        if self._factor is not None:
+        if self._factor is not None and self._refactor:
             try:
                 self._factor.refactor(system)
             except ValueError:
-                self._factor = None
+                # Not definite in ``float64``: a pinching surface's needles reach that while the
+                # iteration still converges. The analysis is kept for a later pass.
+                self._refactor = False
             else:
                 self._factor.solve(rhs, solution, tol=twl.CG_TOLERANCE)
                 return
@@ -2133,30 +2157,36 @@ class _FairingSolver:
         )
         if self._decided:
             return
-        self._decided = True
+        self._decided = not self._redecide
         iterations = result[0]
-        # One read, on the first pass only: whether the iteration is long enough to factor.
+        # One read per iterated pass while a decision is open: whether the iteration is long enough
+        # to factor.
         count = int(read_scalar(iterations, 0)) if isinstance(iterations, wp.array) else iterations
-        if count >= _FAIRING_FACTOR_ITERATIONS:
-            # Ordered by the input's positions: a geometric ordering is cheaper to factor than the
-            # pattern's own, and the flow moves the vertices too little to spoil it.
-            dirichlet = self._dirichlet
-            coordinates = (
-                self._vertices
-                if dirichlet is None
-                else twl.free_coordinates(
-                    self._vertices, dirichlet.fixed_mask, dirichlet.free_map, dirichlet.n_free
-                )
+        if count < _FAIRING_FACTOR_ITERATIONS:
+            return
+        self._refactor = True
+        if self._factor is not None:
+            return
+        # Ordered by the input's positions: a geometric ordering is cheaper to factor than the
+        # pattern's own, and the flow moves the vertices too little to spoil it.
+        dirichlet = self._dirichlet
+        coordinates = (
+            self._vertices
+            if dirichlet is None
+            else twl.free_coordinates(
+                self._vertices, dirichlet.fixed_mask, dirichlet.free_map, dirichlet.n_free
             )
-            try:
-                self._factor = sparse_cholesky(system, coordinates)
-            except ValueError:
-                self._factor = None
+        )
+        try:
+            self._factor = sparse_cholesky(system, coordinates)
+        except ValueError:
+            self._refactor = False
+            self._decided = True
 
 
-# The first fairing pass's Jacobi-Chebyshev iteration count at or above which the later passes
-# refactor and solve directly: a well-shaped patch stays well below it, a strongly graded one well
-# above.
+# The fairing pass's Jacobi-Chebyshev iteration count at or above which the later passes refactor
+# and solve directly: a well-shaped patch stays well below it, a strongly graded one well above,
+# and so does the ordinary flow once the surface starts to pinch.
 _FAIRING_FACTOR_ITERATIONS = 60
 
 

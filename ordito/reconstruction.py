@@ -36,8 +36,8 @@ from warp.geometry import delaunay_edge_flip
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device, run_device_loop
-from ordito.constants import TILE_1D, TOLERANCE_MERGE
+from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
+from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import reconstruction as kernel_reconstruction
@@ -465,11 +465,12 @@ def screened_poisson(
     used instead of PoissonRecon's octree: the oriented normals are trilinearly splatted into a
     smoothed vector field ``V`` (with a density weight ``W``), the indicator function ``x`` is
     recovered by solving the screened-Poisson system ``(L_N + point_weight * W) x = -div V``
-    matrix-free with a Jacobi-preconditioned conjugate gradient, and the iso-surface is extracted
-    with [`levelset.marching_cubes`][ordito.levelset.marching_cubes] at the iso-value given by the
-    average of ``x`` over the input points. A **cascadic** coarse-to-fine schedule solves the
-    system from ``full_depth`` up to ``depth``, prolonging each level's solution as the next level's
-    initial guess (mirroring PoissonRecon's multigrid hierarchy).
+    matrix-free with a multigrid-preconditioned conjugate gradient, and the iso-surface is
+    extracted with [`levelset.marching_cubes`][ordito.levelset.marching_cubes] at the iso-value
+    given by the average of ``x`` over the input points. A **cascadic** coarse-to-fine schedule
+    solves the system from ``full_depth`` up to ``depth``, prolonging each level's solution as the
+    next level's initial guess (mirroring PoissonRecon's multigrid hierarchy); ``method`` describes
+    the adaptive backend's variant of the schedule.
 
     ``normals`` are **required** and must be globally consistently oriented (all pointing outward or
     all inward): the reconstruction encodes the surface orientation in the sign of the vector field,
@@ -484,12 +485,13 @@ def screened_poisson(
         ``confidence`` is set).
     depth
         Finest grid depth: the finest grid has ``2**depth + 1`` nodes per axis. Memory grows as the
-        cube of this; ``depth=8`` (a ``257**3`` grid) is a safe default and ``depth`` is capped at
-        ``10``. This is the single biggest lever on both cost and quality — see Notes before
+        cube of this; ``depth=8`` (a ``257**3`` grid) is a safe default, and a ``depth`` above
+        ``10`` raises. This is the single biggest lever on both cost and quality — see Notes before
         lowering it.
     full_depth
-        Coarsest depth of the cascade (``3 <= full_depth <= depth``). The system is solved at every
-        depth from ``full_depth`` to ``depth``.
+        Coarsest depth of the cascade (``3 <= full_depth <= depth``). The dense backend solves the
+        system at every depth from ``full_depth`` to ``depth``; the adaptive one solves its dense
+        base at ``max(full_depth, depth - 2)`` and a band level at every depth above it.
     scale
         Ratio between the reconstruction cube's side and the point cloud's largest bounding-box
         extent (``>= 1``, so the cube always contains the cloud); ``1.1`` pads the cloud by 10 %.
@@ -497,14 +499,17 @@ def screened_poisson(
         Screening weight ``alpha`` tying the iso-surface to the input samples. ``0`` recovers the
         unscreened Poisson reconstruction (a tiny epsilon is still added to keep the operator SPD).
     solver_iterations
-        Maximum conjugate-gradient iterations per cascade level. The default leaves room: the dense
-        grid's multigrid-preconditioned solve reaches the default tolerance in a dozen or so at any
-        depth, and the adaptive backend's Jacobi-preconditioned one in under a hundred.
+        Maximum conjugate-gradient iterations per dense level (every level of the dense backend,
+        the adaptive backend's dense base). The default leaves room: the multigrid-preconditioned
+        solve reaches the default tolerance in a dozen or so at any depth. The adaptive backend's
+        band levels instead run a fixed, smaller number of Jacobi-preconditioned rounds, capped by
+        this value: each only corrects its coarser level's solution near the surface.
     solver_tolerance
-        Relative residual tolerance for the conjugate-gradient solve. A level that stops at
-        ``solver_iterations`` above it warns. The system is solved in ``float32``, whose rounding
-        bounds the relative residual either backend can actually reach at a few ``1e-6`` -- a
-        tolerance below that is never met and only spends the whole iteration budget.
+        Relative residual tolerance for the conjugate-gradient solves. A dense level that stops at
+        ``solver_iterations`` above it warns; an adaptive band level stops at it or at its fixed
+        round count and never warns. The system is solved in ``float32``, whose rounding bounds
+        the relative residual either backend can actually reach at a few ``1e-6`` -- a tolerance
+        below that is never met and only spends the whole iteration budget.
     confidence
         When ``True``, weight each sample's splat by ``|normals[i]|`` (treating the normal magnitude
         as a per-sample confidence), matching PoissonRecon's ``confidence`` flag.
@@ -536,15 +541,23 @@ def screened_poisson(
     Raises
     ------
     ValueError
-        If ``points`` has fewer than 3 points, or the depth/scale parameters are out of range.
+        If ``points`` has fewer than 3 points, ``normals`` does not have one entry per point, the
+        depth/scale parameters are out of range, or ``method`` is not ``"dense"`` or
+        ``"adaptive"``.
     RuntimeError
         If ``points`` and ``normals`` are not all on one device.
 
     Warns
     -----
     UserWarning
-        When a level's conjugate-gradient solve stops at ``solver_iterations`` with its residual
-        still above ``solver_tolerance``: the surface is then extracted from an unconverged field.
+        When a dense level's conjugate-gradient solve (any level of the dense backend, the adaptive
+        backend's dense base) stops at ``solver_iterations`` with its residual still above
+        ``solver_tolerance``: the surface is then extracted from an unconverged field. The
+        adaptive backend's band levels are not checked (see ``solver_iterations``).
+    UserWarning
+        With ``method="adaptive"``, when the extraction meets crossing cells its narrow band cannot
+        hold (as a degenerate, for instance coplanar, cloud does): those cells are dropped and the
+        surface has holes.
 
     See Also
     --------
@@ -609,6 +622,12 @@ def screened_poisson(
     n = points.size
     if n < 3:
         raise ValueError(f"screened_poisson requires at least 3 points, got {n}.")
+    if normals.size != n:
+        # Every splat and sampling kernel reads ``normals[i]`` for each point ``i``.
+        raise ValueError(
+            f"screened_poisson requires one normal per point, got {normals.size} normals for "
+            f"{n} points."
+        )
 
     cube_lower, cube_upper, cube_size = _poisson_cube(points, scale)
     # Effective screening weight: a floor keeps the operator SPD even at point_weight == 0.
@@ -654,13 +673,14 @@ def screened_poisson(
             odt.as_array3d(solution.reshape((res, res, res)), wp.float32),
             iso,
             bounds=(cube_lower, cube_upper),
-            edge_margin=_lattice_edge_margin(cube_size / float(res - 1)),
+            edge_margin=kernel_levelset.lattice_edge_margin(cube_size / float(res - 1)),
         )
 
-    # Both extractions keep every vertex ``_lattice_edge_margin`` of an edge off the lattice nodes,
-    # which is what makes the surface free of degenerate faces: without it a vertex lands within
-    # rounding of a node wherever the level set grazes one, and the slivers around it fall under
-    # ``face_nondegenerate_mask``'s absolute tolerance -- dozens a call at depth 9, and removing
+    # Both extractions keep every vertex ``kernel_levelset.lattice_edge_margin`` of an edge off the
+    # lattice nodes, which is what makes the surface free of degenerate faces: without it a vertex
+    # lands within rounding of a node wherever the level set grazes one, and the slivers around it
+    # fall under ``face_nondegenerate_mask``'s absolute tolerance -- dozens a call at depth 9, and
+    # removing
     # them opened the closed surface, since their neighbours do not share their vertices. This
     # drop is then a guard for a lattice so fine its spacing nears that tolerance. It is
     # deliberately *not* the full ``_clean_reconstruction`` tail the other three reconstructions
@@ -809,8 +829,8 @@ def _poisson_solve_level(
 
     Splats the oriented normals into the vector field ``V`` and density weight ``W`` on a
     ``res**3`` node grid, normalizes ``V``, builds the negative-divergence right-hand side, and runs
-    a Jacobi-preconditioned conjugate gradient with the screened Laplacian applied as a
-    ``warp.optim.linear.LinearOperator``. ``initial`` is the warm start and is solved in place;
+    ``_solve_screened_poisson``'s multigrid-preconditioned conjugate gradient with the screened
+    Laplacian applied matrix-free. ``initial`` is the warm start and is solved in place;
     ``iterations`` receives the round count, and the returned device pair is the squared threshold
     and squared residual (``_solve_screened_poisson``) -- nothing is read back here.
     """
@@ -1200,7 +1220,6 @@ def _screened_poisson_band(
     solver_iterations: int,
     solver_tolerance: float,
     confidence: bool,
-    diagnostics: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Solve the screened-Poisson system on a narrow band of the dense lattice and extract it.
@@ -1220,9 +1239,9 @@ def _screened_poisson_band(
     the surface closes a hole the samples leave open -- and the band levels are solved coarse to
     fine. The surface is extracted from the composite field (band values, prolonged coarse ones off
     the band) over the finest band grown by a brick, with ``levelset.marching_cubes``' numbering
-    and edge margin. ``diagnostics``, when given, receives ``[missing, skipped]``: coarse nodes a
-    restriction or a ghost found absent (the nesting makes it zero) and crossing cells the
-    extraction band could not own (a hole); both are counted on the device, never read here.
+    and edge margin. Two counts are kept on the device and read with the extraction's totals:
+    coarse nodes a restriction or a ghost found absent (the nesting makes it zero) and crossing
+    cells the extraction band could not own (each a hole); either being nonzero warns.
     """
     device = points.device
     n = points.size
@@ -1230,9 +1249,7 @@ def _screened_poisson_band(
     res_f = (1 << depth) + 1
     nbk_f = (res_f + 7) // 8
     res_b = (1 << base) + 1
-    if diagnostics is None:
-        diagnostics = _launch.zeros(2, dtype=wp.int32, device=device)
-    missing = odt.as_dense(diagnostics[0:1])
+    missing = _launch.zeros(1, dtype=wp.int32, device=device)
 
     # Pass 1: the sample bands, the finest data and its restriction to the dense base.
     sample_flags = _launch.zeros(nbk_f**3, dtype=wp.int32, device=device)
@@ -1244,7 +1261,9 @@ def _screened_poisson_band(
         device=device,
     )
     final_flags = _launch.clone(sample_flags)
-    sample_bands = _band_levels(sample_flags, depth, base, device)
+    sample_levels = _band_hierarchy_flags(sample_flags, depth, base, device)
+    sample_built, _ = _compact_bands(list(sample_levels.values()), device)
+    sample_bands = dict(zip(sample_levels, sample_built, strict=True))
     data = _band_data(
         sample_bands, points, normals, cube_lower, cube_size, confidence, missing, device
     )
@@ -1315,9 +1334,15 @@ def _screened_poisson_band(
         outputs=[extract_flags],
         device=device,
     )
-    bands = _band_levels(final_flags, depth, base, device)
-    # Read after the band builds' own reads, which have already waited for the base solve.
-    _warn_if_unconverged(res_b, int(read_scalar(base_rounds)), base_residual, solver_iterations)
+    final_levels = _band_hierarchy_flags(final_flags, depth, base, device)
+    # Every final band's brick count, the extraction band's and the base solve's round count in
+    # one read, which waits for the base solve that the crossing bricks already depend on.
+    built, (base_iterations,) = _compact_bands(
+        [*final_levels.values(), (extract_flags, res_f)], device, tail=base_rounds
+    )
+    *final_built, extract = built
+    bands = dict(zip(final_levels, final_built, strict=True))
+    _warn_if_unconverged(res_b, base_iterations, base_residual, solver_iterations)
 
     # The band levels, coarse to fine, each from the prolonged level below it.
     coarse_map: wp.array[wp.int32] | None = None
@@ -1396,7 +1421,6 @@ def _screened_poisson_band(
         device=device,
     )
     iso = _poisson_iso_value(sampled, normals, confidence)
-    extract = _band_level(extract_flags, res_f, device)
     composite = [
         finest.brick_map,
         fine_x,
@@ -1408,16 +1432,28 @@ def _screened_poisson_band(
         wp.float32(iso),
     ]
     table = _marching_cubes_table(wp.get_device(device).alias)
-    counts = _launch.empty(extract.n_nodes, dtype=wp.vec2i, device=device)
+    # The per-node counts, then one slot the counts kernel accumulates ``(missing, skipped)`` into
+    # (zeroed for it), so the scan's totals and the diagnostics come back in one read.
+    extract_nodes = extract.n_nodes
+    counts_and_diagnostics = _launch.zeros(extract_nodes + 1, dtype=wp.vec2i, device=device)
+    counts = odt.as_dense(counts_and_diagnostics[:extract_nodes])
     _launch.launch(
         kernel_poisson_band.band_marching_cubes_counts,
-        dim=extract.n_nodes,
-        inputs=[extract.brick_coords, extract.brick_map, extract.nbk, *composite, table],
-        outputs=[counts, odt.as_dense(diagnostics[1:2])],
+        dim=extract_nodes,
+        inputs=[extract.brick_coords, extract.brick_map, extract.nbk, *composite, table, missing],
+        outputs=[counts, odt.as_dense(counts_and_diagnostics[extract_nodes:])],
         device=device,
     )
     _launch.array_scan(counts, counts, inclusive=True)
-    totals = read_scalar(counts)
+    # The totals size the outputs, so they are read; the diagnostics ride in the same copy.
+    totals, (n_missing, n_skipped) = read_values(counts_and_diagnostics, extract_nodes - 1, 2)
+    if n_missing > 0 or n_skipped > 0:
+        warnings.warn(
+            f"screened_poisson: the adaptive extraction dropped {n_skipped} crossing cell(s) its "
+            f"band could not hold and {n_missing} coarse node(s) absent from a band, so the "
+            "surface has holes.",
+            stacklevel=3,
+        )
     vertices = _launch.empty(int(totals[0]), dtype=wp.vec3, device=device)
     faces = _launch.empty(3 * int(totals[1]), dtype=wp.int32, device=device)
     if vertices.size > 0:
@@ -1432,7 +1468,7 @@ def _screened_poisson_band(
                 *composite,
                 cube_lower,
                 wp.vec3(spacing, spacing, spacing),
-                wp.float32(_lattice_edge_margin(cube_size / float(res_f - 1))),
+                wp.float32(kernel_levelset.lattice_edge_margin(cube_size / float(res_f - 1))),
                 table,
                 counts,
             ],
@@ -1442,17 +1478,17 @@ def _screened_poisson_band(
     return vertices, faces
 
 
-def _band_levels(
+def _band_hierarchy_flags(
     flags: wp.array[wp.int32], depth: int, base: int, device: wp.DeviceLike
-) -> dict[int, _BandLevel]:
+) -> dict[int, tuple[wp.array[wp.int32], int]]:
     """
-    Build the band at every level from ``depth`` down to ``base + 1``, the finest from ``flags``.
+    Every band level's brick flags and resolution, from ``depth`` down to ``base + 1``.
 
-    Each coarser level holds the bricks covering its finer level's, grown by one coarse brick, so
-    every ghost a finer level reads and every node its data restricts into is stored. ``flags`` is
-    consumed (scanned in place).
+    The finest level's flags are ``flags``; each coarser level holds the bricks covering its finer
+    level's, grown by one coarse brick, so every ghost a finer level reads and every node its data
+    restricts into is stored. Every set is built before ``_compact_bands`` scans any in place.
     """
-    level_flags = {depth: flags}
+    level_flags = {depth: (flags, (1 << depth) + 1)}
     for level in range(depth - 1, base, -1):
         nbk_f = ((1 << (level + 1)) + 8) // 8
         nbk_c = ((1 << level) + 8) // 8
@@ -1460,7 +1496,7 @@ def _band_levels(
         _launch.launch(
             kernel_poisson_band.project_bricks,
             dim=(nbk_f, nbk_f, nbk_f),
-            inputs=[level_flags[level + 1], nbk_f, nbk_c],
+            inputs=[level_flags[level + 1][0], nbk_f, nbk_c],
             outputs=[projected],
             device=device,
         )
@@ -1472,30 +1508,49 @@ def _band_levels(
             outputs=[grown],
             device=device,
         )
-        level_flags[level] = grown
-    return {
-        level: _band_level(level_flags[level], (1 << level) + 1, device) for level in level_flags
-    }
+        level_flags[level] = (grown, (1 << level) + 1)
+    return level_flags
 
 
-def _band_level(flags: wp.array[wp.int32], res: int, device: wp.DeviceLike) -> _BandLevel:
-    """Compact a brick flag set into a ``_BandLevel``; ``flags`` is scanned in place."""
-    nbk = (res + 7) // 8
-    _launch.array_scan(flags, flags, inclusive=True)
-    # The brick count sizes the band's storage, so it is read.
-    n_bricks = int(read_scalar(flags))
-    brick_map = _launch.empty(nbk**3, dtype=wp.int32, device=device)
-    brick_coords = _launch.empty(max(n_bricks, 1), dtype=wp.vec3i, device=device)
-    _launch.launch(
-        kernel_poisson_band.compact_bricks,
-        dim=nbk**3,
-        inputs=[flags, nbk],
-        outputs=[brick_map, brick_coords],
-        device=device,
-    )
-    return _BandLevel(
-        res, nbk, brick_map, brick_coords, n_bricks * int(kernel_poisson_band.BRICK_NODES)
-    )
+def _compact_bands(
+    flag_sets: list[tuple[wp.array[wp.int32], int]],
+    device: wp.DeviceLike,
+    *,
+    tail: wp.array[wp.int32] | None = None,
+) -> tuple[list[_BandLevel], list[int]]:
+    """
+    Compact each ``(flags, res)`` brick set into a ``_BandLevel``, scanning ``flags`` in place.
+
+    The brick counts size the bands' storage, so they are read -- every set's in one copy, with
+    ``tail[0]`` (a device count the caller wants at the same point) appended to the read and
+    returned as the second item.
+    """
+    n_sets = len(flag_sets)
+    totals = _launch.empty(n_sets + (0 if tail is None else 1), dtype=wp.int32, device=device)
+    for k, (flags, _res) in enumerate(flag_sets):
+        _launch.array_scan(flags, flags, inclusive=True)
+        _launch.copy(totals, flags, dest_offset=k, src_offset=flags.size - 1, count=1)
+    if tail is not None:
+        _launch.copy(totals, tail, dest_offset=n_sets, count=1)
+    values = [int(value) for value in read_values(totals, 0, totals.size)]
+    levels: list[_BandLevel] = []
+    for (flags, res), n_bricks in zip(flag_sets, values[:n_sets], strict=True):
+        nbk = (res + 7) // 8
+        brick_map = _launch.empty(nbk**3, dtype=wp.int32, device=device)
+        brick_coords = _launch.empty(max(n_bricks, 1), dtype=wp.vec3i, device=device)
+        _launch.launch(
+            kernel_poisson_band.compact_bricks,
+            dim=nbk**3,
+            inputs=[flags, nbk],
+            outputs=[brick_map, brick_coords],
+            device=device,
+        )
+        levels.append(
+            _BandLevel(
+                res, nbk, brick_map, brick_coords, n_bricks * int(kernel_poisson_band.BRICK_NODES)
+            )
+        )
+    return levels, values[n_sets:]
 
 
 def _band_data(
@@ -1812,7 +1867,7 @@ def resample_uniform(
         (n_x, n_y, n_z),
         bounds=(grid_lower, grid_upper),
         sign_mode=sign_mode,
-        edge_margin=_lattice_edge_margin(voxel_size),
+        edge_margin=kernel_levelset.lattice_edge_margin(voxel_size),
     )
     # The margin keeps every vertex off the lattice nodes. Without it a node landing on the level
     # set (a unit cube on a 0.05 grid puts whole planes of nodes on its faces) leaves slivers the
@@ -1821,20 +1876,6 @@ def resample_uniform(
     # set of a signed field is already closed, so any hole here would be a symptom worth surfacing
     # rather than patching over.
     return _clean_reconstruction(out_vertices, out_faces, 0.0)
-
-
-def _lattice_edge_margin(spacing: float) -> float:
-    """
-    ``levelset.marching_cubes``' ``edge_margin`` for a lattice of the given node ``spacing``.
-
-    A margin ``m`` bounds every triangle's altitudes below by about ``0.7 * m`` lattice spacings
-    (the worst triangle of the case table at ``m = 0.1``), and ``face_nondegenerate_mask`` rejects
-    an altitude under ``TOLERANCE_MERGE``, an absolute length. So the margin is the smallest of
-    ``1e-3`` of an edge and what clears that tolerance sixteen-fold, capped at ``0.1``: a vertex
-    moves at most a thousandth of a cell at every ordinary scale. Shared by the Poisson
-    extractions and ``resample_uniform``, the reconstructions that extract a level set.
-    """
-    return min(0.1, max(1e-3, 16.0 * TOLERANCE_MERGE / spacing))
 
 
 def ball_pivoting(

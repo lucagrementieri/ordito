@@ -9,6 +9,9 @@ marker.
 
 from __future__ import annotations
 
+import weakref
+from typing import Any, cast
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -18,6 +21,7 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
+from ordito.kernels import cholesky as kernel_cholesky
 from tests.conversions import bsr_to_csr, numpy_to_warp, scipy_to_bsr, warp_empty
 
 
@@ -70,11 +74,11 @@ def test_sparse_cholesky_matches_spsolve(
     def backward_error(x: np.ndarray) -> float:
         return float((np.abs(rhs_np - system_sp @ x) / (abs_sp @ np.abs(x) + np.abs(rhs_np))).max())
 
-    # The default ``tol=1e-12`` stops once no entry moves by 1e-12 of itself, which is not SciPy's
-    # backward error (``sphere_irregular``: 2.2e-15 against 3.7e-16). ``tol`` is a change test, so
-    # 1e-15 is not enough either: the pattern ordering stops there at 8.2e-16 / 9.5e-16 (CUDA /
-    # CPU). Refined until no entry moves by 1e-16 of itself, every ordering on both fixtures and
-    # devices reaches 1.9e-16 to 2.8e-16, below SciPy's 3.7e-16 to 5.4e-16.
+    # ``tol`` bounds the componentwise backward error refinement stops at, so the default 1e-12
+    # stops above SciPy's (``sphere_irregular``: 2.2e-15 against 3.7e-16), and 1e-15 is not enough
+    # either: the pattern ordering stops there at 8.2e-16 / 9.5e-16 (CUDA / CPU). At 1e-16, below
+    # what rounding reaches, every ordering on both fixtures and devices refines to 1.9e-16 to
+    # 2.8e-16, below SciPy's 3.7e-16 to 5.4e-16.
     tight = wp.zeros(n, dtype=wp.float64, device=mesh_wp.device)
     factor.solve(
         wp.array(rhs_np, dtype=wp.float64, device=mesh_wp.device),
@@ -161,6 +165,95 @@ def test_refactor_takes_new_values_of_the_same_pattern(
     assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
 
 
+def test_refactor_rejects_another_operator_shape(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Not a library comparison: ``refactor`` and ``with_operator`` refuse an operator of another size.
+
+    No reference reuses an analysis. An operator of another row count, or of the same rows storing
+    fewer entries than the analysed pattern, made the factorization's kernels read past its
+    storage (on the CPU a crash); both are now a ``ValueError`` before any launch.
+    """
+    _, mesh_wp = sphere_irregular
+    system = _heat_system(mesh_wp)
+    n = int(system.nrow)
+    factor = od.cholesky.sparse_cholesky(system, mesh_wp.points)
+    smaller = scipy_to_bsr(sp.identity(n - 1, format="csr"), device)
+    diagonal = scipy_to_bsr(sp.identity(n, format="csr"), device)
+    for operator, match in ((smaller, "expected an"), (diagonal, "fewer entries")):
+        with pytest.raises(ValueError, match=match):
+            factor.refactor(operator)
+        with pytest.raises(ValueError, match=match):
+            factor.with_operator(operator)
+    # The refused calls left the factorization as it was.
+    rhs_np = np.random.default_rng(17).standard_normal(n)
+    solution = wp.zeros(n, dtype=wp.float64, device=device)
+    factor.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution)
+    expected = spla.spsolve(bsr_to_csr(system).tocsc(), rhs_np)
+    assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
+
+
+def test_a_failed_refactor_leaves_no_factor_until_the_next(
+    device: str, saddle_graded: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Class A at 1e-12: after a refused ``refactor``, ``solve`` raises; a later good one solves.
+
+    The refused operator overwrote the factor, and the solves used to return its NaNs silently.
+    Two refactors run, so the second goes through the recorded factorization path as well.
+    """
+    _, mesh_wp = saddle_graded
+    system_np = bsr_to_csr(_heat_system(mesh_wp))
+    n = system_np.shape[0]
+    rhs = wp.array(np.random.default_rng(19).standard_normal(n), dtype=wp.float64, device=device)
+    factor = od.cholesky.sparse_cholesky(scipy_to_bsr(system_np, device), mesh_wp.points)
+    solution = wp.zeros(n, dtype=wp.float64, device=device)
+    for _ in range(2):
+        with pytest.raises(od.cholesky.NotPositiveDefiniteError):
+            factor.refactor(scipy_to_bsr(sp.csr_matrix(-system_np), device))
+        with pytest.raises(RuntimeError, match="refactor failed"):
+            factor.solve(rhs, solution)
+        factor.refactor(scipy_to_bsr(sp.csr_matrix(3.0 * system_np), device))
+        solution.zero_()
+        factor.solve(rhs, solution)
+        expected = spla.spsolve((3.0 * system_np).tocsc(), rhs.numpy())
+        assert np.allclose(
+            solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max()
+        )
+
+
+def test_either_sign_frees_the_refused_attempt_first(
+    monkeypatch: pytest.MonkeyPatch, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Not a parity assert: ``negated=None`` drops its first, refused attempt before the second.
+
+    The sign probe is forced wrong, so the first attempt fails; its solve blocks must be released
+    by the time the second attempt allocates its own (the retry used to run inside the exception
+    handler, whose traceback kept the first attempt's arena alive: two at peak).
+    """
+    _, mesh_wp = sphere_irregular
+    laplacian = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float64)
+    plan_type = od.cholesky._Plan  # pyright: ignore[reportPrivateUsage]
+    numeric = plan_type.numeric
+    attempts: list[weakref.ref[wp.array[wp.float64]]] = []
+    alive_at_retry: list[bool] = []
+
+    def recording(plan: object) -> object:
+        alive_at_retry.extend(attempt() is not None for attempt in attempts)
+        state = numeric(cast("Any", plan))
+        attempts.append(weakref.ref(state.blocks))
+        return state
+
+    monkeypatch.setattr(plan_type, "numeric", recording)
+    monkeypatch.setattr(od.cholesky, "_leading_diagonal_negative", lambda _matrix: False)
+    factor = od.cholesky.sparse_cholesky(laplacian, mesh_wp.points, negated=None)
+    assert factor.negated
+    assert len(attempts) == 2
+    assert alive_at_retry == [False]
+
+
 def test_an_empty_row_keeps_its_initial_value(device: str) -> None:
     """Class A: an unreferenced row (no entries) is a singular component of one, left untouched."""
     block = sp.csr_matrix(np.array([[4.0, -1.0], [-1.0, 4.0]]))
@@ -225,6 +318,89 @@ def test_sparse_cholesky_rejects_mismatched_inputs(
             wp.zeros(n + 1, dtype=wp.float64, device=device),
             wp.zeros(n + 1, dtype=wp.float64, device=device),
         )
+
+
+def test_sparse_cholesky_rejects_a_one_sided_entry(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Not a library comparison: a stored entry whose transpose is not stored raises ``ValueError``.
+
+    SciPy's solvers take any pattern. The factorization reads one triangle of the pattern, so an
+    entry stored on one side only (here an explicit zero, numerically symmetric) made its
+    extend-add write outside the fronts; the analysis now rejects it. Both an entry in the upper
+    and one in the lower triangle are tried, between rows the mesh does not join.
+    """
+    _, mesh_wp = sphere_irregular
+    system_np = bsr_to_csr(_heat_system(mesh_wp)).tolil()
+    n = system_np.shape[0]
+    far = int(np.flatnonzero(system_np.getrow(0).toarray()[0] == 0.0)[-1])
+    assert far > 0
+    for row, column in ((0, far), (far, 0)):
+        one_sided = system_np.copy()
+        one_sided[row, column] = 1.0
+        one_sided = one_sided.tocsr()
+        one_sided.data[one_sided.indptr[row] : one_sided.indptr[row + 1]][
+            one_sided.indices[one_sided.indptr[row] : one_sided.indptr[row + 1]] == column
+        ] = 0.0
+        assert one_sided.nnz == system_np.nnz + 1
+        with pytest.raises(ValueError, match="not symmetric"):
+            od.cholesky.sparse_cholesky(scipy_to_bsr(one_sided, device), mesh_wp.points)
+    assert n == int(mesh_wp.points.shape[0])
+
+
+def test_refinement_never_passes_a_nan_residual(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Not a library comparison: a NaN solution fails both backward-error tests instead of passing.
+
+    Both tests used ``error > tol * scale``, false for NaN, so a NaN initial guess passed the
+    refinement's first test (the solve returned at once) and ``backward_error_exceeds`` (the
+    verified solves' check) cleared it. The refinement now runs to its round cap, and the check
+    flags; the same solution with its NaN replaced passes both.
+    """
+    _, mesh_wp = sphere_irregular
+    system = _heat_system(mesh_wp)
+    n = int(system.nrow)
+    rhs_np = np.random.default_rng(23).standard_normal(n)
+    exact_np = spla.spsolve(bsr_to_csr(system).tocsc(), rhs_np)
+    rhs = wp.array(rhs_np, dtype=wp.float64, device=device)
+    factor = od.cholesky.sparse_cholesky(system, mesh_wp.points)
+    for guess_np, rounds, flagged in (
+        (np.where(np.arange(n) == 5, np.nan, exact_np), od.cholesky.CHOLESKY_REFINE_ROUNDS + 1, 1),
+        (exact_np, 1, 0),
+    ):
+        solution = wp.array(guess_np, dtype=wp.float64, device=device)
+        factor.solve(rhs, solution)
+        state = factor._solves[1].state.numpy()  # pyright: ignore[reportPrivateUsage]
+        assert state[int(kernel_cholesky.REFINE_ROUND)] == rounds
+        flag = wp.zeros(1, dtype=wp.int32, device=device)
+        nothing = wp.zeros(0, dtype=wp.float64, device=device)
+        wp.launch(
+            kernel_cholesky.backward_error_exceeds,
+            dim=(n, 1),
+            inputs=[system.offsets, system.columns, system.values,
+                    wp.array(guess_np, dtype=wp.float64, device=device), rhs, wp.int32(n),
+                    wp.float64(1e-10), nothing, nothing],
+            outputs=[flag],
+            device=device,
+        )  # fmt: skip
+        assert int(flag.numpy()[0]) == flagged
+        # A NaN residual or threshold of a conjugate-gradient result flags its column too.
+        residual = wp.array([np.nan], dtype=wp.float64, device=device)
+        threshold = wp.array([1.0], dtype=wp.float64, device=device)
+        flag.zero_()
+        wp.launch(
+            kernel_cholesky.backward_error_exceeds,
+            dim=(n, 1),
+            inputs=[system.offsets, system.columns, system.values,
+                    wp.array(exact_np, dtype=wp.float64, device=device), rhs, wp.int32(n),
+                    wp.float64(1e-10), residual, threshold],
+            outputs=[flag],
+            device=device,
+        )  # fmt: skip
+        assert int(flag.numpy()[0]) == 1
 
 
 def test_negated_factorization_solves_a_negative_definite_operator(
@@ -350,3 +526,54 @@ def test_landmark_coordinates_match_the_host_search(device: str) -> None:
     host = od.cholesky._host_landmark_coordinates(system, labels)  # pyright: ignore[reportPrivateUsage]
     assert np.ptp(host[:, 2]) > 4.0
     assert np.array_equal(coordinates.numpy().view(np.float32).reshape(-1, 3), host)
+
+
+def test_landmark_coordinates_match_breadth_first_distances(device: str) -> None:
+    """
+    Class A: the landmark coordinates of many components against SciPy's breadth-first distances.
+
+    A pattern of 300 components -- paths of 40 to 79 rows with chords inside each, and paths of
+    at most ``CHOLESKY_LEAF_ROWS`` rows that keep zero coordinates -- so the host's simultaneous
+    searches (the CPU path, linear in the pattern) and the device's both meet ties and small
+    components. The reference runs each landmark's search per component with
+    [`scipy.sparse.csgraph.shortest_path`][] and picks the next landmark as the sequence does:
+    farthest by the nearer of the last two, the lowest row on a tie.
+    """
+    rng = np.random.default_rng(29)
+    sizes = np.where(np.arange(300) % 3 == 0, rng.integers(5, 33, 300), rng.integers(40, 80, 300))
+    starts = np.concatenate([[0], np.cumsum(sizes)])
+    n = int(starts[-1])
+    rows, cols = [np.arange(n)], [np.arange(n)]
+    for start, size in zip(starts[:-1], sizes, strict=True):
+        path = np.arange(start, start + size - 1)
+        chords = start + rng.integers(0, size, (size // 10, 2))
+        rows += [path, chords[:, 0]]
+        cols += [path + 1, chords[:, 1]]
+    row_np, col_np = np.concatenate(rows), np.concatenate(cols)
+    pattern = sp.csr_matrix(
+        (np.ones(2 * row_np.size), (np.r_[row_np, col_np], np.r_[col_np, row_np])), shape=(n, n)
+    )
+    pattern.sum_duplicates()
+    system = scipy_to_bsr(pattern, device)
+    labels = od.graph.connected_component_labels(system)
+    coordinates = od.cholesky._landmark_coordinates(system, labels)  # pyright: ignore[reportPrivateUsage]
+    coordinates_np = coordinates.numpy().view(np.float32).reshape(-1, 3)
+    expected = np.zeros((n, 3))
+    searched = 0
+    for start, size in zip(starts[:-1], sizes, strict=True):
+        if size <= od.cholesky.CHOLESKY_LEAF_ROWS:
+            continue
+        searched += 1
+        block = pattern[start : start + size][:, start : start + size]
+
+        def hops(seed: int, block: sp.csr_matrix = block) -> np.ndarray:
+            return sp.csgraph.shortest_path(block, unweighted=True, indices=seed)
+
+        first = hops(0)
+        a = hops(int(np.argmax(first)))
+        b = hops(int(np.argmax(a)))
+        c = hops(int(np.argmax(np.minimum(a, b))))
+        expected[start : start + size] = np.stack([a, b, c], 1)
+    assert searched > 150
+    assert np.ptp(expected[:, 2]) > 20.0
+    assert np.array_equal(coordinates_np, expected.astype(np.float32))

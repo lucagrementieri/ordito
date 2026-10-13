@@ -901,3 +901,109 @@ def test_fixed_vertex_maps_reject_an_off_menu_solver(
         function(mesh_wp.points, mesh_wp.indices, fixed, values, solver="cholesky")
     with pytest.raises(ValueError, match="solver"):
         function(od.Trimesh(mesh_wp.points, mesh_wp.indices), fixed, values, solver="cholesky")
+
+
+def _malformed_fixed_set(
+    method: str, mesh_wp: wp.Mesh, case: str
+) -> tuple[wp.array[wp.int32], wp.array[wp.vec2]]:
+    """
+    Return a ``method`` fixed set that repeats a vertex or leaves the mesh, and matching UVs.
+
+    ``lscm``'s repeat is ``[p, p]``: two pins that fix one vertex, a null space left unpinned.
+    """
+    fixed, _ = _fixed_vertex_call(method, mesh_wp, 1.0)
+    fixed_np = fixed.numpy()
+    n_vertices = mesh_wp.points.size
+    if case == "repeated":
+        if method == "lscm":
+            fixed_np = np.array([fixed_np[0], fixed_np[0]], dtype=np.int32)
+        else:
+            fixed_np = np.append(fixed_np, fixed_np[0]).astype(np.int32)
+    elif case == "out_of_range":
+        fixed_np = fixed_np.copy()
+        fixed_np[-1] = n_vertices
+    else:  # every index out of range: nothing at all would be fixed
+        fixed_np = (n_vertices + np.arange(fixed_np.size)).astype(np.int32)
+    device = mesh_wp.points.device
+    uv = wp.zeros(fixed_np.size, dtype=wp.vec2, device=device)
+    return wp.array(fixed_np, dtype=wp.int32, device=device), uv
+
+
+@pytest.mark.parametrize("case", ["repeated", "out_of_range", "all_out_of_range"])
+@pytest.mark.parametrize(
+    ("method", "k"), [("harmonic", 1), ("harmonic", 2), ("harmonic", 3), ("tutte", 1), ("lscm", 1)]
+)
+def test_fixed_vertex_maps_reject_repeated_or_out_of_range_indices(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], method: str, k: int, case: str
+) -> None:
+    """
+    Not a parity assert: a fixed set that repeats a vertex or leaves the mesh raises ``ValueError``.
+
+    The scatter skips an out-of-range index and marks a repeated one once, so either fixes fewer
+    vertices than given: unchecked, ``lscm`` pinned at ``[p, p]`` returned an all-zero map and
+    ``harmonic`` with every index out of range returned zeros. Both forms raise, and a `Trimesh`
+    holding a factorization of the valid set raises too (the repeated set's mask equals it, so
+    the kept system would otherwise answer it). ``FixedVertexSolver.factor`` raises as well.
+    """
+    _, mesh_wp = sphere_irregular_cap
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    function = getattr(od.parametrization, method)
+    keywords = {} if method == "lscm" else {"k": k}
+    fixed, uv = _malformed_fixed_set(method, mesh_wp, case)
+    with pytest.raises(ValueError, match="distinct"):
+        function(vertices, faces, fixed, uv, **keywords)
+    mesh = od.Trimesh(vertices, faces)
+    valid, _ = _fixed_vertex_call(method, mesh_wp, 1.0)
+    assert mesh.fixed_vertex_solver().factor(method, valid, k=k)
+    with pytest.raises(ValueError, match="distinct"):
+        function(mesh, fixed, uv, **keywords)
+    with pytest.raises(ValueError, match="distinct"):
+        mesh.fixed_vertex_solver().factor(method, fixed, k=k)
+
+
+@pytest.mark.parametrize("case", ["repeated", "out_of_range"])
+def test_arap_rejects_repeated_or_out_of_range_indices(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], case: str
+) -> None:
+    """Not a parity assert: ``arap``'s fixed set is checked as the fixed-vertex maps' is."""
+    _, mesh_wp = sphere_irregular_cap
+    fixed, uv = _malformed_fixed_set("harmonic", mesh_wp, case)
+    with pytest.raises(ValueError, match="distinct"):
+        od.parametrization.arap(mesh_wp.points, mesh_wp.indices, fixed, uv, _uv_init(mesh_wp))
+
+
+def test_a_refused_factorization_is_not_attempted_again_on_a_trimesh(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a parity assert: ``"auto"``'s factor-at-once refusal is remembered by the mesh's solver.
+
+    With the factor-at-once size lowered to this mesh and every factorization refused (the
+    analysis raising as it does over the memory budget), each ``lscm`` call on a `Trimesh` would
+    otherwise pay a refused analysis before iterating. The first call attempts it once; later calls
+    attempt none; ``release_factorizations`` forgets the refusal; the ``vertices, faces`` form,
+    holding no solver, attempts it on every call. The iterated answers agree with each other.
+    """
+    _, mesh_wp = sphere_irregular_cap
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    attempts: list[int] = []
+
+    def refused(*_args: Any, **_kwargs: Any) -> od.cholesky.SparseCholesky:
+        attempts.append(1)
+        raise ValueError("over the memory budget")
+
+    monkeypatch.setattr(od.parametrization, "_FACTOR_FROM_VERTICES", 0)
+    monkeypatch.setattr(od.linalg, "sparse_cholesky", refused)
+    pins, pins_uv = _fixed_vertex_call("lscm", mesh_wp, 1.0)
+    mesh = od.Trimesh(vertices, faces)
+    first = od.parametrization.lscm(mesh, pins, pins_uv).numpy()
+    assert len(attempts) == 1
+    again = od.parametrization.lscm(mesh, pins, pins_uv).numpy()
+    assert len(attempts) == 1
+    assert np.allclose(again, first, rtol=1e-5, atol=1e-5 * np.ptp(first))
+    mesh.release_factorizations()
+    od.parametrization.lscm(mesh, pins, pins_uv)
+    assert len(attempts) == 2
+    for expected in (3, 4):
+        od.parametrization.lscm(vertices, faces, pins, pins_uv)
+        assert len(attempts) == expected

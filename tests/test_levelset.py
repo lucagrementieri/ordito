@@ -296,9 +296,11 @@ def test_marching_cubes_is_warps_extraction_bit_for_bit(device: str, case: str) 
     ``marching_cubes`` ports Warp's dense extraction with its own bookkeeping, and promises the same
     vertex numbering, triangle order and interpolation arithmetic. The arms reach what a port gets
     wrong: an anisotropic lattice with world bounds (the per-axis spacing), values quantized onto
-    ``iso`` (the ``>=`` side of every comparison), and NaN and infinite samples, where Warp's case
-    code reads NaN as below ``iso`` while its edge test never crosses -- so a face names an edge
-    with no vertex, and gets ``-1``.
+    ``iso`` (the ``>=`` side of every comparison), and NaN and infinite samples. There the one
+    documented departure is checked instead: Warp's case code reads NaN as below ``iso`` while its
+    edge test never crosses, so a cell with a NaN corner names edges with no vertex (``-1``);
+    ordito emits no triangle for such a cell, so its faces are Warp's with those cells' triangles
+    removed (Class B: equal after that named filter), and every index names a vertex.
     """
     rng = np.random.default_rng(7)
     bounds = None
@@ -331,9 +333,68 @@ def test_marching_cubes_is_warps_extraction_bit_for_bit(device: str, case: str) 
     assert np.array_equal(
         vertices_wp.numpy().view(np.uint32), vertices_warp.numpy().view(np.uint32)
     )
-    assert np.array_equal(faces_wp.numpy(), faces_warp.numpy())
-    if case == "nan":
-        assert (faces_wp.numpy() == -1).any(), "the NaN arm never reached an edge with no vertex"
+    if case != "nan":
+        assert np.array_equal(faces_wp.numpy(), faces_warp.numpy())
+        return
+    kept_np = _cells_without_nan_triangles(field_np.astype(np.float32), iso)
+    assert (faces_warp.numpy() == -1).any(), "the NaN arm never reached an edge with no vertex"
+    assert not kept_np.all(), "the NaN arm dropped no triangle"
+    assert np.array_equal(
+        faces_wp.numpy().reshape(-1, 3), faces_warp.numpy().reshape(-1, 3)[kept_np]
+    )
+    assert faces_wp.numpy().min() >= 0
+    assert faces_wp.numpy().max() < vertices_wp.size
+
+
+def _cells_without_nan_triangles(field_np: np.ndarray, iso: float) -> np.ndarray:
+    """Mask over Warp's triangles: ``True`` for those of a cell with no NaN corner."""
+    cells = tuple(n - 1 for n in field_np.shape)
+    codes_np = np.zeros(cells, dtype=np.int64)
+    nan_cell_np = np.zeros(cells, dtype=bool)
+    for bit, (di, dj, dk) in enumerate(IsoSurfaceMarchingCubes.CUBE_CORNER_OFFSETS):
+        corner_np = field_np[di : di + cells[0], dj : dj + cells[1], dk : dk + cells[2]]
+        codes_np |= (corner_np >= iso).astype(np.int64) << bit
+        nan_cell_np |= np.isnan(corner_np)
+    ranges_np = np.asarray(IsoSurfaceMarchingCubes.CASE_TO_TRI_RANGE, dtype=np.int64)
+    triangles_np = (ranges_np[codes_np + 1] - ranges_np[codes_np]) // 3
+    return np.repeat(~nan_cell_np.ravel(), triangles_np.ravel())
+
+
+def test_marching_cubes_emits_no_triangle_in_a_cell_with_a_nan_corner(device: str) -> None:
+    """
+    Not a library comparison: Warp's extraction is the reference and returns ``-1`` faces here.
+
+    One cell with a NaN corner and its other seven corners above ``iso``: Warp's case code reads
+    the NaN as below and emits a triangle over the corner's three edges, none of which crosses, so
+    its faces are all ``-1``. Here the cell emits nothing, so the result is empty -- and the face
+    buffer, sized by the triangle count, must not be returned unwritten. Then a corner of that
+    cell drops below ``iso`` and a finite cell wholly above it is stacked on: the corner's three
+    crossing edges belong only to the NaN cell, so their vertices are kept, Warp's bit for bit,
+    with no face naming them (a vertex count but no face count).
+    """
+    field_np = np.ones((2, 2, 2), dtype=np.float32)
+    field_np[0, 0, 0] = np.nan
+    field_wp = odt.as_array3d(wp.array(field_np, dtype=wp.float32, device=device), wp.float32)
+    _vertices_warp, faces_warp = IsoSurfaceMarchingCubes.extract(
+        cast("wp.array3d[wp.float32]", field_wp), 0.0
+    )
+    assert np.array_equal(faces_warp.numpy(), [-1, -1, -1])
+    vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp)
+    assert vertices_wp.size == 0
+    assert faces_wp.size == 0
+
+    field_np = np.ones((2, 2, 3), dtype=np.float32)
+    field_np[0, 0, 0] = np.nan
+    field_np[1, 1, 0] = -1.0
+    field_wp = odt.as_array3d(wp.array(field_np, dtype=wp.float32, device=device), wp.float32)
+    vertices_warp, faces_warp = IsoSurfaceMarchingCubes.extract(
+        cast("wp.array3d[wp.float32]", field_wp), 0.0
+    )
+    assert faces_warp.size > 0
+    vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp)
+    assert faces_wp.size == 0
+    assert vertices_wp.size == 3
+    assert np.array_equal(vertices_wp.numpy(), vertices_warp.numpy())
 
 
 def test_marching_cubes_edge_margin_removes_degenerate_triangles(device: str) -> None:
@@ -380,6 +441,34 @@ def test_marching_cubes_empty_and_invalid(device: str) -> None:
     thin_wp = wp.array(np.zeros((1, 8, 8), dtype=np.float32), dtype=wp.float32, device=device)
     with pytest.raises(ValueError, match="at least 2 wide"):
         od.levelset.marching_cubes(odt.as_array3d(thin_wp, wp.float32))
+
+
+def test_marching_cubes_refuses_what_int32_cannot_index(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the ``int32`` guards, at a lowered limit no real field reaches.
+
+    A field of ``2**31`` nodes or a surface of ``2**31 / 3`` triangles does not fit a test, so the
+    limit is lowered to fall between a noise field's node count (1 000) and three times its
+    triangle count: the node guard must let it through and the face guard stop it, and a limit
+    under the node count must stop it before any launch.
+    """
+    rng = np.random.default_rng(3)
+    field_wp = odt.as_array3d(
+        wp.array(
+            rng.standard_normal((10, 10, 10)).astype(np.float32), dtype=wp.float32, device=device
+        ),
+        wp.float32,
+    )
+    _vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp)
+    assert faces_wp.size > 2000, "the face guard has a surface to stop"
+    monkeypatch.setattr(od.levelset, "_INT32_MAX", 2000)
+    with pytest.raises(ValueError, match="int32 indices"):
+        od.levelset.marching_cubes(field_wp)
+    monkeypatch.setattr(od.levelset, "_INT32_MAX", 999)
+    with pytest.raises(ValueError, match="int32 limit"):
+        od.levelset.marching_cubes(field_wp)
 
 
 def _signed_distance_to(
@@ -564,82 +653,44 @@ def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
     assert empty_faces_wp.size == 0
 
 
-@pytest.mark.parametrize(
-    ("mesh_name", "sparse_expected", "distance", "rotate"),
-    [
-        # ``cave_cube`` is rotated off the lattice planes its faces would otherwise lie on.
-        *(
-            (name, True, distance, rotate)
-            for name, rotate in (("sphere_irregular", False), ("sphere_irregular_hollow", True))
-            for distance in (0.08, -0.04)
-        ),
-        # The open arms pin only that the gate keeps the dense lattice, which one distance shows.
-        *((name, False, 0.08, False) for name in ("boy_surface", "saddle_graded")),
-    ],
-)
-def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
-    request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
-    mesh_name: str,
-    sparse_expected: bool,
-    distance: float,
-    rotate: bool,
-) -> None:
+def test_offset_mesh_keeps_its_vertices_off_the_lattice_nodes(device: str) -> None:
     """
-    Ordito against ordito: the sparse extraction is the dense lattice's surface, and only it runs.
+    Not a library comparison: an offset level on lattice nodes gives no degenerate triangles.
 
-    ``test_offset_mesh_lands_at_the_distance_and_matches_meshlib`` and the pymeshlab comparison
-    carry the oracle on the dense path; this pins the sparse path to it by lowering the node gate
-    to zero (every fixture here is far below the shipped one) and closing the winding lattice's,
-    which would otherwise take every winding-signed lattice this size. On a closed, consistently
-    wound input the two must agree vertex for vertex up to the order of the buffers -- matched by
-    nearest neighbour with a bijection check -- and face for face with the same winding. On an open
-    or non-orientable input the gate must keep the dense lattice, whose winding-signed field jumps
-    away from the surface: the sparse extraction measured a fifth of a hemisphere's offset faces
-    missing there.
-
-    ``cave_cube`` is turned by a generic rotation first. Axis-aligned, its offset level runs
-    exactly through lattice nodes, and a node whose distance rounds onto the level lands on
-    different sides in the two extractions (they place the same node one rounding apart), which
-    picks different, equally valid triangulations there -- a tie, not the defect under test.
+    A unit box grown by 0.1 on a 0.02 lattice puts whole planes of nodes on the offset level (the
+    lattice starts a whole number of cells below the box), where an unmargined extraction lands
+    vertices on nodes and leaves zero-area slivers -- asserted on the same lattice with
+    ``edge_margin=0``, so the arm is not vacuous. ``offset_mesh`` keeps the margin: no face is
+    degenerate, the surface stays watertight, and the triangulation is the unmargined one, the
+    margin only moving vertices.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    if rotate:
-        rotation_np = np.asarray(tm.transformations.rotation_matrix(0.3, [1.0, 2.0, 3.0]))[:3, :3]
-        vertices_wp = points_to_warp(np.asarray(mesh_tm.vertices) @ rotation_np.T, mesh_wp.device)
-    # A spacing of its own, coarser than the derived one: the open arms run the dense lattice twice.
-    voxel_size = float(mesh_tm.scale) / 48.0
-    dense_vertices_wp, dense_faces_wp = od.levelset.offset_mesh(
-        vertices_wp, faces_wp, distance, voxel_size
+    vertices_wp, faces_wp = od.creation.box(device=device)
+    distance, spacing = 0.1, 0.02
+    offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
+        vertices_wp, faces_wp, distance, spacing
+    )
+    shape, bounds = od.proximity.signed_distance_lattice(
+        vertices_wp,
+        spacing,
+        bounds=od.bounds.aabb(vertices_wp),
+        pad=2 + math.ceil(distance / spacing),
+    )
+    bare_vertices_wp, bare_faces_wp = od.levelset.signed_distance_level_set(
+        vertices_wp, faces_wp, distance, shape, bounds=bounds
     )
 
-    calls: list[int] = []
-    sparse = od.levelset.sparse_marching_cubes
+    def areas_np(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> np.ndarray:
+        corners_np = vertices.numpy()[faces.numpy().reshape(-1, 3)]
+        edges_np = np.cross(
+            corners_np[:, 1] - corners_np[:, 0], corners_np[:, 2] - corners_np[:, 0]
+        )
+        return 0.5 * np.linalg.norm(edges_np, axis=1)
 
-    def counted(*args: object, **kwargs: object) -> object:
-        calls.append(1)
-        return sparse(*args, **kwargs)  # pyright: ignore[reportArgumentType]
-
-    monkeypatch.setattr(od.levelset, "_LATTICE_WINDING_BELOW_NODES", 0)
-    monkeypatch.setattr(od.levelset, "_SPARSE_LEVEL_SET_FROM_NODES", 0)
-    monkeypatch.setattr(od.levelset, "sparse_marching_cubes", counted)
-    sparse_vertices_wp, sparse_faces_wp = od.levelset.offset_mesh(
-        vertices_wp, faces_wp, distance, voxel_size
-    )
-    assert len(calls) == int(sparse_expected)
-
-    assert dense_vertices_wp.size > 100, "the offset has a surface to compare"
-    assert sparse_vertices_wp.size == dense_vertices_wp.size
-    gap_np, to_dense_np = map(
-        np.asarray, cKDTree(dense_vertices_wp.numpy()).query(sparse_vertices_wp.numpy())
-    )
-    assert gap_np.max() < 1e-5 * float(mesh_tm.scale)
-    assert np.unique(to_dense_np).shape[0] == to_dense_np.shape[0]
-    assert_unordered_rows_equal(
-        canonical_winding(to_dense_np[sparse_faces_wp.numpy().reshape(-1, 3)]),
-        canonical_winding(dense_faces_wp.numpy().reshape(-1, 3)),
-    )
+    assert (areas_np(bare_vertices_wp, bare_faces_wp) < 1e-10).sum() > 100
+    assert areas_np(offset_vertices_wp, offset_faces_wp).min() > 1e-10
+    assert od.triangles.face_nondegenerate_mask(offset_vertices_wp, offset_faces_wp).numpy().all()
+    assert od.validation.is_watertight(offset_vertices_wp, offset_faces_wp)
+    assert np.array_equal(offset_faces_wp.numpy(), bare_faces_wp.numpy())
 
 
 def test_offset_mesh_guards(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -704,8 +755,101 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     )
 
 
-def test_signed_distance_level_set_guards(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a library comparison: the two documented value guards."""
+@pytest.mark.parametrize(
+    ("mesh_name", "sparse_expected", "distance", "rotate"),
+    [
+        # ``cave_cube`` is rotated off the lattice planes its faces would otherwise lie on.
+        *(
+            (name, True, distance, rotate)
+            for name, rotate in (("sphere_irregular", False), ("sphere_irregular_hollow", True))
+            for distance in (0.08, -0.04)
+        ),
+        # The open arms pin only that the gate keeps the dense lattice, which one distance shows.
+        *((name, False, 0.08, False) for name in ("boy_surface", "saddle_graded")),
+    ],
+)
+def test_signed_distance_level_set_sparse_extraction_matches_the_dense_lattice(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    mesh_name: str,
+    sparse_expected: bool,
+    distance: float,
+    rotate: bool,
+) -> None:
+    """
+    Ordito against ordito: the sparse extraction is the dense lattice's surface, and only it runs.
+
+    ``test_offset_mesh_lands_at_the_distance_and_matches_meshlib`` and the pymeshlab comparison
+    carry the oracle on the dense path; this pins the sparse path to it, on the lattice
+    ``offset_mesh`` builds but without its ``edge_margin`` (which Warp's sparse extractor lacks,
+    so a margin keeps the dense path), by lowering the node gate
+    to zero (every fixture here is far below the shipped one) and closing the winding lattice's,
+    which would otherwise take every winding-signed lattice this size. On a closed, consistently
+    wound input the two must agree vertex for vertex up to the order of the buffers -- matched by
+    nearest neighbour with a bijection check -- and face for face with the same winding. On an open
+    or non-orientable input the gate must keep the dense lattice, whose winding-signed field jumps
+    away from the surface: the sparse extraction measured a fifth of a hemisphere's offset faces
+    missing there.
+
+    ``cave_cube`` is turned by a generic rotation first. Axis-aligned, its offset level runs
+    exactly through lattice nodes, and a node whose distance rounds onto the level lands on
+    different sides in the two extractions (they place the same node one rounding apart), which
+    picks different, equally valid triangulations there -- a tie, not the defect under test.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    if rotate:
+        rotation_np = np.asarray(tm.transformations.rotation_matrix(0.3, [1.0, 2.0, 3.0]))[:3, :3]
+        vertices_wp = points_to_warp(np.asarray(mesh_tm.vertices) @ rotation_np.T, mesh_wp.device)
+    # A spacing of its own, coarser than the derived one: the open arms run the dense lattice twice.
+    voxel_size = float(mesh_tm.scale) / 48.0
+    shape, bounds = od.proximity.signed_distance_lattice(
+        vertices_wp,
+        voxel_size,
+        bounds=od.bounds.aabb(vertices_wp),
+        pad=2 + max(math.ceil(distance / voxel_size), 0),
+    )
+    dense_vertices_wp, dense_faces_wp = od.levelset.signed_distance_level_set(
+        vertices_wp, faces_wp, distance, shape, bounds=bounds
+    )
+
+    calls: list[int] = []
+    sparse = od.levelset.sparse_marching_cubes
+
+    def counted(*args: object, **kwargs: object) -> object:
+        calls.append(1)
+        return sparse(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(od.levelset, "_LATTICE_WINDING_BELOW_NODES", 0)
+    monkeypatch.setattr(od.levelset, "_SPARSE_LEVEL_SET_FROM_NODES", 0)
+    monkeypatch.setattr(od.levelset, "sparse_marching_cubes", counted)
+    sparse_vertices_wp, sparse_faces_wp = od.levelset.signed_distance_level_set(
+        vertices_wp, faces_wp, distance, shape, bounds=bounds
+    )
+    assert len(calls) == int(sparse_expected)
+
+    assert dense_vertices_wp.size > 100, "the offset has a surface to compare"
+    assert sparse_vertices_wp.size == dense_vertices_wp.size
+    gap_np, to_dense_np = map(
+        np.asarray, cKDTree(dense_vertices_wp.numpy()).query(sparse_vertices_wp.numpy())
+    )
+    assert gap_np.max() < 1e-5 * float(mesh_tm.scale)
+    assert np.unique(to_dense_np).shape[0] == to_dense_np.shape[0]
+    assert_unordered_rows_equal(
+        canonical_winding(to_dense_np[sparse_faces_wp.numpy().reshape(-1, 3)]),
+        canonical_winding(dense_faces_wp.numpy().reshape(-1, 3)),
+    )
+
+
+def test_signed_distance_level_set_guards(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the three documented value guards.
+
+    ``edge_margin`` is checked before any field is built: the winding lattice is replaced by a
+    function that fails if reached.
+    """
     _mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     bounds = (wp.vec3(-1.5, -1.5, -1.5), wp.vec3(1.5, 1.5, 1.5))
@@ -715,6 +859,16 @@ def test_signed_distance_level_set_guards(sphere_irregular: tuple[tm.Trimesh, wp
         )
     with pytest.raises(ValueError, match="at least 2"):
         od.levelset.signed_distance_level_set(vertices_wp, faces_wp, 0.0, (8, 1, 8), bounds=bounds)
+
+    def unreachable(*_args: object) -> None:
+        raise AssertionError("the field was built before edge_margin was validated")
+
+    monkeypatch.setattr(od.levelset, "_winding_band_field", unreachable)
+    for margin in (-0.1, 0.5):
+        with pytest.raises(ValueError, match="edge_margin"):
+            od.levelset.signed_distance_level_set(
+                vertices_wp, faces_wp, 0.0, (8, 8, 8), bounds=bounds, edge_margin=margin
+            )
 
 
 # Every topology the winding lattice treats differently: closed and curved (``sphere_irregular``),
@@ -761,7 +915,7 @@ _WINDING_LATTICE_SETTLES = [
 ]
 # No room for any cone: the input falls back to sampling every node, so this arm compares the
 # sampled lattice with itself and only proves the fallback runs -- on the inputs with a boundary.
-_WINDING_LATTICE_NO_CONES = ("no_cones", "_MAX_CONE_EDGES", -1)
+_WINDING_LATTICE_NO_CONES = ("no_cones", "_MAX_CONE_WORK", -1)
 
 
 @pytest.mark.parametrize(
@@ -909,6 +1063,33 @@ def test_signed_distance_level_set_re_queries_capped_crossing_endpoints(
     assert np.array_equal(lattice_np[endpoints_np], sampled_np[endpoints_np])
     diagonal = math.sqrt(3.0) * spacing
     assert (np.abs(sampled_np[endpoints_np]) > 1.5 * diagonal).sum() > 0, "a capped endpoint"
+
+
+def test_signed_distance_level_set_cone_guard_counts_rim_edges(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the cone's cost bound is lattice nodes times rim edges.
+
+    A node near a cone sums one solid angle per edge of its rim, so the bound must charge the rim's
+    edges, not its components: the cap has one rim of many edges, and a bound one pair short of
+    ``n_nodes * n_rim_edges`` must fall back to sampling every node (``None``), where the bound
+    exactly equal to it keeps the winding lattice. A bound charging components would admit both.
+    """
+    mesh_tm, mesh_wp = sphere_irregular_cap
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    spacing = float(mesh_tm.scale) / 20.0
+    shape, bounds = od.proximity.signed_distance_lattice(
+        vertices_wp, spacing, bounds=od.bounds.aabb(vertices_wp), pad=2
+    )
+    n_rim_edges = int(od.boundary.oriented_boundary_edges(vertices_wp, faces_wp).shape[0])
+    assert n_rim_edges > 10
+    work = math.prod(shape) * n_rim_edges
+    winding_band_field = od.levelset._winding_band_field  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(od.levelset, "_MAX_CONE_WORK", work - 1)
+    assert winding_band_field(vertices_wp, faces_wp, 0.0, shape, bounds) is None
+    monkeypatch.setattr(od.levelset, "_MAX_CONE_WORK", work)
+    assert winding_band_field(vertices_wp, faces_wp, 0.0, shape, bounds) is not None
 
 
 @pytest.mark.parametrize(

@@ -415,6 +415,11 @@ def cg_step_scalars(
     # driven to its round-off floor -- a zero tolerance, which the heat method's reach-bound solves
     # use -- underflows both to exactly zero, and ``0 / 0`` would poison it with NaN. Such a column
     # has converged exactly, and takes no step.
+    #
+    # A ``NaN`` ``r.r`` fails the ``>`` test and stops its column too, on purpose: every later round
+    # would only carry the ``NaN``. It is not reported as converged: the ``NaN`` is published as the
+    # column's residual, and every host-side test reads it as ``not (r.r <= threshold)``
+    # (``linalg._worst_column``, ``linalg._verified``, ``linalg._warn_if_not_converged``).
     zero = wp.float64(0.0)
     if dots[2] > atol_sq and round_index <= maxiter and dots[0] != zero:
         beta = dots[0] / gamma_old
@@ -642,6 +647,36 @@ def cg_update(
                 out_iterations,
                 state,
             )
+
+
+@wp.kernel
+def cg_capped_residual(
+    n: wp.int32,
+    stride: wp.int32,
+    maxiter: wp.int32,
+    r: wp.array[wp.Float],
+    iterations: wp.array[wp.int32],
+    out_dots: wp.array2d[wp.float64],
+) -> None:
+    # The residual a solve stopped by its cap reports, after its last round, tiled over
+    # ``(n_columns,)``: one block a column folds ``r.r`` over the ``n`` live rows into
+    # ``out_dots[0, c]``. A round publishes the ``r.r`` it *starts* from (``cg_publish_column``) and
+    # the next round's mat-vec measures what its step left, so when the round at the cap stepped no
+    # round follows it and the published residual is one step stale. That happened exactly when
+    # every round stepped, ``iterations == maxiter``; any other stop of the loop's own was a round
+    # that took no step and so published the residual it left, and the launch returns at once. (A
+    # settle monitor's stop can follow a step too; its solves read no residual.) The lanes stride
+    # by ``wp.block_dim()``.
+    c, t = wp.tid()
+    if iterations[0] < maxiter:
+        return
+    acc = wp.float64(0.0)
+    for k in range(t, n, wp.block_dim()):
+        value = wp.float64(r[c * stride + k])
+        acc += value * value
+    total = block_sum(acc)
+    if t == 0:
+        out_dots[0, c] = total
 
 
 # Slots of ``cg_one_block``'s scratch, each ``n_columns * n`` entries: the residual, the
@@ -1024,7 +1059,7 @@ _CG_STORAGE = ((wp.float32, wp.float32), (wp.float64, wp.float64), (wp.float64, 
 
 def _register_overloads() -> None:
     """Instantiate the generic round kernels at every storage precision, keyed by the dtype."""
-    global CG_INITIAL, CG_MATVEC_DOTS, CG_ROUND_DOTS, CG_UPDATE
+    global CG_INITIAL, CG_MATVEC_DOTS, CG_ROUND_DOTS, CG_UPDATE, CG_CAPPED_RESIDUAL
     f64 = wp.float64
     CG_INITIAL = OverloadTable(
         cg_initial,
@@ -1065,6 +1100,13 @@ def _register_overloads() -> None:
             + [wp.array[d]] * 6
             + [wp.array[wp.int32], wp.array[d], wp.array[d]]
             + [wp.array[f64], wp.array[f64], wp.array2d[f64], wp.array[wp.int32]]
+            for d in _CG_DTYPES
+        },
+    )
+    CG_CAPPED_RESIDUAL = OverloadTable(
+        cg_capped_residual,
+        {
+            d: [wp.int32] * 3 + [wp.array[d], wp.array[wp.int32], wp.array2d[f64]]
             for d in _CG_DTYPES
         },
     )

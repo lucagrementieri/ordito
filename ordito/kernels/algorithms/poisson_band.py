@@ -29,7 +29,14 @@ from ordito.kernels.algorithms.conjugate_gradient import (
     cg_widen,
 )
 from ordito.kernels.array import trilinear_cell, trilinear_corner, trilinear_weight
-from ordito.kernels.levelset import MC_CORNERS, mc_edge_vertex, mc_triangle_edge, mc_values_cross
+from ordito.kernels.levelset import (
+    MC_CORNERS,
+    mc_case_corner,
+    mc_case_final,
+    mc_edge_vertex,
+    mc_triangle_edge,
+    mc_values_cross,
+)
 from ordito.kernels.reconstruction import (
     normalized_field_component,
     poisson_grid_index,
@@ -335,7 +342,7 @@ def restrict_band(
     # ``P^T`` of a band level's ``b`` and ``W`` into the next coarser level, scattered: into its
     # band when ``coarse_map`` is given, into a dense ``res_c**3`` grid when it is ``None``. Both
     # outputs are zeroed by the caller. A target missing from the coarse band is counted in
-    # ``out_missing[0]`` and dropped -- the nesting makes it impossible, and a test pins the count.
+    # ``out_missing[0]`` and dropped -- the nesting makes it impossible, and the caller warns on it.
     n = wp.int32(wp.tid())
     g = band_coordinates(brick_coords, n)
     if not node_live(g, res):
@@ -806,8 +813,8 @@ def composite_cell(
             g[1] + wp.static(MC_CORNERS[c][1]),
             g[2] + wp.static(MC_CORNERS[c][2]),
         )
-        if value >= iso:
-            code += wp.static(1 << c)
+        code = mc_case_corner(code, value, iso, wp.static(1 << c))
+    code = mc_case_final(code)
     start = table[code]
     count = (table[code + 1] - start) // 3
     if count == 0:
@@ -842,12 +849,18 @@ def band_marching_cubes_counts(
     res: wp.int32,
     iso: wp.float32,
     table: wp.array[wp.int32],
+    missing: wp.array[wp.int32],
     out_counts: wp.array[wp.vec2i],
-    out_skipped: wp.array[wp.int32],
+    out_diagnostics: wp.array[wp.vec2i],
 ) -> None:
     # ``kernels/levelset.marching_cubes_counts`` over the extraction band's nodes on the composite
     # field: each node's crossing edges and its cell's triangles, into one ``vec2i``.
+    # ``out_diagnostics[0]`` (zeroed by the caller, the slot after the scanned counts) receives
+    # ``(missing, skipped)``: the band builds' ``missing[0]``, copied by node 0, and the crossing
+    # cells this band could not own, so the caller reads both with the scan's totals.
     n = wp.int32(wp.tid())
+    if n == 0:
+        wp.atomic_add(out_diagnostics, 0, wp.vec2i(missing[0], 0))
     g = band_coordinates(extract_coords, n)
     if not node_live(g, res):
         out_counts[n] = wp.vec2i(0, 0)
@@ -861,7 +874,7 @@ def band_marching_cubes_counts(
         extract_map, nbk, brick_map, x, coarse_map, coarse, nbk_c, res_c, res, iso, table, g
     )
     if cell[2] != 0:
-        wp.atomic_add(out_skipped, 0, 1)
+        wp.atomic_add(out_diagnostics, 0, wp.vec2i(0, 1))
     out_counts[n] = wp.vec2i(vertices, cell[1])
 
 

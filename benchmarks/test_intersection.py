@@ -14,7 +14,7 @@ Four functions on two cost shapes:
   on a long rim.
 * ``mesh_with_mesh`` — the only quadratic-ish one. A ``wp.Mesh`` BVH is built over the smaller mesh
   and every triangle of the other supplies an AABB query, so the cost tracks the number of
-  *candidate* pairs (every box overlap; ``max_triangle_collisions`` is only the first stride)
+  *candidate* pairs (every box overlap; ``max_triangle_collisions`` is only the table's stride)
   rather than the face count. This is the benchmark that moves when the separating-axis narrow
   phase changes.
 * ``segments_with_plane`` — a pure ``wp.map`` over independent segments; the array-primitive
@@ -58,7 +58,7 @@ Caps
 ----
 ``mesh_with_mesh`` stops at ``bunny``: the broad phase allocates at least
 ``max_triangle_collisions`` candidate slots per query triangle, so the pair buffer alone is
-``16 * n_faces`` ints (more where a face overflows) before the narrow phase filters it.
+``16 * n_faces`` ints (plus the overflow tail's excess) before the narrow phase filters it.
 ``clip_mesh_with_field``'s pyvista row stops there too, VTK's clip being a
 single-threaded per-cell sweep.
 
@@ -437,8 +437,9 @@ def test_mesh_with_mesh(bench_case: BenchCase, offset_fraction: float) -> None:
     Cost is the number of overlapping triangle *pairs*, so the translation distance is the axis
     rather than the face count. The ``deep`` row shares most of its volume with the original and
     the ``grazing`` row barely touches it; the gap is the collision density. A face whose box
-    overlaps more than ``max_triangle_collisions`` others makes the broad phase walk again at the
-    wider stride, so a saturated row pays a second walk rather than losing pairs.
+    overlaps more than ``max_triangle_collisions`` others is walked again to collect its excess
+    into an overflow tail, so a saturated row pays a scan and a second walk of the overflowing faces
+    rather than losing pairs.
 
     pyvista's ``intersection`` returns the same *unordered* segment soup ordito does, which is what
     makes it the value reference for this group as well as a cost one. Note what its ``grazing`` row

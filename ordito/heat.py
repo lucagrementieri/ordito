@@ -48,7 +48,7 @@ import math
 import warnings
 import weakref
 from dataclasses import dataclass
-from typing import cast, overload
+from typing import Any, cast, overload
 
 import warp as wp
 import warp.optim.linear as wpl
@@ -57,7 +57,7 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_values, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import TILE_1D
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
@@ -305,9 +305,11 @@ def heat_geodesic(
     Diffuses heat from the source vertices for a short time ``t``, normalizes the resulting
     gradient into a unit vector field pointing away from the sources, and integrates it back into a
     distance field by solving a Poisson problem. Both solves are sparse, symmetric positive
-    (semi-)definite systems handled on-device by conjugate gradient. The result is an
-    *approximation* of the true geodesic distance (typically a few percent error), matching
-    ``igl::heat_geodesics``.
+    (semi-)definite systems, solved on the mesh's device by conjugate gradient -- or by a sparse
+    Cholesky factorization where one is held or needed, as [`HeatSolver`][ordito.heat.HeatSolver]
+    decides: once a system is solved a second time on a `Trimesh`, and at once for both when the
+    heat solve's iterate fails its accuracy check. The result is an *approximation* of the true
+    geodesic distance (typically a few percent error), matching ``igl::heat_geodesics``.
 
     The computation runs in ``float64``: the diffused heat decays exponentially away from the
     source and would underflow ``float32``, collapsing the far field.
@@ -349,6 +351,8 @@ def heat_geodesic(
 
     Raises
     ------
+    ValueError
+        If an entry of ``sources`` is not a vertex index in ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces`` and ``sources`` are not all on one device.
 
@@ -421,9 +425,15 @@ def _heat_geodesic(
     # less accurate of the two: equal on a hemisphere, and 1.15 % against 0.93 % mean error (4.9 %
     # against 3.1 % worst) of the distance range on a half torus.
     u0 = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_heat.seed_source_indicator, dim=sources.size, inputs=[sources, u0], device=device
+        kernel_heat.seed_source_indicator,
+        dim=sources.size,
+        inputs=[sources],
+        outputs=[u0, invalid],
+        device=device,
     )
+    _require_indices_in_range(invalid, n_vertices, "heat_geodesic", "sources")
 
     heat = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     solver.diffuse(u0, heat)
@@ -528,7 +538,8 @@ def heat_signed_distance(
     Raises
     ------
     ValueError
-        If ``level_set_constraint`` is not ``"zero_set"`` or ``"none"``.
+        If ``level_set_constraint`` is not ``"zero_set"`` or ``"none"``, or if an entry of
+        ``curve_vertices`` is not a vertex index in ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces``, ``curve_vertices`` and ``curve_offsets`` are not all on one
         device.
@@ -617,6 +628,7 @@ def _heat_signed_distance(
     # Stage 1: splat each segment's normal onto its endpoints, one thread per curve entry, each
     # finding its own curve in the offsets on the device.
     source = _launch.zeros(n_vertices, dtype=wp.vec2d, device=device)
+    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_heat.splat_curve_normals,
         dim=curve_vertices.size,
@@ -629,10 +641,11 @@ def _heat_signed_distance(
             vertex_normals,
             basis_x,
             basis_y,
-            source,
         ],
+        outputs=[source, invalid],
         device=device,
     )
+    _require_indices_in_range(invalid, n_vertices, "heat_signed_distance", "curve_vertices")
 
     # Stage 2: diffuse the tangent field; only its direction is kept. No absolute floor may decide
     # which vectors vanished -- this field carries the mesh's scale, and one zeroes most of it on a
@@ -1121,6 +1134,9 @@ def extend_scalar(
 
     Raises
     ------
+    ValueError
+        If ``sources`` is not empty and ``values`` is not as long, or if an entry of ``sources``
+        is not a vertex index in ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces``, ``sources`` and ``values`` are not all on one device.
 
@@ -1192,6 +1208,7 @@ def _extend_scalar(
     n_sources = sources.size
     if n_vertices == 0 or faces.size == 0 or n_sources == 0:
         return _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    _require_same_length(values, n_sources, "extend_scalar", "values")
 
     solver = mesh.heat_solver(t)
     # The indicator and the weighted values diffuse through the same operator, so they are one
@@ -1202,12 +1219,15 @@ def _extend_scalar(
     )
     # ``(min, -max, -overshoot)`` of the extension against the source values; see the kernels.
     value_range = wp.full(3, math.inf, dtype=wp.float64, device=device)
+    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_heat.seed_source_scalars,
         dim=n_sources,
-        inputs=[sources, values, rhs[0], rhs[1], value_range],
+        inputs=[sources, values],
+        outputs=[rhs[0], rhs[1], value_range, invalid],
         device=device,
     )
+    _require_indices_in_range(invalid, n_vertices, "extend_scalar", "sources")
     diffused = odt.as_array2d(
         _launch.zeros((2, n_vertices), dtype=wp.float64, device=device), wp.float64
     )
@@ -1330,6 +1350,9 @@ def transport_tangent_vectors(
 
     Raises
     ------
+    ValueError
+        If ``sources`` is not empty and ``vectors`` is not as long, or if an entry of ``sources`` is
+        not a vertex index in ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces``, ``sources`` and ``vectors`` are not all on one device.
 
@@ -1405,6 +1428,7 @@ def _transport_tangent_vectors(
             _launch.zeros(n_vertices, dtype=wp.vec2, device=device),
             _launch.zeros(n_vertices, dtype=wp.bool, device=device),
         )
+    _require_same_length(vectors, n_sources, "transport_tangent_vectors", "vectors")
 
     solver = mesh.heat_solver(t)
 
@@ -1415,13 +1439,15 @@ def _transport_tangent_vectors(
     # narrowed values are per row, so they are the two systems' own, and its settle test reads the
     # union, which is the later of the two stops.
     rhs_field, rhs = _stacked_fields(n_vertices, 2, device)
+    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_heat.seed_transport_sources,
         dim=n_sources,
         inputs=[sources, vectors],
-        outputs=[rhs_field, rhs[2 * n_vertices : 3 * n_vertices], rhs[3 * n_vertices :]],
+        outputs=[rhs_field, rhs[2 * n_vertices : 3 * n_vertices], rhs[3 * n_vertices :], invalid],
         device=device,
     )
+    _require_indices_in_range(invalid, n_vertices, "transport_tangent_vectors", "sources")
     direction, diffused = _stacked_fields(n_vertices, 2, device)
     solver.diffuse_stacked(rhs, diffused, 2)
     diffused_indicator = diffused[2 * n_vertices : 3 * n_vertices]
@@ -1507,6 +1533,8 @@ def log_map(
 
     Raises
     ------
+    ValueError
+        If the mesh has faces and ``source`` is not a vertex index in ``[0, n_vertices)``.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -1550,6 +1578,10 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
     n_vertices = vertices.size
     if n_vertices == 0 or faces.size == 0:
         return _launch.zeros(n_vertices, dtype=wp.vec2, device=device)
+    if not 0 <= source < n_vertices:
+        raise ValueError(
+            f"log_map: source must be a vertex index in [0, {n_vertices}), got {source}"
+        )
 
     solver = mesh.heat_solver(t)
     _, scalar, frames, _ = solver.vector_operators
@@ -1781,8 +1813,17 @@ def diffuse_tangent_field(
 
     Raises
     ------
+    TypeError
+        If ``source`` is missing; if a `Trimesh` is given with a ``system`` or ``preconditioner``;
+        if ``system`` is given both by position and by keyword; or if neither a `Trimesh` nor a
+        ``system`` is given, or ``t`` is given with a ``system``.
     ValueError
-        If ``preconditioner`` is neither ``None`` nor ``system``'s own Jacobi preconditioner.
+        If ``source`` is not empty and does not hold one vector per vertex (per block row of
+        ``system``), or if ``preconditioner`` is neither ``None`` nor ``system``'s own Jacobi
+        preconditioner.
+    RuntimeError
+        If the mesh (or ``system`` and ``preconditioner``) and ``source`` are not all on one
+        device.
 
     Notes
     -----
@@ -1833,10 +1874,14 @@ def _diffuse_tangent_field_on(
     mesh: Trimesh, source: wp.array[wp.vec2d], t: float | None
 ) -> wp.array[wp.vec2d]:
     """``diffuse_tangent_field`` on a `Trimesh`'s vector heat system at ``t``."""
-    n_vertices = source.size
+    require_same_device(vertices=mesh.vertices, faces=mesh.faces, source=source)
+    if source.size == 0:
+        return _launch.zeros(0, dtype=wp.vec2d, device=source.device)
+    # Before the solver is reached: a rejected call must not count as one of its solves.
+    n_vertices = mesh.n_vertices
+    _require_same_length(source, n_vertices, "diffuse_tangent_field", "source")
     diffused = _launch.zeros(n_vertices, dtype=wp.vec2d, device=source.device)
-    if n_vertices > 0:
-        mesh.heat_solver(t).diffuse_tangent(source, diffused)
+    mesh.heat_solver(t).diffuse_tangent(source, diffused)
     return diffused
 
 
@@ -1844,10 +1889,12 @@ def _diffuse_tangent_field(
     system: odt.SparseMatrix, source: wp.array[wp.vec2d], preconditioner: wpl.LinearOperator | None
 ) -> wp.array[wp.vec2d]:
     """``diffuse_tangent_field`` against a given ``system``, keeping no factorization."""
-    n_vertices = source.size
+    require_same_device(system=system, source=source, preconditioner=preconditioner)
+    if source.size == 0:
+        return _launch.zeros(0, dtype=wp.vec2d, device=source.device)
+    n_vertices = int(system.nrow)
+    _require_same_length(source, n_vertices, "diffuse_tangent_field", "source")
     diffused = _launch.zeros(n_vertices, dtype=wp.vec2d, device=source.device)
-    if n_vertices == 0:
-        return diffused
     factorization = twl.OperatorFactorization(system)
     twl.solve_spd_settled(
         system,
@@ -2003,7 +2050,13 @@ class HeatSolver:
         return sum(kept.factorization.nbytes for kept in self._systems.values())
 
     def release(self) -> None:
-        """Drop every kept factorization and forget the solve counts; the operators stay."""
+        """
+        Drop every kept factorization and forget the solve counts.
+
+        The operators stay, and so does [`ill_conditioned`][ordito.heat.HeatSolver.ill_conditioned]:
+        it describes the mesh's operators, not a factorization, so after a release a Poisson solve
+        on an ill-conditioned mesh is still factored at once rather than iterated first.
+        """
         for kept in self._systems.values():
             kept.factorization.release()
         self._systems.clear()
@@ -2046,7 +2099,16 @@ class HeatSolver:
             together, ``float64``.
         solution
             Same shape: the initial guess, overwritten with the diffused field.
+
+        Raises
+        ------
+        ValueError
+            If ``rhs`` does not hold ``n_vertices`` entries per column, or ``solution`` is not
+            shaped as ``rhs``.
+        RuntimeError
+            If ``rhs``, ``solution`` and the mesh are not all on one device.
         """
+        self._require_fields("HeatSolver.diffuse", rhs, solution, rhs.shape[-1], 1)
         operators = self.operators
         # Columns are solved together under the Jacobi preconditioner the settle solve builds.
         preconditioner = operators[1] if rhs.ndim == 1 else None
@@ -2066,8 +2128,12 @@ class HeatSolver:
         Raises
         ------
         ValueError
-            If this solver was built with ``use_robust``.
+            If this solver was built with ``use_robust``, or if ``rhs`` and ``solution`` do not
+            hold one vector per vertex.
+        RuntimeError
+            If ``rhs``, ``solution`` and the mesh are not all on one device.
         """
+        self._require_fields("HeatSolver.diffuse_tangent", rhs, solution, rhs.size, 1)
         vector_system, _, _, preconditioner = self.vector_operators
         self._settle("vector", vector_system, rhs, solution, preconditioner=preconditioner)
 
@@ -2094,8 +2160,12 @@ class HeatSolver:
         Raises
         ------
         ValueError
-            If this solver was built with ``use_robust``.
+            If this solver was built with ``use_robust``, or if ``rhs`` and ``solution`` do not
+            hold ``(2 + n_scalars) * n_vertices`` entries.
+        RuntimeError
+            If ``rhs``, ``solution`` and the mesh are not all on one device.
         """
+        self._require_fields("HeatSolver.diffuse_stacked", rhs, solution, rhs.size, 2 + n_scalars)
         role = f"stack{n_scalars}"
         kept = self._systems.get(role)
         if kept is None:
@@ -2117,7 +2187,15 @@ class HeatSolver:
         solution
             ``(n_vertices,)`` initial guess, overwritten with the answer, which is defined up to a
             constant per component.
+
+        Raises
+        ------
+        ValueError
+            If ``rhs`` and ``solution`` do not hold one entry per vertex.
+        RuntimeError
+            If ``rhs``, ``solution`` and the mesh are not all on one device.
         """
+        self._require_fields("HeatSolver.solve_poisson", rhs, solution, rhs.size, 1)
         operators = self.operators
         kept = self._kept("poisson", operators[3])
         heat = self._systems.get("heat")
@@ -2186,6 +2264,24 @@ class HeatSolver:
         heat = self._systems.get("heat")
         return heat.factorization if role == "poisson" and heat is not None else None
 
+    def _require_fields(
+        self, caller: str, rhs: odt.ArrayNd, solution: odt.ArrayNd, rows: int, per_vertex: int
+    ) -> None:
+        """
+        Raise unless ``rhs`` and ``solution`` match each other and the mesh, before any solve.
+
+        ``rows`` is the extent of ``rhs`` that must be ``per_vertex * n_vertices``. Checked before
+        the solve is counted, so a rejected call does not move the rent-or-buy tally.
+        """
+        vertices = self._bound_mesh().vertices
+        require_same_device(vertices=vertices, rhs=rhs, solution=solution)
+        n_rows = per_vertex * vertices.size
+        if int(rows) != n_rows or tuple(solution.shape) != tuple(rhs.shape):
+            raise ValueError(
+                f"{caller}: rhs must hold {n_rows} rows for this mesh and solution its shape, got "
+                f"{tuple(rhs.shape)} and {tuple(solution.shape)}"
+            )
+
     def _bound_mesh(self) -> Trimesh:
         """Return the mesh this solver belongs to."""
         mesh = self._mesh()
@@ -2231,3 +2327,27 @@ def _log_discarded(name: str, owned: bool, solver: HeatSolver) -> None:
         name,
         solver.nbytes,
     )
+
+
+def _require_same_length(array: wp.array[Any], length: int, caller: str, name: str) -> None:
+    """Raise ``ValueError`` unless ``array`` holds ``length`` entries, before a kernel reads it."""
+    if array.size != length:
+        raise ValueError(f"{caller}: {name} must hold {length} entries, got {array.size}")
+
+
+def _require_indices_in_range(
+    invalid: wp.array[wp.int32], n_vertices: int, caller: str, name: str
+) -> None:
+    """
+    Raise ``ValueError`` when a seeding kernel flagged a vertex index outside ``[0, n_vertices)``.
+
+    The seeding kernels skip such an index (``kernels/heat.flag_out_of_range``), so nothing was
+    written out of bounds; the flag says whether to refuse the call.
+    """
+    # Host readback: whether the caller's indices were valid decides whether the call raises. Read
+    # right after the seeding launch, before any solve, so a rejected call neither pays for a
+    # diffusion nor counts as one of the ``HeatSolver``'s solves (its rent-or-buy tally).
+    if read_scalar(invalid, 0) != 0:
+        raise ValueError(
+            f"{caller}: every entry of {name} must be a vertex index in [0, {n_vertices})"
+        )

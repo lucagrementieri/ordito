@@ -2459,8 +2459,9 @@ class Trimesh:
 
         Each [`heat_solver`][ordito.mesh.Trimesh.heat_solver] and the
         [`fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver] is released (its
-        factorizations and solve counts dropped) and forgotten; the operators cached as properties
-        stay. A later solve starts counting afresh, so it factors again only when that pays.
+        factorizations, solve counts and remembered refusals dropped) and forgotten; the operators
+        cached as properties stay. A later solve starts counting afresh, so it factors again only
+        when that pays.
 
         See Also
         --------

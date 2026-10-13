@@ -38,7 +38,9 @@ def scatter_fixed_uv(
     #
     # The fixed-vertex mask is marked in the same pass -- the ``array.indices_to_mask`` of the same
     # indices, whose out-of-range rule (skip negative and ``>= n``) is the one applied here -- as
-    # ``scatter_pinned_stacked`` does for LSCM's stacked layout.
+    # ``scatter_pinned_stacked`` does for LSCM's stacked layout. The skip is memory safety only: a
+    # skipped index, or a repeated one (whose writes race), marks fewer vertices than the indices
+    # list, and the wrapper rejects the call from the mask's free count, which it reads anyway.
     b = wp.int32(wp.tid())
     i = boundary_indices[b]
     if i < wp.int32(0) or i >= out_fixed_values.shape[1]:
@@ -136,7 +138,9 @@ def scatter_pinned_stacked(
     out_fixed_values: wp.array2d[wp.float64],
 ) -> None:
     # Fused mask + value scatter for LSCM's stacked ``[u; v]`` DOFs: pin ``i`` fixes DOF ``i`` (u)
-    # and ``i + n`` (v). ``out_fixed_values`` is ``(1, 2n)`` (single right-hand-side column).
+    # and ``i + n`` (v). ``out_fixed_values`` is ``(1, 2n)`` (single right-hand-side column). An
+    # out-of-range pin is skipped and a repeated one marks its vertex once, which the wrapper
+    # rejects from the free count, as for ``scatter_fixed_uv``.
     b = wp.int32(wp.tid())
     i = pinned_indices[b]
     if i < wp.int32(0) or i >= n_vertices:

@@ -1200,9 +1200,9 @@ def test_face_box_candidates_finds_every_overlapping_box(
     Class A against NumPy: each query face's candidates are every target face whose box meets its.
 
     The query is ``sphere_irregular`` against a copy shifted by 1.2, whose needle faces' boxes
-    overlap up to 81 target faces. At ``capacity=1`` every face with a candidate overflows the first
-    stride and the table is re-collected at the largest count; at 256 none does. Both must give the
-    exact overlap sets (the BVH tests every primitive's own box). A broad phase that stops at its
+    overlap up to 81 target faces. At ``capacity=1`` every face with a candidate overflows the
+    table and its excess goes to the overflow tail; at 256 none does. Both must give the exact
+    overlap sets (the BVH tests every primitive's own box). A broad phase that stops at its
     capacity keeps one candidate a face at 1, which the set comparison sees.
     """
     mesh_tm, mesh_wp = sphere_irregular
@@ -1213,24 +1213,96 @@ def test_face_box_candidates_finds_every_overlapping_box(
     targets_wp, counts_wp, stride = od.intersection.face_box_candidates(
         mesh_wp.points, mesh_wp.indices, other_wp, capacity=capacity
     )
-    counts_np = counts_wp.numpy()
-    targets_np = targets_wp.numpy().reshape(-1, stride)
+    candidates_np = _face_box_candidate_sets(targets_wp.numpy(), counts_wp.numpy(), stride)
+    expected_np = _box_overlap_sets(mesh_tm.triangles, other_tm.triangles)
+    assert stride == capacity
+    for face, overlap_np in enumerate(expected_np):
+        assert np.array_equal(candidates_np[face], overlap_np)
+    # Non-vacuity: the old default capacity would have overflowed.
+    assert max(overlap_np.size for overlap_np in expected_np) > 16
 
-    query_np, target_np = mesh_tm.triangles, other_tm.triangles
+
+def test_face_box_candidates_overflow_is_sized_by_the_excess(device: str) -> None:
+    """
+    Class A against NumPy: one huge query face spills into a tail, not into every face's block.
+
+    A fine sphere plus one triangle spanning the scene, against a coarser sphere: the big face's
+    box meets the 142 target faces it spans while the others meet a few. The table must stay
+    ``capacity`` slots a face with the big face's excess in the tail, so the slot count is the
+    table plus the excess exactly -- growing the stride to the largest count instead made the
+    table ``n_query`` times it (95x on ``icosphere(5)``) -- and the candidate sets must still be
+    the exact box overlaps.
+    """
+    query_tm = tm.creation.icosphere(subdivisions=3)
+    query_tm.apply_translation([0.3, 0.0, 0.0])
+    big_np = np.array([[-3.0, -3.0, 0.0], [3.0, -3.0, 0.0], [0.0, 3.0, 0.5]])
+    n_sphere = len(query_tm.vertices)
+    vertices_np = np.vstack([query_tm.vertices, big_np]).astype(np.float32)
+    faces_np = np.vstack([query_tm.faces, [[n_sphere, n_sphere + 1, n_sphere + 2]]])
+    target_tm = tm.creation.icosphere(subdivisions=2)
+    query_vertices_wp, query_faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    target_wp = trimesh_to_warp(target_tm, device)
+    capacity = 16
+
+    targets_wp, counts_wp, stride = od.intersection.face_box_candidates(
+        query_vertices_wp, query_faces_wp, target_wp, capacity=capacity
+    )
+    counts_np = counts_wp.numpy()
+    excess = int(np.maximum(counts_np - capacity, 0).sum())
+    assert stride == capacity
+    assert targets_wp.size == len(faces_np) * capacity + excess
+    assert counts_np[-1] > 4 * capacity  # non-vacuity: the big face overflows the table
+    candidates_np = _face_box_candidate_sets(targets_wp.numpy(), counts_np, stride)
+    target_np = target_tm.vertices.astype(np.float32)[target_tm.faces]
+    expected_np = _box_overlap_sets(vertices_np[faces_np], target_np)
+    for face, overlap_np in enumerate(expected_np):
+        assert np.array_equal(candidates_np[face], overlap_np)
+
+    # The pairs built on the tail are the pairs a table wide enough for every face gives.
+    inputs = (query_vertices_wp, query_faces_wp, target_wp.points, target_wp.indices)
+    pairs = [
+        lexsort_rows(
+            od.intersection.mesh_collision_pairs(*inputs, max_triangle_collisions=c).numpy()
+        )
+        for c in (capacity, len(target_tm.faces))
+    ]
+    assert pairs[0].shape[0] > 0
+    assert np.array_equal(pairs[0], pairs[1])
+
+
+def _face_box_candidate_sets(
+    targets_np: np.ndarray, counts_np: np.ndarray, stride: int
+) -> list[np.ndarray]:
+    """Each query face's sorted candidates, read from its table block and its overflow tail."""
+    n_table = counts_np.size * stride
+    excess_np = np.maximum(counts_np - stride, 0)
+    tail_np = np.concatenate([[0], np.cumsum(excess_np)]) + n_table
+    return [
+        np.sort(
+            np.concatenate(
+                [
+                    targets_np[q * stride : q * stride + min(int(count), stride)],
+                    targets_np[tail_np[q] : tail_np[q + 1]],
+                ]
+            )
+        )
+        for q, count in enumerate(counts_np)
+    ]
+
+
+def _box_overlap_sets(query_np: np.ndarray, target_np: np.ndarray) -> list[np.ndarray]:
+    """For each ``(3, 3)`` query triangle, the sorted target triangles whose boxes meet its."""
     target_lower_np, target_upper_np = target_np.min(axis=1), target_np.max(axis=1)
-    overlapping = 0
-    for face, triangle_np in enumerate(query_np):
-        expected_np = np.flatnonzero(
+    return [
+        np.flatnonzero(
             np.all(
                 (target_lower_np <= triangle_np.max(axis=0))
                 & (target_upper_np >= triangle_np.min(axis=0)),
                 axis=1,
             )
         )
-        overlapping = max(overlapping, expected_np.size)
-        assert counts_np[face] == expected_np.size
-        assert np.array_equal(np.sort(targets_np[face, : counts_np[face]]), expected_np)
-    assert stride >= overlapping > 16  # non-vacuity: the old default capacity would have overflowed
+        for triangle_np in query_np
+    ]
 
 
 def test_triangle_pair_answers_do_not_depend_on_the_capacity(
@@ -1747,6 +1819,37 @@ def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(
         mesh_wp.points, mesh_wp.indices, _height_field(mesh_tm, device), isovalue
     )
     assert capped_f.size > uncapped_f.size
+
+
+@pytest.mark.parametrize("offset", [0.0, 5e-9, -5e-9])
+def test_clip_mesh_with_field_capped_seals_a_vertex_within_tolerance_of_the_level(
+    device: str, offset: float
+) -> None:
+    """
+    Ordito against ordito: a vertex the classifier puts on the level set is on the cap's section.
+
+    The level is an input vertex's own height, moved by ``offset``: inside the classifier's
+    tolerance, so the cut emits no crossing at that vertex and the section must pass through the
+    vertex itself. The cap's section test once read only an exactly-zero value as on the level set,
+    so at a nonzero offset the loop broke at that vertex and the cap was skipped (open, 662 faces
+    against 746). The oracle is the ``offset=0`` clip, which
+    ``test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface`` pins to VTK: the
+    result must be watertight with the same face count at every offset.
+    """
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=3, device=device)
+    heights_np = vertices_wp.numpy()[:, 2].astype(np.float64)
+    level = float(heights_np[np.argmin(np.abs(heights_np - 0.1))])
+    heights_wp = wp.array(heights_np, dtype=wp.float64, device=device)
+
+    reference_v, reference_f = od.intersection.clip_mesh_with_field(
+        vertices_wp, faces_wp, heights_wp, level, cap=True
+    )
+    capped_v, capped_f = od.intersection.clip_mesh_with_field(
+        vertices_wp, faces_wp, heights_wp, level - offset, cap=True
+    )
+    assert od.validation.is_watertight(reference_v, reference_f)
+    assert od.validation.is_watertight(capped_v, capped_f)
+    assert capped_f.size == reference_f.size
 
 
 @pytest.mark.parametrize("height_fraction", [0.3, 0.81])

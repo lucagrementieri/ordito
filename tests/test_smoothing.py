@@ -1396,6 +1396,75 @@ def test_filter_implicit_fairing_refactors_only_a_slow_system(
     assert np.allclose(faired, iterated, rtol=1e-5, atol=1e-5 * np.ptp(iterated))
 
 
+def _record_fairing_solves(monkeypatch: pytest.MonkeyPatch) -> list[int | str]:
+    """Record each fairing iteration's round count, and ``"factor"`` at each build, in order."""
+    events: list[int | str] = []
+    iterate = od.linalg.solve_spd_columns
+    factor = od.smoothing.sparse_cholesky
+
+    def counted_iterate(*args: Any, **kwargs: Any) -> Any:
+        result = iterate(*args, **kwargs)
+        rounds = result[0]
+        events.append(int(rounds.numpy()[0]) if isinstance(rounds, wp.array) else int(rounds))
+        return result
+
+    def counted_factor(*args: Any, **kwargs: Any) -> od.cholesky.SparseCholesky:
+        result = factor(*args, **kwargs)
+        events.append("factor")
+        return result
+
+    monkeypatch.setattr(od.linalg, "solve_spd_columns", counted_iterate)
+    monkeypatch.setattr(od.smoothing, "sparse_cholesky", counted_factor)
+    return events
+
+
+@pytest.mark.parametrize("conformalized", [False, True], ids=["ordinary", "conformalized"])
+def test_filter_implicit_fairing_factors_once_a_pinching_flow_slows(
+    torus_well_shaped: tuple[tm.Trimesh, wp.Mesh],
+    conformalized: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Ordito against ordito: the ordinary flow factors at the first pass that iterates too long.
+
+    At ``lamb=1`` the well-shaped torus pinches: its first pass iterates well under
+    ``_FAIRING_FACTOR_ITERATIONS`` and a later one over it (12, 17, 41, then 136 rounds). The
+    ordinary flow decides again after every iterated pass, so the factorization is built right
+    after that later pass and the remaining pass iterates no more; the result equals the
+    all-iteration flow (the threshold raised out of reach) to the solves' tolerance. The
+    conformalized flow decides on its first pass alone and never factors here, though its sixth
+    pass runs long too. Well-shaped rather than ``torus_irregular`` so the pinch comes from the
+    flow, not from needles in the input. The flow's oracle is
+    ``test_filter_implicit_fairing_matches_igl``.
+    """
+    _, mesh_wp = torus_well_shaped
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    iterations = 6 if conformalized else 5
+    threshold = od.smoothing._FAIRING_FACTOR_ITERATIONS  # pyright: ignore[reportPrivateUsage]
+    events = _record_fairing_solves(monkeypatch)
+    faired = od.smoothing.filter_implicit_fairing(
+        vertices_wp, faces_wp, lamb=1.0, iterations=iterations, conformalized=conformalized
+    ).numpy()
+    rounds = [event for event in events if isinstance(event, int)]
+    # Not vacuous: the first pass is under the threshold and a later one over it.
+    assert rounds[0] < threshold
+    if conformalized:
+        assert "factor" not in events
+        assert len(rounds) == iterations
+        assert max(rounds) >= threshold
+        return
+    assert events.count("factor") == 1
+    slow = next(i for i, count in enumerate(rounds) if count >= threshold)
+    # Built right after the first slow pass, and no pass iterates after it.
+    assert events.index("factor") == slow + 1
+    assert len(rounds) == slow + 1 < iterations
+    monkeypatch.setattr(od.smoothing, "_FAIRING_FACTOR_ITERATIONS", 1 << 30)
+    iterated = od.smoothing.filter_implicit_fairing(
+        vertices_wp, faces_wp, lamb=1.0, iterations=iterations
+    ).numpy()
+    assert np.allclose(faired, iterated, rtol=1e-5, atol=1e-5 * np.ptp(iterated))
+
+
 def test_implicit_filters_cpu_match_cuda(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: both implicit filters give the CUDA answer on CPU.

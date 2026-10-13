@@ -72,6 +72,10 @@ from ordito.kernels import levelset as kernel_levelset
 _MAX_AUTO_RESOLUTION = 256
 _MIN_AUTO_RESOLUTION = 64
 
+# The largest node count, vertex count and flat face index ``marching_cubes``' ``int32`` kernels
+# address.
+_INT32_MAX = (1 << 31) - 1
+
 # Samples across the offset distance in the automatic ``voxel_size``. Three is the smallest number
 # that puts a lattice cell strictly inside the offset band, which is what marching cubes needs to
 # find the level set at all.
@@ -82,8 +86,9 @@ _SAMPLES_PER_DISTANCE = 3
 # corners of the cells it keeps -- instead of sampling every node: for ``sign_mode="parity"``, and
 # for ``"winding"`` only from ``_LATTICE_WINDING_BELOW_NODES`` on. See
 # ``signed_distance_level_set``'s Notes for why the input has to be closed. Measured on CUDA
-# against the dense lattice through ``offset_mesh``: 0.84-0.93x on ``dragon`` at 0.6-0.7 M nodes,
-# 1.95x at 2.4 M and 4.5x at 9 M, 1.84x on ``happy_buddha`` at the benchmark's finest cell,
+# against the dense lattice on ``offset_mesh``'s lattices at ``edge_margin=0`` (``offset_mesh``
+# itself passes a margin, so it does not take this path): 0.84-0.93x on ``dragon`` at 0.6-0.7 M
+# nodes, 1.95x at 2.4 M and 4.5x at 9 M, 1.84x on ``happy_buddha`` at the benchmark's finest cell,
 # 5.7-11.8x on a 20 k-face sphere at 10-37 M nodes. The closedness test it pays on an open input
 # is two key sorts, 0.98x at worst (``lucy``, 28 M faces).
 _SPARSE_LEVEL_SET_FROM_NODES = 1 << 21
@@ -106,9 +111,14 @@ _WINDING_UNDECIDED_DELTA = 0.1
 _EXACT_WINDING_CAPACITY = 1 << 16
 _EXACT_WINDING_WORK = 1 << 32
 
-# The cone over the boundary is evaluated at every node, so a boundary of very many edges or
-# components (a triangle soup) falls back to sampling the whole lattice with Warp's sign.
-_MAX_CONE_EDGES = 1 << 16
+# Bound on the (lattice node, boundary chain edge) pairs the cone over the boundary may cost; past
+# it the input falls back to sampling the whole lattice with Warp's sign. A node within a few
+# radii of a component's cone sums one solid angle per edge of that component, and a long rim's
+# cone spans most of the lattice, so the cone pass costs up to ``n_nodes * n_chain_edges`` solid
+# angles -- and the per-node loop over components is bounded by the same product, a component
+# having at least one edge. The largest product the benchmarks reach is ``dragon`` at the finest
+# ``offset_mesh`` cell, 3.2 M nodes by a 4 270-edge rim, about 0.8 of the bound; a triangle soup
+# (three chain edges a face) passes it at about 1 400 faces on a lattice of 4 M nodes.
 _MAX_CONE_WORK = 1 << 34
 
 
@@ -166,7 +176,9 @@ def marching_cubes(
     TypeError
         If ``field`` is not a rank-3 ``wp.float32`` array.
     ValueError
-        If any of ``field``'s dimensions is below 2, or ``edge_margin`` is outside ``[0, 0.5)``.
+        If any of ``field``'s dimensions is below 2, ``edge_margin`` is outside ``[0, 0.5)``,
+        ``field`` has ``2**31`` nodes or more, or the level set has ``2**31`` vertices or more or
+        ``3 * n_faces`` reaches ``2**31``: the extraction indexes in ``int32``.
 
     See Also
     --------
@@ -180,11 +192,16 @@ def marching_cubes(
     -----
     The triangulation is Warp's ``warp.geometry.IsoSurfaceMarchingCubes``: its case tables, its
     vertex numbering (one vertex per crossing lattice edge, in row-major order of the edge's lower
-    node and then by axis), its triangle order and its interpolation, so the result equals
-    ``IsoSurfaceMarchingCubes.extract`` on the same lattice and bounds bit for bit, buffer order
-    included. What differs is the scratch it needs: a pair of counters per lattice node, about twice
-    the field, where Warp's extraction needs about eleven times the field -- the margin between
-    fitting a fine lattice on the device and not.
+    node and then by axis), its triangle order and its interpolation, so on a field without NaN
+    the result equals ``IsoSurfaceMarchingCubes.extract`` on the same lattice and bounds bit for
+    bit, buffer order included. A NaN sample is on neither side of ``iso``: no edge from it
+    crosses and no cell it is a corner of emits a triangle, so the surface has a hole around it
+    and every face index names a vertex. Warp's extraction instead triangulates such a cell as if
+    the sample were below ``iso`` and gives the edges from it, which have no vertex, index ``-1``.
+    A vertex on a crossing edge all of whose cells have a NaN corner is kept, unreferenced, so
+    the vertex numbering stays Warp's. What differs otherwise is the scratch it needs: a pair of
+    counters per lattice node, about twice the field, where Warp's extraction needs about eleven
+    times the field -- the margin between fitting a fine lattice on the device and not.
 
     The consequence worth knowing is that the result is **not guaranteed manifold** at an
     ambiguous cell, and can carry duplicate vertices where two cells agree on a crossing —
@@ -217,6 +234,9 @@ def marching_cubes(
     if not 0.0 <= edge_margin < 0.5:
         raise ValueError(f"edge_margin must be in [0, 0.5), got {edge_margin}")
     nx, ny, nz = shape
+    # The kernels index nodes, and the scan counts vertices and triangles, in ``int32``.
+    if nx * ny * nz > _INT32_MAX:
+        raise ValueError(f"field has {nx * ny * nz} nodes, past the int32 limit of {_INT32_MAX}")
 
     if bounds is None:
         lower = wp.vec3(0.0, 0.0, 0.0)
@@ -245,9 +265,19 @@ def marching_cubes(
     # One read sizes both outputs: the scanned pair's last entry is the vertex and triangle totals.
     totals = read_scalar(counts)
     n_vertices, n_faces = int(totals[0]), int(totals[1])
+    # A total past ``int32`` wraps negative in the scan (wrapping all the way round to a positive
+    # one needs 2**32 of them, a buffer larger than any device), and a face's flat index is
+    # ``int32``.
+    if n_vertices < 0 or n_faces < 0 or 3 * n_faces > _INT32_MAX:
+        raise ValueError(
+            "the level set has more vertices or triangles than int32 indices address; "
+            "extract it from a coarser field or in pieces"
+        )
     vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    if n_vertices > 0:
+    # A crossing edge whose every cell has a NaN corner still owns a vertex, so either total alone
+    # can be non-zero.
+    if n_vertices > 0 or n_faces > 0:
         _launch.launch(
             kernel_levelset.marching_cubes_emit,
             dim=(nx, ny, nz),
@@ -300,7 +330,7 @@ def offset_mesh(
         distance alone can be coarser than what is left of it.
     sign_mode
         Forwarded to
-        [`ordito.proximity.signed_distance_grid`][ordito.proximity.signed_distance_grid]. Defaults
+        [`signed_distance_level_set`][ordito.levelset.signed_distance_level_set]. Defaults
         to ``"winding"`` rather than ``"parity"``: an offset of a mesh with a few open rims is a
         common ask, and parity is the mode that goes wrong on one.
     bounds
@@ -343,7 +373,11 @@ def offset_mesh(
 
     The extraction is
     [`signed_distance_level_set`][ordito.levelset.signed_distance_level_set], which searches for
-    distances only near the offset surface.
+    distances only near the offset surface. It keeps every vertex at least a thousandth of a
+    lattice edge off the lattice nodes (its ``edge_margin``), so an offset level that passes
+    through nodes, as a box's does on a lattice aligned with its faces, gives no degenerate
+    triangles; with ``sign_mode="parity"`` that margin is also why a large lattice is sampled
+    node by node rather than through the octree its Notes describe.
 
     See Also
     --------
@@ -399,8 +433,16 @@ def offset_mesh(
     if bounds is None:
         bounds = od.bounds.aabb(vertices)
     shape, box = od.proximity.signed_distance_lattice(vertices, spacing, bounds=bounds, pad=pad)
+    # The margin keeps every vertex off the lattice nodes: an offset level that lands on a plane of
+    # them (a unit box grown by 0.1 on a 0.02 lattice) otherwise leaves zero-area slivers.
     return signed_distance_level_set(
-        vertices, faces, distance, shape, bounds=box, sign_mode=sign_mode
+        vertices,
+        faces,
+        distance,
+        shape,
+        bounds=box,
+        sign_mode=sign_mode,
+        edge_margin=kernel_levelset.lattice_edge_margin(spacing),
     )
 
 
@@ -477,8 +519,8 @@ def signed_distance_level_set(
     approximation of it to decide differently, the node takes Warp's sign, and a node past the
     search's reach that still ends a crossing edge (the sign of an open surface's field can change
     away from the surface) gets its full distance. The result is the dense lattice's surface,
-    vertex for vertex and face for face. A boundary of very many edges or components, as a
-    triangle soup has, samples every node instead.
+    vertex for vertex and face for face. A boundary of very many edges for the lattice's size, as
+    a triangle soup has, samples every node instead.
 
     Otherwise, on a large lattice, a closed, consistently wound input is not sampled on every node
     either: an octree over the lattice discards every cell whose centre is farther from the level
@@ -516,6 +558,8 @@ def signed_distance_level_set(
         raise ValueError("signed_distance_level_set needs at least one face")
     if min(shape) < 2:
         raise ValueError(f"shape must be at least 2 along every axis, got {shape}")
+    if not 0.0 <= edge_margin < 0.5:
+        raise ValueError(f"edge_margin must be in [0, 0.5), got {edge_margin}")
     lower, upper = bounds
     n_nodes = math.prod(shape)
     if sign_mode == "winding" and n_nodes < _LATTICE_WINDING_BELOW_NODES:
@@ -579,12 +623,9 @@ def _winding_band_field(
     if min(steps) <= 0.0:
         return None
     chain = _boundary_chain(faces, vertices.size)
-    if chain.shape[0] > _MAX_CONE_EDGES:
+    if math.prod(shape) * int(chain.shape[0]) > _MAX_CONE_WORK:
         return None
     labels, sorted_keys, order, starts, radius = _cone_components(vertices, chain)
-    n_nodes = math.prod(shape)
-    if n_nodes * (starts.size - 1) > _MAX_CONE_WORK:
-        return None
 
     # A search capped one cell diagonal past ``|iso|`` reaches every node an edge crossing ``iso``
     # can end at; the margin covers the rounding of the distances against the cap.

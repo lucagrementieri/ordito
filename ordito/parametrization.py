@@ -301,9 +301,10 @@ def harmonic(
     [`cotmatrix`][ordito.laplacian.cotmatrix] subject to the boundary vertices being pinned to
     ``boundary_uv``. For ``k == 1`` this is the harmonic map (each interior UV is the
     cotangent-weighted average of its neighbors); ``k == 2`` is the biharmonic map, and so on. The
-    interior system is solved with conjugate gradient at ``k <= 2`` and by a sparse Cholesky
-    factorization above, the iterative result verified and replaced by the factorization's when it
-    is not the system's answer (see Notes).
+    interior system is solved with conjugate gradient at ``k == 1``, and at ``k == 2`` on a mesh of
+    fewer than 4 000 vertices; it is factored at once (a sparse Cholesky) at ``k >= 3``, and at
+    ``k == 2`` from 4 000 vertices. An iterative result is verified and replaced by the
+    factorization's when it is not the system's answer (see Notes).
 
     Parameters
     ----------
@@ -324,13 +325,14 @@ def harmonic(
         [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries]. The operator is assembled in
         float64 (built native, never recast) so the ill-conditioned ``k > 1`` solve is accurate.
     solver
-        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
-        when the iteration's result fails the check -- always at ``k >= 3``, where the iteration
-        does not converge, and at ``k == 2`` on a mesh of 4 000 vertices or more, where a
-        factorization costs less than the iteration. ``"direct"`` factors it at once (a sparse
-        Cholesky); given a `Trimesh`, the factorization is kept on it, so every later call fixing
-        the same vertices -- whatever their values -- is a factored solve with no iteration. Pays
-        from about the second such call; a one-shot call is usually faster under ``"auto"``.
+        ``"auto"`` (default) factors the system at once at ``k >= 3``, where the iteration does
+        not converge, and at ``k == 2`` on a mesh of 4 000 vertices or more, where a factorization
+        costs less than the iteration; otherwise it solves by conjugate gradient, verified, and
+        factors the system only when the iteration's result fails the check. ``"direct"`` factors
+        it at once (a sparse Cholesky); given a `Trimesh`, the factorization is kept on it, so
+        every later call fixing the same vertices -- whatever their values -- is a factored solve
+        with no iteration. Pays from about the second such call; a one-shot call is usually faster
+        under ``"auto"``.
 
     Returns
     -------
@@ -342,7 +344,8 @@ def harmonic(
     ValueError
         If ``k < 1``, if there are interior vertices but ``boundary_indices`` is empty (the
         Dirichlet system would be singular), if ``boundary_indices`` and ``boundary_uv`` have
-        different lengths, or if ``solver`` is not ``"auto"`` or ``"direct"``.
+        different lengths, if ``boundary_indices`` repeats a vertex or holds one outside
+        ``[0, n_vertices)``, or if ``solver`` is not ``"auto"`` or ``"direct"``.
     RuntimeError
         If ``vertices``, ``faces``, ``boundary_indices`` and ``boundary_uv`` are not all on one
         device.
@@ -374,7 +377,9 @@ def harmonic(
     condition number to it. ``k == 1`` runs conjugate gradient under the Jacobi-Chebyshev polynomial
     ([`chebyshev_preconditioner`][ordito.linalg.chebyshev_preconditioner]), ``k == 2`` under the
     square of that Laplacian's polynomial
-    ([`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]). Both
+    ([`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]) -- on a
+    mesh of fewer than 4 000 vertices; from 4 000 the ``k == 2`` system is factored at once, as
+    ``k >= 3`` is below, its iteration growing faster with the mesh than the factorization. Both
     results are verified -- converged within
     [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds, with a componentwise
     backward error under
@@ -384,10 +389,12 @@ def harmonic(
     precision, where no iteration converges. ``k >= 3`` is factored from the start, the iteration
     (under the multigrid preconditioner
     [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]) taken only when the
-    system cannot be factored. Given a `Trimesh`, a factorization built here is kept on it, and
-    one prepared with [`FixedVertexSolver.factor`][ordito.parametrization.FixedVertexSolver.factor]
-    serves every later call fixing the same vertices -- whatever their values -- with no
-    iteration; the ``vertices, faces`` form drops it, and says so at ``INFO``.
+    system cannot be factored; a `Trimesh` remembers that refusal, so its later calls iterate
+    without attempting the factorization again. Given a `Trimesh`, a factorization built here is
+    kept on it, and one prepared with
+    [`FixedVertexSolver.factor`][ordito.parametrization.FixedVertexSolver.factor] serves every
+    later call fixing the same vertices -- whatever their values -- with no iteration; the
+    ``vertices, faces`` form drops it, and says so at ``INFO``.
 
     On such an ill-conditioned system the answer itself is determined only to the system's own
     precision: direct solvers under different orderings agree to about a percent of the UV range
@@ -519,7 +526,8 @@ def tutte(
     ------
     ValueError
         If ``k < 1``, if there are interior vertices but ``boundary_indices`` is empty, if
-        ``boundary_indices`` and ``boundary_uv`` have different lengths, or if ``solver`` is not
+        ``boundary_indices`` and ``boundary_uv`` have different lengths, if ``boundary_indices``
+        repeats a vertex or holds one outside ``[0, n_vertices)``, or if ``solver`` is not
         ``"auto"`` or ``"direct"``.
     RuntimeError
         If ``vertices``, ``faces``, ``boundary_indices`` and ``boundary_uv`` are not all on one
@@ -600,7 +608,7 @@ def _fixed_boundary_map(
     )
     fixed_values_2d = odt.as_array2d(fixed_values, wp.float64)
     sol, free_map = _solve_fixed_vertices(
-        mesh, owned, method, k, fixed_mask, fixed_values_2d, solver
+        mesh, owned, method, k, fixed_mask, fixed_values_2d, solver, boundary_indices.size
     )
     out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
     _launch.launch(
@@ -675,7 +683,8 @@ def arap(
     ------
     ValueError
         If ``max_iterations < 1``, if ``tolerance <= 0``, if there are interior vertices but
-        ``fixed_indices`` is empty, or if ``fixed_indices`` and ``fixed_uv`` have different lengths.
+        ``fixed_indices`` is empty, if ``fixed_indices`` and ``fixed_uv`` have different lengths,
+        or if ``fixed_indices`` repeats a vertex or holds one outside ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces``, ``fixed_indices``, ``fixed_uv`` and ``uv_init`` are not all on
         one device.
@@ -769,6 +778,13 @@ def arap(
     fixed_mask, fixed_values = _scatter_constraints(n_vertices, fixed_indices, fixed_uv, device)
     fixed_values_2d = odt.as_array2d(fixed_values, wp.float64)
     interior_map, n_interior = twl.free_partition(fixed_mask)
+    # The scatter skips an out-of-range index and a repeated one marks its vertex once, so either
+    # leaves fewer vertices fixed than ``fixed_indices`` lists: the free count just read shows it.
+    if n_vertices - n_interior != fixed_indices.size:
+        raise ValueError(
+            "arap: fixed_indices must be distinct vertex indices in [0, n_vertices); they fix "
+            f"{n_vertices - n_interior} vertices where {fixed_indices.size} were given"
+        )
 
     out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
     if n_interior == 0:
@@ -884,7 +900,9 @@ def _scatter_constraints(
     n_fixed = indices.size
     if uv.size != n_fixed:
         raise ValueError(f"indices and uv must have the same length, got {n_fixed} and {uv.size}.")
-    # One scatter marks the mask and writes the values, skipping an out-of-range index in both.
+    # One scatter marks the mask and writes the values, skipping an out-of-range index in both. A
+    # skipped or repeated index fixes fewer vertices than ``indices`` lists, which each caller
+    # rejects from the free count it reads anyway (``_require_fixed_count``, ``arap``).
     fixed_mask = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
     fixed_values = _launch.zeros((2, n_vertices), dtype=wp.float64, device=device)
     if n_fixed > 0:
@@ -937,9 +955,11 @@ def lscm(
     the boundary vector-area term, so it needs only a few pins — typically **two** — to fix the
     remaining similarity-transform (rotation + scale + translation) degree of freedom.
 
-    The interior system is solved with conjugate gradient, verified as
-    [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] verifies it, with a sparse Cholesky
-    factorization taking over a solve that does not converge within its budget. Closed meshes are
+    On a mesh of fewer than 4 000 vertices the interior system is solved with conjugate gradient,
+    verified as [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] verifies it, with a
+    sparse Cholesky factorization taking over a solve that does not converge within its budget;
+    from 4 000 vertices it is factored at once, since with only a few pins its iteration grows
+    faster with the mesh than the factorization does. Closed meshes are
     valid input: the boundary vector-area matrix is then zero and the Hessian reduces to
     ``-repdiag(L, 2)``. Given a `Trimesh`,
     a factorization is kept on it; one prepared with
@@ -979,8 +999,9 @@ def lscm(
     ------
     ValueError
         If fewer than two vertices are pinned (and the mesh has at least two vertices), if
-        ``pinned_indices`` and ``pinned_uv`` have different lengths, or if ``solver`` is not
-        ``"auto"`` or ``"direct"``.
+        ``pinned_indices`` and ``pinned_uv`` have different lengths, if ``pinned_indices`` repeats
+        a vertex or holds one outside ``[0, n_vertices)``, or if ``solver`` is not ``"auto"`` or
+        ``"direct"``.
     RuntimeError
         If ``vertices``, ``faces``, ``pinned_indices`` and ``pinned_uv`` are not all on one device.
 
@@ -1052,7 +1073,14 @@ def lscm(
     )
     fixed_mask, fixed_values = _pin_stacked(n, pinned_indices, pinned_uv, device)
     sol, free_map = _solve_fixed_vertices(
-        bound, owned, "lscm", 1, fixed_mask, odt.as_array2d(fixed_values, wp.float64), solver
+        bound,
+        owned,
+        "lscm",
+        1,
+        fixed_mask,
+        odt.as_array2d(fixed_values, wp.float64),
+        solver,
+        2 * n_pinned,
     )
     out_uv = _launch.empty(n, dtype=wp.vec2, device=device)
     _launch.launch(
@@ -1083,8 +1111,13 @@ class FixedVertexSolver:
     builds it ahead of the calls, when a call asks for one (``solver="direct"``), or when a call
     built one anyway: the iteration's result failed
     its verification (see [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]), or the
-    system is factored from the start (``k >= 3``). A call fixing other vertices than the kept
-    factorization's solves as if none were kept, and replaces it with its own when it builds one.
+    system is factored from the start -- at ``k >= 3``, and for a ``k == 2`` ``harmonic`` /
+    ``tutte`` system or an ``lscm`` one on a mesh of 4 000 vertices or more. A call fixing other
+    vertices than the kept factorization's solves as if none were kept, and replaces it with its
+    own when it builds one. A system factored from the start that cannot be factored (over
+    [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not definite) is
+    remembered as such until [`release`][ordito.parametrization.FixedVertexSolver.release], and
+    later ``"auto"`` calls iterate without attempting it again.
 
     Notes
     -----
@@ -1124,6 +1157,10 @@ class FixedVertexSolver:
         """Bind a solver to ``mesh``; nothing is assembled until a factorization is asked for."""
         self._mesh = weakref.ref(mesh)
         self._systems: dict[tuple[str, int], twl.MinQuadWithFixedData] = {}
+        # The ``(method, k)`` whose system ``"auto"`` factored at once (``_factors_at_once``) and
+        # the factorization refused -- over the memory budget, or not definite. Its later calls
+        # iterate without paying for the refused attempt's analysis again; ``release`` forgets it.
+        self._refused: set[tuple[str, int]] = set()
 
     @property
     def nbytes(self) -> int:
@@ -1131,10 +1168,11 @@ class FixedVertexSolver:
         return sum(system.nbytes for system in self._systems.values())
 
     def release(self) -> None:
-        """Drop every kept factorization."""
+        """Drop every kept factorization, and forget which systems could not be factored."""
         for system in self._systems.values():
             system.release()
         self._systems.clear()
+        self._refused.clear()
 
     def factor(self, method: str, fixed_indices: wp.array[wp.int32], *, k: int = 1) -> bool:
         """
@@ -1162,7 +1200,8 @@ class FixedVertexSolver:
         Raises
         ------
         ValueError
-            If ``method`` is not one of the three, if ``k < 1``, or if ``k != 1`` for ``"lscm"``.
+            If ``method`` is not one of the three, if ``k < 1``, if ``k != 1`` for ``"lscm"``, or
+            if ``fixed_indices`` repeats a vertex or holds one outside ``[0, n_vertices)``.
         RuntimeError
             If ``fixed_indices`` is not on the mesh's device.
 
@@ -1183,12 +1222,14 @@ class FixedVertexSolver:
         n_vertices = mesh.n_vertices
         if n_vertices == 0:
             return True
-        no_uv = _launch.zeros(fixed_indices.size, dtype=wp.vec2, device=mesh.device)
+        n_fixed = fixed_indices.size
+        no_uv = _launch.zeros(n_fixed, dtype=wp.vec2, device=mesh.device)
         if method == "lscm":
             fixed_mask, _ = _pin_stacked(n_vertices, fixed_indices, no_uv, mesh.device)
+            n_fixed *= 2
         else:
             fixed_mask, _ = _scatter_constraints(n_vertices, fixed_indices, no_uv, mesh.device)
-        system, _ = _fixed_vertex_system(mesh, method, k, fixed_mask, factor=True)
+        system, _ = _fixed_vertex_system(mesh, method, k, fixed_mask, n_fixed, factor=True)
         if system.factored:
             self._keep(method, k, system)
         return system.factored or system.n_free == 0
@@ -1197,7 +1238,7 @@ class FixedVertexSolver:
         self,
         method: str,
         fixed_mask: wp.array[wp.bool],
-        fixed_values: odt.Array2dFloat,
+        fixed_values: odt.Array2dFloat64,
         *,
         k: int = 1,
         solver: Literal["auto", "direct"] = "auto",
@@ -1221,9 +1262,10 @@ class FixedVertexSolver:
         k
             The harmonic power (``1`` for ``"lscm"``).
         solver
-            ``"auto"`` iterates, verified, and factors only when the check fails (or at
-            ``k >= 3``, or for ``k == 2`` and ``"lscm"`` on a large mesh); ``"direct"`` factors
-            at once. A factorization either builds is kept.
+            ``"auto"`` iterates, verified, and factors only when the check fails -- or at once at
+            ``k >= 3``, and for ``k == 2`` and ``"lscm"`` on a mesh of 4 000 vertices or more,
+            unless that system was already refused; ``"direct"`` factors at once. A factorization
+            either builds is kept.
 
         Returns
         -------
@@ -1270,6 +1312,24 @@ class FixedVertexSolver:
         print(np.allclose(solution.numpy()[0], x[~mask]))  # True
         ```
         """
+        return self._solve(method, fixed_mask, fixed_values, k, solver, None)
+
+    def _solve(
+        self,
+        method: str,
+        fixed_mask: wp.array[wp.bool],
+        fixed_values: odt.Array2dFloat64,
+        k: int,
+        solver: Literal["auto", "direct"],
+        n_fixed: int | None,
+    ) -> tuple[odt.Array2dFloat, wp.array[wp.int32]]:
+        """
+        ``solve``, confirming the mask fixes ``n_fixed`` degrees of freedom when that is given.
+
+        The maps pass the count their indices fix when distinct and in range: a repeated or
+        out-of-range index fixes fewer, which the system's free count -- read when it is built --
+        shows before anything is factored or solved.
+        """
         _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve")
         _require_solver_name(solver, "FixedVertexSolver.solve")
         mesh = self._bound_mesh()
@@ -1280,13 +1340,21 @@ class FixedVertexSolver:
         preconditioner: str | twl.SquaredLaplacianPreconditioner = "adaptive"
         built = system is None
         if system is None:
+            at_once = _factors_at_once(method, k, mesh.vertices.size)
+            refused = at_once and solver == "auto" and (method, k) in self._refused
             system, preconditioner = _fixed_vertex_system(
                 mesh,
                 method,
                 k,
                 fixed_mask,
-                factor=solver == "direct" or _factors_at_once(method, k, mesh.vertices.size),
+                n_fixed,
+                factor=solver == "direct" or (at_once and not refused),
             )
+            if at_once and not refused and not system.factored and system.n_free > 0:
+                self._refused.add((method, k))
+                _LOGGER.debug("%s: the k=%d system cannot be factored; it iterates", method, k)
+        else:
+            _require_fixed_count(system, n_fixed, method)
         solution, free_map, _ = system.solve(
             fixed_values, tol=_CG_TOLERANCE, preconditioner=preconditioner
         )
@@ -1325,18 +1393,20 @@ def _solve_fixed_vertices(
     method: str,
     k: int,
     fixed_mask: wp.array[wp.bool],
-    fixed_values: odt.Array2dFloat,
+    fixed_values: odt.Array2dFloat64,
     solver: str,
+    n_fixed: int,
 ) -> tuple[odt.Array2dFloat, wp.array[wp.int32]]:
     """
     Solve a fixed-vertex map's reduced system on the mesh's solver, or on one made for the call.
 
-    A caller-owned mesh keeps whatever factorization the solve builds; a ``vertices, faces`` call
-    drops it, saying so at ``INFO``.
+    ``n_fixed`` is the degrees of freedom the caller's indices fix when they are distinct and in
+    range, which the system's free count confirms. A caller-owned mesh keeps whatever factorization
+    the solve builds; a ``vertices, faces`` call drops it, saying so at ``INFO``.
     """
     held = mesh.fixed_vertex_solver() if owned else FixedVertexSolver(mesh)
-    solution, free_map = held.solve(
-        method, fixed_mask, fixed_values, k=k, solver=cast("Literal['auto', 'direct']", solver)
+    solution, free_map = held._solve(  # pyright: ignore[reportPrivateUsage]
+        method, fixed_mask, fixed_values, k, cast("Literal['auto', 'direct']", solver), n_fixed
     )
     if not owned and held.nbytes > 0:
         _LOGGER.info(
@@ -1373,10 +1443,19 @@ def _factors_at_once(method: str, k: int, n_vertices: int) -> bool:
 
 
 def _fixed_vertex_system(
-    mesh: Trimesh, method: str, k: int, fixed_mask: wp.array[wp.bool], *, factor: bool
+    mesh: Trimesh,
+    method: str,
+    k: int,
+    fixed_mask: wp.array[wp.bool],
+    n_fixed: int | None,
+    *,
+    factor: bool,
 ) -> tuple[twl.MinQuadWithFixedData, str | twl.SquaredLaplacianPreconditioner]:
     """
     Assemble ``method``'s reduced system over ``fixed_mask``'s free set, and its preconditioner.
+
+    The mask's fixed count is checked against ``n_fixed`` (``_require_fixed_count``) after the
+    extraction, which reads the free count anyway, and before the factorization.
 
     ``harmonic`` / ``tutte`` minimize ``Q = -L`` at ``k == 1`` and ``Q = (-L) (M^-1 (-L))^(k-1)``
     above ([`k_harmonic`][ordito.energies.k_harmonic]; ``M`` the barycentric lumped mass, the
@@ -1395,7 +1474,7 @@ def _fixed_vertex_system(
     vertices, faces = mesh.vertices, mesh.faces
     if method == "lscm":
         q = od.energies.lscm_hessian(vertices, faces)
-        return twl.MinQuadWithFixedData(q, fixed_mask, vertices, factor=factor), "chebyshev"
+        return _checked_system(q, fixed_mask, vertices, n_fixed, method, factor), "chebyshev"
     if method == "harmonic":
         laplacian = cotmatrix(vertices, faces, dtype=wp.float64)
         mass_diag = mass_matrix_entries(vertices, faces, dtype=wp.float64) if k > 1 else None
@@ -1403,7 +1482,7 @@ def _fixed_vertex_system(
         laplacian = graph_laplacian(vertices, faces, dtype=wp.float64)
         mass_diag = None
     q = od.energies.k_harmonic(laplacian, mass_diag, k=k)
-    system = twl.MinQuadWithFixedData(q, fixed_mask, vertices, factor=factor)
+    system = _checked_system(q, fixed_mask, vertices, n_fixed, method, factor)
     if k == 1:
         return system, "chebyshev"
     if k >= 3 or system.factored or system.n_free == 0:
@@ -1428,6 +1507,43 @@ def _fixed_vertex_system(
             device=device,
         )
     return system, twl.squared_laplacian_preconditioner(l_ff, roots)
+
+
+def _checked_system(
+    q: odt.BsrMatrix[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    vertices: wp.array[wp.vec3],
+    n_fixed: int | None,
+    method: str,
+    factor: bool,
+) -> twl.MinQuadWithFixedData:
+    """Build ``q``'s reduced system over ``fixed_mask``, check its fixed count, then factor it."""
+    system = twl.MinQuadWithFixedData(q, fixed_mask, vertices, factor=False)
+    _require_fixed_count(system, n_fixed, method)
+    if factor and system.factorization is not None:
+        system.factorization.factor()
+    return system
+
+
+def _require_fixed_count(
+    system: twl.MinQuadWithFixedData, n_fixed: int | None, method: str
+) -> None:
+    """
+    Raise ``ValueError`` unless ``system`` fixes the ``n_fixed`` degrees of freedom asked for.
+
+    The scatter kernels mark one degree of freedom (two for ``lscm``) per distinct in-range index
+    and skip an out-of-range one, so a repeated or out-of-range index leaves fewer fixed than the
+    caller's count. The fixed count is the mask's size less the free count the system read when it
+    was built: no read of its own.
+    """
+    if n_fixed is None:
+        return
+    fixed = system.fixed_mask.size - system.n_free
+    if fixed != n_fixed:
+        raise ValueError(
+            f"{method}: the fixed vertex indices must be distinct and in [0, n_vertices); they fix "
+            f"{fixed} degrees of freedom where {n_fixed} were given"
+        )
 
 
 def _pin_stacked(

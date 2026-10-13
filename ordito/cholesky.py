@@ -62,7 +62,6 @@ CHOLESKY_REFINE_ROUNDS = 12
 _SINGULAR_ROW_SUM = 1e-10
 # Rows whose diagonal ``sparse_cholesky(negated=None)`` sums to choose the sign it tries first.
 _SIGN_PROBE_ROWS = 64
-_INT32_MAX = 2**31 - 1
 
 
 class NotPositiveDefiniteError(ValueError):
@@ -147,6 +146,9 @@ class SparseCholesky:
         self._stable: odt.BsrMatrix[wp.float64] | None = None
         self._fronts: wp.array[wp.float64] | None = None
         self._factor_graph: Any = None
+        # Whether the numeric factor is one ``solve`` may use: false from a ``refactor`` that
+        # raised until one that succeeds.
+        self._valid = False
         self._constructing = True
         self.refactor(matrix)
         self._constructing = False
@@ -155,14 +157,23 @@ class SparseCholesky:
         """
         Factor a new operator of the same sparsity pattern in place.
 
+        If the new operator is not positive definite, the factorization holds no usable factor
+        afterwards: [`solve`][ordito.cholesky.SparseCholesky.solve] raises until a later
+        ``refactor`` succeeds.
+
         Parameters
         ----------
         matrix
             ``(n, n)`` symmetric ``float64`` operator whose stored pattern is the one this
-            factorization was built for (the same row offsets and column indices).
+            factorization was built for (the same row offsets and column indices). Only its
+            shape and its storage's sizes are checked; another pattern of as many stored entries
+            is not detected and factors a wrong operator.
 
         Raises
         ------
+        ValueError
+            If ``matrix`` is not ``(n, n)`` scalar ``float64``, or stores fewer entries than the
+            pattern this factorization was built for.
         NotPositiveDefiniteError
             If the operator is not positive definite on its non-singular components (a pivot that
             is not positive).
@@ -188,8 +199,11 @@ class SparseCholesky:
         ```
         """
         require_same_device(matrix=matrix, factor=self)
+        self._require_pattern(matrix, "refactor")
         plan = self._plan
         sign = -1.0 if self.negated else 1.0
+        # The factor is overwritten from here on: unusable until the pivots are read back good.
+        self._valid = False
         if self._constructing:
             plan.factor(matrix, self._numeric, sign)
         else:
@@ -218,6 +232,23 @@ class SparseCholesky:
         self._matrix = matrix
         for solve in self._solves.values():
             solve.matrix = matrix
+        self._valid = True
+
+    def _require_pattern(self, matrix: odt.BsrMatrix[wp.float64], caller: str) -> None:
+        """Raise unless ``matrix`` has this factorization's shape and storage for its pattern."""
+        n = self.n
+        rows, cols = int(matrix.nrow), int(matrix.ncol)
+        if matrix.values.dtype != wp.float64 or rows != n or cols != n:
+            raise ValueError(
+                f"SparseCholesky.{caller}: expected an ({n}, {n}) scalar float64 operator, got "
+                f"({rows}, {cols}) of {matrix.values.dtype.__name__}"
+            )
+        stored = self._plan.n_stored
+        if matrix.offsets.size < n + 1 or min(matrix.columns.size, matrix.values.size) < stored:
+            raise ValueError(
+                f"SparseCholesky.{caller}: the operator stores fewer entries than the {stored} of "
+                "the pattern this factorization was built for"
+            )
 
     def _stable_copy(self, matrix: odt.BsrMatrix[wp.float64]) -> odt.BsrMatrix[wp.float64]:
         """Copy ``matrix``'s values into this factorization's own storage of its pattern."""
@@ -233,8 +264,9 @@ class SparseCholesky:
             self.nbytes += 4 * (stable.offsets.size + stable.columns.size)
             self.nbytes += 8 * stable.values.size
             self._stable = stable
-        else:
-            _launch.copy(stable.values, matrix.values)
+        elif self._plan.n_stored:
+            # The pattern's entries only: a caller's storage may be larger than the pattern.
+            _launch.copy(stable.values, matrix.values, count=self._plan.n_stored)
         return stable
 
     def with_operator(
@@ -250,7 +282,8 @@ class SparseCholesky:
         ----------
         matrix
             ``(n, n)`` symmetric ``float64`` operator stored over the pattern this factorization
-            was built for (the same row offsets and column indices).
+            was built for (the same row offsets and column indices; checked as
+            [`refactor`][ordito.cholesky.SparseCholesky.refactor] checks it).
         negated
             As [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] takes it: ``None`` factors
             whichever sign is positive definite.
@@ -262,6 +295,9 @@ class SparseCholesky:
 
         Raises
         ------
+        ValueError
+            If ``matrix`` is not ``(n, n)`` scalar ``float64``, or stores fewer entries than the
+            pattern this factorization was built for.
         NotPositiveDefiniteError
             If the operator (with ``negated=None``: either sign of it) is not positive definite.
         RuntimeError
@@ -281,6 +317,7 @@ class SparseCholesky:
         ```
         """
         require_same_device(matrix=matrix, factor=self)
+        self._require_pattern(matrix, "with_operator")
         return _factored(self._plan, matrix, negated)
 
     def solve(
@@ -304,8 +341,14 @@ class SparseCholesky:
             triangular solve; on a singular component it supplies the constant (see the module
             notes).
         tol
-            Refinement stops once no entry moves by more than ``tol`` times the column's largest
-            entry -- or, with ``componentwise``, times its own magnitude.
+            Refinement stops once every row's residual passes the backward-error test
+            ``|b - A x|_i <= tol * max(s_i, max_j |b_j|)``, with ``s_i = (|A| |x| + |b|)_i`` the
+            row's Oettli-Prager scale and ``max_j |b_j|`` the column's largest right-hand-side
+            entry -- or, with ``componentwise``, ``|b - A x|_i <= tol * s_i``. A row dropped to
+            pin a singular component is exempt; a residual that is not a number never passes.
+            At most [`CHOLESKY_REFINE_ROUNDS`][ordito.cholesky.CHOLESKY_REFINE_ROUNDS]
+            refinement solves run: a solution still failing the test then is returned as it
+            stands, without a warning.
         componentwise
             Refine every entry to its own size: for solutions spanning many orders of magnitude.
 
@@ -314,7 +357,8 @@ class SparseCholesky:
         ValueError
             If ``rhs`` or ``solution`` is not ``float64`` of a matching shape.
         RuntimeError
-            If ``rhs`` and ``solution`` are not on this factorization's device.
+            If ``rhs`` and ``solution`` are not on this factorization's device, or the last
+            [`refactor`][ordito.cholesky.SparseCholesky.refactor] raised, leaving no factor.
 
         Examples
         --------
@@ -336,6 +380,11 @@ class SparseCholesky:
         ```
         """
         require_same_device(rhs=rhs, solution=solution, factor=self)
+        if not self._valid:
+            raise RuntimeError(
+                "SparseCholesky.solve: the last refactor failed and left no factor; refactor "
+                "with a positive definite operator first"
+            )
         if rhs.dtype != wp.float64 or solution.dtype != wp.float64 or rhs.shape != solution.shape:
             raise ValueError("SparseCholesky.solve takes float64 rhs and solution of one shape")
         n_columns = 1 if rhs.ndim == 1 else int(rhs.shape[0])
@@ -381,7 +430,8 @@ def sparse_cholesky(
     ----------
     matrix
         ``(n, n)`` symmetric scalar ``float64`` operator, positive definite apart from components
-        whose rows all sum to zero (solved up to a constant, see the module notes).
+        whose rows all sum to zero (solved up to a constant, see the module notes). Its stored
+        pattern must be symmetric too: where ``(i, j)`` is stored, so is ``(j, i)``.
     coordinates
         ``(n,)`` positions of the rows, for a geometric ordering: a mesh's vertices for a vertex
         operator. When ``None``, the ordering is computed from the pattern alone.
@@ -399,8 +449,8 @@ def sparse_cholesky(
     Raises
     ------
     ValueError
-        If ``matrix`` is not square scalar ``float64``, ``coordinates`` does not have ``n`` rows, or
-        the factorization would exceed
+        If ``matrix`` is not square scalar ``float64``, its stored pattern is not symmetric,
+        ``coordinates`` does not have ``n`` rows, or the factorization would exceed
         [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
     NotPositiveDefiniteError
         If the operator is not positive definite (with ``negated=None``: neither sign is).
@@ -464,7 +514,10 @@ def _factored(
     try:
         return SparseCholesky(plan, matrix, negated=first)
     except NotPositiveDefiniteError:
-        return SparseCholesky(plan, matrix, negated=not first)
+        # Retried outside the handler: the exception's traceback holds the first attempt (its
+        # solve blocks and fronts), released once the handler ends, before the second allocates.
+        pass
+    return SparseCholesky(plan, matrix, negated=not first)
 
 
 def _leading_diagonal_negative(matrix: odt.BsrMatrix[wp.float64]) -> bool:
@@ -499,13 +552,7 @@ def _plan_cholesky(
     )
     if coordinates is None:
         coordinates = _landmark_coordinates(matrix, labels)
-    plan = _Plan(matrix, coordinates, labels)
-    if plan.nbytes > CHOLESKY_MEMORY_BUDGET:
-        raise ValueError(
-            f"sparse_cholesky: the factorization needs {plan.nbytes} bytes, above "
-            f"CHOLESKY_MEMORY_BUDGET ({CHOLESKY_MEMORY_BUDGET})"
-        )
-    return plan
+    return _Plan(matrix, coordinates, labels)
 
 
 class _Plan:
@@ -647,7 +694,7 @@ class _Plan:
         _launch.launch(
             kernel_cholesky.schedule_levels,
             dim=1,
-            inputs=[level_stats, level_offsets, s.row_ends, group_ends],
+            inputs=[level_stats, level_offsets, s.row_ends, group_ends, terms],
             outputs=[schedule],
             device=device,
         )
@@ -665,13 +712,16 @@ class _Plan:
             outputs=[schedule],
             device=device,
         )
-        # Read back, the analysis' second and last sync: the schedule (distinct rows, groups,
-        # panels; a row a level; the panels' work; the groups) and the terms' totals.
-        n_rows, n_groups, n_panels = (int(value) for value in read_values(schedule, 0, header))
-        table = odt.as_dense(schedule[: work_base + n_panels + 4 * n_groups]).numpy()
-        front_entries, block_entries, _, _, f_tasks, b_tasks = (
-            int(value) for value in odt.as_dense(terms[n_sn : n_sn + 1]).numpy()[0]
+        # Read back, the analysis' last two syncs: the header (distinct rows, groups, panels and
+        # the terms' totals), which sizes the rest of the schedule (a row a level; the panels'
+        # work; the groups), read second.
+        head = [int(value) for value in read_values(schedule, 0, header)]
+        n_rows, n_groups, n_panels = head[:3]
+        terms_at = int(kernel_cholesky.SCHEDULE_TERMS)
+        front_entries, block_entries, f_parts, b_parts, f_tasks, b_tasks = (
+            (head[terms_at + 2 * k] << 31) + head[terms_at + 2 * k + 1] for k in range(6)
         )
+        table = odt.as_dense(schedule[: work_base + n_panels + 4 * n_groups]).numpy()
         levels = table[header:work_base].reshape(n_levels + 1, fields)
         work = table[work_base : work_base + n_panels].tolist()
         group_table = table[work_base + n_panels :].reshape(n_groups, 4)
@@ -679,18 +729,18 @@ class _Plan:
         self.block_entries = block_entries
         last_terms = levels[n_levels]
         self.n_pairs = max(n_rows, 1)
-        totals = odt.as_dense(terms[n_sn : n_sn + 1]).numpy()[0]
-        self.n_forward_parts = max(int(totals[2]), 1)
-        self.n_backward_parts = max(int(totals[3]), 1)
+        self.n_forward_parts = max(f_parts, 1)
+        self.n_backward_parts = max(b_parts, 1)
+        self.n_stored = s.n_stored
         n_entries = s.n_entries
+        # The budget also bounds every count the maps index in ``int32``: each costs at least 8
+        # bytes an item in the estimate, so one past ``2^31`` is past any budget below 16 GiB.
         self._estimate(front_entries, block_entries, f_tasks, b_tasks, n_entries)
         if self.nbytes > CHOLESKY_MEMORY_BUDGET:
             raise ValueError(
                 f"sparse_cholesky: the factorization needs {self.nbytes} bytes, above "
                 f"CHOLESKY_MEMORY_BUDGET ({CHOLESKY_MEMORY_BUDGET})"
             )
-        if max(self.n_forward_parts, self.n_backward_parts, self.n_pairs, n_entries) > _INT32_MAX:
-            raise ValueError("sparse_cholesky: the factorization exceeds int32 indexing")
         self.front_offset = _launch.view(front_offset, 0, n_sn)
         self.block_offset = _launch.view(block_offset, 0, n_sn)
         self.ncol = s.ncol
@@ -906,6 +956,7 @@ class _Plan:
 
         self.n_levels = 0
         self.front_entries = self.block_entries = 0
+        self.n_stored = 0
         self.n_pairs = self.n_forward_parts = self.n_backward_parts = 1
         self._estimate(0, 0, 0, 0, 0)
         self.perm, self.owner, self.ncol, self.c0, self.front_size, self.parent = (
@@ -1182,6 +1233,9 @@ class _Solve:
         self.null_space_partials = _launch.empty(
             max(plan.chunk_bound * n_columns, 1), dtype=wp.float64, device=device
         )
+        self.null_space_means = _launch.empty(
+            max(plan.n_components * n_columns, 1), dtype=wp.float64, device=device
+        )
         self.state = _launch.zeros(3, dtype=wp.int32, device=device)
         # ``wp.capture_while`` reads the condition slot, the state's first.
         self.condition = cast("wp.array[int]", self.state[0:1])
@@ -1243,28 +1297,34 @@ class _Solve:
         self._test()
         wp.capture_while(self.condition, self._round)
         if plan.n_components and self.numeric.any_singular:
-            # Two launches over the whole device, not a block per component: a mesh's one
-            # component is every row.
-            tables = [
-                plan.component_offsets,
-                plan.component_rows,
-                plan.component_label,
-                plan.chunk_offsets,
-                wp.int32(plan.chunk_bound),
-                self.numeric.singular,
-            ]
+            # The chunk sums and the shift run over the whole device, not a block per component:
+            # a mesh's one component is every row. Between them one thread a component adds its
+            # chunks, in order, into its mean.
+            chunk_bound = wp.int32(plan.chunk_bound)
+            singular = self.numeric.singular
             _launch.launch_tiled(
                 kernel_cholesky.null_space_partials,
                 dim=[plan.chunk_bound * self.n_columns],
-                inputs=[*tables, self.initial, self.solution, wp.int32(plan.n)],
+                inputs=[plan.component_offsets, plan.component_rows, plan.component_label,
+                        plan.chunk_offsets, chunk_bound, singular, self.initial, self.solution,
+                        wp.int32(plan.n)],
                 outputs=[self.null_space_partials],
                 block_dim=256 if wp.get_device(device).is_cuda else 1,
                 device=device,
-            )
+            )  # fmt: skip
+            _launch.launch(
+                kernel_cholesky.null_space_means,
+                dim=(plan.n_components, self.n_columns),
+                inputs=[plan.component_offsets, plan.component_label, plan.chunk_offsets,
+                        chunk_bound, singular, self.null_space_partials],
+                outputs=[self.null_space_means],
+                device=device,
+            )  # fmt: skip
             _launch.launch(
                 kernel_cholesky.null_space_shift,
                 dim=(plan.n, self.n_columns),
-                inputs=[*tables, self.null_space_partials, wp.int32(plan.n), self.solution],
+                inputs=[plan.component_offsets, plan.component_rows, plan.component_label,
+                        singular, self.null_space_means, wp.int32(plan.n), self.solution],
                 device=device,
             )  # fmt: skip
 
@@ -1272,10 +1332,12 @@ class _Solve:
         device = wp.get_device(self.plan.device)
         _launch.copy(self.rhs, rhs)
         _launch.copy(self.initial, solution)
+        # The storage a recording replays: the operator's device pointers, which the graph holds
+        # (an array's ``id`` can be reused by a new array at another address).
         identity = (
-            id(self.matrix.offsets),
-            id(self.matrix.columns),
-            id(self.matrix.values),
+            self.matrix.offsets.ptr,
+            self.matrix.columns.ptr,
+            self.matrix.values.ptr,
             self.numeric.any_singular,
         )
         # Recorded on the second run against one operator storage, not the first, unless the
@@ -1311,7 +1373,8 @@ def _structure(
 
     All on the device, from the dissection's tree: one read of the counts that size what
     follows (supernodes, levels, structure pairs, lower entries and, from ``component_ends``,
-    components), and the row structure's distinct count left on the device for the schedule's.
+    components) with the stored entry count and the pattern's symmetry flag, and the row
+    structure's distinct count left on the device for the schedule's.
     """
     device = node.device
     # Supernodes: each tree's top merged into its root while it holds at most
@@ -1354,7 +1417,7 @@ def _structure(
     c0 = _launch.empty(n, dtype=wp.int32, device=device)
     ncol = _launch.zeros(n, dtype=wp.int32, device=device)
     kept = _launch.empty(n, dtype=wp.int32, device=device)
-    header = _launch.zeros(2, dtype=wp.int32, device=device)
+    header = _launch.zeros(kernel_cholesky.HEADER_SLOTS, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_cholesky.supernode_tables,
         dim=n,
@@ -1400,13 +1463,14 @@ def _structure(
         device=device,
     )
     perm = odt.as_dense(vertices[:n])
-    # The operator's lower entries in the new order, for the entry maps and the estimate.
+    # The operator's lower entries in the new order, for the entry maps and the estimate, and
+    # whether its pattern is structurally symmetric.
     lower_ends = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_cholesky.count_lower_entries,
         dim=n,
         inputs=[offsets, columns, pos],
-        outputs=[lower_ends],
+        outputs=[lower_ends, header],
         device=device,
     )
     _launch.array_scan(lower_ends, lower_ends, inclusive=True)
@@ -1423,12 +1487,24 @@ def _structure(
         device=device,
     )
     _launch.array_scan(path_counts, path_counts, inclusive=True)
-    # Read back, the analysis' first sync: the supernode and level counts, the structure pairs'
-    # count (their sort's size), the lower entries and the components.
-    n_sn, n_levels = (int(value) for value in read_values(header, 0, 2))
-    n_pairs = int(read_scalar(path_counts, -1))
-    n_entries = int(read_scalar(lower_ends, -1))
-    n_components = int(read_scalar(component_ends, -1))
+    _launch.launch(
+        kernel_cholesky.structure_counts,
+        dim=1,
+        inputs=[path_counts, lower_ends, component_ends, offsets],
+        outputs=[header],
+        device=device,
+    )
+    # Read back, the analysis' first sync, one copy: the supernode and level counts, the structure
+    # pairs' count (their sort's size), the lower entries, the components, the stored entries and
+    # the symmetry flag.
+    n_sn, n_levels, n_pairs, n_entries, n_components, n_stored, asymmetric = (
+        int(value) for value in read_values(header, 0, kernel_cholesky.HEADER_SLOTS)
+    )
+    if asymmetric:
+        raise ValueError(
+            "sparse_cholesky: the operator's stored pattern is not symmetric (an entry (i, j) is "
+            "stored without (j, i)); store both, explicit zeros included"
+        )
     shift = _bits(n_sn * n)
     if shift + _bits(n_levels) > 64:
         raise ValueError("sparse_cholesky: the factorization exceeds 64-bit row keys")
@@ -1467,7 +1543,7 @@ def _structure(
     return _Structure(
         perm, pos, owner, _launch.view(ncol, 0, n_sn), nrow, _launch.view(c0, 0, n_sn),
         _launch.view(parent, 0, n_sn), _launch.view(height, 0, n_sn), rows, row_node, row_start,
-        row_ends, lower_ends, n_entries, n_sn, n_levels, n_components,
+        row_ends, lower_ends, n_entries, n_stored, n_sn, n_levels, n_components,
     )  # fmt: skip
 
 
@@ -1493,6 +1569,8 @@ class _Structure:
     # Each operator row's lower entries, scanned inclusively, and their total.
     lower_ends: wp.array[wp.int32]
     n_entries: int
+    # The operator's stored entries, ``offsets[n]``.
+    n_stored: int
     n_sn: int
     n_levels: int
     n_components: int
@@ -1774,33 +1852,61 @@ def _landmark_coordinates(
 def _host_landmark_coordinates(
     matrix: odt.BsrMatrix[wp.float64], labels: wp.array[wp.int32]
 ) -> npt.NDArray[np.float32]:
-    """``_landmark_coordinates`` by frontier searches on the host."""
+    """
+    ``_landmark_coordinates`` by frontier searches on the host, every component at once.
+
+    The device path's sequence: a search from each component's lowest row, then from the row
+    farthest from it, from the row farthest from that, and from the row farthest from the nearer
+    of the last two (the lowest row on a tie), each a single multi-source search over all
+    components -- linear in the pattern however many components there are.
+    """
     n = int(matrix.nrow)
     offsets = matrix.offsets.numpy()[: n + 1].astype(np.int64)
     columns = matrix.columns.numpy()[: int(offsets[-1])].astype(np.int64)
-    labels_np = labels.numpy()
+    labels_np = labels.numpy().astype(np.int64)
     coords = np.zeros((n, 3), np.float32)
-    first = np.unique(labels_np, return_index=True)[1]
     sizes = np.bincount(labels_np, minlength=n)
-    for seed in first[sizes[labels_np[first]] > CHOLESKY_LEAF_ROWS]:
-        d0 = _hop_distances(offsets, columns, n, int(seed))
-        inside = d0 >= 0
-        a = _hop_distances(offsets, columns, n, int(np.argmax(d0)))
-        b = _hop_distances(offsets, columns, n, int(np.argmax(np.where(inside, a, -1))))
-        c = _hop_distances(
-            offsets, columns, n, int(np.argmax(np.where(inside, np.minimum(a, b), -1)))
-        )
-        coords[inside] = np.stack([a[inside], b[inside], c[inside]], 1)
+    first = np.full(n, n, np.int64)
+    np.minimum.at(first, labels_np, np.arange(n, dtype=np.int64))
+    searched = np.flatnonzero(sizes > CHOLESKY_LEAF_ROWS)
+    if searched.size == 0:
+        return coords
+    inside = sizes[labels_np] > CHOLESKY_LEAF_ROWS
+    d0 = _hop_distances(offsets, columns, n, first[searched])
+    a = _hop_distances(offsets, columns, n, _farthest_rows(d0, labels_np, inside, searched))
+    b = _hop_distances(offsets, columns, n, _farthest_rows(a, labels_np, inside, searched))
+    nearer = np.minimum(a, b)
+    c = _hop_distances(offsets, columns, n, _farthest_rows(nearer, labels_np, inside, searched))
+    coords[inside] = np.stack([a[inside], b[inside], c[inside]], 1)
     return coords
 
 
-def _hop_distances(
-    offsets: npt.NDArray[np.int64], columns: npt.NDArray[np.int64], n: int, seed: int
+def _farthest_rows(
+    distance: npt.NDArray[np.int64],
+    labels: npt.NDArray[np.int64],
+    inside: npt.NDArray[np.bool_],
+    searched: npt.NDArray[np.int64],
 ) -> npt.NDArray[np.int64]:
-    """Breadth-first hop distance from ``seed``; ``-1`` off its component."""
+    """Each searched component's farthest row by ``distance``, its lowest on a tie."""
+    n = distance.size
+    rows = np.flatnonzero(inside)
+    # The larger distance first, then the lower row: one key per row, maximized per component.
+    key = distance[rows] * (n + 1) + (n - rows)
+    best = np.full(n, -1, np.int64)
+    np.maximum.at(best, labels[rows], key)
+    return n - best[searched] % (n + 1)
+
+
+def _hop_distances(
+    offsets: npt.NDArray[np.int64],
+    columns: npt.NDArray[np.int64],
+    n: int,
+    seeds: npt.NDArray[np.int64],
+) -> npt.NDArray[np.int64]:
+    """Breadth-first hop distance from the nearest of ``seeds``; ``-1`` where none reaches."""
     distance = np.full(n, -1, np.int64)
-    frontier = np.array([seed], np.int64)
-    distance[seed] = 0
+    frontier = np.unique(seeds)
+    distance[frontier] = 0
     level = 0
     while frontier.size:
         level += 1
