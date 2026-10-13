@@ -897,6 +897,7 @@ The full per-component detail is in `reference/component-status.md`; read the co
 - `warp.geometry.tri_tri_adjacency` for `halfedge_twins`: no, quadratic in the largest vertex bucket and cannot carry the validation. Own bucketed pairing is used on CUDA.
 - Hard triangle-quality veto, accumulated quadrics, boundary-segment placement or heavier boundary weights in `quadric_decimate`: no, each worsened mean deviation or stalled; the face-quality guard is measured and left off by owner decision.
 - Reinstating `warp.fem` for Poisson: no, the narrow-band brick backend replaced it.
+- Fusing `sparse_cholesky`'s panel-step launches (re-factoring the diagonal block per row group, lookahead factor in the update or rows launch): no, the factor is device-bound and a tile factor in a launch slows every block of it; a float64 16 x 16 `tile_cholesky` is the floor (5.9 us at 64 lanes, 11.8 at 256).
 
 ### Component notes
 

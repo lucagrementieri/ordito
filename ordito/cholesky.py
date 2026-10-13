@@ -894,7 +894,10 @@ class _Plan:
                 for p, width in enumerate(work):
                     row_dim = (nodes.size, rows_below + min((p + 1) * panel, max_ncol))
                     if cuda:
-                        # The diagonal block as a tile, and the rows by its inverse.
+                        # The diagonal block as a tile, and the rows by its inverse. Three
+                        # launches a panel: the factor is device-bound, and every fusion measured
+                        # (the next block factored inside the update or rows launch, or per row
+                        # group) slowed it. The tile factor's latency is least at 64 lanes.
                         _launch.launch_tiled(
                             kernel_cholesky.factor_panel_tiled,
                             dim=[nodes.size],
@@ -907,7 +910,7 @@ class _Plan:
                                 self.panel_scratch,
                             ],
                             outputs=[self.panel_inverse_tiles],
-                            block_dim=128,
+                            block_dim=64,
                             device=device,
                         )
                         _launch.launch_tiled(
