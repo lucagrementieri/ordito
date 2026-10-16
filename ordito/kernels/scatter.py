@@ -356,6 +356,19 @@ def scatter_index_where_scanned(
         out_scattered[start] = i
 
 
+@wp.kernel
+def scatter_value_where_scanned(
+    inclusive: wp.array[wp.int32], values: wp.array[wp.vec3], out_scattered: wp.array[wp.vec3]
+) -> None:
+    # ``scatter_index_where_scanned`` with the gather folded in: every selected position's
+    # *value* lands at its compact slot, for a caller that wants ``values[flatnonzero(flags)]``
+    # and not the indices, so no index buffer is written and gathered back.
+    i = wp.int32(wp.tid())
+    start, count = scanned_count(inclusive, i)
+    if count != 0:
+        out_scattered[start] = values[i]
+
+
 @wp.func
 def append_to_pair(
     row: wp.int32, value: wp.int32, out_count: wp.array[wp.int32], out_pairs: wp.array2d[wp.int32]

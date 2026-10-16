@@ -20,7 +20,7 @@ from ordito.kernels.halfedge import (
     next_boundary_halfedge,
 )
 from ordito.kernels.predicates import triangle_aspect_ratio, triangle_normal
-from ordito.kernels.selection import face_selected_by_vertices
+from ordito.kernels.selection import face_selected_by_vertices, mark_submesh_face
 from ordito.kernels.triangles import (
     QUALITY_AREA,
     corner_triple,
@@ -171,26 +171,6 @@ def reduce_largest_group(counts: wp.array[wp.int32], out_best: wp.array[wp.int64
         wp.atomic_max(out_best, 0, pack_ranked_key(counts[group], group))
 
 
-@wp.kernel
-def mark_largest_group_mask(
-    groups: wp.array[wp.int32],
-    counts: wp.array[wp.int32],
-    best: wp.array[wp.int64],
-    out_mask: wp.array[wp.bool],
-) -> None:
-    # Flag every member of the group ``reduce_largest_group`` chose. Recomputing the key and testing
-    # it against the reduced maximum is what keeps this readback-free: the winning group index is
-    # never brought to the host, and the ``-1`` seed marks nothing when there are no groups at all.
-    #
-    # Not convertible to a ``wp.map`` over a gather, unlike the *threshold* criteria beside it in
-    # ``repair.remove_small_components``: those are one table lookup compared against a scalar, so
-    # ``wp.map(greater_equal, statistic[labels], threshold)`` is the whole kernel, whereas this
-    # needs two gathers and a call to rebuild the key before it can compare.
-    f = wp.int32(wp.tid())
-    group = groups[f]
-    out_mask[f] = pack_ranked_key(counts[group], group) == best[0]
-
-
 @wp.kernel(enable_backward=False)
 def small_triangle_collapse_edges(
     vertices: wp.array[wp.vec3],
@@ -295,19 +275,70 @@ def scatter_face_volume_by_group(
     wp.atomic_add(out_group_volume, groups[f], face_signed_volume(vertices, faces, f, wp.vec3()))
 
 
-@wp.kernel
-def group_diameter_flags(
+# ``remove_small_components``' four criteria, as the selector ``component_kept`` branches on.
+COMPONENT_MIN_FACES = wp.int32(0)
+COMPONENT_MIN_AREA = wp.int32(1)
+COMPONENT_MIN_DIAMETER = wp.int32(2)
+COMPONENT_LARGEST = wp.int32(3)
+
+
+@wp.func
+def component_kept(
+    criterion: wp.int32,
+    group: wp.int32,
+    counts: wp.array[wp.int32],
+    statistic: wp.array[wp.float32],
     corners: wp.array[wp.float32],
+    best: wp.array[wp.int64],
+    min_count: wp.int32,
+    min_value: wp.float32,
+) -> wp.bool:
+    # Whether ``group`` survives ``remove_small_components``' criterion, read from the one per-group
+    # table that criterion accumulated (the others are never read, so the wrapper passes ``None``;
+    # the branch is warp-uniform). Every bound is inclusive.
+    #
+    # - ``COMPONENT_MIN_FACES``: the group's member count (``scatter.count_occurrences``).
+    # - ``COMPONENT_MIN_AREA``: its summed area (``scatter_face_area_by_group``).
+    # - ``COMPONENT_MIN_DIAMETER``: its bounding-box diagonal, decoded from the packed box
+    #   ``scatter.scatter_group_bounds`` accumulated, so no per-group diagonal table is written.
+    # - ``COMPONENT_LARGEST``: the group ``reduce_largest_group`` chose. Recomputing the key and
+    #   testing it against the reduced maximum keeps this readback-free: the winning group index is
+    #   never brought to the host, and the ``-1`` seed keeps nothing when there are no groups.
+    if criterion == COMPONENT_MIN_FACES:
+        return counts[group] >= min_count
+    if criterion == COMPONENT_MIN_AREA:
+        return statistic[group] >= min_value
+    if criterion == COMPONENT_MIN_DIAMETER:
+        return packed_box_diagonal(corners, group) >= min_value
+    return pack_ranked_key(counts[group], group) == best[0]
+
+
+@wp.kernel
+def mark_kept_components(
+    faces: wp.array[wp.int32],
     groups: wp.array[wp.int32],
-    min_diameter: wp.float32,
+    criterion: wp.int32,
+    counts: wp.array[wp.int32],
+    statistic: wp.array[wp.float32],
+    corners: wp.array[wp.float32],
+    best: wp.array[wp.int64],
+    min_count: wp.int32,
+    min_value: wp.float32,
     out_keep: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
 ) -> None:
-    # A face is kept when its group's bounding-box diagonal reaches ``min_diameter`` (inclusive):
-    # the group's packed box, accumulated by ``scatter.scatter_group_bounds``, decoded by
-    # ``bounds.packed_box_diagonal`` as the face reads it, so no per-group diagonal table is written
-    # and gathered back.
+    # The keep decision and the submesh extraction's marking pass in one launch: each face reads its
+    # group's fate (``component_kept``) and, when kept, flags itself and its vertices in the zeroed
+    # ``(n_faces + n_vertices,)`` rank buffer exactly as
+    # ``selection.mark_submesh_faces_and_vertices`` does from a mask. ``out_keep`` is that mask,
+    # which the compaction still reads.
     f = wp.int32(wp.tid())
-    out_keep[f] = packed_box_diagonal(corners, groups[f]) >= min_diameter
+    keep = component_kept(
+        criterion, groups[f], counts, statistic, corners, best, min_count, min_value
+    )
+    out_keep[f] = keep
+    if keep:
+        mark_submesh_face(faces, groups.shape[0], f, out_flags)
 
 
 @wp.kernel

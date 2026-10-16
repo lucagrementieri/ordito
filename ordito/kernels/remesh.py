@@ -107,13 +107,17 @@ def edge_midpoint(
 
 
 @wp.kernel
-def compute_midpoints(
-    vertices: wp.array[wp.vec3],
-    unique_edges: wp.array2d[wp.int32],
-    out_midpoints: wp.array[wp.vec3],
+def vertices_with_midpoints(
+    vertices: wp.array[wp.vec3], unique_edges: wp.array2d[wp.int32], out_vertices: wp.array[wp.vec3]
 ) -> None:
-    k = wp.int32(wp.tid())
-    out_midpoints[k] = edge_midpoint(vertices, unique_edges, k)
+    # The originals followed by one midpoint per unique edge, over ``n_vertices + n_edges`` threads:
+    # the prefix copy and the midpoint tail in one launch.
+    t = wp.int32(wp.tid())
+    n_vertices = vertices.shape[0]
+    if t < n_vertices:
+        out_vertices[t] = vertices[t]
+    else:
+        out_vertices[t] = edge_midpoint(vertices, unique_edges, t - n_vertices)
 
 
 @wp.func
@@ -424,12 +428,12 @@ def edge_mean_sizing(
     # The sizing target of unique edge ``e``: the mean of its endpoints' values, the standard
     # reading of a vertex-sampled sizing function and symmetric in the edge's orientation. One
     # definition for the target ``mark_long_edges`` tests the edge against and the value
-    # ``fill_edge_mean_sizing`` carries to the midpoint that splits it.
+    # ``extend_edge_mean_sizing`` carries to the midpoint that splits it.
     return wp.float32(0.5) * (sizing[unique_edges[e, 0]] + sizing[unique_edges[e, 1]])
 
 
 @wp.kernel
-def fill_edge_mean_sizing(
+def extend_edge_mean_sizing(
     sizing: wp.array[wp.float32],
     unique_edges: wp.array2d[wp.int32],
     split_mask: wp.array[wp.bool],
@@ -438,9 +442,15 @@ def fill_edge_mean_sizing(
 ) -> None:
     # ``split_child_counts_and_midpoints``' midpoint for the sizing field rather than the position:
     # the value carried to a new midpoint is the target ``mark_long_edges`` tested the edge with.
-    e = wp.int32(wp.tid())
-    if split_mask[e]:
-        out_sizing[offsets[e]] = edge_mean_sizing(sizing, unique_edges, e)
+    # Over ``max(n_vertices, n_edges)`` threads, thread ``t`` also copies the current field's entry
+    # ``t`` into the prefix, so the extended field takes one launch and no copy.
+    t = wp.int32(wp.tid())
+    n_vertices = sizing.shape[0]
+    if t < n_vertices:
+        out_sizing[t] = sizing[t]
+    if t < split_mask.shape[0]:
+        if split_mask[t]:
+            out_sizing[n_vertices + offsets[t]] = edge_mean_sizing(sizing, unique_edges, t)
 
 
 @wp.func

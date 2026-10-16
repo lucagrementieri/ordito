@@ -1,5 +1,6 @@
 import warp as wp
 
+from ordito.constants import INT32_MAX_CONSTANT
 from ordito.kernels.adjacency import write_edge_row, write_face_edge_keys
 from ordito.kernels.algorithms.connected_components import (
     ecl_hook_pair,
@@ -132,6 +133,19 @@ def local_corner_indices(
 # what the index-driven path's sorted ``unique_1d`` produces.
 
 
+@wp.func
+def mark_submesh_face(
+    faces: wp.array[wp.int32], n_faces: wp.int32, f: wp.int32, out_flags: wp.array[wp.int32]
+) -> None:
+    # Flag kept face ``f`` and the three vertices it references in the joint rank buffer. Shared by
+    # every producer of that buffer: the mask-driven extraction below and
+    # ``repair.mark_kept_components``, which decides the face's fate inline instead of reading a
+    # mask.
+    a, b, c = corner_triple(faces, f)
+    out_flags[f] = 1
+    mark_corners(out_flags, n_faces, a, b, c, wp.int32(1))
+
+
 @wp.kernel
 def mark_submesh_faces_and_vertices(
     faces: wp.array[wp.int32],
@@ -144,10 +158,7 @@ def mark_submesh_faces_and_vertices(
     f = wp.int32(wp.tid())
     if face_mask[f] != keep_masked:
         return
-    n_faces = face_mask.shape[0]
-    a, b, c = corner_triple(faces, f)
-    out_flags[f] = 1
-    mark_corners(out_flags, n_faces, a, b, c, wp.int32(1))
+    mark_submesh_face(faces, face_mask.shape[0], f, out_flags)
 
 
 @wp.kernel
@@ -250,20 +261,61 @@ def dilate_vertex_mask(
     value: wp.bool,
     out_mask: wp.array[wp.bool],
 ) -> None:
-    # One one-ring dilation round, reached through the faces: on a triangle mesh two vertices share
-    # an edge exactly when they share a face, so marking every corner of a face with a selected
-    # corner adds precisely the edge neighbours, and no unique-edge table has to exist. Measured
-    # against the same round over a caller's unique edges, it is level at a hundred thousand faces
-    # and 1.2x at tens of millions, so the edge form was retired rather than kept beside it.
-    # ``out_mask`` must be pre-seeded with ``in_mask``; re-marking the selected corner is a no-op.
-    #
-    # ``value`` is the polarity spread: ``True`` dilates, and ``False`` dilates the *complement* --
-    # a face with an unselected corner clears all three -- which is ``shrink_vertex_mask``'s erosion
-    # without forming the complement on the way in or out.
+    # One one-ring dilation round over a boolean mask, for a single round: ``out_mask`` must be
+    # pre-seeded with ``in_mask`` (re-marking the selected corner is a no-op), and the two cannot be
+    # one buffer, since a corner this round marks would spread within the round. Several rounds run
+    # as ``dilate_vertex_hops`` instead, which is the same round over a hop buffer that can grow in
+    # place; see it for why the round goes through the faces and for ``value``.
     f = wp.int32(wp.tid())
     a, b, c = corner_triple(faces, f)
     if in_mask[a] == value or in_mask[b] == value or in_mask[c] == value:
         mark_corners(out_mask, 0, a, b, c, value)
+
+
+@wp.kernel
+def vertex_hops_from_mask(
+    mask: wp.array[wp.bool], value: wp.bool, out_hops: wp.array[wp.int32]
+) -> None:
+    # Seed the hop buffer ``dilate_vertex_hops`` grows in place: ``0`` where the mask already holds
+    # ``value`` (the polarity spread), ``INT32_MAX`` where no round has reached the vertex yet.
+    v = wp.int32(wp.tid())
+    out_hops[v] = wp.where(mask[v] == value, 0, INT32_MAX_CONSTANT)
+
+
+@wp.kernel
+def dilate_vertex_hops(faces: wp.array[wp.int32], hop: wp.int32, hops: wp.array[wp.int32]) -> None:
+    # Dilation round ``hop`` (from 1), reached through the faces: on a triangle mesh two vertices
+    # share an edge exactly when they share a face, so marking every corner of a face with a reached
+    # corner adds precisely the edge neighbours, and no unique-edge table has to exist. Measured
+    # against the same round over a caller's unique edges, it is level at a hundred thousand faces
+    # and 1.2x at tens of millions, so the edge form was retired rather than kept beside it.
+    # ``vertex_mask_from_hops`` explains the polarity ``value`` the seed spreads.
+    #
+    # In place, which ``dilate_vertex_mask``'s boolean mask cannot be: a vertex this round reaches
+    # reads ``hop``, and only a value *below* ``hop`` (reached by an earlier, finished launch)
+    # spreads, so nothing this round writes is read as a source by it. Every racing writer stores
+    # the same ``hop`` over a larger value, so the plain stores are benign.
+    f = wp.int32(wp.tid())
+    a, b, c = corner_triple(faces, f)
+    if hops[a] < hop or hops[b] < hop or hops[c] < hop:
+        if hops[a] > hop:
+            hops[a] = hop
+        if hops[b] > hop:
+            hops[b] = hop
+        if hops[c] > hop:
+            hops[c] = hop
+
+
+@wp.kernel
+def vertex_mask_from_hops(
+    hops: wp.array[wp.int32], n_hops: wp.int32, value: wp.bool, out_mask: wp.array[wp.bool]
+) -> None:
+    # The dilated mask: ``value`` where ``n_hops`` rounds reached the vertex, its negation
+    # elsewhere. ``value == False`` therefore dilates the *complement* -- a face with an unselected
+    # corner clears all three -- which is ``shrink_vertex_mask``'s erosion without forming the
+    # complement on the way in or out.
+    v = wp.int32(wp.tid())
+    out_mask[v] = (hops[v] <= n_hops) == value
 
 
 @wp.kernel
@@ -272,7 +324,7 @@ def mark_incident_vertices(
 ) -> None:
     # Mark every corner of every selected face: the inverse direction of
     # ``face_mask_from_vertex_mask``. Concurrent writes all store ``True``, so the race is benign
-    # and no atomic is needed. ``dilate_vertex_mask`` above is this composed with an any-corner
+    # and no atomic is needed. ``dilate_vertex_hops`` above is this composed with an any-corner
     # ``face_mask_from_vertex_mask`` in one pass, for a caller that does not keep the face mask.
     f = wp.int32(wp.tid())
     if not face_mask[f]:

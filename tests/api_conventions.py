@@ -198,6 +198,10 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "a string-to-kernel-flag table, for face_quality's metric argument, so remesh's objective "
         "names cannot drift from triangles.face_quality's"
     ),
+    ("repair", "selection._compact_marked_submesh"): (
+        "remove_small_components decides each face's fate in the submesh extraction's own marking "
+        "pass; submesh_from_face_mask would need the keep mask built by a pass of its own first"
+    ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "
         "rebuilds connectivity as well, which reconstruction must not do to a fresh triangulation"
@@ -640,6 +644,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``out_triangles`` beside ``out_counts``.
     ("holes", "traceback_fill_triangles"): frozenset({"stack"}),
     ("visibility", "shape_diameter"): frozenset({"scratch"}),
+    # A multi-round vertex dilation grows one hop buffer in place, a launch per round: each round
+    # reads the earlier rounds' values and lowers the newly reached ones.
+    ("selection", "dilate_vertex_hops"): frozenset({"hops"}),
 }
 
 

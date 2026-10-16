@@ -1647,7 +1647,7 @@ def unpack_ranked_index(key: wp.int64) -> wp.int32:
     # complement both use in their low half, so one decoder serves both. It lives here, beside its
     # packers, because a pack/unpack pair in two modules is a pair that cannot be read.
     #
-    # Note the alternative a caller may prefer: ``repair.mark_largest_group_mask`` never unpacks at
+    # Note the alternative a caller may prefer: ``repair.component_kept`` never unpacks at
     # all, it *recomputes* the key and tests it against the reduced maximum, keeping the winner on
     # the device instead of pulling it back to pick a row. Unpack when the host needs the index (a
     # greedy loop's next seed); recompute when only the device does.
