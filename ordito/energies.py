@@ -854,7 +854,19 @@ def crouzeix_raviart_cotmatrix(
     if n_faces == 0:
         return od.array.empty_square_bsr(n_edges, dtype, device)
 
-    if not od.validation.is_edge_manifold(faces, n_vertices=vertices.size, validate=False):
+    # One pass over the corners records each edge's incident faces and flags a third one.
+    face_counts = _launch.zeros(n_edges, dtype=wp.int32, device=device)
+    edge_faces = _launch.full(2 * n_edges, -1, dtype=wp.int32, device=device)
+    nonmanifold = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_energies.crouzeix_raviart_edge_faces,
+        dim=3 * n_faces,
+        inputs=[edge_map],
+        outputs=[face_counts, edge_faces, nonmanifold],
+        device=device,
+    )
+    # The validation raises on the host, so its flag is read back.
+    if int(read_scalar(nonmanifold, 0)) != 0:
         raise ValueError(
             "mesh must be edge-manifold (every edge shared by at most two faces); the "
             "Crouzeix-Raviart discretization is undefined otherwise, like "
@@ -864,15 +876,27 @@ def crouzeix_raviart_cotmatrix(
     if cot_entries is None:
         cot_entries = cotmatrix_entries(vertices, faces, dtype=dtype)
 
-    n_triplets = 12 * n_faces
-    rows, cols, vals = od.array.triplet_buffers(n_triplets, dtype, device)
+    # The pattern follows from the incidence: a row holds its diagonal and the other edges of its
+    # (at most two) faces, so at most five entries, and the count pass and a scan give the offsets.
+    offsets = _launch.zeros(n_edges + 1, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_energies.CROUZEIX_RAVIART_COTMATRIX_TRIPLETS[cot_entries.dtype, dtype],
-        dim=n_faces,
-        inputs=[edge_map, cot_entries, rows, cols, vals],
+        kernel_energies.crouzeix_raviart_row_counts,
+        dim=n_edges,
+        inputs=[edge_map, edge_faces],
+        outputs=[offsets],
         device=device,
     )
-    return od.array.csr_from_triplets(n_edges, n_edges, rows, cols, vals)
+    _launch.array_scan(offsets, out_array=offsets, inclusive=True)
+    columns = _launch.empty(5 * n_edges, dtype=wp.int32, device=device)
+    values = _launch.empty(5 * n_edges, dtype=dtype, device=device)
+    _launch.launch(
+        kernel_energies.CROUZEIX_RAVIART_CSR[cot_entries.dtype, dtype],
+        dim=n_edges,
+        inputs=[edge_map, cot_entries, edge_faces, offsets],
+        outputs=[columns, values],
+        device=device,
+    )
+    return od.array.bsr_from_csr(n_edges, n_edges, offsets, columns, values)
 
 
 def crouzeix_raviart_massmatrix(
@@ -990,9 +1014,8 @@ def lscm_hessian(
     ``L`` is the cotangent Laplacian [`cotmatrix`][ordito.laplacian.cotmatrix] (negative-diagonal
     convention), ``repdiag(L, 2)`` is the block-diagonal ``[[L, 0], [0, L]]``, and ``A`` is the
     boundary [`vector_area_matrix`][ordito.energies.vector_area_matrix]. Built natively in
-    float64 in a single [`csr_from_triplets`][ordito.array.csr_from_triplets] (the
-    within-quadrant repdiag triplets and the
-    cross-quadrant ``-2 A`` triplets never collide), so it feeds the float64 conjugate-gradient
+    float64 by merging the rows of ``L`` and ``A`` (the within-quadrant repdiag entries and the
+    cross-quadrant ``-2 A`` entries never collide), so it feeds the float64 conjugate-gradient
     solve directly. Matches the ``Q`` returned by ``igl.lscm`` exactly.
 
     Parameters
@@ -1043,30 +1066,32 @@ def lscm_hessian(
     require_same_device(vertices=vertices, faces=faces)
     n = vertices.size
     device = vertices.device
+    if n == 0:
+        return od.array.empty_square_bsr(0, wp.float64, device)
     laplacian = cotmatrix(vertices, faces, dtype=wp.float64)
-    # The real compressed-CSR entry count is offsets[-1], not laplacian.nnz: bsr_from_triplets
-    # reports nnz as the (over-allocated) triplet capacity, so sizing by nnz would leave an
-    # uninitialized gap in the wp.empty buffers that bsr_from_triplets reads back as garbage.
-    n_entries = int(read_scalar(laplacian.offsets, n))
-    boundary = od.boundary.oriented_boundary_edges(vertices, faces)
-    n_be = int(boundary.shape[0])
-
-    # Combined triplet buffers: 2 per Laplacian entry (the two diagonal blocks) plus 4 per oriented
-    # boundary edge (the vector-area cross-quadrant terms). Every slot is written, so wp.empty.
-    total = 2 * n_entries + 4 * n_be
-    rows, cols, vals = od.array.triplet_buffers(total, wp.float64, device)
-    # Both terms in one launch. The ``-2 A`` term shares its triplet rule with
-    # [`vector_area_matrix`][ordito.energies.vector_area_matrix] but writes after the Laplacian's
-    # blocks in the combined buffer: assembling ``A`` as its own matrix and adding it would need a
-    # second build plus a ``bsr_axpy``, where this one pass over exact-size buffers does.
+    area = _vector_area_csr(vertices, faces, -2.0)
+    # Capacities, not counts: both buffers may be longer than their stored entries, and the true
+    # count is formed on the device, so nothing is read back.
+    capacity = 2 * laplacian.columns.size + area.columns.size
+    offsets = _launch.empty(2 * n + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    values = _launch.empty(capacity, dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_energies.lscm_hessian_triplets,
-        dim=max(n, n_be),
-        inputs=[laplacian.offsets, laplacian.columns, laplacian.values, wp.int32(n), boundary],
-        outputs=[rows, cols, vals],
+        kernel_energies.lscm_hessian_csr,
+        dim=2 * n,
+        inputs=[
+            laplacian.offsets,
+            laplacian.columns,
+            laplacian.values,
+            area.offsets,
+            area.columns,
+            area.values,
+            wp.int32(n),
+        ],
+        outputs=[offsets, columns, values],
         device=device,
     )
-    return od.array.csr_from_triplets(2 * n, 2 * n, rows, cols, vals)
+    return od.array.bsr_from_csr(2 * n, 2 * n, offsets, columns, values)
 
 
 def vector_area_matrix(
@@ -1131,22 +1156,29 @@ def vector_area_matrix(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    n = vertices.size
-    device = vertices.device
+    return _vector_area_csr(vertices, faces, 1.0)
+
+
+def _vector_area_csr(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], scale: float
+) -> odt.BsrMatrix[wp.float64]:
+    """``scale * A``, the body of [`vector_area_matrix`][ordito.energies.vector_area_matrix]."""
+    device = faces.device
+    n_vertices = vertices.size
     boundary = od.boundary.oriented_boundary_edges(vertices, faces)
     n_be = int(boundary.shape[0])
     if n_be == 0:
-        return od.array.empty_square_bsr(2 * n, wp.float64, device)
+        return od.array.empty_square_bsr(2 * n_vertices, wp.float64, device)
 
     rows, cols, vals = od.array.triplet_buffers(4 * n_be, wp.float64, device)
-    # The four cross-quadrant triplets of every oriented boundary edge, at scale 1: ``A`` itself.
+    # The four cross-quadrant triplets of every oriented boundary edge.
     _launch.launch(
         kernel_energies.vector_area_triplets,
         dim=n_be,
-        inputs=[boundary, wp.int32(n), wp.float64(1.0), rows, cols, vals],
+        inputs=[boundary, wp.int32(n_vertices), wp.float64(scale), rows, cols, vals],
         device=device,
     )
-    return od.array.csr_from_triplets(2 * n, 2 * n, rows, cols, vals)
+    return od.array.csr_from_triplets(2 * n_vertices, 2 * n_vertices, rows, cols, vals)
 
 
 def _edge_numbering(

@@ -622,37 +622,139 @@ def curved_hessian_triplets(
                     out_vals[position] = type(out_vals[0])(value)
 
 
+# The "no further column" sentinel of ``crouzeix_raviart_next_column``.
+CR_NO_COLUMN = wp.int32(2147483647)
+
+
 @wp.kernel
-def crouzeix_raviart_cotmatrix_triplets(
+def crouzeix_raviart_edge_faces(
+    inverse: wp.array[wp.int32],
+    out_face_counts: wp.array[wp.int32],
+    out_edge_faces: wp.array[wp.int32],
+    out_nonmanifold: wp.array[wp.int32],
+) -> None:
+    # One pass over the face corners that both tests edge-manifoldness and records each edge's
+    # (at most two) incident faces: corner ``k`` claims a slot of its edge, slots ``2 e`` and
+    # ``2 e + 1`` hold the faces, and a third claim flags the mesh. A degenerate face naming one
+    # edge twice claims two slots with the same face.
+    k = wp.int32(wp.tid())
+    e = inverse[k]
+    slot = wp.atomic_add(out_face_counts, e, 1)
+    if slot < 2:
+        out_edge_faces[2 * e + slot] = k // 3
+    else:
+        out_nonmanifold[0] = 1
+
+
+@wp.func
+def crouzeix_raviart_row_faces(
+    edge_faces: wp.array[wp.int32], e: wp.int32
+) -> tuple[wp.int32, wp.int32]:
+    # Edge ``e``'s distinct incident faces in ascending order (the order the triplet build summed
+    # them in), an absent second one as ``-1``; the slots' own order is the atomics' and varies.
+    a = edge_faces[2 * e]
+    b = edge_faces[2 * e + 1]
+    if b < 0 or b == a:
+        return a, -1
+    return wp.min(a, b), wp.max(a, b)
+
+
+@wp.func
+def crouzeix_raviart_next_column(
+    inverse: wp.array[wp.int32], f0: wp.int32, f1: wp.int32, e: wp.int32, previous: wp.int32
+) -> wp.int32:
+    # The smallest column of row ``e`` above ``previous``, or ``CR_NO_COLUMN``. Row ``e``'s columns
+    # are exactly ``e`` (the diagonal) and the edges of its incident faces: a face's corners pair
+    # every two of its edge slots, so each other edge couples with ``e``.
+    best = wp.where(e > previous, e, CR_NO_COLUMN)
+    for k in range(2):
+        f = wp.where(k == 0, f0, f1)
+        if f >= 0:
+            for j in range(3):
+                col = inverse[f * 3 + j]
+                if col > previous and col < best:
+                    best = col
+    return best
+
+
+@wp.func
+def crouzeix_raviart_entry(
     inverse: wp.array[wp.int32],
     cot_entries: wp.array2d[wp.Float],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
-    out_vals: wp.array[wp.Float],
+    f0: wp.int32,
+    f1: wp.int32,
+    e: wp.int32,
+    col: wp.int32,
+    zero: wp.Float,
+) -> wp.Float:
+    # Entry ``(e, col)``: at each corner the two edges meeting there couple with minus four times
+    # the corner's half-cotangent, and each gains the same amount on its diagonal
+    # (``igl::crouzeix_raviart_cotmatrix``'s triangle table). Contributions are summed in triplet
+    # order -- ascending face, corner, then ``(e1, e2)``, ``(e2, e1)``, ``(e1, e1)``, ``(e2, e2)``
+    # -- starting from the first, the summation a ``csr_from_triplets`` build of those triplets
+    # performs. Ordito halfedge slot ``s`` spans corners ``s -> s+1``, so the edge opposite corner
+    # ``c`` is halfedge ``(c + 1) % 3``.
+    acc = zero
+    started = wp.int32(0)
+    for k in range(2):
+        f = wp.where(k == 0, f0, f1)
+        if f >= 0:
+            for c in range(3):
+                edge_1 = inverse[f * 3 + (c + 1) % 3]
+                edge_2 = inverse[f * 3 + (c + 2) % 3]
+                weight = type(zero)(4.0) * type(zero)(cot_entries[f, (c + 2) % 3])
+                if edge_1 == e and edge_2 == col:
+                    acc = wp.where(started != 0, acc - weight, -weight)
+                    started = 1
+                if edge_2 == e and edge_1 == col:
+                    acc = wp.where(started != 0, acc - weight, -weight)
+                    started = 1
+                if edge_1 == e and edge_1 == col:
+                    acc = wp.where(started != 0, acc + weight, weight)
+                    started = 1
+                if edge_2 == e and edge_2 == col:
+                    acc = wp.where(started != 0, acc + weight, weight)
+                    started = 1
+    return acc
+
+
+@wp.kernel
+def crouzeix_raviart_row_counts(
+    inverse: wp.array[wp.int32], edge_faces: wp.array[wp.int32], out_offsets: wp.array[wp.int32]
 ) -> None:
-    # 12 triplets per face: for each corner, the two edges meeting there couple with minus four
-    # times the corner's half-cotangent, and each gains the same amount on its diagonal
-    # (``igl::crouzeix_raviart_cotmatrix``'s triangle table). Edge ids come from
-    # ``edges_unique``'s inverse; ordito halfedge slot ``s`` spans corners ``s -> s+1``, so the
-    # edge opposite corner ``c`` is halfedge ``(c + 1) % 3``.
-    f = wp.int32(wp.tid())
-    for c in range(3):
-        edge_1 = inverse[f * 3 + (c + 1) % 3]
-        edge_2 = inverse[f * 3 + (c + 2) % 3]
-        weight = type(out_vals[0])(4.0) * type(out_vals[0])(cot_entries[f, (c + 2) % 3])
-        base = f * 12 + c * 4
-        out_rows[base + 0] = edge_1
-        out_cols[base + 0] = edge_2
-        out_vals[base + 0] = -weight
-        out_rows[base + 1] = edge_2
-        out_cols[base + 1] = edge_1
-        out_vals[base + 1] = -weight
-        out_rows[base + 2] = edge_1
-        out_cols[base + 2] = edge_1
-        out_vals[base + 2] = weight
-        out_rows[base + 3] = edge_2
-        out_cols[base + 3] = edge_2
-        out_vals[base + 3] = weight
+    # Row ``e``'s column count into ``out_offsets[e + 1]``; an in-place scan makes the offsets.
+    # ``crouzeix_raviart_csr`` walks the same columns with the same helper.
+    e = wp.int32(wp.tid())
+    f0, f1 = crouzeix_raviart_row_faces(edge_faces, e)
+    count = wp.int32(0)
+    col = crouzeix_raviart_next_column(inverse, f0, f1, e, -1)
+    while col != CR_NO_COLUMN:
+        count += 1
+        col = crouzeix_raviart_next_column(inverse, f0, f1, e, col)
+    out_offsets[e + 1] = count
+
+
+@wp.kernel
+def crouzeix_raviart_csr(
+    inverse: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    edge_faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.Float],
+) -> None:
+    # Row ``e`` of the Crouzeix-Raviart stiffness matrix written in place, columns ascending: the
+    # pattern follows from the edge-face incidence, so no triplet is sorted.
+    e = wp.int32(wp.tid())
+    f0, f1 = crouzeix_raviart_row_faces(edge_faces, e)
+    slot = offsets[e]
+    zero = type(out_values[0])(0.0)
+    col = crouzeix_raviart_next_column(inverse, f0, f1, e, -1)
+    while col != CR_NO_COLUMN:
+        out_columns[slot] = col
+        out_values[slot] = crouzeix_raviart_entry(inverse, cot_entries, f0, f1, e, col, zero)
+        slot += 1
+        col = crouzeix_raviart_next_column(inverse, f0, f1, e, col)
 
 
 @wp.kernel
@@ -686,7 +788,7 @@ def write_vector_area_triplets(
     # cross-quadrant triplets ``(i+n, j, -q)``, ``(j, i+n, -q)``, ``(i, j+n, +q)``, ``(j+n, i, +q)``
     # with ``q = 0.25 * scale``, at slots ``base .. base + 3``. ``scale = 1`` builds ``A`` itself
     # (``vector_area_triplets``); ``scale = -2`` builds the ``-2A`` term of the LSCM Hessian
-    # (``lscm_hessian_triplets``).
+    # (merged with ``-repdiag(L, 2)`` by ``lscm_hessian_csr``).
     i = boundary_edges[b, 0]
     j = boundary_edges[b, 1]
     q = wp.float64(0.25) * scale
@@ -705,41 +807,57 @@ def write_vector_area_triplets(
 
 
 @wp.kernel
-def lscm_hessian_triplets(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
+def lscm_hessian_csr(
+    laplacian_offsets: wp.array[wp.int32],
+    laplacian_columns: wp.array[wp.int32],
+    laplacian_values: wp.array[wp.float64],
+    area_offsets: wp.array[wp.int32],
+    area_columns: wp.array[wp.int32],
+    area_values: wp.array[wp.float64],
     n_vertices: wp.int32,
-    boundary_edges: wp.array2d[wp.int32],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
-    out_vals: wp.array[wp.float64],
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
 ) -> None:
-    # The LSCM Hessian ``-repdiag(L, 2) - 2 A`` as triplets, in one launch over
-    # ``max(n_vertices, n_boundary_edges)`` threads writing disjoint slots of one buffer:
-    #
-    # - ``-repdiag(L, 2)``, the block-diagonal ``[[-L, 0], [0, -L]]`` (2n x 2n): thread ``t`` below
-    #   ``n_vertices`` takes CSR row ``t`` of ``L``, and each entry ``e`` emits both diagonal-block
-    #   copies into slots ``2*e`` (upper block) and ``2*e + 1`` (lower block, shifted by
-    #   ``n_vertices``);
-    # - ``-2 A``: thread ``t`` below the boundary-edge count writes edge ``t``'s four vector-area
-    #   triplets after them, at ``2 * offsets[n_vertices] + 4 t``.
-    t = wp.int32(wp.tid())
-    if t < n_vertices:
-        for e in range(offsets[t], offsets[t + 1]):
-            j = columns[e]
-            v = -values[e]
-            out_rows[2 * e] = t
-            out_cols[2 * e] = j
-            out_vals[2 * e] = v
-            out_rows[2 * e + 1] = t + n_vertices
-            out_cols[2 * e + 1] = j + n_vertices
-            out_vals[2 * e + 1] = v
-    if t < boundary_edges.shape[0]:
-        base = 2 * offsets[n_vertices] + 4 * t
-        write_vector_area_triplets(
-            boundary_edges, n_vertices, wp.float64(-2.0), t, base, out_rows, out_cols, out_vals
-        )
+    # The LSCM Hessian ``-repdiag(L, 2) + (-2 A)`` written straight into CSR, one thread per row
+    # of the ``2n`` rows. The two terms never share an entry: ``-2 A`` (handed in already summed
+    # as its own CSR) holds only cross-quadrant entries, so an upper row ``r`` is ``-L``'s row
+    # ``r`` (columns below ``n``) followed by ``-2 A``'s (columns from ``n``), and a lower row
+    # ``r + n`` is ``-2 A``'s row (columns below ``n``) followed by ``-L``'s row ``r`` shifted by
+    # ``n``. Each row stays sorted, and its start is closed-form -- no count pass or scan:
+    # ``L.offsets[r] + A.offsets[r]`` above, ``L.offsets[n] + L.offsets[r - n] + A.offsets[r]``
+    # below. Thread 0 also writes the leading zero.
+    r = wp.int32(wp.tid())
+    n_entries = laplacian_offsets[n_vertices]
+    lap_row = r
+    shift = wp.int32(0)
+    base = wp.int32(0)
+    if r >= n_vertices:
+        lap_row = r - n_vertices
+        shift = n_vertices
+        base = n_entries
+    lap_begin = laplacian_offsets[lap_row]
+    lap_end = laplacian_offsets[lap_row + 1]
+    area_begin = area_offsets[r]
+    area_end = area_offsets[r + 1]
+    if r == 0:
+        out_offsets[0] = 0
+    out_offsets[r + 1] = base + lap_end + area_end
+    slot = base + lap_begin + area_begin
+    if r >= n_vertices:
+        for e in range(area_begin, area_end):
+            out_columns[slot] = area_columns[e]
+            out_values[slot] = area_values[e]
+            slot += 1
+    for e in range(lap_begin, lap_end):
+        out_columns[slot] = laplacian_columns[e] + shift
+        out_values[slot] = -laplacian_values[e]
+        slot += 1
+    if r < n_vertices:
+        for e in range(area_begin, area_end):
+            out_columns[slot] = area_columns[e]
+            out_values[slot] = area_values[e]
+            slot += 1
 
 
 @wp.kernel
@@ -770,10 +888,10 @@ _MATRIX_DTYPES = (wp.float32, wp.float64)
 
 # The concrete handles keyed by the caller's matrix dtype -- see
 # [`OverloadTable`][ordito.kernels.array.OverloadTable].
-# ``CROUZEIX_RAVIART_COTMATRIX_TRIPLETS`` keys on the pair ``(entry dtype, matrix dtype)`` for the
+# ``CROUZEIX_RAVIART_CSR`` keys on the pair ``(entry dtype, matrix dtype)`` for the
 # reason its registration already gave: the two templates are independent.
 CROUZEIX_RAVIART_MASS_DIAG: OverloadTable
-CROUZEIX_RAVIART_COTMATRIX_TRIPLETS: OverloadTable
+CROUZEIX_RAVIART_CSR: OverloadTable
 SANDWICH_ROW_COUNTS: OverloadTable
 SANDWICH_ROW_TRIPLETS: OverloadTable
 HESSIAN_ENERGY_TRIPLETS: OverloadTable
@@ -782,7 +900,7 @@ CURVED_HESSIAN_TRIPLETS: OverloadTable
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_COTMATRIX_TRIPLETS
+    global CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_CSR
     global SANDWICH_ROW_COUNTS, SANDWICH_ROW_TRIPLETS
     global HESSIAN_ENERGY_TRIPLETS, CURVED_HESSIAN_TRIPLETS
     i32 = wp.array[wp.int32]
@@ -796,10 +914,10 @@ def _register_overloads() -> None:
     # this is a genuine 2x2 rather than a diagonal. Registering only the diagonal made the first
     # float64-entries/float32-matrix launch recompile this whole module, taking over a minute and
     # returning the right answer -- the silent cost of a lazily instantiated overload.
-    CROUZEIX_RAVIART_COTMATRIX_TRIPLETS = OverloadTable(
-        crouzeix_raviart_cotmatrix_triplets,
+    CROUZEIX_RAVIART_CSR = OverloadTable(
+        crouzeix_raviart_csr,
         {
-            (entry_dtype, dtype): [i32, wp.array2d[entry_dtype], i32, i32, wp.array[dtype]]
+            (entry_dtype, dtype): [i32, wp.array2d[entry_dtype], i32, i32, i32, wp.array[dtype]]
             for dtype in _MATRIX_DTYPES
             for entry_dtype in _MATRIX_DTYPES
         },

@@ -273,14 +273,19 @@ def _implicit_fixed_point_steps(operator: odt.BsrMatrix[wp.float32], lamb: float
     ``lamb`` (a caller-supplied operator whose rows sum past 1) or the count passes the cap.
     """
     n_rows = int(operator.nrow)
-    sums = odt.empty_1d(n_rows, wp.float64, device=operator.values.device)
-    _launch.launch(
-        kernel_smoothing.operator_row_abs_sums,
-        dim=n_rows,
-        inputs=[operator.offsets, operator.values, sums],
-        device=operator.values.device,
-    )
-    contraction = lamb * float(od.reduce.max(sums)) / (1.0 + lamb)
+    device = operator.values.device
+    norm = _launch.zeros(1, dtype=wp.float64, device=device)
+    if n_rows > 0:
+        _launch.launch_tiled(
+            kernel_smoothing.operator_max_row_abs_sum,
+            dim=[kernel_reduce.blocks_1d(n_rows)],
+            inputs=[operator.offsets, operator.values],
+            outputs=[norm],
+            block_dim=TILE_1D,
+            device=device,
+        )
+    # The step count is host control flow, so the norm is read back.
+    contraction = lamb * float(read_scalar(norm, 0)) / (1.0 + lamb)
     if contraction <= 0.0:
         # ``lamb == 0``: the system is the identity and two steps reproduce ``b`` exactly.
         return 2
@@ -1651,7 +1656,11 @@ def filter_mut_dif_laplacian(
     eps = 0.01 * float(od.reduce.max(face_areas)) ** 0.5 if volume_constraint else 0.0
 
     lv = _launch.empty(n, dtype=wp.vec3d, device=device)
-    adil_sum = _launch.zeros(2, dtype=wp.float64, device=device)
+    # Two accumulators, alternating: each step kernel zeroes the one the next pass sums into.
+    adil_sums = (
+        _launch.zeros(2, dtype=wp.float64, device=device),
+        _launch.zeros(2, dtype=wp.float64, device=device),
+    )
     sensitivity = _launch.zeros(1, dtype=wp.float64, device=device)
     nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
     # The three volumes the constraint needs, kept on the device for the whole loop: the input's
@@ -1678,7 +1687,7 @@ def filter_mut_dif_laplacian(
     for index in range(iterations):
         # The mean diffusion coefficient is summed on device by the pass that applies the operator
         # and consumed by the step kernel directly, so the loop body issues no host synchronisation.
-        _launch.zero_(adil_sum)
+        adil_sum = adil_sums[index % 2]
         _launch.launch_tiled(
             kernel_smoothing.mut_dif_adil_pass,
             dim=[n_blocks],
@@ -1693,7 +1702,7 @@ def filter_mut_dif_laplacian(
             kernel_smoothing.mut_dif_step_scaled,
             dim=n,
             inputs=[positions, lv, adil_sum, inv_n, wp.float64(lamb), normals, wp.float64(eps)],
-            outputs=[nxt, probe, sensitivity],
+            outputs=[nxt, probe, sensitivity, adil_sums[(index + 1) % 2]],
             device=device,
         )
         positions, nxt = nxt, positions
