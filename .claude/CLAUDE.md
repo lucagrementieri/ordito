@@ -89,6 +89,7 @@ A kernel whose lanes cooperate (`wp.tile_sum` / `tile_min` / `tile_max` per lane
 - `launch_tiled` runs one lane per block on CPU, where `wp.block_dim()` reads 1; a one-element tile is not a bug, an arg-strided sum is. Do not conclude tiles do not work on CPU (§12.2).
 - Where lanes would partition the outer work (a whole-array reduction with no per-item dimension, e.g. `metrics.chamfer_*_tiled`), keep a constant stride on CUDA only with a lane-free `_sliced` sibling for CPU (`_device.prefers_tiled_reduction`), or stay lane-free on both.
 - For a lane-strided reduction, tune the fold width: launch `dim=kernel_reduce.blocks_1d(n)` so each block owns `ITEMS_PER_BLOCK_1D` elements, never `dim=n / TILE_1D`. Assemble a wide accumulator before the single commit (§13.2).
+- A float block commit goes through `kernels/reduce.store_block_sum` / `store_block_total` into a `_launch.block_partials` buffer, never a bare per-block `atomic_add` (arrival order, §12.3); integer commits keep `commit_block_*`. A float scan goes through `_launch.array_scan`. Where the reproducible form costs 10 % or more of a public call, that function takes `deterministic: bool = True` (§13.2).
 
 ### 2.3 Block-per-item is an occupancy trade, not a shape choice
 
@@ -782,6 +783,7 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
 - Float32 storage sets a noise floor no tolerance reaches; heat fields scale as 1/scale², so absolute tolerances on them are wrong.
 - The backward pass of an empty dynamic `range` runs one iteration past the array: a differentiated thread whose loop can draw nothing must return first.
+- **Float atomics and CUB's float scan are not run-to-run reproducible on CUDA**; integer ones are exact. One `atomic_add` per block changed `procrustes`, `moments`, `gram_matrix` and `icp` in 30 of 30 calls at 1 M items; `array_scan` (decoupled look-back) changed every 1.3 M-element `float32` scan, and with it every seeded CDF draw. Reproducible forms: `_launch.array_scan` takes a fixed-order tile scan for `float32` on CUDA (`wp.tile_scan_*` takes no `float64`), and `store_block_*` stores a row per block that the block drawing the last ticket folds after a `__threadfence` (`wp.func_native`). A vector or matrix counter is one atomic per component, so a ticket is read off one component (`last_ticket_vector` / `_matrix`): comparing whole values let no block, or two, see the last ticket. `wp.utils.array_sum` (CUB reduce) and `bsr_mv` repeat bit for bit.
 - `int(x)` and `wp.int32(x)` generate identical code, but `float()` fails to parse inside `wp.Float`-generic functions; use `type(x)(...)`. `//` floors since 1.18; `%` truncates (§1.5). At Python scope `wp.int32` arithmetic costs ~10 µs and `//` raises; unwrap with `int()` (check 26).
 
 ### 12.4 Compilation, module hashing and import cost
@@ -841,6 +843,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 - Pack same-dtype quantities into one vector tile (`preserve_type=True`) for one barrier. Float sums that must reproduce use a fixed-order two-stage sum.
 - A tile kernel whose reduced extent is under one tile loses ~49x; `tile_chunk` reports what remains, so clamp with `reduce.block_chunk`.
 - Tuning constants are per-device: CUDA wants long strided slices, CPU short (`ITEMS_PER_SLICE_CUDA = 128`, `_CPU = 32`). Sweep both devices and more than two values, split the constant if the optima differ, and re-probe after an upgrade (§9).
+- **Reproducibility prices (§12.3):** the last-block commit adds 2-5 µs of device time to a launch (fence, ticket, the last block's fold, latency-bound: fold its rows with interleaved accumulators), against 3-8 µs of host for a separate fold launch. The fixed-order scan is two launches and an allocation above one 2048-element chunk (+10-15 µs, 3x CUB's device time at 5 M) and cheaper than CUB below. On a 15-100 µs call either crosses 10 %, hence the `deterministic` flags; on solves and loops it is noise.
 
 ---
 

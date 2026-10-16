@@ -785,6 +785,50 @@ def test_samplers_are_deterministic(request: pytest.FixtureRequest, sampler: str
         assert np.array_equal(array_a.numpy(), array_b.numpy())
 
 
+@pytest.mark.parametrize("sampler", ["surface", "volume"])
+def test_cdf_samplers_are_deterministic_on_a_large_mesh(device: str, sampler: str) -> None:
+    """
+    Ordito against ordito: seeded CDF draws on a 1.3M-face sphere repeat bit for bit.
+
+    ``test_samplers_are_deterministic`` runs on fixtures too small to see the scan: both samplers
+    invert a float32 face CDF built by an inclusive scan, and CUB's arrival-order scan on CUDA
+    moved that CDF's last bits from call to call at this size, so every pair of seeded draws of
+    100k points differed in some sample. Three more draws must equal the first.
+    """
+    vertices, faces = od.creation.icosphere(8, device=device)
+
+    def draw() -> wp.array[wp.vec3]:
+        if sampler == "surface":
+            return od.sample.sample_surface(vertices, faces, 100_000, seed=7)[0]
+        return od.sample.sample_volume(vertices, faces, 100_000, seed=7)
+
+    first_np = draw().numpy()
+    for _ in range(3):
+        assert np.array_equal(draw().numpy(), first_np)
+
+
+def test_sample_surface_arrival_order_scan_draws_the_same_points(device: str) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` draws the default's points, to rounding.
+
+    The two scans of a 1.3M-face CDF sum in different orders, and their float32 rounding there is
+    about one face's share of the total: a seeded draw keeps its random numbers, so a sample can
+    only move to a neighbouring entry of the CDF -- measured within two face indices, a fifth of
+    the samples moving -- never elsewhere on the mesh. The draws themselves are pinned to the
+    reference sampler by ``test_sample_surface``; this pins the flag to the default. On the CPU
+    device both arms are one sequential scan and agree exactly.
+    """
+    vertices, faces = od.creation.icosphere(8, device=device)
+    fixed, fixed_faces = od.sample.sample_surface(vertices, faces, 100_000, seed=7)
+    fast, fast_faces = od.sample.sample_surface(
+        vertices, faces, 100_000, seed=7, deterministic=False
+    )
+    assert np.abs(fixed_faces.numpy() - fast_faces.numpy()).max() <= 2
+    assert np.allclose(np.linalg.norm(fast.numpy(), axis=1), 1.0, atol=1e-5)
+    if wp.get_device(device).is_cpu:
+        assert np.array_equal(fixed.numpy(), fast.numpy())
+
+
 @pytest.mark.parametrize(
     "sampler",
     [

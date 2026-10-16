@@ -376,9 +376,13 @@ def test_sample_is_reproducible_under_a_seed(sphere_irregular: tuple[tm.Trimesh,
     """
     _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    first, _ = mesh.sample(64, seed=11)
+    first, first_faces = mesh.sample(64, seed=11)
     second, _ = mesh.sample(64, seed=11)
     assert np.array_equal(first.numpy(), second.numpy())
+    # The arrival-order scan of the face CDF rounds differently, so a seeded draw can only move a
+    # sample to a neighbouring entry of the CDF (``test_sample.py`` measures the bound at scale).
+    _fast, fast_faces = mesh.sample(64, seed=11, deterministic=False)
+    assert np.abs(fast_faces.numpy() - first_faces.numpy()).max() <= 2
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)

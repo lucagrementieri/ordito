@@ -123,9 +123,12 @@ def test_flipped_faces_on_known_windings(
     )
 
 
+@pytest.mark.parametrize("deterministic", [True, False])
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("map_vertices_to_circle", "igl")
-def test_map_vertices_to_circle_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
+def test_map_vertices_to_circle_matches_igl(
+    request: pytest.FixtureRequest, mesh_name: str, deterministic: bool
+):
     """Class A: the arc-length circle map against ``igl.map_vertices_to_circle``, no transform."""
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, _ = mesh_igl(mesh_tm)
@@ -133,10 +136,43 @@ def test_map_vertices_to_circle_matches_igl(request: pytest.FixtureRequest, mesh
     boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
     boundary_np = boundary_wp.numpy().astype(np.int64)
 
-    circle_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
+    circle_wp = od.parametrization.map_vertices_to_circle(
+        mesh_wp.points, boundary_wp, deterministic=deterministic
+    )
     circle_igl = igl.map_vertices_to_circle(vertices_np, boundary_np)
 
     assert np.allclose(circle_wp.numpy(), circle_igl, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("deterministic", [True, False])
+def test_map_vertices_to_circle_on_a_long_loop(device: str, deterministic: bool):
+    """
+    Class A: a 100k-vertex loop against ``igl.map_vertices_to_circle``, no transform.
+
+    The fixtures' loops fit in one chunk of the fixed-order scan; this one spans dozens, on both
+    the deterministic scan and CUB's (``False``), and the deterministic map must repeat bit for
+    bit. The tolerance is ``1e-4``: the float32 arc length over 100k edges carries ~1e-5 relative
+    rounding into the angle, against libigl's float64 sum.
+    """
+    t = np.sort(np.random.default_rng(6).random(100_000)) * 2.0 * np.pi
+    vertices_np = np.stack([np.cos(t) * (1.0 + 0.3 * np.sin(5.0 * t)), np.sin(t), 0.0 * t], 1)
+    boundary_np = np.arange(t.shape[0], dtype=np.int64)
+    vertices_wp = wp.array(vertices_np, dtype=wp.vec3, device=device)
+    boundary_wp = wp.array(boundary_np.astype(np.int32), dtype=wp.int32, device=device)
+    circle_np = od.parametrization.map_vertices_to_circle(
+        vertices_wp, boundary_wp, deterministic=deterministic
+    ).numpy()
+    circle_igl = igl.map_vertices_to_circle(
+        vertices_np.astype(np.float32).astype(np.float64), boundary_np
+    )
+    assert np.allclose(circle_np, circle_igl, rtol=1e-4, atol=1e-4)
+    if deterministic:
+        assert np.array_equal(
+            od.parametrization.map_vertices_to_circle(
+                vertices_wp, boundary_wp, deterministic=True
+            ).numpy(),
+            circle_np,
+        )
 
 
 def test_map_vertices_to_circle_single_vertex_loop(device: str):

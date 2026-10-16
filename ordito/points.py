@@ -241,7 +241,7 @@ def centroid(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     return out
 
 
-def gram_matrix(points: wp.array[wp.vec3]) -> wp.array[wp.mat33]:
+def gram_matrix(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.array[wp.mat33]:
     """
     Uncentered Gram (scatter) matrix ``G = sum_k outer(x_k, x_k)``.
 
@@ -249,6 +249,11 @@ def gram_matrix(points: wp.array[wp.vec3]) -> wp.array[wp.mat33]:
     ----------
     points
         ``(n,)`` positions in space.
+    deterministic
+        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
+        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
+        order, which saves a few microseconds a call but lets the last bits change from call to
+        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -272,7 +277,7 @@ def gram_matrix(points: wp.array[wp.vec3]) -> wp.array[wp.mat33]:
     """
     # The uncentred Gram matrix is the scatter matrix around a zero center, which the kernel
     # reads off a null center array.
-    return _scatter_matrix(points, None, 1.0)
+    return _scatter_matrix(points, None, 1.0, deterministic=deterministic)
 
 
 def fit_line(points: wp.array[wp.vec3]) -> wp.vec3:
@@ -758,41 +763,49 @@ def _point_sum(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     """``sum(points)`` as a ``(1,)`` device array, zero when ``points`` is empty."""
     device = points.device
     n = points.size
-    out = _launch.zeros(1, dtype=wp.vec3, device=device)
     if n == 0:
-        return out
+        return _launch.zeros(1, dtype=wp.vec3, device=device)
+    # Block sums added in a fixed order, so the sum repeats bit for bit on CUDA.
+    blocks = kernel_reduce.blocks_1d(n)
+    out, stride = _launch.block_partials(blocks, 1, wp.vec3, device)
     _launch.launch_tiled(
-        kernel_reduce.sum_vec3_1d_tiled,
-        dim=[kernel_reduce.blocks_1d(n)],
-        inputs=[points, out],
+        kernel_points.point_sum,
+        dim=[blocks],
+        inputs=[points, stride, out],
         block_dim=TILE_1D,
         device=device,
     )
-    return out
+    return _launch.view(out, 0, 1)
 
 
 def _scatter_matrix(
-    points: wp.array[wp.vec3], center: wp.array[wp.vec3] | None, center_divisor: float
+    points: wp.array[wp.vec3],
+    center: wp.array[wp.vec3] | None,
+    center_divisor: float,
+    *,
+    deterministic: bool = True,
 ) -> wp.array[wp.mat33]:
     """
     ``sum_k outer(x_k - c, x_k - c)`` with ``c = center[0] / center_divisor`` as a ``(1,)`` array.
 
     ``center`` is either a centroid (``center_divisor = 1.0``, which divides exactly) or the raw
-    point sum with ``n``; ``None`` is the zero center, i.e. the uncentred Gram matrix.
+    point sum with ``n``; ``None`` is the zero center, i.e. the uncentred Gram matrix. Without
+    ``deterministic`` the blocks commit by atomics (``_launch.block_partials``).
     """
     device = points.device
     n = points.size
-    out = _launch.zeros(1, dtype=wp.mat33, device=device)
     if n == 0:
-        return out
+        return _launch.zeros(1, dtype=wp.mat33, device=device)
+    blocks = kernel_reduce.blocks_1d(n)
+    out, stride = _launch.block_partials(blocks, 1, wp.mat33, device, deterministic=deterministic)
     _launch.launch_tiled(
         kernel_points.centered_covariance,
-        dim=[kernel_reduce.blocks_1d(n)],
-        inputs=[points, center, wp.float32(center_divisor), out],
+        dim=[blocks],
+        inputs=[points, center, wp.float32(center_divisor), stride, out],
         block_dim=TILE_1D,
         device=device,
     )
-    return out
+    return _launch.view(out, 0, 1) if deterministic else out
 
 
 def outlier_probability(
@@ -879,18 +892,19 @@ def outlier_probability(
     if n == 0:
         return _launch.empty(0, dtype=wp.float32, device=device)
 
-    _mean, standard_distance, _count = _neighbor_distance_moments(
+    _mean, standard_distance, _count, _totals = _neighbor_distance_moments(
         neighbor_distance, mean_and_count=False, rms=True
     )
     # nplof = scale * sqrt(E[plof^2]) over the whole cloud: the sum of squares is folded by the
     # pass that writes the factors and left on the device -- the probability kernel reads it and
     # forms the normalizer itself.
     plof = _launch.empty(n, dtype=wp.float32, device=device)
-    plof_sum_squares = _launch.zeros(1, dtype=wp.float32, device=device)
+    blocks = (n + TILE_1D - 1) // TILE_1D
+    plof_sum_squares, stride = _launch.block_partials(blocks, 1, wp.float32, device)
     _launch.launch_tiled(
         kernel_points.local_outlier_factors,
-        dim=[(n + TILE_1D - 1) // TILE_1D],
-        inputs=[standard_distance, neighbor_idx],
+        dim=[blocks],
+        inputs=[standard_distance, neighbor_idx, stride],
         outputs=[plof, plof_sum_squares],
         block_dim=TILE_1D,
         device=device,
@@ -975,25 +989,28 @@ def statistical_outlier_mask(
 
     # Cloud mean and (ddof=1) deviation over the *counted* rows only, exactly as Open3D divides by
     # its ``valid_distances``. Empty rows contribute zero to every sum, so plain reductions work.
-    # The three slots -- counted rows, distance total, squared deviation -- stay on the device:
-    # the moments pass folds the first two, the deviation pass reads the mean from them and the
-    # mask launch the threshold from all three, so nothing is read back.
-    totals = _launch.zeros(3, dtype=wp.float64, device=device)
-    mean_distance, _rms, count = _neighbor_distance_moments(
-        neighbor_distance, mean_and_count=True, rms=False, totals=totals
+    # The three sums -- counted rows, distance total, squared deviation -- stay on the device: the
+    # moments pass folds the first two, the deviation pass reads the mean from them and the mask
+    # launch the threshold from all three, so nothing is read back. Each is summed in a fixed
+    # order, so the mask repeats on CUDA.
+    mean_distance, _rms, count, totals = _neighbor_distance_moments(
+        neighbor_distance, mean_and_count=True, rms=False, totals=True
     )
+    assert totals is not None
+    blocks = kernel_reduce.blocks_1d(n)
+    deviation, stride = _launch.block_partials(blocks, 1, wp.float64, device)
     _launch.launch_tiled(
         kernel_points.accumulate_counted_deviation,
-        dim=[kernel_reduce.blocks_1d(n)],
-        inputs=[count, mean_distance],
-        outputs=[totals],
+        dim=[blocks],
+        inputs=[count, mean_distance, totals, stride],
+        outputs=[deviation],
         block_dim=TILE_1D,
         device=device,
     )
     _launch.launch(
         kernel_points.statistical_outlier_from_totals,
         dim=n,
-        inputs=[mean_distance, count, totals, wp.float64(std_ratio)],
+        inputs=[mean_distance, count, totals, deviation, wp.float64(std_ratio)],
         outputs=[out_mask],
         device=device,
     )
@@ -1001,17 +1018,19 @@ def statistical_outlier_mask(
 
 
 def _neighbor_distance_moments(
-    neighbor_distance: odt.Array2dFloat32,
-    *,
-    mean_and_count: bool,
-    rms: bool,
-    totals: wp.array[wp.float64] | None = None,
-) -> tuple[wp.array[wp.float32] | None, wp.array[wp.float32] | None, wp.array[wp.int32] | None]:
+    neighbor_distance: odt.Array2dFloat32, *, mean_and_count: bool, rms: bool, totals: bool = False
+) -> tuple[
+    wp.array[wp.float32] | None,
+    wp.array[wp.float32] | None,
+    wp.array[wp.int32] | None,
+    wp.array[wp.float64] | None,
+]:
     """
     Per-row ``(mean, rms, count)`` of a neighbour-distance table, ignoring ``inf`` slots.
 
-    A moment a caller does not ask for comes back as ``None`` and is never written. ``totals``,
-    when given, receives ``(rows with a neighbour, sum of their means)`` in its first two slots.
+    A moment a caller does not ask for comes back as ``None`` and is never written. With
+    ``totals``, a fourth array holds ``(rows with a neighbour, sum of their means)`` in its first
+    two slots, summed in a fixed order.
     """
     device = neighbor_distance.device
     n = int(neighbor_distance.shape[0])
@@ -1019,15 +1038,19 @@ def _neighbor_distance_moments(
     out_rms = _launch.empty(n, dtype=wp.float32, device=device) if rms else None
     out_count = _launch.empty(n, dtype=wp.int32, device=device) if mean_and_count else None
     rows_per_block = kernel_points.MOMENT_ROWS_PER_BLOCK
+    blocks = (n + rows_per_block - 1) // rows_per_block
+    out_totals, stride = None, 0
+    if totals:
+        out_totals, stride = _launch.block_partials(blocks, 2, wp.float64, device)
     _launch.launch_tiled(
         kernel_points.neighbor_distance_moments,
-        dim=[(n + rows_per_block - 1) // rows_per_block],
-        inputs=[neighbor_distance],
-        outputs=[out_mean, out_rms, out_count, totals],
+        dim=[blocks],
+        inputs=[neighbor_distance, stride],
+        outputs=[out_mean, out_rms, out_count, out_totals],
         block_dim=TILE_1D,
         device=device,
     )
-    return out_mean, out_rms, out_count
+    return out_mean, out_rms, out_count, out_totals
 
 
 def radius_outlier_mask(

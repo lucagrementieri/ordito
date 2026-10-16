@@ -263,6 +263,30 @@ def test_fit_line(bench_case: BenchCase) -> None:
         assert axis_tm.shape == (3,)
 
 
+@pytest.mark.benchmark(group="gram_matrix")
+@pytest.mark.benchlibs("ordito")
+def test_gram_matrix(bench_case: BenchCase) -> None:
+    """
+    The uncentred scatter matrix as a device array: one lane-strided block fold, no readback.
+
+    ordito-only: NumPy's ``X.T @ X`` is the oracle in ``tests/test_points.py`` and a host matmul,
+    not this reduction. The row and ``gram_matrix_fast`` price the fixed-order block commit on the
+    shortest call that pays it.
+    """
+    points = bench_case.vertices_wp
+    gram = bench_case.run(lambda: od.points.gram_matrix(points))
+    assert gram.shape == (1,)
+
+
+@pytest.mark.benchmark(group="gram_matrix_fast")
+@pytest.mark.benchlibs("ordito")
+def test_gram_matrix_fast(bench_case: BenchCase) -> None:
+    """``gram_matrix(deterministic=False)``: the block sums added by atomics in arrival order."""
+    points = bench_case.vertices_wp
+    gram = bench_case.run(lambda: od.points.gram_matrix(points, deterministic=False))
+    assert gram.shape == (1,)
+
+
 _cloud_ml_cache: dict[str, mm.PointCloud] = {}
 _points_ml_cache: dict[str, mm.std_vector_Vector3_float] = {}
 

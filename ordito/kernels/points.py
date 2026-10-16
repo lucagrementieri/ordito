@@ -17,9 +17,12 @@ from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
     block_max,
-    commit_block_total,
-    commit_sum_and_count,
+    last_ticket,
+    last_ticket_matrix,
+    last_ticket_vector,
     outer_sum_chunk,
+    store_block_total,
+    store_sum_and_count,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -55,10 +58,24 @@ def centroid_from_sum(point_sum: wp.array[wp.vec3], n: wp.float32) -> wp.vec3:
 
 
 @wp.kernel
+def point_sum(points: wp.array[wp.vec3], stride: wp.int32, out_sum: wp.array[wp.vec3]) -> None:
+    # ``sum(points)`` for ``points.centroid`` and the centred scatter matrix, as a reproducible
+    # block commit (``store_block_total``): one block per ``ITEMS_PER_BLOCK_1D`` points, lanes
+    # striding the block's own chunk by ``wp.block_dim()``, so the one CPU lane walks it all.
+    chunk, lane = wp.tid()
+    offset, remaining = block_chunk_1d(points.shape[0], chunk)
+    total = wp.vec3()
+    for k in range(lane, remaining, wp.block_dim()):
+        total += points[offset + k]
+    store_block_total(chunk, lane, total, out_sum, 0, stride, last_ticket_vector)
+
+
+@wp.kernel
 def centered_covariance(
     points: wp.array[wp.vec3],
     center: wp.array[wp.vec3],
     center_divisor: wp.float32,
+    stride: wp.int32,
     out_cov: wp.array[wp.mat33],
 ) -> None:
     # Scatter matrix C = sum_k outer(x_k - c, x_k - c) with ``c = center[0] / center_divisor``, so
@@ -76,7 +93,8 @@ def centered_covariance(
     #
     # Launched ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)``: one block per
     # ``ITEMS_PER_BLOCK_1D`` points, lanes striding that block's own chunk, nine ``wp.tile_sum``
-    # tree reductions, one ``wp.mat33`` atomic per block.
+    # tree reductions, one ``wp.mat33`` row per block that the last block adds in a fixed order
+    # (``store_block_total``; one atomic per block made the answer's last bits move on CUDA).
     #
     # **The redundant lane arithmetic is not the cost -- the block count is**, the same finding as
     # ``registration.accumulate_procrustes_moments``: what costs is one add per block on each of
@@ -99,7 +117,7 @@ def centered_covariance(
     )
 
     # Block-collective, so it runs outside the ``lane == 0`` guard.
-    commit_block_total(lane, m, out_cov, 0)
+    store_block_total(chunk, lane, m, out_cov, 0, stride, last_ticket_matrix)
 
 
 @wp.kernel
@@ -245,6 +263,7 @@ MOMENT_ROWS_PER_BLOCK = wp.constant(256)
 @wp.kernel
 def neighbor_distance_moments(
     neighbor_distance: wp.array2d[wp.float32],
+    stride: wp.int32,
     out_mean: wp.array[wp.float32],
     out_rms: wp.array[wp.float32],
     out_count: wp.array[wp.int32],
@@ -259,9 +278,9 @@ def neighbor_distance_moments(
     # Each caller wants only its own moments, so a length-zero output is skipped: the statistical
     # mask passes no ``out_rms`` and ``outlier_probability`` only ``out_rms``.
     #
-    # The statistical mask also passes ``out_totals``, the first two slots of its
-    # ``(count, total, deviation)`` accumulator, and gets ``(rows with at least one neighbour, sum
-    # of their mean distances)`` folded into them here: a separate fold over this launch's own
+    # The statistical mask also passes ``out_totals``, a ``store_sum_and_count`` partials buffer,
+    # and gets ``(rows with at least one neighbour, sum of their mean distances)`` folded into its
+    # first two slots here: a separate fold over this launch's own
     # outputs would re-read them for one more launch. ``MOMENT_ROWS_PER_BLOCK`` rows per block, a
     # narrower fold than the reduce module's, because the kernel writes per row and the wide fold
     # would collapse the grid; lane-strided by ``wp.block_dim()`` so the
@@ -303,10 +322,10 @@ def neighbor_distance_moments(
         if out_count.shape[0] > 0:
             out_count[i] = count
     # Launch-uniform, so the block-collective commit stays on one side of it for every lane. The
-    # count goes in the *sum* slot of ``reduce.commit_sum_and_count``'s pair: this buffer's order
+    # count goes in the *sum* slot of ``reduce.store_sum_and_count``'s pair: this buffer's order
     # is ``(count, total)``.
     if out_totals.shape[0] > 0:
-        commit_sum_and_count(lane, counted, distance_total, out_totals)
+        store_sum_and_count(chunk, lane, counted, distance_total, out_totals, stride)
 
 
 @wp.func
@@ -344,13 +363,14 @@ def local_outlier_factor(
 def local_outlier_factors(
     standard_distance: wp.array[wp.float32],
     neighbor_idx: wp.array2d[wp.int32],
+    stride: wp.int32,
     out_plof: wp.array[wp.float32],
     out_sum_squares: wp.array[wp.float32],
 ) -> None:
     # Every point's ``local_outlier_factor``, and the cloud-wide sum of their squares the LoOP
     # normalizer needs, folded as they are written. One tile of points per block (the grid keeps
     # its per-point width, since every point is written), lanes striding it by ``wp.block_dim()``
-    # so the one CPU lane walks it all, and one atomic per block.
+    # so the one CPU lane walks it all, and one partial per block (``store_block_total``).
     block, lane = wp.tid()
     offset, count = block_chunk(neighbor_idx.shape[0], block, TILE_1D)
     squares = wp.float32(0.0)
@@ -358,7 +378,7 @@ def local_outlier_factors(
         plof = local_outlier_factor(standard_distance, neighbor_idx, offset + k)
         out_plof[offset + k] = plof
         squares += plof * plof
-    commit_block_total(lane, squares, out_sum_squares, 0)
+    store_block_total(block, lane, squares, out_sum_squares, 0, stride, last_ticket)
 
 
 @wp.func
@@ -433,25 +453,31 @@ def has_cloud_deviation(totals: wp.array[wp.float64]) -> wp.bool:
 
 @wp.kernel
 def accumulate_counted_deviation(
-    count: wp.array[wp.int32], mean_distance: wp.array[wp.float32], out_totals: wp.array[wp.float64]
+    count: wp.array[wp.int32],
+    mean_distance: wp.array[wp.float32],
+    totals: wp.array[wp.float64],
+    stride: wp.int32,
+    out_deviation: wp.array[wp.float64],
 ) -> None:
-    # The squared-deviation sum behind ``statistical_outlier_mask``'s cloud deviation, into slot 2
-    # of the ``(count, total, deviation)`` buffer whose first two slots
-    # ``neighbor_distance_moments`` has already filled -- so the mean it centres on never leaves
+    # The squared-deviation sum behind ``statistical_outlier_mask``'s cloud deviation, into the
+    # ``out_deviation`` partials, centred on the mean of the ``(count, total)`` pair
+    # ``neighbor_distance_moments`` has already folded into ``totals`` -- so the mean never leaves
     # the device. Each term is the ``float32`` ``centered_square_if_counted`` around the
     # ``float32`` cloud mean, as before; the terms are summed in ``float64``, which is also what the
     # Open3D reference accumulates in. A cloud with fewer than two counted rows has no deviation
     # and adds nothing (the mask kernel disables the threshold there).
     chunk, lane = wp.tid()
     offset, n_rows = block_chunk_1d(count.shape[0], chunk)
-    if n_rows <= 0 or not has_cloud_deviation(out_totals):
+    if n_rows <= 0:
         return
-    center = wp.float32(counted_cloud_mean(out_totals))
     total = wp.float64(0.0)
-    for k in range(lane, n_rows, wp.block_dim()):
-        term = centered_square_if_counted(mean_distance[offset + k], count[offset + k], center)
-        total = total + wp.float64(term)
-    commit_block_total(lane, total, out_totals, 2)
+    # Launch-uniform; a block with no deviation to form still stores its zero row.
+    if has_cloud_deviation(totals):
+        center = wp.float32(counted_cloud_mean(totals))
+        for k in range(lane, n_rows, wp.block_dim()):
+            term = centered_square_if_counted(mean_distance[offset + k], count[offset + k], center)
+            total = total + wp.float64(term)
+    store_block_total(chunk, lane, total, out_deviation, 0, stride, last_ticket)
 
 
 @wp.kernel
@@ -459,18 +485,19 @@ def statistical_outlier_from_totals(
     mean_distance: wp.array[wp.float32],
     count: wp.array[wp.int32],
     totals: wp.array[wp.float64],
+    deviation: wp.array[wp.float64],
     std_ratio: wp.float64,
     out_mask: wp.array[wp.bool],
 ) -> None:
     # ``is_statistical_outlier`` at the cloud threshold ``mean + std_ratio * std`` (ddof = 1), with
-    # the threshold formed from the ``(count, total, deviation)`` slots in ``float64`` and rounded
-    # once to ``float32``. Fewer than two counted rows give no deviation: the threshold is then
-    # ``inf``, which disables only the distance third of the predicate and keeps the empty- and
+    # the threshold formed from the ``(count, total)`` slots and the deviation in ``float64`` and
+    # rounded once to ``float32``. Fewer than two counted rows give no deviation: the threshold is
+    # then ``inf``, which disables only the distance third of the predicate and keeps the empty- and
     # coincident-neighbourhood halves.
     i = wp.int32(wp.tid())
     threshold = wp.float32(FLOAT32_INF_CONSTANT)
     if has_cloud_deviation(totals):
-        cloud_std = wp.sqrt(totals[2] / (totals[0] - wp.float64(1.0)))
+        cloud_std = wp.sqrt(deviation[0] / (totals[0] - wp.float64(1.0)))
         threshold = wp.float32(counted_cloud_mean(totals) + std_ratio * cloud_std)
     out_mask[i] = is_statistical_outlier(mean_distance[i], count[i], threshold)
 

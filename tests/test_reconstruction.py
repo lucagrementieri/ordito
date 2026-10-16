@@ -1551,18 +1551,17 @@ def test_ball_pivoting_is_reproducible(device: str):
 
     * the wave loop's own output, which is the property the key buys;
     * the public function, whose cleanup tail keeps the winding the wave loop wrote from the
-      normals rather than re-deriving it.
+      normals rather than re-deriving it -- at an explicit radius and at its own guess, which is a
+      fixed-order sum (an atomic one moved the guess a few ULP between calls, enough to tip a
+      borderline pivot).
     """
     torus_tm = tm.creation.torus(
         major_radius=1.0, minor_radius=0.35, major_sections=64, minor_sections=32
     )
     points_wp, normals_wp = _to_warp(torus_tm.vertices, torus_tm.vertex_normals, device)
     n_points = points_wp.size
-    # The wrapper's own auto-radius, recomputed on the host and then passed explicitly to every run
-    # below -- including the two public calls. That is load-bearing, not tidiness: the wrapper's own
-    # `radius <= 0` guess averages the spacings with a device reduction whose summation order is not
-    # fixed, so it lands a few ULP apart between calls and tips a borderline pivot. Dropping
-    # `radius=` from either public call makes this test flaky rather than stricter.
+    # The wrapper's own auto-radius, recomputed on the host, for the raw wave-loop runs, which take
+    # a radius; the last pair of public calls guesses it on the device instead.
     radius = _bpa_radius(points_wp)
 
     grid = od.neighbors.hashgrid_from_points(points_wp, radius)
@@ -1581,6 +1580,11 @@ def test_ball_pivoting_is_reproducible(device: str):
 
     _vertices, first_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
     _vertices, second_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+    assert_unordered_rows_equal(
+        canonical_winding(first_wp.numpy()), canonical_winding(second_wp.numpy())
+    )
+    _vertices, first_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
+    _vertices, second_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
     assert_unordered_rows_equal(
         canonical_winding(first_wp.numpy()), canonical_winding(second_wp.numpy())
     )

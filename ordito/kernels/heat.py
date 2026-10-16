@@ -24,7 +24,7 @@ from ordito.kernels.predicates import (
     unit_tangent,
     world_to_tangent,
 )
-from ordito.kernels.reduce import block_chunk_1d, commit_sum_and_count
+from ordito.kernels.reduce import block_chunk_1d, store_sum_and_count
 from ordito.kernels.scatter import add_corner_triple
 from ordito.kernels.triangles import face_normals_and_area, face_unit_gradient, face_vertices_vec3d
 
@@ -65,6 +65,7 @@ def upper_edge_length_sum_and_count(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
+    stride: wp.int32,
     out_sum_and_count: wp.array[wp.float64],
 ) -> None:
     # Sum and count of the edge lengths over an operator's *strict upper triangle*, which for the
@@ -75,7 +76,8 @@ def upper_edge_length_sum_and_count(
     # vector solver get the identical number from their two different operators.
     #
     # ``reduce``'s mask-shaped block fold over *rows*: lanes stride the block's rows by
-    # ``wp.block_dim()`` (right on the CPU device too), and one tile sum per quantity commits.
+    # ``wp.block_dim()`` (right on the CPU device too), and one tile sum per quantity is stored in
+    # the block's row (``store_sum_and_count``), added in a fixed order afterwards.
     i, t = wp.tid()
     n = offsets.shape[0] - 1
     base, remaining = block_chunk_1d(n, i)
@@ -90,7 +92,7 @@ def upper_edge_length_sum_and_count(
             if column > row:
                 total += wp.float64(wp.length(vertices[column] - vertices[row]))
                 count += wp.float64(1.0)
-    commit_sum_and_count(t, total, count, out_sum_and_count)
+    store_sum_and_count(i, t, total, count, out_sum_and_count, stride)
 
 
 @wp.func
@@ -201,15 +203,18 @@ def unit_gradient_divergence(
 
 @wp.kernel
 def source_and_global_sums(
-    phi: wp.array[wp.float64], sources: wp.array[wp.int32], out_sums: wp.array[wp.float64]
+    phi: wp.array[wp.float64],
+    sources: wp.array[wp.int32],
+    stride: wp.int32,
+    out_sums: wp.array[wp.float64],
 ) -> None:
-    # ``(sum of phi over the sources, sum of phi over every vertex)`` into ``out_sums`` (zeroed by
-    # the caller), for ``shift_and_orient``: both means the heat method's normalization needs, in
-    # one launch. The ``reduce`` block fold over whichever of the two ranges the launch covers; a
-    # block past the end of the other contributes zero to it, so a launch sized to the sources
-    # alone gives a correct first sum -- all ``shift_and_orient`` reads when it does not orient.
-    # ``sources`` may repeat a vertex, which is then counted as often as it appears, as a gathered
-    # mean counts it.
+    # ``(sum of phi over the sources, sum of phi over every vertex)`` as one row per block of
+    # ``out_sums``, which the last block adds in a fixed order (``store_sum_and_count``), for
+    # ``shift_and_orient``: both means the heat method's normalization needs, in one launch. The
+    # ``reduce`` block fold over whichever of the two ranges the launch covers; a block past the end
+    # of the other contributes zero to it, so a launch sized to the sources alone gives a correct
+    # first sum -- all ``shift_and_orient`` reads when it does not orient. ``sources`` may repeat a
+    # vertex, which is then counted as often as it appears, as a gathered mean counts it.
     i, t = wp.tid()
     base, remaining = block_chunk_1d(phi.shape[0], i)
     source_base, source_remaining = block_chunk_1d(sources.shape[0], i)
@@ -219,7 +224,7 @@ def source_and_global_sums(
         at_sources += phi[sources[source_base + k]]
     for k in range(t, remaining, wp.block_dim()):
         everywhere += phi[base + k]
-    commit_sum_and_count(t, at_sources, everywhere, out_sums)
+    store_sum_and_count(i, t, at_sources, everywhere, out_sums, stride)
 
 
 @wp.kernel

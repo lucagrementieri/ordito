@@ -414,6 +414,20 @@ def test_sum_axis0(bench_case: BenchCase) -> None:
     assert sums.shape[0] == 3
 
 
+@pytest.mark.benchmark(group="sum_axis0_fast")
+@pytest.mark.benchlibs("ordito")
+def test_sum_axis0_fast(bench_case: BenchCase) -> None:
+    """
+    ``sum(axis=0, deterministic=False)``: the tile sums committed by atomics in arrival order.
+
+    ``sum_axis0`` adds them in a fixed order, which repeats bit for bit on CUDA; the gap between the
+    two rows is what that costs on a tall table, where every column folds thousands of tiles.
+    """
+    rows = _rows_wp(bench_case)
+    sums = bench_case.run(lambda: od.reduce.sum(rows, axis=0, deterministic=False))
+    assert sums.shape[0] == 3
+
+
 @pytest.mark.benchmark(group="max_axis1")
 @pytest.mark.benchlibs("ordito", "numpy")
 def test_max_axis1(bench_case: BenchCase) -> None:

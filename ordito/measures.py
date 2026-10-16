@@ -37,7 +37,12 @@ from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
 
 
-def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.int32]) -> float:
+def volume(
+    vertices: wp.array[wp.vec3] | wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    *,
+    deterministic: bool = True,
+) -> float:
     """
     Signed volume enclosed by the mesh.
 
@@ -55,6 +60,11 @@ def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.
         [`filter_laplacian`][ordito.smoothing.filter_laplacian]'s volume constraint does.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
+    deterministic
+        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
+        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
+        order, which saves a few microseconds a call but lets the last bits change from call to
+        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -100,20 +110,24 @@ def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.
     if n_faces == 0:
         return 0.0
     device = vertices.device
-    # Each face's tetrahedron is formed where it is summed: no per-face volume table.
-    total = (
-        _launch.zeros(1, dtype=wp.float64, device=device)
-        if vertices.dtype is wp.vec3d
-        else _launch.zeros(1, dtype=wp.float32, device=device)
+    # Each face's tetrahedron is formed where it is summed: no per-face volume table. The block
+    # sums are added in a fixed order, so the volume repeats bit for bit on CUDA.
+    blocks = kernel_reduce.blocks_1d(n_faces)
+    total, stride = _launch.block_partials(
+        blocks,
+        1,
+        wp.float64 if vertices.dtype is wp.vec3d else wp.float32,
+        device,
+        deterministic=deterministic,
     )
     _launch.launch_tiled(
         kernel_measures.MESH_SIGNED_VOLUME[vertices.dtype],
-        dim=[kernel_reduce.blocks_1d(n_faces)],
-        inputs=[vertices, faces, total],
+        dim=[blocks],
+        inputs=[vertices, faces, stride, total],
         block_dim=TILE_1D,
         device=device,
     )
-    return float(read_scalar(total))
+    return float(read_scalar(total, 0))
 
 
 def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> wp.vec3:
@@ -200,7 +214,7 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
 
 
 def moments(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, deterministic: bool = True
 ) -> tuple[float, wp.vec3, wp.mat33d]:
     """
     Mass properties of the solid bounded by the mesh: volume, centre of mass and inertia tensor.
@@ -220,6 +234,11 @@ def moments(
         ``(n_vertices,)`` mesh vertex positions.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
+    deterministic
+        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
+        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
+        order, which saves a few microseconds a call but lets the last bits change from call to
+        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -279,23 +298,25 @@ def moments(
     if n_faces == 0:
         return 0.0, wp.vec3(float("nan"), float("nan"), float("nan")), wp.mat33d()
 
-    # One launch and one readback for all ten integrals: the kernel reduces over faces itself and
-    # commits into a single ``(10,)`` accumulator, so there are no per-face buffers to allocate and
-    # no per-group reduction to launch. ``wp.zeros`` rather than ``wp.empty`` because the kernel
-    # accumulates into it.
-    totals = _launch.zeros(10, dtype=wp.float64, device=device)
+    # One readback for all ten integrals: the kernel reduces over faces itself into one row of ten
+    # per block, so there are no per-face buffers to allocate and no per-group reduction to launch,
+    # and the rows are added in a fixed order, so the moments repeat bit for bit on CUDA.
     chunk_faces = kernel_measures.moment_chunk_faces(n_faces)
+    blocks = (n_faces + chunk_faces - 1) // chunk_faces
+    totals, stride = _launch.block_partials(
+        blocks, 10, wp.float64, device, deterministic=deterministic
+    )
     _launch.launch_tiled(
         kernel_measures.moment_integrals,
-        dim=[(n_faces + chunk_faces - 1) // chunk_faces],
-        inputs=[vertices, faces, chunk_faces, totals],
+        dim=[blocks],
+        inputs=[vertices, faces, chunk_faces, stride, totals],
         block_dim=TILE_1D,
         device=device,
     )
 
     # Every return here is a host-side value, so the ten sums have to cross the device boundary --
     # but only the ten, and in one readback rather than one per group.
-    totals_np = totals.numpy()
+    totals_np = np.asarray(read_values(totals, 0, 10), dtype=np.float64)
     total_volume = float(totals_np[0])
     first_moment = totals_np[1:4]
     integral_squares = totals_np[4:7]

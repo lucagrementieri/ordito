@@ -37,7 +37,7 @@ from ordito.kernels.predicates import (
     triangle_aspect_ratio,
     vector_angle,
 )
-from ordito.kernels.reduce import block_chunk_1d, block_sum, commit_sum_and_count
+from ordito.kernels.reduce import block_chunk_1d, block_sum, store_sum_and_count
 
 wp.set_module_options({"enable_backward": False})
 
@@ -58,10 +58,11 @@ NORMAL_FILTER_DOT = wp.constant(wp.float32(-0.3))
 
 @wp.kernel
 def positive_finite_sum_and_count(
-    values: wp.array[wp.float32], out_sum_and_count: wp.array[wp.float64]
+    values: wp.array[wp.float32], stride: wp.int32, out_sum_and_count: wp.array[wp.float64]
 ) -> None:
     # Numerator and denominator of "the mean over the strictly positive finite entries" in one
-    # pass, into one two-slot buffer the caller reads once. A neighbour-distance table carries a
+    # pass, as one row per block (``store_sum_and_count``) added in a fixed order into the first
+    # two slots, which the caller reads once. A neighbour-distance table carries a
     # zero per self-match and an ``inf`` per unfilled slot, and neither belongs in a spacing.
     #
     # ``reduce``'s mask-shaped block fold (``_reduce_bool_1d_tiled``): the lanes stride the block's
@@ -80,7 +81,7 @@ def positive_finite_sum_and_count(
         if is_positive_finite(value):
             total += wp.float64(value)
             count += wp.float64(1.0)
-    commit_sum_and_count(t, total, count, out_sum_and_count)
+    store_sum_and_count(i, t, total, count, out_sum_and_count, stride)
 
 
 @wp.kernel

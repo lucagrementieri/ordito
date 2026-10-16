@@ -360,6 +360,31 @@ def test_polyline_angles(bench_case: BenchCase) -> None:
     assert angles.size == polyline.size
 
 
+@pytest.mark.benchmark(group="cumulative_arc_length")
+@pytest.mark.benchaxis("polyline")
+@pytest.mark.benchlibs("ordito")
+def test_cumulative_arc_length(bench_case: BenchCase) -> None:
+    """
+    The arc-length table every resampler reads: one length per segment and one float32 scan.
+
+    The scan is the fixed-order one (``deterministic=True``, the default); ``_fast`` is the same
+    call on CUB's arrival-order scan, which is what the flag trades.
+    """
+    polyline = _polyline_wp(bench_case)
+    table = bench_case.run(lambda: od.polyline.cumulative_arc_length(polyline))
+    assert table.size == polyline.size
+
+
+@pytest.mark.benchmark(group="cumulative_arc_length_fast")
+@pytest.mark.benchaxis("polyline")
+@pytest.mark.benchlibs("ordito")
+def test_cumulative_arc_length_fast(bench_case: BenchCase) -> None:
+    """``cumulative_arc_length(deterministic=False)``: the arrival-order scan of the same table."""
+    polyline = _polyline_wp(bench_case)
+    table = bench_case.run(lambda: od.polyline.cumulative_arc_length(polyline, deterministic=False))
+    assert table.size == polyline.size
+
+
 def _polyline_cpu(bench_case: BenchCase) -> wp.array[wp.vec3]:
     """
     Build the benchmark's polyline as a ``wp.vec3`` array on the **cpu** device, cached per mesh.
@@ -619,6 +644,19 @@ def test_resample_closed_polyline(bench_case: BenchCase) -> None:
     polyline = _polyline_wp(bench_case)
     n_points = polyline.size
     ring = bench_case.run(lambda: od.polyline.polyline_resample(polyline, n_points, closed=True))
+    assert ring.size == n_points
+
+
+@pytest.mark.benchmark(group="polyline_resample_closed_fast")
+@pytest.mark.benchaxis("polyline")
+@pytest.mark.benchlibs("ordito")
+def test_resample_closed_polyline_fast(bench_case: BenchCase) -> None:
+    """``polyline_resample_closed`` on the arrival-order scan (``deterministic=False``)."""
+    polyline = _polyline_wp(bench_case)
+    n_points = polyline.size
+    ring = bench_case.run(
+        lambda: od.polyline.polyline_resample(polyline, n_points, closed=True, deterministic=False)
+    )
     assert ring.size == n_points
 
 

@@ -293,6 +293,24 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
         assert len(cloud.points) == target
 
 
+@pytest.mark.benchmark(group="sample_surface_fast")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("count", _UNIFORM_COUNTS, ids=["n10k", "n100k"])
+def test_sample_surface_fast(bench_case: BenchCase, count: int) -> None:
+    """
+    ``sample_surface(deterministic=False)``: the face CDF on CUB's arrival-order scan.
+
+    ``sample_surface`` scans it in a fixed order, so a seeded draw repeats on CUDA; the gap between
+    the two rows is what that costs, flat in the count like the scan itself.
+    """
+    skip_larger_than(bench_case, "bunny", "matches the sample_surface row's cap")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    points, _faces = bench_case.run(
+        lambda: od.sample.sample_surface(vertices, faces, count, seed=_SEED, deterministic=False)
+    )
+    assert points.shape == (count,)
+
+
 @pytest.mark.benchmark(group="sample_volume")
 @pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
 @pytest.mark.benchlibs("ordito")

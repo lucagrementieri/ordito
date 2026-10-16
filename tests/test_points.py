@@ -185,12 +185,24 @@ def test_centroid(device: str) -> None:
     assert np.allclose(centroid_wp.numpy()[0], points_np.mean(axis=0), rtol=1e-5, atol=1e-5)
 
 
-def test_gram_matrix(device: str) -> None:
-    # 200 = 3 * 64 + 8 exercises the multi-tile reduction and remainder path.
-    points_np = _random_points(200, seed=10)
+@pytest.mark.parametrize("deterministic", [True, False])
+@pytest.mark.parametrize("n_points", [200, 1_000_000])
+def test_gram_matrix(device: str, n_points: int, deterministic: bool) -> None:
+    """
+    Not a library comparison: the Gram matrix against NumPy's float64 ``X.T @ X``, on both commits.
+
+    200 points exercise the remainder path inside one block; a million span 977 blocks, whose
+    sums the fixed-order commit (``deterministic=True``) must repeat bit for bit and the atomic one
+    must still match to float32 rounding.
+    """
+    points_np = _random_points(n_points, seed=10)
     points_wp = points_to_warp(points_np, device)
     gram_np = points_np.T @ points_np
-    assert np.allclose(od.gram_matrix(points_wp).numpy()[0], gram_np, rtol=1e-4, atol=1e-4)
+    gram_wp = od.gram_matrix(points_wp, deterministic=deterministic)
+    assert gram_wp.shape == (1,)
+    assert np.allclose(gram_wp.numpy()[0], gram_np, rtol=1e-4, atol=1e-4)
+    if deterministic:
+        assert np.array_equal(od.gram_matrix(points_wp).numpy(), gram_wp.numpy())
 
 
 @pytest.mark.parametrize(("n_points", "seed"), [(200, 2), (5000, 5)], ids=["small", "multi_tile"])

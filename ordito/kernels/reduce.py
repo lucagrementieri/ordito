@@ -152,16 +152,214 @@ def commit_block_total(lane: wp.int32, local: Any, out: wp.array[Any], slot: wp.
         wp.atomic_add(out, slot, block)
 
 
+# The run-to-run reproducible block commit, in the launch that forms the block sums.
+#
+# One ``atomic_add`` per block adds the blocks in arrival order, so on CUDA a float total's last
+# bits move from call to call; integer sums are exact in any order and keep ``commit_block_sum``.
+# Here each block instead stores its fold in its own row of a zeroed buffer and takes a ticket; the
+# block that draws the last ticket adds every row in one fixed order (lanes stride the rows by
+# ``wp.block_dim()``, ``block_sum`` combines them) and writes the totals. The buffer holds
+# ``stride`` result slots, the ticket counter at ``stride`` and then one ``stride``-slot row per
+# block, ``(n_blocks + 1) * stride + 1`` elements (``_launch.block_partials``), so a consumer reads
+# the total in ``out[slot]`` exactly where the atomic commit left it. The last block resets the
+# counter, so the next launch over the same buffer (a loop's next round, another column of it)
+# needs no clearing. A fence between a block's row and its ticket is what makes the rows visible
+# to the folding block (the CUDA ``threadFenceReduction`` pattern); on the CPU device the blocks
+# run in turn and the fence compiles to nothing. One launch and one zeroed allocation, like the
+# atomic commit; a separate fold launch cost more on a short call.
+#
+# A buffer of exactly ``stride`` elements (``_launch.block_partials(deterministic=False)``) takes
+# the atomic commit instead, for the caller that trades reproducibility for the few microseconds
+# the ticket, the fence and the last block's fold add to a short call (``deterministic`` flags).
+_THREAD_FENCE = """
+#if defined(__CUDA_ARCH__)
+__threadfence();
+#endif
+"""
+
+
+@wp.func_native(_THREAD_FENCE)
+def thread_fence(): ...
+
+
 @wp.func
-def commit_sum_and_count(
-    lane: wp.int32, total: wp.float64, count: wp.float64, out_sum_and_count: wp.array[wp.float64]
+def take_ticket(out: wp.array[Any], counter: wp.int32, unit: Any):
+    # Lane 0's ticket, once it has stored its row: the count of rows stored before it, kept in
+    # ``out[counter]`` in ``out``'s own dtype (``unit`` is any value of it; whole counts are exact).
+    # The fence publishes the row before the ticket can be seen. A vector or matrix counter is one
+    # atomic per component, so only a component's count is a ticket: ``last_ticket_vector`` and
+    # ``last_ticket_matrix`` read the first.
+    thread_fence()
+    return wp.atomic_add(out, counter, type(unit)(wp.float32(1.0)))
+
+
+@wp.func
+def last_ticket(ticket: Any, n_blocks: wp.int32) -> wp.int32:
+    # 1 when a scalar ticket is the last of ``n_blocks``.
+    return wp.where(ticket == type(ticket)(wp.float32(n_blocks - 1)), 1, 0)
+
+
+@wp.func
+def last_ticket_vector(ticket: Any, n_blocks: wp.int32) -> wp.int32:
+    # ``last_ticket`` on a vector counter's first component.
+    return last_ticket(ticket[0], n_blocks)
+
+
+@wp.func
+def last_ticket_matrix(ticket: Any, n_blocks: wp.int32) -> wp.int32:
+    # ``last_ticket`` on a matrix counter's first component.
+    return last_ticket(ticket[0, 0], n_blocks)
+
+
+@wp.func
+def sum_strided_rows(
+    lane: wp.int32,
+    out: wp.array[Any],
+    first: wp.int32,
+    row_stride: wp.int32,
+    n_rows: wp.int32,
+    zero: Any,
+):
+    # This lane's share of ``sum(out[first + r * row_stride] for r in range(n_rows))``: rows
+    # ``lane``, ``lane + block_dim``, ... in four interleaved running sums, so four loads are in
+    # flight at a time where one dependent sum waited on each in turn (the last block's fold is
+    # latency-bound: a 15k-block launch left it a few hundred loads a lane). Combined in a fixed
+    # order, so the result depends only on the block size.
+    step = wp.block_dim()
+    t0 = zero
+    t1 = zero
+    t2 = zero
+    t3 = zero
+    r = lane
+    while r + 3 * step < n_rows:
+        t0 += out[first + r * row_stride]
+        t1 += out[first + (r + step) * row_stride]
+        t2 += out[first + (r + 2 * step) * row_stride]
+        t3 += out[first + (r + 3 * step) * row_stride]
+        r += 4 * step
+    while r < n_rows:
+        t0 += out[first + r * row_stride]
+        r += step
+    return (t0 + t1) + (t2 + t3)
+
+
+@wp.func
+def finish_block_total(
+    lane: wp.int32,
+    out: wp.array[Any],
+    slot: wp.int32,
+    stride: wp.int32,
+    n_blocks: wp.int32,
+    zero: Any,
+):
+    # The last block's half of a reproducible commit: every block's row of slot ``slot`` added in
+    # one fixed order into the result slot, and the ticket counter reset for the next launch.
+    thread_fence()
+    grand = block_sum(sum_strided_rows(lane, out, stride + 1 + slot, stride, n_blocks, zero))
+    if lane == 0:
+        out[slot] = grand
+        out[stride] = zero
+
+
+@wp.func
+def store_block_sum(
+    block: wp.int32,
+    lane: wp.int32,
+    local: Any,
+    out: wp.array[Any],
+    base: wp.int32,
+    stride: wp.int32,
+):
+    # The reproducible ``commit_block_sum``: the block's fold of each lane's register vector into
+    # slots ``base:base + len(local)`` of its row, and of the result row once the last block has
+    # added every row (see the note above). Every block of the launch must reach this, and every
+    # lane of it (it is block-collective).
+    folded = block_sum(local)
+    if out.shape[0] == stride:
+        if lane == 0:
+            for slot in range(len(folded)):
+                wp.atomic_add(out, base + slot, folded[slot])
+        return
+    n_blocks = (out.shape[0] - stride - 1) // stride
+    last = wp.int32(0)
+    if lane == 0:
+        row = stride + 1 + block * stride + base
+        for slot in range(len(folded)):
+            out[row + slot] = folded[slot]
+        last = last_ticket(take_ticket(out, stride, folded[0]), n_blocks)
+    if block_max(last) != 0:
+        thread_fence()
+        # Row by row: every slot of a row is an independent load, so ``len(local)`` are in flight
+        # where a slot-by-slot walk waited on each row in turn. A narrow row is walked two at a
+        # time for twice that; a wide one (``registration``'s 25 and 44 slots) one at a time, which
+        # a second accumulator would push out of registers.
+        zero = type(local[0])(wp.float32(0.0))
+        even = local * zero
+        odd = local * zero
+        step = wp.block_dim()
+        r = lane
+        if len(local) <= 16:
+            while r + step < n_blocks:
+                first = stride + 1 + r * stride + base
+                second = first + step * stride
+                for slot in range(len(even)):
+                    even[slot] = even[slot] + out[first + slot]
+                    odd[slot] = odd[slot] + out[second + slot]
+                r += 2 * step
+        while r < n_blocks:
+            first = stride + 1 + r * stride + base
+            for slot in range(len(even)):
+                even[slot] = even[slot] + out[first + slot]
+            r += step
+        grand = block_sum(even + odd)
+        if lane == 0:
+            for slot in range(len(grand)):
+                out[base + slot] = grand[slot]
+            out[stride] = type(folded[0])(wp.float32(0.0))
+
+
+@wp.func
+def store_block_total(
+    block: wp.int32,
+    lane: wp.int32,
+    local: Any,
+    out: wp.array[Any],
+    slot: wp.int32,
+    stride: wp.int32,
+    is_last: wp.Function,
+):
+    # ``store_block_sum`` for a single value (scalar, vector or matrix, matching ``out``'s dtype),
+    # stored whole in slot ``slot`` of the block's row and of the result row. ``is_last`` reads the
+    # ticket of ``out``'s kind: ``last_ticket``, ``last_ticket_vector`` or ``last_ticket_matrix``.
+    folded = block_sum(local)
+    if out.shape[0] == stride:
+        if lane == 0:
+            wp.atomic_add(out, slot, folded)
+        return
+    n_blocks = (out.shape[0] - stride - 1) // stride
+    last = wp.int32(0)
+    if lane == 0:
+        out[stride + 1 + block * stride + slot] = folded
+        last = is_last(take_ticket(out, stride, folded), n_blocks)
+    if block_max(last) != 0:
+        finish_block_total(lane, out, slot, stride, n_blocks, type(folded)(wp.float32(0.0)))
+
+
+@wp.func
+def store_sum_and_count(
+    block: wp.int32,
+    lane: wp.int32,
+    total: wp.float64,
+    count: wp.float64,
+    out_sum_and_count: wp.array[wp.float64],
+    stride: wp.int32,
 ):
     # The commit of a fused "mean over the entries that qualify" block fold: each lane's register
-    # sum and count, as one ``commit_block_sum`` pair into the two-slot buffer the caller reads
-    # once. Shared by ``heat.upper_edge_length_sum_and_count``, ``heat.source_and_global_sums``,
-    # ``points.neighbor_distance_moments`` and ``reconstruction.positive_finite_sum_and_count``,
-    # which differ only in what qualifies.
-    commit_block_sum(lane, wp.vec2d(total, count), out_sum_and_count, 0)
+    # sum and count, as one ``store_block_sum`` pair into slots 0 and 1. Shared by
+    # ``heat.upper_edge_length_sum_and_count``, ``heat.source_and_global_sums``,
+    # ``points.neighbor_distance_moments``, ``reconstruction.positive_finite_sum_and_count`` and
+    # ``registration.residual_moment``, which differ only in what qualifies.
+    store_block_sum(block, lane, wp.vec2d(total, count), out_sum_and_count, 0, stride)
 
 
 def blocks_1d(n: int) -> int:
@@ -436,9 +634,15 @@ def _reduce_2d_axis_tiled(tile_reduce, atomic, scalar, name, rows, dtype):
     axis=1 (``rows=True``) or axis=0: one output slot per grid index, tiled along its extent.
 
     Each block folds one ``TILE_1D`` tile of slot ``i``'s extent and commits it with ``atomic``, so
-    the wrapper must pre-fill the output with the reduction's identity.
+    the wrapper must pre-fill the output with the reduction's identity. With ``atomic=None`` it
+    is the reproducible commit of ``store_block_sum`` per output slot instead, for the float sums,
+    whose atomic commit adds the tiles in arrival order and moves the last bits from call to call
+    on CUDA: tile ``j`` stores its value in row ``j`` of a zeroed buffer of ``n_out`` results,
+    ``n_out`` ticket counters and ``n_tiles`` rows of ``n_out``, and the last tile of slot ``i`` to
+    finish adds its column in a fixed order into ``out_result[i]``.
     """
     element = _element_along_row if rows else _element_along_col
+    store = atomic is None
 
     def _k(values: wp.array2d[wp.Scalar], out_result: wp.array[wp.Scalar]) -> None:
         i, j, t = wp.tid()
@@ -466,7 +670,26 @@ def _reduce_2d_axis_tiled(tile_reduce, atomic, scalar, name, rows, dtype):
             result = element(values, i, offset)
             for k in range(1, remaining):
                 result = scalar(result, element(values, i, offset + k))
-        if t == 0:
+        if wp.static(store):
+            if wp.static(rows):
+                n_out = values.shape[0]
+            else:
+                n_out = values.shape[1]
+            n_tiles = (out_result.shape[0] - 2 * n_out) // n_out
+            last = wp.int32(0)
+            if t == 0:
+                out_result[2 * n_out + j * n_out + i] = result
+                last = last_ticket(take_ticket(out_result, n_out + i, result), n_tiles)
+            if block_max(last) != 0:
+                thread_fence()
+                zero = type(result)(wp.float32(0.0))
+                grand = block_sum(
+                    sum_strided_rows(t, out_result, 2 * n_out + i, n_out, n_tiles, zero)
+                )
+                if t == 0:
+                    out_result[i] = grand
+                    out_result[n_out + i] = type(result)(wp.float32(0.0))
+        elif t == 0:
             atomic(out_result, i, result)
 
     _k.__annotations__["values"] = wp.array2d[dtype]
@@ -530,11 +753,11 @@ _AXIS_DTYPES = (wp.int32, wp.float32, wp.float64)
 # ---------------------------------------------------------------------------
 
 # One concrete kernel per dtype, and the tables are what the wrapper launches. The factories have
-# always been able to bake the dtype in -- ``sum_vec3_1d_tiled`` and the weighted sums below always
-# did -- and leaving the rest at the ``wp.Scalar`` template made every launch pay Warp's host-side
-# ``infer_argument_types`` over the whole argument list, which roughly doubles a small reduction's
-# host cost and every scalar-returning reduction in the package issues one. Nothing extra is
-# compiled: these are the same instantiations ``_register_overloads`` was already creating.
+# always been able to bake the dtype in -- ``sum_vec3_1d_partials`` and the weighted sums below
+# always did -- and leaving the rest at the ``wp.Scalar`` template made every launch pay Warp's
+# host-side ``infer_argument_types`` over the whole argument list, which roughly doubles a small
+# reduction's host cost and every scalar-returning reduction in the package issues one. Nothing
+# extra is compiled: these are the same instantiations ``_register_overloads`` was already creating.
 MIN1D_TILED = KernelTable(
     "min1d_tiled",
     {
@@ -668,6 +891,25 @@ SUM_2D_COLS_TILED = KernelTable(
             _tile_sum, wp.atomic_add, wp.add, f"sum_2d_cols_tiled_{d.__name__}", False, d
         )
         for d in _AXIS_DTYPES
+    },
+)
+# The reproducible float axis sums: tile partials, added in a fixed order by each slot's last tile.
+SUM_2D_ROWS_PARTIALS = KernelTable(
+    "sum_2d_rows_partials",
+    {
+        d: _reduce_2d_axis_tiled(
+            _tile_sum, None, wp.add, f"sum_2d_rows_partials_{d.__name__}", True, d
+        )
+        for d in (wp.float32, wp.float64)
+    },
+)
+SUM_2D_COLS_PARTIALS = KernelTable(
+    "sum_2d_cols_partials",
+    {
+        d: _reduce_2d_axis_tiled(
+            _tile_sum, None, wp.add, f"sum_2d_cols_partials_{d.__name__}", False, d
+        )
+        for d in (wp.float32, wp.float64)
     },
 )
 SUM_2D_ROWS_SERIAL = KernelTable(
@@ -1002,10 +1244,6 @@ MINMAX_2D_COLS_SERIAL = KernelTable(
 # crossover: one lane per block means the fold is strictly fewer blocks for the
 # same work, and it wins at every size.
 # ---------------------------------------------------------------------------
-
-sum_vec3_1d_tiled = _reduce_1d_tiled(
-    _tile_sum, wp.atomic_add, wp.add, "sum_vec3_1d_tiled", dtype=wp.vec3
-)
 
 sum_vec3_1d_partials = _reduce_1d_tiled(
     _tile_sum, None, wp.add, "sum_vec3_1d_partials", dtype=wp.vec3, partials=True

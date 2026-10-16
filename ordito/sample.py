@@ -237,6 +237,8 @@ def sample_surface(
     count: int,
     face_weight: wp.array[wp.float32] | None = None,
     seed: int | None = None,
+    *,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Sample points uniformly on a triangle mesh surface (area-weighted faces).
@@ -258,6 +260,11 @@ def sample_surface(
         the triangle areas are used.
     seed
         RNG seed for ``wp.rand_init``. If ``None``, a random seed is chosen.
+    deterministic
+        When ``True`` (the default), the face CDF is a fixed-order scan, so a seeded call returns
+        identical points on CUDA. ``False`` takes the faster arrival-order scan, whose last bits
+        can change from call to call on CUDA above a few thousand faces and so move a sample that
+        lands near a boundary of the CDF. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -321,9 +328,9 @@ def sample_surface(
             inputs=[vertices, faces, cdf],
             device=vertices.device,
         )
-        _launch.array_scan(cdf, out_array=cdf)
+        _launch.array_scan(cdf, out_array=cdf, deterministic=deterministic)
     else:
-        _launch.array_scan(face_weight, out_array=cdf)
+        _launch.array_scan(face_weight, out_array=cdf, deterministic=deterministic)
     total = float(read_scalar(cdf))
     if total <= 0.0:
         raise ValueError("total face weight must be positive")

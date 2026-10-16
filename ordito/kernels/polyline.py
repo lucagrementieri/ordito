@@ -29,7 +29,9 @@ from ordito.kernels.reduce import (
     block_min,
     block_sum,
     commit_block_sum,
-    commit_block_total,
+    last_ticket,
+    store_block_sum,
+    store_block_total,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -949,6 +951,7 @@ def accumulate_radius_frame(
     n_segments: wp.int32,
     wrap_open: wp.int32,
     with_normal: wp.int32,
+    stride: wp.int32,
     out_frame: wp.array[wp.float32],
 ) -> None:
     # A polyline's plane frame in one pass, for ``polyline_centroid``, ``polyline_normal`` and
@@ -968,9 +971,10 @@ def accumulate_radius_frame(
     # This kernel, ``accumulate_loop_frame`` and ``accumulate_turning_angle`` are the lane-strided
     # single-slot reduction: ``wp.launch_tiled(dim=blocks_1d(n),
     # block_dim=TILE_1D)``, lanes striding their own block's chunk by ``wp.block_dim()``, one
-    # atomic commit per block. Striding by ``wp.block_dim()`` is what makes it correct on both
-    # devices, so there is no ``prefers_tiled_reduction`` branch. Only an *unconditional* atomic
-    # belongs in this shape.
+    # commit per block. Striding by ``wp.block_dim()`` is what makes it correct on both devices, so
+    # there is no ``prefers_tiled_reduction`` branch. Only an *unconditional* commit belongs in
+    # this shape. Here it is a row of ``store_block_sum`` partials (``stride`` 7), which every block
+    # stores, a chunk past both ranges its zeros, and the last block adds in a fixed order.
     #
     # A ``closed=True`` loop is the one ``polyline_close`` would build, without the copy: its
     # Newell pairs are this input's ``n - ring_closing_flag`` either way, and its segments' ends
@@ -982,8 +986,6 @@ def accumulate_radius_frame(
         with_normal != 0, n - ring_closing_flag(polyline[0], polyline[n - 1]), wp.int32(0)
     )
     offset, count = block_chunk_1d(wp.max(segments, n_pairs), chunk)
-    if count <= 0:
-        return
     weighted = wp.vec3(0.0, 0.0, 0.0)
     total = wp.float32(0.0)
     normal = wp.vec3(0.0, 0.0, 0.0)
@@ -996,11 +998,13 @@ def accumulate_radius_frame(
             total += length
         if i < n_pairs:
             normal += newell_term(start, polyline[loop_point(i + 1, n)], polyline[0])
-    commit_block_sum(
+    store_block_sum(
+        chunk,
         lane,
         wp.vector(weighted[0], weighted[1], weighted[2], total, normal[0], normal[1], normal[2]),
         out_frame,
         0,
+        stride,
     )
 
 
@@ -1051,13 +1055,10 @@ def radius_distances(
     )
 
 
-# ``radius_reduce``'s reductions, and its two-slot result: the reduced value, then the segment
-# count ``closing_segment_flag`` decided -- the mean's divisor, which the host does not know.
+# ``radius_reduce``'s reductions.
 RADIUS_MIN = wp.constant(wp.int32(0))
 RADIUS_MAX = wp.constant(wp.int32(1))
 RADIUS_SUM = wp.constant(wp.int32(2))
-RADIUS_RESULT_COUNT = wp.constant(wp.int32(1))
-RADIUS_RESULT_SIZE = 2
 
 
 @wp.kernel
@@ -1070,6 +1071,7 @@ def radius_reduce(
     frame_normal: wp.int32,
     wrap_open: wp.int32,
     kind: wp.int32,
+    stride: wp.int32,
     out_result: wp.array[wp.float32],
 ) -> None:
     # ``radius_distances`` folded where it is computed, for ``polyline_radius``'s ``min`` / ``max``
@@ -1077,18 +1079,17 @@ def radius_reduce(
     # decided per thread (``closing_segment_flag``, the closure ``is_closed`` would read back), so
     # a ``closed=True`` call asks the host nothing. ``kind`` is warp-uniform, which keeps each block
     # reduction below it block-uniform. Launched ``wp.launch_tiled(dim=blocks_1d(n),
-    # block_dim=TILE_1D)``, the lane-strided single-slot shape of ``accumulate_radius_frame``;
-    # ``out_result[0]`` is seeded with the reduction's identity by the caller. A minimum or a
-    # maximum is order-free, so those answers are the reduction over the buffer's exactly; the sum
-    # is the tree ``reduce.sum`` forms from 64 elements up.
+    # block_dim=TILE_1D)``, the lane-strided single-slot shape of ``accumulate_radius_frame``.
+    # A minimum or a maximum is order-free, so those answers are the reduction over the buffer's
+    # exactly, committed by atomic into ``out_result[0]``, which the caller seeds with the
+    # identity. The mean's sum and its segment count -- the divisor, which the host does not know
+    # -- are each block's ``store_block_sum`` row of ``(sum, count)`` (``stride`` 2), every block
+    # storing one, added in a fixed order by the last block; the counts are whole numbers below
+    # ``2 ** 24`` and add exactly.
     chunk, lane = wp.tid()
     n = polyline.shape[0]
     n_segments = n - 1 + closing_segment_flag(polyline, wrap_open)
-    if chunk == 0 and lane == 0:
-        out_result[RADIUS_RESULT_COUNT] = wp.float32(n_segments)
     offset, count = block_chunk_1d(n_segments, chunk)
-    if count <= 0:
-        return
     plane_center, plane_normal = radius_plane(frame, center, normal, frame_center, frame_normal)
     low = wp.float32(FLOAT32_INF_CONSTANT)
     high = -low
@@ -1110,7 +1111,9 @@ def radius_reduce(
         if lane == 0:
             wp.atomic_max(out_result, 0, block_high)
     else:
-        commit_block_total(lane, total, out_result, 0)
+        # The chunk's count enters once, from lane 0, not once a lane.
+        lane_count = wp.where(lane == 0, wp.float32(wp.max(count, 0)), wp.float32(0.0))
+        store_block_sum(chunk, lane, wp.vec2(total, lane_count), out_result, 0, stride)
 
 
 # --- polygon triangulation (parallel ear clipping); port of libigl ear_clipping.cpp ---
@@ -2139,7 +2142,10 @@ def compact_ring_faces(
 
 @wp.kernel
 def polyline_total_length(
-    points: wp.array[wp.vec3], n_segments: wp.int32, out_total: wp.array[wp.float32]
+    points: wp.array[wp.vec3],
+    n_segments: wp.int32,
+    stride: wp.int32,
+    out_total: wp.array[wp.float32],
 ) -> None:
     # Arc length of an open polyline in one launch: the per-segment lengths are summed where they
     # are computed instead of being written to a buffer a separate reduction then reads back in.
@@ -2159,7 +2165,8 @@ def polyline_total_length(
     # Launched ``wp.launch_tiled(dim=kernel_reduce.blocks_1d(n_segments), block_dim=TILE_1D)``:
     # one block per ``ITEMS_PER_BLOCK_1D`` segments, lanes striding that block's own chunk by
     # ``wp.block_dim()`` (which is what keeps the single-lane CPU device correct), a
-    # ``wp.tile_sum`` fold and one atomic per block.
+    # ``wp.tile_sum`` fold and one row per block that the last block adds in a fixed order
+    # (``store_block_total``), so the length repeats bit for bit on CUDA.
     #
     # ``n_segments`` rather than ``points.shape[0] - 1``, because the closing segment of a *closed*
     # polyline is expressed by wrapping the index here rather than by handing this kernel a copy of
@@ -2175,7 +2182,7 @@ def polyline_total_length(
     for k in range(lane, remaining, wp.block_dim()):
         start = offset + k
         total += segment_length(points[start], points[loop_point(start + 1, n_points)])
-    commit_block_total(lane, total, out_total, 0)
+    store_block_total(i, lane, total, out_total, 0, stride, last_ticket)
 
 
 @wp.kernel

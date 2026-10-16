@@ -120,6 +120,19 @@ def test_map_vertices_to_circle(bench_case: BenchCase) -> None:
         assert circle_igl.shape[0] == loop_np.size
 
 
+@pytest.mark.benchmark(group="map_vertices_to_circle_fast")
+@pytest.mark.benchaxis("patch")
+@pytest.mark.benchlibs("ordito")
+def test_map_vertices_to_circle_fast(bench_case: BenchCase) -> None:
+    """``map_vertices_to_circle(deterministic=False)``: the rim's arc length on CUB's scan."""
+    vertices = bench_case.vertices_wp
+    loop, _loop_uv = _boundary(bench_case)
+    circle = bench_case.run(
+        lambda: od.parametrization.map_vertices_to_circle(vertices, loop, deterministic=False)
+    )
+    assert circle.size == loop.size
+
+
 def _run_harmonic_pml(bench_case: BenchCase, order: int) -> None:
     """
     Time MeshLab's harmonic parametrization at ``k = 1``, the only order it actually honours.

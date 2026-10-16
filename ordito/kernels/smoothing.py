@@ -11,7 +11,7 @@ from ordito.kernels.array import (
 from ordito.kernels.laplacian import face_half_cotangents, operator_row
 from ordito.kernels.linalg import free_row, selected_row, solve_normal_equations
 from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
-from ordito.kernels.reduce import block_chunk, block_chunk_1d, block_max, commit_block_total
+from ordito.kernels.reduce import block_chunk, block_chunk_1d, block_max, store_block_sum
 from ordito.kernels.scatter import add_corner_triple
 from ordito.kernels.triangles import corner_triple
 from ordito.kernels.vertices import gathered_area_weighted_normal
@@ -1142,14 +1142,16 @@ def mut_dif_adil_pass(
     values: wp.array[wp.float32],
     positions: wp.array[wp.vec3d],
     normals: wp.array[wp.vec3],
+    stride: wp.int32,
     out_lv: wp.array[wp.vec3d],
     out_adil_sum: wp.array[wp.float64],
 ) -> None:
-    # ``out_adil_sum[0]`` gathers the coefficients, ``[1]`` their rounding sensitivity
-    # (``mut_dif_adil_rounding``).
+    # ``out_adil_sum`` holds a ``(coefficients, rounding sensitivity)`` row per block
+    # (``mut_dif_adil_rounding``), which the last block adds in a fixed order into slots 0 and 1
+    # (``store_block_sum``), so the mean every step divides by repeats bit for bit on CUDA.
     # Applies the operator row and folds each vertex's ``mut_dif_adil`` straight into the mean's
     # sum: ``MUT_DIF_ROWS_PER_BLOCK`` rows per block, lane-strided by ``wp.block_dim()`` (so the
-    # CPU device's single lane covers the block's rows), one ``float64`` atomic per block. The
+    # CPU device's single lane covers the block's rows), one ``float64`` row per block. The
     # coefficient is not stored: ``mut_dif_step_scaled`` recomputes it at its own vertex from the
     # ``out_lv`` row written here, which costs it a normal load against an ``(n,)`` buffer's write
     # and read and the separate reduction launch. A narrower fold than the reduce module's because
@@ -1167,8 +1169,7 @@ def mut_dif_adil_pass(
         adil = mut_dif_adil(normals[i], positions[i], lv)
         total = total + adil
         rounding = rounding + mut_dif_adil_rounding(positions[i], adil)
-    commit_block_total(lane, total, out_adil_sum, 0)
-    commit_block_total(lane, rounding, out_adil_sum, 1)
+    store_block_sum(chunk, lane, wp.vec2d(total, rounding), out_adil_sum, 0, stride)
 
 
 @wp.func
@@ -1189,15 +1190,10 @@ def mut_dif_step_scaled(
     out_next: wp.array[wp.vec3d],
     out_probe: wp.array[wp.vec3d],
     out_sensitivity: wp.array[wp.float64],
-    out_next_adil_sum: wp.array[wp.float64],
 ) -> None:
     # ``mut_dif_step`` with the mean coefficient read from a device scalar (adil_sum[0] * inv_n),
     # so the smoothing loop never synchronises with the host. A real kernel rather than wp.map:
     # the length-1 ``adil_sum`` is a uniform argument, which wp.map cannot broadcast.
-    #
-    # The loop ping-pongs two accumulators: thread 0 zeroes the one the next pass's
-    # ``mut_dif_adil_pass`` adds into, which nothing reads during this launch, so no pass needs a
-    # separate clearing launch.
     #
     # A non-empty ``out_probe`` (the volume constraint's first pass) also receives the stepped
     # vertex offset by ``probe_scale`` along its normal: the finite-difference probe
@@ -1208,8 +1204,6 @@ def mut_dif_step_scaled(
     if i == wp.int32(0):
         # The largest relative rounding uncertainty of the mean over the passes, for the warning.
         wp.atomic_max(out_sensitivity, 0, adil_sum[1] / adil_sum[0])
-        out_next_adil_sum[0] = wp.float64(0.0)
-        out_next_adil_sum[1] = wp.float64(0.0)
     position = positions[i]
     row = lv[i]
     stepped = mut_dif_step(position, row, mut_dif_adil(normals[i], position, row), mean_adil, lamb)

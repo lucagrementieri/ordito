@@ -1899,7 +1899,7 @@ class Trimesh:
         return od.ray.contains_points(self.warp_mesh, points)
 
     def sample(
-        self, count: int, *, seed: int | None = None
+        self, count: int, *, seed: int | None = None, deterministic: bool = True
     ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
         """
         Sample points uniformly over the surface, area-weighted.
@@ -1910,6 +1910,10 @@ class Trimesh:
             Number of samples to draw.
         seed
             Seed for the sampler; non-reproducible when ``None``.
+        deterministic
+            When ``True`` (the default), a seeded draw returns identical points on CUDA; ``False``
+            trades that for a faster scan of the face CDF
+            ([`sample_surface`][ordito.sample.sample_surface]).
 
         Returns
         -------
@@ -1943,7 +1947,12 @@ class Trimesh:
         ```
         """
         return od.sample.sample_surface(
-            self._vertices, self._faces, count, face_weight=self.face_areas, seed=seed
+            self._vertices,
+            self._faces,
+            count,
+            face_weight=self.face_areas,
+            seed=seed,
+            deterministic=deterministic,
         )
 
     def transform(

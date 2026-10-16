@@ -13,6 +13,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import (
     read_scalar,
+    read_values,
     record_device_loop,
     require_nonempty_mesh,
     require_same_device,
@@ -165,9 +166,9 @@ def procrustes(
         return matrix, _launch.clone(a), 0.0
 
     workspace: _ProcrustesWorkspace = {
-        "acc": _launch.zeros(
-            kernel_registration.PROCRUSTES_ACC_SIZE, dtype=wp.float32, device=device
-        ),
+        "acc": _launch.block_partials(
+            kernel_reduce.blocks_1d(n), kernel_registration.PROCRUSTES_ACC_SIZE, wp.float32, device
+        )[0],
         "matrix": _launch.empty(1, dtype=wp.mat44, device=device),
         "transformed": _launch.empty(n, dtype=wp.vec3, device=device) if return_cost else None,
         "uniform_weights": _zero_length(wp.float32, device),
@@ -224,10 +225,14 @@ def _procrustes_into(
     if weights is None:
         weights = workspace["uniform_weights"]
 
+    # One ``PROCRUSTES_ACC_SIZE`` row per block, added in a fixed order into the leading slots,
+    # so the fit and its cost repeat bit for bit on CUDA.
+    blocks = kernel_reduce.blocks_1d(n)
+    stride = int(kernel_registration.PROCRUSTES_ACC_SIZE)
     _launch.launch_tiled(
         kernel_registration.accumulate_procrustes_moments,
-        dim=kernel_reduce.blocks_1d(n),
-        inputs=[a, b, weights, translation, acc],
+        dim=blocks,
+        inputs=[a, b, weights, translation, stride, acc],
         block_dim=TILE_1D,
         device=device,
     )
@@ -245,25 +250,26 @@ def _procrustes_into(
     # One launch, not three: the fit, the moved points and the residual reduced against them.
     _launch.launch_tiled(
         kernel_registration.fit_transform_and_accumulate_cost,
-        dim=kernel_reduce.blocks_1d(n),
-        inputs=[a, b, weights, acc, reflection, translation, scale, out_matrix, out_transformed],
+        dim=blocks,
+        inputs=[a, b, weights, acc, reflection, translation, scale, stride],
+        outputs=[out_matrix, out_transformed],
         block_dim=TILE_1D,
         device=device,
     )
+    cost_slot = int(kernel_registration.ACC_COST)
     # One readback for the whole accumulator; ICP's convergence test needs the cost on the host,
     # and an extra device-side pass would cost more than the readback. ``ACC_W_SUM`` rides along in
     # the same transfer: ``icp``'s "every correspondence was rejected" guard needs it, and reading
     # it here rather than reducing the weight array separately is one host sync per iteration
     # instead of two -- but only when ``need_weight_sum`` says a caller wants it.
-    cost_slot = int(kernel_registration.ACC_COST)
     if not need_weight_sum:
         return out_matrix, out_transformed, float(read_scalar(acc, cost_slot)), 0.0
     # Both scalars in *one* transfer when the caller wants both. Two ``read_scalar`` calls measured
     # worse than this even though the second read rides on a drained pipeline, and one
     # ``read_scalar`` is better than this when only the cost is wanted, because ``.numpy()``
     # allocates a host array where ``read_scalar`` reuses a cached scratch. Hence the flag rather
-    # than one spelling for both callers.
-    acc_np = acc.numpy()
+    # than one spelling for both callers. The leading slots only: the block rows follow them.
+    acc_np = read_values(acc, 0, cost_slot + 1)
     return (
         out_matrix,
         out_transformed,
@@ -413,11 +419,14 @@ def icp(
         if max_distance is not None
         else _zero_length(wp.float32, device)
     )
-    acc = _launch.zeros(kernel_registration.ICP_POINT_ACC_SIZE, dtype=wp.float32, device=device)
+    # One ``ICP_POINT_ACC_SIZE`` row per block, added in a fixed order into the leading slots,
+    # where the kept cost also lives, so every round repeats bit for bit on CUDA.
+    blocks = kernel_reduce.blocks_1d(n)
+    stride = int(kernel_registration.ICP_POINT_ACC_SIZE)
+    acc, _ = _launch.block_partials(blocks, stride, wp.float32, device)
     fitted = _launch.empty(1, dtype=wp.mat44, device=device)
     state = _launch.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
 
-    blocks = kernel_reduce.blocks_1d(n)
     search_inputs = [
         search_mesh.id,
         target_vertices,
@@ -429,7 +438,7 @@ def icp(
         closest,
         weights,
     ]
-    moment_inputs = [a, closest, weights, translation, acc]
+    moment_inputs = [a, closest, weights, translation, stride, acc]
     fit_inputs = [
         a,
         closest,
@@ -438,6 +447,7 @@ def icp(
         reflection,
         translation,
         scale,
+        stride,
         fitted,
         _zero_length(wp.vec3, device),
     ]
@@ -690,7 +700,11 @@ def icp_point_to_plane(
     closest = _launch.empty(n, dtype=wp.vec3, device=device)
     distance = _launch.empty(n, dtype=wp.float32, device=device)
     triangle_id = _launch.empty(n, dtype=wp.int32, device=device)
-    acc = _launch.zeros(kernel_registration.ICP_ACC_SIZE, dtype=wp.float32, device=device)
+    # One ``ICP_ACC_SIZE`` row per block, added in a fixed order into the leading slots, where the
+    # previous kept cost also lives, so every round repeats bit for bit on CUDA.
+    blocks = kernel_reduce.blocks_1d(n)
+    stride = int(kernel_registration.ICP_ACC_SIZE)
+    acc, _ = _launch.block_partials(blocks, stride, wp.float32, device)
     step = _launch.empty(1, dtype=wp.mat44, device=device)
     total = initial_matrix
     state = _launch.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
@@ -704,10 +718,7 @@ def icp_point_to_plane(
     # writes.
     #
     # Measure this kind of change with ``threshold=-inf``, or the reading is fiction: with the
-    # convergence break live the two arms stop at *different* iterations. The plateau is also not
-    # bit-reproducible on CUDA -- the point-to-plane normal equations are accumulated with
-    # ``float32`` atomics, so two runs of the identical build disagree in the last digits once the
-    # cost stops moving.
+    # convergence break live the two arms stop at *different* iterations.
     normal_table = face_normals if mesh is not None else target_normals
     assert normal_table is not None
     search_mesh = mesh if mesh is not None else target_index
@@ -729,7 +740,7 @@ def icp_point_to_plane(
     def accumulate() -> None:
         _launch.launch_tiled(
             kernel_registration.accumulate_point_to_plane,
-            dim=kernel_reduce.blocks_1d(n),
+            dim=blocks,
             inputs=[
                 current,
                 closest,
@@ -739,6 +750,7 @@ def icp_point_to_plane(
                 wp.float32(max_d),
                 wp.int32(kind),
                 wp.float32(scale_value if scale_value is not None else 0.0),
+                stride,
                 acc,
             ],
             block_dim=TILE_1D,
@@ -822,10 +834,10 @@ def icp_point_to_plane(
     search(stepped)
     resolve_scale()
     accumulate()
-    scalars = acc.numpy()
-    if float(scalars[kernel_registration.ICP_WEIGHT_SUM]) <= 0.0:
+    cost, weight_sum = read_values(acc, int(kernel_registration.ICP_COST), 2)
+    if float(weight_sum) <= 0.0:
         return total, current, math.inf
-    return total, current, float(scalars[kernel_registration.ICP_COST])
+    return total, current, float(cost)
 
 
 def _robust_scale_from_residuals(
@@ -912,11 +924,13 @@ def _residual_standard_deviation(
     device = current.device
     # ``(sum, count, squared deviation)`` of the in-range residuals, in two folds that form the
     # residuals where they are summed: no residual table, compaction or intermediate readback.
-    sums = _launch.zeros(3, dtype=wp.float64, device=device)
+    # One three-slot row per block, its pass's columns added in a fixed order by the pass itself.
+    blocks = kernel_reduce.blocks_1d(current.size)
+    sums, _ = _launch.block_partials(blocks, 3, wp.float64, device)
     for centered in (0, 1):
         _launch.launch_tiled(
             kernel_registration.residual_moment,
-            dim=[kernel_reduce.blocks_1d(current.size)],
+            dim=[blocks],
             inputs=[
                 current,
                 closest,
@@ -925,12 +939,13 @@ def _residual_standard_deviation(
                 distance,
                 wp.float32(max_distance),
                 centered,
+                3,
             ],
             outputs=[sums],
             block_dim=TILE_1D,
             device=device,
         )
-    _, count, squares = sums.numpy()
+    _, count, squares = read_values(sums, 0, 3)
     return math.sqrt(squares / count)
 
 

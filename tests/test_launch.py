@@ -207,6 +207,53 @@ def test_array_scan_matches_warp(device: str, inclusive: bool, dtype: type) -> N
     assert np.array_equal(got.numpy(), expected.numpy())
 
 
+@pytest.mark.parametrize("deterministic", [True, False])
+@pytest.mark.parametrize("n", [1, 2047, 2048, 2049, 5 * 2048 + 3, 100_000])
+def test_float_scan_matches_a_float64_cumsum(device: str, n: int, deterministic: bool) -> None:
+    """
+    Not a library comparison: the float32 inclusive scan against NumPy's float64 cumulative sum.
+
+    Both of ``array_scan``'s float32 routes on CUDA (the fixed-order tile scan, and CUB's under
+    ``deterministic=False``), and the sequential CPU scan, must agree with the exact prefix sums to
+    float32 rounding, in place as well as out of place (bit for bit, for the fixed-order scan).
+    The sizes straddle the tile scan's chunk
+    (one chunk, its boundary, a ragged last chunk, many chunks). The positive inputs keep every
+    prefix sum away from zero, so a relative tolerance applies.
+    """
+    values_np = np.random.default_rng(3).random(n).astype(np.float32) + 0.5
+    values = wp.array(values_np, dtype=wp.float32, device=device)
+    out = wp.empty_like(values)
+    _launch.array_scan(values, out, inclusive=True, deterministic=deterministic)
+    assert np.allclose(out.numpy(), np.cumsum(values_np, dtype=np.float64), rtol=1e-5, atol=0.0)
+    _launch.array_scan(values, values, inclusive=True, deterministic=deterministic)
+    # CUB's in-place scan need not reproduce its out-of-place bits; the fixed-order one must.
+    if deterministic:
+        assert np.array_equal(values.numpy(), out.numpy())
+    else:
+        assert np.allclose(values.numpy(), out.numpy(), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("n", [82_000, 1_300_000])
+def test_deterministic_float_scan_repeats_bit_for_bit(device: str, n: int) -> None:
+    """
+    Ordito against ordito: repeated deterministic float32 scans of one buffer are identical.
+
+    CUB's decoupled look-back adds its predecessors' partials in arrival order, which on CUDA
+    changed the last bits of a 1.3M-element float32 scan on every call (and of an 82k one in a few
+    percent of calls); the fixed-order tile scan must return the same bits every time. The CPU
+    scan is sequential and must hold this trivially.
+    """
+    values = wp.array(
+        np.random.default_rng(4).random(n).astype(np.float32), dtype=wp.float32, device=device
+    )
+    out = wp.empty_like(values)
+    _launch.array_scan(values, out, inclusive=True)
+    first_np = out.numpy().copy()
+    for _ in range(20):
+        _launch.array_scan(values, out, inclusive=True)
+        assert np.array_equal(out.numpy(), first_np)
+
+
 @pytest.mark.parametrize("end_bit", [None, 12])
 def test_radix_sort_pairs_matches_warp(device: str, end_bit: int | None) -> None:
     """The native sort call gives Warp's stable sort, over the full key or a bit prefix."""

@@ -281,11 +281,12 @@ def polyline_length(polyline: wp.array[wp.vec3], *, closed: bool = False) -> flo
     # buffer and a separate reduction over it -- one launch, one allocation and one readback
     # instead of two of each. See ``kernels/polyline.polyline_total_length``, including why the
     # answer's last bits move.
-    total = _launch.zeros(1, dtype=wp.float32, device=device)
+    blocks = kernel_reduce.blocks_1d(n_segments)
+    total, stride = _launch.block_partials(blocks, 1, wp.float32, device)
     _launch.launch_tiled(
         kernel_polyline.polyline_total_length,
-        dim=kernel_reduce.blocks_1d(n_segments),
-        inputs=[polyline, wp.int32(n_segments)],
+        dim=blocks,
+        inputs=[polyline, wp.int32(n_segments), stride],
         outputs=[total],
         block_dim=TILE_1D,
         device=device,
@@ -671,7 +672,9 @@ def _upsample(
     return out_points
 
 
-def cumulative_arc_length(polyline: wp.array[wp.vec3]) -> wp.array[wp.float32]:
+def cumulative_arc_length(
+    polyline: wp.array[wp.vec3], *, deterministic: bool = True
+) -> wp.array[wp.float32]:
     """
     Cumulative arc length from the first vertex to each vertex of an open polyline.
 
@@ -684,6 +687,11 @@ def cumulative_arc_length(polyline: wp.array[wp.vec3]) -> wp.array[wp.float32]:
     ----------
     polyline
         ``(n,)`` polyline vertices.
+    deterministic
+        When ``True`` (the default), the arc lengths are summed in one fixed order, so repeated
+        calls return identical bits on CUDA. ``False`` takes the faster arrival-order scan, whose
+        last bits can change from call to call on CUDA once the polyline exceeds a few thousand
+        points. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -714,7 +722,7 @@ def cumulative_arc_length(polyline: wp.array[wp.vec3]) -> wp.array[wp.float32]:
     if n_points < 2:
         # No segment to sum: a single vertex is at arc length 0, an empty polyline has no entry.
         return _launch.zeros(n_points, dtype=wp.float32, device=polyline.device)
-    return _arc_length_table(polyline, closed=False)
+    return _arc_length_table(polyline, closed=False, deterministic=deterministic)
 
 
 def polyline_downsample(
@@ -769,7 +777,7 @@ def polyline_downsample(
     # ``closed`` walks an ``n + 1``-entry table whose last entry is the closing segment's end, or,
     # when the input already repeats its first point, a stand-in the walks stop short of
     # (``kernels/polyline.seam_repeats_first``) -- the closure is decided on the device.
-    cumulative = _arc_length_table(polyline, closed=closed)
+    cumulative = _arc_length_table(polyline, closed=closed, deterministic=True)
     n_table = cumulative.size
     keep = _launch.zeros(n_table, dtype=wp.int32, device=device)
     if wp.get_device(device).is_cuda and n_table >= _DOWNSAMPLE_DOUBLING_FROM:
@@ -1013,7 +1021,11 @@ def _gather_kept(
 
 
 def polyline_resample(
-    polyline: wp.array[wp.vec3], num_points: int, *, closed: bool = False
+    polyline: wp.array[wp.vec3],
+    num_points: int,
+    *,
+    closed: bool = False,
+    deterministic: bool = True,
 ) -> wp.array[wp.vec3]:
     """
     Resample a polyline to a fixed number of points evenly spaced by arc length.
@@ -1031,6 +1043,11 @@ def polyline_resample(
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]). The result has
         ``num_points`` *distinct* points: the duplicated seam is dropped.
+    deterministic
+        When ``True`` (the default), the arc lengths are summed in one fixed order, so repeated
+        calls return identical bits on CUDA. ``False`` takes the faster arrival-order scan, whose
+        last bits can change from call to call on CUDA once the polyline exceeds a few thousand
+        points. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -1077,7 +1094,7 @@ def polyline_resample(
     # ``closed`` samples ``num_points + 1`` arc lengths of the loop and computes all but the last,
     # the duplicated seam, so the result has ``num_points`` *distinct* points and is a clean cyclic
     # ring. The closure is decided on the device (``kernels/polyline.resample_interp``).
-    cumulative = _arc_length_table(polyline, closed=closed)
+    cumulative = _arc_length_table(polyline, closed=closed, deterministic=deterministic)
     _launch.launch(
         kernel_polyline.resample_interp,
         dim=num_points,
@@ -1093,7 +1110,9 @@ def polyline_resample(
     return out_points
 
 
-def _arc_length_table(polyline: wp.array[wp.vec3], *, closed: bool) -> wp.array[wp.float32]:
+def _arc_length_table(
+    polyline: wp.array[wp.vec3], *, closed: bool, deterministic: bool
+) -> wp.array[wp.float32]:
     """
     Cumulative arc length of a polyline of at least two points, ``closed`` over ``n`` segments.
 
@@ -1103,6 +1122,8 @@ def _arc_length_table(polyline: wp.array[wp.vec3], *, closed: bool) -> wp.array[
     consumers skip (``kernels/polyline.arc_segment_lengths``). The kernel writes the leading zero
     and each segment's length one slot along, and the inclusive scan of everything after the zero
     runs in place, the one-allocation idiom of ``array.counts_to_offsets`` in float32.
+    ``deterministic`` picks the fixed-order scan over the arrival-order one
+    (``_launch.array_scan``).
     """
     device = polyline.device
     n_points = polyline.size
@@ -1115,7 +1136,7 @@ def _arc_length_table(polyline: wp.array[wp.vec3], *, closed: bool) -> wp.array[
         device=device,
     )
     lengths = cumulative[1:]
-    _launch.array_scan(lengths, out_array=lengths, inclusive=True)
+    _launch.array_scan(lengths, out_array=lengths, inclusive=True, deterministic=deterministic)
     return cumulative
 
 
@@ -1255,13 +1276,17 @@ def polyline_radius(
     # (``kernels/polyline.radius_reduce``): no distance buffer, no reduction launch over it, and one
     # readback of the value and, for the mean, the segment count the kernel decided.
     kind, identity = _RADIUS_REDUCTIONS[reduction]
-    result = _launch.full(
-        kernel_polyline.RADIUS_RESULT_SIZE, identity, dtype=wp.float32, device=device
-    )
+    blocks = kernel_reduce.blocks_1d(n)
+    stride = 0
+    if reduction == "mean":
+        # The sum and the segment count as fixed-order partials, so the mean repeats on CUDA.
+        result, stride = _launch.block_partials(blocks, 2, wp.float32, device)
+    else:
+        result = _launch.full(1, identity, dtype=wp.float32, device=device)
     _launch.launch_tiled(
         kernel_polyline.radius_reduce,
-        dim=kernel_reduce.blocks_1d(n),
-        inputs=[*plane, wp.int32(closed), kind, result],
+        dim=blocks,
+        inputs=[*plane, wp.int32(closed), kind, stride, result],
         block_dim=TILE_1D,
         device=device,
     )
@@ -1284,15 +1309,20 @@ def _accumulate_frame(
     ``with_normal``, Newell's sum over the loop.
     """
     device = polyline.device
-    frame = _launch.zeros(kernel_polyline.RADIUS_FRAME_SIZE, dtype=wp.float32, device=device)
+    blocks = kernel_reduce.blocks_1d(polyline.size)
+    # Fixed-order partials, so the frame (and every answer read off it) repeats on CUDA.
+    frame, stride = _launch.block_partials(
+        blocks, kernel_polyline.RADIUS_FRAME_SIZE, wp.float32, device
+    )
     _launch.launch_tiled(
         kernel_polyline.accumulate_radius_frame,
-        dim=kernel_reduce.blocks_1d(polyline.size),
+        dim=blocks,
         inputs=[
             polyline,
             wp.int32(n_segments),
             wp.int32(wrap_open),
             wp.int32(1 if with_normal else 0),
+            stride,
             frame,
         ],
         block_dim=TILE_1D,

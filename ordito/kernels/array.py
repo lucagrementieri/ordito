@@ -1840,3 +1840,86 @@ def unpack_segment_words(
     segment = out_segments[s]
     for k in range(t, segment.count, width):
         segment.data[k] = flat[segment.offset + k]
+
+
+# The fixed-order float inclusive scan behind ``_launch.array_scan`` on CUDA.
+#
+# Warp's float scan is CUB's decoupled look-back: a block adds whichever of its predecessors'
+# aggregates or inclusive prefixes happen to be published when it looks, so the summation tree, and
+# with it the last bits of every entry past the first block, changes from call to call (10 of 300
+# scans of the same 82k-element ``float32`` buffer differed; every scan at 1.3M). A seeded sampler
+# drawing against such a CDF is then not reproducible. Integer scans are exact and unaffected.
+#
+# This scan fixes the tree. Each block owns one ``FLOAT_SCAN_CHUNK`` and scans it as a loaded tile
+# (``wp.tile_scan_inclusive`` is one fixed in-block schedule). ``float_scan_chunk_totals`` publishes
+# each chunk's total -- the last entry of that same tile scan, so a chunk's end and its total are
+# one number. ``float_scan_chunks`` then scans the chunk again and adds its offset: the exclusive
+# scan of the totals, which every block recomputes identically from the same table in the same
+# lane-run order, so no block depends on when another finished and no third launch walks the
+# output. The redundant totals scan is O(n_chunks) a block, a few reads a lane at the sizes ordito
+# scans (5M elements are ~1.2k chunks).
+#
+# Only the CUDA device takes this path: the CPU scan is a sequential loop and already
+# deterministic, and a tiled launch there runs one lane per block (``wp.block_dim()`` reads 1, so
+# the lane runs below would still be correct). ``float32`` only: ``wp.tile_scan_*`` takes
+# ``float32``, ``int32`` and ``uint32`` tiles, and no ordito ``float64`` scan exists to need one.
+FLOAT_SCAN_CHUNK = wp.constant(2048)
+FLOAT_SCAN_BLOCK_DIM = 256
+
+
+@wp.func
+def float_scan_chunk_end(n: wp.int32, chunk: wp.int32) -> wp.int32:
+    # Index, within its tile, of the last element of ``chunk`` in a length-``n`` input.
+    return wp.min(n - chunk * FLOAT_SCAN_CHUNK, FLOAT_SCAN_CHUNK) - 1
+
+
+@wp.kernel
+def float_scan_single_chunk(values: wp.array[wp.float32], out_scan: wp.array[wp.float32]) -> None:
+    # The whole scan when the input fits one chunk: ``float_scan_chunks`` with a zero offset, and
+    # neither the totals launch nor its buffer.
+    _chunk, _lane = wp.tid()
+    wp.tile_store(
+        out_scan, wp.tile_scan_inclusive(wp.tile_load(values, shape=FLOAT_SCAN_CHUNK, offset=0))
+    )
+
+
+@wp.kernel
+def float_scan_chunk_totals(values: wp.array[wp.float32], out_totals: wp.array[wp.float32]) -> None:
+    chunk, lane = wp.tid()
+    scanned = wp.tile_scan_inclusive(
+        wp.tile_load(values, shape=FLOAT_SCAN_CHUNK, offset=chunk * FLOAT_SCAN_CHUNK)
+    )
+    total = wp.tile_extract(scanned, float_scan_chunk_end(values.shape[0], chunk))
+    if lane == 0:
+        out_totals[chunk] = total
+
+
+@wp.kernel
+def float_scan_chunks(
+    values: wp.array[wp.float32], totals: wp.array[wp.float32], out_scan: wp.array[wp.float32]
+) -> None:
+    chunk, lane = wp.tid()
+    # The exclusive scan of the chunk totals, in the one order every block shares: each lane sums a
+    # contiguous run sized by ``wp.block_dim()``, a tile scan offsets the runs, and the run owning
+    # ``chunk`` is walked up to it.
+    lanes = wp.block_dim()
+    n_chunks = totals.shape[0]
+    per = (n_chunks + lanes - 1) // lanes
+    lo = wp.min(lane * per, n_chunks)
+    hi = wp.min(lo + per, n_chunks)
+    run = wp.float32(0.0)
+    for c in range(lo, hi):
+        run += totals[c]
+    run_offsets = wp.tile_scan_exclusive(wp.tile(run))
+    owner = chunk // per
+    offset = wp.tile_extract(run_offsets, owner)
+    for c in range(owner * per, chunk):
+        offset += totals[c]
+    scanned = wp.tile_scan_inclusive(
+        wp.tile_load(values, shape=FLOAT_SCAN_CHUNK, offset=chunk * FLOAT_SCAN_CHUNK)
+    )
+    wp.tile_store(
+        out_scan,
+        scanned + wp.tile_ones(shape=FLOAT_SCAN_CHUNK, dtype=wp.float32) * offset,
+        offset=chunk * FLOAT_SCAN_CHUNK,
+    )

@@ -762,11 +762,12 @@ def _solve_poisson_shifted(
     # ``heat_geodesic``'s device-side shift onto the sources, without its orientation: one launch
     # sized to the curve for the mean, one to apply it, and nothing read back.
     n_sources = curve_vertices.size
-    sums = _launch.zeros(2, dtype=wp.float64, device=device)
+    blocks = kernel_reduce.blocks_1d(n_sources)
+    sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
     _launch.launch_tiled(
         kernel_heat.source_and_global_sums,
-        dim=[kernel_reduce.blocks_1d(n_sources)],
-        inputs=[field, curve_vertices],
+        dim=[blocks],
+        inputs=[field, curve_vertices, stride],
         outputs=[sums],
         block_dim=TILE_1D,
         device=device,
@@ -1081,15 +1082,18 @@ def _edge_length_sums(
     """
     device = vertices.device
     n_rows = int(operator.nrow)
-    sum_and_count = _launch.zeros(2, dtype=wp.float64, device=device)
-    if n_rows > 0:
-        _launch.launch_tiled(
-            kernel_heat.upper_edge_length_sum_and_count,
-            dim=[kernel_reduce.blocks_1d(n_rows)],
-            inputs=[operator.offsets, operator.columns, vertices, sum_and_count],
-            block_dim=TILE_1D,
-            device=device,
-        )
+    if n_rows == 0:
+        return _launch.zeros(2, dtype=wp.float64, device=device)
+    # Block rows added in a fixed order, so the timestep repeats bit for bit on CUDA.
+    blocks = kernel_reduce.blocks_1d(n_rows)
+    sum_and_count, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+    _launch.launch_tiled(
+        kernel_heat.upper_edge_length_sum_and_count,
+        dim=[blocks],
+        inputs=[operator.offsets, operator.columns, vertices, stride, sum_and_count],
+        block_dim=TILE_1D,
+        device=device,
+    )
     return sum_and_count
 
 
@@ -1685,11 +1689,12 @@ def _distance_from_heat(
     # zero. Both means from one reduction launch, applied by a second that reads them on the
     # device, so nothing is read back.
     n_sources = sources.size
-    sums = _launch.zeros(2, dtype=wp.float64, device=device)
+    blocks = kernel_reduce.blocks_1d(max(n_vertices, n_sources))
+    sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
     _launch.launch_tiled(
         kernel_heat.source_and_global_sums,
-        dim=[kernel_reduce.blocks_1d(max(n_vertices, n_sources))],
-        inputs=[phi, sources],
+        dim=[blocks],
+        inputs=[phi, sources, stride],
         outputs=[sums],
         block_dim=TILE_1D,
         device=device,

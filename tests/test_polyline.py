@@ -735,12 +735,41 @@ def test_smooth_upsample_short_polyline_unchanged(device: str) -> None:
 # --- cumulative_arc_length (NumPy reference) ---
 
 
-def test_cumulative_arc_length_matches_reference(device: str) -> None:
+@pytest.mark.parametrize("deterministic", [True, False])
+def test_cumulative_arc_length_matches_reference(device: str, deterministic: bool) -> None:
     pts_np = _random_open_polyline(40)
-    cumulative_wp = od.polyline.cumulative_arc_length(points_to_warp(pts_np, device))
+    cumulative_wp = od.polyline.cumulative_arc_length(
+        points_to_warp(pts_np, device), deterministic=deterministic
+    )
     segment_lengths_np = np.linalg.norm(np.diff(pts_np, axis=0), axis=1)
     expected_np = np.concatenate([[0.0], np.cumsum(segment_lengths_np)])
     assert np.allclose(cumulative_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("deterministic", [True, False])
+def test_cumulative_arc_length_on_a_long_polyline(device: str, deterministic: bool) -> None:
+    """
+    Not a library comparison: a 200k-point table against a ``float64`` NumPy ``cumsum``.
+
+    The long input spans many chunks of the fixed-order scan (``deterministic=True``) and many
+    tiles of CUB's (``False``); both must match the exact sums to float32 rounding, and the
+    deterministic table must come back with the same bits on a second call. A sum that dropped or
+    double-counted a chunk is off by a whole chunk's length, far outside the tolerance.
+    """
+    pts_np = _random_open_polyline(200_000)
+    polyline_wp = points_to_warp(pts_np, device)
+    expected_np = np.concatenate(
+        [[0.0], np.cumsum(np.linalg.norm(np.diff(pts_np.astype(np.float32), axis=0), axis=1))]
+    )
+    cumulative_np = od.polyline.cumulative_arc_length(
+        polyline_wp, deterministic=deterministic
+    ).numpy()
+    assert np.allclose(cumulative_np, expected_np, rtol=1e-5, atol=1e-5)
+    if deterministic:
+        assert np.array_equal(
+            od.polyline.cumulative_arc_length(polyline_wp, deterministic=True).numpy(),
+            cumulative_np,
+        )
 
 
 def test_cumulative_arc_length_last_entry_is_total_length(device: str) -> None:
@@ -923,10 +952,15 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
 # --- resample (NumPy interp reference + trimesh oracle) ---
 
 
+@pytest.mark.parametrize("deterministic", [True, False])
 @pytest.mark.parametrize("num_points", [5, 50])
-def test_resample_polyline_matches_numpy_interp(device: str, num_points: int) -> None:
+def test_resample_polyline_matches_numpy_interp(
+    device: str, num_points: int, deterministic: bool
+) -> None:
     pts_np = _random_open_polyline(70)
-    resampled_wp = od.polyline.polyline_resample(points_to_warp(pts_np, device), num_points)
+    resampled_wp = od.polyline.polyline_resample(
+        points_to_warp(pts_np, device), num_points, deterministic=deterministic
+    )
     assert np.allclose(resampled_wp.numpy(), _resample_np(pts_np, num_points), rtol=1e-4, atol=1e-4)
 
 

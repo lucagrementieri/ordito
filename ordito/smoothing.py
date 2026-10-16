@@ -1656,11 +1656,6 @@ def filter_mut_dif_laplacian(
     eps = 0.01 * float(od.reduce.max(face_areas)) ** 0.5 if volume_constraint else 0.0
 
     lv = _launch.empty(n, dtype=wp.vec3d, device=device)
-    # Two accumulators, alternating: each step kernel zeroes the one the next pass sums into.
-    adil_sums = (
-        _launch.zeros(2, dtype=wp.float64, device=device),
-        _launch.zeros(2, dtype=wp.float64, device=device),
-    )
     sensitivity = _launch.zeros(1, dtype=wp.float64, device=device)
     nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
     # The three volumes the constraint needs, kept on the device for the whole loop: the input's
@@ -1684,14 +1679,16 @@ def filter_mut_dif_laplacian(
     inv_n = wp.float64(1.0 / n)
     rows_per_block = kernel_smoothing.MUT_DIF_ROWS_PER_BLOCK
     n_blocks = (n + rows_per_block - 1) // rows_per_block
+    # One ``(coefficients, sensitivity)`` row per block, rewritten by every pass and added in a
+    # fixed order into the first two slots, so no pass clears it.
+    adil_sum, _ = _launch.block_partials(n_blocks, 2, wp.float64, device)
     for index in range(iterations):
         # The mean diffusion coefficient is summed on device by the pass that applies the operator
         # and consumed by the step kernel directly, so the loop body issues no host synchronisation.
-        adil_sum = adil_sums[index % 2]
         _launch.launch_tiled(
             kernel_smoothing.mut_dif_adil_pass,
             dim=[n_blocks],
-            inputs=[operator.offsets, operator.columns, operator.values, positions, normals],
+            inputs=[operator.offsets, operator.columns, operator.values, positions, normals, 2],
             outputs=[lv, adil_sum],
             block_dim=TILE_1D,
             device=device,
@@ -1702,7 +1699,7 @@ def filter_mut_dif_laplacian(
             kernel_smoothing.mut_dif_step_scaled,
             dim=n,
             inputs=[positions, lv, adil_sum, inv_n, wp.float64(lamb), normals, wp.float64(eps)],
-            outputs=[nxt, probe, sensitivity, adil_sums[(index + 1) % 2]],
+            outputs=[nxt, probe, sensitivity],
             device=device,
         )
         positions, nxt = nxt, positions
@@ -1826,20 +1823,28 @@ class _VolumeConstraint:
         _launch.zero_(self.state)
         if self._n_faces == 0:
             return
+        # Both sums are fixed-order block partials, folded and copied into ``state``, so the anchor
+        # (and the rescale it sets) repeats bit for bit on CUDA.
+        blocks = kernel_reduce.blocks_1d(self._n_faces)
+        volume, stride = _launch.block_partials(blocks, 1, wp.float64, self._device)
         _launch.launch_tiled(
             kernel_measures.MESH_SIGNED_VOLUME[wp.vec3d],
-            dim=[kernel_reduce.blocks_1d(self._n_faces)],
-            inputs=[positions, self._faces, self._volume],
+            dim=[blocks],
+            inputs=[positions, self._faces, stride, volume],
             block_dim=TILE_1D,
             device=self._device,
         )
+        _launch.copy(self._volume, volume, count=1)
+        blocks = -(-self._n_faces // self._chunk_faces)
+        moments, stride = _launch.block_partials(blocks, 4, wp.float64, self._device)
         _launch.launch_tiled(
             kernel_measures.centroid_integrals,
-            dim=[-(-self._n_faces // self._chunk_faces)],
-            inputs=[vertices, self._faces, self._chunk_faces, self._moments],
+            dim=[blocks],
+            inputs=[vertices, self._faces, self._chunk_faces, stride, moments],
             block_dim=TILE_1D,
             device=self._device,
         )
+        _launch.copy(self._moments, moments, count=4)
 
     def apply(self, positions: wp.array[wp.vec3d], *, out: wp.array[wp.vec3] | None = None) -> None:
         """Rescale ``positions`` back to the anchored volume, in place or narrowed into ``out``."""

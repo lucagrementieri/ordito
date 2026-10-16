@@ -8,10 +8,10 @@ from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import (
     ITEMS_PER_BLOCK_1D,
     block_chunk_1d,
-    block_sum,
-    commit_block_sum,
-    commit_block_total,
-    commit_sum_and_count,
+    last_ticket,
+    store_block_sum,
+    store_block_total,
+    store_sum_and_count,
 )
 from ordito.kernels.transform import transform_point_mat44
 
@@ -121,6 +121,7 @@ def accumulate_procrustes_moments(
     b: wp.array[wp.vec3],
     weights: wp.array[wp.float32],
     use_translation: wp.bool,
+    stride: wp.int32,
     out_acc: wp.array[wp.float32],
 ) -> None:
     # Every moment the fit needs, in one pass over ``a`` and ``b``. The two-pass form this replaces
@@ -129,7 +130,10 @@ def accumulate_procrustes_moments(
     #
     # Launched ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)``: one block per
     # ``ITEMS_PER_BLOCK_1D`` points, lanes striding that block's own chunk, and one packed
-    # 25-slot tree reduction committing **one** atomic set per block.
+    # 25-slot tree reduction per block, stored in the block's ``stride``-slot row of ``out_acc``,
+    # which the last block adds in a fixed order into the leading slots (``store_block_sum``: one
+    # atomic set per block added the blocks in arrival order, so the fit's last bits moved from
+    # call to call on CUDA).
     #
     # **The 64-fold redundant lane arithmetic is not the cost, and never was**: all lanes read the
     # same ``a[offset + k]`` and the loads broadcast out of one cache line, so giving each lane
@@ -195,7 +199,7 @@ def accumulate_procrustes_moments(
         packed[ACC_MASK_B + c] = mask_b[c]
         for r in range(3):
             packed[ACC_COV + c * 3 + r] = cov[c, r]
-    commit_block_sum(lane, packed, out_acc, 0)
+    store_block_sum(chunk, lane, packed, out_acc, 0, stride)
 
 
 @wp.func
@@ -310,6 +314,7 @@ def fit_transform_and_accumulate_cost(
     use_reflection: wp.bool,
     use_translation: wp.bool,
     use_scale: wp.bool,
+    stride: wp.int32,
     out_matrix: wp.array[wp.mat44],
     out_transformed: wp.array[wp.vec3],
 ) -> None:
@@ -325,7 +330,8 @@ def fit_transform_and_accumulate_cost(
     # ``build_procrustes_matrix`` writes when no cost is wanted. That replaced a ``dim=1`` fit
     # launch between the moments and this pass: 1.04-1.07x on ``procrustes(return_cost=True)``
     # from 16 k to 0.87 M points, level at 14 M, and 1.00-1.02x on ``icp``'s recorded rounds. The
-    # cost slot the reduction commits is not one the fit reads.
+    # cost slot the reduction commits is not one the fit reads: each block stores its share in its
+    # own row's ``ACC_COST`` slot, added in a fixed order by the last block (``store_block_total``).
     #
     # The reduction is the lane-strided single-slot form, striding by
     # ``wp.block_dim()`` so it needs no ``prefers_tiled_reduction`` branch. The transform only
@@ -349,9 +355,7 @@ def fit_transform_and_accumulate_cost(
             out_transformed[i] = moved
         w = sample_weight(weights, i)
         local += w * wp.length_sq(b[i] - moved)
-    total = block_sum(local)
-    if lane == 0:
-        wp.atomic_add(acc, ACC_COST, total / acc[ACC_W_SUM])
+    store_block_total(chunk, lane, local / acc[ACC_W_SUM], acc, ACC_COST, stride, last_ticket)
 
 
 # --- Iterative closest point (ICP) -----------------------------------------
@@ -626,13 +630,16 @@ def residual_moment(
     distance: wp.array[wp.float32],
     max_distance: wp.float32,
     centered: wp.int32,
+    stride: wp.int32,
     out_sums: wp.array[wp.float64],
 ) -> None:
     # One pass of the in-range residuals' two-pass standard deviation, folded as the residuals are
     # formed (``in_range_residual``; the out-of-range ``+inf`` is skipped). With ``centered == 0``
     # it commits their sum and count into ``out_sums[0:2]``; with ``centered == 1`` the sum of
     # squared deviations from that mean, ``out_sums[0] / out_sums[1]``, into ``out_sums[2]``. The
-    # mean is read on the device, so the two passes need no readback between them.
+    # mean is read on the device, so the two passes need no readback between them. Each block
+    # stores its share in its own ``stride``-slot row, which the pass's last block adds in a fixed
+    # order.
     block, lane = wp.tid()
     offset, count = block_chunk_1d(current.shape[0], block)
     mean = wp.float64(0.0)
@@ -649,9 +656,9 @@ def residual_moment(
             total += wp.where(centered != 0, d * d, d)
             kept += wp.float64(1.0)
     if centered != 0:
-        commit_block_total(lane, total, out_sums, 2)
+        store_block_total(block, lane, total, out_sums, 2, stride, last_ticket)
     else:
-        commit_sum_and_count(lane, total, kept, out_sums)
+        store_sum_and_count(block, lane, total, kept, out_sums, stride)
 
 
 @wp.kernel
@@ -801,12 +808,14 @@ def accumulate_point_to_plane(
     max_distance: wp.float32,
     robust_kind: wp.int32,
     robust_scale: wp.float32,
+    stride: wp.int32,
     out_acc: wp.array[wp.float32],
 ) -> None:
     # Launched ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)``: one block per
     # ``ITEMS_PER_BLOCK_1D`` correspondences, lanes striding that block's own chunk, and one packed
     # block reduction of all 44 moment slots (the normal matrix, the right-hand side, the two
-    # scalars) committing one atomic set per block.
+    # scalars) stored in the block's ``stride``-slot row, which the last block adds in a fixed
+    # order into the leading slots.
     #
     # It was every lane walking a ``TILE_1D`` chunk with lane 0 publishing, which put one add per
     # block on each of 44 hot addresses at ``n / TILE_1D`` blocks. Same finding as
@@ -846,7 +855,7 @@ def accumulate_point_to_plane(
             packed[ICP_JTJ + r * 6 + c] = tile_jtj[r, c]
     packed[ICP_COST] = tile_cost
     packed[ICP_WEIGHT_SUM] = tile_weight_sum
-    commit_block_sum(lane, packed, out_acc, 0)
+    store_block_sum(i, lane, packed, out_acc, 0, stride)
 
 
 @wp.func

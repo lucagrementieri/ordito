@@ -9,7 +9,9 @@ from ordito.kernels.reduce import (
     block_chunk_1d,
     block_sum,
     commit_block_sum,
-    commit_block_total,
+    last_ticket,
+    store_block_sum,
+    store_block_total,
 )
 from ordito.kernels.triangles import (
     face_area_weighted_centroid,
@@ -27,12 +29,16 @@ CENTROID_HOST_FOLD_BLOCKS = 8192
 
 @wp.kernel
 def mesh_signed_volume(
-    vertices: wp.array[Any], faces: wp.array[wp.int32], out_volume: wp.array[wp.Float]
+    vertices: wp.array[Any],
+    faces: wp.array[wp.int32],
+    stride: wp.int32,
+    out_volume: wp.array[wp.Float],
 ) -> None:
     # The whole mesh's signed volume from the origin, folded as it is formed: each block owns the
     # ``ITEMS_PER_BLOCK_1D`` faces ``block_chunk_1d`` gives it, its lanes stride them by
     # ``wp.block_dim()`` (so the one CPU lane walks them all), and lane 0
-    # commits one atomic per block. ``triangles.face_signed_volume`` per face, the volume
+    # stores the block's sum in its own row, which the last block adds in a fixed order
+    # (``store_block_total``). ``triangles.face_signed_volume`` per face, the volume
     # ``triangles.face_signed_volumes`` would have stored for a ``reduce.sum`` pass to read back.
     block, lane = wp.tid()
     offset, count = block_chunk_1d(faces.shape[0] // 3, block)
@@ -40,7 +46,7 @@ def mesh_signed_volume(
     origin = vertices.dtype()
     for k in range(lane, count, wp.block_dim()):
         total += face_signed_volume(vertices, faces, offset + k, origin)
-    commit_block_total(lane, total, out_volume, 0)
+    store_block_total(block, lane, total, out_volume, 0, stride, last_ticket)
 
 
 @wp.kernel
@@ -139,6 +145,7 @@ def moment_integrals(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     chunk_faces: wp.int32,
+    stride: wp.int32,
     out_totals: wp.array[wp.float64],
 ) -> None:
     # The ten mass integrals of the solid bounded by the mesh, summed over faces into one ``(10,)``
@@ -221,7 +228,7 @@ def moment_integrals(
         local[1 + j] = first[j]
         local[4 + j] = squares[j]
         local[7 + j] = products[j]
-    commit_block_sum(lane, local, out_totals, 0)
+    store_block_sum(chunk, lane, local, out_totals, 0, stride)
 
 
 @wp.kernel
@@ -229,6 +236,7 @@ def centroid_integrals(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     chunk_faces: wp.int32,
+    stride: wp.int32,
     out_totals: wp.array[wp.float64],
 ) -> None:
     # The first four of ``moment_integrals``' ten totals -- volume and first moment, all a centre of
@@ -247,7 +255,9 @@ def centroid_integrals(
         _det, volume_term, first_term = tetrahedron_first_integrals(a, b, c)
         volume = volume + volume_term
         first = first + first_term
-    commit_block_sum(lane, wp.vec4d(volume, first[0], first[1], first[2]), out_totals, 0)
+    store_block_sum(
+        chunk, lane, wp.vec4d(volume, first[0], first[1], first[2]), out_totals, 0, stride
+    )
 
 
 # Keyed by the vertex dtype; the volume is accumulated in its scalar type, as
@@ -289,7 +299,7 @@ def _register_overloads() -> None:
     MESH_SIGNED_VOLUME = OverloadTable(
         mesh_signed_volume,
         {
-            vector: [wp.array[vector], wp.array[wp.int32], wp.array[scalar]]
+            vector: [wp.array[vector], wp.array[wp.int32], wp.int32, wp.array[scalar]]
             for vector, scalar in ((wp.vec3, wp.float32), (wp.vec3d, wp.float64))
         },
     )

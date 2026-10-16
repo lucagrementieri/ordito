@@ -1923,8 +1923,7 @@ def ball_pivoting(
         star-shaped clouds only).
     radius
         Ball radius. When ``<= 0``, it is auto-guessed as ``1.5 x`` the mean nearest-neighbour
-        spacing — a device reduction, so the guess is not bit-reproducible between calls and neither
-        is the triangulation built from it (see ``Notes``).
+        spacing, summed in a fixed order so that the guess repeats from call to call.
     clustering
         Candidate points closer than ``clustering * radius`` to an edge endpoint are rejected
         (vcglib clustering, as a fraction of ``radius``).
@@ -1970,15 +1969,10 @@ def ball_pivoting(
     packed from their own vertices and the wave counter rather than by the order they reached an
     atomic counter -- device state the loop advances deterministically, so the ordering varies
     between waves (which keeps a front edge from being starved by a globally fixed key) without
-    varying between runs. Two caveats on how far that reaches:
-
-    * the default ``radius <= 0`` is **not** covered. The auto-guess averages the nearest-neighbour
-      spacings with a device reduction whose summation order is not fixed, so two calls on one cloud
-      can guess radii a few ULP apart -- enough to tip a borderline pivot and change the triangle
-      set. Pass ``radius`` explicitly wherever the result has to be reproducible;
-    * the face buffer's *row order* is not pinned -- ``commit_triangles`` appends with a
-      ``wp.atomic_add`` -- so compare reconstructions as a set of wound triangles, not
-      buffer-to-buffer.
+    varying between runs; the default ``radius <= 0`` guesses its radius with a fixed-order sum, so
+    it is covered too. One caveat on how far that reaches: the face buffer's *row order* is not
+    pinned -- ``commit_triangles`` appends with a ``wp.atomic_add`` -- so compare reconstructions as
+    a set of wound triangles, not buffer-to-buffer.
 
     Results are not comparable across devices, where floating-point contraction differs.
 
@@ -2240,15 +2234,16 @@ def _mean_positive_finite(values: odt.ArrayNdFloat32) -> float | None:
     n = values.size
     if n == 0:
         return None
-    sum_and_count = _launch.zeros(2, dtype=wp.float64, device=device)
+    blocks = kernel_reduce.blocks_1d(n)
+    sum_and_count, stride = _launch.block_partials(blocks, 2, wp.float64, device)
     _launch.launch_tiled(
         kernel_reconstruction.positive_finite_sum_and_count,
-        dim=[kernel_reduce.blocks_1d(n)],
-        inputs=[values, sum_and_count],
+        dim=[blocks],
+        inputs=[values, stride, sum_and_count],
         block_dim=TILE_1D,
         device=device,
     )
-    total, count = (float(x) for x in sum_and_count.numpy())
+    total, count = (float(x) for x in read_values(sum_and_count, 0, 2))
     if count == 0.0:
         return None
     return total / count

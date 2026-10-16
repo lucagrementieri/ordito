@@ -144,6 +144,45 @@ def test_moments(bench_case: BenchCase) -> None:
     assert np.asarray(properties_tm["inertia"]).shape == (3, 3)
 
 
+@pytest.mark.benchmark(group="moments_fast")
+@pytest.mark.benchlibs("ordito")
+def test_moments_fast(bench_case: BenchCase) -> None:
+    """
+    ``moments(deterministic=False)``: the ten sums committed by atomics in arrival order.
+
+    The ``moments`` row commits them as fixed-order block partials, which repeat bit for bit on
+    CUDA; the gap between the two rows is what that reproducibility costs.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    volume, _center, _inertia = bench_case.run(
+        lambda: od.measures.moments(vertices, faces, deterministic=False)
+    )
+    assert np.isfinite(volume)
+
+
+@pytest.mark.benchmark(group="volume")
+@pytest.mark.benchlibs("ordito")
+def test_volume(bench_case: BenchCase) -> None:
+    """
+    The signed volume alone: one fused pass over the faces and one readback.
+
+    Its references sit in the ``moments`` group, where the integral family is timed against them;
+    this row and ``volume_fast`` price the fixed-order commit on the cheapest call that pays it.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    assert np.isfinite(bench_case.run(lambda: od.measures.volume(vertices, faces)))
+
+
+@pytest.mark.benchmark(group="volume_fast")
+@pytest.mark.benchlibs("ordito")
+def test_volume_fast(bench_case: BenchCase) -> None:
+    """``volume(deterministic=False)``: the block sums committed by atomics in arrival order."""
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    assert np.isfinite(
+        bench_case.run(lambda: od.measures.volume(vertices, faces, deterministic=False))
+    )
+
+
 @pytest.mark.benchmark(group="euler_characteristic")
 @pytest.mark.benchlibs("ordito", "trimesh")
 def test_euler_characteristic(bench_case: BenchCase) -> None:
