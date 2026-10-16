@@ -3,7 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import TOLERANCE_PLANAR_CONSTANT
-from ordito.kernels.array import RegisterBlockedTable, morton_code_30, to_vec3d
+from ordito.kernels.array import RegisterBlockedTable, morton_code_30, morton_frame, to_vec3d
 from ordito.kernels.predicates import point_triangle_offset
 from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import block_sum
@@ -181,14 +181,15 @@ PointMajorSums = wp.types.vector(length=POINT_MAJOR_POINTS, dtype=wp.float32)
 @wp.kernel
 def morton_point_order(
     points: wp.array[wp.vec3],
-    lower: wp.vec3,
-    inv_extent: wp.vec3,
+    corners: wp.array[wp.float32],
     out_keys: wp.array[wp.int32],
     out_order: wp.array[wp.int32],
 ) -> None:
     # dim == n_points: each point's Morton code and its own index, written into the radix sort's
-    # double-width buffers.
+    # double-width buffers. The box stays on the device (``morton_frame``), as in
+    # ``proximity.winding_face_keys``, which keys face centroids instead of points.
     i = wp.int32(wp.tid())
+    lower, inv_extent = morton_frame(corners)
     out_keys[i] = morton_code_30(points[i], lower, inv_extent)
     out_order[i] = i
 

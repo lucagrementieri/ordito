@@ -1178,6 +1178,20 @@ def morton_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.in
     return code
 
 
+@wp.func
+def morton_frame(corners: wp.array[wp.float32]) -> tuple[wp.vec3, wp.vec3]:
+    # ``morton_code_30``'s ``(lower, inv_extent)`` from a packed box left on the device by
+    # ``kernels/reduce.minmax_vec3_chunked`` (``[lower, -upper]``), so no readback sits between the
+    # box reduction and the key kernel. A flat axis maps to ``0``.
+    lower = wp.vec3(corners[0], corners[1], corners[2])
+    extent = wp.vec3(-corners[3], -corners[4], -corners[5]) - lower
+    inv_extent = wp.vec3()
+    for axis in range(3):
+        if extent[axis] > 0.0:
+            inv_extent[axis] = 1023.0 / extent[axis]
+    return lower, inv_extent
+
+
 # Threads a register-blocked ``(item, slice)`` reduction must still launch after grouping its outer
 # items (``RegisterBlockedTable.launch_shape``). Grouping ``width`` items per thread divides the
 # grid by ``width``, so past this floor a wider group trades occupancy for traffic it no longer

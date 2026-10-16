@@ -804,10 +804,7 @@ def chamfer_mesh_to_mesh_loss(
         return loss
 
     # Non-differentiable closest-face assignment for each direction (outside the tape).
-    max_dist = _mesh_pair_search_radius(vertices_a, vertices_b, single_directional)
-    face_id_ab = od.proximity.closest_point_on_mesh(
-        vertices_b, faces_b, vertices_a, max_dist=max_dist
-    )[2]
+    face_id_ab = od.proximity.closest_point_on_mesh(vertices_b, faces_b, vertices_a)[2]
     terms = [
         lambda: _launch_surface_term(
             vertices_a,
@@ -820,9 +817,7 @@ def chamfer_mesh_to_mesh_loss(
         )
     ]
     if not single_directional:
-        face_id_ba = od.proximity.closest_point_on_mesh(
-            vertices_a, faces_a, vertices_b, max_dist=max_dist
-        )[2]
+        face_id_ba = od.proximity.closest_point_on_mesh(vertices_a, faces_a, vertices_b)[2]
         terms.append(
             lambda: _launch_surface_term(
                 vertices_b,
@@ -1074,6 +1069,9 @@ def _chamfer(
         return sq_forward, _square(backward)
 
     reduce = _reduce_squared if squared else _reduce_plain
+    if point_reduction == "max" and not single_directional and distances.forward_max is None:
+        largest = _max_of_both(distances.forward, backward)
+        return float(np.float32(largest) * np.float32(largest)) if squared else largest
     reduced_forward = reduce(distances.forward, point_reduction, distances.forward_max)
     if single_directional:
         return reduced_forward
@@ -1133,12 +1131,35 @@ def _hausdorff(distances: _Distances, single_directional: bool) -> float:
     so this matches libigl's ``sqrt(max(dba, dab))`` without squaring.
     """
     directed_forward = distances.forward_max
+    if directed_forward is None and not single_directional:
+        return _max_of_both(distances.forward, cast(wp.array[wp.float32], distances.backward))
     if directed_forward is None:
         directed_forward = od.reduce.max(cast(odt.Array1dFloat32, distances.forward))
     if single_directional:
         return directed_forward
     directed_backward = od.reduce.max(cast(odt.Array1dFloat32, distances.backward))
     return max(directed_forward, directed_backward)
+
+
+def _max_of_both(forward: wp.array[wp.float32], backward: wp.array[wp.float32]) -> float:
+    """
+    Largest of two non-empty distance arrays in one readback, for the symmetric ``"max"`` forms.
+
+    Both arrays fold into one seeded slot with ``reduce.max``'s own tiled kernel (its update is an
+    ``atomic_max``), so the symmetric maximum is the same float as the larger of two
+    [`reduce.max`][ordito.reduce.max] calls, at one sync rather than two.
+    """
+    device = forward.device
+    out = _launch.full(1, -math.inf, dtype=wp.float32, device=device)
+    for distances in (forward, backward):
+        _launch.launch_tiled(
+            kernel_reduce.MAX1D_TILED[wp.float32],
+            dim=[kernel_reduce.blocks_1d(distances.size)],
+            inputs=[distances, out],
+            block_dim=TILE_1D,
+            device=device,
+        )
+    return float(out.numpy()[0])  # the reduced value is the function's answer
 
 
 def _empty_chamfer(
@@ -1301,33 +1322,11 @@ def _distances_mesh_to_mesh(
     """
     if vertices_a.size == 0 or vertices_b.size == 0 or faces_a.size == 0 or faces_b.size == 0:
         return None
-    max_dist = _mesh_pair_search_radius(vertices_a, vertices_b, single_directional)
-    d_forward = od.proximity.closest_point_on_mesh(
-        vertices_b, faces_b, vertices_a, max_dist=max_dist
-    )[1]
+    d_forward = od.proximity.closest_point_on_mesh(vertices_b, faces_b, vertices_a)[1]
     d_backward = None
     if not single_directional:
-        d_backward = od.proximity.closest_point_on_mesh(
-            vertices_a, faces_a, vertices_b, max_dist=max_dist
-        )[1]
+        d_backward = od.proximity.closest_point_on_mesh(vertices_a, faces_a, vertices_b)[1]
     return _Distances(d_forward, d_backward, None)
-
-
-def _mesh_pair_search_radius(
-    vertices_a: wp.array[wp.vec3], vertices_b: wp.array[wp.vec3], single_directional: bool
-) -> float | None:
-    """
-    One search radius for both directions of a mesh-to-mesh query, or ``None`` for one direction.
-
-    [`closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh]'s default ``max_dist`` is
-    the diagonal of the box enclosing the mesh and the queries -- and for the two directions of one
-    pair that is the same box, since the union of ``A`` and ``B`` does not depend on which is the
-    mesh. Computing it once here gives both calls the identical value the default would have and
-    saves the second reduction and its readback; a single direction leaves the default in place.
-    """
-    if single_directional:
-        return None
-    return od.bounds.enclosing_diagonal(vertices_b, vertices_a)
 
 
 def _validate_diff_reduction(point_reduction: _DiffReduction) -> None:

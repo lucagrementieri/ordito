@@ -336,15 +336,19 @@ def _morton_order(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
     """
     device = points.device
     m = points.size
-    lower, upper = od.bounds.aabb(points)
-    extent = [float(upper[k]) - float(lower[k]) for k in range(3)]
-    inv_extent = wp.vec3(*(1023.0 / e if e > 0.0 else 0.0 for e in extent))
+    corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_reduce.minmax_vec3_chunked,
+        dim=kernel_reduce.chunks_1d(m),
+        inputs=[points, corners],
+        device=device,
+    )
     keys = _launch.empty(2 * m, dtype=wp.int32, device=device)
     order = _launch.empty(2 * m, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_visibility.morton_point_order,
         dim=m,
-        inputs=[points, lower, inv_extent],
+        inputs=[points, corners],
         outputs=[keys, order],
         device=device,
     )

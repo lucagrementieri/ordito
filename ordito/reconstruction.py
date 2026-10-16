@@ -184,15 +184,16 @@ def _lexicographic_triangulation(points: wp.array[wp.vec2]) -> np.ndarray:
         kernel_reconstruction.lexicographic_keys, dim=n, inputs=[points, keys, order], device=device
     )
     _launch.radix_sort_pairs(keys, order, count=n)
-    # The sweep's inputs, on the CPU device it runs on (a no-op view when that is already theirs).
-    points_cpu = (
-        points if not device.is_cuda else _launch.array(points.numpy(), dtype=wp.vec2, device="cpu")
-    )
-    order_cpu = (
-        odt.as_dense(order[:n])
-        if not device.is_cuda
-        else _launch.array(order[:n].numpy(), dtype=wp.int32, device="cpu")
-    )
+    # The sweep's inputs, on the CPU device it runs on (a no-op view when that is already theirs):
+    # a device-to-host ``wp.copy`` into a fresh CPU array, with no NumPy round trip in between.
+    if device.is_cuda:
+        points_cpu = _launch.empty(n, dtype=wp.vec2, device="cpu")
+        order_cpu = _launch.empty(n, dtype=wp.int32, device="cpu")
+        _launch.copy(points_cpu, points)
+        _launch.copy(order_cpu, order, count=n)
+    else:
+        points_cpu = points
+        order_cpu = odt.as_dense(order[:n])
 
     # A triangulation of n points has 2n - 2 - h <= 2n - 5 triangles; 2n is the guard capacity.
     max_faces = 2 * n
