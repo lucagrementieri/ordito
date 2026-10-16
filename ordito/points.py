@@ -207,7 +207,7 @@ def half_space_mask(
     return out_mask
 
 
-def centroid(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.array[wp.vec3]:
+def centroid(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     """
     Mean position ``sum(points) / n`` as a ``(1,)`` device ``wp.vec3`` array.
 
@@ -215,11 +215,6 @@ def centroid(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.arr
     ----------
     points
         ``(n,)`` positions in space.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -239,14 +234,14 @@ def centroid(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.arr
     ```
     """
     n = points.size
-    out = _point_sum(points, deterministic=deterministic)
+    out = _point_sum(points)
     if n == 0:
         return out
     _launch.map(wp.div, out, wp.float32(n), out=out)
     return out
 
 
-def gram_matrix(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.array[wp.mat33]:
+def gram_matrix(points: wp.array[wp.vec3]) -> wp.array[wp.mat33]:
     """
     Uncentered Gram (scatter) matrix ``G = sum_k outer(x_k, x_k)``.
 
@@ -254,11 +249,6 @@ def gram_matrix(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.
     ----------
     points
         ``(n,)`` positions in space.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -282,10 +272,10 @@ def gram_matrix(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.
     """
     # The uncentred Gram matrix is the scatter matrix around a zero center, which the kernel
     # reads off a null center array.
-    return _scatter_matrix(points, None, 1.0, deterministic=deterministic)
+    return _scatter_matrix(points, None, 1.0)
 
 
-def fit_line(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.vec3:
+def fit_line(points: wp.array[wp.vec3]) -> wp.vec3:
     """
     Major axis of a point set, weighted across all three singular directions.
 
@@ -300,11 +290,6 @@ def fit_line(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.vec
     ----------
     points
         ``(n,)`` positions in space.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -350,7 +335,7 @@ def fit_line(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.vec
         return wp.vec3(0.0, 0.0, 0.0)
 
     # Pass 1: accumulate the (uncentred) Gram matrix G = sum_j outer(x_j, x_j).
-    gram = gram_matrix(points, deterministic=deterministic)
+    gram = gram_matrix(points)
 
     # Pass 2: SVD of the 3x3 matrix and axis extraction (single thread).
     out_axis = _launch.empty(1, dtype=wp.vec3, device=device)
@@ -359,10 +344,7 @@ def fit_line(points: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.vec
 
 
 def centered_covariance(
-    points: wp.array[wp.vec3],
-    center: wp.array[wp.vec3] | None = None,
-    *,
-    deterministic: bool = True,
+    points: wp.array[wp.vec3], center: wp.array[wp.vec3] | None = None
 ) -> wp.array[wp.mat33]:
     """
     Centered scatter matrix ``C = sum_k outer(x_k - mu, x_k - mu)`` (no ``1/n``).
@@ -378,11 +360,6 @@ def centered_covariance(
     center
         ``(1,)`` precomputed centroid device array. When ``None`` it is computed on-device as
         ``sum(points) / n``.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -411,16 +388,11 @@ def centered_covariance(
     """
     require_same_device(points=points, center=center)
     if center is not None:
-        return _scatter_matrix(points, center, 1.0, deterministic=deterministic)
-    return _scatter_matrix(
-        points,
-        _point_sum(points, deterministic=deterministic),
-        float(points.size),
-        deterministic=deterministic,
-    )
+        return _scatter_matrix(points, center, 1.0)
+    return _scatter_matrix(points, _point_sum(points), float(points.size))
 
 
-def fit_plane(points: wp.array[wp.vec3], *, deterministic: bool = True) -> tuple[wp.vec3, wp.vec3]:
+def fit_plane(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
     """
     Fit a plane to a point set using SVD.
 
@@ -432,11 +404,6 @@ def fit_plane(points: wp.array[wp.vec3], *, deterministic: bool = True) -> tuple
     ----------
     points
         ``(n,)`` positions in space.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -476,12 +443,12 @@ def fit_plane(points: wp.array[wp.vec3], *, deterministic: bool = True) -> tuple
 
     # Pass 1: the point sum on-device; each consumer divides it by ``n`` itself, bit for bit the
     # centroid ``centroid`` would return, so no division launch runs between the passes.
-    point_sum = _point_sum(points, deterministic=deterministic)
+    point_sum = _point_sum(points)
 
     # Pass 2: covariance matrix of the centred points. Centring before the
     # outer products (rather than via the sum(x x^T) - n c c^T identity) avoids
     # float32 catastrophic cancellation.
-    cov = _scatter_matrix(points, point_sum, float(n), deterministic=deterministic)
+    cov = _scatter_matrix(points, point_sum, float(n))
 
     # Pass 3: SVD of the 3x3 covariance and centroid/normal extraction (single thread). Both
     # results land in one buffer and cross to the host in one readback: they are two rows of three
@@ -545,9 +512,7 @@ def plane_basis(normal: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
     return u, v
 
 
-def covariance(
-    points: wp.array[wp.vec3], ddof: int = 1, *, deterministic: bool = True
-) -> wp.array[wp.mat33]:
+def covariance(points: wp.array[wp.vec3], ddof: int = 1) -> wp.array[wp.mat33]:
     """
     Sample covariance matrix ``(1 / (n - ddof)) sum_k outer(x_k - mu, x_k - mu)``.
 
@@ -559,11 +524,6 @@ def covariance(
         ``(n,)`` positions in space.
     ddof
         Delta degrees of freedom; the divisor is ``n - ddof``. Defaults to ``1``.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -590,14 +550,12 @@ def covariance(
     n = points.size
     if n - ddof <= 0:
         raise ValueError(f"covariance requires n > ddof, got n={n}, ddof={ddof}")
-    out = centered_covariance(points, deterministic=deterministic)
+    out = centered_covariance(points)
     _launch.map(wp.div, out, wp.float32(n - ddof), out=out)
     return out
 
 
-def principal_axes(
-    points: wp.array[wp.vec3], *, deterministic: bool = True
-) -> tuple[wp.mat33, wp.vec3, wp.vec3]:
+def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec3]:
     """
     Principal frame of a point cloud: its three axes, spreads and centroid.
 
@@ -611,11 +569,6 @@ def principal_axes(
     ----------
     points
         ``(n,)`` positions in space.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -663,8 +616,8 @@ def principal_axes(
     if n == 0:
         return wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0), wp.vec3(), wp.vec3()
 
-    point_sum = _point_sum(points, deterministic=deterministic)
-    scatter = _scatter_matrix(points, point_sum, float(n), deterministic=deterministic)
+    point_sum = _point_sum(points)
+    scatter = _scatter_matrix(points, point_sum, float(n))
     # All three results in one buffer, read back once: fifteen floats is less than a single
     # readback's fixed cost, so three of them bought three synchronizations and nothing else.
     out_frame = _launch.empty(5, dtype=wp.vec3, device=device)
@@ -684,7 +637,6 @@ def estimate_normals(
     *,
     orient_reference: wp.vec3 | None = None,
     camera_location: wp.vec3 | None = None,
-    deterministic: bool = True,
 ) -> wp.array[wp.vec3]:
     """
     Estimate per-point normals by PCA over each point's neighbourhood.
@@ -718,12 +670,6 @@ def estimate_normals(
         (``dot(normal, camera_location - point) >= 0``), matching Open3D's
         ``orient_normals_towards_camera_location``. Mutually exclusive with
         ``orient_reference``.
-    deterministic
-        When ``True`` (the default), the point sum behind the centroid orientation adds its
-        per-block partial sums in one fixed order, so repeated calls return identical bits on CUDA.
-        ``False`` adds them by atomics in arrival order, which saves a few microseconds a call but
-        lets the last bits change from call to call on CUDA. The two explicit orientations read no
-        sum, and the CPU device is deterministic either way.
 
     Returns
     -------
@@ -796,7 +742,7 @@ def estimate_normals(
     # Only the centroid orientation reads the cloud's centroid, as its raw sum divided in the
     # kernel; the other two modes pass a null array and skip the reduction.
     centroid_mode = camera_location is None and orient_reference is None
-    point_sum = _point_sum(points, deterministic=deterministic) if centroid_mode else None
+    point_sum = _point_sum(points) if centroid_mode else None
     out_normals = _launch.empty(n, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_points.estimate_point_normals,
@@ -808,19 +754,15 @@ def estimate_normals(
     return out_normals
 
 
-def _point_sum(points: wp.array[wp.vec3], *, deterministic: bool) -> wp.array[wp.vec3]:
-    """
-    ``sum(points)`` as a ``(1,)`` device array, zero when ``points`` is empty.
-
-    Without ``deterministic`` the blocks commit by atomics (``_launch.block_partials``).
-    """
+def _point_sum(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
+    """``sum(points)`` as a ``(1,)`` device array, zero when ``points`` is empty."""
     device = points.device
     n = points.size
     if n == 0:
         return _launch.zeros(1, dtype=wp.vec3, device=device)
     # Block sums added in a fixed order, so the sum repeats bit for bit on CUDA.
     blocks = kernel_reduce.blocks_1d(n)
-    out, stride = _launch.block_partials(blocks, 1, wp.vec3, device, deterministic=deterministic)
+    out, stride = _launch.block_partials(blocks, 1, wp.vec3, device)
     _launch.launch_tiled(
         kernel_points.point_sum,
         dim=[blocks],
@@ -828,29 +770,24 @@ def _point_sum(points: wp.array[wp.vec3], *, deterministic: bool) -> wp.array[wp
         block_dim=TILE_1D,
         device=device,
     )
-    return _launch.view(out, 0, 1) if deterministic else out
+    return _launch.view(out, 0, 1)
 
 
 def _scatter_matrix(
-    points: wp.array[wp.vec3],
-    center: wp.array[wp.vec3] | None,
-    center_divisor: float,
-    *,
-    deterministic: bool,
+    points: wp.array[wp.vec3], center: wp.array[wp.vec3] | None, center_divisor: float
 ) -> wp.array[wp.mat33]:
     """
     ``sum_k outer(x_k - c, x_k - c)`` with ``c = center[0] / center_divisor`` as a ``(1,)`` array.
 
     ``center`` is either a centroid (``center_divisor = 1.0``, which divides exactly) or the raw
-    point sum with ``n``; ``None`` is the zero center, i.e. the uncentred Gram matrix. Without
-    ``deterministic`` the blocks commit by atomics (``_launch.block_partials``).
+    point sum with ``n``; ``None`` is the zero center, i.e. the uncentred Gram matrix.
     """
     device = points.device
     n = points.size
     if n == 0:
         return _launch.zeros(1, dtype=wp.mat33, device=device)
     blocks = kernel_reduce.blocks_1d(n)
-    out, stride = _launch.block_partials(blocks, 1, wp.mat33, device, deterministic=deterministic)
+    out, stride = _launch.block_partials(blocks, 1, wp.mat33, device)
     _launch.launch_tiled(
         kernel_points.centered_covariance,
         dim=[blocks],
@@ -858,15 +795,11 @@ def _scatter_matrix(
         block_dim=TILE_1D,
         device=device,
     )
-    return _launch.view(out, 0, 1) if deterministic else out
+    return _launch.view(out, 0, 1)
 
 
 def outlier_probability(
-    neighbor_idx: odt.Array2dInt32,
-    neighbor_distance: odt.Array2dFloat32,
-    *,
-    scale: float = 3.0,
-    deterministic: bool = True,
+    neighbor_idx: odt.Array2dInt32, neighbor_distance: odt.Array2dFloat32, *, scale: float = 3.0
 ) -> wp.array[wp.float32]:
     """
     Local Outlier Probability (LoOP) of each point, in ``[0, 1]``.
@@ -896,12 +829,6 @@ def outlier_probability(
     scale
         The LoOP normalization factor ``lambda``. Larger values make the score more conservative
         (fewer points near ``1``). MeshLab fixes it at ``3``, which is the default here.
-    deterministic
-        When ``True`` (the default), the cloud-wide sum of squared factors adds its per-block
-        partial sums in one fixed order, so repeated calls return identical bits on CUDA.
-        ``False`` adds them by atomics in arrival order, which saves a few microseconds a call but
-        lets the last bits change from call to call on CUDA. The CPU device is deterministic either
-        way.
 
     Returns
     -------
@@ -963,9 +890,7 @@ def outlier_probability(
     # forms the normalizer itself.
     plof = _launch.empty(n, dtype=wp.float32, device=device)
     blocks = (n + TILE_1D - 1) // TILE_1D
-    plof_sum_squares, stride = _launch.block_partials(
-        blocks, 1, wp.float32, device, deterministic=deterministic
-    )
+    plof_sum_squares, stride = _launch.block_partials(blocks, 1, wp.float32, device)
     _launch.launch_tiled(
         kernel_points.local_outlier_factors,
         dim=[blocks],
@@ -986,7 +911,7 @@ def outlier_probability(
 
 
 def statistical_outlier_mask(
-    neighbor_distance: odt.Array2dFloat32, *, std_ratio: float = 2.0, deterministic: bool = True
+    neighbor_distance: odt.Array2dFloat32, *, std_ratio: float = 2.0
 ) -> wp.array[wp.bool]:
     """
     Flag points whose mean neighbour distance exceeds ``mean + std_ratio * std`` over the cloud.
@@ -1008,12 +933,6 @@ def statistical_outlier_mask(
     std_ratio
         Multiplier on the cloud-wide standard deviation of the per-point means. Lower is stricter.
         Open3D's own examples use ``2.0``, the default here.
-    deterministic
-        When ``True`` (the default), the cloud-wide sums behind the threshold add their per-block
-        partial sums in one fixed order, so repeated calls return the same mask on CUDA. ``False``
-        adds them by atomics in arrival order, which saves a few microseconds a call but lets the
-        threshold's last bits, and so a point lying on it, change from call to call on CUDA. The
-        CPU device is deterministic either way.
 
     Returns
     -------
@@ -1065,13 +984,11 @@ def statistical_outlier_mask(
     # launch the threshold from all three, so nothing is read back. Each is summed in a fixed
     # order, so the mask repeats on CUDA.
     mean_distance, _rms, count, totals = _neighbor_distance_moments(
-        neighbor_distance, mean_and_count=True, rms=False, totals=True, deterministic=deterministic
+        neighbor_distance, mean_and_count=True, rms=False, totals=True
     )
     assert totals is not None
     blocks = kernel_reduce.blocks_1d(n)
-    deviation, stride = _launch.block_partials(
-        blocks, 1, wp.float64, device, deterministic=deterministic
-    )
+    deviation, stride = _launch.block_partials(blocks, 1, wp.float64, device)
     _launch.launch_tiled(
         kernel_points.accumulate_counted_deviation,
         dim=[blocks],
@@ -1091,12 +1008,7 @@ def statistical_outlier_mask(
 
 
 def _neighbor_distance_moments(
-    neighbor_distance: odt.Array2dFloat32,
-    *,
-    mean_and_count: bool,
-    rms: bool,
-    totals: bool = False,
-    deterministic: bool = True,
+    neighbor_distance: odt.Array2dFloat32, *, mean_and_count: bool, rms: bool, totals: bool = False
 ) -> tuple[
     wp.array[wp.float32] | None,
     wp.array[wp.float32] | None,
@@ -1108,7 +1020,7 @@ def _neighbor_distance_moments(
 
     A moment a caller does not ask for comes back as ``None`` and is never written. With
     ``totals``, a fourth array holds ``(rows with a neighbour, sum of their means)`` in its first
-    two slots, summed in a fixed order unless ``deterministic`` is off.
+    two slots.
     """
     device = neighbor_distance.device
     n = int(neighbor_distance.shape[0])
@@ -1119,9 +1031,7 @@ def _neighbor_distance_moments(
     blocks = (n + rows_per_block - 1) // rows_per_block
     out_totals, stride = None, 0
     if totals:
-        out_totals, stride = _launch.block_partials(
-            blocks, 2, wp.float64, device, deterministic=deterministic
-        )
+        out_totals, stride = _launch.block_partials(blocks, 2, wp.float64, device)
     _launch.launch_tiled(
         kernel_points.neighbor_distance_moments,
         dim=[blocks],

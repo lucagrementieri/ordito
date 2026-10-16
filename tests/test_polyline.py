@@ -735,23 +735,22 @@ def test_smooth_upsample_short_polyline_unchanged(device: str) -> None:
 # --- cumulative_arc_length (NumPy reference) ---
 
 
-@pytest.mark.parametrize("deterministic", [True, False])
-def test_cumulative_arc_length_matches_reference(device: str, deterministic: bool) -> None:
+@pytest.mark.usefixtures("deterministic")
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+def test_cumulative_arc_length_matches_reference(device: str) -> None:
     pts_np = _random_open_polyline(40)
-    cumulative_wp = od.polyline.cumulative_arc_length(
-        points_to_warp(pts_np, device), deterministic=deterministic
-    )
+    cumulative_wp = od.polyline.cumulative_arc_length(points_to_warp(pts_np, device))
     segment_lengths_np = np.linalg.norm(np.diff(pts_np, axis=0), axis=1)
     expected_np = np.concatenate([[0.0], np.cumsum(segment_lengths_np)])
     assert np.allclose(cumulative_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("deterministic", [True, False])
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 def test_cumulative_arc_length_on_a_long_polyline(device: str, deterministic: bool) -> None:
     """
     Not a library comparison: a 200k-point table against a ``float64`` NumPy ``cumsum``.
 
-    The long input spans many chunks of the fixed-order scan (``deterministic=True``) and many
+    The long input spans many chunks of the fixed-order scan (determinism on) and many
     tiles of CUB's (``False``); both must match the exact sums to float32 rounding, and the
     deterministic table must come back with the same bits on a second call. A sum that dropped or
     double-counted a chunk is off by a whole chunk's length, far outside the tolerance.
@@ -761,15 +760,10 @@ def test_cumulative_arc_length_on_a_long_polyline(device: str, deterministic: bo
     expected_np = np.concatenate(
         [[0.0], np.cumsum(np.linalg.norm(np.diff(pts_np.astype(np.float32), axis=0), axis=1))]
     )
-    cumulative_np = od.polyline.cumulative_arc_length(
-        polyline_wp, deterministic=deterministic
-    ).numpy()
+    cumulative_np = od.polyline.cumulative_arc_length(polyline_wp).numpy()
     assert np.allclose(cumulative_np, expected_np, rtol=1e-5, atol=1e-5)
     if deterministic:
-        assert np.array_equal(
-            od.polyline.cumulative_arc_length(polyline_wp, deterministic=True).numpy(),
-            cumulative_np,
-        )
+        assert np.array_equal(od.polyline.cumulative_arc_length(polyline_wp).numpy(), cumulative_np)
 
 
 def test_cumulative_arc_length_last_entry_is_total_length(device: str) -> None:
@@ -952,15 +946,12 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
 # --- resample (NumPy interp reference + trimesh oracle) ---
 
 
-@pytest.mark.parametrize("deterministic", [True, False])
+@pytest.mark.usefixtures("deterministic")
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 @pytest.mark.parametrize("num_points", [5, 50])
-def test_resample_polyline_matches_numpy_interp(
-    device: str, num_points: int, deterministic: bool
-) -> None:
+def test_resample_polyline_matches_numpy_interp(device: str, num_points: int) -> None:
     pts_np = _random_open_polyline(70)
-    resampled_wp = od.polyline.polyline_resample(
-        points_to_warp(pts_np, device), num_points, deterministic=deterministic
-    )
+    resampled_wp = od.polyline.polyline_resample(points_to_warp(pts_np, device), num_points)
     assert np.allclose(resampled_wp.numpy(), _resample_np(pts_np, num_points), rtol=1e-4, atol=1e-4)
 
 
@@ -2116,7 +2107,7 @@ def test_polyline_triangulate_is_reproducible_far_from_the_origin(device: str) -
     assert all(np.array_equal(sets[0], other) for other in sets[1:])
 
 
-# --- deterministic=False: the arrival-order scan and block commits ---
+# --- od.config.deterministic(False): the arrival-order scan and block commits ---
 
 
 def _arrival_order_loop(device: str) -> wp.array[wp.vec3]:
@@ -2128,27 +2119,21 @@ def _arrival_order_loop(device: str) -> wp.array[wp.vec3]:
     return points_to_warp(loop_np.astype(np.float32), device)
 
 
-_ARRIVAL_ORDER_CALLS: dict[str, Callable[[str, bool], np.ndarray]] = {
-    "polyline_length": lambda device, deterministic: np.array(
-        od.polyline.polyline_length(
-            _arrival_order_loop(device), closed=True, deterministic=deterministic
-        )
+_ARRIVAL_ORDER_CALLS: dict[str, Callable[[str], np.ndarray]] = {
+    "polyline_length": lambda device: np.array(
+        od.polyline.polyline_length(_arrival_order_loop(device), closed=True)
     ),
-    "polyline_centroid": lambda device, deterministic: np.array(
-        od.polyline.polyline_centroid(
-            _arrival_order_loop(device), closed=True, deterministic=deterministic
-        )
+    "polyline_centroid": lambda device: np.array(
+        od.polyline.polyline_centroid(_arrival_order_loop(device), closed=True)
     ),
-    "polyline_normal": lambda device, deterministic: np.array(
-        od.polyline.polyline_normal(_arrival_order_loop(device), deterministic=deterministic)
+    "polyline_normal": lambda device: np.array(
+        od.polyline.polyline_normal(_arrival_order_loop(device))
     ),
-    "polyline_radius_mean": lambda device, deterministic: np.array(
-        od.polyline.polyline_radius(
-            _arrival_order_loop(device), "mean", closed=True, deterministic=deterministic
-        )
+    "polyline_radius_mean": lambda device: np.array(
+        od.polyline.polyline_radius(_arrival_order_loop(device), "mean", closed=True)
     ),
-    "polyline_downsample": lambda device, deterministic: od.polyline.polyline_downsample(
-        _arrival_order_loop(device), 0.05, closed=True, deterministic=deterministic
+    "polyline_downsample": lambda device: od.polyline.polyline_downsample(
+        _arrival_order_loop(device), 0.05, closed=True
     ).numpy(),
 }
 
@@ -2156,16 +2141,17 @@ _ARRIVAL_ORDER_CALLS: dict[str, Callable[[str, bool], np.ndarray]] = {
 @pytest.mark.parametrize("function", list(_ARRIVAL_ORDER_CALLS))
 def test_arrival_order_reductions_agree_with_the_default(device: str, function: str) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` returns the default's answer to rounding.
+    Ordito against ordito: determinism off returns the default's answer to rounding.
 
-    The flag only swaps the fixed-order scan or block commit for the arrival-order one, so the two
+    The mode only swaps the fixed-order scan or block commit for the arrival-order one, so the two
     arms may differ in the last float32 bits on CUDA and nowhere else; the reference comparisons
     above pin the default. The downsampled loop keeps the same points: no arc length of this loop
     lies within rounding of a multiple of the step.
     """
     call = _ARRIVAL_ORDER_CALLS[function]
-    fixed_np = call(device, True)
-    arrival_np = call(device, False)
+    fixed_np = call(device)
+    with od.config.deterministic(False):
+        arrival_np = call(device)
     assert np.ptp(fixed_np) > 1e-3 or fixed_np.size == 1
     assert fixed_np.shape == arrival_np.shape
     assert np.allclose(fixed_np, arrival_np, rtol=1e-5, atol=1e-5)

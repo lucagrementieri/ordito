@@ -174,9 +174,7 @@ def test_sample_surface(bench_case: BenchCase, count: int) -> None:
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         points, face_index = bench_case.run(
-            lambda: od.sample.sample_surface(
-                vertices, faces, count, seed=_SEED, deterministic=False
-            )
+            lambda: od.sample.sample_surface(vertices, faces, count, seed=_SEED)
         )
         assert points.shape == (count,)
         assert face_index.shape == (count,)
@@ -285,9 +283,7 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         radius = radius_scale * _radius_for_mesh(bench_case)
         points, face_index = bench_case.run(
-            lambda: od.sample.sample_surface_blue_noise(
-                vertices, faces, radius, seed=_SEED, deterministic=False
-            )
+            lambda: od.sample.sample_surface_blue_noise(vertices, faces, radius, seed=_SEED)
         )
         assert points.shape[0] > 0
         assert face_index.shape == points.shape
@@ -322,7 +318,5 @@ def test_sample_volume(bench_case: BenchCase, count: int) -> None:
     construction and span 5k to 328k faces.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    points = bench_case.run(
-        lambda: od.sample.sample_volume(vertices, faces, count, seed=_SEED, deterministic=False)
-    )
+    points = bench_case.run(lambda: od.sample.sample_volume(vertices, faces, count, seed=_SEED))
     assert points.shape == (count,)

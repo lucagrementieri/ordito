@@ -181,7 +181,7 @@ def face_flipped_indices(
 
 
 def map_vertices_to_circle(
-    vertices: wp.array[wp.vec3], boundary: wp.array[wp.int32], *, deterministic: bool = True
+    vertices: wp.array[wp.vec3], boundary: wp.array[wp.int32]
 ) -> wp.array[wp.vec2]:
     """
     Map an ordered boundary loop onto the unit circle by arc length.
@@ -200,11 +200,6 @@ def map_vertices_to_circle(
     boundary
         ``(n_boundary,)`` ordered boundary-loop vertex indices, e.g. from
         [`longest_boundary_loop`][ordito.boundary.longest_boundary_loop].
-    deterministic
-        When ``True`` (the default), the edge lengths are summed in one fixed order, so repeated
-        calls return identical bits on CUDA. ``False`` takes the faster arrival-order scan, whose
-        last bits can change from call to call on CUDA once the loop exceeds a few thousand
-        vertices. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -258,9 +253,7 @@ def map_vertices_to_circle(
         device=device,
     )
     cumulative = _launch.empty(n_boundary, dtype=wp.float32, device=device)
-    _launch.array_scan(
-        segment_lengths, out_array=cumulative, inclusive=True, deterministic=deterministic
-    )
+    _launch.array_scan(segment_lengths, out_array=cumulative, inclusive=True)
     _launch.launch(
         kernel_parametrization.circle_positions,
         dim=n_boundary,

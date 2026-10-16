@@ -81,9 +81,7 @@ def _run_case(bench_case: BenchCase, n_rays: int) -> None:
             directions_np.astype(np.float32), dtype=wp.vec3, device=bench_case.device
         )
         _, offsets = bench_case.run(
-            lambda: od.geodesic_walk.trace_from_vertex(
-                vertices, faces, start, directions, deterministic=False
-            ),
+            lambda: od.geodesic_walk.trace_from_vertex(vertices, faces, start, directions),
             rounds=_ROUNDS,
         )
         assert offsets.shape == (n_rays + 1,)
@@ -177,7 +175,7 @@ def test_trace_from_face(bench_case: BenchCase) -> None:
     directions = wp.array(directions_np.astype(np.float32), dtype=wp.vec3, device=bench_case.device)
     _, offsets = bench_case.run(
         lambda: od.geodesic_walk.trace_from_face(
-            vertices, faces, start_faces, barycentric, directions, deterministic=False
+            vertices, faces, start_faces, barycentric, directions
         ),
         rounds=_ROUNDS,
     )
@@ -262,10 +260,7 @@ def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
     source = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
     targets = wp.array(targets_np, dtype=wp.int32, device=device)
     _points, offsets = bench_case.run(
-        lambda: od.geodesic_walk.geodesic_path(
-            vertices, faces, source, targets, deterministic=False
-        ),
-        rounds=_ROUNDS,
+        lambda: od.geodesic_walk.geodesic_path(vertices, faces, source, targets), rounds=_ROUNDS
     )
     assert offsets.shape == (n_paths + 1,)
 

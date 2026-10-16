@@ -112,3 +112,4 @@ Shelving decisions that are not obvious from the section titles:
         * [graph](api/ordito/graph.md)
         * [typing](api/ordito/typing.md)
         * [constants](api/ordito/constants.md)
+        * [config](api/ordito/config.md)

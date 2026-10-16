@@ -189,3 +189,4 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | [graph](api/ordito/graph.md) | Graph algorithms on sparse adjacency matrices and edge lists. |
 | [typing](api/ordito/typing.md) | Array type aliases and runtime rank checks. |
 | [constants](api/ordito/constants.md) | Shared numeric tolerances and sentinel values. |
+| [config](api/ordito/config.md) | Runtime settings: whether float reductions and scans repeat bit for bit on CUDA (`od.set_deterministic`, `with od.deterministic(False):`). |

@@ -482,7 +482,6 @@ def robust_laplacian(
     dtype: type = wp.float32,
     *,
     use_intrinsic_delaunay: bool = True,
-    deterministic: bool = True,
 ) -> odt.BsrMatrix[wp.float32]:
     """
     Cotangent Laplacian that a bad triangulation cannot poison, via mollification and flips.
@@ -520,13 +519,6 @@ def robust_laplacian(
         Flip to the intrinsic Delaunay triangulation first (default), the name and the default
         ``potpourri3d``'s solvers use. The vertex set — and so the matrix's shape and meaning — is
         the same either way; only the edges it sums over change.
-    deterministic
-        When ``True`` (the default), the mean edge length the margin scales with is summed in one
-        fixed order, so repeated calls return identical bits on CUDA. ``False`` adds its per-block
-        partial sums by atomics in arrival order
-        ([`mollify_intrinsic`][ordito.laplacian.mollify_intrinsic]), which saves a few microseconds
-        a call but lets its last bits change from call to call on CUDA. The CPU device is
-        deterministic either way.
 
     Returns
     -------
@@ -582,14 +574,10 @@ def robust_laplacian(
     """
     require_same_device(vertices=vertices, faces=faces)
     if use_intrinsic_delaunay:
-        intrinsic_faces, lengths, _ = od.remesh.intrinsic_delaunay(
-            vertices, faces, epsilon=epsilon, deterministic=deterministic
-        )
+        intrinsic_faces, lengths, _ = od.remesh.intrinsic_delaunay(vertices, faces, epsilon=epsilon)
     else:
         intrinsic_faces = faces
-        lengths, _ = mollify_intrinsic(
-            vertices, faces, epsilon=epsilon, deterministic=deterministic
-        )
+        lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
     entries = cotmatrix_entries_intrinsic(lengths, dtype=dtype)
     worst = _intrinsic_rounding_ratio(vertices.size, intrinsic_faces, lengths)
     # Assembled before the check is read, so the host queues it while the device runs the check.
@@ -647,11 +635,7 @@ def _warn_if_lengths_undetermined(worst: wp.array[wp.float64] | None) -> None:
 
 
 def mollify_intrinsic(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    epsilon: float = TOLERANCE_MOLLIFY,
-    *,
-    deterministic: bool = True,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], epsilon: float = TOLERANCE_MOLLIFY
 ) -> tuple[odt.Array2dFloat32, float]:
     """
     Add the smallest constant to every edge length that makes every triangle non-degenerate.
@@ -671,12 +655,6 @@ def mollify_intrinsic(
         ``(3 * n_faces,)`` triangle index buffer.
     epsilon
         Required margin, relative to the mean edge length.
-    deterministic
-        When ``True`` (the default), the mean edge length the margin scales with is summed in one
-        fixed order, so repeated calls return identical bits on CUDA. ``False`` adds its per-block
-        partial sums by atomics in arrival order ([`reduce.mean`][ordito.reduce.mean]), which saves
-        a few microseconds a call but lets its last bits change from call to call on CUDA. The CPU
-        device is deterministic either way.
 
     Returns
     -------
@@ -728,7 +706,7 @@ def mollify_intrinsic(
     # The margin scales with the *mean* edge length (matching intrinsic_delaunay's docstring and
     # this function's own), not the max: a single long edge on a graded mesh would otherwise inflate
     # delta far past what any degenerate face on the rest of the mesh actually needs.
-    scale = float(reduce_mean(edge_lengths, deterministic=deterministic))
+    scale = float(reduce_mean(edge_lengths))
     slack = odt.empty_1d(n_faces, wp.float32, device=device)
     _launch.launch(
         kernel_laplacian.triangle_inequality_slack,

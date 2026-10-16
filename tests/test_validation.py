@@ -1712,9 +1712,9 @@ def test_is_volume_arrival_order_agrees_with_the_default(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], inverted: bool
 ) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` decides as the default does.
+    Ordito against ordito: determinism off decides as the default does.
 
-    The flag only reaches the signed volume's block commit, whose last bits cannot flip the sign
+    The mode only reaches the signed volume's block commit, whose last bits cannot flip the sign
     of a volume this far from zero; ``inverted`` covers both answers.
     """
     mesh_tm, mesh_wp = sphere_irregular
@@ -1722,4 +1722,6 @@ def test_is_volume_arrival_order_agrees_with_the_default(
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_np, mesh_wp.points.device)
     fixed = od.validation.is_volume(vertices_wp, faces_wp)
     assert fixed is not inverted
-    assert od.validation.is_volume(vertices_wp, faces_wp, deterministic=False) is fixed
+    with od.config.deterministic(False):
+        arrival = od.validation.is_volume(vertices_wp, faces_wp)
+    assert arrival is fixed

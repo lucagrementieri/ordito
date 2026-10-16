@@ -1378,22 +1378,20 @@ def test_mollification_arrival_order_agrees_with_the_default(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], function: str
 ) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` mollifies as the default does, to rounding.
+    Ordito against ordito: determinism off mollifies as the default does, to rounding.
 
-    The flag reaches only the mean edge length the margin scales with, so the two arms may differ
+    The mode reaches only the mean edge length the margin scales with, so the two arms may differ
     in its last bits on CUDA and nowhere else; the reference comparisons above pin the default.
     """
     _, mesh_wp = sphere_irregular
     if function == "mollify_intrinsic":
         fixed = od.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)[0].numpy()
-        arrival = od.laplacian.mollify_intrinsic(
-            mesh_wp.points, mesh_wp.indices, deterministic=False
-        )[0].numpy()
+        with od.config.deterministic(False):
+            arrival = od.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)[0].numpy()
     else:
         fixed_csr = bsr_to_csr(od.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices))
-        arrival_csr = bsr_to_csr(
-            od.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices, deterministic=False)
-        )
+        with od.config.deterministic(False):
+            arrival_csr = bsr_to_csr(od.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices))
         assert np.ptp(fixed_csr.data) > 1e-3
         assert sparse_allclose(arrival_csr, fixed_csr, rtol=1e-5, atol=1e-6)
         return

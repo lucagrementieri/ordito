@@ -809,7 +809,7 @@ def test_cdf_samplers_are_deterministic_on_a_large_mesh(device: str, sampler: st
 
 def test_sample_surface_arrival_order_scan_draws_the_same_points(device: str) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` draws the default's points, to rounding.
+    Ordito against ordito: determinism off draws the default's points, to rounding.
 
     The two scans of a 1.3M-face CDF sum in different orders, and their float32 rounding there is
     about one face's share of the total: a seeded draw keeps its random numbers, so a sample can
@@ -820,9 +820,8 @@ def test_sample_surface_arrival_order_scan_draws_the_same_points(device: str) ->
     """
     vertices, faces = od.creation.icosphere(8, device=device)
     fixed, fixed_faces = od.sample.sample_surface(vertices, faces, 100_000, seed=7)
-    fast, fast_faces = od.sample.sample_surface(
-        vertices, faces, 100_000, seed=7, deterministic=False
-    )
+    with od.config.deterministic(False):
+        fast, fast_faces = od.sample.sample_surface(vertices, faces, 100_000, seed=7)
     assert np.abs(fixed_faces.numpy() - fast_faces.numpy()).max() <= 2
     assert np.allclose(np.linalg.norm(fast.numpy(), axis=1), 1.0, atol=1e-5)
     if wp.get_device(device).is_cpu:
@@ -888,9 +887,9 @@ def test_resolve_seed_passes_a_seed_through_and_draws_one_otherwise() -> None:
 )
 def test_arrival_order_scan_samplers_draw_valid_samples(device: str, sampler: str) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` draws a valid sample of the default's size.
+    Ordito against ordito: determinism off draws a valid sample of the default's size.
 
-    The flag only swaps the fixed-order scan of the CDF for CUB's, so a seeded draw keeps its
+    The mode only swaps the fixed-order scan of the CDF for CUB's, so a seeded draw keeps its
     random numbers and a sample can move only to a neighbouring CDF entry: the volume samples stay
     inside the unit sphere, and the surface samplers return the same count on the surface. On the
     CPU device both arms are one sequential scan and the draws are equal.
@@ -898,13 +897,15 @@ def test_arrival_order_scan_samplers_draw_valid_samples(device: str, sampler: st
     vertices, faces = od.creation.icosphere(4, device=device)
     if sampler == "sample_volume":
         fixed = od.sample.sample_volume(vertices, faces, 2000, seed=3)
-        arrival = od.sample.sample_volume(vertices, faces, 2000, seed=3, deterministic=False)
+        with od.config.deterministic(False):
+            arrival = od.sample.sample_volume(vertices, faces, 2000, seed=3)
         assert np.linalg.norm(arrival.numpy(), axis=1).max() <= 1.0 + 1e-5
     else:
         draw = getattr(od.sample, sampler)
         size = 200 if sampler == "sample_surface_poisson_disk" else 0.15
         fixed = draw(vertices, faces, size, seed=3)[0]
-        arrival = draw(vertices, faces, size, seed=3, deterministic=False)[0]
+        with od.config.deterministic(False):
+            arrival = draw(vertices, faces, size, seed=3)[0]
         assert np.allclose(np.linalg.norm(arrival.numpy(), axis=1), 1.0, atol=1e-2)
         if sampler == "sample_surface_poisson_disk":
             assert arrival.shape == fixed.shape

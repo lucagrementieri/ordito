@@ -485,14 +485,15 @@ def test_loss_arrival_order_agrees_with_the_default(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], function: str
 ) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` returns the default's mean to rounding.
+    Ordito against ordito: determinism off returns the default's mean to rounding.
 
-    The flag only swaps the mean's fixed-order block commit for one atomic per block; the
+    The mode only swaps the mean's fixed-order block commit for one atomic per block; the
     reference comparisons above pin the default.
     """
     _, mesh_wp = sphere_irregular
     loss = getattr(od.energies, function)
     fixed = loss(mesh_wp.points, mesh_wp.indices)
-    arrival = loss(mesh_wp.points, mesh_wp.indices, deterministic=False)
+    with od.config.deterministic(False):
+        arrival = loss(mesh_wp.points, mesh_wp.indices)
     assert fixed > 0.0
     assert np.isclose(fixed, arrival, rtol=1e-5, atol=0.0)

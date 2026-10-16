@@ -13,6 +13,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
 from ordito.array import _sorted_copy, astype  # pyright: ignore[reportPrivateUsage]
+from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TILE_2D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import reduce as kernel_reduce
@@ -279,28 +280,23 @@ def any(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.ar
 
 
 @overload
-def sum(array: wp.array[wp.vec3], *, axis: None = ..., deterministic: bool = ...) -> wp.vec3: ...
+def sum(array: wp.array[wp.vec3], *, axis: None = ...) -> wp.vec3: ...
 @overload
-def sum(array: wp.array[wp.vec4], *, axis: None = ..., deterministic: bool = ...) -> wp.vec4: ...
+def sum(array: wp.array[wp.vec4], *, axis: None = ...) -> wp.vec4: ...
 @overload
-def sum(array: odt.ArrayNdInt, *, axis: None = ..., deterministic: bool = ...) -> int: ...
+def sum(array: odt.ArrayNdInt, *, axis: None = ...) -> int: ...
 @overload
-def sum(array: odt.ArrayNdFloat, *, axis: None = ..., deterministic: bool = ...) -> float: ...
+def sum(array: odt.ArrayNdFloat, *, axis: None = ...) -> float: ...
 @overload
-def sum(
-    array: odt.Array2dScalar, *, axis: Literal[0, 1], deterministic: bool = ...
-) -> odt.Array1dScalar: ...
+def sum(array: odt.Array2dScalar, *, axis: Literal[0, 1]) -> odt.Array1dScalar: ...
 @overload
-def sum(array: wp.array[wp.bool], *, axis: None = ..., deterministic: bool = ...) -> int: ...
+def sum(array: wp.array[wp.bool], *, axis: None = ...) -> int: ...
 @overload
-def sum(
-    array: wp.array[wp.bool], *, axis: Literal[0, 1], deterministic: bool = ...
-) -> odt.Array1dInt32: ...
+def sum(array: wp.array[wp.bool], *, axis: Literal[0, 1]) -> odt.Array1dInt32: ...
 def sum(
     array: odt.ArrayNdScalar | wp.array[wp.bool] | wp.array[wp.vec3] | wp.array[wp.vec4],
     *,
     axis: Literal[0, 1] | None = None,
-    deterministic: bool = True,
 ) -> float | int | odt.Array1dScalar | odt.Array1dInt32 | wp.vec3 | wp.vec4:
     """
     Sum of ``array``.
@@ -324,12 +320,6 @@ def sum(
     axis
         ``None`` for a global scalar result. ``0`` or ``1`` for a per-axis 1D
         result (rank-2 input only).
-    deterministic
-        When ``True`` (the default), a floating-point sum adds its per-block partial sums in one
-        fixed order, so repeated calls return identical bits on CUDA. ``False`` adds them by
-        atomics in arrival order, which is faster for a per-axis sum but lets the last bits change
-        from call to call on CUDA. Integer, boolean and vector sums are exact or fixed-order
-        either way, and so is the CPU device.
 
     Returns
     -------
@@ -396,27 +386,22 @@ def sum(
         return cast(odt.Array1dInt32, result)
     return cast(
         float | int | odt.Array1dScalar,
-        _reduce_scalar(
-            cast(odt.ScalarArray, array), axis, _SCALAR_REDUCE["sum"], deterministic=deterministic
-        ),
+        _reduce_scalar(cast(odt.ScalarArray, array), axis, _SCALAR_REDUCE["sum"]),
     )
 
 
 @overload
-def mean(array: wp.array[wp.vec3], *, axis: None = ..., deterministic: bool = ...) -> wp.vec3: ...
+def mean(array: wp.array[wp.vec3], *, axis: None = ...) -> wp.vec3: ...
+@overload
+def mean(array: odt.ArrayNdScalar | wp.array[wp.bool], *, axis: None = ...) -> float: ...
 @overload
 def mean(
-    array: odt.ArrayNdScalar | wp.array[wp.bool], *, axis: None = ..., deterministic: bool = ...
-) -> float: ...
-@overload
-def mean(
-    array: odt.Array2dScalar | wp.array[wp.bool], *, axis: Literal[0, 1], deterministic: bool = ...
+    array: odt.Array2dScalar | wp.array[wp.bool], *, axis: Literal[0, 1]
 ) -> odt.Array1dFloat32: ...
 def mean(
     array: odt.ArrayNdScalar | wp.array[wp.bool] | wp.array[wp.vec3],
     *,
     axis: Literal[0, 1] | None = None,
-    deterministic: bool = True,
 ) -> float | odt.Array1dFloat32 | wp.vec3:
     """
     Arithmetic mean of ``array``.
@@ -437,12 +422,6 @@ def mean(
     axis
         ``None`` for a global scalar result. ``0`` or ``1`` for a per-axis 1D
         result (rank-2 input only).
-    deterministic
-        When ``True`` (the default), the sum behind a floating-point mean adds its per-block
-        partial sums in one fixed order, so repeated calls return identical bits on CUDA.
-        ``False`` adds them by atomics in arrival order, which is faster for a per-axis mean but
-        lets the last bits change from call to call on CUDA. Integer, boolean and vector sums are
-        exact or fixed-order either way, and so is the CPU device.
 
     Returns
     -------
@@ -482,9 +461,9 @@ def mean(
         if array.dtype == wp.vec3:
             vectors = cast("wp.array[wp.vec3]", array)
             return sum(vectors) / float(array.size)
-        total = sum(cast(odt.ArrayNdScalar, array), deterministic=deterministic)
+        total = sum(cast(odt.ArrayNdScalar, array))
         return float(total) / array.size
-    sums = sum(cast(odt.Array2dScalar, array), axis=axis, deterministic=deterministic)
+    sums = sum(cast(odt.Array2dScalar, array), axis=axis)
     out = astype(sums, wp.float32)
     _launch.map(wp.div, out, wp.float32(array.shape[axis]), out=out)
     return cast(odt.Array1dFloat32, out)
@@ -825,11 +804,7 @@ def _launch_global_vec3_minmax(array: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.ve
 
 
 def _reduce_scalar(
-    array: odt.ArrayNdScalar,
-    axis: Literal[0, 1] | None,
-    spec: _ScalarReduceSpec,
-    *,
-    deterministic: bool = True,
+    array: odt.ArrayNdScalar, axis: Literal[0, 1] | None, spec: _ScalarReduceSpec
 ) -> (
     float
     | int
@@ -841,22 +816,20 @@ def _reduce_scalar(
     _validate_scalar_array(array, spec, axis)
 
     if array.ndim == 2 and axis is not None:
-        return _launch_axis_scalar(
-            cast("odt.Array2dScalar", array), axis, spec, deterministic=deterministic
-        )
+        return _launch_axis_scalar(cast("odt.Array2dScalar", array), axis, spec)
 
-    return _launch_global_scalar_tiled(array, spec, deterministic=deterministic)
+    return _launch_global_scalar_tiled(array, spec)
 
 
 def _launch_global_scalar_tiled(
-    array: odt.ArrayNdScalar, spec: _ScalarReduceSpec, *, deterministic: bool = True
+    array: odt.ArrayNdScalar, spec: _ScalarReduceSpec
 ) -> float | int | tuple[float, float] | tuple[int, int]:
     flat = _flattened_for_global(array)
     if (
-        deterministic
-        and flat is not None
+        flat is not None
         and spec.name == "sum"
         and array.dtype in (wp.float32, wp.float64)
+        and is_deterministic()
     ):
         total = _sum_in_fixed_order(
             kernel_reduce.SUM1D_PARTIALS[array.dtype], [flat], flat.size, array.dtype
@@ -945,11 +918,7 @@ def _flattened_for_global(array: odt.ArrayNdScalar) -> odt.Array1dScalar | None:
 
 
 def _launch_axis_scalar(
-    array: odt.Array2dScalar,
-    axis: Literal[0, 1],
-    spec: _ScalarReduceSpec,
-    *,
-    deterministic: bool = True,
+    array: odt.Array2dScalar, axis: Literal[0, 1], spec: _ScalarReduceSpec
 ) -> odt.Array1dScalar | tuple[odt.Array1dScalar, odt.Array1dScalar]:
     n_rows, n_cols = int(array.shape[0]), int(array.shape[1])
     n_out, reduced = (n_rows, n_cols) if axis == 1 else (n_cols, n_rows)
@@ -990,10 +959,10 @@ def _launch_axis_scalar(
         return cast(odt.Array1dScalar, out_min), cast(odt.Array1dScalar, out_max)
 
     if (
-        deterministic
-        and n_tiles > 1
+        n_tiles > 1
         and spec.name == "sum"
         and array.dtype in (wp.float32, wp.float64)
+        and is_deterministic()
     ):
         # One partial per tile, added in a fixed order, so a float sum repeats bit for bit on CUDA.
         # A single tile per slot commits one atomic onto the zero seed, which is already exact.

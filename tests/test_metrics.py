@@ -1458,9 +1458,9 @@ def test_chamfer_arrival_order_agrees_with_the_default(
     point_reduction: Literal["mean", "sum"],
 ) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` returns the default's Chamfer to rounding.
+    Ordito against ordito: determinism off returns the default's Chamfer to rounding.
 
-    The flag only swaps the unsquared sum's fixed-order block commit for one atomic per block;
+    The mode only swaps the unsquared sum's fixed-order block commit for one atomic per block;
     the reference comparisons above pin the default. The second operand is the mesh moved off
     itself, so neither direction is zero.
     """
@@ -1470,31 +1470,21 @@ def test_chamfer_arrival_order_agrees_with_the_default(
     moved_wp = points_to_warp(moved_np, device)
     faces_wp = mesh_wp.indices
 
-    def chamfer(deterministic: bool) -> float:
+    def chamfer() -> float:
         if function == "chamfer_points_to_points":
             return od.metrics.chamfer_points_to_points(
-                mesh_wp.points,
-                moved_wp,
-                point_reduction=point_reduction,
-                deterministic=deterministic,
+                mesh_wp.points, moved_wp, point_reduction=point_reduction
             )
         if function == "chamfer_points_to_mesh":
             return od.metrics.chamfer_points_to_mesh(
-                moved_wp,
-                mesh_wp.points,
-                faces_wp,
-                point_reduction=point_reduction,
-                deterministic=deterministic,
+                moved_wp, mesh_wp.points, faces_wp, point_reduction=point_reduction
             )
         return od.metrics.chamfer_mesh_to_mesh(
-            mesh_wp.points,
-            faces_wp,
-            moved_wp,
-            faces_wp,
-            point_reduction=point_reduction,
-            deterministic=deterministic,
+            mesh_wp.points, faces_wp, moved_wp, faces_wp, point_reduction=point_reduction
         )
 
-    fixed = chamfer(True)
+    fixed = chamfer()
     assert fixed > 1e-3
-    assert np.isclose(fixed, chamfer(False), rtol=1e-5, atol=0.0)
+    with od.config.deterministic(False):
+        arrival = chamfer()
+    assert np.isclose(fixed, arrival, rtol=1e-5, atol=0.0)

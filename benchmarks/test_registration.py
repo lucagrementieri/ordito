@@ -299,9 +299,7 @@ def test_procrustes(bench_case: BenchCase) -> None:
             device=bench_case.device,
         )
         matrix, _transformed, _cost = bench_case.run(
-            lambda: od.registration.procrustes(
-                source, target, reflection=False, scale=False, deterministic=False
-            )
+            lambda: od.registration.procrustes(source, target, reflection=False, scale=False)
         )
         assert matrix.shape == (1,)
     elif bench_case.kind == "trimesh":
@@ -398,11 +396,7 @@ def test_icp_point_cloud(bench_case: BenchCase) -> None:
         source, target = _source_wp(bench_case), bench_case.vertices_wp
         matrix, _transformed, _cost = bench_case.run(
             lambda: od.registration.icp(
-                source,
-                target,
-                max_iterations=_ICP_ITERATIONS,
-                threshold=-math.inf,
-                deterministic=False,
+                source, target, max_iterations=_ICP_ITERATIONS, threshold=-math.inf
             )
         )
         assert matrix.shape == (1,)
@@ -458,9 +452,7 @@ def test_icp_convergence(bench_case: BenchCase, degrees: float) -> None:
     """
     source, target = _source_wp(bench_case, degrees), bench_case.vertices_wp
     matrix, _transformed, _cost = bench_case.run(
-        lambda: od.registration.icp(
-            source, target, max_iterations=_ICP_ITERATIONS, deterministic=False
-        )
+        lambda: od.registration.icp(source, target, max_iterations=_ICP_ITERATIONS)
     )
     assert matrix.shape == (1,)
 
@@ -528,12 +520,7 @@ def test_icp_mesh(bench_case: BenchCase) -> None:
     source, vertices, faces = _source_wp(bench_case), bench_case.vertices_wp, bench_case.faces_wp
     matrix, _transformed, _cost = bench_case.run(
         lambda: od.registration.icp(
-            source,
-            vertices,
-            faces,
-            max_iterations=_ICP_ITERATIONS,
-            threshold=-math.inf,
-            deterministic=False,
+            source, vertices, faces, max_iterations=_ICP_ITERATIONS, threshold=-math.inf
         )
     )
     assert matrix.shape == (1,)
@@ -594,7 +581,6 @@ def test_icp_point_to_plane_cloud(bench_case: BenchCase) -> None:
                 target_normals=normals,
                 max_iterations=_ICP_ITERATIONS,
                 threshold=-math.inf,
-                deterministic=False,
             )
         )
         assert matrix.shape == (1,)
@@ -628,7 +614,6 @@ def test_icp_point_to_plane_tukey(bench_case: BenchCase) -> None:
                 threshold=-math.inf,
                 robust_kernel="tukey",
                 robust_scale=tukey_k,
-                deterministic=False,
             )
         )
         assert matrix.shape == (1,)
@@ -666,7 +651,6 @@ def test_icp_point_to_plane_mesh(bench_case: BenchCase) -> None:
             max_iterations=_ICP_ITERATIONS,
             threshold=-math.inf,
             robust_kernel="tukey",
-            deterministic=False,
         )
     )
     assert matrix.shape == (1,)

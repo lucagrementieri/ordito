@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         bounds,
         cholesky,
         combine,
+        config,
         constants,
         creation,
         curvature,
@@ -81,6 +82,7 @@ if TYPE_CHECKING:
         visibility,
         voxels,
     )
+    from ordito.config import deterministic, is_deterministic, set_deterministic
     from ordito.mesh import Trimesh
 
 __all__ = [
@@ -91,9 +93,11 @@ __all__ = [
     "bounds",
     "cholesky",
     "combine",
+    "config",
     "constants",
     "creation",
     "curvature",
+    "deterministic",
     "edges",
     "energies",
     "geodesic_walk",
@@ -106,6 +110,7 @@ __all__ = [
     "interpolation",
     "intersection",
     "io",
+    "is_deterministic",
     "laplacian",
     "levelset",
     "linalg",
@@ -126,6 +131,7 @@ __all__ = [
     "sample",
     "seams",
     "selection",
+    "set_deterministic",
     "smoothing",
     "tangent_space",
     "texture",
@@ -141,12 +147,15 @@ __all__ = [
 # The submodules ``__getattr__`` will resolve. ``Trimesh`` is not one of them -- it is a class in
 # ``ordito.mesh`` and is handled separately below, because importing it eagerly here is exactly
 # the whole-package pull this file exists to avoid.
-_LAZY_SUBMODULES = frozenset(__all__) - {"Trimesh"}
+# ``ordito.config``'s three setting functions are reachable at the top level too, like
+# ``torch.use_deterministic_algorithms``; they resolve to the same objects, on first touch.
+_CONFIG_NAMES = frozenset({"deterministic", "is_deterministic", "set_deterministic"})
+_LAZY_SUBMODULES = frozenset(__all__) - {"Trimesh"} - _CONFIG_NAMES
 
 
 def __getattr__(name: str) -> object:
     """
-    Resolve a submodule, ``Trimesh``, or ``__version__`` on first access (:pep:`562`).
+    Resolve a submodule, ``Trimesh``, a setting or ``__version__`` on first access (:pep:`562`).
 
     The result is cached in this module's namespace, so only the first access reaches here and
     every later ``ordito.<name>`` is an ordinary attribute lookup.
@@ -159,12 +168,13 @@ def __getattr__(name: str) -> object:
     Returns
     -------
     object
-        The imported submodule, the ``Trimesh`` class, or the installed version string.
+        The imported submodule, the ``Trimesh`` class, one of ``ordito.config``'s setting
+        functions, or the installed version string.
 
     Raises
     ------
     AttributeError
-        If ``name`` is not a public submodule, ``Trimesh`` or ``__version__``. Raising this rather
+        If ``name`` is not a public name or ``__version__``. Raising this rather
         than letting an ``ImportError`` escape is what keeps ``hasattr`` and
         ``getattr(..., default)`` working.
     """
@@ -183,6 +193,8 @@ def __getattr__(name: str) -> object:
             value = "0.0.0+unknown"
     elif name == "Trimesh":
         value = importlib.import_module("ordito.mesh").Trimesh
+    elif name in _CONFIG_NAMES:
+        value = getattr(importlib.import_module("ordito.config"), name)
     elif name in _LAZY_SUBMODULES:
         value = importlib.import_module(f"ordito.{name}")
     else:

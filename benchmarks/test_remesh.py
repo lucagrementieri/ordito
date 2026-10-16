@@ -608,11 +608,7 @@ def test_isotropic_remesh(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _new_vertices, new_faces = bench_case.run(
         lambda: od.remesh.isotropic_remesh(
-            vertices,
-            faces,
-            target_length=target,
-            iterations=_REMESH_ITERATIONS,
-            deterministic=False,
+            vertices, faces, target_length=target, iterations=_REMESH_ITERATIONS
         ),
         rounds=_ROUNDS,
     )
@@ -634,7 +630,7 @@ def test_intrinsic_delaunay(bench_case: BenchCase) -> None:
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         intrinsic_faces, lengths, _ = bench_case.run(
-            lambda: od.remesh.intrinsic_delaunay(vertices, faces, deterministic=False)
+            lambda: od.remesh.intrinsic_delaunay(vertices, faces)
         )
         assert intrinsic_faces.shape == faces.shape
         assert lengths.shape == (bench_case.n_faces, 3)

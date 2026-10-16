@@ -345,10 +345,7 @@ def test_mean_edge_length(bench_case: BenchCase) -> None:
     """
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        assert (
-            bench_case.run(lambda: od.edges.mean_edge_length(vertices, faces, deterministic=False))
-            >= 0.0
-        )
+        assert bench_case.run(lambda: od.edges.mean_edge_length(vertices, faces)) >= 0.0
     elif bench_case.kind == "trimesh":  # mean of all per-face edge norms
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
 

@@ -65,22 +65,20 @@ def test_volume(request: pytest.FixtureRequest, mesh_name: str):
     assert np.isclose(volume_pv, mesh_tm.volume, rtol=1e-5)
 
 
-@pytest.mark.parametrize("deterministic", [True, False])
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 def test_volume_and_moments_on_a_large_mesh(device: str, deterministic: bool) -> None:
     """
     Class A: volume and moments of a 1.3M-face sphere against trimesh, on both commits.
 
     The fixtures above fit in a few blocks; this mesh spans 1280 of them, where one atomic commit
-    per block (``deterministic=False``) added the block sums in arrival order and moved the last
+    per block (determinism off) added the block sums in arrival order and moved the last
     bits from call to call on CUDA. Both arms must match trimesh's float64 integrals, and the
     fixed-order arm must return the same bits on a second call.
     """
     vertices_wp, faces_wp = od.creation.icosphere(8, device=device)
     mesh_tm = tm.Trimesh(vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3), process=False)
-    volume_wp = od.measures.volume(vertices_wp, faces_wp, deterministic=deterministic)
-    volume_m, center_wp, inertia_wp = od.measures.moments(
-        vertices_wp, faces_wp, deterministic=deterministic
-    )
+    volume_wp = od.measures.volume(vertices_wp, faces_wp)
+    volume_m, center_wp, inertia_wp = od.measures.moments(vertices_wp, faces_wp)
     assert np.isclose(volume_wp, mesh_tm.volume, rtol=1e-5)
     assert np.isclose(volume_m, mesh_tm.volume, rtol=1e-5)
     assert np.allclose(odt.vec3_floats(center_wp), mesh_tm.center_mass, rtol=1e-4, atol=1e-5)

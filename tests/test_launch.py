@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import warp as wp
 
+import ordito.config as od_config
 from ordito import _launch
 from tests.conversions import warp_empty
 
@@ -207,14 +208,14 @@ def test_array_scan_matches_warp(device: str, inclusive: bool, dtype: type) -> N
     assert np.array_equal(got.numpy(), expected.numpy())
 
 
-@pytest.mark.parametrize("deterministic", [True, False])
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 @pytest.mark.parametrize("n", [1, 2047, 2048, 2049, 5 * 2048 + 3, 100_000])
 def test_float_scan_matches_a_float64_cumsum(device: str, n: int, deterministic: bool) -> None:
     """
     Not a library comparison: the float32 inclusive scan against NumPy's float64 cumulative sum.
 
-    Both of ``array_scan``'s float32 routes on CUDA (the fixed-order tile scan, and CUB's under
-    ``deterministic=False``), and the sequential CPU scan, must agree with the exact prefix sums to
+    Both of ``array_scan``'s float32 routes on CUDA (the fixed-order tile scan, and CUB's with
+    determinism off), and the sequential CPU scan, must agree with the exact prefix sums to
     float32 rounding, in place as well as out of place (bit for bit, for the fixed-order scan).
     The sizes straddle the tile scan's chunk
     (one chunk, its boundary, a ragged last chunk, many chunks). The positive inputs keep every
@@ -223,9 +224,9 @@ def test_float_scan_matches_a_float64_cumsum(device: str, n: int, deterministic:
     values_np = np.random.default_rng(3).random(n).astype(np.float32) + 0.5
     values = wp.array(values_np, dtype=wp.float32, device=device)
     out = wp.empty_like(values)
-    _launch.array_scan(values, out, inclusive=True, deterministic=deterministic)
+    _launch.array_scan(values, out, inclusive=True)
     assert np.allclose(out.numpy(), np.cumsum(values_np, dtype=np.float64), rtol=1e-5, atol=0.0)
-    _launch.array_scan(values, values, inclusive=True, deterministic=deterministic)
+    _launch.array_scan(values, values, inclusive=True)
     # CUB's in-place scan need not reproduce its out-of-place bits; the fixed-order one must.
     if deterministic:
         assert np.array_equal(values.numpy(), out.numpy())
@@ -252,6 +253,50 @@ def test_deterministic_float_scan_repeats_bit_for_bit(device: str, n: int) -> No
     for _ in range(20):
         _launch.array_scan(values, out, inclusive=True)
         assert np.array_equal(out.numpy(), first_np)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_float_scan_route_follows_the_setting(
+    device: str, enabled: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the fixed-order float32 scan runs exactly when determinism is on.
+
+    Read at the call, so the same buffer takes the tile scan inside ``deterministic(True)`` and
+    CUB's inside ``deterministic(False)`` on CUDA. The CPU scan is sequential and takes neither.
+    """
+    calls: list[int] = []
+    fixed_order = _launch._float_scan_fixed_order  # pyright: ignore[reportPrivateUsage]
+
+    def counting(
+        in_array: wp.array[wp.float32], out_array: wp.array[wp.float32], size: int
+    ) -> None:
+        calls.append(size)
+        fixed_order(in_array, out_array, size)
+
+    monkeypatch.setattr(_launch, "_float_scan_fixed_order", counting)
+    values = wp.array(np.ones(5000, dtype=np.float32), dtype=wp.float32, device=device)
+    out = wp.empty_like(values)
+    with od_config.deterministic(enabled):
+        _launch.array_scan(values, out, inclusive=True)
+    assert np.array_equal(out.numpy(), np.arange(1, 5001, dtype=np.float32))
+    assert calls == ([5000] if enabled and wp.get_device(device).is_cuda else [])
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_block_partials_follow_the_setting(device: str, enabled: bool) -> None:
+    """
+    Ordito against ordito: a block commit's buffer holds fold rows exactly when determinism is on.
+
+    On, the buffer is the result slots, the ticket and one row per block, which selects the
+    fixed-order fold in ``kernels/reduce.store_block_*``; off, the result slots alone, which select
+    the atomic commit.
+    """
+    with od_config.deterministic(enabled):
+        buffer, stride = _launch.block_partials(7, 3, wp.float32, device)
+    assert stride == 3
+    assert buffer.size == ((7 + 1) * 3 + 1 if enabled else 3)
+    assert not buffer.numpy().any()
 
 
 @pytest.mark.parametrize("end_bit", [None, 12])

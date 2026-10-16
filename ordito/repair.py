@@ -2176,11 +2176,7 @@ def make_winding_consistent(
 
 
 def make_volume(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    *,
-    multibody: bool = False,
-    deterministic: bool = True,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, multibody: bool = False
 ) -> wp.array[wp.int32]:
     """
     Orient faces so the mesh encloses a positive signed volume (normals point outward).
@@ -2199,13 +2195,6 @@ def make_volume(
     multibody
         When ``True`` correct each connected component independently rather than the mesh as a
         whole.
-    deterministic
-        When ``True`` (the default), the signed volume the decision reads is summed in one fixed
-        order, so repeated calls return the same answer on CUDA. ``False`` adds its per-block
-        partial sums by atomics in arrival order ([`volume`][ordito.measures.volume]), which saves
-        a few microseconds a call but lets the volume's last bits change from call to call on
-        CUDA, which decides differently only for a volume within rounding of zero. ``multibody``
-        reads no whole-mesh volume, and the CPU device is deterministic either way.
 
     Returns
     -------
@@ -2285,7 +2274,7 @@ def make_volume(
     ):
         return _launch.clone(faces)
 
-    if od.measures.volume(vertices, faces, deterministic=deterministic) >= 0.0:
+    if od.measures.volume(vertices, faces) >= 0.0:
         return _launch.clone(faces)
 
     out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
@@ -2296,11 +2285,7 @@ def make_volume(
 
 
 def make_normals_outward(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    *,
-    multibody: bool = False,
-    deterministic: bool = True,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, multibody: bool = False
 ) -> wp.array[wp.int32]:
     """
     Make winding consistent and orient normals outward (winding fix followed by inversion fix).
@@ -2320,12 +2305,6 @@ def make_normals_outward(
     multibody
         Forwarded to [`make_volume`][ordito.repair.make_volume]: correct each connected component
         independently.
-    deterministic
-        Forwarded to [`make_volume`][ordito.repair.make_volume]. When ``True`` (the default), the
-        signed volume the flip decision reads is summed in one fixed order, so repeated calls
-        return the same faces on CUDA; ``False`` sums it by atomics in arrival order, faster but
-        free to change the volume's last bits from call to call on CUDA. The CPU device is
-        deterministic either way.
 
     Returns
     -------
@@ -2365,7 +2344,7 @@ def make_normals_outward(
     """
     require_same_device(vertices=vertices, faces=faces)
     wound = make_winding_consistent(faces, n_vertices=vertices.size)
-    return make_volume(vertices, wound, multibody=multibody, deterministic=deterministic)
+    return make_volume(vertices, wound, multibody=multibody)
 
 
 def remove_folded_faces(
@@ -2738,7 +2717,6 @@ def remove_tunnels(
     *,
     metric: str = "plane_normalized",
     max_iter: int = 100,
-    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], int]:
     """
     Remove thin handles by cutting along their short tunnel loops and sealing the two rims.
@@ -2804,13 +2782,6 @@ def remove_tunnels(
         Sweep cap handed to [`shorten_loop`][ordito.geodesic_walk.shorten_loop]. Shortening is what
         makes the length test meaningful: a tree-cotree loop around a thin handle can be many times
         the handle's own girth, so an unshortened basis under-reports every tunnel.
-    deterministic
-        When ``True`` (the default), a loop longer than one reduction block is measured with its
-        per-block partial lengths added in one fixed order, so repeated calls cut the same loops
-        on CUDA. ``False`` adds them by atomics in arrival order
-        ([`polyline_length`][ordito.polyline.polyline_length]), which is faster but lets such a
-        loop's length change in its last bits from call to call on CUDA, and with it the order of
-        two loops of equal length. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -2869,7 +2840,7 @@ def remove_tunnels(
     require_same_device(vertices=vertices, faces=faces)
     if max_length < 0.0:
         raise ValueError(f"max_length must be non-negative, got {max_length}")
-    short = _shortened_basis(vertices, faces, None, max_iter, deterministic=deterministic)
+    short = _shortened_basis(vertices, faces, None, max_iter)
     if not short:
         return vertices, faces, 0
     selected = _disjoint_loops([loop for length, loop in short if length <= max_length])
@@ -2880,9 +2851,7 @@ def remove_tunnels(
         # handle's own short loop first.
         roots = list(dict.fromkeys(int(loop[0]) for _, loop in short))
         for root in roots:
-            candidates = _shortened_basis(
-                vertices, faces, root, max_iter, deterministic=deterministic
-            )
+            candidates = _shortened_basis(vertices, faces, root, max_iter)
             selected = _disjoint_loops(
                 [loop for length, loop in candidates if length <= max_length]
             )
@@ -2910,12 +2879,7 @@ def remove_tunnels(
 
 
 def _shortened_basis(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    root: int | None,
-    max_iter: int,
-    *,
-    deterministic: bool,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], root: int | None, max_iter: int
 ) -> list[tuple[float, np.ndarray]]:
     """
     Shorten and measure the homology basis through ``root``, as ``(length, loop)`` pairs.
@@ -2932,18 +2896,12 @@ def _shortened_basis(
     shortened, shortened_offsets, _sweeps = od.geodesic_walk.shorten_loop_with_offsets(
         vertices, faces, loops, loop_offsets, max_iter=max_iter
     )
-    lengths, loops_np = _measure_loops(
-        vertices, shortened, shortened_offsets, deterministic=deterministic
-    )
+    lengths, loops_np = _measure_loops(vertices, shortened, shortened_offsets)
     return sorted(zip(lengths, loops_np, strict=True), key=lambda pair: pair[0])
 
 
 def _measure_loops(
-    vertices: wp.array[wp.vec3],
-    packed: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    *,
-    deterministic: bool,
+    vertices: wp.array[wp.vec3], packed: wp.array[wp.int32], offsets: wp.array[wp.int32]
 ) -> tuple[list[float], list[np.ndarray]]:
     """
     Measure every loop's closed length, and read every loop's indices back, in one pass each.
@@ -2953,7 +2911,7 @@ def _measure_loops(
     a polyline of one block. The sort that follows keeps
     equal lengths in basis order, and a regular fixture has many, so any other summation order
     would change which loops are cut. A loop longer than one block is measured on its own, its
-    block sums committed in a fixed order only with ``deterministic``.
+    block sums committed in a fixed order.
     """
     device = vertices.device
     n_loops = offsets.size - 1
@@ -2971,9 +2929,7 @@ def _measure_loops(
     sizes_np = np.diff(bounds_np)
     for index in np.flatnonzero(sizes_np > int(kernel_reduce.ITEMS_PER_BLOCK_1D)):
         start, stop = int(bounds_np[index]), int(bounds_np[index + 1])
-        lengths_list[index] = _cycle_length(
-            vertices, odt.as_dense(packed[start:stop]), deterministic=deterministic
-        )
+        lengths_list[index] = _cycle_length(vertices, odt.as_dense(packed[start:stop]))
     packed_np = packed.numpy()
     return lengths_list, [
         packed_np[start:stop]
@@ -3105,13 +3061,11 @@ def _cut_along_loops(
     return od.seams.cut_along_edges(vertices, faces, odt.as_array2d(cut_edges, wp.int32))
 
 
-def _cycle_length(
-    vertices: wp.array[wp.vec3], loop: wp.array[wp.int32], *, deterministic: bool
-) -> float:
+def _cycle_length(vertices: wp.array[wp.vec3], loop: wp.array[wp.int32]) -> float:
     """Length of a closed vertex-index cycle, gathered onto its positions."""
     points = _launch.empty(loop.size, dtype=wp.vec3, device=vertices.device)
     _launch.copy(points, vertices[loop])
-    return od.polyline.polyline_length(points, closed=True, deterministic=deterministic)
+    return od.polyline.polyline_length(points, closed=True)
 
 
 def flip_t_vertices(

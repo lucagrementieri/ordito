@@ -37,12 +37,7 @@ from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
 
 
-def volume(
-    vertices: wp.array[wp.vec3] | wp.array[wp.vec3d],
-    faces: wp.array[wp.int32],
-    *,
-    deterministic: bool = True,
-) -> float:
+def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.int32]) -> float:
     """
     Signed volume enclosed by the mesh.
 
@@ -60,11 +55,6 @@ def volume(
         [`filter_laplacian`][ordito.smoothing.filter_laplacian]'s volume constraint does.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -114,11 +104,7 @@ def volume(
     # sums are added in a fixed order, so the volume repeats bit for bit on CUDA.
     blocks = kernel_reduce.blocks_1d(n_faces)
     total, stride = _launch.block_partials(
-        blocks,
-        1,
-        wp.float64 if vertices.dtype is wp.vec3d else wp.float32,
-        device,
-        deterministic=deterministic,
+        blocks, 1, wp.float64 if vertices.dtype is wp.vec3d else wp.float32, device
     )
     _launch.launch_tiled(
         kernel_measures.MESH_SIGNED_VOLUME[vertices.dtype],
@@ -214,7 +200,7 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
 
 
 def moments(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, deterministic: bool = True
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
 ) -> tuple[float, wp.vec3, wp.mat33d]:
     """
     Mass properties of the solid bounded by the mesh: volume, centre of mass and inertia tensor.
@@ -234,11 +220,6 @@ def moments(
         ``(n_vertices,)`` mesh vertex positions.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -303,9 +284,7 @@ def moments(
     # and the rows are added in a fixed order, so the moments repeat bit for bit on CUDA.
     chunk_faces = kernel_measures.moment_chunk_faces(n_faces)
     blocks = (n_faces + chunk_faces - 1) // chunk_faces
-    totals, stride = _launch.block_partials(
-        blocks, 10, wp.float64, device, deterministic=deterministic
-    )
+    totals, stride = _launch.block_partials(blocks, 10, wp.float64, device)
     _launch.launch_tiled(
         kernel_measures.moment_integrals,
         dim=[blocks],

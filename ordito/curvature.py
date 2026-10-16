@@ -35,7 +35,6 @@ def principal_curvature(
     frame_independent: bool = True,
     face_normals: wp.array[wp.vec3] | None = None,
     face_areas: wp.array[wp.float32] | None = None,
-    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]:
     """
     Principal curvature directions and magnitudes per vertex via quadric fitting.
@@ -73,13 +72,6 @@ def principal_curvature(
         [`Trimesh.face_areas`][ordito.mesh.Trimesh.face_areas] cache the pair.
     face_areas
         ``(n_faces,)`` face areas; see ``face_normals``.
-    deterministic
-        When ``True`` (the default), the mean edge length that scales ``radius`` is summed in one
-        fixed order, so repeated calls return identical bits on CUDA. ``False`` adds its per-block
-        partial sums by atomics in arrival order
-        ([`mean_edge_length`][ordito.edges.mean_edge_length]), which saves a few microseconds a call
-        but lets its last bits change from call to call on CUDA. The CPU device is deterministic
-        either way.
 
     Returns
     -------
@@ -143,7 +135,7 @@ def principal_curvature(
     # ``scaledRadius``. Not ``mean_unique_edge_length``: switching to it takes the mean deviation
     # from ``igl.principal_curvature`` on an open half-torus from 0.0056 to 0.0117 and drops the
     # within-5% fraction from 99.3% to 98.5%.
-    avg_edge = od.edges.mean_edge_length(vertices, faces, deterministic=deterministic)
+    avg_edge = od.edges.mean_edge_length(vertices, faces)
     scaled_radius = float(radius) * avg_edge
 
     # Collect vertex neighborhoods as geodesic balls (libigl getSphere) on device. A Euclidean ball

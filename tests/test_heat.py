@@ -2246,33 +2246,29 @@ def test_extend_scalar_and_transport_reject_mismatched_lengths(device: str) -> N
         )
 
 
-# --- deterministic=False: the arrival-order block commits ---
+# --- od.config.deterministic(False): the arrival-order block commits ---
 
 
-def _heat_call(mesh_wp: wp.Mesh, function: str, deterministic: bool) -> list[np.ndarray]:
+def _heat_call(mesh_wp: wp.Mesh, function: str) -> list[np.ndarray]:
     """One heat-method call on ``vertices, faces``, as the arrays it returns."""
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     device = vertices_wp.device
     if function == "heat_geodesic":
         sources_wp = wp.array([0, 7], dtype=wp.int32, device=device)
-        distance = od.heat.heat_geodesic(
-            vertices_wp, faces_wp, sources_wp, deterministic=deterministic
-        )
+        distance = od.heat.heat_geodesic(vertices_wp, faces_wp, sources_wp)
         return [distance.numpy()]
     if function == "heat_signed_distance":
         loop_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)[0]
         distance = od.heat.heat_signed_distance(
-            vertices_wp, faces_wp, loop_wp, level_set_constraint="none", deterministic=deterministic
+            vertices_wp, faces_wp, loop_wp, level_set_constraint="none"
         )
         return [distance.numpy()]
     if function == "log_map":
-        return [od.heat.log_map(vertices_wp, faces_wp, 0, deterministic=deterministic).numpy()]
+        return [od.heat.log_map(vertices_wp, faces_wp, 0).numpy()]
     if function == "heat_operators":
-        system = od.heat.heat_operators(vertices_wp, faces_wp, deterministic=deterministic)[0]
+        system = od.heat.heat_operators(vertices_wp, faces_wp)[0]
     else:
-        system = od.heat.vector_heat_operators(vertices_wp, faces_wp, deterministic=deterministic)[
-            0
-        ]
+        system = od.heat.vector_heat_operators(vertices_wp, faces_wp)[0]
     # The stored blocks only: ``values`` is allocated at a capacity whose tail is scratch.
     n_blocks = int(system.offsets.numpy()[int(system.nrow)])
     return [system.values.numpy()[:n_blocks]]
@@ -2286,9 +2282,9 @@ def test_heat_arrival_order_agrees_with_the_default(
     request: pytest.FixtureRequest, function: str
 ) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` returns the default's field to rounding.
+    Ordito against ordito: determinism off returns the default's field to rounding.
 
-    The flag reaches the shift a distance is centred by and, for the two builders, the edge-length
+    The mode reaches the shift a distance is centred by and, for the two builders, the edge-length
     sums behind the default ``t``; only their block commits change, so the fields may differ in
     the last bits on CUDA and nowhere else. The reference comparisons above pin the default.
     ``heat_signed_distance`` runs on the open fixture's rim, with the shift its ``"none"`` mode
@@ -2296,8 +2292,9 @@ def test_heat_arrival_order_agrees_with_the_default(
     """
     mesh_name = "saddle_graded" if function == "heat_signed_distance" else "sphere_irregular"
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    fixed = _heat_call(mesh_wp, function, True)
-    arrival = _heat_call(mesh_wp, function, False)
+    fixed = _heat_call(mesh_wp, function)
+    with od.config.deterministic(False):
+        arrival = _heat_call(mesh_wp, function)
     for fixed_np, arrival_np in zip(fixed, arrival, strict=True):
         assert np.ptp(fixed_np) > 1e-3
         assert np.allclose(fixed_np, arrival_np, rtol=1e-4, atol=1e-6)

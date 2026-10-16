@@ -684,13 +684,14 @@ def test_empty_faces(device: str, case: str) -> None:
 
 def test_mean_edge_length_arrival_order_agrees_with_the_default(device: str) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` returns the default's mean to rounding.
+    Ordito against ordito: determinism off returns the default's mean to rounding.
 
     A 5 120-face sphere spans fifteen blocks, whose partial sums the flag adds by atomics instead
     of in a fixed order; the reference comparison above pins the default.
     """
     vertices_wp, faces_wp = od.creation.icosphere(subdivisions=4, device=device)
     fixed = od.edges.mean_edge_length(vertices_wp, faces_wp)
-    arrival = od.edges.mean_edge_length(vertices_wp, faces_wp, deterministic=False)
+    with od.config.deterministic(False):
+        arrival = od.edges.mean_edge_length(vertices_wp, faces_wp)
     assert fixed > 0.0
     assert np.isclose(fixed, arrival, rtol=1e-6, atol=0.0)

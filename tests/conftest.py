@@ -20,6 +20,7 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUME
     os.environ.setdefault(_var, "8")
 
 import functools  # noqa: E402
+from collections.abc import Iterator  # noqa: E402
 from types import CodeType  # noqa: E402
 
 import numpy as np  # noqa: E402
@@ -300,6 +301,19 @@ def device(request: pytest.FixtureRequest) -> str:
     where it should be getting both -- which is a gap, not a failure, so it must not raise.
     """
     return _selected_devices(request.config)[-1]
+
+
+@pytest.fixture
+def deterministic(request: pytest.FixtureRequest) -> Iterator[bool]:
+    """
+    Run the test under ``od.config.deterministic(request.param)``; parametrize with ``indirect``.
+
+    ``@pytest.mark.parametrize("deterministic", [True, False], indirect=True)`` runs a test in both
+    modes and hands it the mode, so a test can assert what only the fixed-order mode promises.
+    """
+    enabled = bool(getattr(request, "param", True))
+    with od.config.deterministic(enabled):
+        yield enabled
 
 
 @pytest.fixture

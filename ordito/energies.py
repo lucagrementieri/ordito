@@ -58,11 +58,7 @@ from ordito.laplacian import cotmatrix, cotmatrix_entries, mass_matrix_entries
 
 
 def edge_length_loss(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    target_length: float = 0.0,
-    *,
-    deterministic: bool = True,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], target_length: float = 0.0
 ) -> float:
     """
     Mean squared deviation of the undirected edge lengths from a resting length.
@@ -80,12 +76,6 @@ def edge_length_loss(
         ``(3 * n_faces,)`` triangle index buffer.
     target_length
         Resting edge length ``L0``.
-    deterministic
-        When ``True`` (the default), the mean is summed in one fixed order, so repeated calls
-        return identical bits on CUDA. ``False`` adds its per-block partial sums by atomics in
-        arrival order ([`reduce.mean`][ordito.reduce.mean]), which saves a few microseconds a call
-        but lets the last bits change from call to call on CUDA. The CPU device is deterministic
-        either way.
 
     Returns
     -------
@@ -135,12 +125,10 @@ def edge_length_loss(
     _launch.map(
         kernel_energies.squared_deviation, lengths, wp.float32(target_length), out=deviations
     )
-    return float(od.reduce.mean(deviations, deterministic=deterministic))
+    return float(od.reduce.mean(deviations))
 
 
-def normal_consistency_loss(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, deterministic: bool = True
-) -> float:
+def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:
     """
     Mean ``1 - cos(theta)`` over the pairs of faces sharing an edge.
 
@@ -155,12 +143,6 @@ def normal_consistency_loss(
         ``(n_vertices,)`` positions.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
-    deterministic
-        When ``True`` (the default), the mean is summed in one fixed order, so repeated calls
-        return identical bits on CUDA. ``False`` adds its per-block partial sums by atomics in
-        arrival order ([`reduce.mean`][ordito.reduce.mean]), which saves a few microseconds a call
-        but lets the last bits change from call to call on CUDA. The CPU device is deterministic
-        either way.
 
     Returns
     -------
@@ -207,15 +189,13 @@ def normal_consistency_loss(
         return 0.0
     terms = _launch.empty(angles.size, dtype=wp.float32, device=angles.device)
     _launch.map(kernel_energies.one_minus_cosine, angles, out=terms)
-    return float(od.reduce.mean(terms, deterministic=deterministic))
+    return float(od.reduce.mean(terms))
 
 
 def laplacian_smoothing_loss(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     method: Literal["uniform", "cot", "cotcurv"] = "uniform",
-    *,
-    deterministic: bool = True,
 ) -> float:
     """
     Mean magnitude of a Laplacian residual per vertex, under one of three normalizations.
@@ -241,12 +221,6 @@ def laplacian_smoothing_loss(
         ``(3 * n_faces,)`` triangle index buffer.
     method
         Which normalization, as above.
-    deterministic
-        When ``True`` (the default), the mean is summed in one fixed order, so repeated calls
-        return identical bits on CUDA. ``False`` adds its per-block partial sums by atomics in
-        arrival order ([`reduce.mean`][ordito.reduce.mean]), which saves a few microseconds a call
-        but lets the last bits change from call to call on CUDA. The CPU device is deterministic
-        either way.
 
     Returns
     -------
@@ -329,7 +303,7 @@ def laplacian_smoothing_loss(
         ],
         device=device,
     )
-    return float(od.reduce.mean(norms, deterministic=deterministic))
+    return float(od.reduce.mean(norms))
 
 
 def k_harmonic(

@@ -36,6 +36,8 @@ import warp._src.codegen as _codegen
 import warp._src.context as _ctx
 import warp._src.types as _types
 
+from ordito.config import is_deterministic
+
 if TYPE_CHECKING:
     import ordito.typing as odt
 
@@ -847,19 +849,17 @@ def _scan_native(dtype: Any) -> tuple[Any, int, int] | None:
     return _scan_dispatch[dtype]
 
 
-def array_scan(
-    in_array: Any, out_array: Any, inclusive: bool = True, *, deterministic: bool = True
-) -> None:
+def array_scan(in_array: Any, out_array: Any, inclusive: bool = True) -> None:
     """
     ``wp.utils.array_scan``, calling the native scan directly for contiguous CUDA arrays.
 
-    With ``deterministic`` an inclusive ``float32`` scan on CUDA takes the fixed-order tile scan of
+    While [`ordito.config.is_deterministic`][ordito.config.is_deterministic] holds (read at the
+    call), an inclusive ``float32`` scan on CUDA takes the fixed-order tile scan of
     ``kernels/array.py`` (``float_scan_chunks``) instead of CUB's, whose decoupled look-back sums
     in arrival order and so moves the last bits of the result from call to call. It costs two
     launches and a small allocation over CUB's one call once the input spans more than one
-    ``FLOAT_SCAN_CHUNK`` (and is cheaper below that), so a caller that cannot afford it on a short
-    public function passes ``deterministic=False`` through. Every other scan is exact (integers)
-    or already sequential (the CPU device), and ignores the flag.
+    ``FLOAT_SCAN_CHUNK`` (and is cheaper below that). Every other scan is exact (integers) or
+    already sequential (the CPU device), and ignores the setting.
     """
     runtime = _ctx.runtime
     size = in_array.size
@@ -870,7 +870,7 @@ def array_scan(
         and out_array.dtype is dtype
         and _plain_cuda(runtime, in_array, out_array)
     ):
-        if deterministic and inclusive and dtype is _types.float32:
+        if inclusive and dtype is _types.float32 and is_deterministic():
             _float_scan_fixed_order(in_array, out_array, size)
             return
         native = _scan_native(dtype)
@@ -890,19 +890,20 @@ def array_scan(
 _kernel_array: Any = None
 
 
-def block_partials(
-    n_blocks: int, width: int, dtype: Any, device: Any, *, deterministic: bool = True
-) -> tuple[Any, int]:
+def block_partials(n_blocks: int, width: int, dtype: Any, device: Any) -> tuple[Any, int]:
     """
     Allocate the zeroed buffer of a block commit; return it and the ``stride`` its kernel takes.
 
     ``kernels/reduce.store_block_sum`` / ``store_block_total`` store each of the ``n_blocks``
     blocks' ``width`` sums in a row of it, and the last block to finish adds the rows in a fixed
     order into the first ``width`` slots, where the caller reads them: ``width`` result slots, a
-    ticket counter and ``n_blocks`` rows. Without ``deterministic`` the buffer is the ``width``
-    result slots alone, which the blocks ``atomic_add`` into in arrival order.
+    ticket counter and ``n_blocks`` rows. While
+    [`ordito.config.is_deterministic`][ordito.config.is_deterministic] is off (read at the call)
+    the buffer is the ``width`` result slots alone, which the blocks ``atomic_add`` into in
+    arrival order; a caller that reads more than the first ``width`` slots tells the two apart by
+    the buffer's size.
     """
-    if not deterministic:
+    if not is_deterministic():
         return zeros(width, dtype=dtype, device=device), width
     return zeros((n_blocks + 1) * width + 1, dtype=dtype, device=device), width
 

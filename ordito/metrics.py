@@ -96,7 +96,6 @@ def chamfer_points_to_points(
     point_reduction: _PointReduction = ...,
     single_directional: bool = ...,
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> float: ...
 @overload
 def chamfer_points_to_points(
@@ -106,7 +105,6 @@ def chamfer_points_to_points(
     point_reduction: None,
     single_directional: Literal[True],
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> odt.Array1dFloat32: ...
 @overload
 def chamfer_points_to_points(
@@ -116,7 +114,6 @@ def chamfer_points_to_points(
     point_reduction: None,
     single_directional: Literal[False] = ...,
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> tuple[odt.Array1dFloat32, odt.Array1dFloat32]: ...
 @overload
 def chamfer_points_to_points(
@@ -126,7 +123,6 @@ def chamfer_points_to_points(
     point_reduction: None,
     single_directional: bool,
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> _UnreducedChamfer: ...
 def chamfer_points_to_points(
     x: wp.array[wp.vec3],
@@ -135,7 +131,6 @@ def chamfer_points_to_points(
     point_reduction: _PointReduction | None = "mean",
     single_directional: bool = False,
     squared: bool = False,
-    deterministic: bool = True,
 ) -> float | _UnreducedChamfer:
     """
     Chamfer distance between two point clouds.
@@ -162,13 +157,6 @@ def chamfer_points_to_points(
         Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
         is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
         misread.
-    deterministic
-        When ``True`` (the default), a ``"mean"`` or ``"sum"`` of unsquared distances adds its
-        per-block partial sums in one fixed order, so repeated calls return identical bits on
-        CUDA. ``False`` adds them by atomics in arrival order
-        ([`reduce.sum`][ordito.reduce.sum]), which saves a few microseconds a call but lets the
-        last bits change from call to call on CUDA. ``"max"``, ``squared`` and unreduced results
-        are exact or fixed-order either way, and so is the CPU device.
 
     Returns
     -------
@@ -215,9 +203,7 @@ def chamfer_points_to_points(
     distances = _distances_points_to_points(x, y, single_directional)
     if distances is None:
         return _empty_chamfer(point_reduction, single_directional, x.device)
-    return _chamfer(
-        distances, point_reduction, single_directional, squared, deterministic=deterministic
-    )
+    return _chamfer(distances, point_reduction, single_directional, squared)
 
 
 @overload
@@ -229,7 +215,6 @@ def chamfer_points_to_mesh(
     point_reduction: _PointReduction = ...,
     single_directional: bool = ...,
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> float: ...
 @overload
 def chamfer_points_to_mesh(
@@ -240,7 +225,6 @@ def chamfer_points_to_mesh(
     point_reduction: None,
     single_directional: Literal[True],
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> odt.Array1dFloat32: ...
 @overload
 def chamfer_points_to_mesh(
@@ -251,7 +235,6 @@ def chamfer_points_to_mesh(
     point_reduction: None,
     single_directional: Literal[False] = ...,
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> tuple[odt.Array1dFloat32, odt.Array1dFloat32]: ...
 @overload
 def chamfer_points_to_mesh(
@@ -262,7 +245,6 @@ def chamfer_points_to_mesh(
     point_reduction: None,
     single_directional: bool,
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> _UnreducedChamfer: ...
 def chamfer_points_to_mesh(
     points: wp.array[wp.vec3],
@@ -272,7 +254,6 @@ def chamfer_points_to_mesh(
     point_reduction: _PointReduction | None = "mean",
     single_directional: bool = False,
     squared: bool = False,
-    deterministic: bool = True,
 ) -> float | _UnreducedChamfer:
     """
     Chamfer distance between a point cloud and a triangle mesh.
@@ -299,13 +280,6 @@ def chamfer_points_to_mesh(
         Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
         is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
         misread.
-    deterministic
-        When ``True`` (the default), a ``"mean"`` or ``"sum"`` of unsquared distances adds its
-        per-block partial sums in one fixed order, so repeated calls return identical bits on
-        CUDA. ``False`` adds them by atomics in arrival order
-        ([`reduce.sum`][ordito.reduce.sum]), which saves a few microseconds a call but lets the
-        last bits change from call to call on CUDA. ``"max"``, ``squared`` and unreduced results
-        are exact or fixed-order either way, and so is the CPU device.
 
     Returns
     -------
@@ -352,9 +326,7 @@ def chamfer_points_to_mesh(
     distances = _distances_points_to_mesh(points, vertices, faces, single_directional)
     if distances is None:
         return _empty_chamfer(point_reduction, single_directional, points.device)
-    return _chamfer(
-        distances, point_reduction, single_directional, squared, deterministic=deterministic
-    )
+    return _chamfer(distances, point_reduction, single_directional, squared)
 
 
 @overload
@@ -367,7 +339,6 @@ def chamfer_mesh_to_mesh(
     point_reduction: _PointReduction = ...,
     single_directional: bool = ...,
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> float: ...
 @overload
 def chamfer_mesh_to_mesh(
@@ -379,7 +350,6 @@ def chamfer_mesh_to_mesh(
     point_reduction: None,
     single_directional: Literal[True],
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> odt.Array1dFloat32: ...
 @overload
 def chamfer_mesh_to_mesh(
@@ -391,7 +361,6 @@ def chamfer_mesh_to_mesh(
     point_reduction: None,
     single_directional: Literal[False] = ...,
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> tuple[odt.Array1dFloat32, odt.Array1dFloat32]: ...
 @overload
 def chamfer_mesh_to_mesh(
@@ -403,7 +372,6 @@ def chamfer_mesh_to_mesh(
     point_reduction: None,
     single_directional: bool,
     squared: bool = ...,
-    deterministic: bool = ...,
 ) -> _UnreducedChamfer: ...
 def chamfer_mesh_to_mesh(
     vertices_a: wp.array[wp.vec3],
@@ -414,7 +382,6 @@ def chamfer_mesh_to_mesh(
     point_reduction: _PointReduction | None = "mean",
     single_directional: bool = False,
     squared: bool = False,
-    deterministic: bool = True,
 ) -> float | _UnreducedChamfer:
     """
     Chamfer distance between two triangle meshes (vertex-to-surface).
@@ -438,13 +405,6 @@ def chamfer_mesh_to_mesh(
         Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
         is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
         misread.
-    deterministic
-        When ``True`` (the default), a ``"mean"`` or ``"sum"`` of unsquared distances adds its
-        per-block partial sums in one fixed order, so repeated calls return identical bits on
-        CUDA. ``False`` adds them by atomics in arrival order
-        ([`reduce.sum`][ordito.reduce.sum]), which saves a few microseconds a call but lets the
-        last bits change from call to call on CUDA. ``"max"``, ``squared`` and unreduced results
-        are exact or fixed-order either way, and so is the CPU device.
 
     Returns
     -------
@@ -495,9 +455,7 @@ def chamfer_mesh_to_mesh(
     )
     if distances is None:
         return _empty_chamfer(point_reduction, single_directional, vertices_a.device)
-    return _chamfer(
-        distances, point_reduction, single_directional, squared, deterministic=deterministic
-    )
+    return _chamfer(distances, point_reduction, single_directional, squared)
 
 
 # ---------------------------------------------------------------------------
@@ -1092,16 +1050,13 @@ def _chamfer(
     point_reduction: _PointReduction | None,
     single_directional: bool,
     squared: bool,
-    *,
-    deterministic: bool,
 ) -> float | _UnreducedChamfer:
     """
     Combine forward/backward Euclidean distances into a Chamfer value.
 
     Under ``squared`` the distances are squared element-wise before reduction (the ``pytorch3d``
     convention), and a reduced value never materializes the squared array -- see
-    [`_reduce_squared`][ordito.metrics._reduce_squared]. Otherwise they are reduced as they are,
-    their sum's block commit chosen by ``deterministic``.
+    [`_reduce_squared`][ordito.metrics._reduce_squared]. Otherwise they are reduced as they are.
     """
     backward = cast(wp.array[wp.float32], distances.backward)
     if point_reduction is None:
@@ -1117,29 +1072,23 @@ def _chamfer(
     if point_reduction == "max" and not single_directional and distances.forward_max is None:
         largest = _max_of_both(distances.forward, backward)
         return float(np.float32(largest) * np.float32(largest)) if squared else largest
-    reduced_forward = reduce(
-        distances.forward, point_reduction, distances.forward_max, deterministic=deterministic
-    )
+    reduced_forward = reduce(distances.forward, point_reduction, distances.forward_max)
     if single_directional:
         return reduced_forward
-    reduced_backward = reduce(backward, point_reduction, None, deterministic=deterministic)
+    reduced_backward = reduce(backward, point_reduction, None)
     if point_reduction == "max":
         return max(reduced_forward, reduced_backward)
     return reduced_forward + reduced_backward
 
 
 def _reduce_plain(
-    distances: wp.array[wp.float32],
-    point_reduction: _PointReduction,
-    known_max: float | None,
-    *,
-    deterministic: bool,
+    distances: wp.array[wp.float32], point_reduction: _PointReduction, known_max: float | None
 ) -> float:
     """Reduce non-empty Euclidean ``distances`` as they are; the unsquared sibling of the below."""
     distances_1d = cast(odt.Array1dFloat32, distances)
     if point_reduction == "max":
         return known_max if known_max is not None else od.reduce.max(distances_1d)
-    total = od.reduce.sum(distances_1d, deterministic=deterministic)
+    total = od.reduce.sum(distances_1d)
     if point_reduction == "mean":
         return total / distances.size
     return total
@@ -1154,11 +1103,7 @@ def _square(distances: wp.array[wp.float32]) -> odt.Array1dFloat32:
 
 
 def _reduce_squared(
-    distances: wp.array[wp.float32],
-    point_reduction: _PointReduction,
-    known_max: float | None,
-    *,
-    deterministic: bool,
+    distances: wp.array[wp.float32], point_reduction: _PointReduction, known_max: float | None
 ) -> float:
     """
     Reduce the element-wise squares of non-empty ``distances`` without building them.
@@ -1166,11 +1111,8 @@ def _reduce_squared(
     ``"sum"`` and ``"mean"`` are [`weighted_sum`][ordito.reduce.weighted_sum] of the distances by
     themselves. ``"max"`` squares the largest distance -- ``known_max`` when the caller already
     holds it -- in ``float32``, which is exact rather than approximate: rounding is monotone, so
-    the largest rounded square is the rounded square of the largest distance. ``deterministic``
-    is accepted for the shared signature: [`weighted_sum`][ordito.reduce.weighted_sum] is
-    fixed-order either way.
+    the largest rounded square is the rounded square of the largest distance.
     """
-    del deterministic
     distances_1d = cast(odt.Array1dFloat32, distances)
     if point_reduction == "max":
         largest = np.float32(known_max if known_max is not None else od.reduce.max(distances_1d))

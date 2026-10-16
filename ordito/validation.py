@@ -1265,11 +1265,7 @@ def face_watertight_mask(
 
 
 def is_volume(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    *,
-    edges: odt.Array2dInt32 | None = None,
-    deterministic: bool = True,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, edges: odt.Array2dInt32 | None = None
 ) -> bool:
     """
     Whether the mesh is a valid closed volume with outward-facing normals.
@@ -1289,13 +1285,6 @@ def is_volume(
         ``(3 * n_faces, 2)`` precomputed directed edges in
         [`faces_to_edges`][ordito.edges.faces_to_edges] row order. When ``None``, built from
         ``faces``.
-    deterministic
-        When ``True`` (the default), the signed volume the decision reads is summed in one fixed
-        order, so repeated calls return the same answer on CUDA. ``False`` adds its per-block
-        partial sums by atomics in arrival order ([`volume`][ordito.measures.volume]), which saves
-        a few microseconds a call but lets the volume's last bits change from call to call on
-        CUDA, which decides differently only for a volume within rounding of zero. The CPU device
-        is deterministic either way.
 
     Returns
     -------
@@ -1361,7 +1350,7 @@ def is_volume(
     if int(read_scalar(violation)) != 0:
         return False
 
-    return od.measures.volume(vertices, faces, deterministic=deterministic) > 0.0
+    return od.measures.volume(vertices, faces) > 0.0
 
 
 def face_defective_mask(

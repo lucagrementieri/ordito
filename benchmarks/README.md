@@ -279,13 +279,12 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
 
 ## Notes
 
-- **Every ordito row runs with `deterministic=False`.** A function whose result passes through a
-  float block reduction or a float scan takes `deterministic: bool = True`; the default makes the
-  result repeat bit for bit on CUDA at the price of a fixed-order fold or scan. The rows time the
-  fastest path, so every call of such a function inside a timed callable passes
-  `deterministic=False` (setup calls that only build an input keep the default). There is no
-  separate row for the deterministic form; price it by hand against the same row with the flag
-  removed.
+- **Every ordito row runs with determinism off.** `benchmarks/conftest.py` calls
+  `od.config.set_deterministic(False)` once for the session, so float block reductions commit by
+  atomics and `float32` scans take CUB's arrival-order scan: the fastest path, for setup and timed
+  calls alike. The default (`True`) makes a result repeat bit for bit on CUDA at the price of a
+  fixed-order fold or scan. There is no separate row for the deterministic form; price it by hand
+  by wrapping the same row's callable in `with od.config.deterministic(True):`.
 - **The CUDA mempool release threshold is 0, and the sync inside the timed region interacts with
   it.** Warp leaves `cudaMemPoolAttrReleaseThreshold` at 0, so the driver reclaims every free pool
   block at each synchronization point — and this harness deliberately syncs *inside* every timed

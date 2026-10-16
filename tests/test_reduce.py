@@ -361,7 +361,7 @@ def test_float_sums_are_bit_identical_across_calls(device: str, n: int) -> None:
     assert np.isclose(weighted.pop(), (values_np.astype(np.float64) * weights_np).sum(), rtol=1e-5)
 
 
-@pytest.mark.parametrize("deterministic", [True, False])
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 @pytest.mark.parametrize(
     ("shape", "axis"),
     [((1_000_000, 3), 0), ((1000, 1000), 0), ((1000, 1000), 1), ((5000, 10), 0), ((50_000,), None)],
@@ -373,7 +373,7 @@ def test_float_axis_sums_on_both_commits(
     Not a library comparison: float sums and means against NumPy in float64, on both commits.
 
     The per-axis shapes reduce over thousands of tiles per slot, where one atomic commit per tile
-    (``deterministic=False``) moved the last bits from call to call on CUDA; the fixed-order commit
+    (determinism off) moved the last bits from call to call on CUDA; the fixed-order commit
     must repeat bit for bit. Both arms must match NumPy to float32 rounding.
     """
     values_np = np.random.default_rng(8).random(shape, dtype=np.float32) + np.float32(0.5)
@@ -381,11 +381,11 @@ def test_float_axis_sums_on_both_commits(
     expected_sum = values_np.astype(np.float64).sum(axis=axis)
     expected_mean = values_np.astype(np.float64).mean(axis=axis)
     if axis is None:
-        sum_np = np.asarray(od_reduce.sum(values_wp, deterministic=deterministic))
-        mean_np = np.asarray(od_reduce.mean(values_wp, deterministic=deterministic))
+        sum_np = np.asarray(od_reduce.sum(values_wp))
+        mean_np = np.asarray(od_reduce.mean(values_wp))
     else:
-        sum_np = od_reduce.sum(values_wp, axis=axis, deterministic=deterministic).numpy()
-        mean_np = od_reduce.mean(values_wp, axis=axis, deterministic=deterministic).numpy()
+        sum_np = od_reduce.sum(values_wp, axis=axis).numpy()
+        mean_np = od_reduce.mean(values_wp, axis=axis).numpy()
     assert np.allclose(sum_np, expected_sum, rtol=1e-5, atol=0.0)
     assert np.allclose(mean_np, expected_mean, rtol=1e-5, atol=0.0)
     if deterministic and axis is not None:

@@ -168,6 +168,7 @@ _MODULES_WITHOUT_BENCHMARKS = frozenset(
     {
         "constants",  # no callables
         "typing",  # annotations and rank/dtype guards; nothing with a runtime cost
+        "config",  # a process-wide setting and its context manager; nothing launches
         "io",  # meshio round-trips, i.e. a benchmark of meshio
     }
 )
@@ -225,7 +226,7 @@ _DUPLICATE_NAME_ALLOWLIST: dict[str, frozenset[str]] = {
 _SHARED_KERNEL_MODULES = frozenset({"predicates", "scatter"})
 
 # Public modules that launch no kernel of their own and so have no kernel module.
-_MODULES_WITHOUT_KERNELS = frozenset({"constants", "io", "mesh", "typing"})
+_MODULES_WITHOUT_KERNELS = frozenset({"config", "constants", "io", "mesh", "typing"})
 
 # --- check 8 ------------------------------------------------------------------------------------
 

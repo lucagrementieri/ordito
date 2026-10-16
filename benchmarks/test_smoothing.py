@@ -166,7 +166,6 @@ def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool
                 iterations=_ITERATIONS,
                 volume_constraint=volume_constraint,
                 laplacian_operator=operator,
-                deterministic=False,
             )
         )
         assert result.shape == vertices.shape
@@ -289,7 +288,6 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
             implicit_time_integration=implicit,
             volume_constraint=False,
             laplacian_operator=operator,
-            deterministic=False,
         )
     )
     assert result.shape == vertices.shape
@@ -834,9 +832,7 @@ def test_inflate(bench_case: BenchCase) -> None:
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     pressure = 0.1 * bench_case.mean_edge
-    inflated = bench_case.run(
-        lambda: od.smoothing.inflate(vertices, faces, pressure, deterministic=False), rounds=3
-    )
+    inflated = bench_case.run(lambda: od.smoothing.inflate(vertices, faces, pressure), rounds=3)
     assert int(inflated.shape[0]) == bench_case.n_vertices
 
 

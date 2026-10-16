@@ -221,7 +221,7 @@ def test_sum_bool(bench_case: BenchCase) -> None:
         assert total_np >= 0
         return
     mask = _mask_wp(bench_case)
-    total = bench_case.run(lambda: od.reduce.sum(mask, deterministic=False))
+    total = bench_case.run(lambda: od.reduce.sum(mask))
     assert total >= 0
 
 
@@ -270,7 +270,7 @@ def test_sum_scalar(bench_case: BenchCase) -> None:
         assert np.isfinite(total_np)
         return
     values = _scalars_wp(bench_case)
-    total = bench_case.run(lambda: od.reduce.sum(values, deterministic=False))
+    total = bench_case.run(lambda: od.reduce.sum(values))
     assert np.isfinite(total)
 
 
@@ -284,7 +284,7 @@ def test_sum_vec3(bench_case: BenchCase) -> None:
         assert total_np.shape == (3,)
         return
     vertices = bench_case.vertices_wp
-    total = bench_case.run(lambda: od.reduce.sum(vertices, deterministic=False))
+    total = bench_case.run(lambda: od.reduce.sum(vertices))
     assert len(total) == 3
 
 
@@ -298,7 +298,7 @@ def test_mean_vec3(bench_case: BenchCase) -> None:
         assert centroid_np.shape == (3,)
         return
     vertices = bench_case.vertices_wp
-    centroid = bench_case.run(lambda: od.reduce.mean(vertices, deterministic=False))
+    centroid = bench_case.run(lambda: od.reduce.mean(vertices))
     assert len(centroid) == 3
 
 
@@ -410,7 +410,7 @@ def test_sum_axis0(bench_case: BenchCase) -> None:
         assert sums_np.shape == (3,)
         return
     rows = _rows_wp(bench_case)
-    sums = bench_case.run(lambda: od.reduce.sum(rows, axis=0, deterministic=False))
+    sums = bench_case.run(lambda: od.reduce.sum(rows, axis=0))
     assert sums.shape[0] == 3
 
 

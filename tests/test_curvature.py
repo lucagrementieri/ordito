@@ -572,14 +572,15 @@ def test_principal_curvature_arrival_order_agrees_with_the_default(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` fits the default's curvatures to rounding.
+    Ordito against ordito: determinism off fits the default's curvatures to rounding.
 
-    The flag reaches only the mean edge length that scales ``radius``; its last bits change no
+    The mode reaches only the mean edge length that scales ``radius``; its last bits change no
     neighbourhood of this mesh, so the curvatures must agree to float32 rounding.
     """
     _, mesh_wp = sphere_irregular
     fixed = od.curvature.principal_curvature(mesh_wp.points, mesh_wp.indices)
-    arrival = od.curvature.principal_curvature(mesh_wp.points, mesh_wp.indices, deterministic=False)
+    with od.config.deterministic(False):
+        arrival = od.curvature.principal_curvature(mesh_wp.points, mesh_wp.indices)
     assert np.ptp(fixed[2].numpy()) > 1e-3
     for fixed_wp, arrival_wp in zip(fixed[2:], arrival[2:], strict=True):
         assert np.allclose(fixed_wp.numpy(), arrival_wp.numpy(), rtol=1e-4, atol=1e-4)

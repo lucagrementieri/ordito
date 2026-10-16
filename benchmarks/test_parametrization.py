@@ -112,9 +112,7 @@ def test_map_vertices_to_circle(bench_case: BenchCase) -> None:
     if bench_case.kind == "ordito":
         vertices = bench_case.vertices_wp
         loop, _loop_uv = _boundary(bench_case)
-        circle = bench_case.run(
-            lambda: od.parametrization.map_vertices_to_circle(vertices, loop, deterministic=False)
-        )
+        circle = bench_case.run(lambda: od.parametrization.map_vertices_to_circle(vertices, loop))
         assert circle.size == loop.size
     else:
         vertices_np, _faces_np, loop_np = _igl_boundary(bench_case)

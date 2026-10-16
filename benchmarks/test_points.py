@@ -252,7 +252,7 @@ def test_fit_line(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        axis = bench_case.run(lambda: od.points.fit_line(points, deterministic=False))
+        axis = bench_case.run(lambda: od.points.fit_line(points))
         assert len(axis) == 3
     else:
         skip_larger_than(bench_case, "bunny_decimated", _HOST_CAP_REASON)
@@ -273,7 +273,7 @@ def test_gram_matrix(bench_case: BenchCase) -> None:
     not this reduction.
     """
     points = bench_case.vertices_wp
-    gram = bench_case.run(lambda: od.points.gram_matrix(points, deterministic=False))
+    gram = bench_case.run(lambda: od.points.gram_matrix(points))
     assert gram.shape == (1,)
 
 
@@ -391,9 +391,7 @@ def test_principal_axes(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        rotation, eigenvalues, centroid = bench_case.run(
-            lambda: od.points.principal_axes(points, deterministic=False)
-        )
+        rotation, eigenvalues, centroid = bench_case.run(lambda: od.points.principal_axes(points))
         assert len(rotation) == 3
         assert len(eigenvalues) == 3
         assert len(centroid) == 3
@@ -451,7 +449,7 @@ def test_fit_plane(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        normal, centroid = bench_case.run(lambda: od.points.fit_plane(points, deterministic=False))
+        normal, centroid = bench_case.run(lambda: od.points.fit_plane(points))
         assert len(centroid) == 3
         assert len(normal) == 3
     else:
@@ -521,9 +519,7 @@ def test_estimate_normals(bench_case: BenchCase, k: int) -> None:
     """
     points = bench_case.vertices_wp
     neighbors = _neighbor_table(bench_case, k)
-    normals = bench_case.run(
-        lambda: od.points.estimate_normals(points, neighbors, deterministic=False)
-    )
+    normals = bench_case.run(lambda: od.points.estimate_normals(points, neighbors))
     assert normals.shape == (bench_case.n_vertices,)
 
 
@@ -592,7 +588,7 @@ def test_estimate_normals_knn(bench_case: BenchCase) -> None:
         points = bench_case.vertices_wp
         normals = bench_case.run(
             lambda: od.points.estimate_normals(
-                points, od.neighbors.query_nearest(points, points, k=_KNN)[0], deterministic=False
+                points, od.neighbors.query_nearest(points, points, k=_KNN)[0]
             )
         )
         assert normals.shape == (bench_case.n_vertices,)
@@ -623,9 +619,7 @@ def test_outlier_probability(bench_case: BenchCase) -> None:
         return
     points = bench_case.vertices_wp
     probability = bench_case.run(
-        lambda: od.points.outlier_probability(
-            *od.neighbors.query_nearest(points, points, k=_KNN), deterministic=False
-        )
+        lambda: od.points.outlier_probability(*od.neighbors.query_nearest(points, points, k=_KNN))
     )
     assert probability.shape == (bench_case.n_vertices,)
 
@@ -641,7 +635,7 @@ def test_statistical_outlier_mask(bench_case: BenchCase) -> None:
         points = bench_case.vertices_wp
         mask = bench_case.run(
             lambda: od.points.statistical_outlier_mask(
-                od.neighbors.query_nearest(points, points, k=_KNN)[1], deterministic=False
+                od.neighbors.query_nearest(points, points, k=_KNN)[1]
             )
         )
         assert mask.shape == (bench_case.n_vertices,)

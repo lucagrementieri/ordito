@@ -168,9 +168,9 @@ def commit_block_total(lane: wp.int32, local: Any, out: wp.array[Any], slot: wp.
 # run in turn and the fence compiles to nothing. One launch and one zeroed allocation, like the
 # atomic commit; a separate fold launch cost more on a short call.
 #
-# A buffer of exactly ``stride`` elements (``_launch.block_partials(deterministic=False)``) takes
-# the atomic commit instead, for the caller that trades reproducibility for the few microseconds
-# the ticket, the fence and the last block's fold add to a short call (``deterministic`` flags).
+# A buffer of exactly ``stride`` elements (``_launch.block_partials`` with determinism off in
+# ``ordito.config``) takes the atomic commit instead, trading reproducibility for the few
+# microseconds the ticket, the fence and the last block's fold add to a short call.
 _THREAD_FENCE = """
 #if defined(__CUDA_ARCH__)
 __threadfence();

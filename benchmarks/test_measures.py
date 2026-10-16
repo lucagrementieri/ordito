@@ -125,9 +125,7 @@ def test_moments(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        volume, _center, inertia = bench_case.run(
-            lambda: od.measures.moments(vertices, faces, deterministic=False)
-        )
+        volume, _center, inertia = bench_case.run(lambda: od.measures.moments(vertices, faces))
         assert np.isfinite(volume)
         assert np.asarray(inertia).reshape(3, 3).shape == (3, 3)
         return
@@ -156,9 +154,7 @@ def test_volume(bench_case: BenchCase) -> None:
     this row is the cheapest call with a block commit, on its arrival-order form.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    assert np.isfinite(
-        bench_case.run(lambda: od.measures.volume(vertices, faces, deterministic=False))
-    )
+    assert np.isfinite(bench_case.run(lambda: od.measures.volume(vertices, faces)))
 
 
 @pytest.mark.benchmark(group="euler_characteristic")

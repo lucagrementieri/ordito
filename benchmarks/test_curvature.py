@@ -153,9 +153,7 @@ def test_principal_curvature(bench_case: BenchCase, radius: int) -> None:
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         *_, pv1, _pv2 = bench_case.run(
-            lambda: od.curvature.principal_curvature(
-                vertices, faces, radius=radius, deterministic=False
-            ),
+            lambda: od.curvature.principal_curvature(vertices, faces, radius=radius),
             rounds=_HEAVY_ROUNDS,
         )
         assert pv1.shape == (n_vertices,)

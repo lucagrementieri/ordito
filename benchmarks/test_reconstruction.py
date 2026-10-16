@@ -312,7 +312,7 @@ def test_triangulate_point_cloud(bench_case: BenchCase) -> None:
     points, normals = bench_case.vertices_wp, _normals(bench_case)
     _vertices, faces = bench_case.run(
         lambda: od.reconstruction.triangulate_point_cloud(
-            points, normals, num_neighbours=_NUM_NEIGHBOURS, deterministic=False
+            points, normals, num_neighbours=_NUM_NEIGHBOURS
         )
     )
     assert int(faces.shape[0]) > 0
@@ -344,9 +344,7 @@ def test_ball_pivoting(bench_case: BenchCase) -> None:
     if bench_case.kind == "ordito":
         points, normals = bench_case.vertices_wp, _normals(bench_case)
         _vertices, faces = bench_case.run(
-            lambda: od.reconstruction.ball_pivoting(
-                points, normals, radius=radius, deterministic=False
-            ),
+            lambda: od.reconstruction.ball_pivoting(points, normals, radius=radius),
             rounds=_HEAVY_ROUNDS,
         )
         assert int(faces.shape[0]) > 0
@@ -430,9 +428,7 @@ def test_screened_poisson(
         return
     points, normals = bench_case.vertices_wp, _normals(bench_case)
     _vertices, faces = bench_case.run(
-        lambda: od.reconstruction.screened_poisson(
-            points, normals, depth=depth, method=method, deterministic=False
-        ),
+        lambda: od.reconstruction.screened_poisson(points, normals, depth=depth, method=method),
         rounds=_HEAVY_ROUNDS,
     )
     assert int(faces.shape[0]) > 0
@@ -521,9 +517,7 @@ def test_resample_uniform(bench_case: BenchCase, cell_fraction: float) -> None:
     skip_larger_than(bench_case, "bunny", "a 1% lattice over dragon is 8 GB of field")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _out_vertices, out_faces = bench_case.run(
-        lambda: od.reconstruction.resample_uniform(
-            vertices, faces, voxel_size=voxel_size, deterministic=False
-        ),
+        lambda: od.reconstruction.resample_uniform(vertices, faces, voxel_size=voxel_size),
         rounds=_HEAVY_ROUNDS,
     )
     assert int(out_faces.shape[0]) > 0

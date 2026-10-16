@@ -73,6 +73,8 @@ from meshes import (
     MeshSpec,
 )
 
+import ordito as od
+
 if TYPE_CHECKING:
     import open3d as o3d
     import pymeshlab as ml
@@ -840,6 +842,10 @@ def pytest_configure(config: pytest.Config) -> None:
     # Only applied when the user did not pass their own ``--benchmark-group-by``.
     if getattr(config.option, "benchmark_group_by", "group") == "group":
         config.option.benchmark_group_by = "group,param:mesh_name"
+    # Every ordito row times the fastest path: float block reductions commit by atomics and
+    # ``float32`` scans take CUB's arrival-order scan (``ordito.config``). Set before any test is
+    # collected, so setup and timed calls alike run in this mode for the whole session.
+    od.config.set_deterministic(False)
 
 
 @pytest.hookimpl(tryfirst=True)

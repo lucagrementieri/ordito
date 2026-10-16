@@ -120,7 +120,6 @@ def isotropic_remesh(
     smooth: bool = True,
     reproject: bool = True,
     max_deviation: float | None = None,
-    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
 
@@ -186,12 +185,6 @@ def isotropic_remesh(
         lie on its own feature curve. It moves no further than the bound requires, and a vertex
         already inside the band is untouched — but if the feature curves must be honoured exactly,
         leave this ``None``.
-    deterministic
-        When ``True`` (the default), the mean of a per-vertex ``target_length`` field is summed in
-        one fixed order, so it repeats bit for bit on CUDA. ``False`` adds its per-block partial
-        sums by atomics in arrival order ([`reduce.mean`][ordito.reduce.mean]), which is faster but
-        lets its last bits change from call to call on CUDA. A scalar ``target_length`` sums
-        nothing, and the CPU device is deterministic either way.
 
     Returns
     -------
@@ -304,7 +297,7 @@ def isotropic_remesh(
             raise ValueError(
                 f"isotropic_remesh requires a positive target_length everywhere, got {smallest}."
             )
-        target = float(od.reduce.mean(field, deterministic=deterministic))
+        target = float(od.reduce.mean(field))
         sizing_input = field
     if max_deviation is not None and max_deviation <= 0.0:
         raise ValueError(f"isotropic_remesh requires max_deviation > 0, got {max_deviation}.")
@@ -2869,8 +2862,6 @@ def intrinsic_delaunay(
     faces: wp.array[wp.int32],
     epsilon: float = TOLERANCE_MOLLIFY,
     max_iter: int = 100,
-    *,
-    deterministic: bool = True,
 ) -> tuple[wp.array[wp.int32], odt.Array2dFloat32, int]:
     """
     Retriangulate to the intrinsic Delaunay triangulation, without moving a vertex.
@@ -2901,13 +2892,6 @@ def intrinsic_delaunay(
         triangle has no well-defined angles to test.
     max_iter
         Cap on the number of parallel flip rounds.
-    deterministic
-        When ``True`` (the default), the mean edge length the margin scales with is summed in one
-        fixed order, so repeated calls return identical bits on CUDA. ``False`` adds its per-block
-        partial sums by atomics in arrival order
-        ([`mollify_intrinsic`][ordito.laplacian.mollify_intrinsic]), which saves a few microseconds
-        a call but lets its last bits change from call to call on CUDA. The CPU device is
-        deterministic either way.
 
     Returns
     -------
@@ -2964,7 +2948,7 @@ def intrinsic_delaunay(
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
-    lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon, deterministic=deterministic)
+    lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
     intrinsic_faces = _launch.clone(faces)
     if n_faces == 0:
         return intrinsic_faces, lengths, 0

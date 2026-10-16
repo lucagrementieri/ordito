@@ -14,6 +14,7 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
+import ordito.config as od_config
 import ordito.grouping as od_grouping
 import ordito.neighbors as od_neighbors
 import ordito.points as od
@@ -185,20 +186,20 @@ def test_centroid(device: str) -> None:
     assert np.allclose(centroid_wp.numpy()[0], points_np.mean(axis=0), rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("deterministic", [True, False])
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 @pytest.mark.parametrize("n_points", [200, 1_000_000])
 def test_gram_matrix(device: str, n_points: int, deterministic: bool) -> None:
     """
     Not a library comparison: the Gram matrix against NumPy's float64 ``X.T @ X``, on both commits.
 
     200 points exercise the remainder path inside one block; a million span 977 blocks, whose
-    sums the fixed-order commit (``deterministic=True``) must repeat bit for bit and the atomic one
+    sums the fixed-order commit (determinism on) must repeat bit for bit and the atomic one
     must still match to float32 rounding.
     """
     points_np = _random_points(n_points, seed=10)
     points_wp = points_to_warp(points_np, device)
     gram_np = points_np.T @ points_np
-    gram_wp = od.gram_matrix(points_wp, deterministic=deterministic)
+    gram_wp = od.gram_matrix(points_wp)
     assert gram_wp.shape == (1,)
     assert np.allclose(gram_wp.numpy()[0], gram_np, rtol=1e-4, atol=1e-4)
     if deterministic:
@@ -1770,7 +1771,7 @@ def test_empty_input(device: str, case: str) -> None:
     assert np.array_equal(result_np, expected)
 
 
-# --- deterministic=False: the arrival-order block commits ---
+# --- od.config.deterministic(False): the arrival-order block commits ---
 
 
 def _arrival_order_cloud(device: str) -> wp.array[wp.vec3]:
@@ -1789,37 +1790,25 @@ def _knn_tables(device: str) -> tuple[odt.Array2dInt32, odt.Array2dFloat32]:
     return od_neighbors.query_nearest(cloud_wp, cloud_wp, k=8)
 
 
-_ARRIVAL_ORDER_CALLS: dict[str, Callable[[str, bool], list[np.ndarray]]] = {
-    "centroid": lambda device, deterministic: [
-        od.centroid(_arrival_order_cloud(device), deterministic=deterministic).numpy()
+_ARRIVAL_ORDER_CALLS: dict[str, Callable[[str], list[np.ndarray]]] = {
+    "centroid": lambda device: [od.centroid(_arrival_order_cloud(device)).numpy()],
+    "centered_covariance": lambda device: [
+        od.centered_covariance(_arrival_order_cloud(device)).numpy()
     ],
-    "centered_covariance": lambda device, deterministic: [
-        od.centered_covariance(_arrival_order_cloud(device), deterministic=deterministic).numpy()
+    "covariance": lambda device: [od.covariance(_arrival_order_cloud(device)).numpy()],
+    "fit_line": lambda device: [np.abs(np.array(od.fit_line(_arrival_order_cloud(device))))],
+    "fit_plane": lambda device: [
+        np.abs(np.array(part)) for part in od.fit_plane(_arrival_order_cloud(device))
     ],
-    "covariance": lambda device, deterministic: [
-        od.covariance(_arrival_order_cloud(device), deterministic=deterministic).numpy()
+    "principal_axes": lambda device: [
+        np.abs(np.array(part)) for part in od.principal_axes(_arrival_order_cloud(device))
     ],
-    "fit_line": lambda device, deterministic: [
-        np.abs(np.array(od.fit_line(_arrival_order_cloud(device), deterministic=deterministic)))
+    "estimate_normals": lambda device: [
+        od.estimate_normals(_arrival_order_cloud(device), _knn_tables(device)[0]).numpy()
     ],
-    "fit_plane": lambda device, deterministic: [
-        np.abs(np.array(part))
-        for part in od.fit_plane(_arrival_order_cloud(device), deterministic=deterministic)
-    ],
-    "principal_axes": lambda device, deterministic: [
-        np.abs(np.array(part))
-        for part in od.principal_axes(_arrival_order_cloud(device), deterministic=deterministic)
-    ],
-    "estimate_normals": lambda device, deterministic: [
-        od.estimate_normals(
-            _arrival_order_cloud(device), _knn_tables(device)[0], deterministic=deterministic
-        ).numpy()
-    ],
-    "outlier_probability": lambda device, deterministic: [
-        od.outlier_probability(*_knn_tables(device), deterministic=deterministic).numpy()
-    ],
-    "statistical_outlier_mask": lambda device, deterministic: [
-        od.statistical_outlier_mask(_knn_tables(device)[1], deterministic=deterministic).numpy()
+    "outlier_probability": lambda device: [od.outlier_probability(*_knn_tables(device)).numpy()],
+    "statistical_outlier_mask": lambda device: [
+        od.statistical_outlier_mask(_knn_tables(device)[1]).numpy()
     ],
 }
 
@@ -1827,16 +1816,17 @@ _ARRIVAL_ORDER_CALLS: dict[str, Callable[[str, bool], list[np.ndarray]]] = {
 @pytest.mark.parametrize("function", list(_ARRIVAL_ORDER_CALLS))
 def test_arrival_order_commit_agrees_with_the_default(device: str, function: str) -> None:
     """
-    Ordito against ordito: ``deterministic=False`` returns the default's answer to rounding.
+    Ordito against ordito: determinism off returns the default's answer to rounding.
 
-    The flag only swaps each block reduction's fixed-order commit for one atomic per block, so the
+    The mode only swaps each block reduction's fixed-order commit for one atomic per block, so the
     two arms may differ in the last float32 bits on CUDA and nowhere else; the reference
     comparisons above pin the default. Sign-ambiguous axes are compared in absolute value, and the
     outlier mask, a threshold no point of this cloud sits on, exactly.
     """
     call = _ARRIVAL_ORDER_CALLS[function]
-    fixed = call(device, True)
-    arrival = call(device, False)
+    fixed = call(device)
+    with od_config.deterministic(False):
+        arrival = call(device)
     assert any(np.ptp(part) > 1e-3 for part in fixed if part.dtype != np.bool_) or (
         fixed[0].dtype == np.bool_ and 0 < fixed[0].sum() < fixed[0].size
     )

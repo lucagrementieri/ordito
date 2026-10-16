@@ -231,9 +231,7 @@ def _append_first_point(polyline: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     return closed
 
 
-def polyline_length(
-    polyline: wp.array[wp.vec3], *, closed: bool = False, deterministic: bool = True
-) -> float:
+def polyline_length(polyline: wp.array[wp.vec3], *, closed: bool = False) -> float:
     """
     Total arc length of a polyline (sum of segment lengths).
 
@@ -245,11 +243,6 @@ def polyline_length(
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]), so the closing
         edge counts toward the total.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -289,9 +282,7 @@ def polyline_length(
     # instead of two of each. See ``kernels/polyline.polyline_total_length``, including why the
     # answer's last bits move.
     blocks = kernel_reduce.blocks_1d(n_segments)
-    total, stride = _launch.block_partials(
-        blocks, 1, wp.float32, device, deterministic=deterministic
-    )
+    total, stride = _launch.block_partials(blocks, 1, wp.float32, device)
     _launch.launch_tiled(
         kernel_polyline.polyline_total_length,
         dim=blocks,
@@ -303,9 +294,7 @@ def polyline_length(
     return float(read_scalar(total, 0))
 
 
-def polyline_centroid(
-    polyline: wp.array[wp.vec3], *, closed: bool = False, deterministic: bool = True
-) -> wp.vec3:
+def polyline_centroid(polyline: wp.array[wp.vec3], *, closed: bool = False) -> wp.vec3:
     """
     Segment-length-weighted centroid of a polyline.
 
@@ -320,11 +309,6 @@ def polyline_centroid(
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]), so the closing
         segment contributes its midpoint and length like any other.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -363,16 +347,14 @@ def polyline_centroid(
         raise ValueError("polyline_centroid requires at least two points")
     # One launch and one readback for all four sums: ``polyline_radius``'s frame pass with no
     # Newell sum, whose first four slots are the weighted midpoints and the total length.
-    sums = _accumulate_frame(
-        polyline, n_segments, 0, with_normal=False, deterministic=deterministic
-    )
+    sums = _accumulate_frame(polyline, n_segments, 0, with_normal=False)
     sums_np = np.asarray(read_values(sums, 0, 4), dtype=np.float32)
     # A NumPy float32 quotient: the same IEEE division per component, without Warp's Python-scope
     # dispatch of a ``wp.vec3`` operator.
     return wp.vec3(*(sums_np[:3] / sums_np[3]))
 
 
-def polyline_normal(polyline: wp.array[wp.vec3], *, deterministic: bool = True) -> wp.vec3:
+def polyline_normal(polyline: wp.array[wp.vec3]) -> wp.vec3:
     """
     Average unit normal of a 3D polyline via Newell's method.
 
@@ -386,11 +368,6 @@ def polyline_normal(polyline: wp.array[wp.vec3], *, deterministic: bool = True) 
     ----------
     polyline
         ``(n,)`` polyline vertices. The closing edge is added if absent.
-    deterministic
-        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
-        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
-        order, which saves a few microseconds a call but lets the last bits change from call to
-        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -429,7 +406,7 @@ def polyline_normal(polyline: wp.array[wp.vec3], *, deterministic: bool = True) 
     if n == 3 and is_closed(polyline):
         raise ValueError("polyline_normal requires at least three points")
     # ``polyline_radius``'s frame pass with no segments: only its Newell sum, in its slots.
-    frame = _accumulate_frame(polyline, 0, 0, with_normal=True, deterministic=deterministic)
+    frame = _accumulate_frame(polyline, 0, 0, with_normal=True)
     # Normalized on the host, in float32 as ``wp.normalize`` does, rather than by a ``wp.map``
     # launch before the readback: the three components cross either way.
     normal_slot = int(kernel_polyline.RADIUS_FRAME_NORMAL)
@@ -695,9 +672,7 @@ def _upsample(
     return out_points
 
 
-def cumulative_arc_length(
-    polyline: wp.array[wp.vec3], *, deterministic: bool = True
-) -> wp.array[wp.float32]:
+def cumulative_arc_length(polyline: wp.array[wp.vec3]) -> wp.array[wp.float32]:
     """
     Cumulative arc length from the first vertex to each vertex of an open polyline.
 
@@ -710,11 +685,6 @@ def cumulative_arc_length(
     ----------
     polyline
         ``(n,)`` polyline vertices.
-    deterministic
-        When ``True`` (the default), the arc lengths are summed in one fixed order, so repeated
-        calls return identical bits on CUDA. ``False`` takes the faster arrival-order scan, whose
-        last bits can change from call to call on CUDA once the polyline exceeds a few thousand
-        points. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -745,15 +715,11 @@ def cumulative_arc_length(
     if n_points < 2:
         # No segment to sum: a single vertex is at arc length 0, an empty polyline has no entry.
         return _launch.zeros(n_points, dtype=wp.float32, device=polyline.device)
-    return _arc_length_table(polyline, closed=False, deterministic=deterministic)
+    return _arc_length_table(polyline, closed=False)
 
 
 def polyline_downsample(
-    polyline: wp.array[wp.vec3],
-    step_size: float,
-    *,
-    closed: bool = False,
-    deterministic: bool = True,
+    polyline: wp.array[wp.vec3], step_size: float, *, closed: bool = False
 ) -> wp.array[wp.vec3]:
     """
     Downsample a polyline to a minimum arc-length spacing between kept points.
@@ -771,12 +737,6 @@ def polyline_downsample(
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]), so the closing
         edge counts toward the spacing.
-    deterministic
-        When ``True`` (the default), the arc lengths are summed in one fixed order, so repeated
-        calls return identical points on CUDA. ``False`` takes the faster arrival-order scan, whose
-        last bits can change from call to call on CUDA once the polyline exceeds a few thousand
-        points, and with them a point lying exactly ``step_size`` along. The CPU device is
-        deterministic either way.
 
     Returns
     -------
@@ -810,7 +770,7 @@ def polyline_downsample(
     # ``closed`` walks an ``n + 1``-entry table whose last entry is the closing segment's end, or,
     # when the input already repeats its first point, a stand-in the walks stop short of
     # (``kernels/polyline.seam_repeats_first``) -- the closure is decided on the device.
-    cumulative = _arc_length_table(polyline, closed=closed, deterministic=deterministic)
+    cumulative = _arc_length_table(polyline, closed=closed)
     n_table = cumulative.size
     keep = _launch.zeros(n_table, dtype=wp.int32, device=device)
     if wp.get_device(device).is_cuda and n_table >= _DOWNSAMPLE_DOUBLING_FROM:
@@ -1054,11 +1014,7 @@ def _gather_kept(
 
 
 def polyline_resample(
-    polyline: wp.array[wp.vec3],
-    num_points: int,
-    *,
-    closed: bool = False,
-    deterministic: bool = True,
+    polyline: wp.array[wp.vec3], num_points: int, *, closed: bool = False
 ) -> wp.array[wp.vec3]:
     """
     Resample a polyline to a fixed number of points evenly spaced by arc length.
@@ -1076,11 +1032,6 @@ def polyline_resample(
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]). The result has
         ``num_points`` *distinct* points: the duplicated seam is dropped.
-    deterministic
-        When ``True`` (the default), the arc lengths are summed in one fixed order, so repeated
-        calls return identical bits on CUDA. ``False`` takes the faster arrival-order scan, whose
-        last bits can change from call to call on CUDA once the polyline exceeds a few thousand
-        points. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -1127,7 +1078,7 @@ def polyline_resample(
     # ``closed`` samples ``num_points + 1`` arc lengths of the loop and computes all but the last,
     # the duplicated seam, so the result has ``num_points`` *distinct* points and is a clean cyclic
     # ring. The closure is decided on the device (``kernels/polyline.resample_interp``).
-    cumulative = _arc_length_table(polyline, closed=closed, deterministic=deterministic)
+    cumulative = _arc_length_table(polyline, closed=closed)
     _launch.launch(
         kernel_polyline.resample_interp,
         dim=num_points,
@@ -1143,9 +1094,7 @@ def polyline_resample(
     return out_points
 
 
-def _arc_length_table(
-    polyline: wp.array[wp.vec3], *, closed: bool, deterministic: bool
-) -> wp.array[wp.float32]:
+def _arc_length_table(polyline: wp.array[wp.vec3], *, closed: bool) -> wp.array[wp.float32]:
     """
     Cumulative arc length of a polyline of at least two points, ``closed`` over ``n`` segments.
 
@@ -1155,8 +1104,6 @@ def _arc_length_table(
     consumers skip (``kernels/polyline.arc_segment_lengths``). The kernel writes the leading zero
     and each segment's length one slot along, and the inclusive scan of everything after the zero
     runs in place, the one-allocation idiom of ``array.counts_to_offsets`` in float32.
-    ``deterministic`` picks the fixed-order scan over the arrival-order one
-    (``_launch.array_scan``).
     """
     device = polyline.device
     n_points = polyline.size
@@ -1169,7 +1116,7 @@ def _arc_length_table(
         device=device,
     )
     lengths = cumulative[1:]
-    _launch.array_scan(lengths, out_array=lengths, inclusive=True, deterministic=deterministic)
+    _launch.array_scan(lengths, out_array=lengths, inclusive=True)
     return cumulative
 
 
@@ -1180,7 +1127,6 @@ def polyline_radius(
     normal: wp.vec3 | None = None,
     *,
     closed: bool = False,
-    deterministic: bool = True,
 ) -> float:
     """
     Radius of a polyline projected onto the plane through ``center`` with the given ``normal``.
@@ -1211,12 +1157,6 @@ def polyline_radius(
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]), so the closing
         segment contributes a radial distance like any other, and the default ``center`` /
         ``normal`` are the closed polyline's.
-    deterministic
-        When ``True`` (the default), the sums behind a defaulted ``center`` or ``normal`` and the
-        ``"mean"`` reduction add their per-block partial sums in one fixed order, so repeated calls
-        return identical bits on CUDA. ``False`` adds them by atomics in arrival order, which saves
-        a few microseconds a call but lets the last bits change from call to call on CUDA. The CPU
-        device is deterministic either way.
 
     Returns
     -------
@@ -1293,9 +1233,7 @@ def polyline_radius(
         # The midpoint sums only for a defaulted centre, the Newell sum only for a defaulted normal.
         n_open = n - 1 if center is None else 0
         wrap_open = int(closed) if center is None else 0
-        frame = _accumulate_frame(
-            polyline, n_open, wrap_open, with_normal=normal is None, deterministic=deterministic
-        )
+        frame = _accumulate_frame(polyline, n_open, wrap_open, with_normal=normal is None)
     plane = [
         polyline,
         frame,
@@ -1322,9 +1260,7 @@ def polyline_radius(
     stride = 0
     if reduction == "mean":
         # The sum and the segment count as fixed-order partials, so the mean repeats on CUDA.
-        result, stride = _launch.block_partials(
-            blocks, 2, wp.float32, device, deterministic=deterministic
-        )
+        result, stride = _launch.block_partials(blocks, 2, wp.float32, device)
     else:
         result = _launch.full(1, identity, dtype=wp.float32, device=device)
     _launch.launch_tiled(
@@ -1341,12 +1277,7 @@ def polyline_radius(
 
 
 def _accumulate_frame(
-    polyline: wp.array[wp.vec3],
-    n_segments: int,
-    wrap_open: int,
-    *,
-    with_normal: bool,
-    deterministic: bool,
+    polyline: wp.array[wp.vec3], n_segments: int, wrap_open: int, *, with_normal: bool
 ) -> wp.array[wp.float32]:
     """
     Launch ``kernels/polyline.accumulate_radius_frame`` into a fresh ``RADIUS_FRAME_SIZE`` buffer.
@@ -1355,14 +1286,13 @@ def _accumulate_frame(
     [`polyline_normal`][ordito.polyline.polyline_normal] and
     [`polyline_radius`][ordito.polyline.polyline_radius]: the length-weighted midpoint sums over
     ``n_segments`` segments plus the closing one ``wrap_open`` asks for, and, with
-    ``with_normal``, Newell's sum over the loop. Without ``deterministic`` the blocks commit by
-    atomics (``_launch.block_partials``).
+    ``with_normal``, Newell's sum over the loop.
     """
     device = polyline.device
     blocks = kernel_reduce.blocks_1d(polyline.size)
     # Fixed-order partials, so the frame (and every answer read off it) repeats on CUDA.
     frame, stride = _launch.block_partials(
-        blocks, kernel_polyline.RADIUS_FRAME_SIZE, wp.float32, device, deterministic=deterministic
+        blocks, kernel_polyline.RADIUS_FRAME_SIZE, wp.float32, device
     )
     _launch.launch_tiled(
         kernel_polyline.accumulate_radius_frame,
