@@ -9,7 +9,6 @@ import numpy as np
 import warp as wp
 
 from ordito import _launch
-from ordito._device import require_nonempty_mesh, require_valid_faces
 from ordito.mesh import Trimesh
 
 if TYPE_CHECKING:
@@ -216,8 +215,9 @@ def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
     """
     Load a triangle mesh file into a ``warp.Mesh``.
 
-    Thin wrapper over [`load_mesh_data`][ordito.io.load_mesh_data] that keeps only the
-    vertices and triangle faces and wraps them in a ``warp.Mesh`` that owns its buffers.
+    Reads only the vertices and triangle faces (the subset
+    [`load_mesh_data`][ordito.io.load_mesh_data] returns) and wraps them in a ``warp.Mesh`` that
+    owns its buffers.
 
     Parameters
     ----------
@@ -263,17 +263,25 @@ def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
     print(loaded.points.shape, loaded.indices.shape)  # (42,) (240,)
     ```
     """
-    data = load_mesh_data(path, device=device)
-    if "faces" not in data:
+    meshio = _import_meshio()
+    mesh = meshio.read(path)
+    faces_np = mesh.cells_dict.get("triangle")
+    if faces_np is None or len(faces_np) == 0:
         raise ValueError(f"Mesh file {path!r} has no triangle faces; cannot build a wp.Mesh.")
-    require_nonempty_mesh(data["faces"], "load_mesh")
     # A malformed file (or a meshio decoder bug) can hand back a face index the vertex buffer
-    # doesn't cover; this is the trust boundary where that first enters ordito, so check it once
-    # here rather than trusting it through every downstream kernel that indexes ``vertices[faces]``.
-    require_valid_faces(data["faces"], data["vertices"].size, "load_mesh")
-    # ``load_mesh_data`` allocated both buffers on the line above and nothing else holds
-    # them, so the mesh can own them directly.
-    return wp.Mesh(points=data["vertices"], indices=data["faces"])
+    # doesn't cover; this is the trust boundary where that first enters ordito. The check reads
+    # the decoder's own integers before the ``int32`` narrowing, which would wrap an index at or
+    # above ``2**31`` into range.
+    _require_valid_faces_host(faces_np, len(mesh.points), "load_mesh")
+    vertices_wp = _launch.array(
+        np.ascontiguousarray(mesh.points, dtype=np.float32), dtype=wp.vec3, device=device
+    )
+    faces_wp = _launch.array(
+        np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
+    )
+    # Both buffers were allocated on the lines above and nothing else holds them, so the mesh
+    # can own them directly.
+    return wp.Mesh(points=vertices_wp, indices=faces_wp)
 
 
 def mesh_from_numpy(
@@ -323,14 +331,33 @@ def mesh_from_numpy(
     print(f"{mesh.area:.4f}")  # 1.0000
     ```
     """
+    # This is the trust boundary where an external caller's raw NumPy connectivity first enters
+    # ordito. The range is checked on the caller's own integers, before the ``int32`` narrowing
+    # (which would wrap an index at or above ``2**31`` into range) and before any upload.
+    _require_valid_faces_host(faces, len(vertices), "mesh_from_numpy")
     vertices_wp = _launch.array(
         np.ascontiguousarray(vertices, dtype=np.float32), dtype=wp.vec3, device=device
     )
     faces_wp = _launch.array(
         np.ascontiguousarray(faces.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    # This is the trust boundary where an external caller's raw NumPy connectivity first enters
-    # ordito -- check it once here rather than trusting it through every downstream kernel that
-    # indexes ``vertices[faces]``.
-    require_valid_faces(faces_wp, vertices_wp.size, "mesh_from_numpy")
     return Trimesh(vertices_wp, faces_wp)
+
+
+def _require_valid_faces_host(faces: np.ndarray, n_vertices: int, name: str) -> None:
+    """Raise ``ValueError`` if a host face index falls outside ``[0, n_vertices)``."""
+    if faces.size == 0:
+        return
+    if faces.dtype.kind in "iu":
+        # One reduction rather than a ``min`` and a ``max``: read as unsigned, a negative index
+        # wraps above every vertex count, so the largest value alone decides the range.
+        unsigned = faces.view(np.dtype(f"u{faces.dtype.itemsize}"))
+        if int(unsigned.max()) < n_vertices:
+            return
+    lo = int(faces.min())
+    hi = int(faces.max())
+    if lo < 0 or hi >= n_vertices:
+        raise ValueError(
+            f"{name}: faces must reference vertex indices in [0, {n_vertices}), "
+            f"got a range of [{lo}, {hi}]"
+        )

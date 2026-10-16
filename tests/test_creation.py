@@ -1921,47 +1921,84 @@ def test_empty_results(device: str) -> None:
     assert solid_f.size == 0
 
 
-@pytest.mark.parametrize("surface", ["boy", "cross_cap", "klein", "mobius", "dini", "conic_spiral"])
-@pytest.mark.parametrize(("u_resolution", "v_resolution"), [(7, 5), (17, 33)])
-def test_parametric_lattice_paths_agree(
-    device: str,
-    monkeypatch: pytest.MonkeyPatch,
-    surface: ParametricSurfaceKind,
-    u_resolution: int,
-    v_resolution: int,
+@pytest.mark.parametrize(
+    "surface",
+    ["boy", "cross_cap", "klein", "mobius", "dini", "conic_spiral", "henneberg", "roman", "kuen"],
+)
+@pytest.mark.parametrize(
+    ("u_resolution", "v_resolution"), [(7, 5), (17, 33), (2, 4), (3, 9), (4, 4), (40, 5)]
+)
+def test_parametric_lattice_matches_numpy_lattice(
+    device: str, surface: ParametricSurfaceKind, u_resolution: int, v_resolution: int
 ) -> None:
     """
-    Ordito against ordito: the device lattice against the numpy one, which carries the oracle.
+    Not a library comparison: the identified lattice's topology against a whole-lattice NumPy build.
 
-    Not a library comparison at this level — the reference comparisons for these surfaces are the
-    pyvista tests elsewhere in this file, and they exercise whichever path the size gate selects.
-    What this pins is that the gate is a *performance* switch and nothing else: the two lattices
-    must be **bit-identical**, because the device path exists only to remove host work and any drift
-    in the last float32 bit would be a second definition of the geometry rather than a faster route
-    to the same one.
-
-    The gate is at ``_PARAMETRIC_LATTICE_DEVICE_FROM`` lattice samples, and each path is forced
-    both ways rather than left to whichever side of the gate a resolution happens to land on; the
-    two lattices are a tiny one and a non-square one, so a transposed u/v index shows. The
-    surfaces straddle the gluing rules the two paths have to agree on: a twisted wrap with two
-    collapsed pole rows (``boy``, ``cross_cap``), a wrap in each direction (``klein``), a twist with
-    a boundary (``mobius``), a plain open patch (``dini``) and a pole on one end only
-    (``conic_spiral``).
+    The pyvista tests elsewhere in this file carry the geometry; VTK welds by distance, so its
+    connectivity is not this one. What this pins is the single-launch lattice, which resolves the
+    gluing on the lattice's edges only and counts its way to every slot, against the direct
+    whole-lattice form: canonicalise every sample, ``numpy.unique`` the keys, drop the triangles
+    with two equal corners. Faces must match exactly, row order included. The surfaces straddle
+    the gluing rules: a twisted wrap with two collapsed pole rows (``boy``, ``cross_cap``), a wrap
+    in each direction (``klein``), a twist with a boundary (``mobius``), a plain open patch
+    (``dini``), a pole on one end only (``conic_spiral``, ``kuen``), a v-twist (``henneberg``) and a
+    u-twist with a v-wrap (``roman``); the lattices straddle the four-sample floor below which every
+    edge cell is checked corner by corner, and are non-square so a transposed index shows.
     """
-    forced = od.creation._PARAMETRIC_LATTICE_DEVICE_FROM  # pyright: ignore[reportPrivateUsage]
-    monkeypatch.setattr(od.creation, "_PARAMETRIC_LATTICE_DEVICE_FROM", 1 << 30)
-    host_v, host_f = od.creation.parametric_surface(
-        surface, u_resolution, v_resolution, device=device
+    spec = od.creation._PARAMETRIC_SPECS[surface]  # pyright: ignore[reportPrivateUsage]
+    if (spec.u_wrap and not spec.u_twist and u_resolution < 3) or (
+        spec.v_wrap and not spec.v_twist and v_resolution < 3
+    ):
+        pytest.skip("below the wrapped-axis resolution floor")
+    n_u, n_v = u_resolution, v_resolution
+    i, j = np.meshgrid(np.arange(n_u), np.arange(n_v), indexing="ij")
+    if spec.u_wrap:
+        seam = i == n_u - 1
+        if spec.u_twist:
+            j = np.where(seam, n_v - 1 - j, j)
+        i = np.where(seam, 0, i)
+    if spec.v_wrap:
+        seam = j == n_v - 1
+        if spec.v_twist:
+            i = np.where(seam, n_u - 1 - i, i)
+        j = np.where(seam, 0, j)
+        if spec.u_wrap:
+            i = np.where(i == n_u - 1, 0, i)
+    poles = []
+    if spec.v_wrap:
+        if spec.pole_v_min or spec.pole_v_max:
+            poles.append(j == 0)
+    else:
+        if spec.pole_v_min:
+            poles.append(j == 0)
+        if spec.pole_v_max:
+            poles.append(j == n_v - 1)
+    if spec.u_wrap:
+        if spec.pole_u_min or spec.pole_u_max:
+            poles.append(i == 0)
+    else:
+        if spec.pole_u_min:
+            poles.append(i == 0)
+        if spec.pole_u_max:
+            poles.append(i == n_u - 1)
+    for on_row in poles:
+        anchor_i, anchor_j = int(i[on_row][0]), int(j[on_row][0])
+        i = np.where(on_row, anchor_i, i)
+        j = np.where(on_row, anchor_j, j)
+    _, inverse = np.unique(i * n_v + j, return_inverse=True)
+    index_np = inverse.reshape((n_u, n_v))
+    a_np, b_np = index_np[:-1, :-1].ravel(), index_np[1:, :-1].ravel()
+    c_np, d_np = index_np[1:, 1:].ravel(), index_np[:-1, 1:].ravel()
+    triangles_np = np.concatenate(
+        (np.column_stack((a_np, c_np, b_np)), np.column_stack((a_np, d_np, c_np)))
     )
-    host_v_np, host_f_np = host_v.numpy(), host_f.numpy()
-
-    monkeypatch.setattr(od.creation, "_PARAMETRIC_LATTICE_DEVICE_FROM", 0)
-    device_v, device_f = od.creation.parametric_surface(
-        surface, u_resolution, v_resolution, device=device
+    keep = (
+        (triangles_np[:, 0] != triangles_np[:, 1])
+        & (triangles_np[:, 1] != triangles_np[:, 2])
+        & (triangles_np[:, 2] != triangles_np[:, 0])
     )
-    assert forced > 0, "the gate must be a positive sample count"
-    # Not vacuous: the lattice really did produce a surface on both sides.
-    assert len(host_v_np) > 0
-    assert host_f_np.size > 0
-    assert np.array_equal(device_v.numpy(), host_v_np)
-    assert np.array_equal(device_f.numpy(), host_f_np)
+    vertices_wp, faces_wp = od.creation.parametric_surface(surface, n_u, n_v, device=device)
+    # Not vacuous: the oracle produced a surface.
+    assert keep.any()
+    assert vertices_wp.size == int(inverse.max()) + 1
+    assert np.array_equal(faces_wp.numpy(), triangles_np[keep].reshape(-1))

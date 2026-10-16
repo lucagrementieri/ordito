@@ -164,3 +164,32 @@ def test_load_mesh_without_faces_raises(tmp_path: Path, device: str):
 
     with pytest.raises(ValueError, match="no triangle faces"):
         od.io.load_mesh(path, device=device)
+
+
+def test_load_mesh_rejects_an_index_wrapping_past_int32(tmp_path: Path, device: str):
+    """
+    Not a library comparison: an input-validation contract no reference library checks.
+
+    Index ``2**32`` wraps to ``0`` under the ``int32`` narrowing, so a device-side range check
+    would pass it; the host check reads the decoder's own integers first.
+    """
+    path = tmp_path / "wrap.obj"
+    vertices_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    faces_np = np.array([[0, 1, 2], [0, 1, 2**32]], dtype=np.int64)
+    meshio.write(str(path), meshio.Mesh(vertices_np, [("triangle", faces_np)]))
+    with pytest.raises(ValueError, match="faces must reference vertex indices"):
+        od.io.load_mesh(path, device=device)
+
+
+@pytest.mark.parametrize("bad_index", [2**32, 2**31, 3, -1])
+def test_mesh_from_numpy_rejects_out_of_range_indices(bad_index: int, device: str):
+    """
+    Not a library comparison: an input-validation contract no reference library checks.
+
+    ``2**32`` wraps to ``0`` and ``2**31`` to a negative ``int32``; both must be caught on the host
+    before the narrowing, as must the plain ``n_vertices`` and ``-1`` boundaries.
+    """
+    vertices_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    faces_np = np.array([[0, 1, 2], [0, 1, bad_index]], dtype=np.int64)
+    with pytest.raises(ValueError, match="faces must reference vertex indices"):
+        od.io.mesh_from_numpy(vertices_np, faces_np, device=device)
