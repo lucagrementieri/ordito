@@ -342,7 +342,7 @@ def euler_characteristic(faces: wp.array[wp.int32]) -> int:
 
     See Also
     --------
-    [`edges_unique`][ordito.edges.edges_unique]
+    [`unique_edge_count`][ordito.edges.unique_edge_count]
     [`trimesh.Trimesh.euler_number`][]
 
     Examples
@@ -371,6 +371,6 @@ def euler_characteristic(faces: wp.array[wp.int32]) -> int:
     # ``unique_1d(faces)``: the indices are bounded by ``n_vertices``, so the mask is the same set
     # without the hash table, compaction and sort, and the count is one read instead of two.
     n_referenced = od.reduce.sum(od.array.indices_to_mask(faces, n_vertices))
-    unique_edges, _ = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
-    n_edges = int(unique_edges.shape[0])
+    # Only the count is needed, so the sort's run scan is read and no edge table is emitted.
+    n_edges = od.edges.unique_edge_count(faces, n_vertices=n_vertices, validate=False)
     return n_referenced - n_edges + n_faces

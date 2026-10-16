@@ -696,6 +696,23 @@ def test_transform_identity_returns_self(sphere_irregular: tuple[tm.Trimesh, wp.
     assert mesh.transform(od.transform.translation_matrix((0.0, 0.0, 0.0))) is mesh
 
 
+def test_transform_shares_faces_unless_it_mirrors(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Not a parity assert: the face buffer is aliased, and copied reversed only by a mirror."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
+    for kind, matrix in TRANSFORMS[1:]:
+        moved = mesh.transform(matrix)
+        mirrors = od.transform.reverses_orientation(matrix)
+        assert (moved.faces is mesh.faces) is not mirrors, kind
+        faces_np = mesh.faces.numpy().reshape(-1, 3)
+        expected_np = faces_np[:, ::-1] if mirrors else faces_np
+        assert np.array_equal(
+            np.sort(moved.faces.numpy().reshape(-1, 3), axis=1), np.sort(expected_np, axis=1)
+        )
+
+
 def test_transform_mirror_drops_the_orientation_dependent_caches(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:

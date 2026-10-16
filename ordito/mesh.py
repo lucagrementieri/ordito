@@ -12,7 +12,8 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_nonempty_mesh
+from ordito._device import read_scalar, require_nonempty_mesh
+from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
 _R = TypeVar("_R")
 
@@ -901,10 +902,7 @@ class Trimesh:
         --------
         [`ordito.edges.mean_edge_length`][]
         """
-        if self.n_faces == 0:
-            return 0.0
-        lengths = od.edges.edges_length(self._vertices, self._faces)
-        return od.reduce.mean(cast("odt.Array1dFloat32", lengths))
+        return od.edges.mean_edge_length(self._vertices, self._faces)
 
     @_CachedProperty
     def edges(self) -> odt.Array2dInt32:
@@ -1205,7 +1203,18 @@ class Trimesh:
         """
         if self.n_faces == 0:
             return 0
-        return od.grouping.unique_1d(self.face_connected_component_labels).size
+        # Both labelling paths name each component by its smallest face id, so the components are
+        # the faces that are their own label: one launch and one read, no deduplication.
+        labels = self.face_connected_component_labels
+        count = _launch.zeros(1, dtype=wp.int32, device=labels.device)
+        _launch.launch(
+            kernel_connected_components.count_component_roots,
+            dim=self.n_faces,
+            inputs=[labels, count],
+            device=labels.device,
+        )
+        # The count is the returned host integer.
+        return int(read_scalar(count, 0))
 
     @_CachedProperty
     def vertex_face_adjacency(self) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
@@ -1342,9 +1351,9 @@ class Trimesh:
 
         Notes
         -----
-        Triggers a device-to-host synchronization on first access. Equivalent to
-        [`euler_characteristic`][ordito.measures.euler_characteristic], recomposed here to
-        reuse the cached `edges_unique` count instead of recomputing it.
+        Triggers a device-to-host synchronization on first access. Calls
+        [`euler_characteristic`][ordito.measures.euler_characteristic], except that a cached
+        `edges_unique` supplies the edge count instead of a fresh sort.
 
         See Also
         --------
@@ -1353,8 +1362,13 @@ class Trimesh:
         """
         if self.n_faces == 0:
             return 0
-        n_referenced = od.grouping.unique_1d(self._faces).size
-        return n_referenced - int(self.edges_unique.shape[0]) + self.n_faces
+        unique_edges = self._cache.get("edges_unique")
+        if unique_edges is None:
+            return od.measures.euler_characteristic(self._faces)
+        # The referenced count is the membership mask's popcount, as in the measures function.
+        mask = od.array.indices_to_mask(self._faces, self.n_vertices)
+        n_edges = int(cast("odt.Array2dInt32", unique_edges).shape[0])
+        return od.reduce.sum(mask) - n_edges + self.n_faces
 
     @_CachedProperty
     def is_edge_manifold(self) -> bool:
@@ -1981,7 +1995,8 @@ class Trimesh:
         -------
         Trimesh
             New instance on the transformed vertices, sharing whatever cached values survive.
-            ``self`` when ``matrix`` is the identity.
+            ``self`` when ``matrix`` is the identity. `faces` is the same buffer as this mesh's
+            unless ``matrix`` mirrors, in which case it is a new, corner-reversed buffer.
 
         Raises
         ------
@@ -2038,12 +2053,17 @@ class Trimesh:
         # resolved host value down turns what was up to 7-8 independent host syncs of the same 16
         # floats into exactly one.
         matrix_host = od.transform.as_mat44(matrix)
-        new_vertices, new_faces = od.transform.transform_mesh(
-            self._vertices, self._faces, matrix_host
-        )
         carry = _TRANSFORM_CARRY[kind]
         if od.transform.reverses_orientation(matrix_host):
+            new_vertices, new_faces = od.transform.transform_mesh(
+                self._vertices, self._faces, matrix_host
+            )
             carry = carry - _ORIENTATION_DEPENDENT_KEYS
+        else:
+            # Connectivity is untouched, so the face buffer is shared rather than copied, as
+            # `invert` shares the vertices: neither mesh can mutate it.
+            new_vertices = od.transform.transform_points(self._vertices, matrix_host)
+            new_faces = self._faces
         survived = {key: value for key, value in self._cache.items() if key in carry}
         self._carry_directions(kind, matrix_host, survived)
         self._carry_box(kind, matrix_host, survived)

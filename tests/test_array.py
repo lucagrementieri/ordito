@@ -691,6 +691,61 @@ def test_csr_from_triplets_prunes_assembled_zeros(device: str) -> None:
 
 
 @pytest.mark.parametrize("dtype", [wp.float32, wp.float64, wp.int32])
+def test_csr_from_coo_keys_matches_csr_from_triplets(dtype: type, device: str) -> None:
+    """
+    Keys written by the caller assemble the matrix the same triplets assemble, bit for bit.
+
+    Ordito against ordito: ``csr_from_triplets`` is pinned to ``bsr_from_triplets`` above, and
+    this entry point differs from it only in who writes the keys. Duplicates, out-of-range indices
+    (the sentinel key) and an empty row are all present.
+    """
+    rng = np.random.default_rng(5)
+    n_rows, n_cols, m = 40, 30, 500
+    rows_np = rng.integers(-2, n_rows + 2, m).astype(np.int32)
+    cols_np = rng.integers(-2, n_cols + 2, m).astype(np.int32)
+    rows_np[rows_np == 7] = 8  # an empty row
+    values_np = (rng.standard_normal(m) * 10).astype(wp.dtype_to_numpy(dtype))
+    inside = (rows_np >= 0) & (rows_np < n_rows) & (cols_np >= 0) & (cols_np < n_cols)
+    keys_np = np.where(
+        inside, rows_np.astype(np.uint64) * n_cols + cols_np.astype(np.uint64), n_rows * n_cols
+    ).astype(np.uint64)
+    keys_wp, order_wp = od.array.csr_key_buffers(m, device)
+    wp.copy(keys_wp, wp.array(keys_np, dtype=wp.uint64, device=device))
+    wp.copy(order_wp, wp.array(np.arange(m, dtype=np.int32), dtype=wp.int32, device=device))
+    values_wp = wp.array(values_np, dtype=dtype, device=device)
+    ours_wp = od.array.csr_from_coo_keys(n_rows, n_cols, keys_wp, order_wp, values_wp)
+    triplets_wp = od.array.csr_from_triplets(
+        n_rows,
+        n_cols,
+        wp.array(rows_np, dtype=wp.int32, device=device),
+        wp.array(cols_np, dtype=wp.int32, device=device),
+        values_wp,
+    )
+    n_entries = triplets_wp.nnz_sync()
+    assert n_entries > n_rows
+    assert ours_wp.nnz_sync() == n_entries
+    assert np.array_equal(ours_wp.offsets.numpy(), triplets_wp.offsets.numpy())
+    assert np.array_equal(
+        ours_wp.columns.numpy()[:n_entries], triplets_wp.columns.numpy()[:n_entries]
+    )
+    assert np.array_equal(
+        ours_wp.values.numpy()[:n_entries], triplets_wp.values.numpy()[:n_entries]
+    )
+
+
+def test_csr_from_coo_keys_rejects_mismatched_buffers(device: str) -> None:
+    """Not a parity assert: sort buffers not twice the value count are refused."""
+    keys_wp, order_wp = od.array.csr_key_buffers(3, device)
+    values_wp = wp.zeros(4, dtype=wp.float32, device=device)
+    with pytest.raises(ValueError, match="keys and order must have length 8"):
+        od.array.csr_from_coo_keys(2, 2, keys_wp, order_wp, values_wp)
+    empty_wp = od.array.csr_from_coo_keys(
+        2, 2, *od.array.csr_key_buffers(0, device), wp.zeros(0, dtype=wp.float32, device=device)
+    )
+    assert np.array_equal(empty_wp.offsets.numpy(), [0, 0, 0])
+
+
+@pytest.mark.parametrize("dtype", [wp.float32, wp.float64, wp.int32])
 @pytest.mark.parametrize("synced", [True, False], ids=["synced", "capacity"])
 def test_csr_transpose(dtype: type, synced: bool, device: str) -> None:
     """

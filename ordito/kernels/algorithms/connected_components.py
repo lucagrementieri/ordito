@@ -168,6 +168,16 @@ def ecl_flatten(parents: wp.array[wp.int32], out_labels: wp.array[wp.int32]) -> 
     out_labels[v] = find_representative(parents, v)
 
 
+@wp.kernel
+def count_component_roots(labels: wp.array[wp.int32], out_count: wp.array[wp.int32]) -> None:
+    # The component count of an ``ecl_flatten`` labelling: every label is its component's smallest
+    # node id, so a component is counted exactly once, at the node that names it. One conditional
+    # atomic per component replaces ``unique_1d`` over the labels (hash table, compaction, sort).
+    v = wp.int32(wp.tid())
+    if labels[v] == v:
+        wp.atomic_add(out_count, 0, wp.int32(1))
+
+
 @wp.func
 def find_representative_parity(words: wp.array[wp.int32], v: wp.int32) -> tuple[wp.int32, wp.int32]:
     # Path-halving find that also accumulates a Z2 potential. ``words[x]`` packs both halves of the

@@ -182,6 +182,27 @@ def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("bounded", [False, True], ids=["inferred", "n_vertices"])
+def test_unique_edge_count(request: pytest.FixtureRequest, mesh_name: str, bounded: bool) -> None:
+    """Class A on an integer: the count equals ``len(Trimesh.edges_unique)``."""
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_vertices = mesh_wp.points.size if bounded else None
+    count_wp = od.edges.unique_edge_count(mesh_wp.indices, n_vertices)
+    assert len(mesh_tm.edges_unique) > 0
+    assert count_wp == len(mesh_tm.edges_unique)
+    assert count_wp == od.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)[0].shape[0]
+
+
+def test_unique_edge_count_validates(device: str) -> None:
+    """Not a parity assert: the range check and the empty mesh."""
+    faces_wp = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32, device=device)
+    assert od.edges.unique_edge_count(faces_wp) == 5
+    with pytest.raises(ValueError, match="less than n_vertices"):
+        od.edges.unique_edge_count(faces_wp, 3)
+    assert od.edges.unique_edge_count(wp.zeros(0, dtype=wp.int32, device=device)) == 0
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("edges_unique_inverse", "trimesh")
 def test_edges_unique_inverse(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
