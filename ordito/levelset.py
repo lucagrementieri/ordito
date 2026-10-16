@@ -412,7 +412,14 @@ def offset_mesh(
 
     spacing = voxel_size
     if spacing is None:
-        diagonal = float(od.bounds.enclosing_diagonal(vertices))
+        if bounds is None:
+            # The box the lattice needs anyway gives the diagonal too: one reduction and readback.
+            # Taken in ``float32``, as ``enclosing_diagonal`` takes it, so the spacing is unchanged.
+            bounds = od.bounds.aabb(vertices)
+            extent = np.array(bounds[1], dtype=np.float32) - np.array(bounds[0], dtype=np.float32)
+            diagonal = float(np.linalg.norm(extent))
+        else:
+            diagonal = float(od.bounds.enclosing_diagonal(vertices))
         # The band sets the spacing, and the two resolution bounds keep it usable: fine enough to
         # resolve what survives the offset, coarse enough to allocate. The cap is applied last, so
         # it wins over the floor. See the constants.

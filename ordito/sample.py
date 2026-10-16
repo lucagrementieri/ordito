@@ -39,7 +39,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.array import flatnonzero, gather
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import sample as kernel_sample
@@ -964,31 +964,40 @@ def sample_volume(
 
     center = od.measures.surface_centroid(vertices, faces)
 
-    signed_vols = od.triangles.face_signed_volumes(vertices, faces, center)
-
-    # One device reduction, not two: the star-shaped test genuinely needs a ``min``, but the total
-    # is the inclusive scan's last element and comes for free with the CDF this builds anyway.
-    # ``n_faces > 0`` guards the empty mesh, where "no negative volumes" holds vacuously and
-    # ``reduce.min`` would otherwise raise its own unrelated "requires a non-empty array" error.
-    if n_faces > 0 and od.reduce.min(signed_vols) < 0.0:
-        raise ValueError(
-            "mesh is not star-shaped with respect to its centroid (e.g. a torus); "
-            "tetrahedral decomposition cannot sample it without rejection"
+    # The signed tetrahedron volumes are written straight into the CDF buffer, whose one extra slot
+    # flags a negative volume; the scan turns the face slots into the CDF in place, and one
+    # readback brings back the total (the scan's last element) and the flag together, so the
+    # star-shaped test needs no separate ``min`` reduction. The empty mesh, where "no negative
+    # volumes" holds vacuously, launches nothing.
+    cdf = _launch.zeros(n_faces + 1, dtype=wp.float32, device=vertices.device)
+    total_vol = 0.0
+    if n_faces > 0:
+        _launch.launch(
+            kernel_sample.tetrahedron_volumes_flag_negative,
+            dim=n_faces,
+            inputs=[vertices, faces, center],
+            outputs=[cdf],
+            device=vertices.device,
         )
+        face_slots = odt.as_dense(cdf[:n_faces])
+        _launch.array_scan(face_slots, out_array=face_slots)
+        # Sizes nothing but decides two raises and scales the sampling kernel's draws.
+        total_vol, negative = read_values(cdf, n_faces - 1, 2)
+        if negative != 0.0:
+            raise ValueError(
+                "mesh is not star-shaped with respect to its centroid (e.g. a torus); "
+                "tetrahedral decomposition cannot sample it without rejection"
+            )
 
     if count == 0:
         return _launch.empty(0, dtype=wp.vec3, device=vertices.device)
 
     if n_faces == 0:
-        # Without this, an empty ``signed_vols``/``cdf`` reaches ``read_scalar``'s tail read below
-        # and raises an unrelated ``IndexError`` (CPU) or a Warp slicing error (CUDA) instead.
         raise ValueError("mesh has no faces; cannot sample its volume")
 
-    cdf = _launch.empty(n_faces, dtype=wp.float32, device=vertices.device)
-    _launch.array_scan(signed_vols, out_array=cdf)
-    total_vol = float(read_scalar(cdf))
     if total_vol == 0.0:
         raise ValueError("mesh has zero volume")
+    cdf = odt.as_dense(cdf[:n_faces])
 
     out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
     _launch.launch(

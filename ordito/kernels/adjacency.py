@@ -5,7 +5,7 @@ from ordito.kernels.algorithms.connected_components import ecl_hook_pair, ecl_pr
 from ordito.kernels.array import pack_edge_key, scanned_count
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
-from ordito.kernels.triangles import corner_triple
+from ordito.kernels.triangles import corner_triple, face_normals_and_area
 
 wp.set_module_options({"enable_backward": False})
 
@@ -403,3 +403,86 @@ def face_adjacency_convex(
         vertices, face_normals, face_adjacency, face_adjacency_edges, face_adjacency_unshared, tid
     )
     out_convex[tid] = projection < tolerance
+
+
+@wp.func
+def sorted_pair_normals_and_projection(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], edge_0: wp.int32, edge_1: wp.int32
+) -> tuple[wp.vec3, wp.vec3, wp.float32]:
+    # A pair's two face normals, lower face first, and its ``unshared_projection``, straight from
+    # the two grouped halfedges: what ``adjacency_projection`` and ``face_adjacency_angles`` read
+    # from the ``face_adjacency`` / ``face_adjacency_edges`` / ``face_adjacency_unshared`` /
+    # ``face_normals`` tables, formed in the thread instead. The normals are
+    # ``face_normals_and_area``'s, the ones ``triangles.face_normals_and_areas`` writes, and the
+    # unshared columns follow ``emit_sorted_unshared``, so every value is bit-identical.
+    shared_a, _shared_b, face_0, face_1, unshared_0, unshared_1 = edge_pair_topology(
+        faces, edge_0, edge_1
+    )
+    low = wp.min(face_0, face_1)
+    high = wp.max(face_0, face_1)
+    other = wp.where(face_0 <= face_1, unshared_1, unshared_0)
+    normal_low, _area_low = face_normals_and_area(vertices, faces, low)
+    normal_high, _area_high = face_normals_and_area(vertices, faces, high)
+    projection = unshared_projection(vertices, normal_low, shared_a, other)
+    return normal_low, normal_high, projection
+
+
+@wp.kernel
+def emit_sorted_projections(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inclusive: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    out_projections: wp.array[wp.float32],
+) -> None:
+    # ``face_adjacency_projections`` with no table supplied, compacted off the sorted halfedge keys
+    # exactly as ``emit_sorted_face_pairs`` compacts the pairs, so the rows align with
+    # ``face_adjacency``'s. Differs from ``emit_sorted_convex`` only by the threshold.
+    i = wp.int32(wp.tid())
+    row, count = scanned_count(inclusive, i)
+    if count == 0:
+        return
+    _normal_low, _normal_high, projection = sorted_pair_normals_and_projection(
+        vertices, faces, order[i], order[i + 1]
+    )
+    out_projections[row] = projection
+
+
+@wp.kernel
+def emit_sorted_convex(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inclusive: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    tolerance: wp.float32,
+    out_convex: wp.array[wp.bool],
+) -> None:
+    # ``face_adjacency_convex`` with no table supplied: ``emit_sorted_projections`` thresholded.
+    i = wp.int32(wp.tid())
+    row, count = scanned_count(inclusive, i)
+    if count == 0:
+        return
+    _normal_low, _normal_high, projection = sorted_pair_normals_and_projection(
+        vertices, faces, order[i], order[i + 1]
+    )
+    out_convex[row] = projection < tolerance
+
+
+@wp.kernel
+def emit_sorted_angles(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inclusive: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    out_angles: wp.array[wp.float32],
+) -> None:
+    # ``face_adjacency_angles`` with nothing supplied: ``vector_angle`` of the pair's two normals,
+    # lower face first, as the table kernel reads them.
+    i = wp.int32(wp.tid())
+    row, count = scanned_count(inclusive, i)
+    if count == 0:
+        return
+    normal_low, normal_high, _projection = sorted_pair_normals_and_projection(
+        vertices, faces, order[i], order[i + 1]
+    )
+    out_angles[row] = vector_angle(normal_low, normal_high)

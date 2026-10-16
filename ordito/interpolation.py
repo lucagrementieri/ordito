@@ -24,6 +24,7 @@ kernel width rather than an incidence structure.
 
 from __future__ import annotations
 
+import math
 from typing import TypeVar
 
 import warp as wp
@@ -31,7 +32,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._device import require_nonempty_mesh, require_same_device
 from ordito.kernels import array as kernel_array
 from ordito.kernels import interpolation as kernel_interpolation
 from ordito.kernels import scatter as kernel_scatter
@@ -378,9 +379,10 @@ def transfer_onto_vertices(
     if n_target == 0 or source_faces.size == 0:
         return out_values, _launch.full(n_target, float("inf"), dtype=wp.float32, device=device)
 
-    closest, distance, face_id = od.proximity.closest_point_on_mesh(
-        source_vertices, source_faces, target_vertices, max_dist=max_dist
-    )
+    require_nonempty_mesh(source_faces, "transfer_onto_vertices")
+    # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
+    mesh = wp.Mesh(points=source_vertices, indices=source_faces)
+    distance = _launch.empty(n_target, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_interpolation.TRANSFER_ONTO_VERTICES[source_values.dtype],
         dim=n_target,
@@ -388,8 +390,9 @@ def transfer_onto_vertices(
             source_vertices,
             source_faces,
             source_values,
-            closest,
-            face_id,
+            mesh.id,
+            target_vertices,
+            wp.float32(math.inf if max_dist is None else max_dist),
             out_values,
             distance,
         ],

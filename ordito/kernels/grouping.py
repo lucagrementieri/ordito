@@ -405,18 +405,38 @@ def pack_index_digit(
     return packed + wp.uint64(wp.uint32(value)) * power, power * max_index
 
 
+@wp.func
+def pack_index_row(indices: wp.array2d[wp.int32], row: wp.int32, max_index: wp.uint64) -> wp.uint64:
+    # Row ``row``'s mixed-radix key, column 0 the least significant digit: what ``pack_indices``
+    # writes and ``pack_indices_and_order`` writes into a sort buffer.
+    indices_row = indices[row]
+    packed_value = wp.uint64(0)
+    power = wp.uint64(1)
+    for i in range(indices_row.shape[0]):
+        packed_value, power = pack_index_digit(packed_value, power, indices_row[i], max_index)
+    return packed_value
+
+
 @wp.kernel
 def pack_indices(
     indices: wp.array2d[wp.int32], max_index: wp.uint64, out_packed: wp.array[wp.uint64]
 ) -> None:
     tid = wp.int32(wp.tid())
-    indices_row = indices[tid]
-    packed_value = wp.uint64(0)
-    power = wp.uint64(1)
-    for i in range(indices_row.shape[0]):
-        packed_value, power = pack_index_digit(packed_value, power, indices_row[i], max_index)
+    out_packed[tid] = pack_index_row(indices, tid, max_index)
 
-    out_packed[tid] = packed_value
+
+@wp.kernel
+def pack_indices_and_order(
+    indices: wp.array2d[wp.int32],
+    max_index: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``pack_indices`` plus ``keys_and_identity`` in one launch: each row's key and the identity
+    # payload into the leading halves of a radix sort's double-width buffers.
+    tid = wp.int32(wp.tid())
+    out_keys[tid] = pack_index_row(indices, tid, max_index)
+    out_order[tid] = tid
 
 
 @wp.kernel

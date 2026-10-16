@@ -25,8 +25,8 @@ number appears as the ``mean_edge_length`` reference in [`test_edges.py`](test_e
 worth knowing before reading either as a per-quantity cost. It is read-only, so it shares the
 MeshSet.
 
-``volume`` and ``euler_characteristic`` have **no groups**; see the known-gaps table in
-``README.md``.
+``volume`` has **no group**; see the known-gaps table in ``README.md``. ``euler_characteristic``
+is timed alone, as a regression row for its edge count.
 """
 
 from __future__ import annotations
@@ -143,3 +143,16 @@ def test_moments(bench_case: BenchCase) -> None:
         lambda: tm.Trimesh(vertices_np, faces_np, process=False).mass_properties
     )
     assert np.asarray(properties_tm["inertia"]).shape == (3, 3)
+
+
+@pytest.mark.benchmark(group="euler_characteristic")
+@pytest.mark.benchlibs("ordito")
+def test_euler_characteristic(bench_case: BenchCase) -> None:
+    """
+    ``V - E + F``: one range reduction, a membership popcount and the edge-key sort's run scan.
+
+    The edge count is the scan's tail, so no unique-edge table is emitted; three host readbacks
+    (the bound, the vertex count, the edge count).
+    """
+    faces = bench_case.faces_wp
+    assert isinstance(bench_case.run(lambda: od.measures.euler_characteristic(faces)), int)

@@ -230,6 +230,60 @@ def edges_unique(
     return _unique_edges_from_keys(keys, n_vertices, device)
 
 
+def unique_edge_count(
+    faces: wp.array[wp.int32], n_vertices: int | None = None, *, validate: bool = True
+) -> int:
+    """
+    Count the unique undirected edges, without building the edge table.
+
+    Equals ``edges_unique(faces, n_vertices=n_vertices)[0].shape[0]``: the same sort and run scan,
+    stopped before the rows and the inverse map are written.
+
+    Parameters
+    ----------
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer.
+    n_vertices
+        Vertex count bounding the indices, as in [`edges_unique`][ordito.edges.edges_unique];
+        inferred from ``faces`` when ``None``.
+    validate
+        As in [`edges_unique`][ordito.edges.edges_unique]: check the index range, which costs a
+        host readback.
+
+    Returns
+    -------
+    int
+        Unique undirected edge count. ``0`` for an empty mesh.
+
+    Raises
+    ------
+    ValueError
+        If ``n_vertices`` is not positive, or ``validate`` is ``True`` and a face index is negative
+        or reaches ``n_vertices``.
+
+    See Also
+    --------
+    [`edges_unique`][ordito.edges.edges_unique]
+        The table this counts.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(od.edges.unique_edge_count(faces))  # 18
+    ```
+    """
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        return 0
+    radix = _face_edge_radix(faces, n_faces, n_vertices, validate)
+    _, _, ranks = _sorted_edge_run_ranks(faces, n_faces, radix)
+    # The count is the returned host integer.
+    return int(read_scalar(ranks, 3 * n_faces - 1))
+
+
 def _face_edge_radix(
     faces: wp.array[wp.int32], n_faces: int, n_vertices: int | None, validate: bool
 ) -> int:
@@ -270,11 +324,36 @@ def _unique_edges_from_faces(
     The unique edges are the runs of the sorted keys, so a run-start mark, an inclusive scan and
     one emit give exactly what ``grouping.unique_1d`` over the same keys returns -- ascending-key
     rows and the corner map into them -- without its open-addressing table, whose ~``2 * 3 *
-    n_faces`` slots take random atomics where the sort streams. The keys and the identity payload
-    are written straight into the sort's double-width buffers (the launch
-    ``adjacency.sorted_face_edge_keys`` makes), and the run marks and their scan live in the
-    payload's upper half, which is free scratch once the sort has run; the emit re-derives each
-    run start from the sorted keys.
+    n_faces`` slots take random atomics where the sort streams. The emit re-derives each run start
+    from the sorted keys.
+    """
+    device = faces.device
+    n = 3 * n_faces
+    keys, order, ranks = _sorted_edge_run_ranks(faces, n_faces, radix)
+    # The edge count sizes the returned table.
+    n_edges = int(read_scalar(ranks, n - 1))
+    unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
+    inverse = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_edges.emit_sorted_unique_edges,
+        dim=n,
+        inputs=[faces, keys, order, ranks, unique_edges, inverse],
+        device=device,
+    )
+    return unique_edges, inverse
+
+
+def _sorted_edge_run_ranks(
+    faces: wp.array[wp.int32], n_faces: int, radix: int
+) -> tuple[wp.array[wp.uint64], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    ``(keys, order, ranks)``: every corner's sorted edge key and its 1-based unique-edge rank.
+
+    The part of [`edges_unique`][ordito.edges.edges_unique] that both the table emit and
+    [`unique_edge_count`][ordito.edges.unique_edge_count] need: ``ranks[3 * n_faces - 1]`` is the
+    unique edge count. The keys and the identity payload are written straight into the sort's
+    double-width buffers (the launch ``adjacency.sorted_face_edge_keys`` makes), and the run marks
+    and their scan live in the payload's upper half, which is free scratch once the sort has run.
     """
     device = faces.device
     n = 3 * n_faces
@@ -297,17 +376,7 @@ def _unique_edges_from_faces(
         device=device,
     )
     _launch.array_scan(ranks, ranks, inclusive=True)
-    # The edge count sizes the returned table.
-    n_edges = int(read_scalar(ranks, n - 1))
-    unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
-    inverse = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_edges.emit_sorted_unique_edges,
-        dim=n,
-        inputs=[faces, keys, order, ranks, unique_edges, inverse],
-        device=device,
-    )
-    return unique_edges, inverse
+    return keys, order, ranks
 
 
 def _unique_edges_from_keys(

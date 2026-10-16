@@ -6,43 +6,50 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
-def write_adjacency_pair(
+def write_adjacency_keys(
     edges: wp.array2d[wp.int32],
     e: wp.int32,
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
 ) -> None:
-    # One undirected edge becomes two directed triplet slots: ``2e`` is ``(a, b)`` and ``2e + 1``
-    # is ``(b, a)``. Both kernels below emit in exactly this layout, which is what lets the
-    # weighted one duplicate the weight into the matching slots.
+    # One undirected edge becomes two directed entry keys in ``array.csr_key_buffers``' layout:
+    # slot ``2e`` is ``(a, b)`` and ``2e + 1`` is ``(b, a)``, each carrying its own slot as the
+    # payload -- what ``array.coo_keys`` would write from a two-column triplet table, without the
+    # table. Both kernels below emit in exactly this layout, which is what lets the weighted one
+    # duplicate the weight into the matching slots.
     a = edges[e, 0]
     b = edges[e, 1]
     base = e * 2
-    out_rows[base] = a
-    out_cols[base] = b
-    out_rows[base + 1] = b
-    out_cols[base + 1] = a
+    out_keys[base] = kernel_array.csr_key(a, b, n, n)
+    out_order[base] = base
+    out_keys[base + 1] = kernel_array.csr_key(b, a, n, n)
+    out_order[base + 1] = base + 1
 
 
 @wp.kernel
-def edges_to_adjacency(
-    edges: wp.array2d[wp.int32], out_rows: wp.array[wp.int32], out_cols: wp.array[wp.int32]
+def edges_to_adjacency_keys(
+    edges: wp.array2d[wp.int32],
+    n: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
 ) -> None:
     # The unweighted path, whose values are a ``wp.ones`` fill rather than a launch.
-    write_adjacency_pair(edges, wp.int32(wp.tid()), out_rows, out_cols)
+    write_adjacency_keys(edges, wp.int32(wp.tid()), n, out_keys, out_order)
 
 
 @wp.kernel
-def edges_to_adjacency_weighted(
+def edges_to_adjacency_keys_weighted(
     edges: wp.array2d[wp.int32],
     weights: wp.array[wp.float32],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_values: wp.array[wp.float32],
 ) -> None:
-    # The weighted path: the structure and the two duplicated values in one launch.
+    # The weighted path: the keys and the two duplicated values in one launch.
     e = wp.int32(wp.tid())
-    write_adjacency_pair(edges, e, out_rows, out_cols)
+    write_adjacency_keys(edges, e, n, out_keys, out_order)
     out_values[e * 2] = weights[e]
     out_values[e * 2 + 1] = weights[e]
 
