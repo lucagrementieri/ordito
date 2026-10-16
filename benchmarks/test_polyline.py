@@ -750,3 +750,29 @@ def test_triangulate_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
         polygon = sg.Polygon(_star_np(ring_size))
         _vertices, faces_tm = bench_lib.run(lambda: tm.creation.triangulate_polygon(polygon))
         assert faces_tm.shape[0] > 0
+
+
+_PACKED_LOOP_COUNTS = [64, 4096]
+
+
+@pytest.mark.benchmark(group="polyline_triangulate_from_offsets")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("n_loops", _PACKED_LOOP_COUNTS)
+def test_polyline_triangulate_from_offsets(bench_lib: BenchLibrary, n_loops: int) -> None:
+    """
+    Many short packed star loops at once: the one-block-per-loop launch and its compaction.
+
+    Every loop is a 64-point star, so each reaches the ear clipper rather than the fan, and all
+    fit the block launch; the axis is the loop count, which is what the packing and compaction
+    scale with. No reference library triangulates a packed batch of loops.
+    """
+    star_np = np.column_stack([_star_np(64), np.zeros(64)])
+    points_np = np.concatenate([star_np + np.array([3.0 * k, 0.0, 0.0]) for k in range(n_loops)])
+    device = bench_lib.device
+    polylines = wp.array(points_np.astype(np.float32), dtype=wp.vec3, device=device)
+    offsets = wp.array(np.arange(n_loops + 1, dtype=np.int32) * 64, dtype=wp.int32, device=device)
+    faces, face_offsets = bench_lib.run(
+        lambda: od.polyline.polyline_triangulate_from_offsets(polylines, offsets)
+    )
+    assert int(faces.shape[0]) == 62 * n_loops
+    assert face_offsets.size == n_loops + 1

@@ -10,6 +10,7 @@ from ordito.kernels.algorithms.connected_components import (
 )
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
+from ordito.kernels.triangles import face_vertices, triangle_radius_ratio
 
 wp.set_module_options({"enable_backward": False})
 
@@ -418,47 +419,62 @@ def mate_orientation_conflict(
         out_conflict[0] = wp.int32(1)
 
 
-@wp.kernel
-def accumulate_neighbor_normals(
-    face_normals: wp.array[wp.vec3],
-    mates: wp.array[wp.int32],
-    out_neighbor_sum: wp.array[wp.vec3],
-    out_max_angle: wp.array[wp.float32],
-) -> None:
-    # One pass over the adjacency pairs, scattering both per-face quantities the bad-face criteria
-    # need: the sum of the neighbouring face normals (whose direction is the local consensus) and
-    # the sharpest dihedral angle to any neighbour (which is what a fold looks like).
-    #
-    # The dihedral angle is ``adjacency.face_adjacency_angles``' -- ``vector_angle`` of the pair's
-    # two normals -- taken from the two normals this thread loads anyway, rather than read from a
-    # ``(m,)`` table a launch of its own would have written for this pass alone.
-    #
-    # Launched over the halfedge mates rather than a compacted ``face_adjacency`` table: each
-    # pair's lower halfedge does the pair's work, so no table is built and no host read of its
-    # length is needed.
-    h = wp.int32(wp.tid())
+@wp.func
+def mate_pair_key(mates: wp.array[wp.int32], h: wp.int32) -> wp.int32:
+    # The lower halfedge of ``h``'s adjacency pair, or ``INT32_MAX`` for a halfedge with no mate:
+    # the order in which a launch over the pairs (each at its lower halfedge) visits them.
     mate = mates[h]
-    if mate <= h:
-        return
-    e0 = h // 3
-    e1 = mate // 3
-    f0 = wp.min(e0, e1)
-    f1 = wp.max(e0, e1)
-    normal_0 = face_normals[f0]
-    normal_1 = face_normals[f1]
-    angle = vector_angle(normal_0, normal_1)
-    wp.atomic_add(out_neighbor_sum, f0, normal_1)
-    wp.atomic_add(out_neighbor_sum, f1, normal_0)
-    wp.atomic_max(out_max_angle, f0, angle)
-    wp.atomic_max(out_max_angle, f1, angle)
+    return wp.where(mate >= 0, wp.min(h, mate), INT32_MAX_CONSTANT)
+
+
+@wp.func
+def neighbor_normals(
+    face_normals: wp.array[wp.vec3], mates: wp.array[wp.int32], f: wp.int32
+) -> tuple[wp.vec3, wp.float32]:
+    # Both per-face quantities the bad-face criteria need, gathered through the face's three
+    # halfedge mates: the sum of the neighbouring face normals (whose direction is the local
+    # consensus) and the sharpest dihedral angle to any neighbour (which is what a fold looks like).
+    # The dihedral angle is ``adjacency.face_adjacency_angles``' -- ``vector_angle`` of the pair's
+    # two normals, lower face first.
+    #
+    # The sum is formed in ascending pair-key order (each pair keyed by its lower halfedge), the
+    # order a serial scatter over the pairs adds them in, so the result does not depend on which
+    # corner of the face a neighbour sits at.
+    normal = face_normals[f]
+    keys = wp.vec3i(
+        mate_pair_key(mates, 3 * f),
+        mate_pair_key(mates, 3 * f + 1),
+        mate_pair_key(mates, 3 * f + 2),
+    )
+    slots = wp.vec3i(0, 1, 2)
+    # Three-element sorting network on (key, slot): compare-exchange (0, 1), (1, 2), (0, 1).
+    for step in range(3):
+        lo = wp.where(step == 1, 1, 0)
+        if keys[lo + 1] < keys[lo]:
+            key = keys[lo]
+            keys[lo] = keys[lo + 1]
+            keys[lo + 1] = key
+            slot = slots[lo]
+            slots[lo] = slots[lo + 1]
+            slots[lo + 1] = slot
+    total = wp.vec3(0.0)
+    max_angle = wp.float32(0.0)
+    for k in range(3):
+        if keys[k] != INT32_MAX_CONSTANT:
+            g = mates[3 * f + slots[k]] // 3
+            other = face_normals[g]
+            total = total + other
+            angle = wp.where(f < g, vector_angle(normal, other), vector_angle(other, normal))
+            max_angle = wp.max(max_angle, angle)
+    return total, max_angle
 
 
 @wp.kernel
 def face_defective_mask(
-    quality: wp.array[wp.float32],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
     face_normals: wp.array[wp.vec3],
-    neighbor_sum: wp.array[wp.vec3],
-    max_angle: wp.array[wp.float32],
+    mates: wp.array[wp.int32],
     min_quality: wp.float32,
     max_normal_cos: wp.float32,
     max_fold_cos: wp.float32,
@@ -469,23 +485,26 @@ def face_defective_mask(
     # -1, which no real value can reach, so the three gates compose without a separate flag
     # argument.
     #
-    # The same sentinels also say which tables exist: a disabled criterion's inputs are never read,
-    # so the wrapper passes ``None`` for them rather than allocating a table of constants (the two
-    # branches are warp-uniform). A disabled pair of angle criteria reaches ``False`` below exactly
-    # as their zeroed tables did: the zero consensus fails the normal test and ``cos(0)`` the fold.
+    # One thread per face does all of it: the thinness is ``triangles.face_quality``'s
+    # ``radius_ratio`` formed from the corners in registers, and the neighbourhood is gathered
+    # through the face's halfedge mates (``neighbor_normals``) rather than scattered into per-face
+    # tables. ``face_normals`` and ``mates`` are never read when both angle criteria are off, so
+    # the wrapper passes ``None`` for them then (the branch is warp-uniform).
     f = wp.int32(wp.tid())
     if min_quality > -1.0:
-        if quality[f] < min_quality:
+        v0, v1, v2 = face_vertices(vertices, faces, f)
+        if triangle_radius_ratio(v0, v1, v2) < min_quality:
             out_bad[f] = wp.bool(True)
             return
     if max_normal_cos <= -2.0 and max_fold_cos <= -2.0:
         out_bad[f] = wp.bool(False)
         return
 
+    neighbor_sum, max_angle = neighbor_normals(face_normals, mates, f)
     # Direction of the sum of the neighbouring normals: the local consensus. ``wp.normalize`` of a
     # zero vector is zero in Warp, which is how an isolated face -- and a face whose neighbours
     # cancel each other exactly -- ends up with no consensus to disagree with.
-    consensus = wp.normalize(neighbor_sum[f])
+    consensus = wp.normalize(neighbor_sum)
     agreement = wp.dot(face_normals[f], consensus)
     if wp.length_sq(consensus) > 0.0 and agreement < max_normal_cos:
         out_bad[f] = wp.bool(True)
@@ -495,4 +514,4 @@ def face_defective_mask(
     # cosine) *and* this face is the one facing against its own neighbourhood. Both halves matter --
     # a fold has two faces and only one of them is the mistake, so flagging both would delete a good
     # triangle along with it.
-    out_bad[f] = wp.cos(max_angle[f]) < max_fold_cos and agreement < 0.0
+    out_bad[f] = wp.cos(max_angle) < max_fold_cos and agreement < 0.0

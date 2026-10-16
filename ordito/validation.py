@@ -1480,28 +1480,15 @@ def face_defective_mask(
     if n_faces == 0:
         return out_bad
 
-    # A disabled criterion's tables are ``None``: the kernel never reads them, see its comment.
-    quality = (
-        od.triangles.face_quality(vertices, faces, metric="radius_ratio")
-        if min_quality is not None
-        else None
-    )
-    neighbor_sum = None
-    max_angle = None
+    # Both angle criteria read the face normals and the halfedge mates; with both off the kernel
+    # reads neither, see its comment.
+    mates = None
     if max_normal_angle is not None or max_fold_angle is not None:
         if face_normals is None:
             face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
-        neighbor_sum = _launch.zeros(n_faces, dtype=wp.vec3, device=device)
-        max_angle = _launch.zeros(n_faces, dtype=wp.float32, device=device)
-        # Over the halfedge mates, each adjacency pair taken at its lower halfedge: the pairs
-        # ``face_adjacency`` would emit, with no table compacted and no host read of its length.
         mates = od.halfedge.halfedge_mates(faces, vertices.size)
-        _launch.launch(
-            kernel_validation.accumulate_neighbor_normals,
-            dim=mates.size,
-            inputs=[face_normals, mates, neighbor_sum, max_angle],
-            device=device,
-        )
+    else:
+        face_normals = None
 
     # -2 is unreachable for a cosine and -1 for the normalized quality, so a disabled criterion
     # simply never fires and the kernel needs no per-criterion flag.
@@ -1509,10 +1496,10 @@ def face_defective_mask(
         kernel_validation.face_defective_mask,
         dim=n_faces,
         inputs=[
-            quality,
+            vertices,
+            faces,
             face_normals,
-            neighbor_sum,
-            max_angle,
+            mates,
             wp.float32(min_quality if min_quality is not None else -1.0),
             wp.float32(
                 math.cos(math.radians(max_normal_angle)) if max_normal_angle is not None else -2.0

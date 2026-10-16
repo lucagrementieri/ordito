@@ -20,6 +20,7 @@ from collections.abc import Sequence
 import warp as wp
 
 import ordito as od
+import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
 from ordito.kernels import combine as kernel_combine
@@ -254,7 +255,14 @@ def split_with_offsets(
 
     face_labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
 
-    sorted_labels, sorted_face_ids = od.array.sort_and_argsort(face_labels)
+    # ``array.sort_and_argsort`` spelled out for its one extra fact: every label is a face id, below
+    # ``n_faces``, so the radix sort stops at that bit width instead of running all 32 bits.
+    keys = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    _launch.copy(keys, face_labels, count=n_faces)
+    order = od.array.sort_pair_indices(n_faces, -1, device)
+    _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=max(1, (n_faces - 1).bit_length()))
+    sorted_labels = odt.as_dense(keys[:n_faces])
+    sorted_face_ids = odt.as_dense(order[:n_faces])
 
     # Segment boundaries of the label-sorted array: position 0, every label change, and the end.
     is_start = _launch.empty(n_faces + 1, dtype=wp.bool, device=device)

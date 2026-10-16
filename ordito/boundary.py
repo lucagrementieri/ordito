@@ -1101,8 +1101,9 @@ def boundary_vertices(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    indices = boundary_vertex_indices(vertices, faces)
-    return od.array.gather(vertices, indices)
+    if faces.size // 3 == 0:
+        return _launch.empty(0, dtype=wp.vec3, device=faces.device)
+    return _BoundaryHalfedges(faces, vertices.size).vertex_positions(vertices)
 
 
 def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
@@ -1292,18 +1293,7 @@ class _BoundaryHalfedges:
     def vertex_indices(self, n_vertices: int) -> wp.array[wp.int32]:
         """Sorted unique boundary vertex indices, from a scan of per-vertex flags."""
         device = self.faces.device
-        flags = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
-        if n_vertices == 0:
-            return flags
-        _launch.launch(
-            kernel_boundary.mark_boundary_vertices,
-            dim=self.n,
-            inputs=[self.mates, self.faces, flags],
-            device=device,
-        )
-        _launch.array_scan(flags, out_array=flags, inclusive=True)
-        # Sizes the output: the one host readback of this path.
-        n_out = int(read_scalar(flags))
+        flags, n_out = self._scanned_vertex_flags(n_vertices)
         out = _launch.empty(n_out, dtype=wp.int32, device=device)
         if n_out > 0:
             _launch.launch(
@@ -1313,3 +1303,34 @@ class _BoundaryHalfedges:
                 device=device,
             )
         return out
+
+    def vertex_positions(self, vertices: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
+        """Gather the boundary vertex positions in ascending index order, with no index buffer."""
+        device = self.faces.device
+        n_vertices = vertices.size
+        flags, n_out = self._scanned_vertex_flags(n_vertices)
+        out = _launch.empty(n_out, dtype=wp.vec3, device=device)
+        if n_out > 0:
+            _launch.launch(
+                kernel_scatter.scatter_value_where_scanned,
+                dim=n_vertices,
+                inputs=[flags, vertices, out],
+                device=device,
+            )
+        return out
+
+    def _scanned_vertex_flags(self, n_vertices: int) -> tuple[wp.array[wp.int32], int]:
+        """Inclusive scan of the per-vertex boundary flags, and its total (one readback)."""
+        device = self.faces.device
+        flags = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+        if n_vertices == 0:
+            return flags, 0
+        _launch.launch(
+            kernel_boundary.mark_boundary_vertices,
+            dim=self.n,
+            inputs=[self.mates, self.faces, flags],
+            device=device,
+        )
+        _launch.array_scan(flags, out_array=flags, inclusive=True)
+        # Sizes the output: the one host readback of this path.
+        return flags, int(read_scalar(flags))

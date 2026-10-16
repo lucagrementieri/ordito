@@ -2093,6 +2093,51 @@ def triangulate_rings(
 
 
 @wp.kernel
+def reserved_ring_rows(
+    offsets: wp.array[wp.int32], max_ring: wp.int32, out_bases: wp.array[wp.int32]
+) -> None:
+    # The face rows ``triangulate_rings`` reserves per loop (``n - 2`` for an ``n``-point loop) into
+    # ``out_bases[r + 1]`` of the zeroed ``(n_loops + 2,)`` buffer, for an in-place scan of its
+    # ``n_loops + 1`` prefix; the trailing slot counts the loops longer than ``max_ring``, which
+    # ``triangulate_rings`` leaves to the round loop. Both totals sit side by side for one readback.
+    r = wp.int32(wp.tid())
+    n = offsets[r + 1] - offsets[r]
+    out_bases[r + 1] = wp.max(n - 2, 0)
+    if n > max_ring:
+        wp.atomic_add(out_bases, out_bases.shape[0] - 1, 1)
+
+
+@wp.kernel
+def ring_face_counts(
+    bases: wp.array[wp.int32], ends: wp.array[wp.int32], out_face_offsets: wp.array[wp.int32]
+) -> None:
+    # Loop ``r``'s face count -- ``triangulate_rings``' end row less its reserved base -- into
+    # ``out_face_offsets[r + 1]`` of the zeroed ``(n_loops + 1,)`` buffer, for an in-place scan.
+    r = wp.int32(wp.tid())
+    out_face_offsets[r + 1] = ends[r] - bases[r]
+
+
+@wp.kernel
+def compact_ring_faces(
+    faces: wp.array2d[wp.int32],
+    bases: wp.array[wp.int32],
+    ends: wp.array[wp.int32],
+    face_offsets: wp.array[wp.int32],
+    out_faces: wp.array2d[wp.int32],
+) -> None:
+    # Reserved row ``i`` of ``triangulate_rings``' output, moved to its loop's packed position when
+    # the loop wrote it. ``bases`` is the ``(n_loops + 1,)`` reservation scan: the owning loop is
+    # the last whose base is at most ``i`` (a loop reserving no rows shares its base with the next).
+    i = wp.int32(wp.tid())
+    r = binary_search_index(bases, i) - 1
+    if i < ends[r]:
+        slot = face_offsets[r] + i - bases[r]
+        out_faces[slot, 0] = faces[i, 0]
+        out_faces[slot, 1] = faces[i, 1]
+        out_faces[slot, 2] = faces[i, 2]
+
+
+@wp.kernel
 def polyline_total_length(
     points: wp.array[wp.vec3], n_segments: wp.int32, out_total: wp.array[wp.float32]
 ) -> None:
