@@ -60,10 +60,10 @@ its cost is the host-side allocation and launch floor every ordito wrapper share
 therefore wins at a low section count and loses by orders of magnitude at a high one, and open3d's
 tight C++ loops win outright at small sizes while falling behind above a few thousand sections.
 
-The parametric-surface groups are flat for the same reason: every resolution they time sits above
-``creation._PARAMETRIC_LATTICE_DEVICE_FROM``, where the device lattice's flat floor of launches and
-readbacks beats the host build, which is quadratic in the resolution. ``icosphere`` generates its
-connectivity in closed form, so it is ``subdivisions + 2`` launches and sits on the same floor.
+The parametric-surface groups are flat for the same reason: the host resolves only the lattice's
+``O(n_u + n_v)`` edge samples and cells, and one launch writes the whole surface. ``icosphere``
+generates its connectivity in closed form, so it is ``subdivisions + 2`` launches and sits on the
+same floor.
 
 ``extrude_polygon`` only ever exercises the *convex* fast path (a single fan), which is why the ear
 clipper is benchmarked directly on a non-convex star ring — the same reasoning that gives
@@ -444,6 +444,47 @@ def test_cylinder(bench_lib: BenchLibrary, sections: int) -> None:
         assert len(mesh_o3d.triangles) == 4 * sections
 
 
+@pytest.mark.benchmark(group="cylinder_transformed")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("sections", [32, 4096])
+@pytest.mark.parametrize("mirror", [False, True], ids=["rigid", "mirror"])
+def test_cylinder_transformed(bench_lib: BenchLibrary, sections: int, mirror: bool) -> None:
+    """
+    ``cylinder`` with a ``transform``: the generator places what it writes, mirror included.
+
+    The vertices go through the matrix and a mirroring matrix reverses each triangle at write
+    time, so this row should sit on ``cylinder``'s own floor rather than above it by a second
+    pass over each buffer.
+    """
+    device = bench_lib.device
+    matrix = (
+        od.transform.reflection_matrix((1.0, 0.0, 0.0))
+        if mirror
+        else od.transform.rotation_matrix((1.0, 2.0, 3.0), 0.7)
+    )
+    _, faces_wp = bench_lib.run(
+        lambda: od.creation.cylinder(
+            radius=1.0, height=2.0, sections=sections, transform=matrix, device=device
+        )
+    )
+    assert faces_wp.size // 3 == 4 * sections
+
+
+@pytest.mark.benchmark(group="axis")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("transformed", [False, True], ids=["identity", "rotated"])
+def test_axis(bench_lib: BenchLibrary, transformed: bool) -> None:
+    """
+    The XYZ marker: a ball and three cylinders written into views of one pair of buffers.
+
+    Fixed size, so this is the call's floor: four generator launches and no concatenation.
+    """
+    device = bench_lib.device
+    matrix = od.transform.rotation_matrix((1.0, 2.0, 3.0), 0.7) if transformed else None
+    _, faces_wp = bench_lib.run(lambda: od.creation.axis(transform=matrix, device=device))
+    assert faces_wp.size > 0
+
+
 @pytest.mark.benchmark(group="cone")
 @pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib")
 @pytest.mark.parametrize("sections", _SECTIONS)
@@ -728,9 +769,8 @@ def test_parametric_surface(
     lattice does the most identification work, and ``dini`` is a plain open patch that does none.
     The axis is the resolution, quadratic in both.
 
-    Every resolution here is above the device gate, so the ordito side is the device lattice's flat
-    floor: one launch marking the canonical keys and the surviving triangles, one scan, two
-    readbacks sizing the outputs, one launch emitting them and one evaluating the map. VTK evaluates
+    The ordito side is one upload of the edge layout the host resolves and one launch writing the
+    whole surface, with no readback. VTK evaluates
     its map in a per-point C++ loop and then *welds by distance*, which is the part ordito does
     combinatorially and for free.
     """
