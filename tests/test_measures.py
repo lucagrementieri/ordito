@@ -310,6 +310,7 @@ def test_empty_mesh(device: str):
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("euler_characteristic", "trimesh")
 def test_euler_characteristic(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A on an integer, against ``Trimesh.euler_number`` across the fixture set.

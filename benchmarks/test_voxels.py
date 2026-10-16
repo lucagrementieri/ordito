@@ -746,3 +746,19 @@ def test_grid_points(bench_lib: BenchLibrary, resolution: int) -> None:
     bounds = (wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0))
     lattice = bench_lib.run(lambda: od.voxels.grid_points(shape, bounds=bounds, device=device))
     assert lattice.size == resolution**3
+
+
+@pytest.mark.benchmark(group="to_dense")
+@pytest.mark.benchlibs("ordito")
+def test_to_dense(bench_case: BenchCase) -> None:
+    """
+    The tight occupied box as a dense lattice: one bounds launch and readback, then one scatter.
+
+    ordito-only: trimesh's ``sparse_to_matrix`` takes non-negative cells and returns no origin, so
+    its lattice is not this one. The grid is the mesh voxelized at the morphology groups' size,
+    built outside the timed callable.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    occupancy, _origin = bench_case.run(lambda: od.voxels.to_dense(grid))
+    assert occupancy.ndim == 3

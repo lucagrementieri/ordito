@@ -7,10 +7,12 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device, run_device_loop
+from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.array import arange
+from ordito.constants import INT32_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import graph as kernel_graph
+from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -535,17 +537,25 @@ def connected_component_parity_from_edges(
     if node_count < 0:
         raise ValueError(f"node_count must be non-negative, got {node_count}")
     if validate and m > 0:
-        # One 8-byte read of both bounds, not a copy of the whole edge buffer -- see
-        # ``_validate_edge_list``, whose range check this mirrors for a signed edge list.
-        lowest, highest = od.reduce.minmax(edges)
+        # Both range checks -- endpoints and signs -- fold in one launch and come back in one
+        # 16-byte read. ``signs`` needs the check for the same reason ``edges`` does: the hook
+        # packs the parity bit into the low bit of a word whose upper bits are a node id, so a sign
+        # outside {0, 1} is not a tolerable approximation of one -- it addresses a different node.
+        bounds = _launch.full(4, INT32_MAX, dtype=wp.int32, device=edges.device)
+        _launch.launch_tiled(
+            kernel_graph.signed_edge_bounds,
+            dim=[kernel_reduce.blocks_1d(m)],
+            inputs=[edges, signs, bounds],
+            block_dim=TILE_1D,
+            device=edges.device,
+        )
+        # The bounds decide whether to raise.
+        lowest, highest_flip, lowest_sign, highest_sign_flip = read_values(bounds, 0, 4)
+        highest, highest_sign = ~highest_flip, ~highest_sign_flip
         if lowest < 0 or highest >= node_count:
             raise ValueError(
                 f"edge indices must lie in [0, {node_count}), got min={lowest} max={highest}"
             )
-        # ``signs`` needs the same range check and for the same reason: the hook packs the parity
-        # bit into the low bit of a word whose upper bits are a node id, so a sign outside {0, 1}
-        # is not a tolerable approximation of one -- it addresses a different node.
-        lowest_sign, highest_sign = od.reduce.minmax(signs)
         if lowest_sign < 0 or highest_sign > 1:
             raise ValueError(f"signs must be 0 or 1, got min={lowest_sign} max={highest_sign}")
 

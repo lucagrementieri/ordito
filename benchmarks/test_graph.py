@@ -157,6 +157,26 @@ def test_connected_component_labels(bench_case: BenchCase) -> None:
         assert labels_np.shape == (n_vertices,)
 
 
+@pytest.mark.benchmark(group="connected_component_parity_from_edges")
+@pytest.mark.benchlibs("ordito")
+def test_connected_component_parity_from_edges(bench_case: BenchCase) -> None:
+    """
+    The checked parity union-find over the mesh's unique edges, every sign ``1``.
+
+    Ordito only: no reference library solves a Z2 potential over an edge list. The default
+    ``validate=True`` is timed, so the row includes the endpoint and sign range checks and their
+    readback; the edge table and signs are inputs, built outside the timed callable.
+    """
+    n_vertices = bench_case.n_vertices
+    unique_edges, _ = od.edges.edges_unique(bench_case.faces_wp, n_vertices=n_vertices)
+    signs = wp.ones(unique_edges.shape[0], dtype=wp.int32, device=unique_edges.device)
+    labels, parity = bench_case.run(
+        lambda: od.graph.connected_component_parity_from_edges(unique_edges, signs, n_vertices)
+    )
+    assert labels.shape == (n_vertices,)
+    assert parity.shape == (n_vertices,)
+
+
 @pytest.mark.benchmark(group="connected_component_labels_depth")
 @pytest.mark.benchaxis("diameter")
 @pytest.mark.benchlibs("ordito", "scipy", "igl")

@@ -43,6 +43,7 @@ from ordito._device import read_scalar, require_same_device
 from ordito.array import flatnonzero, gather
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import sample as kernel_sample
+from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels.algorithms import blue_noise as kernel_blue_noise
 from ordito.neighbors import query_ball_with_offsets
 from ordito.triangles import face_normals_and_areas
@@ -237,7 +238,7 @@ def sample_surface(
     """
     Sample points uniformly on a triangle mesh surface (area-weighted faces).
 
-    Uses ``face_normals_and_areas`` for default triangle weights. Builds a CDF and
+    Weights faces by their area by default. Builds a CDF and
     draws triangle indices by inverse-transform sampling it, then uniform points with
     ``wp.sample_triangle`` (same scheme as [`trimesh.sample.sample_surface`][]).
 
@@ -251,7 +252,7 @@ def sample_surface(
         Number of samples.
     face_weight
         ``(n_faces,)`` per-face weights. If ``None``,
-        triangle areas from ``face_normals_and_areas`` are used.
+        the triangle areas are used.
     seed
         RNG seed for ``wp.rand_init``. If ``None``, a random seed is chosen.
 
@@ -305,16 +306,21 @@ def sample_surface(
         # raises an unrelated ``IndexError`` (CPU) or a Warp slicing error (CUDA) instead.
         raise ValueError("mesh has no faces; cannot sample its surface")
 
-    if face_weight is None:
-        _, weights = face_normals_and_areas(vertices, faces)
-    else:
-        weights = face_weight
-
     # ``array_scan`` is inclusive by default, so the total is the scan's last element -- a 4-byte
     # tail read instead of a whole second reduction over the weights. Same trick as
-    # ``array.flatnonzero`` and ``array.counts_to_offsets``.
+    # ``array.flatnonzero`` and ``array.counts_to_offsets``. Without a ``face_weight`` the areas
+    # are written straight into the CDF buffer and scanned in place: no normals, no second buffer.
     cdf = _launch.empty(n_faces, dtype=wp.float32, device=vertices.device)
-    _launch.array_scan(weights, out_array=cdf)
+    if face_weight is None:
+        _launch.launch(
+            kernel_triangles.face_areas,
+            dim=n_faces,
+            inputs=[vertices, faces, cdf],
+            device=vertices.device,
+        )
+        _launch.array_scan(cdf, out_array=cdf)
+    else:
+        _launch.array_scan(face_weight, out_array=cdf)
     total = float(read_scalar(cdf))
     if total <= 0.0:
         raise ValueError("total face weight must be positive")

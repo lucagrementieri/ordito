@@ -1,9 +1,10 @@
 import warp as wp
 
-from ordito.kernels.adjacency import write_edge_row
+from ordito.kernels.adjacency import write_edge_row, write_face_edge_keys
 from ordito.kernels.array import sorted_run_start, unpack_edge_key
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb, side_lengths
+from ordito.kernels.reduce import block_chunk_1d, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -51,6 +52,50 @@ def edges_from_keys(
     out_edges[i, 1] = hi
 
 
+# Codes ``face_edge_keys_checked`` raises its range flag to; the larger wins, so a negative index is
+# reported ahead of one past the bound, the order the reduction-based check tests them in.
+INDEX_ABOVE_BOUND = wp.int32(1)
+INDEX_NEGATIVE = wp.int32(2)
+
+
+@wp.func
+def face_index_range_code(faces: wp.array[wp.int32], f: wp.int32, bound: wp.int32) -> wp.int32:
+    # ``0`` when face ``f``'s three corners lie in ``[0, bound)``, else the worse of
+    # ``INDEX_NEGATIVE`` / ``INDEX_ABOVE_BOUND``.
+    code = wp.int32(0)
+    for k in range(3):
+        v = faces[3 * f + k]
+        if v < 0:
+            code = INDEX_NEGATIVE
+        elif v >= bound:
+            code = wp.max(code, INDEX_ABOVE_BOUND)
+    return code
+
+
+@wp.kernel
+def face_edge_keys_checked(
+    faces: wp.array[wp.int32],
+    base: wp.uint64,
+    bound: wp.int32,
+    flag_slot: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``adjacency.face_edge_keys_and_order`` plus the index range check ``edges.edges_unique``
+    # would otherwise run as a ``minmax`` reduction and its own readback: a face with a corner
+    # outside ``[0, bound)`` raises ``out_order[flag_slot]`` (a zeroed slot past the sort's
+    # double-width buffer) to its ``face_index_range_code``, and the wrapper reads that slot in the
+    # same copy as the scan's tail. Keys of a bad face are garbage, which only reorders the sort
+    # the wrapper then discards. The identity payload is the only other statement the two share.
+    f = wp.int32(wp.tid())
+    write_face_edge_keys(faces, f, 3 * f, base, out_keys)
+    for k in range(3):
+        out_order[3 * f + k] = 3 * f + k
+    code = face_index_range_code(faces, f, bound)
+    if code > 0:
+        wp.atomic_max(out_order, flag_slot, code)
+
+
 @wp.kernel
 def emit_sorted_unique_edges(
     faces: wp.array[wp.int32],
@@ -86,6 +131,16 @@ def edge_lengths(
     out_lengths[i] = wp.length(vertices[edges[i, 1]] - vertices[edges[i, 0]])
 
 
+@wp.func
+def halfedge_length(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], h: wp.int32
+) -> wp.float32:
+    # Length of halfedge ``h``, tip minus tail: the one spelling ``halfedge_lengths`` writes and
+    # ``halfedge_length_partials`` folds, so the stored lengths and their mean cannot drift apart.
+    tail, tip = halfedge_endpoints(faces, h)
+    return wp.length(vertices[tip] - vertices[tail])
+
+
 @wp.kernel
 def halfedge_lengths(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_lengths: wp.array[wp.float32]
@@ -94,8 +149,63 @@ def halfedge_lengths(
     # that table is halfedge ``h``, so the ``(3 * n_faces, 2)`` table is never written only to be
     # gathered through once.
     h = wp.int32(wp.tid())
-    tail, tip = halfedge_endpoints(faces, h)
-    out_lengths[h] = wp.length(vertices[tip] - vertices[tail])
+    out_lengths[h] = halfedge_length(vertices, faces, h)
+
+
+@wp.kernel
+def halfedge_length_partials(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    n_halfedges: wp.int32,
+    out_partials: wp.array[wp.float32],
+) -> None:
+    # ``halfedge_lengths`` folded on the fly into one stored sum per block, the first stage of
+    # ``reduce.sum``'s fixed-order tree: ``edges.mean_edge_length`` hands ``out_partials`` to
+    # ``reduce.sum``, so the ``(3 * n_faces,)`` length buffer is never written. Lane-strided by
+    # ``wp.block_dim()`` over the block's ``ITEMS_PER_BLOCK_1D`` halfedges, so the CPU device's
+    # one-lane block walks them all.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(n_halfedges, block)
+    total = wp.float32(0.0)
+    for k in range(lane, count, wp.block_dim()):
+        total += halfedge_length(vertices, faces, offset + k)
+    block_total = block_sum(total)
+    if lane == 0:
+        out_partials[block] = block_total
+
+
+@wp.kernel
+def unique_edge_length_partials(
+    vertices: wp.array[wp.vec3],
+    sorted_keys: wp.array[wp.uint64],
+    n_keys: wp.int32,
+    base: wp.uint64,
+    flags: wp.array[wp.int32],
+    flag_slot: wp.int32,
+    out_partials: wp.array[wp.vec3],
+) -> None:
+    # ``(length sum, edge count, range flag)`` of the unique edges, one stored triple per block for
+    # ``reduce.sum``'s fixed-order tree, straight off the sorted corner keys: a run start is one
+    # unique edge and its key unpacks to the endpoints, so ``edges.mean_unique_edge_length`` needs
+    # no run scan, no emitted edge table, no length buffer and no edge-count readback. Block 0 adds
+    # ``flags[flag_slot]`` (``face_edge_keys_checked``'s range code, or a zero slot) as the third
+    # component, so the one readback of the total also carries the validation.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(n_keys, block)
+    # A raised flag means some key unpacks to an index outside ``vertices``: read none of them.
+    if flags[flag_slot] != 0:
+        count = 0
+    acc = wp.vec3(0.0)
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        if sorted_run_start(sorted_keys, i):
+            lo, hi = unpack_edge_key(sorted_keys[i], base)
+            acc += wp.vec3(wp.length(vertices[hi] - vertices[lo]), 1.0, 0.0)
+    if block == 0 and lane == 0:
+        acc += wp.vec3(0.0, 0.0, wp.float32(flags[flag_slot]))
+    block_total = block_sum(acc)
+    if lane == 0:
+        out_partials[block] = block_total
 
 
 @wp.kernel

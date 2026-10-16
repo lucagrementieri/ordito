@@ -20,12 +20,13 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.array import arange_repeat
-from ordito.constants import INDEX_RADIX_PAIR
+from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import edges as kernel_edges
 from ordito.kernels import grouping as kernel_grouping
+from ordito.kernels import reduce as kernel_reduce
 
 
 def faces_to_edges(
@@ -209,8 +210,8 @@ def edges_unique(
         # pair exactly as ``hash_indices_rows`` packs the corresponding ``faces_to_edges`` row, so
         # the ``(3 * n_faces, 2)`` table is never written or read back, and any range check reduces
         # the ``3 * n_faces`` face buffer -- the same values, half the entries.
-        radix = _face_edge_radix(faces, n_faces, n_vertices, validate)
-        return _unique_edges_from_faces(faces, n_faces, radix)
+        radix, check = _face_edge_radix(faces, n_faces, n_vertices, validate)
+        return _unique_edges_from_faces(faces, n_faces, radix, check)
 
     if n_vertices is None:
         if validate:
@@ -232,37 +233,33 @@ def edges_unique(
 
 def _face_edge_radix(
     faces: wp.array[wp.int32], n_faces: int, n_vertices: int | None, validate: bool
-) -> int:
+) -> tuple[int, bool]:
     """
-    Return the radix every corner edge's sorted-pair key packs against.
+    Return the radix every corner edge's sorted-pair key packs against, and whether to check it.
 
     The ``edges_sorted is None`` half of [`edges_unique`][ordito.edges.edges_unique], resolving
     ``n_vertices`` and ``validate`` exactly as the composed ``faces_to_edges`` +
     ``hash_indices_rows`` path does: an inferred bound checks the negative half, a supplied one is
-    checked against, and ``validate=False`` with no bound packs against ``INDEX_RADIX_PAIR``. The
-    reduction reads only the ``3 * n_faces`` indices a face actually owns, which is the set the
-    edge rows would have held.
+    checked against, and ``validate=False`` with no bound packs against ``INDEX_RADIX_PAIR``. Only
+    the inferred bound needs a reduction here, since the radix depends on it; a supplied bound is
+    returned with ``True``, and the key kernel checks every index against it in the same pass,
+    its flag read back with the edge count.
     """
     if n_vertices is not None and n_vertices <= 0:
         raise ValueError(f"n_vertices must be positive, got {n_vertices}")
+    if n_vertices is not None:
+        return n_vertices, validate
     if validate:
         owned = faces if faces.size == 3 * n_faces else odt.as_dense(faces[: 3 * n_faces])
         low, high = od.reduce.minmax(owned)
         if low < 0:
             raise ValueError(f"edge indices must be non-negative, got a minimum of {low}")
-        if n_vertices is None:
-            n_vertices = int(high) + 1
-        elif high >= n_vertices:
-            raise ValueError(
-                f"edge indices must be less than n_vertices {n_vertices}, got a maximum of {high}"
-            )
-    elif n_vertices is None:
-        n_vertices = INDEX_RADIX_PAIR
-    return n_vertices
+        return int(high) + 1, False
+    return INDEX_RADIX_PAIR, False
 
 
 def _unique_edges_from_faces(
-    faces: wp.array[wp.int32], n_faces: int, radix: int
+    faces: wp.array[wp.int32], n_faces: int, radix: int, check: bool
 ) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
     """
     ``(unique_edges, inverse)`` from one radix sort of every corner's packed edge key.
@@ -270,26 +267,15 @@ def _unique_edges_from_faces(
     The unique edges are the runs of the sorted keys, so a run-start mark, an inclusive scan and
     one emit give exactly what ``grouping.unique_1d`` over the same keys returns -- ascending-key
     rows and the corner map into them -- without its open-addressing table, whose ~``2 * 3 *
-    n_faces`` slots take random atomics where the sort streams. The keys and the identity payload
-    are written straight into the sort's double-width buffers (the launch
-    ``adjacency.sorted_face_edge_keys`` makes), and the run marks and their scan live in the
-    payload's upper half, which is free scratch once the sort has run; the emit re-derives each
-    run start from the sorted keys.
+    n_faces`` slots take random atomics where the sort streams. The run marks and their scan live
+    in the payload's upper half, which is free scratch once the sort has run; the emit re-derives
+    each run start from the sorted keys. With ``check`` the range flag sits in the slot after that
+    scan, so the edge count and the validation come back in one read.
     """
     device = faces.device
     n = 3 * n_faces
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_adjacency.face_edge_keys_and_order,
-        dim=n_faces,
-        inputs=[faces, wp.uint64(radix), keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(
-        keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
-    )
-    ranks = odt.as_dense(order[n:])
+    keys, order = _sorted_face_edge_keys(faces, n_faces, radix, radix if check else None)
+    ranks = odt.as_dense(order[n : 2 * n])
     _launch.launch(
         kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
         dim=n,
@@ -297,9 +283,13 @@ def _unique_edges_from_faces(
         device=device,
     )
     _launch.array_scan(ranks, ranks, inclusive=True)
-    # The edge count sizes the returned table.
-    n_edges = int(read_scalar(ranks, n - 1))
-    unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
+    # The edge count sizes the returned table; the range flag (when checked) rides in the same copy.
+    if check:
+        n_edges, code = read_values(order, 2 * n - 1, 2)
+        _raise_on_range_code(int(code), radix)
+    else:
+        n_edges = int(read_scalar(ranks, n - 1))
+    unique_edges = odt.empty_2d((int(n_edges), 2), wp.int32, device=device)
     inverse = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_edges.emit_sorted_unique_edges,
@@ -308,6 +298,52 @@ def _unique_edges_from_faces(
         device=device,
     )
     return unique_edges, inverse
+
+
+def _sorted_face_edge_keys(
+    faces: wp.array[wp.int32], n_faces: int, radix: int, bound: int | None
+) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
+    """
+    Every corner's packed edge key, radix-sorted with its corner index as the payload.
+
+    The keys and the identity payload are written straight into the sort's double-width buffers
+    (the launch ``adjacency.sorted_face_edge_keys`` makes). With a ``bound`` the key kernel also
+    range-checks every face index against it and raises the zeroed slot ``order[6 * n_faces]`` to
+    a nonzero code on a miss; [`_raise_on_range_code`][ordito.edges._raise_on_range_code] reads it.
+    """
+    device = faces.device
+    n = 3 * n_faces
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    if bound is None:
+        order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_adjacency.face_edge_keys_and_order,
+            dim=n_faces,
+            inputs=[faces, wp.uint64(radix), keys, order],
+            device=device,
+        )
+    else:
+        order = _launch.zeros(2 * n + 1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_edges.face_edge_keys_checked,
+            dim=n_faces,
+            inputs=[faces, wp.uint64(radix), bound, 2 * n, keys, order],
+            device=device,
+        )
+    _launch.radix_sort_pairs(
+        keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
+    )
+    return keys, order
+
+
+def _raise_on_range_code(code: int, n_vertices: int) -> None:
+    """Raise the ``ValueError`` a ``face_edge_keys_checked`` range code stands for, if any."""
+    if code == int(kernel_edges.INDEX_NEGATIVE):
+        raise ValueError("edge indices must be non-negative, got a negative index")
+    if code == int(kernel_edges.INDEX_ABOVE_BOUND):
+        raise ValueError(
+            f"edge indices must be less than n_vertices {n_vertices}, got one at or above it"
+        )
 
 
 def _unique_edges_from_keys(
@@ -678,10 +714,22 @@ def mean_edge_length(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = faces.size // 3
-    if n_faces == 0:
+    n_halfedges = faces.size // 3 * 3
+    if n_halfedges == 0:
         return 0.0
-    return od.reduce.mean(edges_length(vertices, faces))
+    # Each block's length sum is stored, not committed, and ``reduce.sum`` folds the partials in
+    # its fixed order: no ``(3 * n_faces,)`` length buffer, and one readback.
+    partials = _launch.empty(
+        kernel_reduce.blocks_1d(n_halfedges), dtype=wp.float32, device=vertices.device
+    )
+    _launch.launch_tiled(
+        kernel_edges.halfedge_length_partials,
+        dim=[partials.size],
+        inputs=[vertices, faces, n_halfedges, partials],
+        block_dim=TILE_1D,
+        device=vertices.device,
+    )
+    return od.reduce.sum(partials) / n_halfedges
 
 
 def mean_unique_edge_length(
@@ -743,6 +791,21 @@ def mean_unique_edge_length(
     n_faces = faces.size // 3
     if n_faces == 0:
         return 0.0
-    return od.reduce.mean(
-        edges_unique_length(vertices, faces, n_vertices=vertices.size, validate=validate)
+    # The unique edges are the sorted corner keys' run starts, so their lengths and count fold
+    # straight off the sort into per-block ``(sum, count, range flag)`` partials: no emitted edge
+    # table, no length buffer, and one readback carrying the total, the count and the validation.
+    n_vertices = vertices.size
+    n = 3 * n_faces
+    keys, order = _sorted_face_edge_keys(faces, n_faces, n_vertices, n_vertices)
+    partials = _launch.empty(kernel_reduce.blocks_1d(n), dtype=wp.vec3, device=vertices.device)
+    _launch.launch_tiled(
+        kernel_edges.unique_edge_length_partials,
+        dim=[partials.size],
+        inputs=[vertices, keys, n, wp.uint64(n_vertices), order, 2 * n, partials],
+        block_dim=TILE_1D,
+        device=vertices.device,
     )
+    total, count, code = od.reduce.sum(partials)
+    if validate:
+        _raise_on_range_code(int(code), n_vertices)
+    return float(total) / float(count)

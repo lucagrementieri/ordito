@@ -1,6 +1,8 @@
 import warp as wp
 
+from ordito.constants import INT32_MAX_CONSTANT
 from ordito.kernels import array as kernel_array
+from ordito.kernels.reduce import block_chunk_1d, block_min
 
 wp.set_module_options({"enable_backward": False})
 
@@ -74,6 +76,41 @@ def scatter_neighbor_lists(
     b = edges[e, 1]
     out_neighbors[offsets[a + 1] - wp.atomic_sub(cursor, a, 1)] = b
     out_neighbors[offsets[b + 1] - wp.atomic_sub(cursor, b, 1)] = a
+
+
+@wp.kernel
+def signed_edge_bounds(
+    edges: wp.array2d[wp.int32], signs: wp.array[wp.int32], out_bounds: wp.array[wp.int32]
+) -> None:
+    # ``graph.connected_component_parity_from_edges``' two range checks in one fold and one read:
+    # ``out_bounds`` (four slots seeded ``INT32_MAX``) receives ``min(edges)``, ``min(~edges)``,
+    # ``min(signs)`` and ``min(~signs)``. ``~v`` is ``-v - 1``, so its minimum is ``~max(v)``
+    # with no overflow at ``INT32_MIN``, and all four commits are the same ``atomic_min``.
+    # Lane-strided by ``wp.block_dim()`` over the block's ``ITEMS_PER_BLOCK_1D`` rows.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(edges.shape[0], block)
+    low = wp.int32(INT32_MAX_CONSTANT)
+    low_flip = wp.int32(INT32_MAX_CONSTANT)
+    low_sign = wp.int32(INT32_MAX_CONSTANT)
+    low_sign_flip = wp.int32(INT32_MAX_CONSTANT)
+    for k in range(lane, count, wp.block_dim()):
+        e = offset + k
+        a = edges[e, 0]
+        b = edges[e, 1]
+        s = signs[e]
+        low = wp.min(low, wp.min(a, b))
+        low_flip = wp.min(low_flip, wp.min(~a, ~b))
+        low_sign = wp.min(low_sign, s)
+        low_sign_flip = wp.min(low_sign_flip, ~s)
+    low = block_min(low)
+    low_flip = block_min(low_flip)
+    low_sign = block_min(low_sign)
+    low_sign_flip = block_min(low_sign_flip)
+    if lane == 0 and count > 0:
+        wp.atomic_min(out_bounds, 0, low)
+        wp.atomic_min(out_bounds, 1, low_flip)
+        wp.atomic_min(out_bounds, 2, low_sign)
+        wp.atomic_min(out_bounds, 3, low_sign_flip)
 
 
 @wp.kernel

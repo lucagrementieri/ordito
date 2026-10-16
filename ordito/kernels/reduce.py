@@ -1115,6 +1115,27 @@ def minmax_vec3_pair_chunked(
         minmax_vec3_chunk(points_b, t - chunks_a, out_corners, b_box)
 
 
+@wp.kernel
+def minmax_rows3_int32_chunked(rows: wp.array2d[wp.int32], out_corners: wp.array[wp.int32]) -> None:
+    # ``minmax_vec3_chunked`` for ``(n, 3)`` ``int32`` rows (integer cell coordinates): one thread
+    # per ``TILE_1D`` rows, six atomic minima into ``[min_x, min_y, min_z, ~max_x, ~max_y,
+    # ~max_z]`` seeded ``INT32_MAX``. The upper half is bit-complemented rather than negated --
+    # ``~v`` is ``-v - 1``, which cannot overflow at ``INT32_MIN`` -- so one fill initializes both
+    # halves and the caller reads the six back in one copy. Launch with ``chunks_1d``.
+    offset, count = block_chunk(rows.shape[0], wp.int32(wp.tid()), TILE_1D)
+    if count <= 0:
+        return
+    lower = wp.vec3i(rows[offset, 0], rows[offset, 1], rows[offset, 2])
+    upper = lower
+    for k in range(1, count):
+        row = wp.vec3i(rows[offset + k, 0], rows[offset + k, 1], rows[offset + k, 2])
+        lower = wp.min(lower, row)
+        upper = wp.max(upper, row)
+    for axis in range(3):
+        wp.atomic_min(out_corners, axis, lower[axis])
+        wp.atomic_min(out_corners, 3 + axis, ~upper[axis])
+
+
 # ---------------------------------------------------------------------------
 # Concrete overloads, registered at import.
 #

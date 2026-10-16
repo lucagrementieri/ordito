@@ -25,8 +25,7 @@ number appears as the ``mean_edge_length`` reference in [`test_edges.py`](test_e
 worth knowing before reading either as a per-quantity cost. It is read-only, so it shares the
 MeshSet.
 
-``volume`` and ``euler_characteristic`` have **no groups**; see the known-gaps table in
-``README.md``.
+``volume`` has **no group**; see the known-gaps table in ``README.md``.
 """
 
 from __future__ import annotations
@@ -143,3 +142,25 @@ def test_moments(bench_case: BenchCase) -> None:
         lambda: tm.Trimesh(vertices_np, faces_np, process=False).mass_properties
     )
     assert np.asarray(properties_tm["inertia"]).shape == (3, 3)
+
+
+@pytest.mark.benchmark(group="euler_characteristic")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_euler_characteristic(bench_case: BenchCase) -> None:
+    """
+    ``V - E + F`` over the referenced vertices and the unique edges: two host readbacks.
+
+    One for the index bound (the mask and the key radix need it on the host), one for both counts,
+    which fold in a single launch over the referenced-vertex mask and the sorted edge keys' run
+    starts. The trimesh row is the uncached ``euler_number`` on a fresh ``Trimesh`` (its own
+    ``edges_unique`` grouping and referenced-vertex count).
+    """
+    if bench_case.kind == "ordito":
+        faces = bench_case.faces_wp
+        result = bench_case.run(lambda: od.measures.euler_characteristic(faces))
+    else:
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        result = bench_case.run(
+            lambda: tm.Trimesh(vertices_np, faces_np, process=False).euler_number
+        )
+    assert isinstance(int(result), int)

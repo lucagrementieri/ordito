@@ -13,6 +13,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_nonempty_mesh
+from ordito.kernels import mesh as kernel_mesh
 
 _R = TypeVar("_R")
 
@@ -2078,29 +2079,47 @@ class Trimesh:
         """
         if kind not in ("rigid", "reflection", "similarity"):
             return
-        rotate = od.transform.transform_normals
-        if "face_normals" in self._cache:
-            survived["face_normals"] = rotate(
-                cast("wp.array[wp.vec3]", self._cache["face_normals"]), matrix
-            )
+        device = self._vertices.device
+        none = _launch.empty(0, dtype=wp.vec3, device=device)
+        # Every cached direction maps through one launch: up to four arrays, an absent one passed
+        # as ``none``. Each output is allocated only for an input that is present.
+        face_normals = cast("wp.array[wp.vec3] | None", self._cache.get("face_normals"))
+        basis_x = basis_y = None
         frames = self._cache.get("vertex_tangent_frames")
         if frames is not None and "vertex_tangent_frames" in survived:
-            basis_x, basis_y, normal = cast(
+            basis_x, basis_y, vertex_normals = cast(
                 "tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]", frames
             )
-            rotated_normal = rotate(normal, matrix)
+        else:
+            vertex_normals = cast("wp.array[wp.vec3] | None", self._cache.get("vertex_normals"))
+        inputs = [face_normals, basis_x, basis_y, vertex_normals]
+        if all(array is None for array in inputs):
+            return
+        outputs = [
+            none if array is None else _launch.empty(array.size, dtype=wp.vec3, device=device)
+            for array in inputs
+        ]
+        n = max(0 if array is None else array.size for array in inputs)
+        if n > 0:
+            _launch.launch(
+                kernel_mesh.transform_cached_directions,
+                dim=n,
+                inputs=[
+                    od.transform.normal_matrix(matrix),
+                    *(none if array is None else array for array in inputs),
+                    *outputs,
+                ],
+                device=device,
+            )
+        out_face, out_x, out_y, out_normal = outputs
+        if face_normals is not None:
+            survived["face_normals"] = out_face
+        if basis_x is not None:
             # The frame's third element *is* `vertex_normals` (that property's documented
             # invariant), so rotate it once and fill both slots with the same array.
-            survived["vertex_tangent_frames"] = (
-                rotate(basis_x, matrix),
-                rotate(basis_y, matrix),
-                rotated_normal,
-            )
-            survived["vertex_normals"] = rotated_normal
-        elif "vertex_normals" in self._cache:
-            survived["vertex_normals"] = rotate(
-                cast("wp.array[wp.vec3]", self._cache["vertex_normals"]), matrix
-            )
+            survived["vertex_tangent_frames"] = (out_x, out_y, out_normal)
+        if vertex_normals is not None:
+            survived["vertex_normals"] = out_normal
 
     def _carry_box(
         self, kind: str, matrix: wp.mat44 | wp.array[wp.mat44], survived: dict[str, object]
@@ -2198,16 +2217,27 @@ class Trimesh:
         ```
         """
         survived = {key: value for key, value in self._cache.items() if key in _INVERT_CARRY}
-        for key in ("face_normals", "vertex_normals"):
-            # Negated, not recomputed: exact, and it saves rebuilding `vertex_normals` from the
-            # `face_angles` this flip drops.
-            cached = self._cache.get(key)
-            if cached is not None:
-                normals = cast("wp.array[wp.vec3]", cached)
-                flipped = _launch.empty(normals.size, dtype=wp.vec3, device=normals.device)
-                if normals.size > 0:
-                    _launch.map(wp.neg, normals, out=flipped)
-                survived[key] = flipped
+        # Negated, not recomputed: exact, and it saves rebuilding `vertex_normals` from the
+        # `face_angles` this flip drops. Both buffers in one launch; an absent one is zero-length.
+        device = self._vertices.device
+        none = _launch.empty(0, dtype=wp.vec3, device=device)
+        face_normals = cast("wp.array[wp.vec3] | None", self._cache.get("face_normals"))
+        vertex_normals = cast("wp.array[wp.vec3] | None", self._cache.get("vertex_normals"))
+        if face_normals is not None or vertex_normals is not None:
+            inputs = [none if a is None else a for a in (face_normals, vertex_normals)]
+            outputs = [_launch.empty(a.size, dtype=wp.vec3, device=device) for a in inputs]
+            n = max(a.size for a in inputs)
+            if n > 0:
+                _launch.launch(
+                    kernel_mesh.negate_cached_normals,
+                    dim=n,
+                    inputs=[*inputs, *outputs],
+                    device=device,
+                )
+            if face_normals is not None:
+                survived["face_normals"] = outputs[0]
+            if vertex_normals is not None:
+                survived["vertex_normals"] = outputs[1]
         return Trimesh(
             self._vertices, od.repair.reverse_winding(self._faces), initial_cache=survived
         )

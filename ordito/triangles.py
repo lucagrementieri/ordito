@@ -201,11 +201,13 @@ def corner_normals(
         host readback that inferring it costs.
     face_normals
         ``(n_faces,)`` unit face normals and matching areas from
-        [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]; recomputed together
-        when either is ``None``. [`Trimesh.face_normals`][ordito.mesh.Trimesh.face_normals] and
+        [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]; at
+        ``weighting="area"`` recomputed together when either is ``None``, at ``"angle"`` (which
+        reads no area) recomputed alongside the corner angles when ``None``.
+        [`Trimesh.face_normals`][ordito.mesh.Trimesh.face_normals] and
         [`Trimesh.face_areas`][ordito.mesh.Trimesh.face_areas] cache the pair.
     face_areas
-        ``(n_faces,)`` face areas; see ``face_normals``.
+        ``(n_faces,)`` face areas; see ``face_normals``. Unused at ``weighting="angle"``.
 
     Returns
     -------
@@ -285,13 +287,25 @@ def corner_normals(
         if int(crease_edges.shape[0]) > 0:
             crease_keys = od.grouping.sorted_undirected_edge_keys(crease_edges, n_vertices)
 
-    if face_normals is None or face_areas is None:
-        face_normals, face_areas = face_normals_and_areas(vertices, faces)
     if weighting == "angle":
         # ``(n_faces, 3)`` reshaped flat is already corner-indexed: row ``f`` column ``k`` is
-        # corner ``3f + k``, the same index the kernel's thread carries.
-        corner_weights = face_angles(vertices, faces).reshape(3 * n_faces)
+        # corner ``3f + k``, the same index the kernel's thread carries. The area is never read on
+        # this path, so a missing normal is formed in the same launch as the angles.
+        if face_normals is None:
+            face_normals = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+            angles = odt.empty_2d((n_faces, 3), wp.float32, device=device)
+            _launch.launch(
+                kernel_triangles.face_normals_and_corner_angles,
+                dim=n_faces,
+                inputs=[vertices, faces, face_normals, angles],
+                device=device,
+            )
+        else:
+            angles = face_angles(vertices, faces)
+        corner_weights = angles.reshape(3 * n_faces)
     elif weighting == "area":
+        if face_normals is None or face_areas is None:
+            face_normals, face_areas = face_normals_and_areas(vertices, faces)
         # The face's own area, indexed by ``halfedge // 3`` inside the kernel. Broadcasting it to
         # the three corners here instead cost an ``arange_repeat`` launch and a gather, for a
         # division the kernel already performs.

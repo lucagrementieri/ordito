@@ -31,7 +31,7 @@ import warp as wp
 
 import ordito as od
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import TILE_1D
 from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
@@ -370,7 +370,18 @@ def euler_characteristic(faces: wp.array[wp.int32]) -> int:
     # The referenced-vertex count is a membership mask's popcount rather than the length of
     # ``unique_1d(faces)``: the indices are bounded by ``n_vertices``, so the mask is the same set
     # without the hash table, compaction and sort, and the count is one read instead of two.
-    n_referenced = od.reduce.sum(od.array.indices_to_mask(faces, n_vertices))
-    unique_edges, _ = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
-    n_edges = int(unique_edges.shape[0])
+    referenced = od.array.indices_to_mask(faces, n_vertices)
+    # The unique edges are the sorted halfedge keys' runs, so only their count is formed: no run
+    # scan and no emitted edge table. Both counts fold in one launch and come back in one read.
+    sorted_keys, _ = od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
+    counts = _launch.zeros(2, dtype=wp.int32, device=faces.device)
+    _launch.launch_tiled(
+        kernel_measures.referenced_vertex_and_unique_edge_counts,
+        dim=[kernel_reduce.blocks_1d(max(n_vertices, sorted_keys.size))],
+        inputs=[referenced, sorted_keys, max(n_vertices, sorted_keys.size), counts],
+        block_dim=TILE_1D,
+        device=faces.device,
+    )
+    # The two counts are the answer.
+    n_referenced, n_edges = read_values(counts, 0, 2)
     return n_referenced - n_edges + n_faces

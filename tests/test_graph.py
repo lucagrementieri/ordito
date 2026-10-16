@@ -478,8 +478,9 @@ def test_connected_component_parity_no_edges(device: str) -> None:
     [
         ([[0, 0]] * 4, 3, 4, "signs must have length 4"),
         ([[0, 10]], 1, 5, "edge indices must lie in"),
+        ([[-1, 2]], 1, 5, "edge indices must lie in"),
     ],
-    ids=["signs_length", "endpoint_range"],
+    ids=["signs_length", "endpoint_range", "endpoint_negative"],
 )
 def test_connected_component_parity_validates_its_input(
     device: str, edges: list[list[int]], n_signs: int, node_count: int, message: str

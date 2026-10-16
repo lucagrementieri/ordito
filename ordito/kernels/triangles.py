@@ -272,6 +272,18 @@ def face_normals_and_areas(
     out_areas[f] = area
 
 
+@wp.kernel
+def face_areas(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_areas: wp.array[wp.float32]
+) -> None:
+    # ``face_normals_and_areas``' area alone -- ``0.5 * |triangle_cross|``, the same expression
+    # ``face_normals_and_area`` forms, so the two agree bit for bit -- for a consumer that never
+    # reads the normal: ``sample.sample_surface`` writes it straight into its CDF buffer and scans
+    # in place.
+    f = wp.int32(wp.tid())
+    out_areas[f] = 0.5 * wp.length(triangle_cross(vertices, faces, f))
+
+
 @wp.func
 def face_corner_angles(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_index: wp.int32
@@ -319,6 +331,23 @@ def angles(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_angles: wp.array2d[wp.float32]
 ) -> None:
     f = wp.int32(wp.tid())
+    a0, a1, a2 = face_corner_angles(vertices, faces, f)
+    write_row_triple(out_angles, f, a0, a1, a2)
+
+
+@wp.kernel
+def face_normals_and_corner_angles(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_normals: wp.array[wp.vec3],
+    out_angles: wp.array2d[wp.float32],
+) -> None:
+    # ``face_normals_and_areas``' normal and ``angles``' row in one pass over the corners, for
+    # ``triangles.corner_normals`` at ``weighting="angle"``, which needs both and never the area.
+    # The two bodies are the shared ``face_normals_and_area`` / ``face_corner_angles``.
+    f = wp.int32(wp.tid())
+    normal, _area = face_normals_and_area(vertices, faces, f)
+    out_normals[f] = normal
     a0, a1, a2 = face_corner_angles(vertices, faces, f)
     write_row_triple(out_angles, f, a0, a1, a2)
 

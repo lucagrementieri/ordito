@@ -65,9 +65,11 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
+from ordito.constants import INT32_MAX
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import interpolation as kernel_interpolation
+from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import voxels as kernel_voxels
 
@@ -3075,13 +3077,21 @@ def _cell_bounds(grid: wp.Volume) -> tuple[tuple[int, int, int], tuple[int, int,
     voxels = cells(grid)
     if int(voxels.shape[0]) == 0:
         return (0, 0, 0), (1, 1, 1)
-    # One readback of six integers: the dense lattice has to be sized on the host.
-    lower_wp, upper_wp = od.reduce.minmax(voxels, axis=0)
-    lower = lower_wp.numpy()
-    upper = upper_wp.numpy()
+    # One launch and one readback of six integers into one buffer: the dense lattice has to be
+    # sized on the host. Slots 3..5 hold the bit-complemented upper corner; see the kernel.
+    corners = _launch.full(6, INT32_MAX, dtype=wp.int32, device=grid.device)
+    _launch.launch(
+        kernel_reduce.minmax_rows3_int32_chunked,
+        dim=kernel_reduce.chunks_1d(voxels.shape[0]),
+        inputs=[voxels, corners],
+        device=grid.device,
+    )
+    values = [int(c) for c in read_values(corners, 0, 6)]
+    lower = values[:3]
+    upper = [~c for c in values[3:]]
     return (
-        (int(lower[0]), int(lower[1]), int(lower[2])),
-        (int(upper[0] - lower[0]) + 1, int(upper[1] - lower[1]) + 1, int(upper[2] - lower[2]) + 1),
+        (lower[0], lower[1], lower[2]),
+        (upper[0] - lower[0] + 1, upper[1] - lower[1] + 1, upper[2] - lower[2] + 1),
     )
 
 

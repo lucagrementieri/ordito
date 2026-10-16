@@ -17,7 +17,7 @@ from ordito.kernels.predicates import (
     triangle_aabb,
     triangle_triangle_distance_sq,
 )
-from ordito.kernels.reduce import block_argmin, block_sum
+from ordito.kernels.reduce import block_argmin, block_barrier, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -932,6 +932,31 @@ def winding_leaves(
     out_first[k] = start
 
 
+@wp.func
+def merge_winding_node(
+    k: wp.int32,
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
+    out_slab_lower: wp.array[wp.vec4],
+    out_slab_upper: wp.array[wp.vec4],
+    out_corner_sum: wp.array[wp.vec3d],
+    out_count: wp.array[wp.int32],
+    out_first: wp.array[wp.int32],
+) -> None:
+    # Node ``k`` from its two children ``2k`` and ``2k + 1``, already written into the same
+    # arrays. The one merge both ``winding_merge_level`` (a level a launch) and
+    # ``winding_merge_top_levels`` (the narrow top levels in one block) run.
+    left = 2 * k
+    right = left + 1
+    out_lower[k] = wp.min(out_lower[left], out_lower[right])
+    out_upper[k] = wp.max(out_upper[left], out_upper[right])
+    out_slab_lower[k] = wp.min(out_slab_lower[left], out_slab_lower[right])
+    out_slab_upper[k] = wp.max(out_slab_upper[left], out_slab_upper[right])
+    out_corner_sum[k] = out_corner_sum[left] + out_corner_sum[right]
+    out_count[k] = out_count[left] + out_count[right]
+    out_first[k] = out_first[left]
+
+
 @wp.kernel
 def winding_merge_level(
     level_start: wp.int32,
@@ -946,15 +971,55 @@ def winding_merge_level(
     # dim == level width: node ``level_start + tid`` from its two children, which the previous
     # launch (one level deeper) wrote into the same arrays.
     k = level_start + wp.int32(wp.tid())
-    left = 2 * k
-    right = left + 1
-    out_lower[k] = wp.min(out_lower[left], out_lower[right])
-    out_upper[k] = wp.max(out_upper[left], out_upper[right])
-    out_slab_lower[k] = wp.min(out_slab_lower[left], out_slab_lower[right])
-    out_slab_upper[k] = wp.max(out_slab_upper[left], out_slab_upper[right])
-    out_corner_sum[k] = out_corner_sum[left] + out_corner_sum[right]
-    out_count[k] = out_count[left] + out_count[right]
-    out_first[k] = out_first[left]
+    merge_winding_node(
+        k,
+        out_lower,
+        out_upper,
+        out_slab_lower,
+        out_slab_upper,
+        out_corner_sum,
+        out_count,
+        out_first,
+    )
+
+
+# Lanes of the one block ``winding_merge_top_levels`` runs; every level at most this wide is
+# merged inside it, so the per-level launches stop where a level no longer fills the block.
+WINDING_TOP_LEVELS_BLOCK_DIM = 256
+
+
+@wp.kernel
+def winding_merge_top_levels(
+    top_level: wp.int32,
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
+    out_slab_lower: wp.array[wp.vec4],
+    out_slab_upper: wp.array[wp.vec4],
+    out_corner_sum: wp.array[wp.vec3d],
+    out_count: wp.array[wp.int32],
+    out_first: wp.array[wp.int32],
+) -> None:
+    # ``winding_merge_level`` for every level from ``top_level`` up to the root, in one block of a
+    # ``launch_tiled`` of width one: the lanes stride each level by ``wp.block_dim()`` and a block
+    # barrier separates the levels, so a level reads children the previous one wrote. On the CPU
+    # device the one lane walks every level in order. The merge is order-free (min, max, an exact
+    # integer count and a two-term ``float64`` sum per node), so the nodes are the same bits as
+    # the level-a-launch schedule's.
+    _block, lane = wp.tid()
+    for step in range(top_level + 1):
+        width = wp.int32(1) << (top_level - step)
+        for t in range(lane, width, wp.block_dim()):
+            merge_winding_node(
+                width + t,
+                out_lower,
+                out_upper,
+                out_slab_lower,
+                out_slab_upper,
+                out_corner_sum,
+                out_count,
+                out_first,
+            )
+        block_barrier()
 
 
 @wp.func

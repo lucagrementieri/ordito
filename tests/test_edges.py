@@ -626,6 +626,15 @@ def test_edges_unique_unvalidated_matches_the_validated_answer(device: str) -> N
     with pytest.raises(ValueError, match="non-negative"):
         _ = od.edges.edges_unique(negative_wp)
 
+    # The unique-edge mean reads its range flag in the same copy as its total.
+    vertices_wp = wp.array(vertices_np, dtype=wp.vec3, device=device)
+    with pytest.raises(ValueError, match="must be less than n_vertices"):
+        _ = od.edges.mean_unique_edge_length(vertices_wp, broken_wp)
+    with pytest.raises(ValueError, match="non-negative"):
+        _ = od.edges.mean_unique_edge_length(vertices_wp, negative_wp)
+    with pytest.raises(ValueError, match="non-negative"):
+        _ = od.edges.edges_unique(negative_wp, n_vertices=n_vertices)
+
 
 _EMPTY_CASES: dict[
     str, tuple[Callable[[wp.array[wp.int32], wp.array[wp.vec3]], object], object]

@@ -3,7 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import TILE_1D
-from ordito.kernels.array import OverloadTable
+from ordito.kernels.array import OverloadTable, sorted_run_start
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
@@ -224,6 +224,34 @@ def centroid_integrals(
 # Keyed by the vertex dtype; the volume is accumulated in its scalar type, as
 # ``triangles.face_signed_volumes`` stores it.
 MESH_SIGNED_VOLUME: OverloadTable
+
+
+@wp.kernel
+def referenced_vertex_and_unique_edge_counts(
+    referenced: wp.array[wp.bool],
+    sorted_keys: wp.array[wp.uint64],
+    n_items: wp.int32,
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # ``measures.euler_characteristic``'s two counts in one fold, committed into a zeroed two-slot
+    # buffer the wrapper reads once: slot 0 the ``True`` entries of the referenced-vertex mask,
+    # slot 1 the run starts of the sorted edge keys (one per unique edge, which is what
+    # ``edges.edges_unique``'s scan tail counts). ``n_items`` is the longer of the two arrays;
+    # each test is bounded by its own array's length. Lane-strided by ``wp.block_dim()``.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(n_items, block)
+    n_vertices = referenced.shape[0]
+    n_keys = sorted_keys.shape[0]
+    local = wp.vec2i(0, 0)
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        if i < n_vertices:
+            if referenced[i]:
+                local += wp.vec2i(1, 0)
+        if i < n_keys:
+            if sorted_run_start(sorted_keys, i):
+                local += wp.vec2i(0, 1)
+    commit_block_sum(lane, local, out_counts, 0)
 
 
 def _register_overloads() -> None:
