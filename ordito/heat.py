@@ -62,11 +62,11 @@ from ordito.constants import TILE_1D
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import scatter as kernel_scatter
 from ordito.laplacian import (
     MeshOperatorPattern,
     connection_laplacian,
     cotmatrix,
-    cotmatrix_entries,
     cotmatrix_entries_intrinsic,
     mass_matrix_entries,
     mesh_operator_pattern,
@@ -74,7 +74,6 @@ from ordito.laplacian import (
 )
 from ordito.mesh import Trimesh, mesh_arguments
 from ordito.tangent_space import vertex_tangent_frames
-from ordito.triangles import face_normals_and_areas
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -980,8 +979,36 @@ def _heat_operators(
         # the *solves* robust rather than turning the whole method intrinsic.
         lengths, _ = mollify_intrinsic(vertices, faces)
         cot_entries = cotmatrix_entries_intrinsic(lengths)
-    elif cot_entries is None:
-        cot_entries = cotmatrix_entries(vertices, faces)
+    # Face normals and areas (float32) for the gradient, the half-cotangent table when the caller
+    # has none, and the lumped mass's exact float64 area sums, in one pass over the faces.
+    device = vertices.device
+    n_faces = faces.size // 3
+    write_cot = cot_entries is None
+    if cot_entries is None:
+        cot_entries = odt.empty_2d((n_faces, 3), wp.float32, device=device)
+    normals = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
+    mass = _launch.zeros(vertices.size, dtype=wp.float64, device=device)
+    if n_faces > 0:
+        _launch.launch(
+            kernel_heat.heat_face_terms,
+            dim=n_faces,
+            inputs=[vertices, faces, wp.int32(write_cot)],
+            outputs=[
+                cot_entries if write_cot else odt.empty_2d((0, 3), wp.float32, device=device),
+                normals,
+                areas,
+                mass,
+            ],
+            device=device,
+        )
+        # The exact sums over three, in place: ``mass_matrix_entries``' barycentric diagonal.
+        _launch.launch(
+            kernel_scatter.SCALE_FACE_SUMS[wp.float64],
+            dim=vertices.size,
+            inputs=[mass, wp.float64(3.0), mass],
+            device=device,
+        )
     # ``cotmatrix`` casts the shared float32 half-cotangent weights to float64 and assembles the
     # operator natively in a single build, avoiding a recast rebuild (see cotmatrix's kernel note).
     laplacian = cotmatrix(
@@ -1000,11 +1027,6 @@ def _heat_operators(
     # returned rather than passed through at whatever precision it arrived in.
     if cot_entries.dtype is not wp.float32:
         cot_entries = odt.as_array2d(od.array.astype(cot_entries, wp.float32), wp.float32)
-
-    # Face normals / areas (float32) for the gradient; the lumped mass is built natively in float64
-    # by ``mass_matrix_entries``.
-    normals, areas = face_normals_and_areas(vertices, faces)
-    mass = mass_matrix_entries(vertices, faces, dtype=wp.float64, face_areas=areas)
 
     # Heat system (M - t L) and Poisson operator ``-L``, both over the Laplacian's own pattern
     # (which stores every referenced vertex's diagonal) and written in one pass

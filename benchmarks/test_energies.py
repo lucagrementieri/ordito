@@ -6,16 +6,15 @@ its own file is what the timed callable *takes*: everything here consumes an alr
 operator, so its inputs are cached per mesh on both sides and the row measures the assembly of the
 second-order form alone. ``test_laplacian.py`` times the first-order builders these are fed.
 
-All five rows run the **scale** axis (``sphere_small`` -> ``sphere_med`` -> ``sphere_large``) rather
-than the scan sweep, and the ratio against igl grows with size on every one of them, because igl's
-side is Eigen sparse products where ordito's is a fixed number of launches. libigl is the only
-reference that exposes these operators at all -- no other library has a Crouzeix-Raviart pair, a
-curved Hessian energy or an integrated k-harmonic form.
+The operator rows run the **scale** axis (``sphere_small`` -> ``sphere_med`` -> ``sphere_large``)
+rather than the scan sweep, and the ratio against igl grows with size on every one igl also has,
+because igl's side is Eigen sparse products where ordito's is a fixed number of launches. libigl is
+the only reference that exposes these operators at all -- no other library has a Crouzeix-Raviart
+pair, a curved Hessian energy or an integrated k-harmonic form.
 
-The LSCM operators (``lscm_hessian``, ``vector_area_matrix``) are **not** timed here: neither has an
-igl binding of its own, and their cost is measured through the ``lscm`` solve in
-[`test_parametrization.py`](test_parametrization.py), which is the only way a caller reaches them.
-Recorded in ``README.md``.
+The LSCM operators have no igl binding of their own, so ``lscm_hessian`` is timed on ordito's side
+alone (the assembly the ``lscm`` solve in [`test_parametrization.py`](test_parametrization.py)
+starts with), and ``vector_area_matrix`` only through it.
 """
 
 from __future__ import annotations
@@ -293,6 +292,16 @@ def test_crouzeix_raviart_cotmatrix(bench_case: BenchCase) -> None:
             lambda: igl.crouzeix_raviart_cotmatrix(vertices_np, faces_np, edges_igl, edge_map_igl)
         )
         assert matrix_igl.shape == (len(edges_igl), len(edges_igl))
+
+
+@pytest.mark.benchmark(group="lscm_hessian")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_lscm_hessian(bench_case: BenchCase) -> None:
+    """LSCM Hessian assembly from the mesh: the Laplacian, the boundary term and their merge."""
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    matrix = bench_case.run(lambda: od.energies.lscm_hessian(vertices, faces))
+    assert matrix.nrow == 2 * bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="crouzeix_raviart_massmatrix")
