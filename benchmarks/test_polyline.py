@@ -289,7 +289,7 @@ def test_polyline_length(bench_case: BenchCase) -> None:
         assert bench_case.run(lambda: mm.calcLength(contour_ml)) > 0.0
         return
     polyline = _polyline_wp(bench_case)
-    length = bench_case.run(lambda: od.polyline.polyline_length(polyline))
+    length = bench_case.run(lambda: od.polyline.polyline_length(polyline, deterministic=False))
     assert length > 0.0
 
 
@@ -323,7 +323,7 @@ def test_polyline_normal(bench_case: BenchCase) -> None:
     ``rim_long`` is the row that matters here -- 65 536 vertices, the axis's asymptotic point.
     """
     polyline = _polyline_wp(bench_case)
-    normal = bench_case.run(lambda: od.polyline.polyline_normal(polyline))
+    normal = bench_case.run(lambda: od.polyline.polyline_normal(polyline, deterministic=False))
     assert float(np.linalg.norm(np.asarray(list(normal), dtype=np.float64))) > 0.0
 
 
@@ -340,7 +340,9 @@ def test_polyline_radius(bench_case: BenchCase) -> None:
     ``polyline_point_distance``'s question and already carries its rows. See the module docstring.
     """
     polyline = _polyline_wp(bench_case)
-    radius = bench_case.run(lambda: od.polyline.polyline_radius(polyline, reduction="min"))
+    radius = bench_case.run(
+        lambda: od.polyline.polyline_radius(polyline, reduction="min", deterministic=False)
+    )
     assert radius >= 0.0
 
 
@@ -367,19 +369,8 @@ def test_cumulative_arc_length(bench_case: BenchCase) -> None:
     """
     The arc-length table every resampler reads: one length per segment and one float32 scan.
 
-    The scan is the fixed-order one (``deterministic=True``, the default); ``_fast`` is the same
-    call on CUB's arrival-order scan, which is what the flag trades.
+    The scan is CUB's arrival-order one (``deterministic=False``, as every ordito row runs).
     """
-    polyline = _polyline_wp(bench_case)
-    table = bench_case.run(lambda: od.polyline.cumulative_arc_length(polyline))
-    assert table.size == polyline.size
-
-
-@pytest.mark.benchmark(group="cumulative_arc_length_fast")
-@pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("ordito")
-def test_cumulative_arc_length_fast(bench_case: BenchCase) -> None:
-    """``cumulative_arc_length(deterministic=False)``: the arrival-order scan of the same table."""
     polyline = _polyline_wp(bench_case)
     table = bench_case.run(lambda: od.polyline.cumulative_arc_length(polyline, deterministic=False))
     assert table.size == polyline.size
@@ -479,7 +470,9 @@ def test_downsample_polyline(bench_case: BenchCase) -> None:
         return
 
     polyline = _polyline_wp(bench_case)
-    sparse = bench_case.run(lambda: od.polyline.polyline_downsample(polyline, step))
+    sparse = bench_case.run(
+        lambda: od.polyline.polyline_downsample(polyline, step, deterministic=False)
+    )
     assert sparse.size >= 2
 
 
@@ -627,7 +620,9 @@ def test_downsample_closed_polyline(bench_case: BenchCase) -> None:
     """``polyline_downsample(closed=True)`` at the open row's step, the closing edge counted."""
     step = _DOWNSAMPLE_FRACTION * _segment_scale(bench_case)[0]
     polyline = _polyline_wp(bench_case)
-    sparse = bench_case.run(lambda: od.polyline.polyline_downsample(polyline, step, closed=True))
+    sparse = bench_case.run(
+        lambda: od.polyline.polyline_downsample(polyline, step, closed=True, deterministic=False)
+    )
     assert sparse.size >= 2
 
 
@@ -641,17 +636,6 @@ def test_resample_closed_polyline(bench_case: BenchCase) -> None:
     A cumulative arc length and one interpolation pass, with no data-dependent output size and so
     no readback of its own.
     """
-    polyline = _polyline_wp(bench_case)
-    n_points = polyline.size
-    ring = bench_case.run(lambda: od.polyline.polyline_resample(polyline, n_points, closed=True))
-    assert ring.size == n_points
-
-
-@pytest.mark.benchmark(group="polyline_resample_closed_fast")
-@pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("ordito")
-def test_resample_closed_polyline_fast(bench_case: BenchCase) -> None:
-    """``polyline_resample_closed`` on the arrival-order scan (``deterministic=False``)."""
     polyline = _polyline_wp(bench_case)
     n_points = polyline.size
     ring = bench_case.run(

@@ -881,3 +881,33 @@ def test_resolve_seed_passes_a_seed_through_and_draws_one_otherwise() -> None:
     assert all(isinstance(seed, int) for seed in drawn)
     # Eight identical draws would be a fixed default wearing a random one's signature.
     assert len(set(drawn)) > 1
+
+
+@pytest.mark.parametrize(
+    "sampler", ["sample_volume", "sample_surface_poisson_disk", "sample_surface_blue_noise"]
+)
+def test_arrival_order_scan_samplers_draw_valid_samples(device: str, sampler: str) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` draws a valid sample of the default's size.
+
+    The flag only swaps the fixed-order scan of the CDF for CUB's, so a seeded draw keeps its
+    random numbers and a sample can move only to a neighbouring CDF entry: the volume samples stay
+    inside the unit sphere, and the surface samplers return the same count on the surface. On the
+    CPU device both arms are one sequential scan and the draws are equal.
+    """
+    vertices, faces = od.creation.icosphere(4, device=device)
+    if sampler == "sample_volume":
+        fixed = od.sample.sample_volume(vertices, faces, 2000, seed=3)
+        arrival = od.sample.sample_volume(vertices, faces, 2000, seed=3, deterministic=False)
+        assert np.linalg.norm(arrival.numpy(), axis=1).max() <= 1.0 + 1e-5
+    else:
+        draw = getattr(od.sample, sampler)
+        size = 200 if sampler == "sample_surface_poisson_disk" else 0.15
+        fixed = draw(vertices, faces, size, seed=3)[0]
+        arrival = draw(vertices, faces, size, seed=3, deterministic=False)[0]
+        assert np.allclose(np.linalg.norm(arrival.numpy(), axis=1), 1.0, atol=1e-2)
+        if sampler == "sample_surface_poisson_disk":
+            assert arrival.shape == fixed.shape
+    assert fixed.shape[0] > 0
+    if wp.get_device(device).is_cpu:
+        assert np.array_equal(fixed.numpy(), arrival.numpy())

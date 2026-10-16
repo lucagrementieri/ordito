@@ -1446,3 +1446,55 @@ def test_sliced_chamfer_terms_grad_with_more_slices_than_points(device: str, ter
         nearest = _nn_indices_np(points_np, targets_np)
         grad_points_np = points_np - targets_np[nearest]
         np.testing.assert_allclose(grads_serial[0], grad_points_np, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("point_reduction", ["mean", "sum"])
+@pytest.mark.parametrize(
+    "function", ["chamfer_points_to_points", "chamfer_points_to_mesh", "chamfer_mesh_to_mesh"]
+)
+def test_chamfer_arrival_order_agrees_with_the_default(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    function: str,
+    point_reduction: Literal["mean", "sum"],
+) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` returns the default's Chamfer to rounding.
+
+    The flag only swaps the unsquared sum's fixed-order block commit for one atomic per block;
+    the reference comparisons above pin the default. The second operand is the mesh moved off
+    itself, so neither direction is zero.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    device = mesh_wp.points.device
+    moved_np = (mesh_tm.vertices * 1.1 + 0.05).astype(np.float32)
+    moved_wp = points_to_warp(moved_np, device)
+    faces_wp = mesh_wp.indices
+
+    def chamfer(deterministic: bool) -> float:
+        if function == "chamfer_points_to_points":
+            return od.metrics.chamfer_points_to_points(
+                mesh_wp.points,
+                moved_wp,
+                point_reduction=point_reduction,
+                deterministic=deterministic,
+            )
+        if function == "chamfer_points_to_mesh":
+            return od.metrics.chamfer_points_to_mesh(
+                moved_wp,
+                mesh_wp.points,
+                faces_wp,
+                point_reduction=point_reduction,
+                deterministic=deterministic,
+            )
+        return od.metrics.chamfer_mesh_to_mesh(
+            mesh_wp.points,
+            faces_wp,
+            moved_wp,
+            faces_wp,
+            point_reduction=point_reduction,
+            deterministic=deterministic,
+        )
+
+    fixed = chamfer(True)
+    assert fixed > 1e-3
+    assert np.isclose(fixed, chamfer(False), rtol=1e-5, atol=0.0)

@@ -2114,3 +2114,58 @@ def test_polyline_triangulate_is_reproducible_far_from_the_origin(device: str) -
         assert faces_np.shape == (ring_np.shape[0] - 2, 3)
         sets.append(lexsort_rows(faces_np))
     assert all(np.array_equal(sets[0], other) for other in sets[1:])
+
+
+# --- deterministic=False: the arrival-order scan and block commits ---
+
+
+def _arrival_order_loop(device: str) -> wp.array[wp.vec3]:
+    """Build a wavy 20 000-point loop off the origin: twenty blocks and ten scan chunks."""
+    angle = np.linspace(0.0, 2.0 * np.pi, 20_000, endpoint=False)
+    loop_np = np.stack(
+        [3.0 + 2.0 * np.cos(angle), 1.0 + np.sin(angle), 0.1 * np.sin(7.0 * angle)], axis=1
+    )
+    return points_to_warp(loop_np.astype(np.float32), device)
+
+
+_ARRIVAL_ORDER_CALLS: dict[str, Callable[[str, bool], np.ndarray]] = {
+    "polyline_length": lambda device, deterministic: np.array(
+        od.polyline.polyline_length(
+            _arrival_order_loop(device), closed=True, deterministic=deterministic
+        )
+    ),
+    "polyline_centroid": lambda device, deterministic: np.array(
+        od.polyline.polyline_centroid(
+            _arrival_order_loop(device), closed=True, deterministic=deterministic
+        )
+    ),
+    "polyline_normal": lambda device, deterministic: np.array(
+        od.polyline.polyline_normal(_arrival_order_loop(device), deterministic=deterministic)
+    ),
+    "polyline_radius_mean": lambda device, deterministic: np.array(
+        od.polyline.polyline_radius(
+            _arrival_order_loop(device), "mean", closed=True, deterministic=deterministic
+        )
+    ),
+    "polyline_downsample": lambda device, deterministic: od.polyline.polyline_downsample(
+        _arrival_order_loop(device), 0.05, closed=True, deterministic=deterministic
+    ).numpy(),
+}
+
+
+@pytest.mark.parametrize("function", list(_ARRIVAL_ORDER_CALLS))
+def test_arrival_order_reductions_agree_with_the_default(device: str, function: str) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` returns the default's answer to rounding.
+
+    The flag only swaps the fixed-order scan or block commit for the arrival-order one, so the two
+    arms may differ in the last float32 bits on CUDA and nowhere else; the reference comparisons
+    above pin the default. The downsampled loop keeps the same points: no arc length of this loop
+    lies within rounding of a multiple of the step.
+    """
+    call = _ARRIVAL_ORDER_CALLS[function]
+    fixed_np = call(device, True)
+    arrival_np = call(device, False)
+    assert np.ptp(fixed_np) > 1e-3 or fixed_np.size == 1
+    assert fixed_np.shape == arrival_np.shape
+    assert np.allclose(fixed_np, arrival_np, rtol=1e-5, atol=1e-5)

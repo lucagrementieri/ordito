@@ -174,7 +174,9 @@ def test_sample_surface(bench_case: BenchCase, count: int) -> None:
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         points, face_index = bench_case.run(
-            lambda: od.sample.sample_surface(vertices, faces, count, seed=_SEED)
+            lambda: od.sample.sample_surface(
+                vertices, faces, count, seed=_SEED, deterministic=False
+            )
         )
         assert points.shape == (count,)
         assert face_index.shape == (count,)
@@ -283,7 +285,9 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         radius = radius_scale * _radius_for_mesh(bench_case)
         points, face_index = bench_case.run(
-            lambda: od.sample.sample_surface_blue_noise(vertices, faces, radius, seed=_SEED)
+            lambda: od.sample.sample_surface_blue_noise(
+                vertices, faces, radius, seed=_SEED, deterministic=False
+            )
         )
         assert points.shape[0] > 0
         assert face_index.shape == points.shape
@@ -291,24 +295,6 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
         mesh_o3d = bench_case.mesh_o3d
         cloud = bench_case.run(lambda: mesh_o3d.sample_points_poisson_disk(number_of_points=target))
         assert len(cloud.points) == target
-
-
-@pytest.mark.benchmark(group="sample_surface_fast")
-@pytest.mark.benchlibs("ordito")
-@pytest.mark.parametrize("count", _UNIFORM_COUNTS, ids=["n10k", "n100k"])
-def test_sample_surface_fast(bench_case: BenchCase, count: int) -> None:
-    """
-    ``sample_surface(deterministic=False)``: the face CDF on CUB's arrival-order scan.
-
-    ``sample_surface`` scans it in a fixed order, so a seeded draw repeats on CUDA; the gap between
-    the two rows is what that costs, flat in the count like the scan itself.
-    """
-    skip_larger_than(bench_case, "bunny", "matches the sample_surface row's cap")
-    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    points, _faces = bench_case.run(
-        lambda: od.sample.sample_surface(vertices, faces, count, seed=_SEED, deterministic=False)
-    )
-    assert points.shape == (count,)
 
 
 @pytest.mark.benchmark(group="sample_volume")
@@ -336,5 +322,7 @@ def test_sample_volume(bench_case: BenchCase, count: int) -> None:
     construction and span 5k to 328k faces.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    points = bench_case.run(lambda: od.sample.sample_volume(vertices, faces, count, seed=_SEED))
+    points = bench_case.run(
+        lambda: od.sample.sample_volume(vertices, faces, count, seed=_SEED, deterministic=False)
+    )
     assert points.shape == (count,)

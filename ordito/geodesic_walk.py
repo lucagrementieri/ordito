@@ -56,6 +56,8 @@ def trace_from_vertex(
     rings: tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]] | None = None,
     frames: tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]] | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
+    *,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Trace a straightest geodesic from each of a batch of vertices.
@@ -103,6 +105,13 @@ def trace_from_vertex(
         in-plane axes do not matter.
     max_steps
         Maximum edge crossings per ray.
+    deterministic
+        When ``True`` (the default), the mean edge length that scales the walk's crossing tolerance
+        is summed in one fixed order, so repeated calls return identical bits on CUDA. ``False``
+        adds its per-block partial sums by atomics in arrival order
+        ([`mean_edge_length`][ordito.edges.mean_edge_length]), which saves a few microseconds a call
+        but lets its last bits change from call to call on CUDA. The CPU device is deterministic
+        either way.
 
     Returns
     -------
@@ -190,7 +199,7 @@ def trace_from_vertex(
         start_vertices,
         directions,
         wp.int32(max_steps),
-        wp.float32(_length_epsilon(vertices, faces)),
+        wp.float32(_length_epsilon(vertices, faces, deterministic=deterministic)),
     ]
     return _trace(kernel_geodesic_walk.trace_from_vertices, inputs, n_rays, device)
 
@@ -203,6 +212,8 @@ def trace_from_face(
     directions: wp.array[wp.vec3],
     twins: wp.array[wp.int32] | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
+    *,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Trace a straightest geodesic from each of a batch of barycentric points inside faces.
@@ -228,6 +239,13 @@ def trace_from_face(
         ``None`` to compute them from ``faces``.
     max_steps
         Maximum edge crossings per ray.
+    deterministic
+        When ``True`` (the default), the mean edge length that scales the walk's crossing tolerance
+        is summed in one fixed order, so repeated calls return identical bits on CUDA. ``False``
+        adds its per-block partial sums by atomics in arrival order
+        ([`mean_edge_length`][ordito.edges.mean_edge_length]), which saves a few microseconds a call
+        but lets its last bits change from call to call on CUDA. The CPU device is deterministic
+        either way.
 
     Returns
     -------
@@ -293,7 +311,7 @@ def trace_from_face(
         start_barycentric,
         directions,
         wp.int32(max_steps),
-        wp.float32(_length_epsilon(vertices, faces)),
+        wp.float32(_length_epsilon(vertices, faces, deterministic=deterministic)),
     ]
     return _trace(kernel_geodesic_walk.trace_from_faces, inputs, n_rays, device)
 
@@ -309,6 +327,7 @@ def descend_field(
     vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
     gradients: wp.array[wp.vec3d] | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Follow a per-vertex scalar field downhill from each of a batch of start vertices.
@@ -360,6 +379,13 @@ def descend_field(
         descending the same field from several batches.
     max_steps
         Cap on steps per path. A path that hits it is returned truncated rather than reported.
+    deterministic
+        When ``True`` (the default), the mean edge length that scales the walk's crossing tolerance
+        is summed in one fixed order, so repeated calls return identical bits on CUDA. ``False``
+        adds its per-block partial sums by atomics in arrival order
+        ([`mean_edge_length`][ordito.edges.mean_edge_length]), which saves a few microseconds a call
+        but lets its last bits change from call to call on CUDA. The CPU device is deterministic
+        either way.
 
     Returns
     -------
@@ -438,7 +464,16 @@ def descend_field(
             f"gradients must have one entry per face, got {gradients.size} for {n_faces}"
         )
     points, offsets, _ = _descend(
-        vertices, faces, values, starts, stop_value, twins, vertex_faces, gradients, max_steps
+        vertices,
+        faces,
+        values,
+        starts,
+        stop_value,
+        twins,
+        vertex_faces,
+        gradients,
+        max_steps,
+        deterministic=deterministic,
     )
     return points, offsets
 
@@ -452,6 +487,7 @@ def geodesic_path(
     *,
     t: float | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def geodesic_path(
@@ -463,6 +499,7 @@ def geodesic_path(
     *,
     t: float | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 def geodesic_path(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -473,6 +510,7 @@ def geodesic_path(
     vertices: wp.array[wp.vec3] | None = None,
     t: float | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Trace a path across the surface from each target vertex back to a source set.
@@ -507,6 +545,13 @@ def geodesic_path(
         [`heat_geodesic`][ordito.heat.heat_geodesic]. ``None`` uses its default.
     max_steps
         Cap on steps per path.
+    deterministic
+        When ``True`` (the default), the heat distance's shift
+        ([`heat_geodesic`][ordito.heat.heat_geodesic]) and the mean edge length that scales the
+        walk's crossing tolerance are summed in one fixed order, so repeated calls return identical
+        paths on CUDA. ``False`` adds their per-block partial sums by atomics in arrival order,
+        which is faster but lets their last bits change from call to call on CUDA. The CPU device
+        is deterministic either way.
 
     Returns
     -------
@@ -580,9 +625,11 @@ def geodesic_path(
     # The ``vertices, faces`` form hands them on, so ``heat_geodesic`` builds and drops the mesh
     # (and logs a factorization it drops); a `Trimesh` keeps its heat solver for the next source.
     distance = (
-        od.heat.heat_geodesic(bound, source, t=t)
+        od.heat.heat_geodesic(bound, source, t=t, deterministic=deterministic)
         if owned
-        else od.heat.heat_geodesic(bound.vertices, bound.faces, source, t)
+        else od.heat.heat_geodesic(
+            bound.vertices, bound.faces, source, t, deterministic=deterministic
+        )
     )
     # A path arrives on a source vertex, not at a field value: the heat distance is shifted to a
     # zero *mean* over the sources, so with several of them each reads a little above or below
@@ -598,6 +645,7 @@ def geodesic_path(
         None,
         max_steps,
         complete_to=(bound, source),
+        deterministic=deterministic,
     )
     if n_completed > 0:
         warnings.warn(
@@ -621,6 +669,7 @@ def _descend(
     max_steps: int,
     *,
     complete_to: tuple[Trimesh, wp.array[wp.int32]] | None = None,
+    deterministic: bool,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], int]:
     """
     ``descend_field``'s walk; with ``complete_to``, short paths are finished along mesh edges.
@@ -665,7 +714,7 @@ def _descend(
         wp.float64(stop_value),
         stop_mask,
         wp.int32(max_steps),
-        wp.float32(_length_epsilon(vertices, faces)),
+        wp.float32(_length_epsilon(vertices, faces, deterministic=deterministic)),
     ]
     kernel = kernel_geodesic_walk.descent_paths
     no_graph = _launch.empty(0, dtype=wp.float32, device=device)
@@ -1180,16 +1229,18 @@ class _LoopSweep:
         )
 
 
-def _length_epsilon(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:
+def _length_epsilon(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, deterministic: bool
+) -> float:
     """
     Smallest crossing distance the walk will accept, as a fraction of the mean edge length.
 
     The walk needs *some* scale-aware floor: a ray starting at a vertex stands on two of its face's
     edges, and one starting on an edge stands on that edge, so a crossing at distance ~0 has to be
     rejected or the walk rotates on the spot. Tying it to the mean edge length keeps the behaviour
-    invariant under a global rescale of the mesh.
+    invariant under a global rescale of the mesh. ``deterministic`` is that mean's.
     """
-    return 1e-6 * od.edges.mean_edge_length(vertices, faces)
+    return 1e-6 * od.edges.mean_edge_length(vertices, faces, deterministic=deterministic)
 
 
 def _trace(

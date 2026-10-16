@@ -221,7 +221,7 @@ def test_sum_bool(bench_case: BenchCase) -> None:
         assert total_np >= 0
         return
     mask = _mask_wp(bench_case)
-    total = bench_case.run(lambda: od.reduce.sum(mask))
+    total = bench_case.run(lambda: od.reduce.sum(mask, deterministic=False))
     assert total >= 0
 
 
@@ -270,7 +270,7 @@ def test_sum_scalar(bench_case: BenchCase) -> None:
         assert np.isfinite(total_np)
         return
     values = _scalars_wp(bench_case)
-    total = bench_case.run(lambda: od.reduce.sum(values))
+    total = bench_case.run(lambda: od.reduce.sum(values, deterministic=False))
     assert np.isfinite(total)
 
 
@@ -284,7 +284,7 @@ def test_sum_vec3(bench_case: BenchCase) -> None:
         assert total_np.shape == (3,)
         return
     vertices = bench_case.vertices_wp
-    total = bench_case.run(lambda: od.reduce.sum(vertices))
+    total = bench_case.run(lambda: od.reduce.sum(vertices, deterministic=False))
     assert len(total) == 3
 
 
@@ -298,7 +298,7 @@ def test_mean_vec3(bench_case: BenchCase) -> None:
         assert centroid_np.shape == (3,)
         return
     vertices = bench_case.vertices_wp
-    centroid = bench_case.run(lambda: od.reduce.mean(vertices))
+    centroid = bench_case.run(lambda: od.reduce.mean(vertices, deterministic=False))
     assert len(centroid) == 3
 
 
@@ -409,20 +409,6 @@ def test_sum_axis0(bench_case: BenchCase) -> None:
         sums_np = bench_case.run(lambda: rows_np.sum(axis=0))
         assert sums_np.shape == (3,)
         return
-    rows = _rows_wp(bench_case)
-    sums = bench_case.run(lambda: od.reduce.sum(rows, axis=0))
-    assert sums.shape[0] == 3
-
-
-@pytest.mark.benchmark(group="sum_axis0_fast")
-@pytest.mark.benchlibs("ordito")
-def test_sum_axis0_fast(bench_case: BenchCase) -> None:
-    """
-    ``sum(axis=0, deterministic=False)``: the tile sums committed by atomics in arrival order.
-
-    ``sum_axis0`` adds them in a fixed order, which repeats bit for bit on CUDA; the gap between the
-    two rows is what that costs on a tall table, where every column folds thousands of tiles.
-    """
     rows = _rows_wp(bench_case)
     sums = bench_case.run(lambda: od.reduce.sum(rows, axis=0, deterministic=False))
     assert sums.shape[0] == 3

@@ -112,25 +112,14 @@ def test_map_vertices_to_circle(bench_case: BenchCase) -> None:
     if bench_case.kind == "ordito":
         vertices = bench_case.vertices_wp
         loop, _loop_uv = _boundary(bench_case)
-        circle = bench_case.run(lambda: od.parametrization.map_vertices_to_circle(vertices, loop))
+        circle = bench_case.run(
+            lambda: od.parametrization.map_vertices_to_circle(vertices, loop, deterministic=False)
+        )
         assert circle.size == loop.size
     else:
         vertices_np, _faces_np, loop_np = _igl_boundary(bench_case)
         circle_igl = bench_case.run(lambda: igl.map_vertices_to_circle(vertices_np, loop_np))
         assert circle_igl.shape[0] == loop_np.size
-
-
-@pytest.mark.benchmark(group="map_vertices_to_circle_fast")
-@pytest.mark.benchaxis("patch")
-@pytest.mark.benchlibs("ordito")
-def test_map_vertices_to_circle_fast(bench_case: BenchCase) -> None:
-    """``map_vertices_to_circle(deterministic=False)``: the rim's arc length on CUB's scan."""
-    vertices = bench_case.vertices_wp
-    loop, _loop_uv = _boundary(bench_case)
-    circle = bench_case.run(
-        lambda: od.parametrization.map_vertices_to_circle(vertices, loop, deterministic=False)
-    )
-    assert circle.size == loop.size
 
 
 def _run_harmonic_pml(bench_case: BenchCase, order: int) -> None:

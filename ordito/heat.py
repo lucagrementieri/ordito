@@ -145,6 +145,7 @@ def heat_operators(
     *,
     use_robust: bool = False,
     cot_entries: odt.Array2dFloat | None = None,
+    deterministic: bool = True,
 ) -> HeatOperators:
     """
     Assemble the source-independent operators the heat method solves against.
@@ -186,6 +187,13 @@ def heat_operators(
         caller assembling these operators at several diffusion times reuses one table -- and
         [`Trimesh.cotmatrix_entries`][ordito.mesh.Trimesh.cotmatrix_entries] has it cached. Both
         precisions are accepted: the assembly casts to the matrix dtype in a single build.
+    deterministic
+        When ``True`` (the default), the unique-edge length sums behind the default ``t`` and the
+        ``use_robust`` mollification's mean are
+        added in one fixed order, so repeated calls return identical bits on CUDA. ``False`` adds
+        their per-block partial sums by atomics in arrival order, which saves a few microseconds a
+        call but lets the last bits change from call to call on CUDA. The CPU device is
+        deterministic either way.
 
     Returns
     -------
@@ -267,7 +275,14 @@ def heat_operators(
             "cot_entries and use_robust are mutually exclusive: use_robust rebuilds the "
             "half-cotangent table from mollified edge lengths."
         )
-    return _heat_operators(vertices, faces, t, use_robust=use_robust, cot_entries=cot_entries)[0]
+    return _heat_operators(
+        vertices,
+        faces,
+        t,
+        use_robust=use_robust,
+        cot_entries=cot_entries,
+        deterministic=deterministic,
+    )[0]
 
 
 @overload
@@ -278,6 +293,7 @@ def heat_geodesic(
     *,
     t: float | None = None,
     use_robust: bool = False,
+    deterministic: bool = True,
 ) -> wp.array[wp.float64]: ...
 @overload
 def heat_geodesic(
@@ -288,6 +304,7 @@ def heat_geodesic(
     t: float | None = None,
     *,
     use_robust: bool = False,
+    deterministic: bool = True,
 ) -> wp.array[wp.float64]: ...
 def heat_geodesic(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -297,6 +314,7 @@ def heat_geodesic(
     *,
     vertices: wp.array[wp.vec3] | None = None,
     use_robust: bool = False,
+    deterministic: bool = True,
 ) -> wp.array[wp.float64]:
     """
     Approximate geodesic distance to the nearest source vertex (Crane et al. heat method).
@@ -342,6 +360,13 @@ def heat_geodesic(
         flag of the same name does more -- it also solves on an intrinsic Delaunay triangulation
         -- and defaults to ``True``; this defaults to ``False`` so the plain call stays exactly
         ``igl::heat_geodesics``.
+    deterministic
+        When ``True`` (the default), the source and global means the distance is shifted by are
+        summed in one fixed order, so repeated calls return identical bits on CUDA. ``False`` adds
+        the per-block partial sums by atomics in arrival order, which saves a few microseconds a
+        call but lets the last bits change from call to call on CUDA. The operators the mesh keeps
+        (see [`HeatSolver`][ordito.heat.HeatSolver]) are always assembled in the fixed order, so one
+        kept solver serves both settings. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -397,11 +422,17 @@ def heat_geodesic(
         cast("wp.array[wp.int32]", arguments[0]),
         cast("float | None", arguments[1]),
         use_robust,
+        deterministic,
     )
 
 
 def _heat_geodesic(
-    mesh: Trimesh, owned: bool, sources: wp.array[wp.int32], t: float | None, use_robust: bool
+    mesh: Trimesh,
+    owned: bool,
+    sources: wp.array[wp.int32],
+    t: float | None,
+    use_robust: bool,
+    deterministic: bool,
 ) -> wp.array[wp.float64]:
     """``heat_geodesic`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
     vertices, faces = mesh.vertices, mesh.faces
@@ -436,7 +467,7 @@ def _heat_geodesic(
 
     heat = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     solver.diffuse(u0, heat)
-    distance = _distance_from_heat(mesh, solver, sources, heat)
+    distance = _distance_from_heat(mesh, solver, sources, heat, deterministic=deterministic)
     _log_discarded("heat_geodesic", owned, solver)
     return distance
 
@@ -456,6 +487,7 @@ def heat_signed_distance(
     t: float | None = None,
     closed: bool = True,
     level_set_constraint: str = "zero_set",
+    deterministic: bool = True,
 ) -> wp.array[wp.float64]: ...
 @overload
 def heat_signed_distance(
@@ -468,6 +500,7 @@ def heat_signed_distance(
     *,
     closed: bool = True,
     level_set_constraint: str = "zero_set",
+    deterministic: bool = True,
 ) -> wp.array[wp.float64]: ...
 def heat_signed_distance(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -479,6 +512,7 @@ def heat_signed_distance(
     vertices: wp.array[wp.vec3] | None = None,
     closed: bool = True,
     level_set_constraint: str = "zero_set",
+    deterministic: bool = True,
 ) -> wp.array[wp.float64]:
     """
     Signed distance from every vertex to a set of oriented curves.
@@ -528,6 +562,13 @@ def heat_signed_distance(
         ``"none"`` solves unconstrained and then shifts the field so the curve's mean is zero,
         which leaves the level set slightly off the curve but is cheaper and pins nothing. Both are
         modes ``potpourri3d`` offers under the same names.
+    deterministic
+        When ``True`` (the default), the curve mean ``"none"`` shifts the field by is summed in one
+        fixed order, so repeated calls return identical bits on CUDA. ``False`` adds the per-block
+        partial sums by atomics in arrival order, which saves a few microseconds a call but lets the
+        last bits change from call to call on CUDA. ``"zero_set"`` sums nothing. The operators the
+        mesh keeps (see [`HeatSolver`][ordito.heat.HeatSolver]) are always assembled in the fixed
+        order, so one kept solver serves both settings. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -590,6 +631,7 @@ def heat_signed_distance(
         cast("float | None", arguments[2]),
         closed=closed,
         level_set_constraint=level_set_constraint,
+        deterministic=deterministic,
     )
 
 
@@ -602,6 +644,7 @@ def _heat_signed_distance(
     *,
     closed: bool,
     level_set_constraint: str,
+    deterministic: bool,
 ) -> wp.array[wp.float64]:
     """``heat_signed_distance`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
     vertices, faces = mesh.vertices, mesh.faces
@@ -671,7 +714,9 @@ def _heat_signed_distance(
             poisson_system, divergence, curve_vertices, vertices, solver.ill_conditioned
         )
     else:
-        field = _solve_poisson_shifted(solver, divergence, curve_vertices, vertices)
+        field = _solve_poisson_shifted(
+            solver, divergence, curve_vertices, vertices, deterministic=deterministic
+        )
     _log_discarded("heat_signed_distance", owned, solver)
     return field
 
@@ -746,6 +791,8 @@ def _solve_poisson_shifted(
     divergence: wp.array[wp.float64],
     curve_vertices: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
+    *,
+    deterministic: bool,
 ) -> wp.array[wp.float64]:
     """
     Solve the Poisson problem unconstrained, then shift so the curve's mean value is zero.
@@ -753,6 +800,7 @@ def _solve_poisson_shifted(
     The unconstrained system is singular up to a constant (a pure Neumann problem), which conjugate
     gradient handles while the right-hand side is consistent; the shift afterwards picks that
     constant, and putting the curve at zero is the choice that makes the result a distance.
+    ``deterministic`` is the curve mean's block commit (``_launch.block_partials``).
     """
     device = vertices.device
     n_vertices = vertices.size
@@ -763,7 +811,9 @@ def _solve_poisson_shifted(
     # sized to the curve for the mean, one to apply it, and nothing read back.
     n_sources = curve_vertices.size
     blocks = kernel_reduce.blocks_1d(n_sources)
-    sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+    sums, stride = _launch.block_partials(
+        blocks, 2, wp.float64, device, deterministic=deterministic
+    )
     _launch.launch_tiled(
         kernel_heat.source_and_global_sums,
         dim=[blocks],
@@ -816,6 +866,7 @@ def vector_heat_operators(
     *,
     scalar_operators: HeatOperators | None = None,
     frames: tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]] | None = None,
+    deterministic: bool = True,
 ) -> VectorHeatOperators:
     """
     Assemble everything the vector-valued solvers need before their solves.
@@ -857,6 +908,12 @@ def vector_heat_operators(
         ``(basis_x, basis_y, normal)`` -- the gauge, which depends on the mesh alone and not on
         ``t``. [`Trimesh.vertex_tangent_frames`][ordito.mesh.Trimesh.vertex_tangent_frames] caches
         it.
+    deterministic
+        When ``True`` (the default), the unique-edge length sums behind the default ``t`` are
+        added in one fixed order, so repeated calls return identical bits on CUDA. ``False`` adds
+        their per-block partial sums by atomics in arrival order, which saves a few microseconds a
+        call but lets the last bits change from call to call on CUDA. The CPU device is
+        deterministic either way.
 
     Returns
     -------
@@ -915,11 +972,11 @@ def vector_heat_operators(
         # off the connection Laplacian's sparsity, which is the cotangent Laplacian's, twelve
         # triplets per face and nothing pruned -- and the scalar bundle built here takes these
         # very sums. Both systems square it on the device, so nothing is read back.
-        edge_sums = _edge_length_sums(vertices, connection)
+        edge_sums = _edge_length_sums(vertices, connection, deterministic=deterministic)
 
     if scalar_operators is None:
         scalar_operators, mass = _heat_operators(
-            vertices, faces, t, edge_sums=edge_sums, pattern=pattern
+            vertices, faces, t, edge_sums=edge_sums, pattern=pattern, deterministic=deterministic
         )
     else:
         # The bundle's own face areas, which ``_heat_operators`` builds the mass from too.
@@ -962,6 +1019,7 @@ def _heat_operators(
     cot_entries: odt.Array2dFloat | None = None,
     edge_sums: wp.array[wp.float64] | None = None,
     pattern: MeshOperatorPattern | None = None,
+    deterministic: bool = True,
 ) -> tuple[HeatOperators, wp.array[wp.float64]]:
     """
     ``heat_operators``' assembly, returning the ``float64`` lumped mass it built alongside.
@@ -969,7 +1027,8 @@ def _heat_operators(
     ``vector_heat_operators`` reuses the mass for its own system, and hands over the edge-length
     sums it already reduced for the default timestep as ``edge_sums``: the connection Laplacian's
     sparsity is the cotangent Laplacian's, so the sums are the ones this would reduce -- and the
-    ``pattern`` it built them over, so the sparsity is built once for both.
+    ``pattern`` it built them over, so the sparsity is built once for both. ``deterministic`` is
+    the block commit of every float sum the assembly reduces.
     """
     # Per-face half-cotangent weights (float32, O(1) and safe) reused for both the Laplacian and
     # the divergence. The cotangent stiffness follows the igl convention (negative diagonal, so
@@ -978,7 +1037,7 @@ def _heat_operators(
         # Mollified lengths: one global constant added to every edge so no triangle is degenerate.
         # The gradient and divergence stages below still use the extrinsic positions, so this makes
         # the *solves* robust rather than turning the whole method intrinsic.
-        lengths, _ = mollify_intrinsic(vertices, faces)
+        lengths, _ = mollify_intrinsic(vertices, faces, deterministic=deterministic)
         cot_entries = cotmatrix_entries_intrinsic(lengths)
     # Face normals and areas (float32) for the gradient, the half-cotangent table when the caller
     # has none, and the lumped mass's exact float64 area sums, in one pass over the faces.
@@ -1019,7 +1078,7 @@ def _heat_operators(
         # The unique-edge average, which is what ``igl::heat_geodesics`` uses for its timestep --
         # read off the Laplacian's own sparsity, which already holds the unique edges, and left on
         # the device for the system's assembly to square.
-        edge_sums = _edge_length_sums(vertices, laplacian)
+        edge_sums = _edge_length_sums(vertices, laplacian, deterministic=deterministic)
 
     # The divergence kernel this bundle feeds (``kernels/heat.py::unit_gradient_divergence``) is
     # hardcoded ``wp.array2d[wp.float32]`` -- ``cotmatrix`` above accepts either precision because
@@ -1068,7 +1127,7 @@ def _heat_operators(
 
 
 def _edge_length_sums(
-    vertices: wp.array[wp.vec3], operator: odt.SparseMatrix
+    vertices: wp.array[wp.vec3], operator: odt.SparseMatrix, *, deterministic: bool
 ) -> wp.array[wp.float64]:
     """
     Sum and count of the unique-edge lengths, read off an operator with one entry per edge.
@@ -1078,7 +1137,8 @@ def _edge_length_sums(
     [`mean_unique_edge_length`][ordito.edges.mean_unique_edge_length] would re-sort every edge of
     the mesh to recover the same set. The two sums stay on the device, where
     ``kernels/linalg.shifted_system_values`` squares their mean -- ``0`` for a mesh with no edges,
-    as that function returns.
+    as that function returns. Without ``deterministic`` the blocks commit by atomics
+    (``_launch.block_partials``).
     """
     device = vertices.device
     n_rows = int(operator.nrow)
@@ -1086,7 +1146,9 @@ def _edge_length_sums(
         return _launch.zeros(2, dtype=wp.float64, device=device)
     # Block rows added in a fixed order, so the timestep repeats bit for bit on CUDA.
     blocks = kernel_reduce.blocks_1d(n_rows)
-    sum_and_count, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+    sum_and_count, stride = _launch.block_partials(
+        blocks, 2, wp.float64, device, deterministic=deterministic
+    )
     _launch.launch_tiled(
         kernel_heat.upper_edge_length_sum_and_count,
         dim=[blocks],
@@ -1498,10 +1560,18 @@ def _transport_tangent_vectors(
 
 
 @overload
-def log_map(mesh: Trimesh, source: int, /, *, t: float | None = None) -> wp.array[wp.vec2]: ...
+def log_map(
+    mesh: Trimesh, source: int, /, *, t: float | None = None, deterministic: bool = True
+) -> wp.array[wp.vec2]: ...
 @overload
 def log_map(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], source: int, /, t: float | None = None
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    source: int,
+    /,
+    t: float | None = None,
+    *,
+    deterministic: bool = True,
 ) -> wp.array[wp.vec2]: ...
 def log_map(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -1510,6 +1580,7 @@ def log_map(
     t: float | None = None,
     *,
     vertices: wp.array[wp.vec3] | None = None,
+    deterministic: bool = True,
 ) -> wp.array[wp.vec2]:
     """
     Logarithmic map: every vertex's position in the source vertex's tangent plane.
@@ -1547,6 +1618,13 @@ def log_map(
         Diffusion time; defaults to the squared mean edge length. The *angles* this function
         returns are measured from the source's ``basis_x`` in
         [`Trimesh.vertex_tangent_frames`][ordito.mesh.Trimesh.vertex_tangent_frames].
+    deterministic
+        When ``True`` (the default), the means the radius is shifted by are summed in one fixed
+        order, so repeated calls return identical bits on CUDA. ``False`` adds the per-block
+        partial sums by atomics in arrival order, which saves a few microseconds a call but lets
+        the last bits change from call to call on CUDA. The operators the mesh keeps (see
+        [`HeatSolver`][ordito.heat.HeatSolver]) are always assembled in the fixed order, so one
+        kept solver serves both settings. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -1593,10 +1671,18 @@ def log_map(
     ```
     """
     bound, owned, arguments = mesh_arguments("log_map", mesh, vertices, faces, (source, t), 1)
-    return _log_map(bound, owned, cast("int", arguments[0]), cast("float | None", arguments[1]))
+    return _log_map(
+        bound,
+        owned,
+        cast("int", arguments[0]),
+        cast("float | None", arguments[1]),
+        deterministic=deterministic,
+    )
 
 
-def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.array[wp.vec2]:
+def _log_map(
+    mesh: Trimesh, owned: bool, source: int, t: float | None, *, deterministic: bool
+) -> wp.array[wp.vec2]:
     """``log_map`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
     vertices, faces = mesh.vertices, mesh.faces
     require_same_device(vertices=vertices, faces=faces)
@@ -1631,7 +1717,9 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
 
     # Radial direction: the unit gradient of the distance field, averaged onto vertices and
     # expressed in each vertex's frame.
-    distance = _distance_from_heat(mesh, solver, sources, odt.as_dense(diffused[2 * n_vertices :]))
+    distance = _distance_from_heat(
+        mesh, solver, sources, odt.as_dense(diffused[2 * n_vertices :]), deterministic=deterministic
+    )
     normals, areas = scalar[6], scalar[7]
     n_faces = faces.size // 3
     vertex_gradient = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
@@ -1655,12 +1743,18 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
 
 
 def _distance_from_heat(
-    mesh: Trimesh, solver: HeatSolver, sources: wp.array[wp.int32], heat: wp.array[wp.float64]
+    mesh: Trimesh,
+    solver: HeatSolver,
+    sources: wp.array[wp.int32],
+    heat: wp.array[wp.float64],
+    *,
+    deterministic: bool,
 ) -> wp.array[wp.float64]:
     """
     ``heat_geodesic`` from the diffused heat on: the divergence, the Poisson solve and the shift.
 
     Split out so ``log_map`` can diffuse the heat inside a stacked solve of its own.
+    ``deterministic`` is the shift's block commit (``_launch.block_partials``).
     """
     vertices, faces = mesh.vertices, mesh.faces
     device = vertices.device
@@ -1690,7 +1784,9 @@ def _distance_from_heat(
     # device, so nothing is read back.
     n_sources = sources.size
     blocks = kernel_reduce.blocks_1d(max(n_vertices, n_sources))
-    sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+    sums, stride = _launch.block_partials(
+        blocks, 2, wp.float64, device, deterministic=deterministic
+    )
     _launch.launch_tiled(
         kernel_heat.source_and_global_sums,
         dim=[blocks],

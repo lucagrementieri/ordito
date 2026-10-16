@@ -2516,3 +2516,28 @@ def test_filter_laplacian_leaves_a_faceless_mesh_alone(device: str) -> None:
     smoothed_np = od.smoothing.filter_laplacian(vertices_wp, faces_wp, iterations=3).numpy()
     assert np.isfinite(smoothed_np).all()
     assert np.array_equal(smoothed_np, positions_np)
+
+
+@pytest.mark.parametrize("function", ["filter_laplacian", "inflate", "filter_mut_dif_laplacian"])
+def test_volume_sums_arrival_order_agree_with_the_default(
+    sphere_round: tuple[tm.Trimesh, wp.Mesh], function: str
+) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` smooths as the default does, to rounding.
+
+    The flag reaches the anchored volume and centre of ``filter_laplacian`` and ``inflate`` and the
+    per-pass mean coefficient of ``filter_mut_dif_laplacian``, whose atomic form must be cleared
+    every pass: a missing clear would add each pass's sums onto the last, far outside rounding.
+    ``sphere_round`` is saddle-free, the premise ``test_filter_mut_dif_laplacian`` gives for
+    comparing that filter at rounding level at all.
+    """
+    _, mesh_wp = sphere_round
+    smooth = getattr(od.smoothing, function)
+    if function == "inflate":
+        fixed = smooth(mesh_wp.points, mesh_wp.indices, 0.05)
+        arrival = smooth(mesh_wp.points, mesh_wp.indices, 0.05, deterministic=False)
+    else:
+        fixed = smooth(mesh_wp.points, mesh_wp.indices, iterations=5)
+        arrival = smooth(mesh_wp.points, mesh_wp.indices, iterations=5, deterministic=False)
+    assert np.abs(fixed.numpy() - mesh_wp.points.numpy()).max() > 1e-4
+    assert np.allclose(fixed.numpy(), arrival.numpy(), rtol=1e-5, atol=1e-5)

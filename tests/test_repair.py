@@ -3881,3 +3881,43 @@ def test_repair_rejects_invalid_arguments(
     _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match=match):
         repair_fn(mesh_wp.points, mesh_wp.indices)
+
+
+# --- deterministic=False: the arrival-order block commits ---
+
+
+@pytest.mark.parametrize("function", ["make_volume", "make_normals_outward"])
+def test_orientation_arrival_order_agrees_with_the_default(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], function: str
+) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` flips the faces the default flips.
+
+    The flag only reaches the signed volume's block commit, whose last bits cannot flip the sign
+    of a volume this far from zero. The input is inside out, so both arms must reverse it.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = numpy_to_warp(
+        mesh_tm.vertices, mesh_tm.faces[:, ::-1], mesh_wp.points.device
+    )
+    repair = getattr(od.repair, function)
+    fixed_np = repair(vertices_wp, faces_wp).numpy()
+    assert not np.array_equal(fixed_np, faces_wp.numpy())
+    assert np.array_equal(repair(vertices_wp, faces_wp, deterministic=False).numpy(), fixed_np)
+
+
+def test_remove_tunnels_arrival_order_agrees_with_the_default(device: str) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` cuts the loops the default cuts.
+
+    The flag reaches only the length of a loop longer than one reduction block; the torus's loops
+    are shorter, so the two arms must agree exactly, which pins the forwarding.
+    """
+    vertices_wp, faces_wp = od.creation.torus(
+        1.0, 0.2, major_sections=24, minor_sections=8, device=device
+    )
+    fixed = od.repair.remove_tunnels(vertices_wp, faces_wp, max_length=2.0)
+    arrival = od.repair.remove_tunnels(vertices_wp, faces_wp, max_length=2.0, deterministic=False)
+    assert fixed[2] == arrival[2] == 1
+    assert np.array_equal(fixed[0].numpy(), arrival[0].numpy())
+    assert np.array_equal(fixed[1].numpy(), arrival[1].numpy())

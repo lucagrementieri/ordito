@@ -723,7 +723,9 @@ def face_edge_lengths(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     return odt.as_array2d(lengths, wp.float32)
 
 
-def mean_edge_length(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:
+def mean_edge_length(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, deterministic: bool = True
+) -> float:
     """
     Mean length of the ``3 * n_faces`` per-face edges, counting a shared edge once per face.
 
@@ -751,6 +753,11 @@ def mean_edge_length(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
         ``(n_vertices,)`` vertex positions.
     faces
         ``(3 * n_faces,)`` face index buffer.
+    deterministic
+        When ``True`` (the default), the per-block partial sums are added in one fixed order, so
+        repeated calls return identical bits on CUDA. ``False`` adds them by atomics in arrival
+        order, which saves a few microseconds a call but lets the last bits change from call to
+        call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -800,7 +807,7 @@ def mean_edge_length(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
         block_dim=TILE_1D,
         device=vertices.device,
     )
-    return od.reduce.sum(partials) / n_halfedges
+    return od.reduce.sum(partials, deterministic=deterministic) / n_halfedges
 
 
 def mean_unique_edge_length(

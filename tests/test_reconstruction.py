@@ -1111,6 +1111,7 @@ def test_poisson_band_nests_and_extracts_closed(device: str) -> None:
             solver_iterations=100,
             solver_tolerance=1e-5,
             confidence=False,
+            deterministic=True,
         )
     assert faces_wp.size > 0
     assert np.all(od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp).numpy())
@@ -1801,3 +1802,44 @@ def test_ball_pivoting_too_few_points(device: str):
     normals_wp = wp.array(np.ones((2, 3), dtype=np.float64), dtype=wp.vec3, device=device)
     _vertices, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
     assert faces_wp.size == 0
+
+
+# --- deterministic=False: the arrival-order block commits ---
+
+
+def _reconstruct(device: str, function: str, deterministic: bool) -> tuple[np.ndarray, np.ndarray]:
+    """Run one reconstruction on a sphere cloud (or mesh), returning its vertices and faces."""
+    points_wp, normals_wp = _to_warp(*_sphere_cloud(4), device)
+    if function == "triangulate_point_cloud":
+        result = od.reconstruction.triangulate_point_cloud(points_wp, deterministic=deterministic)
+    elif function == "ball_pivoting":
+        result = od.reconstruction.ball_pivoting(points_wp, deterministic=deterministic)
+    elif function == "screened_poisson":
+        result = od.reconstruction.screened_poisson(
+            points_wp, normals_wp, depth=5, full_depth=4, deterministic=deterministic
+        )
+    else:
+        vertices_wp, faces_wp = od.creation.icosphere(subdivisions=2, device=device)
+        result = od.reconstruction.resample_uniform(
+            vertices_wp, faces_wp, voxel_size=0.1, deterministic=deterministic
+        )
+    return result[0].numpy(), result[1].numpy()
+
+
+@pytest.mark.parametrize(
+    "function", ["triangulate_point_cloud", "ball_pivoting", "screened_poisson", "resample_uniform"]
+)
+def test_reconstruction_arrival_order_agrees_with_the_default(device: str, function: str) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` reconstructs the default's surface.
+
+    The flag reaches only the reductions that set a scale or an orientation (the centroid that
+    orients estimated normals, the automatic ball radius, the Poisson iso-value and the signed
+    volume that orients the result), whose last bits move no lattice crossing or pivot of these
+    inputs: the triangulations must be equal, and the vertices equal to float32 rounding.
+    """
+    fixed_vertices, fixed_faces = _reconstruct(device, function, True)
+    arrival_vertices, arrival_faces = _reconstruct(device, function, False)
+    assert fixed_faces.size > 0
+    assert np.array_equal(fixed_faces, arrival_faces)
+    assert np.allclose(fixed_vertices, arrival_vertices, rtol=1e-5, atol=1e-5)

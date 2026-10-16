@@ -255,7 +255,9 @@ def test_is_volume(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        result = bench_case.run(lambda: od.validation.is_volume(vertices, faces))
+        result = bench_case.run(
+            lambda: od.validation.is_volume(vertices, faces, deterministic=False)
+        )
     else:
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
         result = bench_case.run(lambda: tm.Trimesh(vertices, faces, process=False).is_volume)

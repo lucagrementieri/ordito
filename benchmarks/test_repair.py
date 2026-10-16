@@ -759,7 +759,9 @@ def test_make_volume(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        oriented = bench_case.run(lambda: od.repair.make_volume(vertices, faces))
+        oriented = bench_case.run(
+            lambda: od.repair.make_volume(vertices, faces, deterministic=False)
+        )
         assert int(oriented.shape[0]) == faces.size
     else:  # trimesh mutates in place and caches the volume: rebuild inside the timed callable
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -1009,7 +1011,7 @@ def test_remove_tunnels(bench_case: BenchCase) -> None:
     # Every handle in these fixtures is a real one, so an unbounded length eliminates a maximal
     # disjoint family and times the whole chain rather than the length test.
     cut_vertices, cut_faces, removed = bench_case.run(
-        lambda: od.repair.remove_tunnels(vertices, faces, 1e9), rounds=3
+        lambda: od.repair.remove_tunnels(vertices, faces, 1e9, deterministic=False), rounds=3
     )
     assert removed >= 1
     assert cut_vertices.size >= bench_case.n_vertices

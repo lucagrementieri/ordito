@@ -4227,3 +4227,43 @@ def _split_every_edge(mesh_wp: wp.Mesh, **kwargs: Any) -> tuple[Any, ...]:
         inverse=inverse,
         **kwargs,
     )
+
+
+@pytest.mark.parametrize("function", ["intrinsic_delaunay", "isotropic_remesh"])
+def test_remesh_arrival_order_agrees_with_the_default(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], function: str
+) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` remeshes as the default does.
+
+    The flag reaches only a mean -- the edge length the mollification margin scales with, or a
+    sizing field's -- whose last bits flip no edge of this mesh, so the connectivity must be equal
+    and the lengths or positions equal to rounding. ``isotropic_remesh`` runs one iteration with a
+    sizing field and no smoothing, which is all the mean feeds.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    if function == "intrinsic_delaunay":
+        fixed_faces, fixed_values, _ = od.remesh.intrinsic_delaunay(vertices_wp, faces_wp)
+        arrival_faces, arrival_values, _ = od.remesh.intrinsic_delaunay(
+            vertices_wp, faces_wp, deterministic=False
+        )
+    else:
+        edge_np = float(mesh_tm.edges_unique_length.mean())
+        field_wp = wp.full(
+            vertices_wp.size, 1.5 * edge_np, dtype=wp.float32, device=vertices_wp.device
+        )
+        fixed_values, fixed_faces = od.remesh.isotropic_remesh(
+            vertices_wp, faces_wp, target_length=field_wp, iterations=1, smooth=False
+        )
+        arrival_values, arrival_faces = od.remesh.isotropic_remesh(
+            vertices_wp,
+            faces_wp,
+            target_length=field_wp,
+            iterations=1,
+            smooth=False,
+            deterministic=False,
+        )
+    assert fixed_faces.size > 0
+    assert np.array_equal(fixed_faces.numpy(), arrival_faces.numpy())
+    assert np.allclose(fixed_values.numpy(), arrival_values.numpy(), rtol=1e-5, atol=1e-6)

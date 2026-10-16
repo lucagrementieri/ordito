@@ -213,10 +213,10 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
         if amortized:
             mesh = od.Trimesh(vertices, faces)
             for _ in range(2):
-                od.heat.heat_geodesic(mesh, sources)
-            solve = lambda: od.heat.heat_geodesic(mesh, sources)  # noqa: E731
+                od.heat.heat_geodesic(mesh, sources, deterministic=False)
+            solve = lambda: od.heat.heat_geodesic(mesh, sources, deterministic=False)  # noqa: E731
         else:
-            solve = lambda: od.heat.heat_geodesic(vertices, faces, sources)  # noqa: E731
+            solve = lambda: od.heat.heat_geodesic(vertices, faces, sources, deterministic=False)  # noqa: E731
         distance = bench_case.run(solve, rounds=_GEODESIC_ROUNDS)
         assert distance.shape == (n_vertices,)
         return
@@ -435,7 +435,9 @@ def test_heat_signed_distance(bench_case: BenchCase, curve_kind: str) -> None:
         curve = wp.array(curve_np, dtype=wp.int32, device=bench_case.device)
         offsets = wp.array(bounds_np, dtype=wp.int32, device=bench_case.device)
         distance = bench_case.run(
-            lambda: od.heat.heat_signed_distance(vertices, faces, curve, offsets),
+            lambda: od.heat.heat_signed_distance(
+                vertices, faces, curve, offsets, deterministic=False
+            ),
             rounds=_SIGNED_DISTANCE_ROUNDS,
         )
         assert distance.shape == (bench_case.n_vertices,)
@@ -466,7 +468,7 @@ def test_heat_signed_distance_constraint(bench_case: BenchCase, level_set_constr
     curve = wp.array(_curve(bench_case, "ring")[0], dtype=wp.int32, device=bench_case.device)
     distance = bench_case.run(
         lambda: od.heat.heat_signed_distance(
-            vertices, faces, curve, level_set_constraint=level_set_constraint
+            vertices, faces, curve, level_set_constraint=level_set_constraint, deterministic=False
         ),
         rounds=_SIGNED_DISTANCE_ROUNDS,
     )
@@ -579,7 +581,8 @@ def test_log_map(bench_case: BenchCase) -> None:
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         logarithm = bench_case.run(
-            lambda: od.heat.log_map(vertices, faces, 0), rounds=_VECTOR_HEAT_ROUNDS
+            lambda: od.heat.log_map(vertices, faces, 0, deterministic=False),
+            rounds=_VECTOR_HEAT_ROUNDS,
         )
         assert logarithm.shape == (n_vertices,)
     else:

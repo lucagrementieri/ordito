@@ -119,7 +119,9 @@ def test_edge_length_loss(bench_case: BenchCase) -> None:
         _run_loss_pytorch3d(bench_case, lambda mesh_p3d: p3d_loss.mesh_edge_loss(mesh_p3d))
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loss = bench_case.run(lambda: od.energies.edge_length_loss(vertices, faces))
+    loss = bench_case.run(
+        lambda: od.energies.edge_length_loss(vertices, faces, deterministic=False)
+    )
     assert loss > 0.0
 
 
@@ -143,7 +145,9 @@ def test_normal_consistency_loss(bench_case: BenchCase) -> None:
         _run_loss_pytorch3d(bench_case, lambda mesh_p3d: p3d_loss.mesh_normal_consistency(mesh_p3d))
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loss = bench_case.run(lambda: od.energies.normal_consistency_loss(vertices, faces))
+    loss = bench_case.run(
+        lambda: od.energies.normal_consistency_loss(vertices, faces, deterministic=False)
+    )
     assert loss >= 0.0
 
 
@@ -173,7 +177,9 @@ def test_laplacian_smoothing_loss(
         )
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loss = bench_case.run(lambda: od.energies.laplacian_smoothing_loss(vertices, faces, method))
+    loss = bench_case.run(
+        lambda: od.energies.laplacian_smoothing_loss(vertices, faces, method, deterministic=False)
+    )
     assert loss > 0.0
 
 

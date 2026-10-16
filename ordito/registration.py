@@ -45,6 +45,7 @@ def procrustes(
     scale: bool = True,
     *,
     return_cost: Literal[True] = True,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]: ...
 @overload
 def procrustes(
@@ -56,6 +57,7 @@ def procrustes(
     scale: bool = True,
     *,
     return_cost: Literal[False],
+    deterministic: bool = True,
 ) -> wp.array[wp.mat44]: ...
 @overload
 def procrustes(
@@ -67,6 +69,7 @@ def procrustes(
     scale: bool = True,
     *,
     return_cost: bool = True,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float] | wp.array[wp.mat44]: ...
 def procrustes(
     a: wp.array[wp.vec3],
@@ -77,6 +80,7 @@ def procrustes(
     scale: bool = True,
     *,
     return_cost: bool = True,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float] | wp.array[wp.mat44]:
     """
     Find the optimal transform mapping point cloud *a* onto *b*.
@@ -99,6 +103,11 @@ def procrustes(
         Allow uniform scaling.
     return_cost:
         Keyword-only. When ``True`` (the default) also return the transformed points and cost.
+    deterministic:
+        Keyword-only. When ``True`` (the default), the per-block partial moments and cost are
+        added in one fixed order, so repeated calls return identical bits on CUDA. ``False`` adds
+        them by atomics in arrival order, which saves a few microseconds a call but lets the last
+        bits change from call to call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -167,7 +176,11 @@ def procrustes(
 
     workspace: _ProcrustesWorkspace = {
         "acc": _launch.block_partials(
-            kernel_reduce.blocks_1d(n), kernel_registration.PROCRUSTES_ACC_SIZE, wp.float32, device
+            kernel_reduce.blocks_1d(n),
+            kernel_registration.PROCRUSTES_ACC_SIZE,
+            wp.float32,
+            device,
+            deterministic=deterministic,
         )[0],
         "matrix": _launch.empty(1, dtype=wp.mat44, device=device),
         "transformed": _launch.empty(n, dtype=wp.vec3, device=device) if return_cost else None,
@@ -293,6 +306,7 @@ def icp(
     reflection: bool = False,
     translation: bool = True,
     scale: bool = False,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
     """
     Point-to-point iterative closest point registration.
@@ -343,6 +357,12 @@ def icp(
         Forwarded to [`procrustes`][ordito.registration.procrustes]. Defaults are
         rigid (`reflection=False, scale=False`); set ``scale=True`` for a
         similarity transform.
+    deterministic
+        When ``True`` (the default), every round's per-block partial sums are added in one fixed
+        order, so repeated calls return identical bits on CUDA. ``False`` adds them by atomics in
+        arrival order, which is faster but lets the last bits of each round, and so possibly the
+        round the loop stops at, change from call to call on CUDA. The CPU device is deterministic
+        either way.
 
     Returns
     -------
@@ -423,7 +443,7 @@ def icp(
     # where the kept cost also lives, so every round repeats bit for bit on CUDA.
     blocks = kernel_reduce.blocks_1d(n)
     stride = int(kernel_registration.ICP_POINT_ACC_SIZE)
-    acc, _ = _launch.block_partials(blocks, stride, wp.float32, device)
+    acc, _ = _launch.block_partials(blocks, stride, wp.float32, device, deterministic=deterministic)
     fitted = _launch.empty(1, dtype=wp.mat44, device=device)
     state = _launch.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
 
@@ -537,6 +557,7 @@ def icp_point_to_plane(
     robust_kernel: Literal["none", "huber", "tukey"] = "none",
     robust_scale: float | None = None,
     damping: float = 1e-6,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
     """
     Point-to-plane iterative closest point registration with optional robust loss.
@@ -590,6 +611,12 @@ def icp_point_to_plane(
     damping
         Relative Levenberg damping added to the normal-equations diagonal (scaled
         by its mean magnitude) for conditioning on planar/degenerate targets.
+    deterministic
+        When ``True`` (the default), every round's per-block partial sums are added in one fixed
+        order, so repeated calls return identical bits on CUDA. ``False`` adds them by atomics in
+        arrival order, which is faster but lets the last bits of each round, and so possibly the
+        round the loop stops at, change from call to call on CUDA. The CPU device is deterministic
+        either way.
 
     Returns
     -------
@@ -704,7 +731,7 @@ def icp_point_to_plane(
     # previous kept cost also lives, so every round repeats bit for bit on CUDA.
     blocks = kernel_reduce.blocks_1d(n)
     stride = int(kernel_registration.ICP_ACC_SIZE)
-    acc, _ = _launch.block_partials(blocks, stride, wp.float32, device)
+    acc, _ = _launch.block_partials(blocks, stride, wp.float32, device, deterministic=deterministic)
     step = _launch.empty(1, dtype=wp.mat44, device=device)
     total = initial_matrix
     state = _launch.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
@@ -763,7 +790,14 @@ def icp_point_to_plane(
         if kind == 0 or scale_value is not None:
             return
         scale_value = _robust_scale_from_residuals(
-            current, closest, normal_table, distance, triangle_id, max_d, kind
+            current,
+            closest,
+            normal_table,
+            distance,
+            triangle_id,
+            max_d,
+            kind,
+            deterministic=deterministic,
         )
 
     round_inputs = [wp.float32(damping), wp.float64(threshold), wp.int32(max_iterations)]
@@ -848,6 +882,8 @@ def _robust_scale_from_residuals(
     triangle_id: wp.array[wp.int32],
     max_distance: float,
     kind: int,
+    *,
+    deterministic: bool,
 ) -> float:
     """
     Robust scale (Huber/Tukey) from the MAD of the current point-to-plane residuals.
@@ -859,7 +895,7 @@ def _robust_scale_from_residuals(
     (``kernel_registration.robust_residual_keys``), so the whole estimate is one readback of the
     in-range count and ``1.4826 * MAD``. A zero MAD falls back to the standard deviation, on the
     host path the medians used to take too, since its means must sum the in-range residuals in
-    their original order.
+    their original order; ``deterministic`` is that fallback's block commit.
     """
     device = current.device
     n = current.size
@@ -900,7 +936,7 @@ def _robust_scale_from_residuals(
     sigma = float(stats_np[kernel_registration.MAD_STATS_VALUE])
     if sigma <= 0.0:
         sigma = _residual_standard_deviation(
-            current, closest, normals, distance, triangle_id, max_distance
+            current, closest, normals, distance, triangle_id, max_distance, deterministic
         )
     if sigma <= 0.0:
         return 0.0
@@ -915,6 +951,7 @@ def _residual_standard_deviation(
     distance: wp.array[wp.float32],
     triangle_id: wp.array[wp.int32],
     max_distance: float,
+    deterministic: bool,
 ) -> float:
     """
     ``sqrt(mean((r - mean(r))^2))`` over the in-range residuals, in their original order.
@@ -926,7 +963,7 @@ def _residual_standard_deviation(
     # residuals where they are summed: no residual table, compaction or intermediate readback.
     # One three-slot row per block, its pass's columns added in a fixed order by the pass itself.
     blocks = kernel_reduce.blocks_1d(current.size)
-    sums, _ = _launch.block_partials(blocks, 3, wp.float64, device)
+    sums, _ = _launch.block_partials(blocks, 3, wp.float64, device, deterministic=deterministic)
     for centered in (0, 1):
         _launch.launch_tiled(
             kernel_registration.residual_moment,

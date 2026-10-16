@@ -230,6 +230,7 @@ def triangulate_point_cloud(
     boundary_angle: float = 0.9 * math.pi,
     max_neighbours: int = 32,
     crit_hole_length: float = -1.0,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Reconstruct a triangle mesh from an (optionally oriented) point cloud.
@@ -268,6 +269,12 @@ def triangulate_point_cloud(
     crit_hole_length
         Boundary loops with perimeter at most this value are filled. When negative, defaults to
         ``0.1 *`` the point-cloud bounding-box diagonal.
+    deterministic
+        When ``True`` (the default), the cloud centroid that orients estimated normals is summed in
+        one fixed order, so repeated calls return the same mesh on CUDA. ``False`` sums it by
+        atomics in arrival order ([`estimate_normals`][ordito.points.estimate_normals]), which is
+        faster but lets its last bits change from call to call on CUDA. Ignored when ``normals``
+        is given; the CPU device is deterministic either way.
 
     Returns
     -------
@@ -341,7 +348,7 @@ def triangulate_point_cloud(
     neighbor_idx, neighbor_dist = od.neighbors.query_nearest(points, points, k=k + 1, bounds=bounds)
 
     if normals is None:
-        normals = od.points.estimate_normals(points, neighbor_idx)
+        normals = od.points.estimate_normals(points, neighbor_idx, deterministic=deterministic)
 
     # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``.
     out_tris = _launch.empty((n, k, 3), dtype=wp.int32, device=device)
@@ -456,6 +463,7 @@ def screened_poisson(
     solver_tolerance: float = 1e-5,
     confidence: bool = False,
     method: Literal["dense", "adaptive"] = "dense",
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Screened-Poisson surface reconstruction from an oriented point cloud (Kazhdan PoissonRecon).
@@ -524,6 +532,12 @@ def screened_poisson(
         surface agrees with ``dense`` to a small fraction of a cell, its cost follows the surface
         rather than the volume, and it runs at ``depth=10``, whose dense lattice does not fit a
         32 GB device. With ``depth == full_depth`` there is no band and it is the dense solve.
+    deterministic
+        When ``True`` (the default), the iso-value's mean and the signed volume that orients the
+        result are summed in one fixed order, so repeated calls return the same mesh on CUDA.
+        ``False`` adds their per-block partial sums by atomics in arrival order, which is faster
+        but lets their last bits change from call to call on CUDA. The CPU device is deterministic
+        either way.
 
     Returns
     -------
@@ -646,6 +660,7 @@ def screened_poisson(
             solver_iterations=solver_iterations,
             solver_tolerance=solver_tolerance,
             confidence=confidence,
+            deterministic=deterministic,
         )
     else:
         solution, res = _poisson_dense_solve(
@@ -669,7 +684,7 @@ def screened_poisson(
             inputs=[solution, res, cube_lower, inv_cell, points, sampled],
             device=device,
         )
-        iso = _poisson_iso_value(sampled, normals, confidence)
+        iso = _poisson_iso_value(sampled, normals, confidence, deterministic=deterministic)
         vertices, faces = od.levelset.marching_cubes(
             odt.as_array3d(solution.reshape((res, res, res)), wp.float32),
             iso,
@@ -688,7 +703,7 @@ def screened_poisson(
     # use: welding coincident vertices manufactures non-manifold edges.
     vertices, faces = od.repair.remove_degenerate_faces(vertices, faces)
     if faces.size > 0:
-        faces = od.repair.make_normals_outward(vertices, faces)
+        faces = od.repair.make_normals_outward(vertices, faces, deterministic=deterministic)
     return vertices, faces
 
 
@@ -705,7 +720,11 @@ def _poisson_cube(points: wp.array[wp.vec3], scale: float) -> tuple[wp.vec3, wp.
 
 
 def _poisson_iso_value(
-    sampled: wp.array[wp.float32], normals: wp.array[wp.vec3], confidence: bool
+    sampled: wp.array[wp.float32],
+    normals: wp.array[wp.vec3],
+    confidence: bool,
+    *,
+    deterministic: bool,
 ) -> float:
     """
     Iso-value for the extraction: the mean of the solution at the input samples.
@@ -715,13 +734,14 @@ def _poisson_iso_value(
     uniform; the two weightings are deliberately kept distinct rather than unified. Shared by both
     backends, whose only difference is how ``sampled`` was produced.
 
-    Both branches reduce on the device rather than reading the fields back.
+    Both branches reduce on the device rather than reading the fields back; ``deterministic`` is
+    [`reduce.sum`][ordito.reduce.sum]'s.
     """
     if not confidence:
-        return od.reduce.mean(sampled)
+        return od.reduce.mean(sampled, deterministic=deterministic)
     lengths = odt.empty_1d(normals.size, wp.float32, device=normals.device)
     _launch.map(wp.length, normals, out=lengths)
-    total_weight = od.reduce.sum(lengths)
+    total_weight = od.reduce.sum(lengths, deterministic=deterministic)
     if total_weight <= 0.0:
         return 0.0
     return od.reduce.weighted_sum(sampled, lengths) / total_weight
@@ -1221,6 +1241,7 @@ def _screened_poisson_band(
     solver_iterations: int,
     solver_tolerance: float,
     confidence: bool,
+    deterministic: bool,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Solve the screened-Poisson system on a narrow band of the dense lattice and extract it.
@@ -1319,7 +1340,9 @@ def _screened_poisson_band(
         inputs=[
             base_x,
             res_b,
-            wp.float32(_poisson_iso_value(sampled, normals, confidence)),
+            wp.float32(
+                _poisson_iso_value(sampled, normals, confidence, deterministic=deterministic)
+            ),
             (res_f - 1) // (res_b - 1),
             res_f,
             nbk_f,
@@ -1421,7 +1444,7 @@ def _screened_poisson_band(
         outputs=[sampled],
         device=device,
     )
-    iso = _poisson_iso_value(sampled, normals, confidence)
+    iso = _poisson_iso_value(sampled, normals, confidence, deterministic=deterministic)
     composite = [
         finest.brick_map,
         fine_x,
@@ -1752,6 +1775,7 @@ def resample_uniform(
     voxel_size: float | None = None,
     offset: float = 0.0,
     sign_mode: Literal["parity", "winding"] = "winding",
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Rebuild a mesh by sampling its signed distance field on a uniform grid and re-extracting it.
@@ -1785,6 +1809,12 @@ def resample_uniform(
         ``"winding"`` rather than that function's ``"parity"``: resampling is usually applied to a
         mesh that is *broken*, and ray parity has no principled answer through a hole, while the
         generalized winding number degrades gracefully.
+    deterministic
+        When ``True`` (the default), the signed volume that orients the result is summed in one
+        fixed order, so repeated calls return the same faces on CUDA. ``False`` sums it by atomics
+        in arrival order ([`make_normals_outward`][ordito.repair.make_normals_outward]), which is
+        faster but lets its last bits change from call to call on CUDA. The CPU device is
+        deterministic either way.
 
     Returns
     -------
@@ -1876,7 +1906,7 @@ def resample_uniform(
     # neighbours do not share their vertices. Hole filling is off (``crit_hole_length=0``): a level
     # set of a signed field is already closed, so any hole here would be a symptom worth surfacing
     # rather than patching over.
-    return _clean_reconstruction(out_vertices, out_faces, 0.0)
+    return _clean_reconstruction(out_vertices, out_faces, 0.0, deterministic=deterministic)
 
 
 def ball_pivoting(
@@ -1888,6 +1918,7 @@ def ball_pivoting(
     crease_angle: float = math.pi / 2.0,
     max_waves: int = 0,
     crit_hole_length: float = 0.0,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
 
@@ -1936,6 +1967,12 @@ def ball_pivoting(
     crit_hole_length
         Boundary loops with perimeter at most this value are filled at the end. ``0`` disables hole
         filling; a negative value defaults to ``0.1 x`` the bounding-box diagonal.
+    deterministic
+        When ``True`` (the default), the mean spacing behind an automatic ``radius`` and the cloud
+        centroid that orients estimated normals are summed in one fixed order, so repeated calls
+        start from the same radius and normals on CUDA. ``False`` adds their per-block partial
+        sums by atomics in arrival order, which is faster but lets their last bits change from
+        call to call on CUDA. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -2012,10 +2049,10 @@ def ball_pivoting(
         # The whole table, not columns ``1:``: the self-distance in slot 0 is exactly zero and the
         # positive-finite filter drops it, so flattening costs nothing and keeps the reduction on
         # the device -- a column slice would be strided and could not be flattened at all.
-        mean_spacing = _mean_positive_finite(neighbor_dist.flatten())
+        mean_spacing = _mean_positive_finite(neighbor_dist.flatten(), deterministic=deterministic)
         radius = 1.5 * (mean_spacing if mean_spacing is not None else 1.0)
     if normals is None:
-        normals = od.points.estimate_normals(points, neighbor_idx)
+        normals = od.points.estimate_normals(points, neighbor_idx, deterministic=deterministic)
 
     # Cell width equal to the ball radius, not to the ``2 * radius`` neighbourhood the pivot
     # searches: the inner empty-ball test is by far the most frequent query, and a cell twice its
@@ -2220,7 +2257,7 @@ class _BpaState:
         )
 
 
-def _mean_positive_finite(values: odt.ArrayNdFloat32) -> float | None:
+def _mean_positive_finite(values: odt.ArrayNdFloat32, *, deterministic: bool) -> float | None:
     """
     Mean of the strictly positive finite entries of ``values``, or ``None`` if there are none.
 
@@ -2228,14 +2265,17 @@ def _mean_positive_finite(values: odt.ArrayNdFloat32) -> float | None:
     table carries a zero per self-match and an ``inf`` per unfilled slot, and neither belongs in a
     mean spacing. Reduces on the device rather than reading the whole table back, since the buffer
     scales with the cloud, and folds the sum and the count in one pass into one buffer, so the
-    answer costs one launch and one readback.
+    answer costs one launch and one readback. Without ``deterministic`` the blocks commit by
+    atomics (``_launch.block_partials``).
     """
     device = values.device
     n = values.size
     if n == 0:
         return None
     blocks = kernel_reduce.blocks_1d(n)
-    sum_and_count, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+    sum_and_count, stride = _launch.block_partials(
+        blocks, 2, wp.float64, device, deterministic=deterministic
+    )
     _launch.launch_tiled(
         kernel_reconstruction.positive_finite_sum_and_count,
         dim=[blocks],
@@ -2412,6 +2452,7 @@ def _clean_reconstruction(
     *,
     orient: bool = True,
     deduplicate: bool = True,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Shared reconstruction cleanup: dedup, drop degenerate/non-manifold, orient, fill small holes.
@@ -2424,6 +2465,7 @@ def _clean_reconstruction(
     that already have a trusted orientation. ``deduplicate=False`` skips the duplicate-resolution
     stage for a caller whose faces already carry pairwise distinct vertex sets *in ascending
     unoriented-key order* -- the order that stage emits -- so the result is unchanged.
+    ``deterministic`` is [`make_normals_outward`][ordito.repair.make_normals_outward]'s.
     """
     if faces.size == 0:
         return _launch.clone(points), faces
@@ -2436,7 +2478,7 @@ def _clean_reconstruction(
 
     if faces.size > 0:
         if orient:
-            faces = od.repair.make_normals_outward(vertices, faces)
+            faces = od.repair.make_normals_outward(vertices, faces, deterministic=deterministic)
         if crit_hole_length != 0.0:
             hole_length = crit_hole_length
             if hole_length < 0.0:

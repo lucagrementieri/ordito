@@ -481,7 +481,9 @@ def test_robust_laplacian(bench_case: BenchCase) -> None:
     n_vertices = bench_case.n_vertices
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        matrix = bench_case.run(lambda: od.laplacian.robust_laplacian(vertices, faces))
+        matrix = bench_case.run(
+            lambda: od.laplacian.robust_laplacian(vertices, faces, deterministic=False)
+        )
         assert matrix.nrow == n_vertices
     else:  # igl's intrinsic overload, from the same length table (built on the host with numpy)
         triangles_np = bench_case.vertices_np[bench_case.faces_np]
@@ -506,7 +508,9 @@ def test_robust_laplacian(bench_case: BenchCase) -> None:
 def test_mollify_intrinsic(bench_case: BenchCase) -> None:
     """The length table, the max-reduce and the two host readbacks it needs."""
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    lengths, _ = bench_case.run(lambda: od.laplacian.mollify_intrinsic(vertices, faces))
+    lengths, _ = bench_case.run(
+        lambda: od.laplacian.mollify_intrinsic(vertices, faces, deterministic=False)
+    )
     assert lengths.shape == (bench_case.n_faces, 3)
 
 

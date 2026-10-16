@@ -1243,6 +1243,7 @@ def test_robust_scale_matches_the_host_mad(device: str, n_valid: int) -> None:
         wp.array(index_np, dtype=wp.int32, device=device),
         1.0,
         1,
+        deterministic=True,
     )
     kept = np.sort(residual_np[valid])
     center = np.float32(_host_prefix_median(kept))
@@ -1289,6 +1290,7 @@ def test_robust_scale_falls_back_to_the_standard_deviation(device: str) -> None:
         wp.array(index_np, dtype=wp.int32, device=device),
         1.0,
         1,
+        deterministic=True,
     )
     kept = residual_np[valid].astype(np.float64)
     assert np.median(np.abs(kept - np.median(kept))) == 0.0
@@ -1328,6 +1330,7 @@ def test_robust_scale_ignores_the_length_of_the_target_normals(device: str) -> N
             index_wp,
             1.0,
             1,
+            deterministic=True,
         )
 
     unit = scale(unit_np)
@@ -1714,3 +1717,51 @@ def test_icp_point_to_plane_rejects_an_off_menu_robust_kernel(device: str) -> No
             robust_kernel=robust_kernel,
         )
         assert np.isfinite(matrix_wp.numpy()).all()
+
+
+# --- deterministic=False: the arrival-order block commits ---
+
+
+def _register(device: str, function: str, deterministic: bool) -> tuple[np.ndarray, float]:
+    """One registration of a sampled box onto a rotated copy, returning its matrix and cost."""
+    vertices_wp, faces_wp = od.creation.box(extents=(3.0, 2.0, 1.0), device=device)
+    source_wp, _ = od.sample.sample_surface(vertices_wp, faces_wp, 20_000, seed=0)
+    motion = od.transform.rotation_matrix((0.0, 0.0, 1.0), 0.1, center=(0.2, 0.1, 0.0))
+    if function == "procrustes":
+        target_wp = od.transform.transform_points(source_wp, motion)
+        matrix_wp, _, cost = od.registration.procrustes(
+            source_wp, target_wp, scale=False, deterministic=deterministic
+        )
+    elif function == "icp":
+        moved_wp = od.transform.transform_points(vertices_wp, motion)
+        matrix_wp, _, cost = od.registration.icp(
+            source_wp, moved_wp, faces_wp, max_iterations=10, deterministic=deterministic
+        )
+    else:
+        moved_wp = od.transform.transform_points(vertices_wp, motion)
+        matrix_wp, _, cost = od.registration.icp_point_to_plane(
+            source_wp,
+            moved_wp,
+            faces_wp,
+            max_iterations=5,
+            robust_kernel="huber",
+            deterministic=deterministic,
+        )
+    return od.transform.matrix_to_numpy(matrix_wp), cost
+
+
+@pytest.mark.parametrize("function", ["procrustes", "icp", "icp_point_to_plane"])
+def test_registration_arrival_order_agrees_with_the_default(device: str, function: str) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` fits the default's transform to rounding.
+
+    The flag only swaps each round's fixed-order block commit (and the robust scale's fallback
+    sums) for one atomic per block, so 20 blocks of correspondences may move the fit in its last
+    float32 bits on CUDA and nowhere else; the reference comparisons above pin the default. The
+    motion is a real rotation, so the matrix is not the identity either arm could fall back to.
+    """
+    fixed_matrix, fixed_cost = _register(device, function, True)
+    arrival_matrix, arrival_cost = _register(device, function, False)
+    assert np.abs(fixed_matrix - np.eye(4)).max() > 1e-2
+    assert np.allclose(fixed_matrix, arrival_matrix, rtol=1e-4, atol=1e-5)
+    assert np.isclose(fixed_cost, arrival_cost, rtol=1e-3, atol=1e-7)

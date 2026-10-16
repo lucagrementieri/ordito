@@ -476,3 +476,23 @@ def test_vector_area_matrix_matches_igl_derived(
 
     area_wp = bsr_to_csr(od.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices))
     assert sparse_allclose(area_wp, area_igl, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "function", ["edge_length_loss", "normal_consistency_loss", "laplacian_smoothing_loss"]
+)
+def test_loss_arrival_order_agrees_with_the_default(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], function: str
+) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` returns the default's mean to rounding.
+
+    The flag only swaps the mean's fixed-order block commit for one atomic per block; the
+    reference comparisons above pin the default.
+    """
+    _, mesh_wp = sphere_irregular
+    loss = getattr(od.energies, function)
+    fixed = loss(mesh_wp.points, mesh_wp.indices)
+    arrival = loss(mesh_wp.points, mesh_wp.indices, deterministic=False)
+    assert fixed > 0.0
+    assert np.isclose(fixed, arrival, rtol=1e-5, atol=0.0)

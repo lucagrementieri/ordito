@@ -1371,3 +1371,32 @@ def test_operators_float64_match_float32(request: pytest.FixtureRequest, mesh_na
         matrix_f64 = builder(points, indices, dtype=wp.float64)
         assert matrix_f64.values.dtype == wp.float64
         assert sparse_allclose(bsr_to_csr(matrix_f64), bsr_to_csr(matrix_f32), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("function", ["mollify_intrinsic", "robust_laplacian"])
+def test_mollification_arrival_order_agrees_with_the_default(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], function: str
+) -> None:
+    """
+    Ordito against ordito: ``deterministic=False`` mollifies as the default does, to rounding.
+
+    The flag reaches only the mean edge length the margin scales with, so the two arms may differ
+    in its last bits on CUDA and nowhere else; the reference comparisons above pin the default.
+    """
+    _, mesh_wp = sphere_irregular
+    if function == "mollify_intrinsic":
+        fixed = od.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)[0].numpy()
+        arrival = od.laplacian.mollify_intrinsic(
+            mesh_wp.points, mesh_wp.indices, deterministic=False
+        )[0].numpy()
+    else:
+        fixed_csr = bsr_to_csr(od.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices))
+        arrival_csr = bsr_to_csr(
+            od.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices, deterministic=False)
+        )
+        assert np.ptp(fixed_csr.data) > 1e-3
+        assert sparse_allclose(arrival_csr, fixed_csr, rtol=1e-5, atol=1e-6)
+        return
+    assert np.ptp(fixed) > 1e-3
+    assert fixed.shape == arrival.shape
+    assert np.allclose(fixed, arrival, rtol=1e-5, atol=1e-6)

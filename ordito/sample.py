@@ -361,6 +361,8 @@ def sample_surface_poisson_disk(
     init_factor: float = 5.0,
     face_weight: wp.array[wp.float32] | None = None,
     seed: int | None = None,
+    *,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Sample points on a triangle mesh surface with Poisson disk distribution.
@@ -391,6 +393,12 @@ def sample_surface_poisson_disk(
     seed
         RNG seed for the initial uniform sampling. If ``None``, a random seed
         is chosen.
+    deterministic
+        When ``True`` (the default), the face CDF of the initial uniform sampling is a fixed-order
+        scan, so a seeded call returns identical points on CUDA. ``False`` takes the faster
+        arrival-order scan ([`sample_surface`][ordito.sample.sample_surface]), whose last bits can
+        change from call to call on CUDA above a few thousand faces and so move a sample that
+        lands near a boundary of the CDF. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -435,7 +443,7 @@ def sample_surface_poisson_disk(
 
     # 1. Initial uniform surface samples
     init_points, init_face_indices = sample_surface(
-        vertices, faces, init_count, face_weight=face_weight, seed=seed
+        vertices, faces, init_count, face_weight=face_weight, seed=seed, deterministic=deterministic
     )
 
     # 2. Surface area (for radius computation)
@@ -574,7 +582,12 @@ def _top_maxima_by_weight(
 
 
 def sample_surface_blue_noise(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], radius: float, seed: int | None = None
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    radius: float,
+    seed: int | None = None,
+    *,
+    deterministic: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Sample points on a triangle mesh surface with a blue-noise (Poisson-disk) distribution.
@@ -599,6 +612,12 @@ def sample_surface_blue_noise(
         RNG seed for the initial uniform sampling and the sampling order. If ``None``, a random seed
         is chosen. With a seed the output is reproducible — every round of the loop is a
         deterministic function of its input state.
+    deterministic
+        When ``True`` (the default), the face CDF the pool is drawn from is a fixed-order scan, so
+        a seeded call returns identical points on CUDA. ``False`` takes the faster arrival-order
+        scan ([`sample_surface`][ordito.sample.sample_surface]), whose last bits can change from
+        call to call on CUDA above a few thousand faces and so move a pool sample that lands near
+        a boundary of the CDF. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -665,7 +684,9 @@ def sample_surface_blue_noise(
     # correlation while staying a deterministic function of the caller's own seed.
     pool_seed = resolve_seed(seed)
     priority_seed = (pool_seed ^ 0x2545F491) & 0x7FFFFFFF
-    init_points, init_face_indices = sample_surface(vertices, faces, nx, seed=pool_seed)
+    init_points, init_face_indices = sample_surface(
+        vertices, faces, nx, seed=pool_seed, deterministic=deterministic
+    )
     return _dart_throw_blue_noise(init_points, init_face_indices, radius, priority_seed)
 
 
@@ -913,7 +934,12 @@ def _emit_kept_samples(
 
 
 def sample_volume(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], count: int, seed: int | None = None
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    count: int,
+    seed: int | None = None,
+    *,
+    deterministic: bool = True,
 ) -> wp.array[wp.vec3]:
     """
     Sample points uniformly inside a watertight triangle mesh volume.
@@ -933,6 +959,11 @@ def sample_volume(
         Number of samples.
     seed
         RNG seed for ``wp.rand_init``. If ``None``, a random seed is chosen.
+    deterministic
+        When ``True`` (the default), the tetrahedron-volume CDF is a fixed-order scan, so a seeded
+        call returns identical points on CUDA. ``False`` takes the faster arrival-order scan, whose
+        last bits can change from call to call on CUDA above a few thousand faces and so move a
+        sample that lands near a boundary of the CDF. The CPU device is deterministic either way.
 
     Returns
     -------
@@ -996,7 +1027,7 @@ def sample_volume(
             device=vertices.device,
         )
         face_slots = odt.as_dense(cdf[:n_faces])
-        _launch.array_scan(face_slots, out_array=face_slots)
+        _launch.array_scan(face_slots, out_array=face_slots, deterministic=deterministic)
         # Sizes nothing but decides two raises and scales the sampling kernel's draws.
         total_vol, negative = read_values(cdf, n_faces - 1, 2)
         if negative != 0.0:
