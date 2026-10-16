@@ -19,6 +19,18 @@ from ordito.kernels.triangles import (
 
 wp.set_module_options({"enable_backward": False})
 
+# Block partials at or below which ``measures.surface_centroid`` folds them on the host: the
+# readback of a few thousand beats a device reduction's launches; past it, the device fold wins
+# (28 M faces).
+CENTROID_HOST_FOLD_BLOCKS = 8192
+
+# Block partials at or below which ``sample.sample_volume`` folds them on the device with
+# ``fold_centroid_partials`` rather than calling ``measures.surface_centroid`` and syncing. The fold
+# is one thread over a dependent ``float64`` chain, about 0.14 us a block on the RTX 5090, against
+# a 27-58 us readback and host fold: even near 200 blocks, so the gate sits at 256 (262 144 faces).
+# Past it ``sample_volume`` takes the host fold, so the centroid's bits never depend on the path.
+CENTROID_DEVICE_FOLD_BLOCKS = 256
+
 
 @wp.kernel
 def mesh_signed_volume(
@@ -67,6 +79,31 @@ def centroid_partials(
     block_total = block_sum(total)
     if lane == 0:
         out_partials[block] = block_total
+
+
+@wp.kernel
+def fold_centroid_partials(partials: wp.array[wp.vec4], out_center: wp.array[wp.vec3]) -> None:
+    # One thread: the device twin of ``measures.surface_centroid``'s host fold, so a consumer that
+    # only feeds the centroid to another kernel (``sample.sample_volume``) keeps it on the device
+    # instead of syncing on it. The host form is ``partials.numpy().astype(float64).sum(axis=0)``,
+    # which adds the rows in block order; this adds them in the same order in ``float64`` and
+    # divides in ``float64`` before the one rounding to ``float32``, so the centroid is the same
+    # bits on either side. All-NaN when the area sums to zero, as the host form returns.
+    #
+    # The cost is the chain of dependent ``float64`` adds (issuing the loads eight ahead changed
+    # nothing), which no reordering may shorten without changing the bits; hence the caller's
+    # ``CENTROID_DEVICE_FOLD_BLOCKS`` gate.
+    acc = wp.vec4d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
+    for b in range(partials.shape[0]):
+        acc += wp.vec4d(partials[b])
+    area = acc[3]
+    nan = wp.float32(wp.nan)
+    if area == wp.float64(0.0):
+        out_center[0] = wp.vec3(nan, nan, nan)
+    else:
+        out_center[0] = wp.vec3(
+            wp.float32(acc[0] / area), wp.float32(acc[1] / area), wp.float32(acc[2] / area)
+        )
 
 
 @wp.func
