@@ -69,22 +69,10 @@ def sample_surface(
     out_points[tid] = v0 * w + v1 * uv.x + v2 * uv.y
 
 
-@wp.func
-def fan_apex(center_value: wp.vec3, center: wp.array[wp.vec3]) -> wp.vec3:
-    # The tetrahedra's shared apex, from whichever form ``sample.sample_volume`` passed: the
-    # one-element device buffer its on-device centroid fold writes (no sync), or, past that fold's
-    # size gate, the host value ``measures.surface_centroid`` returned, with ``center`` a null
-    # array. Every thread takes the same branch.
-    if center.shape[0] > 0:
-        return center[0]
-    return center_value
-
-
 @wp.kernel
 def tetrahedron_volumes_flag_negative(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    center_value: wp.vec3,
     center: wp.array[wp.vec3],
     out_volumes: wp.array[wp.float32],
 ) -> None:
@@ -93,8 +81,10 @@ def tetrahedron_volumes_flag_negative(
     # negative tetrahedron sets to ``1``. The wrapper scans the face slots in place into the CDF
     # and reads its total and this flag in one readback, rather than reducing a ``min``
     # separately. Every writer stores the same value, so the unordered stores need no atomic.
+    # ``center`` is the one-element buffer ``measures.fold_centroid_partials`` writes, so the
+    # centroid never crosses to the host.
     fi = wp.int32(wp.tid())
-    volume = face_signed_volume(vertices, faces, fi, fan_apex(center_value, center))
+    volume = face_signed_volume(vertices, faces, fi, center[0])
     out_volumes[fi] = volume
     if volume < wp.float32(0.0):
         out_volumes[out_volumes.shape[0] - 1] = wp.float32(1.0)
@@ -104,7 +94,6 @@ def tetrahedron_volumes_flag_negative(
 def sample_volume_tetrahedra(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    center_value: wp.vec3,
     center: wp.array[wp.vec3],
     cdf: wp.array[wp.float32],
     total: wp.float32,
@@ -132,7 +121,7 @@ def sample_volume_tetrahedra(
     s3 = wp.max(abc)
     s2 = a + b + c - s1 - s3
 
-    apex = fan_apex(center_value, center)
+    apex = center[0]
     out_points[tid] = apex * (1.0 - s3) + v0 * s1 + v1 * (s2 - s1) + v2 * (s3 - s2)
 
 

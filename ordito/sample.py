@@ -971,8 +971,6 @@ def sample_volume(
             "mesh is not watertight; tetrahedral decomposition requires a closed surface"
         )
 
-    center_value, center = _surface_centroid_on_device(vertices, faces, n_faces)
-
     # The signed tetrahedron volumes are written straight into the CDF buffer, whose one extra slot
     # flags a negative volume; the scan turns the face slots into the CDF in place, and one
     # readback brings back the total (the scan's last element) and the flag together, so the
@@ -980,11 +978,13 @@ def sample_volume(
     # volumes" holds vacuously, launches nothing.
     cdf = _launch.zeros(n_faces + 1, dtype=wp.float32, device=vertices.device)
     total_vol = 0.0
+    center = None
     if n_faces > 0:
+        center = _surface_centroid_on_device(vertices, faces, n_faces)
         _launch.launch(
             kernel_sample.tetrahedron_volumes_flag_negative,
             dim=n_faces,
-            inputs=[vertices, faces, center_value, center],
+            inputs=[vertices, faces, center],
             outputs=[cdf],
             device=vertices.device,
         )
@@ -1007,6 +1007,7 @@ def sample_volume(
     if total_vol == 0.0:
         raise ValueError("mesh has zero volume")
     cdf = odt.as_dense(cdf[:n_faces])
+    assert center is not None  # n_faces > 0 here, so the volume pass computed it
 
     out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
     _launch.launch(
@@ -1015,7 +1016,6 @@ def sample_volume(
         inputs=[
             vertices,
             faces,
-            center_value,
             center,
             cdf,
             wp.float32(total_vol),
@@ -1029,22 +1029,17 @@ def sample_volume(
 
 def _surface_centroid_on_device(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], n_faces: int
-) -> tuple[wp.vec3, wp.array[wp.vec3] | None]:
+) -> wp.array[wp.vec3]:
     """
-    [`surface_centroid`][ordito.measures.surface_centroid] as the volume kernels take it.
+    [`surface_centroid`][ordito.measures.surface_centroid] as a one-element device buffer.
 
-    Returns ``(value, buffer)``: a one-element device buffer and an unused zero value when the fold
-    runs on the device, or the host value and ``None`` when it does not (the kernels read whichever
-    is set, so the fallback allocates and uploads nothing).
-
-    The same block partials and the same ``float64`` fold, run on the device so the centroid feeds
-    the volume kernels without a sync. The fold is one thread, so past a few hundred blocks the
-    readback is cheaper and it defers to ``surface_centroid``; the bits match on every size.
+    The same block partials, folded by one block on the device so the centroid feeds the volume
+    kernels without a sync. It agrees with ``surface_centroid`` to rounding, not bit for bit (a
+    parallel ``float32`` fold rather than a sequential ``float64`` one), and repeats exactly from
+    call to call. Requires ``n_faces > 0``.
     """
     device = vertices.device
     blocks = kernel_reduce.blocks_1d(n_faces)
-    if n_faces == 0 or blocks > kernel_measures.CENTROID_DEVICE_FOLD_BLOCKS:
-        return od.measures.surface_centroid(vertices, faces), None
     partials = _launch.empty(blocks, dtype=wp.vec4, device=device)
     _launch.launch_tiled(
         kernel_measures.centroid_partials,
@@ -1054,17 +1049,15 @@ def _surface_centroid_on_device(
         device=device,
     )
     out_center = _launch.empty(1, dtype=wp.vec3, device=device)
-    # ``block_dim=TILE_1D`` like the partials launch: Warp builds a module once per block size, so
-    # the default 256 would load all of ``kernels.measures`` a second time for this one thread.
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_measures.fold_centroid_partials,
-        dim=1,
+        dim=[1],
         inputs=[partials],
         outputs=[out_center],
         block_dim=TILE_1D,
         device=device,
     )
-    return wp.vec3(0.0, 0.0, 0.0), out_center
+    return out_center
 
 
 def resolve_seed(seed: int | None) -> int:

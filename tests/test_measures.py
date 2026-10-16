@@ -162,11 +162,10 @@ def test_surface_centroid_is_reproducible(sphere_irregular: tuple[tm.Trimesh, wp
     """
     Ordito against ordito: the same mesh gives the same centroid bits on every call.
 
-    The oracle for the value is ``test_surface_centroid``; this pins repeatability, which
-    ``sample.sample_volume`` inherits (it fans every sample from this point). One float atomic per
-    block summed the blocks in arrival order, and on CUDA the result moved in its last bits on
-    every call: 10 distinct centroids in 10 calls on every scan mesh. The per-block partials are
-    folded in a fixed order now.
+    The oracle for the value is ``test_surface_centroid``; this pins repeatability. One float
+    atomic per block summed the blocks in arrival order, and on CUDA the result moved in its last
+    bits on every call: 10 distinct centroids in 10 calls on every scan mesh. The per-block partials
+    are folded in a fixed order now.
     """
     _, mesh_wp = sphere_irregular
     centroids = {
