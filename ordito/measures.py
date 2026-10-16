@@ -342,7 +342,7 @@ def euler_characteristic(faces: wp.array[wp.int32]) -> int:
 
     See Also
     --------
-    [`edges_unique`][ordito.edges.edges_unique]
+    [`unique_edge_count`][ordito.edges.unique_edge_count]
     [`trimesh.Trimesh.euler_number`][]
 
     Examples

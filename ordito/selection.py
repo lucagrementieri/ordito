@@ -1109,6 +1109,28 @@ def _submesh_from_mask(
         inputs=[faces, face_mask, keep_masked, ranks],
         device=device,
     )
+    return _compact_marked_submesh(vertices, faces, face_mask, ranks, keep_masked=keep_masked)
+
+
+def _compact_marked_submesh(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    ranks: wp.array[wp.int32],
+    *,
+    keep_masked: bool,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Scan, size and compact a submesh whose rank buffer is already marked.
+
+    The second half of ``_submesh_from_mask``, for a caller
+    whose own kernel wrote the face mask and the ``(n_faces + n_vertices,)`` 0/1 flags (with
+    ``kernels/selection.mark_submesh_face``) in the pass that decided them. Returns what
+    ``_submesh_from_mask`` returns; ``n_faces`` must be positive.
+    """
+    device = vertices.device
+    n_faces = face_mask.size
+    n_vertices = vertices.size
     _launch.array_scan(ranks, out_array=ranks, inclusive=True)
     counts = _launch.empty(2, dtype=wp.int32, device=device)
     _launch.launch(
@@ -1453,32 +1475,48 @@ def _dilate_vertex_mask(
 
     ``True`` dilates the selection and ``False`` erodes it.
 
-    A round reads one mask and writes a copy of it, so two buffers alternate: every round after
-    the second refills the buffer the round before last read, rather than allocating a fresh one.
-    The caller's ``mask`` is never written. ``hops`` must be positive.
+    Several rounds share one ``int32`` buffer holding the round each vertex was first reached in,
+    grown in place by one launch per round, and a final pass turns it into the mask; so a round
+    costs a launch and no copy. A single round skips the two conversions: it seeds a copy of the
+    mask and spreads into it directly. The caller's ``mask`` is never written. ``hops`` must be
+    positive.
     """
     device = mask.device
+    n_vertices = mask.size
     n_faces = faces.size // 3
-    current = mask
-    spare = None
-    owned = False
-    for _ in range(hops):
-        if spare is None:
-            nxt = _launch.clone(current)
-        else:
-            _launch.copy(spare, current)
-            nxt = spare
+    if hops == 1:
+        out_mask = _launch.clone(mask)
         if n_faces > 0:
             _launch.launch(
                 kernel_selection.dilate_vertex_mask,
                 dim=n_faces,
-                inputs=[faces, current, value, nxt],
+                inputs=[faces, mask, value, out_mask],
                 device=device,
             )
-        spare = current if owned else None
-        owned = True
-        current = nxt
-    return current
+        return out_mask
+    hop_of = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_selection.vertex_hops_from_mask,
+        dim=n_vertices,
+        inputs=[mask, value, hop_of],
+        device=device,
+    )
+    if n_faces > 0:
+        for hop in range(1, hops + 1):
+            _launch.launch(
+                kernel_selection.dilate_vertex_hops,
+                dim=n_faces,
+                inputs=[faces, hop, hop_of],
+                device=device,
+            )
+    out_mask = _launch.empty(n_vertices, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_selection.vertex_mask_from_hops,
+        dim=n_vertices,
+        inputs=[hop_of, hops, value, out_mask],
+        device=device,
+    )
+    return out_mask
 
 
 def face_indices_from_vertex_indices(

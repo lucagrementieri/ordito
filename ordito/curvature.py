@@ -24,7 +24,6 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
 from ordito.kernels import curvature as kernel_curvature
-from ordito.kernels import scatter as kernel_scatter
 from ordito.vertices import vertex_normals as _vertex_normals
 
 
@@ -253,9 +252,10 @@ def discrete_gaussian_curvature(
     # Each vertex's incident-angle sum, in float64; the ball walk forms its defect as it reads it.
     angle_sum = _launch.zeros(vertices.size, dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_scatter.SCATTER_SUM_SCALAR[wp.float64],
+        kernel_curvature.vertex_angle_sums,
         dim=n_faces,
-        inputs=[od.array.astype(face_angles, wp.float64), faces.reshape((-1, 3)), angle_sum],
+        inputs=[face_angles, faces],
+        outputs=[angle_sum],
         device=device,
     )
     grid = od.neighbors.hashgrid_from_points(vertices, float(radius))

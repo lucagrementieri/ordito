@@ -80,26 +80,30 @@ def edges_to_csr(
         raise ValueError(f"weights must have one entry per edge, got {weights.size} for {m} edges")
 
     n_entries = 2 * m
-    rows = _launch.empty(n_entries, dtype=wp.int32, device=device)
-    cols = _launch.empty(n_entries, dtype=wp.int32, device=device)
-    # One launch either way: the weighted form emits the structure and the two duplicated values
-    # together, and the unweighted form's values are a fill rather than a launch at all.
+    # The edge kernel writes each directed entry's key straight into the sort buffers, so no
+    # ``rows`` / ``cols`` triplet table is written only to be packed. One launch either way: the
+    # weighted form emits the keys and the two duplicated values together, and the unweighted
+    # form's values are a fill rather than a launch at all.
+    keys, order = od.array.csr_key_buffers(n_entries, device)
     if weights is None:
         data = _launch.ones(n_entries, dtype=wp.float32, device=device)
         if m > 0:
             _launch.launch(
-                kernel_graph.edges_to_adjacency, dim=m, inputs=[edges, rows, cols], device=device
+                kernel_graph.edges_to_adjacency_keys,
+                dim=m,
+                inputs=[edges, wp.int32(node_count), keys, order],
+                device=device,
             )
     else:
         data = _launch.empty(n_entries, dtype=wp.float32, device=device)
         if m > 0:
             _launch.launch(
-                kernel_graph.edges_to_adjacency_weighted,
+                kernel_graph.edges_to_adjacency_keys_weighted,
                 dim=m,
-                inputs=[edges, weights, rows, cols, data],
+                inputs=[edges, weights, wp.int32(node_count), keys, order, data],
                 device=device,
             )
-    return od.array.csr_from_triplets(node_count, node_count, rows, cols, data)
+    return od.array.csr_from_coo_keys(node_count, node_count, keys, order, data)
 
 
 def edges_to_neighbor_lists(

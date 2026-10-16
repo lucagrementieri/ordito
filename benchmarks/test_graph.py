@@ -96,6 +96,20 @@ def _scipy_graph(bench_case: BenchCase) -> sp.csr_matrix:
     return _scipy_cache[bench_case.mesh_name]
 
 
+@pytest.mark.benchmark(group="edges_to_csr")
+@pytest.mark.benchlibs("ordito")
+def test_edges_to_csr(bench_case: BenchCase) -> None:
+    """
+    The symmetric vertex adjacency from the unique edges: one key launch and the CSR key sort.
+
+    Timed alone: it is the input every other group here takes prebuilt.
+    """
+    unique_edges, _ = od.edges.edges_unique(bench_case.faces_wp, n_vertices=bench_case.n_vertices)
+    n_vertices = bench_case.n_vertices
+    adjacency = bench_case.run(lambda: od.graph.edges_to_csr(n_vertices, unique_edges))
+    assert adjacency.nrow == n_vertices
+
+
 @pytest.mark.benchmark(group="connected_component_labels")
 @pytest.mark.benchaxis("components")
 @pytest.mark.benchlibs("ordito", "scipy", "igl", "pymeshlab", "meshlib")

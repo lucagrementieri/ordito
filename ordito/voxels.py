@@ -204,7 +204,11 @@ def voxelize_mesh(
     if n_faces == 0:
         return _empty_grid(voxel_size, origin, device)
 
-    counts = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    # The exact counts go straight into the tail of the ``n_faces + 1`` offsets buffer and are
+    # scanned in place before the budget is read, so the budget's readback drains the scan too and
+    # the total is a second read off an idle queue rather than a second pipeline drain.
+    offsets = _launch.zeros(n_faces + 1, dtype=wp.int32, device=device)
+    counts = odt.as_dense(offsets[1:])
     counts_f32 = _launch.empty(n_faces, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_voxels.count_triangle_candidates,
@@ -212,9 +216,10 @@ def voxelize_mesh(
         inputs=[vertices, faces, origin, wp.float32(1.0 / voxel_size), counts, counts_f32],
         device=device,
     )
+    _launch.array_scan(counts, counts, inclusive=True)
     # The budget check runs on the float32 copy: the exact count can overflow ``int32`` for an
     # absurd voxel_size, and the whole point of the guard is to catch exactly that case before the
-    # prefix sum is asked to represent it.
+    # scanned total is trusted (a wrapped scan above is harmless: it is discarded with the raise).
     approximate_total = od.reduce.sum(counts_f32)
     if approximate_total > float(max_candidates):
         raise ValueError(
@@ -222,7 +227,7 @@ def voxelize_mesh(
             f"max_candidates={max_candidates}: voxel_size={voxel_size:.6g} is too small for this "
             "mesh (the count grows as its reciprocal cubed)"
         )
-    offsets, total = od.array.counts_to_offsets(counts)
+    total = int(read_scalar(offsets, index=-1))  # sizes the candidate launch
     if total == 0:
         return _empty_grid(voxel_size, origin, device)
 

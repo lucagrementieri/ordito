@@ -28,6 +28,44 @@ def project_to_radius(v: wp.vec3, radius: wp.float32) -> wp.vec3:
     return v + wp.normalize(v) * (radius - wp.length(v))
 
 
+# How a generator kernel places what it writes: ``TRANSFORM_NONE`` stores its own coordinates,
+# ``TRANSFORM_KEEP`` carries every vertex through the caller's ``wp.mat44`` and
+# ``TRANSFORM_MIRROR`` does too and also reverses every triangle (``(a, b, c)`` becomes
+# ``(c, b, a)``, ``transform.transform_mesh``'s own reversal) because that matrix mirrors. The
+# placement happens at write time, so a transformed primitive costs its one generator launch and
+# no second pass over either buffer. The host decides the mode once from the matrix's determinant.
+TRANSFORM_NONE = wp.int32(0)
+TRANSFORM_KEEP = wp.int32(1)
+TRANSFORM_MIRROR = wp.int32(2)
+
+
+@wp.func
+def place_point(p: wp.vec3, matrix: wp.mat44, transform_mode: wp.int32) -> wp.vec3:
+    # The untransformed branch returns ``p`` itself rather than an identity product, which would
+    # turn a ``-0.0`` coordinate into ``+0.0``.
+    if transform_mode == TRANSFORM_NONE:
+        return p
+    return wp.transform_point(matrix, p)
+
+
+@wp.func
+def placement_mirrors(transform_mode: wp.int32) -> wp.bool:
+    return transform_mode == TRANSFORM_MIRROR
+
+
+@wp.func
+def write_placed_triangle(
+    out_faces: wp.array[wp.int32],
+    row: wp.int32,
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+    transform_mode: wp.int32,
+) -> None:
+    # Triangle ``row`` as ``(a, b, c)``, reversed when the placement mirrors.
+    write_corner_triple_reversible(out_faces, row, a, b, c, placement_mirrors(transform_mode))
+
+
 @wp.kernel
 def grid_mesh(
     nx: wp.int32,
@@ -36,6 +74,8 @@ def grid_mesh(
     height: wp.float64,
     origin_x: wp.float64,
     origin_y: wp.float64,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
@@ -54,20 +94,18 @@ def grid_mesh(
     y = origin_y + height * (wp.float64(j) / wp.float64(ny - 1))
     # ``wp.float32(...)``, not ``wp.cast``: the latter is a same-size bit reinterpretation and
     # fails to compile on a float64 source ("source and destination must have the same size").
-    out_vertices[i * ny + j] = wp.vec3(wp.float32(x), wp.float32(y), wp.float32(0.0))
+    out_vertices[i * ny + j] = place_point(
+        wp.vec3(wp.float32(x), wp.float32(y), wp.float32(0.0)), matrix, transform_mode
+    )
     if i >= nx - 1 or j >= ny - 1:
         return
     # The cell's two triangles, wound counter-clockwise seen from +Z. Its corners are ``corner``,
     # ``corner + ny`` (next X) and ``+ 1`` (next Y), and cell ``(i, j)`` owns face slots
     # ``2 * (i * (ny - 1) + j)`` and the next.
     corner = i * ny + j
-    slot = (i * (ny - 1) + j) * 6
-    out_faces[slot + 0] = corner
-    out_faces[slot + 1] = corner + ny
-    out_faces[slot + 2] = corner + ny + 1
-    out_faces[slot + 3] = corner
-    out_faces[slot + 4] = corner + ny + 1
-    out_faces[slot + 5] = corner + 1
+    row = (i * (ny - 1) + j) * 2
+    write_placed_triangle(out_faces, row, corner, corner + ny, corner + ny + 1, transform_mode)
+    write_placed_triangle(out_faces, row + 1, corner, corner + ny + 1, corner + 1, transform_mode)
 
 
 # Vertex and edge counts of the base icosahedron, which set the two block boundaries of the
@@ -154,6 +192,8 @@ def icosphere_mesh(
     coarse: wp.int32,
     stride: wp.int32,
     radius: wp.float32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
@@ -182,6 +222,10 @@ def icosphere_mesh(
     # 0.30x at nine (the full lattice descending nine levels); six levels in the first launch and
     # one launch per level after it is 1.5-3.0x through eight levels and 0.97x at nine, where the
     # call is device-bound. Five or seven levels in the first launch lose at seven to nine.
+    #
+    # ``place_point`` applies only on a single-launch build (``coarse == n`` and ``stride == 1``):
+    # a later launch reads the coarser vertices back, so the wrapper passes ``TRANSFORM_NONE`` to a
+    # multi-launch build.
     f, ti, tj = wp.tid()
     i = ti * stride
     j = tj * stride
@@ -191,17 +235,27 @@ def icosphere_mesh(
         # rest of the block is remapped by ``(i, j) -> (n - 1 - i, n - 1 - j)`` onto the
         # ``n (n - 1) / 2`` downward ones, which is a bijection -- so every thread writes exactly
         # one triangle and no prefix-sum over rows is needed.
-        slot = (f * n * n + i * n + j) * 3
+        row = f * n * n + i * n + j
         if i + j < n:
-            out_faces[slot + 0] = icosphere_vertex_index(table, n, f, i + 1, j)
-            out_faces[slot + 1] = icosphere_vertex_index(table, n, f, i, j + 1)
-            out_faces[slot + 2] = icosphere_vertex_index(table, n, f, i, j)
+            write_placed_triangle(
+                out_faces,
+                row,
+                icosphere_vertex_index(table, n, f, i + 1, j),
+                icosphere_vertex_index(table, n, f, i, j + 1),
+                icosphere_vertex_index(table, n, f, i, j),
+                transform_mode,
+            )
         else:
             di = n - 1 - i
             dj = n - 1 - j
-            out_faces[slot + 0] = icosphere_vertex_index(table, n, f, di, dj + 1)
-            out_faces[slot + 1] = icosphere_vertex_index(table, n, f, di + 1, dj)
-            out_faces[slot + 2] = icosphere_vertex_index(table, n, f, di + 1, dj + 1)
+            write_placed_triangle(
+                out_faces,
+                row,
+                icosphere_vertex_index(table, n, f, di, dj + 1),
+                icosphere_vertex_index(table, n, f, di + 1, dj),
+                icosphere_vertex_index(table, n, f, di + 1, dj + 1),
+                transform_mode,
+            )
     if i + j > n:
         return
     # Offsets inside the coarse lattice cell; at ``coarse == n`` the cell is the base face itself
@@ -256,19 +310,19 @@ def icosphere_mesh(
             c01, k01, p01 = icosphere_edge_vertex(
                 table, n, f, corner0, index0, position0, corner1, index1, position1, radius
             )
-            out_vertices[k01] = p01
+            out_vertices[k01] = place_point(p01, matrix, transform_mode)
             return
         if w0 == 0 and w1 == h:
             c12, k12, p12 = icosphere_edge_vertex(
                 table, n, f, corner1, index1, position1, corner2, index2, position2, radius
             )
-            out_vertices[k12] = p12
+            out_vertices[k12] = place_point(p12, matrix, transform_mode)
             return
         if w1 == 0 and w2 == h:
             c20, k20, p20 = icosphere_edge_vertex(
                 table, n, f, corner2, index2, position2, corner0, index0, position0, radius
             )
-            out_vertices[k20] = p20
+            out_vertices[k20] = place_point(p20, matrix, transform_mode)
             return
         if w0 >= h:
             c01, k01, p01 = icosphere_edge_vertex(
@@ -338,11 +392,11 @@ def icosphere_mesh(
         s = h
     # The corner the descent ended on is the vertex itself, so its index is the thread's slot.
     if w0 == s:
-        out_vertices[index0] = position0
+        out_vertices[index0] = place_point(position0, matrix, transform_mode)
     elif w1 == s:
-        out_vertices[index1] = position1
+        out_vertices[index1] = place_point(position1, matrix, transform_mode)
     else:
-        out_vertices[index2] = position2
+        out_vertices[index2] = place_point(position2, matrix, transform_mode)
 
 
 @wp.func
@@ -397,6 +451,8 @@ def cone_mesh(
     angle: wp.float32,
     keep_caps: wp.int32,
     keep_sides: wp.int32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
@@ -415,10 +471,16 @@ def cone_mesh(
     # axis points are written by one thread rather than by every one: they are a single slot each,
     # and the profile points they come from lie *on* the axis, where ``revolution_point`` returns
     # the same value for every slice.
-    out_vertices[1 + k] = revolution_point(radius, 0.0, k, sections, angle)
+    out_vertices[1 + k] = place_point(
+        revolution_point(radius, 0.0, k, sections, angle), matrix, transform_mode
+    )
     if k == 0:
-        out_vertices[0] = revolution_point(0.0, 0.0, 0, sections, angle)
-        out_vertices[sections + 1] = revolution_point(0.0, height, 0, sections, angle)
+        out_vertices[0] = place_point(
+            revolution_point(0.0, 0.0, 0, sections, angle), matrix, transform_mode
+        )
+        out_vertices[sections + 1] = place_point(
+            revolution_point(0.0, height, 0, sections, angle), matrix, transform_mode
+        )
 
     # ``keep_caps`` / ``keep_sides`` are ``revolve``'s own degenerate-area verdict on this
     # profile's template, decided by the caller through the very function ``revolve`` uses -- so a
@@ -426,16 +488,12 @@ def cone_mesh(
     # general engine does, and so does a cone small enough for its caps to fall under the area
     # tolerance. Emission stays in template order: cap, then side.
     next_ring = 1 + (k + 1) % sections
-    slot = (keep_caps + keep_sides) * 3 * k
+    row = (keep_caps + keep_sides) * k
     if keep_caps != 0:
-        out_faces[slot + 0] = 1 + k
-        out_faces[slot + 1] = 0
-        out_faces[slot + 2] = next_ring
-        slot = slot + 3
+        write_placed_triangle(out_faces, row, 1 + k, 0, next_ring, transform_mode)
+        row = row + 1
     if keep_sides != 0:
-        out_faces[slot + 0] = 1 + k
-        out_faces[slot + 1] = next_ring
-        out_faces[slot + 2] = sections + 1
+        write_placed_triangle(out_faces, row, 1 + k, next_ring, sections + 1, transform_mode)
 
 
 @wp.kernel
@@ -446,48 +504,53 @@ def cylinder_mesh(
     angle: wp.float32,
     keep_caps: wp.int32,
     keep_sides: wp.int32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
+    vertex_base: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
     # The closed-form counterpart of ``cone_mesh`` for a capped cylinder: ``2 * sections + 2``
     # vertices and ``4 * sections`` faces, one thread per wedge. Same reasoning -- see
-    # ``cone_mesh``.
+    # ``cone_mesh``. ``vertex_base`` is added to every face index, for a caller (``creation.axis``)
+    # that writes this cylinder into views of a larger buffer, after other parts' vertices.
     k = wp.int32(wp.tid())
     # Vertex 0 is the bottom axis point, 1..sections the bottom ring, sections + 1..2 * sections
     # the top ring, 2 * sections + 1 the top axis point: the profile's four points in order, each
     # contributing a whole ring or a single shared slot.
-    out_vertices[1 + k] = revolution_point(radius, -half_height, k, sections, angle)
-    out_vertices[1 + sections + k] = revolution_point(radius, half_height, k, sections, angle)
+    out_vertices[1 + k] = place_point(
+        revolution_point(radius, -half_height, k, sections, angle), matrix, transform_mode
+    )
+    out_vertices[1 + sections + k] = place_point(
+        revolution_point(radius, half_height, k, sections, angle), matrix, transform_mode
+    )
     if k == 0:
-        out_vertices[0] = revolution_point(0.0, -half_height, 0, sections, angle)
-        out_vertices[2 * sections + 1] = revolution_point(0.0, half_height, 0, sections, angle)
+        out_vertices[0] = place_point(
+            revolution_point(0.0, -half_height, 0, sections, angle), matrix, transform_mode
+        )
+        out_vertices[2 * sections + 1] = place_point(
+            revolution_point(0.0, half_height, 0, sections, angle), matrix, transform_mode
+        )
 
-    bottom = 1 + k
-    bottom_next = 1 + (k + 1) % sections
-    top = 1 + sections + k
-    top_next = 1 + sections + (k + 1) % sections
+    bottom = vertex_base + 1 + k
+    bottom_next = vertex_base + 1 + (k + 1) % sections
+    top = vertex_base + 1 + sections + k
+    top_next = vertex_base + 1 + sections + (k + 1) % sections
     # Bottom cap, the wedge's two side triangles, then the top cap -- the order ``revolve`` emits
     # them in, which is per slice rather than per band. The two flags are its degenerate-area
     # verdict; see ``cone_mesh``. Both caps share a radius and a step and both sides split one
     # rectangle, so each pair stands or falls together and two flags cover the four.
-    slot = (2 * keep_caps + 2 * keep_sides) * 3 * k
+    row = (2 * keep_caps + 2 * keep_sides) * k
     if keep_caps != 0:
-        out_faces[slot + 0] = bottom
-        out_faces[slot + 1] = 0
-        out_faces[slot + 2] = bottom_next
-        slot = slot + 3
+        write_placed_triangle(out_faces, row, bottom, vertex_base, bottom_next, transform_mode)
+        row = row + 1
     if keep_sides != 0:
-        out_faces[slot + 0] = bottom
-        out_faces[slot + 1] = bottom_next
-        out_faces[slot + 2] = top
-        out_faces[slot + 3] = top
-        out_faces[slot + 4] = bottom_next
-        out_faces[slot + 5] = top_next
-        slot = slot + 6
+        write_placed_triangle(out_faces, row, bottom, bottom_next, top, transform_mode)
+        write_placed_triangle(out_faces, row + 1, top, bottom_next, top_next, transform_mode)
+        row = row + 2
     if keep_caps != 0:
-        out_faces[slot + 0] = top
-        out_faces[slot + 1] = top_next
-        out_faces[slot + 2] = 2 * sections + 1
+        top_axis = vertex_base + 2 * sections + 1
+        write_placed_triangle(out_faces, row, top, top_next, top_axis, transform_mode)
 
 
 @wp.kernel
@@ -499,6 +562,8 @@ def revolve_mesh(
     n_face_slices: wp.int32,
     layout: wp.array[wp.int32],
     cap_faces: wp.array[wp.int32],
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
@@ -525,16 +590,19 @@ def revolve_mesh(
         if layout[i] == i and (s == 0 or layout[2 * per + i] == 0):
             p = linestring[i]
             slot = revolve_vertex_slot(s, i, n_slices, layout, per)
-            out_vertices[slot] = revolution_point(p[0], p[1], s, n_points - 1, angle)
+            out_vertices[slot] = place_point(
+                revolution_point(p[0], p[1], s, n_points - 1, angle), matrix, transform_mode
+            )
         return
     n_keep = layout.shape[0] - 3 * per
     w = r - n_slices * per
     if w < n_face_slices * n_keep:
         s = w // n_keep
         tri = revolve_template_triangle(layout[3 * per + w % n_keep], per)
-        for k in range(3):
-            g = tri[k]
-            out_faces[w * 3 + k] = revolve_vertex_slot(s + g // per, g % per, n_slices, layout, per)
+        a0 = revolve_vertex_slot(s + tri[0] // per, tri[0] % per, n_slices, layout, per)
+        a1 = revolve_vertex_slot(s + tri[1] // per, tri[1] % per, n_slices, layout, per)
+        a2 = revolve_vertex_slot(s + tri[2] // per, tri[2] % per, n_slices, layout, per)
+        write_placed_triangle(out_faces, w, a0, a1, a2, transform_mode)
         return
     c = w - n_face_slices * n_keep
     n_cap = cap_faces.shape[0] // 3
@@ -548,7 +616,7 @@ def revolve_mesh(
         revolve_vertex_slot(slice_index, a, n_slices, layout, per),
         revolve_vertex_slot(slice_index, b, n_slices, layout, per),
         revolve_vertex_slot(slice_index, v, n_slices, layout, per),
-        end == 1,
+        (end == 1) != placement_mirrors(transform_mode),
     )
 
 
@@ -618,6 +686,8 @@ def lift_layers_and_signed_area(
     vertices: wp.array[wp.vec2],
     faces: wp.array[wp.int32],
     height: wp.float32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_area: wp.array[wp.float32],
 ) -> None:
@@ -638,8 +708,12 @@ def lift_layers_and_signed_area(
     for k in range(lane, remaining, wp.block_dim()):
         i = offset + k
         if i < n:
-            out_vertices[i] = lift_vec2(vertices[i], wp.float32(0.0))
-            out_vertices[n + i] = lift_vec2(vertices[i], height)
+            out_vertices[i] = place_point(
+                lift_vec2(vertices[i], wp.float32(0.0)), matrix, transform_mode
+            )
+            out_vertices[n + i] = place_point(
+                lift_vec2(vertices[i], height), matrix, transform_mode
+            )
         if i < n_faces:
             p0, p1, p2 = face_vertices(vertices, faces, i)
             area += orient2d(p0, p1, p2)
@@ -653,6 +727,7 @@ def extrude_faces(
     stride: wp.int32,
     height_negative: wp.bool,
     area: wp.array[wp.float32],
+    transform_mode: wp.int32,
     out_faces: wp.array[wp.int32],
 ) -> None:
     # Every face of an extrusion in one launch: rows ``[0, 2 n_faces)`` are the two caps
@@ -668,19 +743,17 @@ def extrude_faces(
     n_faces = faces.shape[0] // 3
     flip = (area[0] < wp.float32(0.0)) != height_negative
     if r < 2 * n_faces:
-        write_cap_face(faces, r % n_faces, r // n_faces, stride, flip, 0, out_faces)
+        # A mirroring placement reverses every triangle: the cap's own flip, inverted.
+        cap_flip = flip != placement_mirrors(transform_mode)
+        write_cap_face(faces, r % n_faces, r // n_faces, stride, cap_flip, 0, out_faces)
         return
     e = r - 2 * n_faces
     a, b = wall_edge(boundary, e, stride)
     if flip:
         a, b = b, a
-    base = 2 * n_faces * 3 + e * 6
-    out_faces[base + 0] = b + stride
-    out_faces[base + 1] = a + stride
-    out_faces[base + 2] = b
-    out_faces[base + 3] = b
-    out_faces[base + 4] = a + stride
-    out_faces[base + 5] = a
+    row = 2 * n_faces + e * 2
+    write_placed_triangle(out_faces, row, b + stride, a + stride, b, transform_mode)
+    write_placed_triangle(out_faces, row + 1, b, a + stride, a, transform_mode)
 
 
 @wp.func
@@ -1136,11 +1209,12 @@ def parametric_canonical_key(
     Identify lattice sample ``flat`` with the sample that represents its output vertex.
 
     Returns ``i_canonical * n_v + j_canonical`` for the sample at C-order index ``flat``, so that
-    two samples the surface glues together get the same key. This is the gluing rule of
-    ``creation._parametric_lattice_host`` moved to the device verbatim, including the two
-    orderings that are easy to get wrong: the ``u``-seam re-canonicalisation after a ``v``-twist
-    is *unmasked* (it applies to every sample, not only the seam), and all four pole masks are
-    snapshots of the post-wrap state, taken before any of them collapses anything.
+    two samples the surface glues together get the same key. This is the whole-lattice NumPy
+    gluing rule moved to the device verbatim (``creation._parametric_keys`` is its host twin, run
+    on the lattice's edges), including the two orderings that are easy to get wrong: the
+    ``u``-seam re-canonicalisation after a ``v``-twist is *unmasked* (it applies to every sample,
+    not only the seam), and all four pole masks are snapshots of the post-wrap state, taken
+    before any of them collapses anything.
 
     The pole anchors need no arguments because they are fixed by the rule itself -- a pole on
     ``j == 0`` or ``i == 0`` collapses to ``(0, 0)``, one on ``j == n_v - 1`` to ``(0, n_v - 1)``,
@@ -1205,51 +1279,6 @@ def parametric_triangle_keys(
     return wp.vec3i(key_a, key_c, parametric_canonical_key((i + 1) * n_v + j, n_u, n_v, gluing))
 
 
-@wp.kernel
-def parametric_lattice_flags(
-    n_u: wp.int32, n_v: wp.int32, gluing: wp.int32, out_flags: wp.array[wp.int32]
-) -> None:
-    # The first half of the device lattice, over ``n_lattice + n_triangles`` rows into one
-    # zero-filled buffer the caller then scans once. A lattice row marks its canonical key, so the
-    # scan's prefix over the lattice numbers the vertices in ascending key order -- the order
-    # ``numpy.unique`` gives the host path -- and a triangle row flags whether it survives.
-    r = wp.int32(wp.tid())
-    n_lattice = n_u * n_v
-    if r < n_lattice:
-        out_flags[parametric_canonical_key(r, n_u, n_v, gluing)] = 1
-        return
-    keys = parametric_triangle_keys(r - n_lattice, n_u, n_v, gluing)
-    out_flags[r] = wp.where(keys[0] != keys[1] and keys[1] != keys[2] and keys[2] != keys[0], 1, 0)
-
-
-@wp.kernel
-def parametric_lattice_emit(
-    n_u: wp.int32,
-    n_v: wp.int32,
-    gluing: wp.int32,
-    scan: wp.array[wp.int32],
-    out_first: wp.array[wp.int32],
-    out_faces: wp.array[wp.int32],
-) -> None:
-    # The second half, over the same rows and the inclusive scan of ``parametric_lattice_flags``.
-    # A lattice row folds itself into its vertex's ``out_first`` (seeded with ``INT32_MAX``): the
-    # lowest lattice index in each group, the ``return_index`` of the host's ``numpy.unique``. A
-    # surviving triangle row writes its corners' vertex numbers at its rank among the survivors,
-    # which keeps the host's row order.
-    r = wp.int32(wp.tid())
-    n_lattice = n_u * n_v
-    if r < n_lattice:
-        vertex = scan[parametric_canonical_key(r, n_u, n_v, gluing)] - 1
-        wp.atomic_min(out_first, vertex, r)
-        return
-    if scan[r] == scan[r - 1]:
-        return
-    keys = parametric_triangle_keys(r - n_lattice, n_u, n_v, gluing)
-    row = scan[r] - scan[n_lattice - 1] - 1
-    for k in range(3):
-        out_faces[row * 3 + k] = scan[keys[k]] - 1
-
-
 @wp.func
 def parametric_position(
     kind: wp.int32, u: wp.float32, v: wp.float32, n1: wp.float32, n2: wp.float32
@@ -1295,57 +1324,292 @@ def parametric_position(
     return position
 
 
+# ``parametric_mesh``'s ``kind`` for the random height field, which sums a table of bumps rather
+# than evaluating a closed form.
+SURFACE_RANDOM_HILLS = wp.int32(-1)
+
+
 @wp.func
-def parametric_sample(
-    first: wp.array[wp.int32], tables: wp.array[wp.float32], n_v: wp.int32, k: wp.int32
-) -> wp.vec2:
-    # The ``(u, v)`` parameters of output vertex ``k``. ``first`` is the flat lattice index of the
-    # sample chosen to represent it, so its lattice position is one divmod and the parameters are
-    # two gathers from ``tables`` -- the host's ``linspace`` over ``u`` then over ``v``, unchanged:
-    # both ends of the domain have to be hit exactly, because several of these maps are singular
-    # one ulp outside their rectangle.
-    flat = first[k]
-    n_u = tables.shape[0] - n_v
-    return wp.vec2(tables[flat // n_v], tables[n_u + flat % n_v])
+def layout_float(layout: wp.array[wp.int32], index: wp.int32) -> wp.float32:
+    # A ``float32`` the host packed into the ``int32`` layout by its bits.
+    return wp.cast(layout[index], wp.float32)
 
 
-@wp.kernel
-def parametric_vertices(
-    kind: wp.int32,
-    first: wp.array[wp.int32],
-    tables: wp.array[wp.float32],
+# The head of ``parametric_mesh``'s ``layout``: which anchors a pole collapse reaches, each one's
+# representative sample, which lattice sides lose their non-corner triangles, how many explicit
+# dead triangles follow the float tables.
+PARAMETRIC_META_HITS = wp.int32(0)
+PARAMETRIC_META_FIRST = wp.int32(1)
+PARAMETRIC_META_DEAD_SIDES = wp.int32(4)
+PARAMETRIC_META_N_DEAD = wp.int32(5)
+PARAMETRIC_META_SIZE = wp.int32(6)
+
+# The three points a pole collapses onto, as bits of ``PARAMETRIC_META_HITS`` and slots after
+# ``PARAMETRIC_META_FIRST``: ``(0, 0)``, ``(0, n_v - 1)`` and ``(n_u - 1, 0)``.
+ANCHOR_ORIGIN = wp.int32(0)
+ANCHOR_J_HI = wp.int32(1)
+ANCHOR_I_HI = wp.int32(2)
+
+# The lattice sides whose non-corner cells each lose one triangle to a pole, as bits of
+# ``PARAMETRIC_META_DEAD_SIDES``: row ``0``, row ``n_u - 1``, column ``0``, column ``n_v - 1``.
+SIDE_TOP = wp.int32(1)
+SIDE_BOTTOM = wp.int32(2)
+SIDE_LEFT = wp.int32(4)
+SIDE_RIGHT = wp.int32(8)
+
+
+@wp.func
+def sorted_count_less(
+    values: wp.array[wp.int32], begin: wp.int32, end: wp.int32, value: wp.int32
+) -> wp.int32:
+    # How many of the ascending ``values[begin:end]`` are below ``value`` (``searchsorted`` with
+    # ``side="left"``, relative to ``begin``), for a range that may be empty or end below ``value``.
+    left = begin
+    right = end
+    while left < right:
+        mid = (left + right) // 2
+        if values[mid] < value:
+            left = mid + 1
+        else:
+            right = mid
+    return left - begin
+
+
+@wp.func
+def lattice_row_before(row_j: wp.int32, i: wp.int32, j: wp.int32) -> wp.int32:
+    # How many points of the lattice line ``j == row_j`` precede ``(i, j)`` in row-major order.
+    return i + wp.where(row_j < j, 1, 0)
+
+
+@wp.func
+def lattice_column_before(
+    column_i: wp.int32, extent_j: wp.int32, i: wp.int32, j: wp.int32
+) -> wp.int32:
+    # How many points of the lattice line ``i == column_i``, ``extent_j`` long, precede ``(i, j)``.
+    if column_i < i:
+        return extent_j
+    if column_i == i:
+        return j
+    return wp.int32(0)
+
+
+@wp.func
+def lattice_point_before(pi: wp.int32, pj: wp.int32, i: wp.int32, j: wp.int32) -> wp.int32:
+    return wp.where(pi < i or (pi == i and pj < j), 1, 0)
+
+
+@wp.func
+def parametric_vertex(
+    key: wp.int32, n_u: wp.int32, n_v: wp.int32, gluing: wp.int32, hits: wp.int32
+) -> wp.int32:
+    # Output vertex of canonical key ``key``: its rank among the keys in ascending order, the
+    # order ``numpy.unique`` numbers them in. The keys are exactly the reduced rectangle
+    # ``[0, n_u - u_wrap) x [0, extent_j)`` (a wrapped axis loses its last row), less every point
+    # on an active pole line, plus the anchors a pole collapse reaches -- so the rank is three
+    # counts.
+    i = key // n_v
+    j = key % n_v
+    extent_j = n_v - wp.where(glued(gluing, GLUE_V_WRAP), 1, 0)
+    rank = i * extent_j + j
+    j_lo = glued(gluing, GLUE_POLE_J_LO)
+    j_hi = glued(gluing, GLUE_POLE_J_HI)
+    i_lo = glued(gluing, GLUE_POLE_I_LO)
+    i_hi = glued(gluing, GLUE_POLE_I_HI)
+    if j_lo:
+        rank -= lattice_row_before(0, i, j)
+    if j_hi:
+        rank -= lattice_row_before(n_v - 1, i, j)
+    if i_lo:
+        rank -= lattice_column_before(0, extent_j, i, j)
+        # A point on two pole lines was subtracted twice.
+        if j_lo:
+            rank += lattice_point_before(0, 0, i, j)
+        if j_hi:
+            rank += lattice_point_before(0, n_v - 1, i, j)
+    if i_hi:
+        rank -= lattice_column_before(n_u - 1, extent_j, i, j)
+        if j_lo:
+            rank += lattice_point_before(n_u - 1, 0, i, j)
+        if j_hi:
+            rank += lattice_point_before(n_u - 1, n_v - 1, i, j)
+    if (hits & (1 << ANCHOR_ORIGIN)) != 0:
+        rank += lattice_point_before(0, 0, i, j)
+    if (hits & (1 << ANCHOR_J_HI)) != 0:
+        rank += lattice_point_before(0, n_v - 1, i, j)
+    if (hits & (1 << ANCHOR_I_HI)) != 0:
+        rank += lattice_point_before(n_u - 1, 0, i, j)
+    return rank
+
+
+@wp.func
+def on_pole_line(key: wp.int32, n_u: wp.int32, n_v: wp.int32, gluing: wp.int32) -> wp.bool:
+    i = key // n_v
+    j = key % n_v
+    return (
+        (glued(gluing, GLUE_POLE_J_LO) and j == 0)
+        or (glued(gluing, GLUE_POLE_J_HI) and j == n_v - 1)
+        or (glued(gluing, GLUE_POLE_I_LO) and i == 0)
+        or (glued(gluing, GLUE_POLE_I_HI) and i == n_u - 1)
+    )
+
+
+@wp.func
+def representative_sample(
+    r: wp.int32,
+    key: wp.int32,
+    n_u: wp.int32,
     n_v: wp.int32,
+    gluing: wp.int32,
+    layout: wp.array[wp.int32],
+) -> wp.bool:
+    # Whether lattice sample ``r`` is the lowest-index sample of its vertex (the ``return_index`` of
+    # ``numpy.unique``), the one the vertex is evaluated from. A pole anchor's representative is
+    # the host's. Any other key is reached only through seams, so every sample reaching it is one of
+    # its row in ``{i, n_u - 1 - i, n_u - 1, 0}`` and column in ``{j, n_v - 1 - j, n_v - 1, 0}``.
+    if on_pole_line(key, n_u, n_v, gluing):
+        anchor = ANCHOR_ORIGIN
+        if key == n_v - 1:
+            anchor = ANCHOR_J_HI
+        elif key != 0:
+            anchor = ANCHOR_I_HI
+        return layout[PARAMETRIC_META_FIRST + anchor] == r
+    i = key // n_v
+    j = key % n_v
+    rows = wp.vec4i(i, n_u - 1 - i, n_u - 1, 0)
+    columns = wp.vec4i(j, n_v - 1 - j, n_v - 1, 0)
+    for a in range(4):
+        for b in range(4):
+            candidate = rows[a] * n_v + columns[b]
+            if candidate < r:
+                if parametric_canonical_key(candidate, n_u, n_v, gluing) == key:
+                    return False
+    return True
+
+
+@wp.func
+def side_dead_before(
+    t: wp.int32, n_cells_u: wp.int32, n_cells_v: wp.int32, sides: wp.int32
+) -> wp.int32:
+    # How many triangles below ``t`` a pole side kills: cell ``(0, j)``'s ``(a, d, c)`` and cell
+    # ``(n_u - 2, j)``'s ``(a, c, b)`` for every non-corner ``j``, cell ``(i, 0)``'s ``(a, c, b)``
+    # and cell ``(i, n_v - 2)``'s ``(a, d, c)`` for every non-corner ``i``.
+    n_cells = n_cells_u * n_cells_v
+    count = wp.int32(0)
+    if (sides & SIDE_TOP) != 0:
+        count += wp.clamp(t - (n_cells + 1), 0, n_cells_v - 2)
+    if (sides & SIDE_BOTTOM) != 0:
+        count += wp.clamp(t - ((n_cells_u - 1) * n_cells_v + 1), 0, n_cells_v - 2)
+    if (sides & SIDE_LEFT) != 0:
+        count += wp.clamp((t + n_cells_v - 1) // n_cells_v - 1, 0, n_cells_u - 2)
+    if (sides & SIDE_RIGHT) != 0:
+        s = wp.max(t - n_cells - (n_cells_v - 1), 0)
+        count += wp.clamp((s + n_cells_v - 1) // n_cells_v - 1, 0, n_cells_u - 2)
+    return count
+
+
+@wp.func
+def parametric_point(
+    kind: wp.int32,
+    uv: wp.vec2,
     n1: wp.float32,
     n2: wp.float32,
-    out_vertices: wp.array[wp.vec3],
-) -> None:
-    k = wp.int32(wp.tid())
-    uv = parametric_sample(first, tables, n_v, k)
-    out_vertices[k] = parametric_position(kind, uv[0], uv[1], n1, n2)
-
-
-@wp.kernel
-def random_hills_vertices(
     amplitude: wp.float32,
     x_variance: wp.float32,
     y_variance: wp.float32,
-    hill_centers: wp.array[wp.vec2],
-    first: wp.array[wp.int32],
-    tables: wp.array[wp.float32],
-    n_v: wp.int32,
-    out_vertices: wp.array[wp.vec3],
-) -> None:
-    t = wp.int32(wp.tid())
-    uv = parametric_sample(first, tables, n_v, t)
-    x = uv[0]
-    y = uv[1]
+    layout: wp.array[wp.int32],
+    hills_begin: wp.int32,
+    n_hills: wp.int32,
+) -> wp.vec3:
+    # The surface point at ``uv``: a closed-form map, or the random height field's sum of bumps
+    # whose centres are packed into ``layout`` from ``hills_begin``.
+    if kind != SURFACE_RANDOM_HILLS:
+        return parametric_position(kind, uv[0], uv[1], n1, n2)
     height = wp.float32(0.0)
-    for h in range(hill_centers.shape[0]):
-        offset = uv - hill_centers[h]
+    for h in range(n_hills):
+        center = wp.vec2(
+            layout_float(layout, hills_begin + 2 * h), layout_float(layout, hills_begin + 2 * h + 1)
+        )
+        offset = uv - center
         height += wp.exp(
             -0.5 * (offset[0] * offset[0] / x_variance + offset[1] * offset[1] / y_variance)
         )
-    out_vertices[t] = wp.vec3(x, y, amplitude * height)
+    return wp.vec3(uv[0], uv[1], amplitude * height)
+
+
+@wp.kernel
+def parametric_mesh(
+    kind: wp.int32,
+    n_u: wp.int32,
+    n_v: wp.int32,
+    gluing: wp.int32,
+    n_hills: wp.int32,
+    n1: wp.float32,
+    n2: wp.float32,
+    amplitude: wp.float32,
+    x_variance: wp.float32,
+    y_variance: wp.float32,
+    layout: wp.array[wp.int32],
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # A whole parametric surface in one launch, one row per lattice sample and per lattice
+    # triangle, with both buffers sized on the host and no scan and no readback. ``layout`` is one
+    # host-built ``int32`` upload: ``PARAMETRIC_META_SIZE`` integers of pole bookkeeping, the ``u``
+    # then ``v`` parameter tables (``float32`` bits; the host's ``linspace``, so both ends of the
+    # domain are hit exactly, since several of these maps are singular one ulp outside it), the
+    # hill centres (``float32`` bits) and the sorted indices of the dead triangles no side bit
+    # covers.
+    #
+    # Gluing only ever touches the lattice's four edges, and along each side it acts uniformly, so
+    # the vertex set and every rank are closed form: ``parametric_vertex`` numbers a key,
+    # ``representative_sample`` picks the one sample each vertex is evaluated from (so a vertex
+    # reached through a twisted seam and a collapsed pole is computed once, from one expression,
+    # bit-exact run to run), and ``side_dead_before`` with the explicit list ranks the surviving
+    # triangles in the host's row order.
+    r = wp.int32(wp.tid())
+    n_lattice = n_u * n_v
+    tables_begin = PARAMETRIC_META_SIZE
+    hills_begin = tables_begin + n_u + n_v
+    dead_begin = hills_begin + 2 * n_hills
+    hits = layout[PARAMETRIC_META_HITS]
+    if r < n_lattice:
+        i = r // n_v
+        j = r % n_v
+        key = r
+        if i == 0 or i == n_u - 1 or j == 0 or j == n_v - 1:
+            key = parametric_canonical_key(r, n_u, n_v, gluing)
+            if not representative_sample(r, key, n_u, n_v, gluing, layout):
+                return
+        uv = wp.vec2(
+            layout_float(layout, tables_begin + i), layout_float(layout, tables_begin + n_u + j)
+        )
+        point = parametric_point(
+            kind, uv, n1, n2, amplitude, x_variance, y_variance, layout, hills_begin, n_hills
+        )
+        out_vertices[parametric_vertex(key, n_u, n_v, gluing, hits)] = place_point(
+            point, matrix, transform_mode
+        )
+        return
+    t = r - n_lattice
+    n_cells_u = n_u - 1
+    n_cells_v = n_v - 1
+    keys = parametric_triangle_keys(t, n_u, n_v, gluing)
+    if keys[0] == keys[1] or keys[1] == keys[2] or keys[2] == keys[0]:
+        return
+    dead_end = dead_begin + layout[PARAMETRIC_META_N_DEAD]
+    dead_before = side_dead_before(
+        t, n_cells_u, n_cells_v, layout[PARAMETRIC_META_DEAD_SIDES]
+    ) + sorted_count_less(layout, dead_begin, dead_end, t)
+    write_placed_triangle(
+        out_faces,
+        t - dead_before,
+        parametric_vertex(keys[0], n_u, n_v, gluing, hits),
+        parametric_vertex(keys[1], n_u, n_v, gluing, hits),
+        parametric_vertex(keys[2], n_u, n_v, gluing, hits),
+        transform_mode,
+    )
 
 
 @wp.func
@@ -1377,6 +1641,8 @@ def revolve_uniform(
     wrap: wp.int32,
     first_segment_faces: wp.int32,
     faces_per_slice: wp.int32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
@@ -1409,7 +1675,9 @@ def revolve_uniform(
     here = revolve_uniform_slot(c, s, n_columns, n_slices, ring_base, axis_first, axis_last)
     if not on_axis_c or s == 0:
         point = profile[c]
-        out_vertices[here] = revolution_point(point[0], point[1], s, n_slices, angle)
+        out_vertices[here] = place_point(
+            revolution_point(point[0], point[1], s, n_slices, angle), matrix, transform_mode
+        )
 
     # --- the faces of the segment leaving this column ------------------------------------------
     n_segments = n_columns - 1 + wrap
@@ -1432,16 +1700,12 @@ def revolve_uniform(
     within = wp.int32(0)
     if c > 0:
         within = first_segment_faces + 2 * (c - 1)
-    base = (s * faces_per_slice + within) * 3
+    row = s * faces_per_slice + within
     if not on_axis_c:
-        out_faces[base + 0] = here
-        out_faces[base + 1] = here_next
-        out_faces[base + 2] = there
-        base = base + 3
+        write_placed_triangle(out_faces, row, here, here_next, there, transform_mode)
+        row = row + 1
     if not on_axis_next:
-        out_faces[base + 0] = there
-        out_faces[base + 1] = here_next
-        out_faces[base + 2] = there_next
+        write_placed_triangle(out_faces, row, there, here_next, there_next, transform_mode)
 
 
 @wp.func

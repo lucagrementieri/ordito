@@ -146,9 +146,10 @@ def edges_unique(
         [`constants.INDEX_RADIX_PAIR`][ordito.constants.INDEX_RADIX_PAIR] instead, which bounds
         every ``int32`` index with no reduction at all and leaves the row order unchanged.
     validate
-        Whether to range-check the edge indices before packing them. The check is a
-        ``ordito.reduce.minmax`` whose host readback serialises the device pipeline, and it is a
-        large share of this call because everything else here is launch overhead. Pass ``False``
+        Whether to range-check the edge indices. With ``n_vertices`` given (and no
+        ``edges_sorted``) the check is folded into the key pass and read back with the edge count,
+        so it costs no extra synchronization; otherwise it is a ``ordito.reduce.minmax`` whose host
+        readback serialises the device pipeline. Pass ``False``
         only where both bounds are structurally guaranteed -- a face buffer this package produced
         itself, or one an entry point has already validated. A ``False`` that is wrong does not
         raise: indices at or above ``n_vertices`` collide in the packing and silently group two
@@ -231,6 +232,59 @@ def edges_unique(
     return _unique_edges_from_keys(keys, n_vertices, device)
 
 
+def unique_edge_count(
+    faces: wp.array[wp.int32], n_vertices: int | None = None, *, validate: bool = True
+) -> int:
+    """
+    Count the unique undirected edges, without building the edge table.
+
+    Equals ``edges_unique(faces, n_vertices=n_vertices)[0].shape[0]``: the same sort and run scan,
+    stopped before the rows and the inverse map are written.
+
+    Parameters
+    ----------
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer.
+    n_vertices
+        Vertex count bounding the indices, as in [`edges_unique`][ordito.edges.edges_unique];
+        inferred from ``faces`` when ``None``.
+    validate
+        As in [`edges_unique`][ordito.edges.edges_unique]: check the index range. With
+        ``n_vertices`` given the check rides in the count's own readback; inferring the bound
+        costs one more.
+
+    Returns
+    -------
+    int
+        Unique undirected edge count. ``0`` for an empty mesh.
+
+    Raises
+    ------
+    ValueError
+        If ``n_vertices`` is not positive, or ``validate`` is ``True`` and a face index is negative
+        or reaches ``n_vertices``.
+
+    See Also
+    --------
+    [`edges_unique`][ordito.edges.edges_unique]
+        The table this counts.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    print(od.edges.unique_edge_count(faces))  # 18
+    ```
+    """
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        return 0
+    radix, check = _face_edge_radix(faces, n_faces, n_vertices, validate)
+    return _sorted_edge_run_ranks(faces, n_faces, radix, check)[3]
+
+
 def _face_edge_radix(
     faces: wp.array[wp.int32], n_faces: int, n_vertices: int | None, validate: bool
 ) -> tuple[int, bool]:
@@ -267,10 +321,35 @@ def _unique_edges_from_faces(
     The unique edges are the runs of the sorted keys, so a run-start mark, an inclusive scan and
     one emit give exactly what ``grouping.unique_1d`` over the same keys returns -- ascending-key
     rows and the corner map into them -- without its open-addressing table, whose ~``2 * 3 *
-    n_faces`` slots take random atomics where the sort streams. The run marks and their scan live
-    in the payload's upper half, which is free scratch once the sort has run; the emit re-derives
-    each run start from the sorted keys. With ``check`` the range flag sits in the slot after that
-    scan, so the edge count and the validation come back in one read.
+    n_faces`` slots take random atomics where the sort streams. The emit re-derives each run start
+    from the sorted keys; the edge count (and, with ``check``, the range flag) comes back in one
+    read before it.
+    """
+    device = faces.device
+    n = 3 * n_faces
+    keys, order, ranks, n_edges = _sorted_edge_run_ranks(faces, n_faces, radix, check)
+    unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
+    inverse = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_edges.emit_sorted_unique_edges,
+        dim=n,
+        inputs=[faces, keys, order, ranks, unique_edges, inverse],
+        device=device,
+    )
+    return unique_edges, inverse
+
+
+def _sorted_edge_run_ranks(
+    faces: wp.array[wp.int32], n_faces: int, radix: int, check: bool
+) -> tuple[wp.array[wp.uint64], wp.array[wp.int32], wp.array[wp.int32], int]:
+    """
+    ``(keys, order, ranks, n_edges)``: sorted edge keys, their 1-based unique-edge ranks, the count.
+
+    The part of [`edges_unique`][ordito.edges.edges_unique] that both the table emit and
+    [`unique_edge_count`][ordito.edges.unique_edge_count] need. The run marks and their scan live
+    in the payload's upper half, which is free scratch once the sort has run. With ``check`` the
+    key pass range-checks every index against ``radix`` and its flag sits in the slot after the
+    scan, so the count and the validation come back in one read, raising before any emit.
     """
     device = faces.device
     n = 3 * n_faces
@@ -283,21 +362,13 @@ def _unique_edges_from_faces(
         device=device,
     )
     _launch.array_scan(ranks, ranks, inclusive=True)
-    # The edge count sizes the returned table; the range flag (when checked) rides in the same copy.
+    # The edge count sizes the caller's table; the range flag (when checked) rides in the same copy.
     if check:
         n_edges, code = read_values(order, 2 * n - 1, 2)
         _raise_on_range_code(int(code), radix)
     else:
-        n_edges = int(read_scalar(ranks, n - 1))
-    unique_edges = odt.empty_2d((int(n_edges), 2), wp.int32, device=device)
-    inverse = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_edges.emit_sorted_unique_edges,
-        dim=n,
-        inputs=[faces, keys, order, ranks, unique_edges, inverse],
-        device=device,
-    )
-    return unique_edges, inverse
+        n_edges = read_scalar(ranks, n - 1)
+    return keys, order, ranks, int(n_edges)
 
 
 def _sorted_face_edge_keys(

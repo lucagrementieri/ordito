@@ -332,6 +332,17 @@ def fit_principal_curvature(
 
 
 @wp.kernel
+def vertex_angle_sums(
+    face_angles: wp.array2d[wp.float32], faces: wp.array[wp.int32], out_sum: wp.array[wp.float64]
+) -> None:
+    # Each face's three ``float32`` corner angles widened as they are read and scattered into the
+    # ``float64`` per-vertex sums: no widened copy of the angle table.
+    f = wp.int32(wp.tid())
+    for j in range(3):
+        wp.atomic_add(out_sum, faces[3 * f + j], wp.float64(face_angles[f, j]))
+
+
+@wp.kernel
 def ball_angle_defect_sum(
     vertices: wp.array[wp.vec3],
     angle_sum: wp.array[wp.float64],

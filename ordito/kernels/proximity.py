@@ -2,7 +2,14 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE_CONSTANT, TWO_PI
 from ordito.kernels import triangles as kernel_triangles
-from ordito.kernels.array import RegisterBlockedTable, lift_vec2, morton_code_30, to_vec3, to_vec3d
+from ordito.kernels.array import (
+    RegisterBlockedTable,
+    lift_vec2,
+    morton_code_30,
+    morton_frame,
+    to_vec3,
+    to_vec3d,
+)
 from ordito.kernels.neighbors import (
     MAX_SEARCH_ATTEMPTS,
     attempt_radius,
@@ -856,14 +863,10 @@ def winding_face_keys(
     # dim == n_faces: the Morton code of each face centroid over the vertices' box, and the face's
     # own index, into the radix sort's double-width buffers. ``corners`` is
     # ``kernel_reduce.minmax_vec3_chunked``'s ``[lower, -upper]``, read here so no readback sits
-    # between the reduction and the sort.
+    # between the reduction and the sort; ``visibility.morton_point_order`` keys points the same
+    # way and differs only in keying a point rather than a face centroid.
     f = wp.int32(wp.tid())
-    lower = wp.vec3(corners[0], corners[1], corners[2])
-    extent = wp.vec3(-corners[3], -corners[4], -corners[5]) - lower
-    inv_extent = wp.vec3()
-    for axis in range(3):
-        if extent[axis] > 0.0:
-            inv_extent[axis] = 1023.0 / extent[axis]
+    lower, inv_extent = morton_frame(corners)
     a, b, c = kernel_triangles.face_vertices(vertices, faces, f)
     out_keys[f] = morton_code_30((a + b + c) / 3.0, lower, inv_extent)
     out_order[f] = f

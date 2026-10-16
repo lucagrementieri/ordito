@@ -83,31 +83,7 @@ def group(values: wp.array[wp.Int], length: int) -> odt.Array2dInt32:
         copyto(odt.as_dense(values_buffer[:n]), values)
         indices_buffer = sort_pair_indices(n, -1, device)
     _launch.radix_sort_pairs(values_buffer, indices_buffer, count=n)
-
-    # Scan compaction: flag run starts, scan the flags, then emit one right-sized row per group
-    # (deterministic ascending-value order, no atomic counter and no (n, length) over-allocation).
-    # The emit reads each flag back as a step in the scan, so it compacts and writes in one launch.
-    # The flags live in the sort payload's upper half, which is free scratch once the sort has run
-    # (``adjacency``'s pair grouping does the same), and are scanned there in place.
-    inclusive = odt.as_dense(indices_buffer[n:])
-    _launch.launch(
-        kernel_grouping.MARK_GROUP_STARTS[values_buffer.dtype],
-        dim=n,
-        inputs=[values_buffer, wp.int32(n), wp.int32(length), inclusive],
-        device=device,
-    )
-    _launch.array_scan(inclusive, inclusive, inclusive=True)
-    # The group count sizes the output, so it has to come back to the host.
-    n_groups = int(read_scalar(inclusive))
-    groups = odt.empty_2d((n_groups, length), wp.int32, device=device)
-    if n_groups > 0:
-        _launch.launch(
-            kernel_grouping.emit_groups,
-            dim=n,
-            inputs=[inclusive, indices_buffer, groups],
-            device=device,
-        )
-    return odt.as_array2d(groups, wp.int32)
+    return _group_sorted(values_buffer, indices_buffer, n, length)
 
 
 def group_int_rows(
@@ -158,9 +134,65 @@ def group_int_rows(
     print(od.grouping.group_int_rows(rows, 2).numpy().tolist())  # [[0, 2]]
     ```
     """
-    odt.ensure_ndim(data, 2)
-    hashed_rows = hash_indices_rows(data, max_value, validate=validate)
-    return group(hashed_rows, length)
+    odt.ensure_ndim(data, 2, dtype=wp.int32)
+    rows = data
+    radix = _row_radix(rows, max_value, validate)
+    n = int(rows.shape[0])
+    device = rows.device
+    if n < length or length <= 0:
+        return odt.as_array2d(odt.empty_2d((0, max(length, 0)), wp.int32, device=device), wp.int32)
+    assert radix is not None  # resolved whenever ``n > 0``
+    # The keys go straight into the sort's double-width buffers -- no key array to copy in -- and
+    # the sort runs over only the bits ``radix ** width`` needs rather than all 64.
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_grouping.pack_indices_and_order,
+        dim=n,
+        inputs=[rows, wp.uint64(radix), keys, order],
+        device=device,
+    )
+    end_bit = min(64, max(1, (radix ** int(rows.shape[1]) - 1).bit_length()))
+    _launch.radix_sort_pairs(keys, order, count=n, end_bit=end_bit)
+    return _group_sorted(keys, order, n, length)
+
+
+def _group_sorted(
+    values_buffer: wp.array[Any], indices_buffer: wp.array[wp.int32], n: int, length: int
+) -> odt.Array2dInt32:
+    """
+    Return the groups of ``length`` equal keys in radix-sorted double-width sort buffers.
+
+    The part of [`group`][ordito.grouping.group] after the sort, shared with
+    [`group_int_rows`][ordito.grouping.group_int_rows], which packs its rows straight into the
+    sort buffers instead of through a key array.
+    """
+    device = values_buffer.device
+
+    # Scan compaction: flag run starts, scan the flags, then emit one right-sized row per group
+    # (deterministic ascending-value order, no atomic counter and no (n, length) over-allocation).
+    # The emit reads each flag back as a step in the scan, so it compacts and writes in one launch.
+    # The flags live in the sort payload's upper half, which is free scratch once the sort has run
+    # (``adjacency``'s pair grouping does the same), and are scanned there in place.
+    inclusive = odt.as_dense(indices_buffer[n:])
+    _launch.launch(
+        kernel_grouping.MARK_GROUP_STARTS[values_buffer.dtype],
+        dim=n,
+        inputs=[values_buffer, wp.int32(n), wp.int32(length), inclusive],
+        device=device,
+    )
+    _launch.array_scan(inclusive, inclusive, inclusive=True)
+    # The group count sizes the output, so it has to come back to the host.
+    n_groups = int(read_scalar(inclusive))
+    groups = odt.empty_2d((n_groups, length), wp.int32, device=device)
+    if n_groups > 0:
+        _launch.launch(
+            kernel_grouping.emit_groups,
+            dim=n,
+            inputs=[inclusive, indices_buffer, groups],
+            device=device,
+        )
+    return odt.as_array2d(groups, wp.int32)
 
 
 @overload
@@ -1181,9 +1213,30 @@ def hash_indices_rows(
     ```
     """
     odt.ensure_ndim(data, 2, dtype=wp.int32)
+    n = int(data.shape[0])
+    max_index = _row_radix(data, max_index, validate)
+    hashes = _launch.empty(n, dtype=wp.uint64, device=data.device)
+    if n > 0:
+        assert max_index is not None  # set by the bound above whenever ``n > 0``
+        _launch.launch(
+            kernel_grouping.pack_indices,
+            dim=n,
+            inputs=[data, wp.uint64(max_index), hashes],
+            device=data.device,
+        )
+    return hashes
+
+
+def _row_radix(data: odt.Array2dInt32, max_index: int | None, validate: bool) -> int | None:
+    """
+    Return the radix [`hash_indices_rows`][ordito.grouping.hash_indices_rows] packs ``data`` by.
+
+    Validates ``max_index`` and, with ``validate``, the data's range. ``None`` only for an empty
+    ``data`` with no bound given.
+    """
+    n = int(data.shape[0])
     if max_index is not None and max_index <= 0:
         raise ValueError(f"max_index must be positive, got {max_index}")
-    n = int(data.shape[0])
     width = int(data.shape[1])
     if not validate:
         if max_index is None:
@@ -1210,16 +1263,7 @@ def hash_indices_rows(
             )
         if max_index is None:
             max_index = max_data + 1
-    hashes = _launch.empty(n, dtype=wp.uint64, device=data.device)
-    if n > 0:
-        assert max_index is not None  # set by the bound above whenever ``n > 0``
-        _launch.launch(
-            kernel_grouping.pack_indices,
-            dim=n,
-            inputs=[data, wp.uint64(max_index), hashes],
-            device=data.device,
-        )
-    return hashes
+    return max_index
 
 
 def sorted_undirected_edge_keys(edges: odt.Array2dInt32, n_vertices: int) -> wp.array[wp.uint64]:

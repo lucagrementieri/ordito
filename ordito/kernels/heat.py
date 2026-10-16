@@ -17,6 +17,7 @@ import warp as wp
 
 from ordito.constants import TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.array import binary_search_index, cross2, to_vec2, to_vec2d, to_vec3, to_vec3d
+from ordito.kernels.laplacian import face_half_cotangents
 from ordito.kernels.predicates import (
     stable_length,
     stable_normalize,
@@ -25,9 +26,38 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import block_chunk_1d, commit_sum_and_count
 from ordito.kernels.scatter import add_corner_triple
-from ordito.kernels.triangles import face_unit_gradient, face_vertices_vec3d
+from ordito.kernels.triangles import face_normals_and_area, face_unit_gradient, face_vertices_vec3d
 
 wp.set_module_options({"enable_backward": False})
+
+
+@wp.kernel
+def heat_face_terms(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    write_cot: wp.int32,
+    out_cot: wp.array2d[wp.float32],
+    out_normals: wp.array[wp.vec3],
+    out_areas: wp.array[wp.float32],
+    out_area_sums: wp.array[wp.float64],
+) -> None:
+    # Every per-face quantity the heat operators read, in one pass: the ``float32`` half-cotangent
+    # table (``laplacian.cotmatrix_entries``' row, skipped when ``write_cot`` is 0 because the
+    # caller has its own), the unit normal and area (``triangles.face_normals_and_areas``'), and
+    # the area's exact ``float64`` scatter into each corner (``scatter.scatter_face_areas_exact``,
+    # the lumped mass before its division by three). Each value is the standalone kernel's bit
+    # for bit.
+    f = wp.int32(wp.tid())
+    if write_cot != 0:
+        c0, c1, c2 = face_half_cotangents(vertices, faces, f)
+        out_cot[f, 0] = c0
+        out_cot[f, 1] = c1
+        out_cot[f, 2] = c2
+    normal, area = face_normals_and_area(vertices, faces, f)
+    out_normals[f] = normal
+    out_areas[f] = area
+    value = wp.float64(area)
+    add_corner_triple(out_area_sums, faces, f, value, value, value)
 
 
 @wp.kernel

@@ -41,6 +41,7 @@ from ordito import _launch
 from ordito._device import (
     prefers_tiled_reduction,
     read_scalar,
+    read_values,
     require_nonempty_mesh,
     require_same_device,
 )
@@ -369,16 +370,28 @@ def closest_point_on_edges(
         bvh = od.neighbors.bvh_from_bounds(lower, upper)
     # The scene box bounds each query's *complete* search radius, so a query outside the geometry
     # still terminates exactly rather than growing to ``max_dist``.
-    min_bound, max_bound = od.bounds.aabb(vertices)
     if max_dist is None:
-        # ``enclosing_diagonal(vertices, queries)`` from the scene box already in hand plus the
-        # queries' own box: one reduction of ``vertices`` rather than two. The union and the norm
-        # are taken in float32 NumPy, exactly as ``enclosing_diagonal`` takes them, so the radius
-        # is the same float.
-        query_lower, query_upper = od.bounds.aabb(queries)
-        union_lower = np.minimum(np.array(min_bound, np.float32), np.array(query_lower, np.float32))
-        union_upper = np.maximum(np.array(max_bound, np.float32), np.array(query_upper, np.float32))
+        # ``enclosing_diagonal(vertices, queries)`` and the scene box in one launch and one
+        # readback: both boxes reduce into one twelve-slot corner buffer (``vertices`` first,
+        # ``queries`` second; slots 3..5 and 9..11 the negated upper corners), as
+        # ``visibility.max_tangent_sphere`` does. The union and the norm are taken in float32
+        # NumPy, exactly as ``enclosing_diagonal`` takes them, so the radius is the same float.
+        corners_wp = _launch.full(12, math.inf, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_reduce.minmax_vec3_pair_chunked,
+            dim=kernel_reduce.chunks_1d(vertices.size) + kernel_reduce.chunks_1d(m),
+            inputs=[vertices, queries, wp.int32(1)],
+            outputs=[corners_wp],
+            device=device,
+        )
+        # Sizes the search: the scene box and the default radius are kernel arguments.
+        corners = np.array(read_values(corners_wp, 0, 12), dtype=np.float32)
+        min_bound, max_bound = wp.vec3(*corners[0:3]), wp.vec3(*(-corners[3:6]))
+        union_lower = np.minimum(corners[0:3], corners[6:9])
+        union_upper = np.maximum(-corners[3:6], -corners[9:12])
         max_dist = float(np.linalg.norm(union_upper - union_lower))
+    else:
+        min_bound, max_bound = od.bounds.aabb(vertices)
 
     out_closest = _launch.empty(m, dtype=wp.vec3, device=device)
     out_distance = _launch.empty(m, dtype=wp.float32, device=device)

@@ -137,6 +137,32 @@ def clear_boundary_vertices(
         out_mask[b] = False
 
 
+@wp.kernel
+def set_boundary_vertices(
+    mates: wp.array[wp.int32], faces: wp.array[wp.int32], out_mask: wp.array[wp.bool]
+) -> None:
+    # ``clear_boundary_vertices``' dual: the boundary vertices set in a ``False``-filled mask, the
+    # fixed set ``smoothing._dirichlet_state`` pins, with no scan, no index list and no readback.
+    h = wp.int32(wp.tid())
+    a, b = boundary_halfedge_endpoints(mates, faces, h)
+    if a >= 0:
+        out_mask[a] = True
+        out_mask[b] = True
+
+
+@wp.kernel
+def zero_at_boundary_vertices(
+    mates: wp.array[wp.int32], faces: wp.array[wp.int32], out_values: wp.array[wp.float64]
+) -> None:
+    # ``out_values`` zeroed in place at both endpoints of every boundary halfedge
+    # (``energies._zero_at_boundary``); a closed mesh pays one launch that writes nothing.
+    h = wp.int32(wp.tid())
+    a, b = boundary_halfedge_endpoints(mates, faces, h)
+    if a >= 0:
+        out_values[a] = wp.float64(0.0)
+        out_values[b] = wp.float64(0.0)
+
+
 @wp.func
 def ear_interior_corner(mates: wp.array[wp.int32], f: wp.int32) -> wp.int32:
     # The local index of face ``f``'s one interior edge when exactly two of its three edges are

@@ -1516,6 +1516,85 @@ def csr_from_triplets(
     )
 
 
+def csr_from_coo_keys(
+    n_rows: int,
+    n_cols: int,
+    keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    values: wp.array[odt.Block, Any],
+) -> odt.BsrMatrix[odt.Block]:
+    """
+    Assemble a sparse matrix from written entry keys, summing each key's ``values``.
+
+    [`csr_from_triplets`][ordito.array.csr_from_triplets] for a producer that writes the keys
+    itself: slot ``i < n_triplets`` of [`csr_key_buffers`][ordito.array.csr_key_buffers] holds
+    ``kernels/array.csr_key(row, col, n_rows, n_cols)`` and an index into ``values``, so no
+    ``rows`` / ``cols`` buffers are written only to be packed. Duplicates are summed in slot order
+    and an out-of-range entry (the sentinel key) is dropped, exactly as there.
+
+    Parameters
+    ----------
+    n_rows, n_cols
+        Matrix shape in blocks.
+    keys, order
+        ``(2 * n_triplets,)`` sort buffers holding the keys and the value indices in their first
+        halves. Both are sorted in place, and ``order``'s upper half is overwritten.
+    values
+        ``(n_triplets,)`` blocks the payloads index (``wp.float32``, ``wp.float64``, ``wp.int32``
+        or ``wp.mat22d``).
+
+    Returns
+    -------
+    warp.sparse.BsrMatrix
+        ``(n_rows, n_cols)`` assembled matrix. Its ``nnz`` is ``n_triplets`` as an upper bound
+        until ``nnz_sync()``, as after [`csr_from_triplets`][ordito.array.csr_from_triplets].
+
+    Raises
+    ------
+    ValueError
+        If ``keys`` or ``order`` is not ``2 * n_triplets`` long.
+
+    See Also
+    --------
+    [`csr_from_triplets`][ordito.array.csr_from_triplets]
+    [`csr_from_keys`][ordito.array.csr_from_keys]
+        The pattern alone, for a producer forming its values per entry.
+
+    Examples
+    --------
+    The matrix ``[[2, 0], [0, 3]]``, its ``(0, 0)`` entry written as two keys:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    keys, order = od.array.csr_key_buffers(3, wp.get_device())
+    wp.copy(keys, wp.array([0, 3, 0], dtype=wp.uint64))
+    wp.copy(order, wp.array([0, 1, 2], dtype=wp.int32))
+    values = wp.array([1.0, 3.0, 1.0], dtype=wp.float32)
+    matrix = od.array.csr_from_coo_keys(2, 2, keys, order, values)
+    print(matrix.offsets.numpy().tolist())  # [0, 1, 2]
+    print(matrix.values.numpy()[:2].tolist())  # [2.0, 3.0]
+    ```
+    """
+    count = int(values.shape[0])
+    if keys.size != 2 * count or order.size != 2 * count:
+        raise ValueError(
+            f"keys and order must have length {2 * count}, got {keys.size} and {order.size}"
+        )
+    if count == 0:
+        device = keys.device
+        return bsr_from_csr(
+            n_rows,
+            n_cols,
+            _launch.zeros(n_rows + 1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=values.dtype, device=device),
+        )
+    return _csr_from_coo_keys(n_rows, n_cols, keys, order, values)
+
+
 def csr_transpose(matrix: odt.BsrMatrix[odt.Block]) -> odt.BsrMatrix[odt.Block]:
     """
     Transpose a sparse matrix of scalar blocks, with no host readback.

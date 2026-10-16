@@ -155,6 +155,21 @@ def test_boundary_edges(bench_case: BenchCase) -> None:
         assert bench_case.run(boundary_tm).ndim == 2
 
 
+@pytest.mark.benchmark(group="boundary_vertices")
+@pytest.mark.benchaxis("loops")
+@pytest.mark.benchlibs("ordito")
+def test_boundary_vertices(bench_case: BenchCase) -> None:
+    """
+    Positions of the vertices on a boundary edge: one flag scan and a scatter of the positions.
+
+    No reference library returns the rim positions as one call; ``boundary_vertex_indices`` is the
+    index form and shares everything but the final scatter.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    rim = bench_case.run(lambda: od.boundary.boundary_vertices(vertices, faces))
+    assert rim.size <= vertices.size
+
+
 @pytest.mark.benchmark(group="ears")
 @pytest.mark.benchaxis("loops")
 @pytest.mark.benchlibs("ordito", "igl")

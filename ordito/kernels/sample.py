@@ -4,7 +4,7 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.array import scanned_count
-from ordito.kernels.triangles import face_vertices
+from ordito.kernels.triangles import face_signed_volume, face_vertices
 
 wp.set_module_options({"enable_backward": False})
 
@@ -67,6 +67,25 @@ def sample_surface(
 
     out_face_indices[tid] = fi
     out_points[tid] = v0 * w + v1 * uv.x + v2 * uv.y
+
+
+@wp.kernel
+def tetrahedron_volumes_flag_negative(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    center: wp.vec3,
+    out_volumes: wp.array[wp.float32],
+) -> None:
+    # ``triangles.face_signed_volumes`` (the same ``face_signed_volume`` helper) with the
+    # star-shaped test folded in: the buffer carries one slot past the faces, zero-seeded, that any
+    # negative tetrahedron sets to ``1``. The wrapper scans the face slots in place into the CDF
+    # and reads its total and this flag in one readback, rather than reducing a ``min``
+    # separately. Every writer stores the same value, so the unordered stores need no atomic.
+    fi = wp.int32(wp.tid())
+    volume = face_signed_volume(vertices, faces, fi, center)
+    out_volumes[fi] = volume
+    if volume < wp.float32(0.0):
+        out_volumes[out_volumes.shape[0] - 1] = wp.float32(1.0)
 
 
 @wp.kernel

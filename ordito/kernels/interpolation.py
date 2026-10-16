@@ -4,6 +4,7 @@ import warp as wp
 
 from ordito.kernels.array import OverloadTable, trilinear_cell, trilinear_corner, trilinear_weight
 from ordito.kernels.neighbors import in_ball
+from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.triangles import face_vertices, point_barycentric
 
 wp.set_module_options({"enable_backward": False})
@@ -25,22 +26,26 @@ def transfer_onto_vertices(
     source_vertices: wp.array[wp.vec3],
     source_faces: wp.array[wp.int32],
     source_values: wp.array[Any],
-    closest: wp.array[wp.vec3],
-    face_id: wp.array[wp.int32],
+    mesh_id: wp.uint64,
+    target_vertices: wp.array[wp.vec3],
+    max_dist: wp.float32,
     out_values: wp.array[Any],
     out_distance: wp.array[wp.float32],
 ) -> None:
-    # Barycentric resample of a source per-vertex field at each target vertex's closest point.
+    # Barycentric resample of a source per-vertex field at each target vertex's closest point, the
+    # query fused in through ``proximity.closest_point_query`` (the same helper
+    # ``closest_point_on_mesh`` launches), so no closest-point or face buffer is materialized.
     #
     # ``face_id < 0`` is the ``max_dist`` miss case. The value slot keeps whatever the wrapper
     # pre-filled (so a caller who narrowed the search still gets a deterministic buffer), and the
     # distance is promoted to ``inf``: ``wp.mesh_query_point_no_sign`` reports ``max_dist`` there,
     # which is indistinguishable from a genuine hit at exactly that range.
     i = wp.int32(wp.tid())
-    f = face_id[i]
+    closest, distance, f = closest_point_query(mesh_id, target_vertices[i], max_dist)
     if f < 0:
         out_distance[i] = wp.float32(wp.INF)
         return
+    out_distance[i] = distance
     #
     # ``point_barycentric``'s conditioning is load-bearing here, not incidental: a source face thin
     # enough for the Gram-determinant form to cancel to zero in float32 would write ``nan`` into the
@@ -49,7 +54,7 @@ def transfer_onto_vertices(
     # reconstructed source mesh, which is exactly the input this transfer exists for -- that is the
     # defect that got the Gram form removed from the package outright.
     v0, v1, v2 = face_vertices(source_vertices, source_faces, f)
-    bary = point_barycentric(v0, v1, v2, closest[i])
+    bary = point_barycentric(v0, v1, v2, closest)
     a0, a1, a2 = face_vertices(source_values, source_faces, f)
     out_values[i] = a0 * bary[0] + a1 * bary[1] + a2 * bary[2]
 
@@ -293,8 +298,9 @@ def _register_overloads() -> None:
                 wp.array[wp.vec3],
                 wp.array[wp.int32],
                 wp.array[d],
+                wp.uint64,
                 wp.array[wp.vec3],
-                wp.array[wp.int32],
+                wp.float32,
                 wp.array[d],
                 wp.array[wp.float32],
             ]

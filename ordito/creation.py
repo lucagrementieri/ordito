@@ -42,7 +42,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
-from ordito.constants import INT32_MAX, TILE_1D, TOLERANCE_MERGE
+from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import array as kernel_array
 from ordito.kernels import creation as kernel_creation
 from ordito.kernels import reduce as kernel_reduce
@@ -57,6 +57,8 @@ _CLOSED_ANGLE_ATOL = 1e-10
 # solids and ``revolve`` pass bit-identical spans: the angle divides into the slice fraction, so a
 # difference here would move every ring vertex in the last bits.
 _FULL_TURN = wp.float32(2.0 * math.pi)
+# The matrix a generator kernel receives when the caller passed no transform (it is not applied).
+_IDENTITY_MATRIX = wp.mat44(*np.eye(4).ravel())
 
 _UNIT_X = np.array([1.0, 0.0, 0.0])
 _UNIT_Y = np.array([0.0, 1.0, 0.0])
@@ -177,12 +179,14 @@ _ICOSPHERE_FACE_TABLE = _icosphere_face_table()
 # depth it descends while a launch costs a fixed host overhead, so the coarse levels, whose
 # lattices are small, share one launch and every finer level gets its own, one level deep.
 _ICOSPHERE_LEVELS_PER_LAUNCH = 6
+# Refinement levels of ``axis``'s origin ball: ``icosphere``'s default, and a single launch, so
+# the marker transform can be applied as the ball is written.
+_AXIS_BALL_LEVELS = 3
 
 # Deliberately NOT cached per device. ``box``, ``tetrahedron``, ``octahedron``, ``icosahedron``
-# and ``dodecahedron`` *return* the buffer they upload (``_apply_transform`` may rewrite its
-# winding in place), so a cached table would have to be ``wp.clone``-d on read, which gives the
-# upload straight back -- a bad trade for a module-level dict pinning device memory for the life
-# of the process.
+# and ``dodecahedron`` *return* the buffer they upload, so a cached table would have to be
+# ``wp.clone``-d on read, which gives the upload straight back -- a bad trade for a module-level
+# dict pinning device memory for the life of the process.
 
 
 # The remaining three Platonic solids, as MeshLab's ``create_tetrahedron`` /
@@ -361,9 +365,16 @@ def box(
     else:
         vertices_np -= 0.5
 
+    faces_np = _BOX_FACES
+    if transform is not None:
+        # Eight corners: placed on the host, in ``float64``, before the one upload.
+        matrix_np = od.transform.matrix_to_numpy(transform).astype(np.float64)
+        vertices_np = vertices_np @ matrix_np[:3, :3].T + matrix_np[:3, 3]
+        if np.linalg.det(matrix_np[:3, :3]) < 0.0:
+            faces_np = np.ascontiguousarray(faces_np.reshape(-1, 3)[:, ::-1].reshape(-1))
     vertices = _upload_points(vertices_np, wp.vec3, device)
-    faces = _launch.array(_BOX_FACES, dtype=wp.int32, device=device)
-    return _apply_transform(vertices, faces, transform)
+    faces = _launch.array(faces_np, dtype=wp.int32, device=device)
+    return vertices, faces
 
 
 def grid(
@@ -455,11 +466,12 @@ def grid(
             wp.float64(height),
             wp.float64(-0.5 * width if center else 0.0),
             wp.float64(-0.5 * height if center else 0.0),
+            *_placement(transform),
         ],
         outputs=[vertices, faces],
         device=device,
     )
-    return _apply_transform(vertices, faces, transform)
+    return vertices, faces
 
 
 def icosahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
@@ -687,12 +699,37 @@ def icosphere(
     ```
     """
     levels = max(0, int(subdivisions))
-    n = 1 << levels
-    radius_f = float(radius)
+    n_vertices, n_faces = _icosphere_sizes(levels)
+    device = wp.get_device(device)
+    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _icosphere_into(levels, float(radius), None, vertices, faces)
+    return vertices, faces
 
-    table, corners = _icosphere_tables(wp.get_device(device).alias)
-    vertices = _launch.empty(10 * 4**levels + 2, dtype=wp.vec3, device=corners.device)
-    faces = _launch.empty(20 * n * n * 3, dtype=wp.int32, device=vertices.device)
+
+def _icosphere_sizes(levels: int) -> tuple[int, int]:
+    """``(n_vertices, n_faces)`` of an icosphere refined ``levels`` times."""
+    return 10 * 4**levels + 2, 20 * 4**levels
+
+
+def _icosphere_into(
+    levels: int,
+    radius: float,
+    transform: wp.mat44 | None,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+) -> None:
+    """
+    Write an icosphere into ``vertices`` and ``faces``, placed by ``transform``.
+
+    A placement is applied at write time, which only a single-launch build allows (a later launch
+    reads the coarser vertices back), so ``transform`` requires at most
+    ``_ICOSPHERE_LEVELS_PER_LAUNCH`` levels.
+    """
+    n = 1 << levels
+    table, corners = _icosphere_tables(wp.get_device(vertices.device).alias)
+    matrix, transform_mode = _placement(transform)
+    assert transform is None or levels <= _ICOSPHERE_LEVELS_PER_LAUNCH
     # One launch for the first ``_ICOSPHERE_LEVELS_PER_LAUNCH`` levels, then one per level; the
     # last one writes the faces too.
     coarse = n
@@ -701,14 +738,24 @@ def icosphere(
         _launch.launch(
             kernel_creation.icosphere_mesh,
             dim=(20, n // stride + 1, n // stride + 1),
-            inputs=[table, corners, n, coarse, stride, radius_f, vertices, faces],
+            inputs=[
+                table,
+                corners,
+                n,
+                coarse,
+                stride,
+                radius,
+                matrix,
+                transform_mode,
+                vertices,
+                faces,
+            ],
             device=vertices.device,
         )
         if stride == 1:
             break
         coarse = stride
         stride = coarse >> 1
-    return vertices, faces
 
 
 @functools.cache
@@ -1071,29 +1118,55 @@ def cylinder(
     """
     transform, half = _resolve_cylinder_axis(height, segment, transform)
     n_sections = _resolve_sections(sections)
-    radius_f = float(radius)
+    template = _cylinder_template(float(radius), half, n_sections)
+    vertices = _launch.empty(2 * n_sections + 2, dtype=wp.vec3, device=device)
+    faces = _launch.empty(3 * _cylinder_face_count(template), dtype=wp.int32, device=device)
+    _cylinder_into(template, transform, 0, vertices, faces)
+    return vertices, faces
+
+
+def _cylinder_template(
+    radius: float, half: float, n_sections: int
+) -> tuple[float, float, int, int, int]:
+    """``(radius, half_height, n_sections, keep_caps, keep_sides)`` of a capped cylinder."""
     profile = np.array(
-        [[0.0, -half], [radius_f, -half], [radius_f, half], [0.0, half]], dtype=np.float64
+        [[0.0, -half], [radius, -half], [radius, half], [0.0, half]], dtype=np.float64
     )
     keep_caps, keep_sides = _closed_form_template(profile, n_sections)
-    vertices = _launch.empty(2 * n_sections + 2, dtype=wp.vec3, device=device)
-    n_face_slots = (2 * keep_caps + 2 * keep_sides) * n_sections * 3
-    faces = _launch.empty(n_face_slots, dtype=wp.int32, device=device)
+    return radius, half, n_sections, keep_caps, keep_sides
+
+
+def _cylinder_face_count(template: tuple[float, float, int, int, int]) -> int:
+    """Face count of the cylinder ``template`` describes."""
+    _, _, n_sections, keep_caps, keep_sides = template
+    return (2 * keep_caps + 2 * keep_sides) * n_sections
+
+
+def _cylinder_into(
+    template: tuple[float, float, int, int, int],
+    transform: wp.mat44 | None,
+    vertex_base: int,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+) -> None:
+    """Write a cylinder into ``vertices`` and ``faces``, face indices offset by ``vertex_base``."""
+    radius, half, n_sections, keep_caps, keep_sides = template
     _launch.launch(
         kernel_creation.cylinder_mesh,
         dim=n_sections,
         inputs=[
-            wp.float32(radius_f),
+            wp.float32(radius),
             wp.float32(half),
             wp.int32(n_sections),
             _FULL_TURN,
             wp.int32(keep_caps),
             wp.int32(keep_sides),
+            *_placement(transform),
+            wp.int32(vertex_base),
         ],
         outputs=[vertices, faces],
-        device=device,
+        device=vertices.device,
     )
-    return _apply_transform(vertices, faces, transform)
 
 
 def cone(
@@ -1155,11 +1228,12 @@ def cone(
             _FULL_TURN,
             wp.int32(keep_caps),
             wp.int32(keep_sides),
+            *_placement(transform),
         ],
         outputs=[vertices, faces],
         device=device,
     )
-    return _apply_transform(vertices, faces, transform)
+    return vertices, faces
 
 
 def annulus(
@@ -1479,13 +1553,13 @@ def revolve(
             wp.int32(n_slices),
             layout,
             cap_faces,
+            *_placement(transform),
             vertices,
             faces,
         ],
         device=device,
     )
-
-    return _apply_transform(vertices, faces, transform)
+    return vertices, faces
 
 
 def _revolve_kept_template(profile_np: np.ndarray, step: float) -> np.ndarray:
@@ -1763,12 +1837,13 @@ def _extrude(
         )
 
     # Both layers, ``z = 0`` then ``z = height``, and the triangulation's signed area in one pass.
+    matrix, transform_mode = _placement(transform)
     layers = _launch.empty(2 * n, dtype=wp.vec3, device=device)
     area = _launch.zeros(1, dtype=wp.float32, device=device)
     _launch.launch_tiled(
         kernel_creation.lift_layers_and_signed_area,
         dim=kernel_reduce.chunks_1d(max(n, n_faces)),
-        inputs=[vertices, faces, wp.float32(height_f), layers, area],
+        inputs=[vertices, faces, wp.float32(height_f), matrix, transform_mode, layers, area],
         block_dim=TILE_1D,
         device=device,
     )
@@ -1786,10 +1861,10 @@ def _extrude(
     _launch.launch(
         kernel_creation.extrude_faces,
         dim=2 * n_faces + n_boundary,
-        inputs=[faces, boundary, wp.int32(n), height_f < 0.0, area, out_faces],
+        inputs=[faces, boundary, wp.int32(n), height_f < 0.0, area, transform_mode, out_faces],
         device=device,
     )
-    return _apply_transform(layers, out_faces, transform)
+    return layers, out_faces
 
 
 def sweep_polygon(
@@ -2090,22 +2165,39 @@ def axis(
         axis_length = origin_size_f * 10.0
 
     # Each cylinder is built centered on the origin, so it has to be pushed out along its own axis
-    # by half its length. The marker transform is applied once, to the assembled result.
+    # by half its length, then carried by the marker transform: the two compose on the host into
+    # the one matrix its kernel places it with. The four parts are written straight into views of
+    # the final buffers, the ball first, so there is no concatenation pass.
     shift = np.eye(4)
     shift[2, 3] = float(axis_length) / 2.0
+    marker = np.eye(4) if transform is None else od.transform.matrix_to_numpy(transform)
 
-    parts = [icosphere(radius=origin_size_f, device=device)]
-    for direction in (_UNIT_X, _UNIT_Y, _UNIT_Z):
-        placement = _align_vectors(_UNIT_Z, direction).dot(shift)
-        parts.append(
-            cylinder(
-                radius=float(axis_radius),
-                height=float(axis_length),
-                transform=wp.mat44(*placement.flatten()),
-                device=device,
-            )
+    template = _cylinder_template(float(axis_radius), float(axis_length) / 2.0, DEFAULT_SECTIONS)
+    ball_vertices, ball_faces = _icosphere_sizes(_AXIS_BALL_LEVELS)
+    cylinder_vertices = 2 * DEFAULT_SECTIONS + 2
+    cylinder_faces = _cylinder_face_count(template)
+    device = wp.get_device(device)
+    vertices = _launch.empty(ball_vertices + 3 * cylinder_vertices, dtype=wp.vec3, device=device)
+    faces = _launch.empty(3 * (ball_faces + 3 * cylinder_faces), dtype=wp.int32, device=device)
+    _icosphere_into(
+        _AXIS_BALL_LEVELS,
+        origin_size_f,
+        transform,
+        odt.as_dense(vertices[:ball_vertices]),
+        odt.as_dense(faces[: 3 * ball_faces]),
+    )
+    for k, direction in enumerate((_UNIT_X, _UNIT_Y, _UNIT_Z)):
+        placement = marker @ _align_vectors(_UNIT_Z, direction).dot(shift)
+        vertex_start = ball_vertices + k * cylinder_vertices
+        face_start = 3 * (ball_faces + k * cylinder_faces)
+        _cylinder_into(
+            template,
+            wp.mat44(*placement.flatten()),
+            vertex_start,
+            odt.as_dense(vertices[vertex_start : vertex_start + cylinder_vertices]),
+            odt.as_dense(faces[face_start : face_start + 3 * cylinder_faces]),
         )
-    return _apply_transform(*od.combine.concatenate(parts), transform)
+    return vertices, faces
 
 
 ParametricSurfaceKind = Literal[
@@ -2295,12 +2387,13 @@ def super_ellipsoid(
     radii_np = np.asanyarray(radii, dtype=np.float64)
     if radii_np.shape != (3,):
         raise ValueError(f"radii must be (3,) float, got {radii_np.shape}")
-    vertices, faces = _parametric_surface(
-        _SUPER_ELLIPSOID_SPEC, u_resolution, v_resolution, device, n1=n1, n2=n2
-    )
+    # Radii other than one scale the unit superquadric as it is written.
+    scale = None
     if not np.array_equal(radii_np, np.ones(3)):
-        return _apply_transform(vertices, faces, wp.mat44(*np.diag([*radii_np, 1.0]).ravel()))
-    return vertices, faces
+        scale = wp.mat44(*np.diag([*radii_np, 1.0]).ravel())
+    return _parametric_surface(
+        _SUPER_ELLIPSOID_SPEC, u_resolution, v_resolution, device, n1=n1, n2=n2, transform=scale
+    )
 
 
 def super_toroid(
@@ -2441,33 +2534,19 @@ def random_hills(
     """
     if float(x_variance) <= 0.0 or float(y_variance) <= 0.0:
         raise ValueError(f"variances must be positive, got {(x_variance, y_variance)}")
-    first, tables, faces = _parametric_samples(
-        _RANDOM_HILLS_SPEC, u_resolution, v_resolution, device
-    )
     generator = np.random.default_rng(od.sample.resolve_seed(seed))
     centers = generator.uniform(
         low=(_RANDOM_HILLS_SPEC.u_range[0], _RANDOM_HILLS_SPEC.v_range[0]),
         high=(_RANDOM_HILLS_SPEC.u_range[1], _RANDOM_HILLS_SPEC.v_range[1]),
         size=(max(int(n_hills), 0), 2),
     )
-
-    vertices = _launch.empty(first.size, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_creation.random_hills_vertices,
-        dim=vertices.size,
-        inputs=[
-            wp.float32(amplitude),
-            wp.float32(x_variance),
-            wp.float32(y_variance),
-            _launch.array(centers, dtype=wp.vec2, device=device),
-            first,
-            tables,
-            wp.int32(int(v_resolution)),
-            vertices,
-        ],
-        device=device,
+    return _parametric_surface(
+        _RANDOM_HILLS_SPEC,
+        u_resolution,
+        v_resolution,
+        device,
+        hills=(float(amplitude), float(x_variance), float(y_variance), centers),
     )
-    return vertices, faces
 
 
 def random_soup(
@@ -2636,6 +2715,16 @@ _PARAMETRIC_SPECS: dict[str, _ParametricSpec] = {
     ),
 }
 
+# The gluing flags as plain ints, for the host's lattice arithmetic.
+_GLUE_U_WRAP = int(kernel_creation.GLUE_U_WRAP)
+_GLUE_U_TWIST = int(kernel_creation.GLUE_U_TWIST)
+_GLUE_V_WRAP = int(kernel_creation.GLUE_V_WRAP)
+_GLUE_V_TWIST = int(kernel_creation.GLUE_V_TWIST)
+_GLUE_POLE_J_LO = int(kernel_creation.GLUE_POLE_J_LO)
+_GLUE_POLE_J_HI = int(kernel_creation.GLUE_POLE_J_HI)
+_GLUE_POLE_I_LO = int(kernel_creation.GLUE_POLE_I_LO)
+_GLUE_POLE_I_HI = int(kernel_creation.GLUE_POLE_I_HI)
+
 # The two superquadrics and the height field, whose shape parameters earn them their own builders.
 _SUPER_ELLIPSOID_SPEC = _ParametricSpec(
     kernel_creation.SURFACE_SUPER_ELLIPSOID,
@@ -2652,14 +2741,11 @@ _SUPER_TOROID_SPEC = _ParametricSpec(
     u_wrap=True,
     v_wrap=True,
 )
-# The height field has its own kernel -- it sums a table of bumps rather than evaluating a closed
-# form -- so its ``kind`` selects nothing and the lattice is a plain grid.
-_RANDOM_HILLS_SPEC = _ParametricSpec(wp.int32(-1), (-10.0, 10.0), (-10.0, 10.0))
-
-# Lattice samples at or above which the device lattice beats the numpy one. The device path costs a
-# flat floor of launches, allocations and two readbacks whatever the resolution; the host path is
-# quadratic in it, and the two cross here.
-_PARAMETRIC_LATTICE_DEVICE_FROM = 625
+# The height field sums a table of bumps rather than evaluating a closed form, and its lattice is a
+# plain grid.
+_RANDOM_HILLS_SPEC = _ParametricSpec(
+    kernel_creation.SURFACE_RANDOM_HILLS, (-10.0, 10.0), (-10.0, 10.0)
+)
 
 # Longest profile ``_revolve_regular`` will screen. The screen is ``O(P)`` in the profile length
 # while the fast path's win is flat in it -- the general engine's layout tables, three uploads and
@@ -2682,48 +2768,37 @@ def _parametric_surface(
     u_resolution: int,
     v_resolution: int,
     device: wp.DeviceLike,
+    *,
     n1: float = 1.0,
     n2: float = 1.0,
+    transform: wp.mat44 | None = None,
+    hills: tuple[float, float, float, np.ndarray] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """Sample one analytic surface on its identified lattice, for the four public builders."""
-    # One output per *vertex*, carrying the one lattice sample chosen to represent it, never one per
-    # lattice sample: where the surface glues, several lattice samples map to the same vertex, and
-    # evaluating only the canonical one keeps the result bit-exact run to run -- mapping over the
-    # lattice and letting the identified samples race for the slot would not (a twisted seam and a
-    # collapsed pole row reach the same point through different expressions, so they agree only to
-    # rounding).
-    first, tables, faces = _parametric_samples(spec, u_resolution, v_resolution, device)
-    vertices = _launch.empty(first.size, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_creation.parametric_vertices,
-        dim=first.size,
-        inputs=[
-            spec.kind,
-            first,
-            tables,
-            wp.int32(int(v_resolution)),
-            wp.float32(n1),
-            wp.float32(n2),
-            vertices,
-        ],
-        device=device,
-    )
-    return vertices, faces
-
-
-def _parametric_samples(
-    spec: _ParametricSpec, u_resolution: int, v_resolution: int, device: wp.DeviceLike
-) -> tuple[wp.array[wp.int32], wp.array[wp.float32], wp.array[wp.int32]]:
     """
-    ``(first, tables, faces)`` for one surface's lattice.
+    Sample one analytic surface on its identified lattice, for the four public builders.
 
-    ``first`` is the flat lattice index of the sample representing each output vertex, ``tables``
-    the ``u`` parameter table followed by the ``v`` one, and ``faces`` the flat triangle buffer.
-    The parameter *tables* are built here rather than in the kernel so that both ends of the domain
-    are hit exactly: several of these maps are singular one ulp outside their rectangle. They are
-    length ``n_u`` and ``n_v``, not one entry per sample, so the gather that spreads them over the
-    lattice happens on the device (``kernels/creation.parametric_sample``).
+    One output per *vertex*, carrying the one lattice sample chosen to represent it, never one per
+    lattice sample: where the surface glues, several lattice samples map to the same vertex, and
+    evaluating only the canonical one keeps the result bit-exact run to run -- mapping over the
+    lattice and letting the identified samples race for the slot would not (a twisted seam and a
+    collapsed pole row reach the same point through different expressions, so they agree only to
+    rounding).
+
+    The topology is pure index arithmetic, in the same spirit as [`grid`][ordito.creation.grid]: no
+    position is consulted and no tolerance appears anywhere, so it is exact and independent of
+    resolution, dtype and device. Welding by *distance* instead would (a) make every one of these
+    meshes depend on [`remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices],
+    which several of them exist to test, and (b) glue the accidental self-intersections of an
+    immersed surface -- which is what VTK does, merging 40 lattice points of Catalan's minimal
+    surface that the map does not identify, because two sheets happen to cross there.
+
+    All the gluing happens on the lattice's four edges and acts uniformly along each side, so the
+    host resolves a fixed handful of samples (``_parametric_layout``), sizes both outputs in closed
+    form, and one launch writes the whole mesh (``kernels/creation.parametric_mesh``). ``hills`` is
+    ``random_hills``'s ``(amplitude, x_variance, y_variance, centers)``.
     """
+    if spec.u_twist and spec.v_twist:
+        raise ValueError("a surface twisted in both directions is not supported")
     n_u, n_v = int(u_resolution), int(v_resolution)
     if n_u < 2 or n_v < 2:
         raise ValueError(f"resolutions must be at least 2, got {(n_u, n_v)}")
@@ -2736,157 +2811,61 @@ def _parametric_samples(
         raise ValueError(f"u_resolution must be at least 3 on a wrapped axis, got {n_u}")
     if spec.v_wrap and not spec.v_twist and n_v < 3:
         raise ValueError(f"v_resolution must be at least 3 on a wrapped axis, got {n_v}")
-    # The lattice is a closed-form parallel map, so the device wins it outright once there is
-    # enough of it -- and loses below that to its own launch and readback floor, which is flat where
-    # the host cost is quadratic in the resolution. Both paths produce byte-identical vertices and
-    # faces, so the gate is purely a cost choice; see ``_PARAMETRIC_LATTICE_DEVICE_FROM``.
-    tables = _launch.array(
-        np.concatenate((np.linspace(*spec.u_range, n_u), np.linspace(*spec.v_range, n_v))),
-        dtype=wp.float32,
+
+    gluing = _parametric_gluing(spec)
+    meta, dead_np, n_vertices, n_dead = _parametric_layout(gluing, n_u, n_v)
+    amplitude, x_variance, y_variance, centers_np = (
+        (0.0, 1.0, 1.0, np.empty((0, 2))) if hills is None else hills
+    )
+    # The parameter tables are built here rather than in the kernel so that both ends of the domain
+    # are hit exactly: several of these maps are singular one ulp outside their rectangle.
+    floats_np = np.concatenate(
+        (
+            np.linspace(*spec.u_range, n_u),
+            np.linspace(*spec.v_range, n_v),
+            np.asarray(centers_np, dtype=np.float64).reshape(-1),
+        )
+    ).astype(np.float32)
+    layout = _launch.array(
+        np.concatenate((np.array(meta, dtype=np.int32), floats_np.view(np.int32), dead_np)),
+        dtype=wp.int32,
         device=device,
     )
-    if n_u * n_v >= _PARAMETRIC_LATTICE_DEVICE_FROM:
-        first, faces = _parametric_lattice_device(spec, n_u, n_v, device)
-        return first, tables, faces
-
-    first_np, faces_np = _parametric_lattice_host(spec, n_u, n_v)
-    return (
-        _launch.array(first_np, dtype=wp.int32, device=device),
-        tables,
-        _launch.array(faces_np, dtype=wp.int32, device=device),
+    n_triangles = 2 * (n_u - 1) * (n_v - 1)
+    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=layout.device)
+    faces = _launch.empty(3 * (n_triangles - n_dead), dtype=wp.int32, device=layout.device)
+    _launch.launch(
+        kernel_creation.parametric_mesh,
+        dim=n_u * n_v + n_triangles,
+        inputs=[
+            spec.kind,
+            wp.int32(n_u),
+            wp.int32(n_v),
+            wp.int32(gluing),
+            wp.int32(centers_np.shape[0]),
+            wp.float32(n1),
+            wp.float32(n2),
+            wp.float32(amplitude),
+            wp.float32(x_variance),
+            wp.float32(y_variance),
+            layout,
+            *_placement(transform),
+        ],
+        outputs=[vertices, faces],
+        device=layout.device,
     )
+    return vertices, faces
 
 
-def _parametric_lattice_host(
-    spec: _ParametricSpec, n_u: int, n_v: int
-) -> tuple[np.ndarray, np.ndarray]:
+def _parametric_gluing(spec: _ParametricSpec) -> int:
     """
-    Choose one lattice sample per output vertex, and build the face buffer, for one surface.
+    Return the ``kernels/creation.GLUE_*`` bitmask of one surface's gluing rule.
 
-    Returns ``(first, faces)`` where ``first`` is the flat lattice index of the sample
-    representing each output vertex -- several samples land on one vertex wherever the
-    surface glues, and evaluating only the representative keeps the result bit-exact -- and
-    ``faces`` is ordito's flat triangle buffer.
-
-    The small-lattice half of the dispatch in
-    [`_parametric_samples`][ordito.creation._parametric_samples]; its device twin is
-    ``_parametric_lattice_device``, which produces the identical answer and wins above
-    ``_PARAMETRIC_LATTICE_DEVICE_FROM`` samples. Pure index arithmetic, in the same spirit as
-    [`grid`][ordito.creation.grid]: no position is consulted and no tolerance appears anywhere, so
-    the topology is exact and independent of resolution, dtype and device. Welding by *distance*
-    instead would (a) make every one of these meshes depend on
-    [`remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices], which several of them
-    exist to test, and (b) glue the accidental self-intersections of an immersed surface -- which is
-    what VTK does, merging 40 lattice points of Catalan's minimal surface that the map does not
-    identify, because two sheets happen to cross there.
+    A pole is a boundary row the map collapses to a single point. A *wrapped* boundary has already
+    identified its two extreme rows, so a pole on either of them is one pole on the surviving row
+    -- which is why Boy and the cross-cap keep 1 483 vertices rather than losing a second row's
+    worth. The mask carries the four resolved pole rows, not the four spec flags.
     """
-    if spec.u_twist and spec.v_twist:
-        raise ValueError("a surface twisted in both directions is not supported")
-    i_lattice, j_lattice = np.meshgrid(np.arange(n_u), np.arange(n_v), indexing="ij")
-    i_canonical, j_canonical = i_lattice.copy(), j_lattice.copy()
-
-    # Wrapped boundary: the last row *is* the first row. A twist reverses the other index on the way
-    # across, which is precisely what makes Moebius, Klein, Boy, Roman and the cross-cap
-    # non-orientable -- the seam glues the strip to itself with a flip.
-    if spec.u_wrap:
-        seam = i_canonical == n_u - 1
-        if spec.u_twist:
-            j_canonical = np.where(seam, n_v - 1 - j_canonical, j_canonical)
-        i_canonical = np.where(seam, 0, i_canonical)
-    if spec.v_wrap:
-        seam = j_canonical == n_v - 1
-        if spec.v_twist:
-            i_canonical = np.where(seam, n_u - 1 - i_canonical, i_canonical)
-        j_canonical = np.where(seam, 0, j_canonical)
-        # A v-twist can send an index back onto the u seam, so re-canonicalise it.
-        if spec.u_wrap:
-            i_canonical = np.where(i_canonical == n_u - 1, 0, i_canonical)
-
-    # A pole is a boundary row the map collapses to a single point, so every sample on it is one
-    # vertex. ``v_min`` / ``v_max`` are rows spanning u, ``u_min`` / ``u_max`` columns spanning v.
-    # A *wrapped* boundary has already identified its two extreme rows, so a pole on either of them
-    # is one pole on the surviving row -- which is why Boy and the cross-cap keep 1 483 vertices
-    # rather than losing a second row's worth.
-    poles = []
-    if spec.v_wrap:
-        if spec.pole_v_min or spec.pole_v_max:
-            poles.append(j_canonical == 0)
-    else:
-        if spec.pole_v_min:
-            poles.append(j_canonical == 0)
-        if spec.pole_v_max:
-            poles.append(j_canonical == n_v - 1)
-    if spec.u_wrap:
-        if spec.pole_u_min or spec.pole_u_max:
-            poles.append(i_canonical == 0)
-    else:
-        if spec.pole_u_min:
-            poles.append(i_canonical == 0)
-        if spec.pole_u_max:
-            poles.append(i_canonical == n_u - 1)
-    for on_row in poles:
-        anchor_i, anchor_j = int(i_canonical[on_row][0]), int(j_canonical[on_row][0])
-        i_canonical = np.where(on_row, anchor_i, i_canonical)
-        j_canonical = np.where(on_row, anchor_j, j_canonical)
-
-    _unique, first, inverse = np.unique(
-        i_canonical * n_v + j_canonical, return_index=True, return_inverse=True
-    )
-    vertex_index = inverse.reshape((n_u, n_v)).astype(np.int32)
-
-    # One cell per lattice square -- wrapping reuses vertices rather than adding cells, so the count
-    # is ``(n_u - 1) * (n_v - 1)`` however the boundary glues. A cell touching a pole has two
-    # identical corners, so it contributes one triangle instead of two.
-    corner_a = vertex_index[:-1, :-1].ravel()
-    corner_b = vertex_index[1:, :-1].ravel()
-    corner_c = vertex_index[1:, 1:].ravel()
-    corner_d = vertex_index[:-1, 1:].ravel()
-    # Wound against the (u, v) frame, matching VTK's convention, which puts the normals of the
-    # closed surfaces outward.
-    triangles = np.concatenate(
-        (
-            np.column_stack((corner_a, corner_c, corner_b)),
-            np.column_stack((corner_a, corner_d, corner_c)),
-        )
-    )
-    nondegenerate = (
-        (triangles[:, 0] != triangles[:, 1])
-        & (triangles[:, 1] != triangles[:, 2])
-        & (triangles[:, 2] != triangles[:, 0])
-    )
-    faces_np = np.ascontiguousarray(triangles[nondegenerate].reshape(-1), dtype=np.int32)
-    return first.astype(np.int32), faces_np
-
-
-def _parametric_lattice_device(
-    spec: _ParametricSpec, n_u: int, n_v: int, device: wp.DeviceLike
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """
-    Choose one lattice sample per output vertex, and build the face buffer, for one surface.
-
-    Returns ``(first, faces)`` where ``first`` is the flat lattice index of the sample representing
-    each output vertex -- several samples land on one vertex wherever the surface glues, and
-    evaluating only the representative keeps the result bit-exact -- and ``faces`` is ordito's flat
-    triangle buffer.
-
-    The large-lattice half of the dispatch in
-    [`_parametric_samples`][ordito.creation._parametric_samples]; ``_parametric_lattice_host``
-    is its numpy twin and returns the identical answer. Pure index arithmetic, in the same spirit
-    as [`grid`][ordito.creation.grid]: no position is consulted and no tolerance appears anywhere,
-    so the topology is exact and independent of resolution, dtype and device. Welding by *distance*
-    instead would (a) make every one of these meshes depend on
-    [`remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices], which several of them
-    exist to test, and (b) glue the accidental self-intersections of an immersed surface -- which is
-    what VTK does, merging 40 lattice points of Catalan's minimal surface that the map does not
-    identify, because two sheets happen to cross there.
-    """
-    if spec.u_twist and spec.v_twist:
-        raise ValueError("a surface twisted in both directions is not supported")
-
-    # A pole is a boundary row the map collapses to a single point. A *wrapped* boundary has
-    # already identified its two extreme rows, so a pole on either of them is one pole on the
-    # surviving row -- which is why Boy and the cross-cap keep 1 483 vertices rather than losing a
-    # second row's worth. The kernel takes the four resolved masks, not the eight spec flags.
     pole_j_lo = (spec.pole_v_min or spec.pole_v_max) if spec.v_wrap else spec.pole_v_min
     pole_j_hi = False if spec.v_wrap else spec.pole_v_max
     pole_i_lo = (spec.pole_u_min or spec.pole_u_max) if spec.u_wrap else spec.pole_u_min
@@ -2904,33 +2883,137 @@ def _parametric_lattice_device(
     ):
         if on:
             gluing |= int(flag)
+    return gluing
 
-    # One cell per lattice square -- wrapping reuses vertices rather than adding cells, so the count
-    # is ``(n_u - 1) * (n_v - 1)`` however the boundary glues. A cell touching a pole has two
-    # identical corners, so it contributes one triangle instead of two.
-    n_lattice = n_u * n_v
-    n_rows = n_lattice + 2 * (n_u - 1) * (n_v - 1)
-    # The lattice's canonical keys marked, then each triangle's survival, in one buffer and one
-    # inclusive scan: the lattice prefix numbers the vertices and the triangle tail ranks the
-    # survivors. The two counts are the only readbacks, and they size the outputs.
-    scan = _launch.zeros(n_rows, dtype=wp.int32, device=device)
-    inputs = [wp.int32(n_u), wp.int32(n_v), wp.int32(gluing)]
-    _launch.launch(
-        kernel_creation.parametric_lattice_flags, dim=n_rows, inputs=[*inputs, scan], device=device
-    )
-    _launch.array_scan(scan, out_array=scan, inclusive=True)
-    n_vertices = int(read_scalar(scan, n_lattice - 1))
-    n_faces = int(read_scalar(scan, n_rows - 1)) - n_vertices
 
-    first = _launch.full(n_vertices, INT32_MAX, dtype=wp.int32, device=device)
-    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_creation.parametric_lattice_emit,
-        dim=n_rows,
-        inputs=[*inputs, scan, first, faces],
-        device=device,
-    )
-    return first, faces
+def _parametric_layout(gluing: int, n_u: int, n_v: int) -> tuple[list[int], np.ndarray, int, int]:
+    """
+    ``(meta, dead, n_vertices, n_dead)``: the host half of one surface's single launch.
+
+    The canonical keys are the reduced rectangle ``[0, extent_i) x [0, extent_j)`` (a wrapped axis
+    loses its last row) less every point on an active pole line, plus the anchors a pole collapse
+    reaches, so ``n_vertices`` is closed form. An interior lattice sample is never glued, and along
+    each side of the lattice every inner sample goes through the same branch of the gluing rule,
+    so a few samples decide everything else: which anchors are reached and the lowest lattice index
+    reaching each (the sample its vertex is evaluated from -- a lattice corner, or the first inner
+    sample of a side that collapses onto it), and which sides lose a triangle in every non-corner
+    cell. ``dead`` lists the remaining dead triangles explicitly: those of the four corner cells, or
+    of every cell when the lattice is two samples wide and a cell touches both long sides.
+
+    ``meta`` is the head of ``kernels/creation.parametric_mesh``'s layout (its
+    ``PARAMETRIC_META_*`` slots) and ``n_dead`` counts every dead triangle, listed or not.
+    """
+    u_wrap = gluing & _GLUE_U_WRAP != 0
+    v_wrap = gluing & _GLUE_V_WRAP != 0
+    j_lo, j_hi = gluing & _GLUE_POLE_J_LO != 0, gluing & _GLUE_POLE_J_HI != 0
+    i_lo, i_hi = gluing & _GLUE_POLE_I_LO != 0, gluing & _GLUE_POLE_I_HI != 0
+    extent_i, extent_j = n_u - int(u_wrap), n_v - int(v_wrap)
+    pole_rows, pole_columns = int(j_lo) + int(j_hi), int(i_lo) + int(i_hi)
+    n_pole = pole_rows * extent_i + pole_columns * extent_j - pole_rows * pole_columns
+    # The anchors: ``(0, 0)``, ``(0, n_v - 1)``, ``(n_u - 1, 0)``. The second takes the points of
+    # its row that no column pole re-anchors afterwards.
+    anchor_keys = (0, n_v - 1, (n_u - 1) * n_v)
+    hit = (j_lo or i_lo, j_hi and extent_i - int(i_lo) - int(i_hi) > 0, i_hi)
+    n_vertices = extent_i * extent_j - n_pole + sum(hit)
+
+    # One key pass over every sample consulted: the four lattice corners, the first two inner
+    # samples of each side (top, bottom, left, right; clamped where a side has fewer), and the
+    # corners of the four corner cells.
+    last_i, last_j = n_u - 1, n_v - 1
+    one_i, two_i, one_j, two_j = min(1, last_i), min(2, last_i), min(1, last_j), min(2, last_j)
+    sample_i = [0, 0, last_i, last_i, 0, last_i, one_i, one_i, 0, last_i, two_i, two_i]
+    sample_j = [0, last_j, 0, last_j, one_j, one_j, 0, last_j, two_j, two_j, 0, last_j]
+    n_cells_u, n_cells_v = n_u - 1, n_v - 1
+    n_cells = n_cells_u * n_cells_v
+    if min(n_u, n_v) >= 3:
+        cells = np.array([0, n_cells_v - 1, (n_cells_u - 1) * n_cells_v, n_cells - 1])
+    else:
+        cells = np.arange(n_cells)
+    cell_i, cell_j = cells // n_cells_v, cells % n_cells_v
+    keys = _parametric_keys(
+        gluing,
+        np.concatenate((sample_i, cell_i, cell_i + 1, cell_i + 1, cell_i)),
+        np.concatenate((sample_j, cell_j, cell_j, cell_j + 1, cell_j + 1)),
+        n_u,
+        n_v,
+    ).tolist()
+    first_dead, second_dead = _corner_dead(*np.split(np.asarray(keys[12:]), 4))
+    dead = np.concatenate((np.sort(cells[first_dead]), n_cells + np.sort(cells[second_dead])))
+
+    # Lowest lattice index reaching each anchor: a corner, or a side's first inner sample.
+    candidates = [(sample_i[k] * n_v + sample_j[k], keys[k]) for k in range(4)]
+    if n_v >= 3:
+        candidates += [(one_j, keys[4]), (last_i * n_v + one_j, keys[5])]
+    if n_u >= 3:
+        candidates += [(n_v, keys[6]), (n_v + last_j, keys[7])]
+    first = [
+        min((flat for flat, key in candidates if key == anchor), default=0) if reached else 0
+        for anchor, reached in zip(anchor_keys, hit, strict=True)
+    ]
+
+    # A side whose inner samples collapse loses one triangle in each of its non-corner cells.
+    sides = 0
+    n_side_dead = 0
+    if min(n_u, n_v) >= 3:
+        for flag, one, two, count in (
+            (kernel_creation.SIDE_TOP, keys[4], keys[8], n_cells_v - 2),
+            (kernel_creation.SIDE_BOTTOM, keys[5], keys[9], n_cells_v - 2),
+            (kernel_creation.SIDE_LEFT, keys[6], keys[10], n_cells_u - 2),
+            (kernel_creation.SIDE_RIGHT, keys[7], keys[11], n_cells_u - 2),
+        ):
+            if count > 0 and one == two:
+                sides |= int(flag)
+                n_side_dead += count
+    meta = [int(sum(1 << k for k, reached in enumerate(hit) if reached)), *first, sides, dead.size]
+    return meta, dead.astype(np.int32), n_vertices, n_side_dead + int(dead.size)
+
+
+def _corner_dead(
+    corner_a: np.ndarray, corner_b: np.ndarray, corner_c: np.ndarray, corner_d: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Whether each cell's ``(a, c, b)`` and ``(a, d, c)`` triangles repeat a corner key."""
+    first_dead = (corner_a == corner_c) | (corner_c == corner_b) | (corner_b == corner_a)
+    second_dead = (corner_a == corner_d) | (corner_d == corner_c) | (corner_c == corner_a)
+    return first_dead, second_dead
+
+
+def _parametric_keys(gluing: int, i: np.ndarray, j: np.ndarray, n_u: int, n_v: int) -> np.ndarray:
+    """
+    Canonical key ``i_canonical * n_v + j_canonical`` of each lattice sample ``(i, j)``.
+
+    The host form of ``kernels/creation.parametric_canonical_key``, with the same two orderings:
+    the ``u``-seam re-canonicalisation after a ``v``-twist is unmasked, and the four pole masks are
+    snapshots of the post-wrap state taken before any of them collapses anything. A wrapped
+    boundary's last row *is* its first; a twist reverses the other index on the way across, which
+    is precisely what makes Moebius, Klein, Boy, Roman and the cross-cap non-orientable.
+    """
+    u_wrap = gluing & _GLUE_U_WRAP != 0
+    if u_wrap:
+        seam = i == n_u - 1
+        if gluing & _GLUE_U_TWIST:
+            j = np.where(seam, n_v - 1 - j, j)
+        i = np.where(seam, 0, i)
+    if gluing & _GLUE_V_WRAP:
+        seam = j == n_v - 1
+        if gluing & _GLUE_V_TWIST:
+            i = np.where(seam, n_u - 1 - i, i)
+        j = np.where(seam, 0, j)
+        if u_wrap:
+            i = np.where(i == n_u - 1, 0, i)
+    # Every mask first, then the collapses in order, a later pole overriding an earlier one.
+    poles = []
+    if gluing & _GLUE_POLE_J_LO:
+        poles.append((j == 0, 0, 0))
+    if gluing & _GLUE_POLE_J_HI:
+        poles.append((j == n_v - 1, 0, n_v - 1))
+    if gluing & _GLUE_POLE_I_LO:
+        poles.append((i == 0, 0, 0))
+    if gluing & _GLUE_POLE_I_HI:
+        poles.append((i == n_u - 1, n_u - 1, 0))
+    for on_pole, anchor_i, anchor_j in poles:
+        i = np.where(on_pole, anchor_i, i)
+        j = np.where(on_pole, anchor_j, j)
+    return i * n_v + j
 
 
 def _resolve_cylinder_axis(
@@ -3054,11 +3137,12 @@ def _revolve_regular(
             wp.int32(wrap),
             wp.int32(first_segment_faces),
             wp.int32(faces_per_slice),
+            *_placement(transform),
         ],
         outputs=[vertices, faces],
         device=device,
     )
-    return _apply_transform(vertices, faces, transform)
+    return vertices, faces
 
 
 def _closed_form_template(profile_np: np.ndarray, n_sections: int) -> tuple[int, int]:
@@ -3094,22 +3178,19 @@ def _align_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return matrix
 
 
-def _apply_transform(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], transform: wp.mat44 | None
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+def _placement(transform: wp.mat44 | None) -> tuple[wp.mat44, wp.int32]:
     """
-    Transform ``vertices`` in place, reversing face winding when the transform is a mirror.
+    Return the ``(matrix, transform_mode)`` pair a generator kernel places its output with.
 
-    In place is right *here* and nowhere else in the package: every caller has just built the
-    buffer it hands over, so there is no second holder to corrupt and no cache to invalidate --
-    the opposite of [`Trimesh.transform`][ordito.mesh.Trimesh.transform], which is functional for
-    exactly that reason.
+    The kernel applies ``matrix`` to every vertex and reverses every triangle when the matrix
+    mirrors, at write time (``kernels/creation.place_point``), so a transformed primitive is
+    still one launch.
     """
     if transform is None:
-        return vertices, faces
-    return od.transform.transform_mesh(
-        vertices, faces, transform, out_vertices=vertices, out_faces=faces
-    )
+        return _IDENTITY_MATRIX, kernel_creation.TRANSFORM_NONE
+    if od.transform.reverses_orientation(transform):
+        return transform, kernel_creation.TRANSFORM_MIRROR
+    return transform, kernel_creation.TRANSFORM_KEEP
 
 
 def _upload_points(points_np: np.ndarray, dtype: type, device: wp.DeviceLike) -> odt.ArrayNd:

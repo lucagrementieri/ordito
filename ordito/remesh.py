@@ -3082,12 +3082,11 @@ def subdivide(
     # One buffer sized for its final use: the originals copied into the prefix and one midpoint per
     # unique edge written straight into the tail, which is the layout ``_split_faces_four`` indexes.
     new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
-    _launch.copy(new_vertices, vertices, count=n_vertices)
     _launch.launch(
-        kernel_remesh.compute_midpoints,
-        dim=n_unique,
+        kernel_remesh.vertices_with_midpoints,
+        dim=n_vertices + n_unique,
         inputs=[vertices, unique_edges],
-        outputs=[new_vertices[n_vertices:]],
+        outputs=[new_vertices],
         device=device,
     )
     return new_vertices, _split_faces_four(faces, inverse, n_vertices)
@@ -3609,12 +3608,11 @@ def _extend_sizing_field(
     # straight into the tail, in the same order the split appends the midpoints.
     n_vertices = sizing.size
     extended = _launch.empty(n_vertices + n_split, dtype=wp.float32, device=device)
-    _launch.copy(extended, sizing, count=n_vertices)
     _launch.launch(
-        kernel_remesh.fill_edge_mean_sizing,
-        dim=int(unique_edges.shape[0]),
+        kernel_remesh.extend_edge_mean_sizing,
+        dim=max(n_vertices, int(unique_edges.shape[0])),
         inputs=[sizing, unique_edges, split_mask, offsets],
-        outputs=[extended[n_vertices:]],
+        outputs=[extended],
         device=device,
     )
     return extended

@@ -76,6 +76,7 @@ from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import repair as kernel_repair
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import selection as kernel_selection
+from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPrivateUsage]
 
 # Lattice resolution for ``fix_self_intersections(method="voxel")``, in samples across the mesh's
 # bounding-box diagonal. The same order as ``offset.offset_mesh``'s automatic floor, and the field
@@ -1027,9 +1028,13 @@ def remove_small_components(
         return vertices, faces
 
     labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
-    keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
 
+    # Each criterion accumulates one per-component table; the others stay ``None`` and are never
+    # read. The table is then thresholded inside the submesh extraction's own marking pass, so no
+    # separate keep-mask pass runs.
+    counts = statistic = corners = best = None
     if min_area is not None:
+        criterion = kernel_repair.COMPONENT_MIN_AREA
         # Each face's area is summed into its component where it is computed, rather than written
         # to a per-face buffer for a scatter pass to read back.
         statistic = _launch.zeros(n_faces, dtype=wp.float32, device=device)
@@ -1039,14 +1044,8 @@ def remove_small_components(
             inputs=[vertices, faces, labels, statistic],
             device=device,
         )
-        # Gather-then-compare at Python scope rather than a kernel: ``statistic[labels]`` is a
-        # per-component table read through the per-face label, and ``wp.map`` over that
-        # ``indexedarray`` is the standard elementwise-op idiom (and ``make_volume`` below already
-        # uses it). ``labels`` is a dense array, so the strided-index hazard -- which applies to a
-        # *column* of a rank-2 buffer -- does not arise. The bound is inclusive at every criterion,
-        # matching both references.
-        _launch.map(kernel_array.greater_equal, statistic[labels], wp.float32(min_area), out=keep)
     elif min_diameter is not None:
+        criterion = kernel_repair.COMPONENT_MIN_DIAMETER
         # ``+inf`` in all six slots seeds both ends at once: the packing stores the upper corner
         # negated so every update is a ``wp.atomic_min``. Each face then decodes its own
         # component's box as it reads it.
@@ -1057,22 +1056,17 @@ def remove_small_components(
             inputs=[vertices, faces, labels, corners],
             device=device,
         )
-        _launch.launch(
-            kernel_repair.group_diameter_flags,
-            dim=n_faces,
-            inputs=[corners, labels, wp.float32(min_diameter), keep],
-            device=device,
-        )
     else:
         counts = _launch.zeros(n_faces, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_scatter.count_occurrences, dim=n_faces, inputs=[labels, counts], device=device
         )
         if min_faces is not None:
-            _launch.map(kernel_array.greater_equal, counts[labels], wp.int32(min_faces), out=keep)
+            criterion = kernel_repair.COMPONENT_MIN_FACES
         else:
+            criterion = kernel_repair.COMPONENT_LARGEST
             # ``-1`` is below every packed key, so the reduction needs no separate seeding pass and
-            # the winning label never reaches the host -- the mask kernel recomputes its key.
+            # the winning label never reaches the host -- the marking pass recomputes its key.
             best = _launch.full(1, -1, dtype=wp.int64, device=device)
             _launch.launch(
                 kernel_repair.reduce_largest_group,
@@ -1080,14 +1074,32 @@ def remove_small_components(
                 inputs=[counts, best],
                 device=device,
             )
-            _launch.launch(
-                kernel_repair.mark_largest_group_mask,
-                dim=n_faces,
-                inputs=[labels, counts, best, keep],
-                device=device,
-            )
 
-    return od.selection.submesh_from_face_mask(vertices, faces, keep)
+    # ``wp.empty``: the marking pass writes every face's entry.
+    keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.mark_kept_components,
+        dim=n_faces,
+        inputs=[
+            faces,
+            labels,
+            criterion,
+            counts,
+            statistic,
+            corners,
+            best,
+            int(min_faces) if min_faces is not None else 0,
+            float(min_area if min_area is not None else (min_diameter or 0.0)),
+            keep,
+            ranks,
+        ],
+        device=device,
+    )
+    new_vertices, new_faces, _vertex_index, _ranks = _compact_marked_submesh(
+        vertices, faces, keep, ranks, keep_masked=True
+    )
+    return new_vertices, new_faces
 
 
 def split_non_manifold_vertices(
