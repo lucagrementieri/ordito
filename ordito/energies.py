@@ -52,6 +52,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
 from ordito.edges import edges_unique, edges_unique_length
+from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import energies as kernel_energies
 from ordito.laplacian import cotmatrix, cotmatrix_entries, mass_matrix_entries
 
@@ -389,7 +390,17 @@ def k_harmonic(
     require_same_device(laplacian=laplacian, mass=mass)
     if k < 1:
         raise ValueError(f"harmonic power k must be >= 1, got {k}.")
-    negated = odt.bsr_axpy(x=laplacian, alpha=-1.0)
+    # ``-L`` on ``L``'s own topology: copied offsets and columns and one negating map over the
+    # values, rather than ``bsr_axpy``'s general sum, which also reads the stale ``nnz`` field.
+    negated_values = _launch.empty_like(laplacian.values)
+    _launch.map(wp.neg, laplacian.values, out=negated_values)
+    negated = od.array.bsr_from_csr(
+        int(laplacian.nrow),
+        int(laplacian.ncol),
+        _launch.clone(laplacian.offsets),
+        _launch.clone(laplacian.columns),
+        negated_values,
+    )
     if k == 1:
         return negated
 
@@ -1160,15 +1171,14 @@ def _zero_at_boundary(
 
     Both quantities these energies build on -- a mass diagonal and an angle defect -- are defined
     only at interior vertices, so each is zeroed on the boundary before being inverted or scaled.
-    The guard is required rather than defensive: a closed mesh has no boundary vertices, and
-    launching over an empty index buffer is what the check avoids.
+    Cleared straight off the halfedge mates: no index list, scan or readback, and a closed mesh
+    pays one launch that writes nothing.
     """
-    boundary = od.boundary.boundary_vertex_indices(vertices, faces)
-    n_boundary = boundary.size
-    if n_boundary > 0:
-        _launch.launch(
-            kernel_energies.ZERO_AT_INDICES[values.dtype],
-            dim=n_boundary,
-            inputs=[boundary, values],
-            device=values.device,
-        )
+    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    _launch.launch(
+        kernel_boundary.zero_at_boundary_vertices,
+        dim=mates.size,
+        inputs=[mates, faces],
+        outputs=[values],
+        device=values.device,
+    )

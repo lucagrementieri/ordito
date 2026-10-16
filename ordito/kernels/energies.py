@@ -270,12 +270,6 @@ def hessian_face_terms(
 
 
 @wp.kernel
-def zero_at_indices(indices: wp.array[wp.int32], out_values: wp.array[wp.Float]) -> None:
-    i = wp.int32(wp.tid())
-    out_values[indices[i]] = type(out_values[0])(0.0)
-
-
-@wp.kernel
 def hessian_energy_counts(
     vf_offsets: wp.array[wp.int32],
     mass: wp.array[wp.float64],
@@ -360,7 +354,7 @@ def zero_at_boundary_edges(
 ) -> None:
     # Zero ``out_values`` at both endpoints of every unique edge with one halfedge -- every
     # boundary vertex, read off the halfedge counts ``internal_angles_and_sums`` leaves rather than
-    # a second sort of the halfedges (``energies._zero_at_boundary``'s route).
+    # a second pass over the halfedge mates (``energies._zero_at_boundary``'s route).
     #
     # Riding this on ``cr_gradient_rows``' grid (same ``dim``, independent; a boundary edge is one
     # whose second halfedge slot is ``-1``) was measured and declined: ``curved_hessian_energy``
@@ -778,7 +772,6 @@ _MATRIX_DTYPES = (wp.float32, wp.float64)
 # [`OverloadTable`][ordito.kernels.array.OverloadTable].
 # ``CROUZEIX_RAVIART_COTMATRIX_TRIPLETS`` keys on the pair ``(entry dtype, matrix dtype)`` for the
 # reason its registration already gave: the two templates are independent.
-ZERO_AT_INDICES: OverloadTable
 CROUZEIX_RAVIART_MASS_DIAG: OverloadTable
 CROUZEIX_RAVIART_COTMATRIX_TRIPLETS: OverloadTable
 SANDWICH_ROW_COUNTS: OverloadTable
@@ -789,14 +782,10 @@ CURVED_HESSIAN_TRIPLETS: OverloadTable
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global ZERO_AT_INDICES, CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_COTMATRIX_TRIPLETS
+    global CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_COTMATRIX_TRIPLETS
     global SANDWICH_ROW_COUNTS, SANDWICH_ROW_TRIPLETS
     global HESSIAN_ENERGY_TRIPLETS, CURVED_HESSIAN_TRIPLETS
     i32 = wp.array[wp.int32]
-    # ``_zero_at_boundary``'s only caller, ``float64`` in and out (``mass``/``kappa`` are fixed at
-    # that precision by their own producers) -- one dtype, not the full ``_MATRIX_DTYPES`` cross
-    # product this kernel's ``wp.Float`` genericity would otherwise admit.
-    ZERO_AT_INDICES = OverloadTable(zero_at_indices, {wp.float64: [i32, wp.array[wp.float64]]})
     CROUZEIX_RAVIART_MASS_DIAG = OverloadTable(
         crouzeix_raviart_mass_diag,
         {d: [wp.array[wp.vec3], i32, i32, wp.array[d]] for d in _MATRIX_DTYPES},

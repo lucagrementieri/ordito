@@ -455,11 +455,11 @@ def inflate(
         else _launch.clone(vertices)
     )
     # Each pass is the displacement and then one ``filter_laplacian`` pass with its volume
-    # constraint, written out so that nothing is allocated per pass: the normals are normalized as
-    # the displacement reads them from their accumulator, and every buffer and the constraint's
-    # device state are reused. Same arithmetic, so the same answer as the composed calls.
-    n_faces = faces.size // 3
-    normal_sums = odt.empty_2d((n_vertices, 3), wp.float64, device=device)
+    # constraint, written out so that nothing is allocated per pass: the displacement gathers each
+    # vertex's normal over the vertex-face table built once here, and every buffer and the
+    # constraint's device state are reused. Same arithmetic as the composed calls, up to the
+    # normal sums' order.
+    vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     displaced = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     wide = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
     diffused = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
@@ -467,17 +467,10 @@ def inflate(
     coeff = wp.float64(lamb)
     for step in range(iterations):
         amount = pressure * (step + 1) / iterations if gradual else pressure
-        _launch.zero_(normal_sums)
-        _launch.launch(
-            kernel_vertices.SCATTER_AREA_WEIGHTED_NORMALS[wp.float64],
-            dim=n_faces,
-            inputs=[positions, faces, normal_sums],
-            device=device,
-        )
         _launch.launch(
             kernel_smoothing.inflate_displace,
             dim=n_vertices,
-            inputs=[positions, normal_sums, wp.float32(amount)],
+            inputs=[positions, faces, vf_offsets, vf_indices, wp.float32(amount)],
             outputs=[displaced, wide],
             device=device,
         )
@@ -959,13 +952,8 @@ def equalize_triangle_areas(
     )
     region = _without_boundary_vertices(vertices, faces, region)
     positions = _launch.clone(vertices)
-    normals = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
     nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     for _ in range(iterations):
-        if no_shrinkage:
-            # Recomputed per pass rather than hoisted: the tangent plane the solve is confined to is
-            # the one through the vertex *now*, and after a pass that is a different plane.
-            normals = od.vertices.vertex_normals(positions, faces)
         _launch.launch(
             kernel_smoothing.equalize_area_step,
             dim=n_vertices,
@@ -974,7 +962,6 @@ def equalize_triangle_areas(
                 faces,
                 offsets,
                 vf_indices,
-                normals,
                 region,
                 vertices,
                 wp.float32(force),
@@ -1984,7 +1971,7 @@ def filter_implicit_fairing(
     # Boundary topology is fixed for the whole flow, so the partition is built once. ``None`` means
     # "solve over every vertex" -- either the caller asked for the unconstrained flow, or the mesh
     # is closed and there is nothing to pin.
-    dirichlet = _dirichlet_state(vertices, faces, positions, n, device) if pin_boundary else None
+    dirichlet = _dirichlet_state(faces, positions, n, device) if pin_boundary else None
     if dirichlet is not None and dirichlet.n_free == 0:
         # Every vertex is pinned, so the flow has no unknown to move and the pass is the identity.
         return _as_vec3(positions)
@@ -2203,11 +2190,7 @@ class _Dirichlet(NamedTuple):
 
 
 def _dirichlet_state(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    positions: wp.array[wp.vec3d],
-    n: int,
-    device: wp.DeviceLike,
+    faces: wp.array[wp.int32], positions: wp.array[wp.vec3d], n: int, device: wp.DeviceLike
 ) -> _Dirichlet | None:
     """
     Boundary-pinned solve state, or ``None`` when there is no boundary to pin.
@@ -2215,11 +2198,20 @@ def _dirichlet_state(
     Returning ``None`` for a closed mesh is deliberate: it routes the caller down the unreduced
     path, so a watertight input runs exactly the same code as it did before pinning existed.
     """
-    boundary_wp = od.boundary.boundary_vertex_indices(vertices, faces)
-    if boundary_wp.size == 0:
-        return None
-    fixed_mask = od.array.indices_to_mask(boundary_wp, n, device=device)
+    # The fixed mask straight off the halfedge mates (no index list, scan or readback); "no
+    # boundary" is then read off the one readback ``free_partition`` already makes.
+    mates = od.halfedge.halfedge_mates(faces, n)
+    fixed_mask = _launch.zeros(n, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_boundary.set_boundary_vertices,
+        dim=mates.size,
+        inputs=[mates, faces],
+        outputs=[fixed_mask],
+        device=device,
+    )
     free_map, n_free = twl.free_partition(fixed_mask)
+    if n_free == n:
+        return None
     # ``n_free == 0`` is *not* folded into the ``None`` above, although it too has nothing to
     # solve: ``None`` means "no boundary, so run unconstrained", and a mesh whose every vertex is
     # on the boundary (a single triangle, a fan, a strip, a small hole patch) would then have the

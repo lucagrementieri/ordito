@@ -14,7 +14,7 @@ from ordito.kernels.predicates import angle_defect, closest_point_on_segment, pl
 from ordito.kernels.reduce import block_chunk, commit_block_total
 from ordito.kernels.scatter import add_corner_triple
 from ordito.kernels.triangles import corner_triple
-from ordito.kernels.vertices import normalized_accumulated_row
+from ordito.kernels.vertices import gathered_area_weighted_normal
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1508,17 +1508,21 @@ def step_along_normal(position: wp.vec3, normal: wp.vec3, distance: wp.float32) 
 @wp.kernel
 def inflate_displace(
     positions: wp.array[wp.vec3],
-    normal_sums: wp.array2d[wp.float64],
+    faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
     distance: wp.float32,
     out_displaced: wp.array[wp.vec3],
     out_displaced_wide: wp.array[wp.vec3d],
 ) -> None:
-    # One inflation step: each vertex moved along its area-weighted normal, normalized as it is read
-    # from the scatter's accumulator (``vertices.normalize_accumulated_rows``' arithmetic, so the
-    # normals are never written), stored at both precisions -- the ``float32`` copy feeds the
-    # centre-of-mass integrals, the exact ``float64`` widening the diffusion and its volume.
+    # One inflation step: each vertex moved along its area-weighted normal, gathered over its
+    # incident faces as it is read (``vertices.vertex_normals``' arithmetic, so the normals are
+    # never written and no accumulator is zeroed and scattered per pass), stored at both
+    # precisions -- the ``float32`` copy feeds the centre-of-mass integrals, the exact ``float64``
+    # widening the diffusion and its volume.
     v = wp.int32(wp.tid())
-    moved = step_along_normal(positions[v], normalized_accumulated_row(normal_sums, v), distance)
+    normal = gathered_area_weighted_normal(positions, faces, vf_offsets, vf_indices, v)
+    moved = step_along_normal(positions[v], normal, distance)
     out_displaced[v] = moved
     out_displaced_wide[v] = to_vec3d(moved)
 
@@ -1720,7 +1724,6 @@ def equalize_area_step(
     faces: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
-    normals: wp.array[wp.vec3],
     region: wp.array[wp.bool],
     initial: wp.array[wp.vec3],
     force: wp.float32,
@@ -1735,8 +1738,13 @@ def equalize_area_step(
     if not in_region(region, vertex) or offsets[vertex] == offsets[vertex + 1]:
         out_positions[vertex] = current
         return
+    # The tangent plane is the one through the vertex *now*, so its normal is gathered from the
+    # current positions (only read under ``no_shrinkage``).
+    normal = wp.vec3()
+    if no_shrinkage:
+        normal = gathered_area_weighted_normal(positions, faces, offsets, vertex_faces, vertex)
     target = equal_area_position(
-        positions, faces, offsets, vertex_faces, vertex, normals[vertex], no_shrinkage
+        positions, faces, offsets, vertex_faces, vertex, normal, no_shrinkage
     )
     moved = current + (target - current) * force
     out_positions[vertex] = limit_near_initial(moved, initial[vertex], max_displacement)

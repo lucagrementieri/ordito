@@ -45,23 +45,54 @@ def max_corner_inverse_edge_length_sq(
 
 
 @wp.func
-def normalized_accumulated_row(sums: wp.array2d[wp.Float], i: wp.int32) -> wp.vec3:
+def normalized_narrowed(x: wp.Float, y: wp.Float, z: wp.Float) -> wp.vec3:
     """
-    Row ``i`` of an ``(n, 3)`` normal accumulator, unit-normalized and narrowed to ``wp.vec3``.
+    Return the accumulated vector ``(x, y, z)`` unit-normalized and narrowed to ``wp.vec3``.
 
-    The zero row comes back as the zero vector. Shared by ``normalize_accumulated_rows`` and by
-    the consumers that normalize on read (``smoothing.inflate_displace``) instead of materializing
-    the normals.
+    The zero vector comes back as the zero vector. The normalization every normal accumulator in
+    the module ends with, whether it was scattered into rows or gathered in registers.
     """
-    x = sums[i, 0]
-    y = sums[i, 1]
-    z = sums[i, 2]
     length = wp.sqrt(x * x + y * y + z * z)
-    if length > sums.dtype(0.0):
+    if length > type(x)(0.0):
         x = x / length
         y = y / length
         z = z / length
     return wp.vec3(wp.float32(x), wp.float32(y), wp.float32(z))
+
+
+@wp.func
+def normalized_accumulated_row(sums: wp.array2d[wp.Float], i: wp.int32) -> wp.vec3:
+    """
+    Row ``i`` of an ``(n, 3)`` normal accumulator, unit-normalized and narrowed to ``wp.vec3``.
+
+    The zero row comes back as the zero vector. Shared by ``normalize_accumulated_rows``.
+    """
+    return normalized_narrowed(sums[i, 0], sums[i, 1], sums[i, 2])
+
+
+@wp.func
+def gathered_area_weighted_normal(
+    positions: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex: wp.int32,
+) -> wp.vec3:
+    """
+    Vertex ``vertex``'s area-weighted unit normal, gathered over its incident faces.
+
+    The gather form of ``scatter_area_weighted_normals`` followed by ``normalized_accumulated_row``
+    at ``float64``: the same per-face ``normal * area`` widened into a ``float64`` sum and
+    normalized, in the vertex-face table's order (so equal to the scatter up to summation order).
+    A consumer that reads each vertex's normal once
+    (``smoothing.inflate_displace``, ``smoothing.equalize_area_step``) needs no accumulator, zero
+    fill or atomic scatter per pass.
+    """
+    total = wp.vec3d()
+    for slot in range(offsets[vertex], offsets[vertex + 1]):
+        normal, area = face_normals_and_area(positions, faces, vertex_faces[slot])
+        total += wp.vec3d(normal * area)
+    return normalized_narrowed(total[0], total[1], total[2])
 
 
 @wp.kernel

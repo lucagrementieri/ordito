@@ -926,6 +926,26 @@ def test_equalize_triangle_areas(bench_case: BenchCase) -> None:
     assert relaxed.shape == (bench_case.n_vertices,)
 
 
+@pytest.mark.benchmark(group="equalize_triangle_areas_no_shrinkage")
+@pytest.mark.benchlibs("ordito")
+def test_equalize_triangle_areas_no_shrinkage(bench_case: BenchCase) -> None:
+    """
+    ``equalize_triangle_areas`` confined to each vertex's tangent plane.
+
+    Read against the plain row: the difference is the area-weighted normal each vertex gathers
+    over its incident faces per pass, plus the 2x2 tangent solve. ordito-only: meshlib's row
+    already covers the agreement, which ``tests/test_smoothing.py`` checks with and without it.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    relaxed = bench_case.run(
+        lambda: od.smoothing.equalize_triangle_areas(
+            vertices, faces, _ITERATIONS, no_shrinkage=True
+        ),
+        rounds=3,
+    )
+    assert relaxed.shape == (bench_case.n_vertices,)
+
+
 @pytest.mark.benchmark(group="relax_keep_volume")
 @pytest.mark.benchlibs("ordito", "meshlib")
 def test_relax_keep_volume(bench_case: BenchCase) -> None:
