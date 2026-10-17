@@ -842,7 +842,7 @@ class _Plan:
         self.extend: list[list[tuple[wp.array[wp.int32], int]]] = [[] for _ in range(n_levels)]
         for level, start, end, width in group_table.tolist():
             self.extend[level].append((_launch.view(members, start, end), width * width))
-        # The per-level task maps, every level in one launch per map.
+        # The four per-level solve maps, every level of every map in one launch.
         f_offsets, r_offsets, b_offsets, c_offsets = (
             odt.as_dense(level_offsets[k]) for k in range(4)
         )
@@ -855,34 +855,15 @@ class _Plan:
         b_first, b_ncol, b_size, b_start, b_rows, b_slot = (empty(n_b, wp.int32) for _ in range(6))
         c_slot, c_stride, c_first, c_count, c_target = (empty(n_c, wp.int32) for _ in range(5))
         _launch.launch(
-            kernel_cholesky.forward_task_map,
-            dim=n_f,
-            inputs=[level_nodes, f_offsets, self.ncol, self.front_size, self.c0,
-                    self.block_offset, f_base_d],
-            outputs=[f_block, f_stride, f_count_d, f_source, f_slot],
-            device=device,
-        )  # fmt: skip
-        _launch.launch(
-            kernel_cholesky.forward_row_map,
-            dim=n_r,
-            inputs=[level_nodes, r_offsets, self.ncol, self.front_size, self.c0,
-                    self.row_offsets, f_base_d],
-            outputs=[r_slot, r_stride, r_count, r_target],
-            device=device,
-        )  # fmt: skip
-        _launch.launch(
-            kernel_cholesky.backward_task_map,
-            dim=n_b,
-            inputs=[level_nodes, b_offsets, self.ncol, self.front_size, self.c0,
-                    self.block_offset, self.row_offsets, b_base_d],
-            outputs=[b_block, b_first, b_ncol, b_size, b_start, b_rows, b_slot],
-            device=device,
-        )  # fmt: skip
-        _launch.launch(
-            kernel_cholesky.backward_row_map,
-            dim=n_c,
-            inputs=[level_nodes, c_offsets, self.ncol, self.front_size, self.c0, b_base_d],
-            outputs=[c_slot, c_stride, c_first, c_count, c_target],
+            kernel_cholesky.solve_task_maps,
+            dim=n_f + n_r + n_b + n_c,
+            inputs=[level_nodes, f_offsets, r_offsets, b_offsets, c_offsets, self.ncol,
+                    self.front_size, self.c0, self.block_offset, self.row_offsets, f_base_d,
+                    b_base_d, wp.int32(n_f), wp.int32(n_r), wp.int32(n_b)],
+            outputs=[f_block, f_stride, f_count_d, f_source, f_slot,
+                     r_slot, r_stride, r_count, r_target,
+                     b_block, b_first, b_ncol, b_size, b_start, b_rows, b_slot,
+                     c_slot, c_stride, c_first, c_count, c_target],
             device=device,
         )  # fmt: skip
         # Each column's contributions (the row-structure entries naming it), listed level-major
@@ -1706,12 +1687,14 @@ def _nested_dissection(
     partials = _launch.empty(max_tasks, dtype=kernel_cholesky.moment_vector, device=device)
     centre = _launch.empty(slots, dtype=wp.vec3d, device=device)
     axis = _launch.empty(slots, dtype=wp.vec3d, device=device)
-    # Each segment's count of stored partials, cleared by the block that stores its last one.
-    tickets = _launch.zeros(slots, dtype=wp.int32, device=device)
     keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
     vertices = _launch.empty(2 * n, dtype=wp.int32, device=device)
-    # The crossing counts start zeroed; ``dissection_link`` clears each segment's once read.
-    counts = _launch.zeros(2 * slots, dtype=wp.int32, device=device)
+    # The crossing counts start zeroed; ``dissection_link`` clears each segment's once read. Behind
+    # them in the same zeroed buffer, each segment's count of stored partials, which the block
+    # storing its last one clears.
+    crossings_and_tickets = _launch.zeros(3 * slots, dtype=wp.int32, device=device)
+    counts = _launch.view(crossings_and_tickets, 0, 2 * slots)
+    tickets = _launch.view(crossings_and_tickets, 2 * slots, 3 * slots)
     keep = _launch.empty(n, dtype=wp.int32, device=device)
     next_segment = _launch.empty(n, dtype=wp.int32, device=device)
     separator_side = _launch.empty(slots, dtype=wp.int32, device=device)

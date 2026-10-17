@@ -2265,8 +2265,9 @@ def level_item(offsets: wp.array[wp.int32], t: wp.int32) -> wp.int32:
     return binary_search_index(offsets, t) - 1
 
 
-@wp.kernel
-def forward_task_map(
+@wp.func
+def forward_task_entry(
+    t: wp.int32,
     level_node: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     ncol: wp.array[wp.int32],
@@ -2282,7 +2283,6 @@ def forward_task_map(
 ) -> None:
     # Forward tasks of every level, level-major: supernode by supernode, chunk-major, each chunk's
     # rows from ``CHUNK`` times the chunk down.
-    t = wp.int32(wp.tid())
     j = level_item(offsets, t)
     k = level_node[j]
     local = t - offsets[j]
@@ -2305,8 +2305,9 @@ def forward_task_map(
     out_slot[t] = forward_base[k] + c * size + row
 
 
-@wp.kernel
-def forward_row_map(
+@wp.func
+def forward_row_entry(
+    t: wp.int32,
     level_node: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     ncol: wp.array[wp.int32],
@@ -2321,7 +2322,6 @@ def forward_row_map(
 ) -> None:
     # Every solve-block row of every level: where its chunks sit and where their sum goes (a
     # column's forward entry, or ``-1 - pair`` for a lower row's contribution).
-    t = wp.int32(wp.tid())
     j = level_item(offsets, t)
     k = level_node[j]
     r = t - offsets[j]
@@ -2338,8 +2338,9 @@ def forward_row_map(
         out_target[t] = c0[k] + r
 
 
-@wp.kernel
-def backward_task_map(
+@wp.func
+def backward_task_entry(
+    t: wp.int32,
     level_node: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     ncol: wp.array[wp.int32],
@@ -2356,7 +2357,6 @@ def backward_task_map(
     out_rows: wp.array[wp.int32],
     out_slot: wp.array[wp.int32],
 ) -> None:
-    t = wp.int32(wp.tid())
     j = level_item(offsets, t)
     k = level_node[j]
     local = t - offsets[j]
@@ -2381,8 +2381,9 @@ def backward_task_map(
     out_slot[t] = backward_base[k] + c * width + column
 
 
-@wp.kernel
-def backward_row_map(
+@wp.func
+def backward_row_entry(
+    t: wp.int32,
     level_node: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     ncol: wp.array[wp.int32],
@@ -2397,7 +2398,6 @@ def backward_row_map(
 ) -> None:
     # Every column of every level, level-major: its backward chunks and its position (also the
     # forward solve's gather rows, in the same order).
-    t = wp.int32(wp.tid())
     j = level_item(offsets, t)
     k = level_node[j]
     i = t - offsets[j]
@@ -2407,6 +2407,78 @@ def backward_row_map(
     out_first[t] = i // CHUNK
     out_count[t] = (front_size[k] + CHUNK - 1) // CHUNK
     out_target[t] = c0[k] + i
+
+
+@wp.kernel
+def solve_task_maps(
+    level_node: wp.array[wp.int32],
+    forward_task_offsets: wp.array[wp.int32],
+    forward_row_offsets: wp.array[wp.int32],
+    backward_task_offsets: wp.array[wp.int32],
+    backward_column_offsets: wp.array[wp.int32],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    c0: wp.array[wp.int32],
+    block_offset: wp.array[wp.int64],
+    row_offsets: wp.array[wp.int32],
+    forward_base: wp.array[wp.int32],
+    backward_base: wp.array[wp.int32],
+    n_forward: wp.int32,
+    n_rows: wp.int32,
+    n_backward: wp.int32,
+    out_f_block: wp.array[wp.int64],
+    out_f_stride: wp.array[wp.int32],
+    out_f_count: wp.array[wp.int32],
+    out_f_source: wp.array[wp.int32],
+    out_f_slot: wp.array[wp.int32],
+    out_r_slot: wp.array[wp.int32],
+    out_r_stride: wp.array[wp.int32],
+    out_r_count: wp.array[wp.int32],
+    out_r_target: wp.array[wp.int32],
+    out_b_block: wp.array[wp.int64],
+    out_b_first: wp.array[wp.int32],
+    out_b_ncol: wp.array[wp.int32],
+    out_b_size: wp.array[wp.int32],
+    out_b_start: wp.array[wp.int32],
+    out_b_rows: wp.array[wp.int32],
+    out_b_slot: wp.array[wp.int32],
+    out_c_slot: wp.array[wp.int32],
+    out_c_stride: wp.array[wp.int32],
+    out_c_first: wp.array[wp.int32],
+    out_c_count: wp.array[wp.int32],
+    out_c_target: wp.array[wp.int32],
+) -> None:
+    # The four per-level solve maps of every level in one launch, one item a thread: the forward
+    # tasks, then the forward rows, the backward tasks and the backward columns, each map's items
+    # taking the next ``n_*`` threads (the last map's count is the launch's remainder). The maps
+    # are independent; each ``*_entry`` writes its own item.
+    t = wp.int32(wp.tid())
+    if t < n_forward:
+        forward_task_entry(
+            t, level_node, forward_task_offsets, ncol, front_size, c0, block_offset, forward_base,
+            out_f_block, out_f_stride, out_f_count, out_f_source, out_f_slot,
+        )  # fmt: skip
+        return
+    t -= n_forward
+    if t < n_rows:
+        forward_row_entry(
+            t, level_node, forward_row_offsets, ncol, front_size, c0, row_offsets, forward_base,
+            out_r_slot, out_r_stride, out_r_count, out_r_target,
+        )  # fmt: skip
+        return
+    t -= n_rows
+    if t < n_backward:
+        backward_task_entry(
+            t, level_node, backward_task_offsets, ncol, front_size, c0, block_offset, row_offsets,
+            backward_base, out_b_block, out_b_first, out_b_ncol, out_b_size, out_b_start,
+            out_b_rows, out_b_slot,
+        )  # fmt: skip
+        return
+    t -= n_backward
+    backward_row_entry(
+        t, level_node, backward_column_offsets, ncol, front_size, c0, backward_base,
+        out_c_slot, out_c_stride, out_c_first, out_c_count, out_c_target,
+    )  # fmt: skip
 
 
 @wp.kernel
