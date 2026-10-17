@@ -522,13 +522,17 @@ def mark_long_edges(
     # branch rather than two kernels, since the two differ by a parameter; ``sizing`` is not read
     # (and may be a null array) when ``use_sizing`` is false. The verdict is written twice: as the
     # mask the split reads, and as the ``int32`` flag the caller scans in place into its ranks.
+    # ``out_flags`` is that ``n_edges + 1`` rank buffer whole: edge ``e``'s flag goes to entry
+    # ``e + 1``, behind the leading zero thread 0 writes, so the buffer needs no zero-fill.
     e = wp.int32(wp.tid())
     target = max_edge
     if use_sizing:
         target = edge_mean_sizing(sizing, unique_edges, e)
     is_long = unique_edge_length(vertices, unique_edges, e) > target
     out_long[e] = is_long
-    out_flags[e] = wp.where(is_long, wp.int32(1), wp.int32(0))
+    out_flags[e + 1] = wp.where(is_long, wp.int32(1), wp.int32(0))
+    if e == 0:
+        out_flags[0] = wp.int32(0)
 
 
 @wp.func
@@ -773,16 +777,20 @@ def mark_density_splits(
 ) -> None:
     # Which region faces want a centroid split this pass, as 0/1 so the result scans directly into
     # the new-vertex slots ``emit_density_splits`` needs. A face outside the region never splits,
-    # which is what keeps the refinement inside the patch.
+    # which is what keeps the refinement inside the patch. ``out_split`` is the caller's
+    # ``n_faces + 1`` rank buffer whole: face ``f``'s flag goes to entry ``f + 1``, behind the
+    # leading zero thread 0 writes, so the buffer needs no zero-fill.
     f = wp.int32(wp.tid())
+    if f == 0:
+        out_split[0] = wp.int32(0)
     if not region[f]:
-        out_split[f] = wp.int32(0)
+        out_split[f + 1] = wp.int32(0)
         return
     i, j, k = corner_triple(faces, f)
     wanted = density_split_wanted(
         vertices[i], vertices[j], vertices[k], scale[i], scale[j], scale[k], alpha
     )
-    out_split[f] = wp.where(wanted, wp.int32(1), wp.int32(0))
+    out_split[f + 1] = wp.where(wanted, wp.int32(1), wp.int32(0))
 
 
 @wp.kernel
@@ -2339,6 +2347,7 @@ def pair_intrinsic_twins(
     mates: wp.array[wp.int32],
     out_twin: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
+    out_face_claim: wp.array[wp.int32],
 ) -> None:
     # The *one* point in ``intrinsic_delaunay``'s loop where a vertex-pair key is trustworthy: the
     # caller's input is still a simplicial complex, so an edge carrying exactly two halfedges (a
@@ -2350,9 +2359,13 @@ def pair_intrinsic_twins(
     # key can tell which of several same-key corners is which edge's true twin -- see
     # ``intrinsic_delaunay_candidates``. Launched over the halfedges; the pair's lower halfedge
     # writes both directions (the order the edge-key sort's stable runs held them in). Thread ``h``
-    # also copies corner ``h`` into ``out_faces``, the face buffer the loop flips in place.
+    # also copies corner ``h`` into ``out_faces``, the face buffer the loop flips in place, and the
+    # threads below ``n_faces`` arm the claim table for the loop's first round (``fixup_twin_remap``
+    # re-arms it for every later one).
     h = wp.int32(wp.tid())
     out_faces[h] = faces[h]
+    if h < out_face_claim.shape[0]:
+        out_face_claim[h] = INT32_MAX_CONSTANT
     mate = mates[h]
     if mate <= h:
         return

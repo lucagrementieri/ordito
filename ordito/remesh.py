@@ -36,7 +36,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
 from ordito.config import is_deterministic
-from ordito.constants import INT32_MAX, TOLERANCE_MOLLIFY, UINT64_MAX
+from ordito.constants import TOLERANCE_MOLLIFY, UINT64_MAX
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import array as kernel_array
 from ordito.kernels import edges as kernel_edges
@@ -3043,14 +3043,16 @@ def intrinsic_delaunay(
     # a simplicial complex, so the twins are the halfedge mates' pairs, derived once. Every later
     # round instead maintains ``twin`` in place, because a flip can make the vertex-pair key
     # ambiguous (see ``kernel_remesh.pair_intrinsic_twins``). The same launch copies the faces
-    # into the buffer the loop flips in place.
+    # into the buffer the loop flips in place and arms the claim table for the first round;
+    # ``fixup_twin_remap`` re-arms it for every later one.
     twin = _launch.full(n_half, -1, dtype=wp.int32, device=device)
     intrinsic_faces = _launch.empty(n_half, dtype=wp.int32, device=device)
+    face_claim = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.pair_intrinsic_twins,
         dim=n_half,
         inputs=[faces, od.halfedge.halfedge_mates(faces, n_vertices)],
-        outputs=[twin, intrinsic_faces],
+        outputs=[twin, intrinsic_faces, face_claim],
         device=device,
     )
 
@@ -3058,11 +3060,10 @@ def intrinsic_delaunay(
     quad = odt.empty_2d((n_half, 4), wp.int32, device=device)
     new_length = _launch.empty(n_half, dtype=wp.float32, device=device)
     neighbors = odt.empty_2d((n_half, 4), wp.int32, device=device)
-    # Armed here for the first round; ``fixup_twin_remap`` re-arms it for every later one.
-    face_claim = _launch.full(n_faces, INT32_MAX, dtype=wp.int32, device=device)
+    # Cleared by every round's candidate pass before anything reads them.
     remap = _launch.empty(n_half, dtype=wp.int32, device=device)
-    no_remap = _launch.zeros(n_half, dtype=wp.bool, device=device)
-    count = _launch.zeros(1, dtype=wp.int32, device=device)
+    no_remap = _launch.empty(n_half, dtype=wp.bool, device=device)
+    count = _launch.empty(1, dtype=wp.int32, device=device)
 
     total = 0
     for _ in range(max_iter):
@@ -3647,7 +3648,7 @@ def _subdivide_to_size(
 
         # Flag the edges that are longer than the target length, measuring each where it is tested.
         long_mask = _launch.empty(m, dtype=wp.bool, device=device)
-        rank_buffer = _launch.zeros(m + 1, dtype=wp.int32, device=device)
+        rank_buffer = _launch.empty(m + 1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_remesh.mark_long_edges,
             dim=m,
@@ -3658,7 +3659,7 @@ def _subdivide_to_size(
                 sizing,
                 wp.bool(sizing is not None),
                 long_mask,
-                rank_buffer[1:],
+                rank_buffer,
             ],
             device=device,
         )
@@ -4141,12 +4142,12 @@ def refine_region_to_density(
         n_faces = current_faces.size // 3
         # The flags are written into the tail of the ranks buffer and scanned there, so the emit
         # reads each face's verdict back as a step in the scan.
-        split_offsets = _launch.zeros(n_faces + 1, dtype=wp.int32, device=device)
+        split_offsets = _launch.empty(n_faces + 1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_remesh.mark_density_splits,
             dim=n_faces,
             inputs=[current_vertices, current_faces, current_region, scale, alpha_f],
-            outputs=[split_offsets[1:]],
+            outputs=[split_offsets],
             device=device,
         )
         _ranks, n_split = _ranks_from_flags(split_offsets)
@@ -4258,10 +4259,11 @@ def _ranks_from_flags(rank_buffer: wp.array[wp.int32]) -> tuple[wp.array[wp.int3
     """
     Scan the 0/1 flags in ``rank_buffer[1:]`` in place; return the exclusive ranks and their count.
 
-    The buffer is zero-filled and one longer than the flags, so after an inclusive scan of its tail
-    the leading zero makes ``rank_buffer[:n]`` the exclusive ranks and ``rank_buffer[n]`` the
-    count -- ``array.mask_to_compact_ranks`` for a caller whose marking kernel already wrote the
-    flags, which saves converting a mask into them.
+    The buffer is one longer than the flags and its leading entry is zero (zero-filled, or written
+    by the marking kernel), so after an inclusive scan of its tail the leading zero makes
+    ``rank_buffer[:n]`` the exclusive ranks and ``rank_buffer[n]`` the count --
+    ``array.mask_to_compact_ranks`` for a caller whose marking kernel already wrote the flags, which
+    saves converting a mask into them.
     """
     n = rank_buffer.size - 1
     flags = odt.as_dense(rank_buffer[1:])
