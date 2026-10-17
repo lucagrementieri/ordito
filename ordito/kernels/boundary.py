@@ -15,8 +15,14 @@ from ordito.kernels.halfedge import (
     next_boundary_halfedge,
 )
 from ordito.kernels.predicates import newell_term
+from ordito.kernels.reduce import block_sum
 
 wp.set_module_options({"enable_backward": False})
+
+# Lanes per loop of the fixed-order segmented sums (``loop_perimeters_ordered`` and the
+# ``*_ordered`` kernels after it). A loop is one block, so the width only has to cover a typical
+# rim; a long one is walked ``LOOP_SUM_BLOCK`` edges at a time.
+LOOP_SUM_BLOCK = 64
 
 # Every boundary query here reads the halfedge mates (``halfedge.halfedge_mates``): a boundary
 # edge is a halfedge with no mate, which names the halfedge -- row ``h`` of
@@ -469,6 +475,70 @@ def loop_perimeters(
     wp.atomic_add(out_perimeter, ell, wp.length(c - a))
 
 
+@wp.func
+def loop_perimeter_lanes(
+    flat_loops: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    ell: wp.int32,
+    lane: wp.int32,
+) -> wp.float32:
+    # Loop ``ell``'s perimeter, summed by the block's lanes in one fixed order: lane ``l`` folds
+    # the rim edges ``l, l + block_dim, ...`` and ``block_sum`` adds the lanes, so the bits are the
+    # same on every run, where ``loop_perimeters``' atomics commit in arrival order. Every lane
+    # returns the total.
+    local = wp.float32(0.0)
+    slot = loop_offsets[ell] + lane
+    end = loop_offsets[ell + 1]
+    while slot < end:
+        _ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, slot)
+        local += wp.length(c - a)
+        slot += wp.block_dim()
+    return block_sum(local)
+
+
+@wp.kernel
+def loop_perimeters_ordered(
+    flat_loops: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    out_perimeter: wp.array[wp.float32],
+) -> None:
+    # ``loop_perimeters`` in deterministic mode: one block per loop (``LOOP_SUM_BLOCK`` lanes,
+    # one on the CPU device), written once instead of accumulated, so ``out_perimeter`` needs no
+    # zeroing.
+    ell, lane = wp.tid()
+    total = loop_perimeter_lanes(flat_loops, loop_id, loop_offsets, vertices, ell, lane)
+    if lane == 0:
+        out_perimeter[ell] = total
+
+
+@wp.func
+def loop_newell_lanes(
+    flat_loops: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    ell: wp.int32,
+    lane: wp.int32,
+) -> wp.vec3:
+    # Loop ``ell``'s Newell sum about its first vertex (``newell_term``), in
+    # ``loop_perimeter_lanes``' fixed lane order. Shared by ``loop_directed_areas_ordered`` (half
+    # of it) and ``holes.finalize_rim_metrics_ordered`` (the hole plane), whose atomic forms
+    # differ the same way: only in the scale. Every lane returns the total.
+    origin = vertices[flat_loops[loop_offsets[ell]]]
+    local = wp.vec3(0.0)
+    slot = loop_offsets[ell] + lane
+    end = loop_offsets[ell + 1]
+    while slot < end:
+        _ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, slot)
+        local += newell_term(a, c, origin)
+        slot += wp.block_dim()
+    return block_sum(local)
+
+
 @wp.kernel
 def loop_directed_areas(
     flat_loops: wp.array[wp.int32],
@@ -485,6 +555,22 @@ def loop_directed_areas(
     ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, t)
     origin = vertices[flat_loops[loop_offsets[ell]]]
     wp.atomic_add(out_directed_area, ell, wp.float32(0.5) * newell_term(a, c, origin))
+
+
+@wp.kernel
+def loop_directed_areas_ordered(
+    flat_loops: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    out_directed_area: wp.array[wp.vec3],
+) -> None:
+    # ``loop_directed_areas`` in deterministic mode, as ``loop_perimeters_ordered`` is for the
+    # perimeter. Halving the sum rather than each term changes no bit: the scale is a power of two.
+    ell, lane = wp.tid()
+    total = loop_newell_lanes(flat_loops, loop_id, loop_offsets, vertices, ell, lane)
+    if lane == 0:
+        out_directed_area[ell] = wp.float32(0.5) * total
 
 
 @wp.kernel

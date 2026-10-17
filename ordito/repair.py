@@ -2185,7 +2185,9 @@ def make_winding_consistent(
     fail either: the flood-fill orients everything it reaches and the contradiction is left on a
     seam. The seam can even end up with *more* inconsistent edges than before the pass ran, not
     merely the same ones — so treat the result as unrepaired rather than partly repaired, and test
-    with [`is_orientable`][ordito.validation.is_orientable] first if that matters.
+    with [`is_orientable`][ordito.validation.is_orientable] first if that matters. Under
+    [`is_deterministic`][ordito.config.is_deterministic] the seam is a function of ``faces`` too
+    ([`face_flip_mask`][ordito.validation.face_flip_mask] says which).
 
     Examples
     --------

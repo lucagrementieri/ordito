@@ -24,7 +24,7 @@ from tests.comparisons import (
     lexsort_rows,
     same_partition,
 )
-from tests.conftest import OPEN_MESHES
+from tests.conftest import OPEN_MESHES, open_cylinder_arrays
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -1126,6 +1126,26 @@ def test_hole_dp_captures_is_bounded_at_both_ends(device: str) -> None:
     assert not kernel_holes.hole_dp_captures(heavy_length, 1), "one very long rim must decline"
     # Same rim length, more rims: the work bound has to see this and a length bound cannot.
     assert not kernel_holes.hole_dp_captures(light, kernel_holes.HOLE_DP_CAPTURE_MAX_WORK)
+
+
+def test_fill_min_weight_is_reproducible_when_deterministic(device: str) -> None:
+    """
+    Not a parity assert: under the deterministic setting repeated fills agree bit for bit.
+
+    ``preserve_largest_hole`` on the 512-section tube chooses between two rims whose perimeters tie
+    up to rounding, and the hole plane's Newell sum decides the triangulation's metric ties; both
+    were atomic sums in arrival order, and 24 of 100 CUDA calls closed the other rim, so ten calls
+    see both answers about 94 % of the time without the fixed-order sums. Exactly one rim is left
+    open either way, which keeps the comparison from passing on an unfilled mesh.
+    """
+    vertices_np, faces_np = open_cylinder_arrays(512)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    filled_np = od.holes.fill_min_weight(vertices_wp, faces_wp, preserve_largest_hole=True).numpy()
+    assert filled_np.size == faces_np.size + 3 * (512 - 2)  # one rim closed, one left open
+    # The CPU device runs its blocks in turn and is reproducible either way: one repeat there.
+    for _ in range(9 if wp.get_device(device).is_cuda else 1):
+        again_wp = od.holes.fill_min_weight(vertices_wp, faces_wp, preserve_largest_hole=True)
+        assert np.array_equal(again_wp.numpy(), filled_np)
 
 
 def test_fill_min_weight_optimal_vs_fan(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:

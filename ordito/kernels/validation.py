@@ -431,6 +431,98 @@ def mate_orientation_conflict(
         out_conflict[0] = wp.int32(1)
 
 
+# A spanning forest of the mate pairs that is a function of the input alone, for ``face_flip_mask``
+# on a non-orientable mesh under the deterministic setting. There the parity union-find's answer
+# is whichever spanning forest its racing hooks built: no potential exists, and the edges left out
+# of the forest are where the contradiction lands. Every pair keyed by its lower halfedge (the
+# keys are distinct), the minimum spanning forest is unique, and Boruvka's rounds find it with
+# integer atomics only, which are exact: ``mate_forest_candidates`` takes each component's lightest
+# outgoing pair by ``atomic_min``, ``mate_forest_hook`` adds it to the forest and hooks the
+# component, and ``forest_flatten`` relabels. The parity union-find over the forest's pairs alone
+# (``mate_hook_parity_forest``) is then order-free: each tree's root is its smallest face at parity
+# ``0`` and every other face's parity is its tree path's. On a consistent component that is the
+# fast path's answer, whatever the tree.
+
+
+@wp.kernel
+def mate_forest_candidates(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    best: wp.array[wp.int32],
+) -> None:
+    # One thread per halfedge: a pair joining two components offers its key to both.
+    h = wp.int32(wp.tid())
+    f0, f1, _sign = mate_signed_edge(faces, mates, h)
+    if f0 == f1:
+        return
+    c0 = labels[f0]
+    c1 = labels[f1]
+    if c0 != c1:
+        wp.atomic_min(best, c0, h)
+        wp.atomic_min(best, c1, h)
+
+
+@wp.kernel
+def mate_forest_hook(
+    mates: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    best: wp.array[wp.int32],
+    parents: wp.array[wp.int32],
+    in_forest: wp.array[wp.int32],
+    hooked: wp.array[wp.int32],
+) -> None:
+    # One thread per face; a component root with an outgoing pair takes it into the forest and
+    # hooks onto the component across it. Two roots that chose the same pair (the only cycle
+    # distinct keys allow) would hook onto each other, so the smaller stays the root.
+    r = wp.int32(wp.tid())
+    if labels[r] != r:
+        return
+    h = best[r]
+    if h == INT32_MAX_CONSTANT:
+        return
+    other = labels[h // 3]
+    if other == r:
+        other = labels[mates[h] // 3]
+    in_forest[h] = wp.int32(1)
+    if best[other] == h and r < other:
+        return
+    parents[r] = other
+    hooked[0] = wp.int32(1)
+
+
+@wp.kernel
+def forest_flatten(
+    parents: wp.array[wp.int32], out_labels: wp.array[wp.int32], out_best: wp.array[wp.int32]
+) -> None:
+    # Each face's root, by path halving: a concurrent halving writes an ancestor over an ancestor,
+    # so the trees race but the roots do not. Also clears the face's slot for the next round.
+    v = wp.int32(wp.tid())
+    x = v
+    p = parents[x]
+    while p != x:
+        grandparent = parents[p]
+        parents[x] = grandparent
+        x = grandparent
+        p = parents[x]
+    out_labels[v] = x
+    out_best[v] = INT32_MAX_CONSTANT
+
+
+@wp.kernel
+def mate_hook_parity_forest(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    in_forest: wp.array[wp.int32],
+    words: wp.array[wp.int32],
+) -> None:
+    # ``mate_hook_parity`` over the forest's pairs only; every other halfedge is a self-loop.
+    h = wp.int32(wp.tid())
+    if in_forest[h] != 0:
+        f0, f1, sign = mate_signed_edge(faces, mates, h)
+        ecl_hook_pair_parity(words, f0, f1, sign)
+
+
 @wp.func
 def mate_pair_key(mates: wp.array[wp.int32], h: wp.int32) -> wp.int32:
     # The lower halfedge of ``h``'s adjacency pair, or ``INT32_MAX`` for a halfedge with no mate:

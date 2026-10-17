@@ -29,6 +29,7 @@ from tests.comparisons import (
     same_partition,
     undirected_edges,
 )
+from tests.conftest import torus_irregular_arrays
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -2715,6 +2716,32 @@ def test_fix_self_intersections_voxel_rebuilds(
     assert int(after_np.sum()) < int(before_np.sum())
     assert after_ml == int(after_np.sum())
     assert after_pmf == int(after_np.sum())
+
+
+def test_fix_self_intersections_is_reproducible_when_deterministic(device: str) -> None:
+    """
+    Not a parity assert: under the deterministic setting repeated repairs agree bit for bit.
+
+    A twenty-fifth of ``torus_irregular``'s vertices reflected through its centre: the refill
+    leaves edges on four to six faces, whose cotangent weights were ``float32`` atomic sums, and
+    the rims' Newell normals and perimeters were arrival-order sums too; 5 of 20 CUDA calls came
+    out different, so ten calls see two answers about 94 % of the time without the fixes.
+    """
+    vertices_np, faces_np = torus_irregular_arrays()
+    rng = np.random.default_rng(0)
+    moved_np = vertices_np.copy()
+    centre_np = moved_np.mean(axis=0)
+    picked_np = rng.choice(moved_np.shape[0], size=moved_np.shape[0] // 25, replace=False)
+    moved_np[picked_np] = centre_np + (centre_np - moved_np[picked_np]) * 0.8
+    vertices_wp, faces_wp = numpy_to_warp(moved_np, faces_np, device)
+    assert od.validation.face_self_intersecting_mask(vertices_wp, faces_wp).numpy().any()
+
+    fixed_vertices_wp, fixed_faces_wp = od.repair.fix_self_intersections(vertices_wp, faces_wp)
+    fixed_vertices_np, fixed_faces_np = fixed_vertices_wp.numpy(), fixed_faces_wp.numpy()
+    for _ in range(9):
+        again_vertices_wp, again_faces_wp = od.repair.fix_self_intersections(vertices_wp, faces_wp)
+        assert np.array_equal(again_faces_wp.numpy(), fixed_faces_np)
+        assert np.array_equal(again_vertices_wp.numpy(), fixed_vertices_np)
 
 
 def test_fix_self_intersections_leaves_a_clean_mesh_alone(

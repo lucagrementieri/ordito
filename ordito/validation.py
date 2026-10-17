@@ -17,6 +17,7 @@ from ordito._device import (
     require_same_device,
     require_valid_faces,
 )
+from ordito.config import is_deterministic
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import intersection as kernel_intersections
@@ -1094,7 +1095,17 @@ def face_flip_mask(
     On an orientable mesh the mask is a deterministic function of ``faces``: each component keeps
     its lowest-indexed face's winding, on either device. On a non-orientable patch no consistent
     winding exists and the mask is a best-effort flood-fill (matching
-    ``trimesh.repair.fix_winding``), which on CUDA can differ between runs.
+    ``trimesh.repair.fix_winding``) that leaves the contradiction on a seam. Which seam depends
+    on the setting of [`is_deterministic`][ordito.config.is_deterministic]:
+
+    - on, the mask is the parity over the minimum spanning forest of the edge-adjacent face pairs,
+      each pair keyed by the lower of its two halfedge indices (``3 * face + corner``): each tree's
+      lowest-indexed face keeps its winding, every other face agrees with its tree path, and the
+      seam is the pairs the forest leaves out. The same mask on every run and on either device,
+      for one more pass and a host read on every input, and a few passes more on a non-orientable
+      one;
+    - off, it is whichever spanning forest the parallel union-find builds, which on CUDA can differ
+      between runs.
 
     This is a different flip from
     [`face_flipped_mask`][ordito.parametrization.face_flipped_mask], which is about the *UV
@@ -1128,12 +1139,85 @@ def face_flip_mask(
         return _launch.empty(0, dtype=wp.bool, device=device)
 
     # The flip mask is the parity itself, so the flatten writes it as a ``bool`` directly.
-    words, _ = _orientation_words_from_mates(faces, n_vertices, mates)
+    words, mates = _orientation_words_from_mates(faces, n_vertices, mates)
+    if is_deterministic():
+        words = _reproducible_orientation_words(faces, mates, words)
     mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_validation.flatten_parity_flip_mask, dim=n_faces, inputs=[words, mask], device=device
     )
     return mask
+
+
+def _reproducible_orientation_words(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], words: wp.array[wp.int32]
+) -> wp.array[wp.int32]:
+    """
+    Parity words that are a function of ``faces`` alone, for the deterministic setting.
+
+    ``words`` from the racing parity union-find already are on a consistent mesh, which one
+    conflict test and a readback confirm. Otherwise the parity is re-solved over the mates' unique
+    minimum spanning forest (``kernels/validation``'s Boruvka rounds, one readback each to stop),
+    whose parity is the same on every run and, on each consistent component, the racing answer.
+    """
+    device = faces.device
+    n_faces = words.size
+    n_halfedges = mates.size
+    conflict = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_validation.mate_orientation_conflict,
+        dim=n_halfedges,
+        inputs=[faces, mates, _flatten_orientation(words), conflict],
+        device=device,
+    )
+    # Unavoidable: whether any pair contradicts the parity decides whether the forest is needed.
+    if int(read_scalar(conflict, 0)) == 0:
+        return words
+
+    parents = od.array.arange(n_faces, device=device)
+    labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    best = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    in_forest = _launch.zeros(n_halfedges, dtype=wp.int32, device=device)
+    hooked = conflict
+    # Each round hooks every component with an outgoing pair, so at least halves their number:
+    # ``log2(n_faces) + 1`` rounds bound it, and a round that hooks nothing ends it sooner.
+    for _ in range(n_faces.bit_length() + 1):
+        _launch.launch(
+            kernel_validation.forest_flatten,
+            dim=n_faces,
+            inputs=[parents, labels, best],
+            device=device,
+        )
+        _launch.launch(
+            kernel_validation.mate_forest_candidates,
+            dim=n_halfedges,
+            inputs=[faces, mates, labels, best],
+            device=device,
+        )
+        _launch.zero_(hooked)
+        _launch.launch(
+            kernel_validation.mate_forest_hook,
+            dim=n_faces,
+            inputs=[mates, labels, best, parents, in_forest, hooked],
+            device=device,
+        )
+        # Unavoidable: the round count is the components' merge depth, known only on the device.
+        if int(read_scalar(hooked, 0)) == 0:
+            break
+    forest_words = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_connected_components.ecl_init_parent_parity,
+        dim=n_faces,
+        inputs=[forest_words],
+        device=device,
+    )
+    _launch.launch(
+        kernel_validation.mate_hook_parity_forest,
+        dim=n_halfedges,
+        inputs=[faces, mates, in_forest, forest_words],
+        device=device,
+    )
+    return forest_words
 
 
 def _orientation_bits_from_mates(

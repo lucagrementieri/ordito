@@ -921,6 +921,22 @@ def sphere_irregular_hollow(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
 
 
 @functools.cache
+def open_cylinder_arrays(sections: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Uncapped unit tube: two congruent rims of ``sections`` vertices, ``2 * sections`` faces.
+
+    ``benchmarks/meshes.py``'s ``rim_short`` shape at any size. The two rims tie in perimeter up to
+    rounding, and 512 sections is where a sum over a rim committed in arrival order changed its last
+    bits between CUDA calls, so the reproducibility tests of the rim measures use it.
+    """
+    mesh = tm.creation.cylinder(radius=1.0, height=1.0, sections=sections)
+    face_z = mesh.vertices[mesh.faces, 2]
+    mesh.update_faces(face_z.max(axis=1) > face_z.min(axis=1))
+    mesh.remove_unreferenced_vertices()
+    return np.asarray(mesh.vertices), np.asarray(mesh.faces)
+
+
+@functools.cache
 def torus_irregular_arrays() -> tuple[np.ndarray, np.ndarray]:
     """
     Return ``torus_irregular``'s ``(n_vertices, 3)`` vertices and ``(n_faces, 3)`` faces.

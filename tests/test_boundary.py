@@ -20,7 +20,7 @@ from tests.comparisons import (
     lexsort_rows,
     trimesh_outline_loops,
 )
-from tests.conftest import BOUNDARY_MESHES
+from tests.conftest import BOUNDARY_MESHES, open_cylinder_arrays
 from tests.conversions import (
     numpy_to_warp,
     points_to_warp,
@@ -833,6 +833,36 @@ def test_loop_perimeters_and_directed_areas_match_meshlib(
     order_np, order_ml = np.argsort(perimeters_np), np.argsort(perimeters_ml)
     assert np.diff(np.sort(perimeters_np)).min(initial=np.inf) > 1e-3
     assert np.allclose(areas_np[order_np], -areas_ml[order_ml], rtol=1e-5, atol=1e-5)
+
+
+def test_loop_measures_are_reproducible_when_deterministic(device: str) -> None:
+    """
+    Not a parity assert: under the deterministic setting repeated calls agree bit for bit.
+
+    Each rim is summed by one block in a fixed order; the off mode's arrival-order atomics agree to
+    ``float32`` round-off. On the 512-section tube's two rims the atomic sums gave 12-20 distinct
+    perimeter / area results in 20 CUDA calls, so the repeat fails there without the fixed order.
+    """
+    vertices_np, faces_np = open_cylinder_arrays(512)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    flat_wp, offsets_wp = od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp)
+    assert offsets_wp.size == 3  # non-vacuity: the two rims
+
+    def measures() -> tuple[np.ndarray, np.ndarray]:
+        return (
+            od.boundary.loop_perimeters_from_offsets(vertices_wp, flat_wp, offsets_wp).numpy(),
+            od.boundary.loop_directed_areas_from_offsets(vertices_wp, flat_wp, offsets_wp).numpy(),
+        )
+
+    perimeters_np, areas_np = measures()
+    for _ in range(4):
+        again_perimeters_np, again_areas_np = measures()
+        assert np.array_equal(again_perimeters_np, perimeters_np)
+        assert np.array_equal(again_areas_np, areas_np)
+    with od.config.deterministic(False):
+        arrival_perimeters_np, arrival_areas_np = measures()
+    assert np.allclose(arrival_perimeters_np, perimeters_np, rtol=1e-5, atol=1e-5)
+    assert np.allclose(arrival_areas_np, areas_np, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)

@@ -12,6 +12,7 @@ from ordito.kernels.array import (
     update_argmin,
 )
 from ordito.kernels.array import wrap_index as _wrap
+from ordito.kernels.boundary import loop_newell_lanes
 from ordito.kernels.halfedge import halfedge_endpoints, halfedge_prev
 from ordito.kernels.predicates import (
     circumcircle_diameter,
@@ -282,6 +283,28 @@ def finalize_rim_metrics(
     ell = wp.int32(wp.tid())
     out_normals[ell] = wp.normalize(newell_sums[ell])
     out_char_areas[ell] = char_area_from_max(max_edge_sq[ell])
+
+
+@wp.kernel
+def finalize_rim_metrics_ordered(
+    flat_loops: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    max_edge_sq: wp.array[wp.float32],
+    out_normals: wp.array[wp.vec3],
+    out_char_areas: wp.array[wp.float32],
+) -> None:
+    # ``finalize_rim_metrics`` in deterministic mode, which re-forms the Newell sum rather than
+    # normalizing ``loop_rim_metrics``' arrival-order one (left unread in ``out_normals``, which it
+    # overwrites): one block per loop (``boundary.LOOP_SUM_BLOCK`` lanes) sums it in a fixed lane
+    # order (``boundary.loop_newell_lanes``), so the hole plane, and with it every metric tie the
+    # DP breaks, is the same on every run. Same launch count as the atomic form.
+    ell, lane = wp.tid()
+    newell = loop_newell_lanes(flat_loops, loop_id, loop_offsets, vertices, ell, lane)
+    if lane == 0:
+        out_normals[ell] = wp.normalize(newell)
+        out_char_areas[ell] = char_area_from_max(max_edge_sq[ell])
 
 
 @wp.kernel

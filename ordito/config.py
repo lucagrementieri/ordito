@@ -20,7 +20,12 @@ deterministic either way):
   [`curved_hessian_energy`][ordito.energies.curved_hessian_energy] and
   [`vertex_defects`][ordito.vertices.vertex_defects];
 - the order within each row of
-  [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] (ascending when on).
+  [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] (ascending when on);
+- the per-loop sums of [`loop_perimeters`][ordito.boundary.loop_perimeters],
+  [`loop_directed_areas`][ordito.boundary.loop_directed_areas] and their packed forms, and the
+  hole planes of [`fill_min_weight`][ordito.holes.fill_min_weight] and the fills built on it;
+- the flip mask of [`face_flip_mask`][ordito.validation.face_flip_mask] on a non-orientable
+  mesh, and so the seam [`make_winding_consistent`][ordito.repair.make_winding_consistent] leaves.
 
 What it does not govern:
 

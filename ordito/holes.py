@@ -78,7 +78,9 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
+from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_ZERO
+from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import holes as kernel_holes
 from ordito.kernels import scatter as kernel_scatter
 
@@ -730,6 +732,10 @@ def _fill_packed_loops(
     # Accumulated into, then finished in place: the finalize pass reads each loop's sum and writes
     # that loop's slot, so the plane normals overwrite the Newell sums and the ``char_area`` scales
     # overwrite the longest edges rather than taking two buffers of their own.
+    # Under the deterministic setting the finalize pass re-forms the Newell sum in a fixed order
+    # (``finalize_rim_metrics_ordered``) and overwrites the rim pass's: its atomics commit in
+    # arrival order, and on a rim with exact metric ties the last bits of the plane pick the
+    # triangulation.
     plane_normals = _launch.zeros(loops.n_loops, dtype=wp.vec3, device=device)
     char_areas = _launch.zeros(loops.n_loops, dtype=wp.float32, device=device)
     _launch.launch(
@@ -749,12 +755,29 @@ def _fill_packed_loops(
         ],
         device=device,
     )
-    _launch.launch(
-        kernel_holes.finalize_rim_metrics,
-        dim=loops.n_loops,
-        inputs=[char_areas, plane_normals, plane_normals, char_areas],
-        device=device,
-    )
+    if is_deterministic():
+        _launch.launch_tiled(
+            kernel_holes.finalize_rim_metrics_ordered,
+            dim=loops.n_loops,
+            inputs=[
+                loops.flat_loops,
+                loops.loop_id,
+                loops.offsets,
+                vertices,
+                char_areas,
+                plane_normals,
+                char_areas,
+            ],
+            device=device,
+            block_dim=kernel_boundary.LOOP_SUM_BLOCK,
+        )
+    else:
+        _launch.launch(
+            kernel_holes.finalize_rim_metrics,
+            dim=loops.n_loops,
+            inputs=[char_areas, plane_normals, plane_normals, char_areas],
+            device=device,
+        )
 
     forbidden = (
         edge_table.forbidden_chords(loops)
@@ -2244,10 +2267,18 @@ def stitch_smooth(
     The three stages are: minimum-weight stitch, refine the band to the target edge length, then
     smooth its new interior vertices into both surrounding surfaces.
 
+    The default target is the rims' mean edge length. On a rim whose edges are all one length that
+    target equals every rim edge up to rounding, so whether those edges split is decided by the
+    last bit of the mean, which the summation order (and so the device and the
+    [`is_deterministic`][ordito.config.is_deterministic] setting) can change. Pass ``max_edge``
+    for such input.
+
     Examples
     --------
     Two spherical caps facing away from each other, their rims a unit apart, joined into one
-    closed body; the band gains vertices and bulges to continue both caps:
+    closed body; the band gains vertices and bulges to continue both caps. ``max_edge`` is given
+    because these rims are regular: by default every rim edge would sit exactly on the split
+    threshold (see Notes):
 
     ```python
     import math
@@ -2259,10 +2290,12 @@ def stitch_smooth(
     top_vertices, top_faces = od.creation.sphere_cap(angle=math.pi / 3, subdivisions=2)
     bottom_vertices = wp.array(top_vertices.numpy() * [1.0, 1.0, -1.0], dtype=wp.vec3)
     bottom_faces = od.repair.reverse_winding(top_faces)
-    vertices, faces = od.holes.stitch_smooth(top_vertices, top_faces, bottom_vertices, bottom_faces)
-    print(vertices.shape)  # (746,)
+    vertices, faces = od.holes.stitch_smooth(
+        top_vertices, top_faces, bottom_vertices, bottom_faces, max_edge=0.25
+    )
+    print(vertices.shape)  # (650,)
     print(od.validation.is_watertight(vertices, faces))  # True
-    print(f"{od.measures.volume(vertices, faces):.2f}")  # 4.46
+    print(f"{od.measures.volume(vertices, faces):.2f}")  # 4.53
     ```
     """
     require_same_device(

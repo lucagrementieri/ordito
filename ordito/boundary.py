@@ -31,6 +31,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
+from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
@@ -585,7 +586,9 @@ def loop_perimeters(
     is one launch and one packing pass rather than one call per loop. Equivalent to
     [`polyline_length`][ordito.polyline.polyline_length] with ``closed=True`` on each loop's
     gathered positions, and the segmented form is why the fill's ``preserve_largest_hole`` can rank
-    every rim for the price of one readback.
+    every rim for the price of one readback. Under
+    [`is_deterministic`][ordito.config.is_deterministic] each loop is summed in one fixed order,
+    so two rims of equal length rank the same way on every run.
 
     Parameters
     ----------
@@ -911,17 +914,40 @@ def _launch_loop_measure(
 
     The two kernels differ only in what they accumulate -- an arc length into a ``float32`` or a
     cross-product sum into a ``vec3`` -- and take the identical four inputs, so the launch is
-    written once here rather than four times above. ``wp.zeros`` rather than ``wp.empty``: both
-    kernels accumulate into their output with an atomic add.
+    written once here rather than four times above. ``kernel`` is the atomic form, one thread per
+    rim edge accumulating into a zeroed output in arrival order. Under
+    [`is_deterministic`][ordito.config.is_deterministic] its ``_ordered`` sibling runs instead, one
+    block per loop summing in a fixed order and writing each loop once, so the result repeats bit
+    for bit on CUDA.
     """
-    out = _launch.zeros(offsets.size - 1, dtype=dtype, device=vertices.device)
+    device = vertices.device
+    n_loops = offsets.size - 1
+    if is_deterministic():
+        out = _launch.empty(n_loops, dtype=dtype, device=device)
+        _launch.launch_tiled(
+            _ORDERED_LOOP_MEASURES[kernel],
+            dim=n_loops,
+            inputs=[flat_loops, loop_id, offsets, vertices, out],
+            device=device,
+            block_dim=kernel_boundary.LOOP_SUM_BLOCK,
+        )
+        return out
+    out = _launch.zeros(n_loops, dtype=dtype, device=device)
     _launch.launch(
         kernel,
         dim=flat_loops.size,
         inputs=[flat_loops, loop_id, offsets, vertices, out],
-        device=vertices.device,
+        device=device,
     )
     return out
+
+
+# Each atomic loop measure's fixed-order sibling, which ``_launch_loop_measure`` runs instead under
+# the deterministic setting.
+_ORDERED_LOOP_MEASURES = {
+    kernel_boundary.loop_perimeters: kernel_boundary.loop_perimeters_ordered,
+    kernel_boundary.loop_directed_areas: kernel_boundary.loop_directed_areas_ordered,
+}
 
 
 def _loop_owner_labels(

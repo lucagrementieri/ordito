@@ -1170,6 +1170,95 @@ def test_face_flip_mask_long_path(device: str) -> None:
     )
 
 
+def _minimum_forest_flip_mask(faces_np: np.ndarray) -> np.ndarray:
+    """
+    Build the flip mask over the minimum spanning forest of the manifold edge pairs in NumPy.
+
+    Every edge used by exactly two halfedges joins their faces, keyed by the lower halfedge index
+    and signed ``1`` when the two traverse it the same way. Kruskal in key order picks the forest;
+    each tree's smallest face keeps its winding and every other face takes its tree path's parity.
+    """
+    n_faces = faces_np.shape[0]
+    tails = faces_np.reshape(-1)
+    heads = np.roll(faces_np, -1, axis=1).reshape(-1)
+    keys = np.minimum(tails, heads).astype(np.int64) * (tails.max() + 1) + np.maximum(tails, heads)
+    order = np.argsort(keys, kind="stable")
+    runs, starts, counts = np.unique(keys[order], return_index=True, return_counts=True)
+    assert runs.size > 0
+    pairs = [
+        (order[start], order[start + 1])
+        for start, count in zip(starts, counts, strict=True)
+        if count == 2
+    ]
+    pairs.sort(key=min)
+    parent = list(range(n_faces))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    tree: list[list[tuple[int, int]]] = [[] for _ in range(n_faces)]
+    for h0, h1 in pairs:
+        f0, f1 = int(h0) // 3, int(h1) // 3
+        root0, root1 = find(f0), find(f1)
+        if root0 == root1:
+            continue
+        parent[max(root0, root1)] = min(root0, root1)
+        sign = int(tails[h0] == tails[h1])
+        tree[f0].append((f1, sign))
+        tree[f1].append((f0, sign))
+    flip = np.zeros(n_faces, dtype=bool)
+    seen = np.zeros(n_faces, dtype=bool)
+    for seed in range(n_faces):  # ascending, so each tree is entered at its smallest face
+        if seen[seed]:
+            continue
+        seen[seed] = True
+        stack = [seed]
+        while stack:
+            f = stack.pop()
+            for g, sign in tree[f]:
+                if not seen[g]:
+                    seen[g] = True
+                    flip[g] = flip[f] ^ bool(sign)
+                    stack.append(g)
+    return flip
+
+
+@pytest.mark.parametrize("mesh_name", ["mobius", "boy_surface", "sphere_irregular"])
+@pytest.mark.parametrize("flipped", [False, True], ids=["as_built", "half_flipped"])
+def test_face_flip_mask_is_reproducible_on_non_orientable_input(
+    request: pytest.FixtureRequest, mesh_name: str, flipped: bool
+) -> None:
+    """
+    Not a library comparison: the deterministic setting's flip mask is the minimum-forest parity.
+
+    No consistent winding exists on ``mobius`` / ``boy_surface``, so trimesh's and igl's flood
+    fills each answer with their own traversal and no reference computes this one; the oracle is
+    the contract written out in NumPy (``_minimum_forest_flip_mask``): the parity over the minimum
+    spanning forest of the edge pairs keyed by their lower halfedge, each tree's smallest face at
+    ``0``. On orientable ``sphere_irregular`` that is the fast path's answer. Before the forest,
+    a CUDA call raced its parity hooks and 26-28 of 30 calls on ``mobius`` gave distinct masks, so
+    the repeated call fails there; CPU was already stable. The two non-orientable fixtures do not
+    pass vacuously: the mask flips faces once half of them were reversed, and the repaired winding
+    stays inconsistent on the seam.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = np.asarray(mesh_tm.faces)
+    if flipped:
+        faces_np = _flip_half(faces_np)
+    _, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_np, mesh_wp.device)
+    mask_np = od.validation.face_flip_mask(faces_wp).numpy()
+    for _ in range(3):
+        assert np.array_equal(od.validation.face_flip_mask(faces_wp).numpy(), mask_np)
+    assert np.array_equal(mask_np, _minimum_forest_flip_mask(faces_np))
+    if flipped:
+        assert bool(mask_np.any())
+    repaired_wp = od.repair.make_winding_consistent(faces_wp)
+    assert od.validation.is_winding_consistent(repaired_wp) is (mesh_name == "sphere_irregular")
+
+
 @pytest.mark.parametrize(
     ("mesh_name", "orientable"),
     [
@@ -1713,9 +1802,8 @@ def test_validation_functions_take_precomputed_mates(
 
     The derived answers are pinned to the reference libraries above; this pins the ``mates``
     keyword to them over a closed, an open and two non-orientable fixtures, so each predicate
-    sees both of its answers across the set. ``face_flip_mask`` is compared only where the mesh
-    is orientable: on a non-orientable one its bits are not reproducible on CUDA from one call to
-    the next, with or without ``mates``.
+    sees both of its answers across the set. ``face_flip_mask`` is compared on all four: under the
+    deterministic setting the tests run with, its bits on a non-orientable mesh repeat too.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -1758,10 +1846,9 @@ def test_validation_functions_take_precomputed_mates(
             od.validation.face_defective_mask(vertices_wp, faces_wp, mates=mates_wp),
         ),
     }
-    if verdicts["is_orientable"][0]:
-        masks["face_flip_mask"] = (
-            od.validation.face_flip_mask(faces_wp),
-            od.validation.face_flip_mask(faces_wp, mates=mates_wp),
-        )
+    masks["face_flip_mask"] = (
+        od.validation.face_flip_mask(faces_wp),
+        od.validation.face_flip_mask(faces_wp, mates=mates_wp),
+    )
     for name, (derived_wp, supplied_wp) in masks.items():
         assert np.array_equal(supplied_wp.numpy(), derived_wp.numpy()), name

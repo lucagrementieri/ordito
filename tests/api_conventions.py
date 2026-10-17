@@ -618,6 +618,15 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # pre-hook and the hook: ``parents`` is the forest itself, read and written by every launch on
     # it, and ``out_`` would read as write-only.
     ("algorithms.connected_components", "ecl_compress"): frozenset({"parents"}),
+    # ``face_flip_mask``'s Boruvka rounds carry their forest across launches: ``parents`` is the
+    # component forest each round hooks and every flatten compresses in place (``ecl_compress``'s
+    # case), ``best`` each component's lightest outgoing pair, offered by atomic minimum and
+    # cleared by the flatten for the next round, ``in_forest`` the pairs taken so far and
+    # ``hooked`` the round's "some component merged" word. None is the answer, which is the
+    # parity the forest's pairs then solve.
+    ("validation", "mate_forest_candidates"): frozenset({"best"}),
+    ("validation", "mate_forest_hook"): frozenset({"parents", "in_forest", "hooked"}),
+    ("validation", "forest_flatten"): frozenset({"parents"}),
     # ``state`` is the ``wp.capture_while`` loop's own [rounds run, condition] pair, read and
     # incremented across launches -- the ``rdp_begin_round`` / ``rdp_split_spans`` case below,
     # under the same name.
