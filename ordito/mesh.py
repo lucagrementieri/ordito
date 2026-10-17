@@ -1795,14 +1795,32 @@ class Trimesh:
         print(mesh.halfedge_transport_angles.shape)  # (240,)
         ```
         """
+        # Imported here so that importing this module does not load the kernel module.
+        from ordito.kernels import tangent_space as kernel_tangent_space
+
+        device = self._faces.device
         if self._faces.size == 0:
-            return _launch.empty(0, dtype=wp.float32, device=self._faces.device)
+            return _launch.empty(0, dtype=wp.float32, device=device)
+        # The cached corner angles when `vertex_normals` already formed them; otherwise the ring
+        # walk forms them itself, which costs less than building the table.
         tangent_angles = od.tangent_space.halfedge_tangent_angles(
-            self._vertices, self._faces, rings=self.vertex_one_rings
+            self._vertices,
+            self._faces,
+            face_angles=cast("odt.Array2dFloat32 | None", self._cache.get("face_angles")),
+            rings=self.vertex_one_rings,
         )
-        return od.tangent_space.halfedge_transport_angles(
-            self._vertices, self._faces, twins=self.halfedge_twins, tangent_angles=tangent_angles
+        # The transport kernel itself, since `halfedge_transport_angles` verifies a supplied twin
+        # table with a launch and a readback: these are this mesh's own `halfedge_twins`, which the
+        # `vertex_one_rings` build above already verified.
+        twins = self.halfedge_twins
+        rho = _launch.empty(twins.size, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_tangent_space.halfedge_transport_angles,
+            dim=twins.size,
+            inputs=[twins, tangent_angles, rho],
+            device=device,
         )
+        return rho
 
     @_CachedProperty
     def vertex_tangent_frames(
@@ -1849,12 +1867,17 @@ class Trimesh:
         [`ordito.heat.heat_operators`][]
         [`vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators]
         """
-        return od.heat.heat_operators(
+        # The cached half-cotangents when there are any; otherwise the assembly forms them in its
+        # own pass over the faces (``cotmatrix_entries``' table, bit for bit), and
+        # `cotmatrix_entries` then serves those.
+        operators = od.heat.heat_operators(
             self._vertices,
             self._faces,
-            cot_entries=self.cotmatrix_entries,
+            cot_entries=cast("odt.Array2dFloat32 | None", self._cache.get("cotmatrix_entries")),
             pattern=self.mesh_operator_pattern,
         )
+        self._cache.setdefault("cotmatrix_entries", operators[5])
+        return operators
 
     @_CachedProperty
     def vector_heat_operators(self) -> od.heat.VectorHeatOperators:
@@ -1898,8 +1921,9 @@ class Trimesh:
             transport_angles=self.halfedge_transport_angles,
         )
         # The scalar bundle the vector assembly built alongside (one sparsity pattern for both)
-        # is this class's own `heat_operators`.
+        # is this class's own `heat_operators`, and its half-cotangents are `cotmatrix_entries`.
         self._cache.setdefault("heat_operators", bundle[1])
+        self._cache.setdefault("cotmatrix_entries", bundle[1][5])
         return bundle
 
     def heat_solver(
