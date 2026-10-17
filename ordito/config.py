@@ -24,8 +24,11 @@ deterministic either way):
 - the per-loop sums of [`loop_perimeters`][ordito.boundary.loop_perimeters],
   [`loop_directed_areas`][ordito.boundary.loop_directed_areas] and their packed forms, and the
   hole planes of [`fill_min_weight`][ordito.holes.fill_min_weight] and the fills built on it;
-- the flip mask of [`face_flip_mask`][ordito.validation.face_flip_mask] on a non-orientable
-  mesh, and so the seam [`make_winding_consistent`][ordito.repair.make_winding_consistent] leaves.
+- the flip mask of [`face_flip_mask`][ordito.validation.face_flip_mask] and the bits of
+  [`face_orientation_bits`][ordito.validation.face_orientation_bits] on a non-orientable mesh,
+  and so the seam [`make_winding_consistent`][ordito.repair.make_winding_consistent] leaves;
+- the positions of [`subdivide_loop`][ordito.remesh.subdivide_loop], whose 1-ring sums are
+  added in a fixed order.
 
 What it does not govern:
 
@@ -38,7 +41,10 @@ The setting is read when a reduction launches. Two consequences follow:
 - a CUDA graph keeps the mode it was recorded with: replaying it after a change of setting replays
   the old choice;
 - state a [`Trimesh`][ordito.mesh.Trimesh] caches (heat operators, solvers) keeps the mode it was
-  built in until it is rebuilt.
+  built in until it is rebuilt. The one exception is
+  [`Trimesh.vertex_face_adjacency`][ordito.mesh.Trimesh.vertex_face_adjacency]: a value cached
+  with the setting off is rebuilt, with ascending rows, the first time it is read with the setting
+  on.
 
 [`set_deterministic`][ordito.config.set_deterministic] sets the process-wide default, which every
 thread and task sees. The [`deterministic`][ordito.config.deterministic] context manager overrides
