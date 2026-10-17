@@ -265,6 +265,20 @@ def mark_face_fate(
 
 
 @wp.kernel
+def mark_nondegenerate_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_keep: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``triangles.face_nondegenerate_mask`` and the submesh compaction's marking in one pass, for
+    # ``remove_degenerate_faces``: ``remap_mark_nondegenerate_faces`` without the remap.
+    f = wp.int32(wp.tid())
+    v0, v1, v2 = face_vertices(vertices, faces, f)
+    mark_face_fate(faces, f, triangle_nondegenerate(v0, v1, v2), out_keep, out_flags)
+
+
+@wp.kernel
 def remap_mark_nondegenerate_faces(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -456,7 +470,8 @@ def halfedge_orientation_slots(
     # *consistently oriented manifold* edge has exactly one of each; anything else -- two forward
     # (a flipped neighbour), three or more of either (a non-manifold edge), or one alone (a
     # boundary) -- is not mergeable, so its corner slot is never read and the ``atomic_max`` only
-    # keeps the write deterministic.
+    # keeps the write deterministic. A mergeable edge's slot holds its one corner, so the slots need
+    # no seed below every corner index: zero, the counts' own seed, does.
     c = wp.int32(wp.tid())
     e = edge_of_corner[c]
     if faces[c] < halfedge_destination(faces, c):
@@ -1336,31 +1351,36 @@ def pack_root_loops(
 
 
 @wp.kernel
-def flag_any_selected(mask: wp.array[wp.bool], out_state: wp.array[wp.int32]) -> None:
+def flag_any_selected(
+    mask: wp.array[wp.bool], stamp: wp.int32, out_state: wp.array[wp.int32]
+) -> None:
     # ``fix_self_intersections``' "is any face bad" as a raised word rather than a readback of the
-    # whole mask: every selected face stores the same ``1`` into slot 0, so the store order is
-    # irrelevant and the host reads four bytes.
+    # whole mask: every selected face stores the same ``stamp`` into slot 0, so the store order is
+    # irrelevant and the host reads four bytes. The stamp is the pass's own number, so the word
+    # needs no reset between passes: it was raised this pass exactly when it reads the stamp.
     f = wp.int32(wp.tid())
     if mask[f]:
-        out_state[0] = wp.int32(1)
+        out_state[0] = stamp
 
 
 @wp.kernel
 def face_mask_from_vertex_mask_flag_unselected(
     faces: wp.array[wp.int32],
     vertex_mask: wp.array[wp.bool],
+    stamp: wp.int32,
     out_face_mask: wp.array[wp.bool],
     out_state: wp.array[wp.int32],
 ) -> None:
     # The dilation's last any-corner lookup (``selection.face_mask_from_vertex_mask``), raising
-    # slot 1 wherever a face stays unselected, so "the region swallowed the mesh" is that word
-    # still reading zero. A flag raised by the faces outside the region rather than a count of the
-    # faces inside it: a count would put one atomic per selected face on one address.
+    # slot 1 to ``stamp`` wherever a face stays unselected, so "the region swallowed the mesh" is
+    # that word not reading the pass's stamp (``flag_any_selected``'s convention). A flag raised by
+    # the faces outside the region rather than a count of the faces inside it: a count would put
+    # one atomic per selected face on one address.
     f = wp.int32(wp.tid())
     selected = face_selected_by_vertices(faces, vertex_mask, wp.bool(False), f)
     out_face_mask[f] = selected
     if not selected:
-        out_state[1] = wp.int32(1)
+        out_state[1] = stamp
 
 
 def _declare_map_kernels() -> None:
