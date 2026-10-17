@@ -1,11 +1,12 @@
 """
 Host-traffic census of the ordito benchmark rows, and the count-budget gate built on it.
 
-Load with ``-p benchmarks.census``. Every ordito row's ``BenchLibrary.run`` is replaced by two warm
-calls (the first compiles) and one counted call, and pytest-benchmark is bypassed. What is counted is
-what a call costs on the host besides its kernels' device time: launches, allocations, memsets,
-copies by direction, readbacks, synchronizations, CUB scans and radix sorts. For a fixed input and
-code path these numbers are the same on every run, unlike a timing, which is what makes them a gate.
+Load with ``-p benchmarks.census``. Every ordito row's ``BenchLibrary.run`` is replaced by two
+warm calls (the first compiles) and one counted call, and pytest-benchmark is bypassed. What is
+counted is what a call costs on the host besides its kernels' device time: launches, allocations,
+memsets, copies by direction, readbacks, synchronizations, CUB scans and radix sorts. For a fixed
+input and code path these numbers are the same on every run, unlike a timing, which is what makes
+them a gate.
 
 The counts are taken at Warp's native entry points (``warp._src.context.runtime.core.wp_*``, and
 ``warp._src.context.invoke`` for a CPU kernel), below both ``wp.launch`` and ``ordito._launch``'s
