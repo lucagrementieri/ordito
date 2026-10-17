@@ -563,6 +563,45 @@ def test_crop_mesh_drops_the_faces_that_straddle_the_box(device: str) -> None:
     assert any_faces_wp.size // 3 == 3
 
 
+@pytest.mark.parametrize("oriented", [False, True])
+def test_crop_mesh_is_the_all_corners_submesh_of_the_box_mask(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], oriented: bool
+) -> None:
+    """
+    Ordito against ordito: both box arms equal the vertex-mask submesh of the matching mask.
+
+    ``crop_mesh`` tests each corner against the box in its own marking pass; this pins it to
+    [`submesh_from_vertex_mask`][ordito.selection.submesh_from_vertex_mask] over
+    ``points_in_aabb_mask`` / ``points_in_obb_mask``, whose rule the open3d comparison above pins
+    (axis-aligned only: open3d's oriented crop is not the same box convention). The oriented box
+    is tilted off the axes, so the two arms keep different faces.
+    """
+    _, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    lower_np, upper_np = (np.asarray(corner) for corner in od.bounds.aabb(vertices_wp))
+    centre_np = 0.5 * (lower_np + upper_np)
+    lower_wp, upper_wp = wp.vec3(*centre_np.tolist()), wp.vec3(*upper_np.tolist())
+    rotation_np = np.asarray(
+        tm.transformations.rotation_matrix(0.4, [1.0, 1.0, 0.0]), dtype=np.float64
+    )[:3, :3]
+    rotation_wp = wp.mat33(*rotation_np.ravel().tolist()) if oriented else None
+    if rotation_wp is None:
+        mask_wp = od.bounds.points_in_aabb_mask(vertices_wp, lower_wp, upper_wp)
+    else:
+        lower_wp = wp.vec3(*(rotation_np @ centre_np).tolist())
+        upper_wp = wp.vec3(*(rotation_np @ upper_np).tolist())
+        mask_wp = od.bounds.points_in_obb_mask(vertices_wp, rotation_wp, lower_wp, upper_wp)
+    expected_vertices_wp, expected_faces_wp = od.selection.submesh_from_vertex_mask(
+        vertices_wp, faces_wp, mask_wp, face_mode="all"
+    )
+    sub_vertices_wp, sub_faces_wp = od.bounds.crop_mesh(
+        vertices_wp, faces_wp, lower_wp, upper_wp, rotation=rotation_wp
+    )
+    assert 0 < expected_faces_wp.size < faces_wp.size  # not vacuous
+    assert np.array_equal(sub_faces_wp.numpy(), expected_faces_wp.numpy())
+    assert np.array_equal(sub_vertices_wp.numpy(), expected_vertices_wp.numpy())
+
+
 def test_points_in_aabb_empty_cloud_and_empty_box(device: str) -> None:
     """An empty cloud and an inverted box both select nothing, through all four entry points."""
     rng = np.random.default_rng(21)

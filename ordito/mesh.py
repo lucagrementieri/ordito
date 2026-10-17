@@ -1209,8 +1209,8 @@ class Trimesh:
         [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
         on it; otherwise
         [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels],
-        which labels straight off the sorted edge keys and builds no adjacency table. Same
-        labelling engine, same answer.
+        which labels straight off the halfedge mates (the cached `halfedge_mates` when there are
+        some) and builds no adjacency table. Same labelling engine, same answer.
 
         See Also
         --------
@@ -1219,7 +1219,9 @@ class Trimesh:
         adjacency = self._cache.get("face_adjacency")
         if adjacency is None:
             return od.adjacency.face_connected_component_labels(
-                self._faces, n_vertices=self.n_vertices
+                self._faces,
+                n_vertices=self.n_vertices,
+                mates=cast("wp.array[wp.int32] | None", self._cache.get("halfedge_mates")),
             )
         # ``validate=False``: the rows are face ids ``face_adjacency`` derived as ``e // 3``,
         # so they are below ``n_faces`` by construction and the check would only add a sync.

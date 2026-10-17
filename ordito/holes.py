@@ -3681,12 +3681,16 @@ class _JoinRim:
         the last join returns at once on the device.
         """
         device = faces.device
-        boundary = od.boundary.oriented_boundary_edges(vertices, faces)
+        # One pairing for both the rim and the components. Mates given without a key order sort
+        # only the boundary halfedges for the rim's order, where a pairing of its own would sort
+        # (or bucket) every halfedge a second time.
+        mates = od.halfedge.halfedge_mates(faces, vertices.size)
+        boundary = od.boundary.oriented_boundary_edges(vertices, faces, mates=mates)
         n_rows = int(boundary.shape[0])
         if n_rows == 0:
             return None
         n_faces = faces.size // 3
-        face_labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+        face_labels = od.adjacency.face_connected_component_labels(faces, mates=mates)
         vertex_labels = _launch.full(vertices.size, -1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_scatter.scatter_face_labels_to_vertices,

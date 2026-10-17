@@ -3,6 +3,7 @@ from warp.geometry import IsoSurfaceMarchingCubes
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels.array import lattice_position, ravel_index
+from ordito.kernels.vertices import normalized_accumulated_row
 
 
 def lattice_edge_margin(spacing: float) -> float:
@@ -982,7 +983,7 @@ def marching_cubes_emit(
 @wp.func
 def shell_vertex(
     vertices: wp.array[wp.vec3],
-    normals: wp.array[wp.vec3],
+    normal_sums: wp.array2d[wp.float64],
     outside: wp.float32,
     inside: wp.float32,
     v: wp.int32,
@@ -990,10 +991,12 @@ def shell_vertex(
 ) -> None:
     # Both layers of a thickened shell at vertex ``v``: the outward-displaced copy in the first
     # ``n_vertices`` slots and the inward-displaced one after it, so the second layer's vertex ``v``
-    # is at ``v + n_vertices`` and the face emitters below can shift by a constant.
+    # is at ``v + n_vertices`` and the face emitters below can shift by a constant. The normal is
+    # ``vertex_normals``' normalizing pass taken here (``normalized_accumulated_row``) over its
+    # accumulator, so it is that function's normal bit for bit.
     n_vertices = vertices.shape[0]
     position = vertices[v]
-    normal = normals[v]
+    normal = normalized_accumulated_row(normal_sums, v)
     out_vertices[v] = position + outside * normal
     out_vertices[n_vertices + v] = position - inside * normal
 
@@ -1048,7 +1051,7 @@ def shell_band(
 @wp.kernel
 def shell_mesh(
     vertices: wp.array[wp.vec3],
-    normals: wp.array[wp.vec3],
+    normal_sums: wp.array2d[wp.float64],
     outside: wp.float32,
     inside: wp.float32,
     faces: wp.array[wp.int32],
@@ -1063,7 +1066,7 @@ def shell_mesh(
     n_vertices = vertices.shape[0]
     n_faces = faces.shape[0] // 3
     if t < n_vertices:
-        shell_vertex(vertices, normals, outside, inside, t, out_vertices)
+        shell_vertex(vertices, normal_sums, outside, inside, t, out_vertices)
     elif t < n_vertices + n_faces:
         shell_face(faces, n_vertices, t - n_vertices, out_faces)
     else:

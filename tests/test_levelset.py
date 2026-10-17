@@ -1193,6 +1193,29 @@ def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_n
     assert 0.5 < volume / (mesh_tm.area * thickness) < 1.5
 
 
+def test_thicken_mesh_displaces_along_the_angle_weighted_normals(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: both layers sit at ``vertex_normals(weighting="angle")`` offsets.
+
+    The shell normalizes the angle-weighted accumulator inside its own kernel; this pins that to
+    the public normals, which their own tests compare against the reference libraries.
+    """
+    _, mesh_wp = saddle_graded
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    outside, thickness = 0.02, 0.05
+    shell_vertices_wp, _ = od.levelset.thicken_mesh(
+        vertices_wp, faces_wp, thickness, outside=outside
+    )
+    normals_np = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle").numpy()
+    vertices_np = vertices_wp.numpy()
+    shell_np = shell_vertices_wp.numpy()
+    n_vertices = vertices_wp.size
+    assert np.allclose(shell_np[:n_vertices], vertices_np + outside * normals_np, atol=1e-6)
+    assert np.allclose(shell_np[n_vertices:], vertices_np - thickness * normals_np, atol=1e-6)
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("thicken_mesh", "meshlib")
 def test_thicken_mesh_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:

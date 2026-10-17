@@ -49,6 +49,7 @@ from ordito import _launch
 from ordito._device import read_scalar, require_same_device
 from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import scatter as kernel_scatter
+from ordito.kernels import vertices as kernel_vertices
 
 # Bounds on the automatic ``voxel_size``, both expressed as a sample count across a span, and both
 # load-bearing rather than defensive. The spans differ, which is the part to read carefully: the
@@ -997,7 +998,16 @@ def thicken_mesh(
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
-    normals = od.vertices.vertex_normals(vertices, faces, weighting="angle")
+    # ``vertex_normals(weighting="angle")`` with nothing precomputed is one angle-weighted scatter
+    # into a ``float64`` accumulator and one normalizing pass; the pass is folded into the shell
+    # kernel, which normalizes each vertex's row as it displaces it.
+    normal_sums = _launch.zeros((n_vertices, 3), dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_vertices.SCATTER_ANGLE_WEIGHTED_NORMALS[wp.float64],
+        dim=n_faces,
+        inputs=[vertices, faces, normal_sums],
+        device=device,
+    )
     rim = od.boundary.oriented_boundary_edges(vertices, faces)
     n_rim = int(rim.shape[0])
 
@@ -1006,7 +1016,7 @@ def thicken_mesh(
     _launch.launch(
         kernel_levelset.shell_mesh,
         dim=n_vertices + n_faces + n_rim,
-        inputs=[vertices, normals, wp.float32(outside), wp.float32(thickness), faces, rim],
+        inputs=[vertices, normal_sums, wp.float32(outside), wp.float32(thickness), faces, rim],
         outputs=[out_vertices, out_faces],
         device=device,
     )

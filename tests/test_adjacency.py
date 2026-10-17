@@ -944,6 +944,28 @@ def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(
     assert np.array_equal(compressed_wp, labels_doubled_wp)
 
 
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular_hollow", "cave_cube"])
+def test_face_connected_component_labels_takes_precomputed_mates(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: given ``mates`` reproduce the labels derived here.
+
+    The derived labels are pinned to the reference libraries above; this pins the ``mates``
+    keyword to them, and its length check to a short table.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_wp = mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, mesh_wp.points.size)
+    derived_np = od.adjacency.face_connected_component_labels(faces_wp).numpy()
+    supplied_np = od.adjacency.face_connected_component_labels(faces_wp, mates=mates_wp).numpy()
+    assert np.unique(derived_np).size > 1  # not vacuous
+    assert np.array_equal(supplied_np, derived_np)
+    with pytest.raises(ValueError, match="mates must have one entry per halfedge"):
+        short_wp = wp.array(mates_wp.numpy()[:-3], dtype=wp.int32, device=faces_wp.device)
+        od.adjacency.face_connected_component_labels(faces_wp, mates=short_wp)
+
+
 def test_face_connected_component_labels_is_per_edge(device: str) -> None:
     """
     Class B against MeshLib: the pair that pins *which* incidence rule ordito implements.
