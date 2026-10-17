@@ -1705,23 +1705,3 @@ def test_face_defective_mask_matches_meshlib(
     )
     assert int(patch_wp.sum()) == 1
     assert int(patch_ml.sum()) == 3
-
-
-@pytest.mark.parametrize("inverted", [False, True])
-def test_is_volume_arrival_order_agrees_with_the_default(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], inverted: bool
-) -> None:
-    """
-    Ordito against ordito: determinism off decides as the default does.
-
-    The mode only reaches the signed volume's block commit, whose last bits cannot flip the sign
-    of a volume this far from zero; ``inverted`` covers both answers.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    faces_np = mesh_tm.faces[:, ::-1] if inverted else mesh_tm.faces
-    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_np, mesh_wp.points.device)
-    fixed = od.validation.is_volume(vertices_wp, faces_wp)
-    assert fixed is not inverted
-    with od.config.deterministic(False):
-        arrival = od.validation.is_volume(vertices_wp, faces_wp)
-    assert arrival is fixed

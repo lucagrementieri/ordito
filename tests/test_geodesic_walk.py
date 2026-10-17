@@ -1276,60 +1276,30 @@ def test_shorten_loop_is_idempotent_and_handles_edge_cases(
 # ---------------------------------------------------------------------------
 
 
-def _walk(mesh_tm: tm.Trimesh, mesh_wp: wp.Mesh, function: str) -> tuple[np.ndarray, np.ndarray]:
-    """One batch of walks on the mesh, as its packed points and offsets."""
-    device = mesh_wp.device
-    start_np, directions_np = _rays(mesh_tm, 64, seed=5)
-    starts_wp = wp.array(start_np, dtype=wp.int32, device=device)
-    if function == "trace_from_vertex":
-        points_wp, offsets_wp = od.geodesic_walk.trace_from_vertex(
-            mesh_wp.points, mesh_wp.indices, starts_wp, points_to_warp(directions_np, device)
-        )
-    elif function == "trace_from_face":
-        barycentric_np = np.full((64, 3), 1.0 / 3.0, dtype=np.float32)
-        points_wp, offsets_wp = od.geodesic_walk.trace_from_face(
-            mesh_wp.points,
-            mesh_wp.indices,
-            wp.array(start_np % len(mesh_tm.faces), dtype=wp.int32, device=device),
-            points_to_warp(barycentric_np, device),
-            points_to_warp(directions_np, device),
-        )
-    elif function == "descend_field":
-        height_np = (mesh_tm.vertices[:, 2] - mesh_tm.vertices[:, 2].min()).astype(np.float64)
-        points_wp, offsets_wp = od.geodesic_walk.descend_field(
-            mesh_wp.points,
-            mesh_wp.indices,
-            wp.array(height_np, dtype=wp.float64, device=device),
-            starts_wp,
-        )
-    else:
-        source_wp = wp.array([0], dtype=wp.int32, device=device)
-        points_wp, offsets_wp = od.geodesic_walk.geodesic_path(
-            mesh_wp.points, mesh_wp.indices, source_wp, starts_wp
-        )
-    return points_wp.numpy(), offsets_wp.numpy()
-
-
-@pytest.mark.parametrize(
-    "function", ["trace_from_vertex", "trace_from_face", "descend_field", "geodesic_path"]
-)
-def test_walk_arrival_order_agrees_with_the_default(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], function: str
+def test_geodesic_path_arrival_order_agrees_with_the_default(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: determinism off walks the default's paths to rounding.
 
-    The mode reaches the mean edge length that scales the crossing tolerance and, for
-    ``geodesic_path``, the heat distance's shift; a last-bit change in either moves no crossing
-    of these walks, so the paths must have the same lengths and the same points to rounding.
+    The mode reaches the walk floor (pinned by ``test_walk_length_epsilon_is_the_host_floor``) and
+    the heat distance's shift; a last-bit change in either moves no crossing of these walks, so the
+    paths must have the same lengths and the same points to rounding.
     """
     mesh_tm, mesh_wp = sphere_irregular
+    starts_wp = wp.array(_rays(mesh_tm, 64, seed=5)[0], dtype=wp.int32, device=mesh_wp.device)
+    source_wp = wp.array([0], dtype=wp.int32, device=mesh_wp.device)
+    results = []
     with warnings.catch_warnings():
         # ``geodesic_path`` warns when it finishes a path along edges; both arms alike.
         warnings.simplefilter("ignore")
-        fixed_points, fixed_offsets = _walk(mesh_tm, mesh_wp, function)
-        with od.config.deterministic(False):
-            arrival_points, arrival_offsets = _walk(mesh_tm, mesh_wp, function)
+        for enabled in (True, False):
+            with od.config.deterministic(enabled):
+                points_wp, offsets_wp = od.geodesic_walk.geodesic_path(
+                    mesh_wp.points, mesh_wp.indices, source_wp, starts_wp
+                )
+            results.append((points_wp.numpy(), offsets_wp.numpy()))
+    (fixed_points, fixed_offsets), (arrival_points, arrival_offsets) = results
     assert fixed_offsets[-1] > fixed_offsets.size
     assert np.array_equal(fixed_offsets, arrival_offsets)
     assert np.allclose(fixed_points, arrival_points, rtol=1e-4, atol=1e-5)

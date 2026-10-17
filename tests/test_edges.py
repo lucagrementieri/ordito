@@ -756,10 +756,6 @@ def test_edge_length_sum_is_the_mean_times_the_edge_count(
     assert float(total_wp.numpy()[0]) / mesh_wp.indices.size == od.edges.mean_edge_length(
         mesh_wp.points, mesh_wp.indices
     )
-
-
-def test_edge_length_sum_of_no_faces_is_zero(device: str) -> None:
-    """Not a library comparison: the empty total is the zero the mean's ``0.0`` stands for."""
-    vertices_wp = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
-    faces_wp = warp_empty(0, wp.int32, device)
-    assert od.edges.edge_length_sum(vertices_wp, faces_wp).numpy().tolist() == [0.0]
+    # No faces: the total is the zero the mean's ``0.0`` stands for.
+    no_faces_wp = warp_empty(0, wp.int32, mesh_wp.device)
+    assert od.edges.edge_length_sum(mesh_wp.points, no_faces_wp).numpy().tolist() == [0.0]

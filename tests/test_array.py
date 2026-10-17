@@ -571,34 +571,25 @@ def test_sort_and_argsort_every_key_dtype_is_a_stable_argsort(device: str, dtype
     Class A: every radix-sortable key dtype against ``numpy.argsort(kind="stable")``.
 
     The keys and the identity payload are seeded in one launch per dtype, so each registered
-    overload is reached; a small key range makes ties, where only a stable sort matches.
+    overload is reached; a small key range makes ties, where only a stable sort matches. The
+    ``int32`` keys also sort over ``end_bit``, the bit length of the largest key, at lengths 1, 2
+    and 1000: a sort that stopped a bit short would misorder the keys with that top bit set.
     """
     rng = np.random.default_rng(33)
     keys_np = rng.integers(0, 50, size=5000).astype(wp.dtype_to_numpy(dtype))
-    keys_wp = wp.array(keys_np, dtype=dtype, device=device)
-    sorted_keys_wp, order_wp = od.array.sort_and_argsort(keys_wp)
-    order_np = np.argsort(keys_np, kind="stable").astype(np.int32)
+    cases: list[tuple[np.ndarray, int | None]] = [(keys_np, None)]
+    if dtype is wp.int32:
+        for n in (1, 2, 1000):
+            bounded_np = rng.integers(0, max(n // 3, 1), size=n).astype(np.int32)
+            cases.append((bounded_np, max(1, int(bounded_np.max()).bit_length())))
     assert np.unique(keys_np).size > 1
-    assert np.array_equal(order_wp.numpy(), order_np)
-    assert np.array_equal(sorted_keys_wp.numpy(), keys_np[order_np])
-
-
-@pytest.mark.parametrize("n", [1, 2, 1000])
-def test_sort_and_argsort_end_bit(device: str, n: int) -> None:
-    """
-    Class A: a sort over only the bits a bounded key needs is still ``numpy.argsort``'s stable one.
-
-    ``end_bit`` is the bit length of the largest key, the tightest bound the contract allows; a
-    sort that stopped a bit short would misorder the keys with that top bit set.
-    """
-    rng = np.random.default_rng(34)
-    keys_np = rng.integers(0, max(n // 3, 1), size=n).astype(np.int32)
-    keys_wp = wp.array(keys_np, dtype=wp.int32, device=device)
-    end_bit = max(1, int(keys_np.max()).bit_length())
-    sorted_keys_wp, order_wp = od.array.sort_and_argsort(keys_wp, end_bit=end_bit)
-    order_np = np.argsort(keys_np, kind="stable").astype(np.int32)
-    assert np.array_equal(order_wp.numpy(), order_np)
-    assert np.array_equal(sorted_keys_wp.numpy(), keys_np[order_np])
+    for case_np, end_bit in cases:
+        keys_wp = wp.array(case_np, dtype=dtype, device=device)
+        kwargs = {} if end_bit is None else {"end_bit": end_bit}
+        sorted_keys_wp, order_wp = od.array.sort_and_argsort(keys_wp, **kwargs)
+        order_np = np.argsort(case_np, kind="stable").astype(np.int32)
+        assert np.array_equal(order_wp.numpy(), order_np)
+        assert np.array_equal(sorted_keys_wp.numpy(), case_np[order_np])
 
 
 def test_sort_and_argsort_in_place(device: str) -> None:
@@ -629,16 +620,12 @@ def test_sort_and_argsort_in_place(device: str) -> None:
     )
     assert empty_keys_wp.shape == (0,)
     assert empty_order_wp.shape == (0,)
-
-
-def test_sort_and_argsort_in_place_rejects_unpaired_buffers(device: str) -> None:
-    keys_wp = wp.zeros(6, dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="one even length"):
-        od.array.sort_and_argsort_in_place(keys_wp, wp.zeros(4, dtype=wp.int32, device=device))
-    with pytest.raises(ValueError, match="one even length"):
-        od.array.sort_and_argsort_in_place(
-            wp.zeros(5, dtype=wp.int32, device=device), wp.zeros(5, dtype=wp.int32, device=device)
-        )
+    for n_keys, n_order in ((6, 4), (5, 5)):  # unpaired, then odd
+        with pytest.raises(ValueError, match="one even length"):
+            od.array.sort_and_argsort_in_place(
+                wp.zeros(n_keys, dtype=wp.int32, device=device),
+                wp.zeros(n_order, dtype=wp.int32, device=device),
+            )
 
 
 def test_pack_1d_wp_arrays_vec3(device: str):
@@ -1103,34 +1090,23 @@ def test_flatnonzero_indices_to_mask_round_trip(device: str, n: int) -> None:
 
 
 @pytest.mark.parametrize("density", [0.0, 0.4, 1.0], ids=["none", "some", "all"])
-def test_flatnonzero_in_place(device: str, density: float) -> None:
+def test_flatnonzero_and_compress_in_place(device: str, density: float) -> None:
     """
-    Class A: ``flatnonzero_in_place`` equals ``numpy.flatnonzero`` and leaves the inclusive scan.
+    Class A: the in-place forms equal ``numpy.flatnonzero`` / ``numpy.compress``, leaving the scan.
 
-    The buffer form behind ``parametrization.face_flipped_indices`` and
-    ``selection.face_indices_from_vertex_indices``; the densities reach the empty result, the
-    general case and a full one, and the length crosses several CUDA scan tiles.
+    ``flatnonzero_in_place`` is the buffer form behind ``parametrization.face_flipped_indices``
+    and ``selection.face_indices_from_vertex_indices``; ``compress_in_place`` the value form behind
+    ``boundary``'s boundary-vertex positions and ``points.convex_subset``. Each overwrites its flags
+    with their inclusive scan. The densities reach the empty result, the general case and a full
+    one, and the length crosses several CUDA scan tiles.
     """
     rng = np.random.default_rng(31)
     flags_np = (rng.random(100_003) < density).astype(np.int32)
+    values_np = rng.standard_normal((flags_np.size, 3)).astype(np.float32)
     flags_wp = wp.array(flags_np, dtype=wp.int32, device=device)
     assert np.array_equal(od.array.flatnonzero_in_place(flags_wp).numpy(), np.flatnonzero(flags_np))
     assert np.array_equal(flags_wp.numpy(), np.cumsum(flags_np))
     assert od.array.flatnonzero_in_place(warp_empty(0, wp.int32, device)).size == 0
-
-
-@pytest.mark.parametrize("density", [0.0, 0.3, 1.0])
-def test_compress_in_place(device: str, density: float) -> None:
-    """
-    Class A: ``compress_in_place`` equals ``numpy.compress`` and leaves the inclusive scan.
-
-    The value form behind ``boundary``'s boundary-vertex positions and ``points.convex_subset``;
-    the densities reach the empty result, the general case and a full one, and the length crosses
-    several CUDA scan tiles.
-    """
-    rng = np.random.default_rng(37)
-    flags_np = (rng.random(100_003) < density).astype(np.int32)
-    values_np = rng.standard_normal((flags_np.size, 3)).astype(np.float32)
     flags_wp = wp.array(flags_np, dtype=wp.int32, device=device)
     values_wp = wp.array(values_np, dtype=wp.vec3, device=device)
     compressed_np = np.compress(flags_np.astype(bool), values_np, axis=0)

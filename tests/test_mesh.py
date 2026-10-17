@@ -1120,36 +1120,45 @@ def test_vector_heat_operators_shares_its_two_sub_bundles(
     assert int(vector_system.nrow) == mesh.n_vertices
 
 
-def test_heat_bundles_share_the_cached_operator_pattern(
+def test_heat_bundles_share_the_cached_pattern_and_rings(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Not a parity assert: one mesh's operators sort its sparsity once, a new face buffer again.
+    Not a parity assert: one mesh's operators sort once and build no rings of their own.
 
-    ``test_vector_heat_operators_reuse_a_prebuilt_scalar_bundle`` pins the values; this counts the
-    key sorts ``mesh_operator_pattern`` runs through ``ordito.array.csr_from_keys`` (its one call
-    site of the radix sort; the vector bundle's transport angles sort halfedges of their own on
-    the CPU, which a count of every sort would mix in). The scalar bundle sorts once, and the
-    vector bundle, ``cotmatrix`` and a ``HeatSolver`` at another diffusion time then sort
-    nothing. ``with_vertices`` keeps the pattern, while ``invert`` and
-    ``with_faces`` -- a new face buffer -- each sort a new one.
+    ``test_heat_operators_reuse_prebuilt_parts`` pins the values a reused part gives; this counts
+    the key sorts ``mesh_operator_pattern`` runs through ``ordito.array.csr_from_keys`` (its one
+    call site of the radix sort; the transport angles sort halfedges of their own on the CPU,
+    which a count of every sort would mix in) and the ``vertex_one_rings`` builds the vector
+    bundles' connection would make. The scalar bundle sorts once; the vector bundle, ``cotmatrix``
+    and a ``HeatSolver`` at another diffusion time then sort nothing, and the connection walks the
+    rings the tangent frames cached, giving the function-level system byte for byte.
+    ``with_vertices`` keeps the pattern, while ``invert`` and ``with_faces`` -- a new face buffer
+    -- each sort a new one.
     """
     _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    sorts: list[int] = []
-    csr_from_keys = od.array.csr_from_keys
+    _ = mesh.vertex_tangent_frames
+    calls: list[str] = []
 
-    def counting_sort(*args: Any, **kwargs: Any) -> Any:
-        sorts.append(1)
-        return csr_from_keys(*args, **kwargs)
+    def counting(name: str, real: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            calls.append(name)
+            return real(*args, **kwargs)
 
-    monkeypatch.setattr(od.array, "csr_from_keys", counting_sort)
+        return wrapped
+
+    monkeypatch.setattr(od.array, "csr_from_keys", counting("sort", od.array.csr_from_keys))
+    monkeypatch.setattr(
+        od.tangent_space, "vertex_one_rings", counting("rings", od.tangent_space.vertex_one_rings)
+    )
 
     scalar = mesh.heat_operators
-    assert len(sorts) == 1
+    assert calls == ["sort"]
     vector_system, shared_scalar, _frames, _preconditioner = mesh.vector_heat_operators
-    _ = mesh.cotmatrix, mesh.heat_solver(t=0.01).vector_operators
-    assert len(sorts) == 1
+    solver_system = mesh.heat_solver(t=0.01).vector_operators[0]
+    _ = mesh.cotmatrix
+    assert calls == ["sort"]
     assert shared_scalar is scalar
     pattern = mesh.mesh_operator_pattern
     assert vector_system.offsets is pattern.offsets
@@ -1157,40 +1166,13 @@ def test_heat_bundles_share_the_cached_operator_pattern(
     assert mesh.cotmatrix.offsets is pattern.offsets
 
     assert mesh.with_vertices(mesh.vertices).mesh_operator_pattern is pattern
-    assert len(sorts) == 1
+    assert calls == ["sort"]
     flipped = mesh.invert().mesh_operator_pattern
-    assert len(sorts) == 2
     refaced = mesh.with_faces(wp.clone(mesh.faces)).mesh_operator_pattern
-    assert len(sorts) == 3
+    assert calls == ["sort"] * 3
     assert flipped is not pattern
     assert refaced is not pattern
 
-
-def test_vector_heat_connection_walks_the_cached_rings(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """
-    Ordito against ordito: the vector bundles' connection is formed over the mesh's cached rings.
-
-    ``Trimesh.halfedge_transport_angles`` walks the ``vertex_one_rings`` the tangent frames
-    already cached, so neither ``vector_heat_operators`` nor a ``HeatSolver`` at another diffusion
-    time builds rings of its own, and the system is byte-equal to the function-level assembly,
-    which builds them inside ``halfedge_transport_angles``.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    _ = mesh.vertex_tangent_frames
-    builds: list[int] = []
-    vertex_one_rings = od.tangent_space.vertex_one_rings
-
-    def counting_rings(*args: Any, **kwargs: Any) -> Any:
-        builds.append(1)
-        return vertex_one_rings(*args, **kwargs)
-
-    monkeypatch.setattr(od.tangent_space, "vertex_one_rings", counting_rings)
-    vector_system = mesh.vector_heat_operators[0]
-    solver_system = mesh.heat_solver(t=0.01).vector_operators[0]
-    assert builds == []
     monkeypatch.undo()
     reference = od.heat.vector_heat_operators(mesh.vertices, mesh.faces)[0]
     reference_t = od.heat.vector_heat_operators(mesh.vertices, mesh.faces, 0.01)[0]
