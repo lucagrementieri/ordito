@@ -196,6 +196,8 @@ def edges_to_neighbor_lists(
     See Also
     --------
     [`edges_to_csr`][ordito.graph.edges_to_csr]
+    [`edges_to_neighbor_lists_from_counts`][ordito.graph.edges_to_neighbor_lists_from_counts]
+        The same lists from node degrees the caller already holds.
     [`ordito.adjacency.vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency]
         The same counting-sort fill for the vertex-to-face relation.
     ``igl.adjacency_list``
@@ -218,11 +220,11 @@ def edges_to_neighbor_lists(
     node_count = _validate_edge_list(edges, node_count, validate=validate)
     device = edges.device
     m = int(edges.shape[0])
-
-    offsets = _launch.zeros(node_count + 1, dtype=wp.int32, device=device)
-    neighbors = _launch.empty(2 * m, dtype=wp.int32, device=device)
     if m == 0 or node_count == 0:
-        return neighbors, offsets
+        return (
+            _launch.empty(2 * m, dtype=wp.int32, device=device),
+            _launch.zeros(node_count + 1, dtype=wp.int32, device=device),
+        )
 
     # An ``(m, 2)`` edge buffer flattened *is* the entry -> node map, so one histogram over it is
     # every node's degree. ``count_occurrences``' own docstring names this as what it is for.
@@ -230,17 +232,86 @@ def edges_to_neighbor_lists(
     _launch.launch(
         kernel_scatter.count_occurrences, dim=2 * m, inputs=[edges.flatten(), degree], device=device
     )
+    return edges_to_neighbor_lists_from_counts(edges, degree, sort_rows=sort_rows)
+
+
+def edges_to_neighbor_lists_from_counts(
+    edges: odt.Array2dInt32, counts: wp.array[wp.int32], *, sort_rows: bool = False
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists] from degrees already counted.
+
+    The second half of that function, for a caller whose own kernel counted every node's degree in
+    a pass it makes anyway: the degree histogram is the one launch this skips. ``counts`` is
+    trusted, not checked -- it must be exactly each node's number of entries in ``edges`` -- and it
+    is **consumed**: the fill counts its entries down as a per-row cursor, so it holds zeros
+    afterwards.
+
+    Parameters
+    ----------
+    edges
+        ``(m, 2)`` edge rows, every endpoint in ``[0, n_nodes)``. Unchecked, with the
+        consequences [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists] describes
+        for ``validate=False``.
+    counts
+        ``(n_nodes,)`` ``int32`` number of times each node appears in ``edges``, on
+        ``edges.device``. Overwritten.
+    sort_rows
+        As in [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists]: sort each row
+        ascending in one extra launch, which makes the row order reproducible.
+
+    Returns
+    -------
+    neighbors : wp.array[wp.int32]
+        ``(2 * m,)`` node indices grouped by node, ordered as in
+        [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists].
+    offsets : wp.array[wp.int32]
+        ``(n_nodes + 1,)`` row offsets on ``edges.device``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``edges`` and ``counts`` are not on one device.
+
+    See Also
+    --------
+    [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists]
+    [`ordito.adjacency.vertex_face_adjacency_from_counts`][ordito.adjacency.vertex_face_adjacency_from_counts]
+        The same split for the vertex-to-face relation.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    edges = wp.array([[0, 1], [1, 2], [3, 4]], dtype=wp.int32)
+    counts = wp.array([1, 2, 1, 1, 1, 0], dtype=wp.int32)
+    neighbors, offsets = od.graph.edges_to_neighbor_lists_from_counts(edges, counts, sort_rows=True)
+    print(neighbors.numpy().tolist())  # [1, 0, 2, 1, 4, 3]
+    print(offsets.numpy().tolist())  # [0, 1, 3, 4, 5, 6, 6]
+    ```
+    """
+    require_same_device(edges=edges, counts=counts)
+    device = edges.device
+    m = int(edges.shape[0])
+    node_count = counts.size
+    offsets = _launch.zeros(node_count + 1, dtype=wp.int32, device=device)
+    neighbors = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    if m == 0 or node_count == 0:
+        return neighbors, offsets
     # Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is 2 * m, known on the host). The same decline
     # ``adjacency.vertex_face_adjacency`` and ``halfedge.vertex_one_rings`` already write down.
-    _launch.array_scan(degree, out_array=offsets[1:], inclusive=True)
-    # ``degree`` has done its job and becomes the fill's write cursor, counting each row's free
+    _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
+    # ``counts`` has done its job and becomes the fill's write cursor, counting each row's free
     # slots down to zero -- which saves an allocation and a fill, and is why the scatter takes both
     # it and ``offsets``.
     _launch.launch(
         kernel_graph.scatter_neighbor_lists,
         dim=m,
-        inputs=[edges, offsets, degree, neighbors],
+        inputs=[edges, offsets, counts, neighbors],
         device=device,
     )
     if sort_rows:

@@ -352,6 +352,39 @@ def test_vertex_face_adjacency_zero_rows_with_faces(device: str) -> None:
     assert np.array_equal(payload_wp.numpy(), np.zeros(3, dtype=np.int32))
 
 
+@pytest.mark.parametrize("deterministic", [True, False])
+def test_vertex_face_adjacency_from_counts_is_the_counted_form(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], deterministic: bool
+) -> None:
+    """
+    Ordito against ordito: the from-counts entry is the second half of the counted one.
+
+    ``vertex_face_adjacency`` carries the oracle (igl, above); this pins that handing it the corner
+    counts taken on the host builds the same CSR, bit for bit under the deterministic setting and
+    as the same row sets without it.
+    """
+    _, mesh_wp = sphere_irregular
+    faces_wp, n_vertices = mesh_wp.indices, mesh_wp.points.size
+    counts_np = np.bincount(faces_wp.numpy(), minlength=n_vertices).astype(np.int32)
+    assert int(counts_np.max()) > int(counts_np.min()) > 0
+    counts_wp = wp.array(counts_np, dtype=wp.int32, device=faces_wp.device)
+    with od.config.deterministic(deterministic):
+        payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency_from_counts(faces_wp, counts_wp)
+        expected_wp, expected_offsets_wp = od.adjacency.vertex_face_adjacency(
+            faces_wp, n_vertices=n_vertices
+        )
+    offsets_np, payload_np, expected_np = (
+        offsets_wp.numpy(),
+        payload_wp.numpy(),
+        expected_wp.numpy(),
+    )
+    assert np.array_equal(offsets_np, expected_offsets_wp.numpy())
+    if deterministic:
+        assert np.array_equal(payload_np, expected_np)
+    for start, stop in itertools.pairwise(offsets_np):
+        assert np.array_equal(np.sort(payload_np[start:stop]), np.sort(expected_np[start:stop]))
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_adjacency_unshared", "trimesh")
 def test_face_adjacency_unshared(request: pytest.FixtureRequest, mesh_name: str) -> None:

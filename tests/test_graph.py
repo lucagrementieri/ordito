@@ -159,6 +159,40 @@ def test_edges_to_neighbor_lists_empty_and_out_of_range(device: str) -> None:
     assert np.array_equal(offsets_wp.numpy(), np.zeros(5, dtype=np.int32))
 
 
+@pytest.mark.parametrize("sort_rows", [False, True])
+def test_edges_to_neighbor_lists_from_counts_is_the_counted_form(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], sort_rows: bool
+) -> None:
+    """
+    Ordito against ordito: the from-counts entry is the second half of the counted one.
+
+    ``edges_to_neighbor_lists`` carries the oracle (igl, above); this pins that handing it the
+    degrees counted on the host builds the same structure -- bit for bit with ``sort_rows``, the
+    same row sets without -- and that the counts come back consumed, as documented.
+    """
+    _, mesh_wp = sphere_irregular
+    n_vertices = mesh_wp.points.size
+    edges_wp, _ = od.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)
+    degrees_np = np.bincount(edges_wp.numpy().ravel(), minlength=n_vertices).astype(np.int32)
+    assert int(degrees_np.max()) > int(degrees_np.min()) > 0
+    counts_wp = wp.array(degrees_np, dtype=wp.int32, device=edges_wp.device)
+
+    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists_from_counts(
+        edges_wp, counts_wp, sort_rows=sort_rows
+    )
+    expected_wp, expected_offsets_wp = od.graph.edges_to_neighbor_lists(
+        n_vertices, edges_wp, sort_rows=sort_rows
+    )
+    offsets_np, neighbors_np = offsets_wp.numpy(), neighbors_wp.numpy()
+    expected_np = expected_wp.numpy()
+    assert np.array_equal(offsets_np, expected_offsets_wp.numpy())
+    if sort_rows:
+        assert np.array_equal(neighbors_np, expected_np)
+    for start, stop in itertools.pairwise(offsets_np):
+        assert np.array_equal(np.sort(neighbors_np[start:stop]), np.sort(expected_np[start:stop]))
+    assert np.array_equal(counts_wp.numpy(), np.zeros(n_vertices, dtype=np.int32))
+
+
 @pytest.mark.parametrize(("node_count", "n_edges"), [(64, 24), (2048, 2047)])
 @pytest.mark.parity("connected_component_labels", "igl", "scipy")
 @pytest.mark.parity("connected_component_labels_depth", "igl", "scipy")

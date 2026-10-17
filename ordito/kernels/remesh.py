@@ -1651,6 +1651,7 @@ def scatter_feature_edge_counts(
     feature_angle: wp.float32,
     out_feature_count: wp.array[wp.int32],
     out_boundary_vertex: wp.array[wp.bool],
+    out_degree: wp.array[wp.int32],
 ) -> None:
     # Add 1 to both endpoints of every feature edge: a boundary edge, or an interior edge whose two
     # faces meet at more than ``feature_angle``. One launch over the unique edges answers both
@@ -1658,9 +1659,16 @@ def scatter_feature_edge_counts(
     # rows twice (once as boundary edges, once as face adjacency) to ask them separately. An empty
     # output (``None`` at launch) is not written, and without the counts no dihedral is measured: a
     # boundary edge is a feature edge by definition, so the mask needs only the face count.
+    #
+    # ``out_degree``, when given (zeroed), also counts every unique edge onto both endpoints: the
+    # vertex degrees ``graph.edges_to_neighbor_lists_from_counts`` builds the rings from, in the
+    # launch that already reads each edge's endpoints.
     e = wp.int32(wp.tid())
     v0 = unique_edges[e, 0]
     v1 = unique_edges[e, 1]
+    if out_degree.shape[0] > 0:
+        wp.atomic_add(out_degree, v0, 1)
+        wp.atomic_add(out_degree, v1, 1)
     if out_boundary_vertex.shape[0] > 0 and edge_face_count[e] == 1:
         # Every writer stores the same value, so the mask needs no atomic.
         out_boundary_vertex[v0] = True
@@ -1670,6 +1678,25 @@ def scatter_feature_edge_counts(
     ):
         wp.atomic_add(out_feature_count, v0, 1)
         wp.atomic_add(out_feature_count, v1, 1)
+
+
+@wp.kernel
+def scatter_edge_incidence_and_corner_counts(
+    inverse: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    out_edge_face_count: wp.array[wp.int32],
+    out_edge_faces: wp.array2d[wp.int32],
+    out_corner_count: wp.array[wp.int32],
+) -> None:
+    # ``scatter.scatter_edge_incidence`` plus each vertex's corner count, which is its
+    # incident-face count: corner ``c`` names vertex ``faces[c]``, and the launch already visits
+    # every corner once.
+    # The counts are what ``adjacency.vertex_face_adjacency_from_counts`` builds the collapse fold
+    # veto's vertex-face CSR from, so that CSR costs no histogram launch of its own. Launch over
+    # ``inverse.shape[0]`` with both counts zeroed.
+    c = wp.int32(wp.tid())
+    record_edge_incidence(inverse[c], c, out_edge_face_count, out_edge_faces)
+    wp.atomic_add(out_corner_count, faces[c], 1)
 
 
 @wp.func

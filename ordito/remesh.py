@@ -80,6 +80,11 @@ class _EdgeIncidence(NamedTuple):
     """Length ``m`` face-corners per unique edge."""
     faces: odt.Array2dInt32
     """``(m, 2)`` incident face indices, the second column unwritten where ``face_count`` is 1."""
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None
+    """
+    The same faces' [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency], when the
+    grouping was asked for it: its corner counts come from the incidence scatter itself.
+    """
 
 
 # Backstop on the independent-set rounds per geometry rebuild in ``quadric_decimate``.
@@ -368,7 +373,9 @@ def isotropic_remesh(
                 current_vertices, current_faces, low, high, feature, grouping=grouping
             )
         elif grouping is not None:
-            incidence = _edge_incidence(current_faces, current_vertices.size, grouping)
+            incidence = _edge_incidence(
+                current_faces, current_vertices.size, grouping, vertex_faces=smooth
+            )
         if current_faces.size == 0:
             break
         if swap:
@@ -381,15 +388,32 @@ def isotropic_remesh(
                 # A flip rewrote the faces in place, so the grouping is stale; the flip loop's own
                 # key sort regroups them without re-packing every corner's key.
                 incidence = _edge_incidence(
-                    current_faces, current_vertices.size, topology.edges_unique()
+                    current_faces,
+                    current_vertices.size,
+                    topology.edges_unique(),
+                    vertex_faces=smooth,
                 )
         if smooth or reproject:
             # One edge grouping serves both the classification and the smoothing ring: the two read
             # the same faces, and the smooth step would otherwise hash and sort them a second time.
             if incidence is None:
-                incidence = _edge_incidence(current_faces, current_vertices.size)
+                incidence = _edge_incidence(
+                    current_faces, current_vertices.size, vertex_faces=smooth
+                )
+            # The deterministic smoothing ring is built from vertex degrees, counted in the
+            # classification launch that reads every unique edge anyway.
+            ring_degree = (
+                _launch.zeros(current_vertices.size, dtype=wp.int32, device=device)
+                if smooth and is_deterministic()
+                else None
+            )
             feature_count, _boundary = _classify(
-                current_vertices, current_faces, feature, incidence, boundary=False
+                current_vertices,
+                current_faces,
+                feature,
+                incidence,
+                boundary=False,
+                degree=ring_degree,
             )
             # Reprojection reads each vertex where the smoothing wrote it, so with both on it runs
             # inside the smoothing launch.
@@ -400,6 +424,8 @@ def isotropic_remesh(
                     current_faces,
                     feature_count,
                     incidence.unique_edges,
+                    vertex_faces=incidence.vertex_faces,
+                    ring_degree=ring_degree,
                     reproject_onto=reproject_mesh,
                     max_dist=query_radius,
                 )
@@ -477,6 +503,7 @@ def _classify(
     incidence: _EdgeIncidence | None = None,
     *,
     boundary: bool = True,
+    degree: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.bool] | None]:
     """
     Per-vertex incident feature-edge counts plus a boundary-vertex mask.
@@ -494,13 +521,16 @@ def _classify(
     grouping avoids that repeated work whenever a caller has it in hand.
 
     ``boundary=False`` returns ``None`` for the mask and neither allocates nor writes it, for the
-    stages that read only the counts.
+    stages that read only the counts. ``degree``, a zeroed per-vertex buffer when given, receives
+    each vertex's unique-edge count in the same launch.
     """
     device = vertices.device
     n_vertices = vertices.size
     boundary_vertex = _launch.zeros(n_vertices, dtype=wp.bool, device=device) if boundary else None
     feature_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
-    _scatter_feature_edges(vertices, faces, feature, incidence, feature_count, boundary_vertex)
+    _scatter_feature_edges(
+        vertices, faces, feature, incidence, feature_count, boundary_vertex, degree
+    )
     return feature_count, boundary_vertex
 
 
@@ -508,6 +538,8 @@ def _edge_incidence(
     faces: wp.array[wp.int32],
     n_vertices: int,
     grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None,
+    *,
+    vertex_faces: bool = False,
 ) -> _EdgeIncidence:
     """
     Group a triangulation's edge rows once, into unique edges and their incident faces.
@@ -517,7 +549,8 @@ def _edge_incidence(
     for the count alone, so it is very nearly free. It is what lets ``_classify`` skip a second and
     third grouping of the same rows; see ``scatter_edge_incidence`` in ``kernels/scatter.py``.
     ``grouping``, when given, is ``edges_unique``'s ``(unique_edges, inverse)`` for ``faces``,
-    already in hand from the stage that produced them.
+    already in hand from the stage that produced them. ``vertex_faces`` also builds the faces'
+    vertex-face CSR, its corner counts taken by the same scatter.
     """
     device = faces.device
     unique_edges, inverse = (
@@ -528,14 +561,28 @@ def _edge_incidence(
     m = int(unique_edges.shape[0])
     face_count = _launch.zeros(m, dtype=wp.int32, device=device)
     edge_faces = odt.empty_2d((m, 2), wp.int32, device=device)
-    if m > 0:
-        _launch.launch(
-            kernel_scatter.scatter_edge_incidence,
-            dim=inverse.size,
-            inputs=[inverse, face_count, edge_faces],
-            device=device,
-        )
-    return _EdgeIncidence(unique_edges, face_count, odt.as_array2d(edge_faces, wp.int32))
+    if not vertex_faces or m == 0:
+        if m > 0:
+            _launch.launch(
+                kernel_scatter.scatter_edge_incidence,
+                dim=inverse.size,
+                inputs=[inverse, face_count, edge_faces],
+                device=device,
+            )
+        return _EdgeIncidence(unique_edges, face_count, odt.as_array2d(edge_faces, wp.int32))
+    corner_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_remesh.scatter_edge_incidence_and_corner_counts,
+        dim=inverse.size,
+        inputs=[inverse, faces, face_count, edge_faces, corner_count],
+        device=device,
+    )
+    return _EdgeIncidence(
+        unique_edges,
+        face_count,
+        odt.as_array2d(edge_faces, wp.int32),
+        od.adjacency.vertex_face_adjacency_from_counts(faces, corner_count),
+    )
 
 
 def _collapse_pass(
@@ -583,26 +630,30 @@ def _collapse_pass(
 
         # One edge grouping per pass, shared by the candidate scoring and ``_classify``; the first
         # pass's may come from the stage before (``grouping``).
-        incidence = _edge_incidence(faces, n_vertices, grouping)
+        #
+        # The vertex-face CSR it also builds exists only for ``collapse_candidates``' fold veto,
+        # which needs the faces incident to a vertex where the rings below have only its
+        # neighbours. It is about a percent of the collapse stage, and the veto's own per-candidate
+        # work does not show above run-to-run noise -- see the veto itself in
+        # ``kernels/remesh.collapse_candidates``. Its corner counts come from the incidence scatter.
+        incidence = _edge_incidence(faces, n_vertices, grouping, vertex_faces=True)
         grouping = None
         unique_edges = incidence.unique_edges
         m = int(unique_edges.shape[0])
         if m == 0:
             break
-        feature_count, _boundary = _classify(vertices, faces, feature, incidence, boundary=False)
+        assert incidence.vertex_faces is not None
+        vertex_faces, face_offsets = incidence.vertex_faces
+        degree = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+        feature_count, _boundary = _classify(
+            vertices, faces, feature, incidence, boundary=False, degree=degree
+        )
         # Only the neighbour *sets* are read -- the link condition counts shared neighbours, the
         # band walks and the ring locks exit or take a minimum over a whole row -- so the rows need
-        # no order, and a degree count and a cursor fill build them with no sort. The unique edges
-        # came from this very face buffer, so they are in range.
-        ring_neighbors, ring_offsets = od.graph.edges_to_neighbor_lists(
-            n_vertices, unique_edges, validate=False
-        )
-        # The vertex-face CSR exists only for ``collapse_candidates``' fold veto, which needs the
-        # faces incident to a vertex where the rings above have only its neighbours. It is about a
-        # percent of the collapse stage, and the veto's own per-candidate work does not show above
-        # run-to-run noise -- see the veto itself in ``kernels/remesh.collapse_candidates``.
-        vertex_faces, face_offsets = od.adjacency.vertex_face_adjacency(
-            faces, n_vertices=n_vertices
+        # no order, and the degrees the classification counted and a cursor fill build them with
+        # no sort. The unique edges came from this very face buffer, so they are in range.
+        ring_neighbors, ring_offsets = od.graph.edges_to_neighbor_lists_from_counts(
+            unique_edges, degree
         )
 
         survivor = _launch.empty(m, dtype=wp.int32, device=device)
@@ -765,7 +816,7 @@ def _boundary_vertex_mask(
 ) -> wp.array[wp.bool]:
     """``_classify``'s boundary-vertex mask alone, with no feature counts allocated or tested."""
     boundary_vertex = _launch.zeros(vertices.size, dtype=wp.bool, device=vertices.device)
-    _scatter_feature_edges(vertices, faces, wp.float32(0.0), incidence, None, boundary_vertex)
+    _scatter_feature_edges(vertices, faces, wp.float32(0.0), incidence, None, boundary_vertex, None)
     return boundary_vertex
 
 
@@ -776,12 +827,14 @@ def _scatter_feature_edges(
     incidence: _EdgeIncidence | None,
     feature_count: wp.array[wp.int32] | None,
     boundary_vertex: wp.array[wp.bool] | None,
+    degree: wp.array[wp.int32] | None,
 ) -> None:
     """
     Write ``_classify``'s two tables into the zeroed buffers given, in one launch over the edges.
 
     Either table may be ``None``, and is then neither written nor, for the counts, tested for:
     ``kernels/remesh.scatter_feature_edge_counts`` skips the dihedral test without them.
+    ``degree``, when given, receives each vertex's unique-edge count.
     """
     n_faces = faces.size // 3
     if n_faces == 0:
@@ -803,6 +856,7 @@ def _scatter_feature_edges(
             feature,
             feature_count,
             boundary_vertex,
+            degree,
         ],
         device=vertices.device,
     )
@@ -814,6 +868,8 @@ def _smooth_pass(
     feature_count: wp.array[wp.int32],
     unique_edges: odt.Array2dInt32 | None = None,
     *,
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
+    ring_degree: wp.array[wp.int32] | None = None,
     reproject_onto: wp.Mesh | None = None,
     max_dist: float = 0.0,
 ) -> wp.array[wp.vec3]:
@@ -829,6 +885,8 @@ def _smooth_pass(
 
     ``reproject_onto``, when given, also snaps each free vertex's new position onto that surface
     within ``max_dist``, in the same launch: the answer ``_reproject_pass`` gives on this one's.
+    ``vertex_faces`` is the faces' vertex-face CSR when the caller holds it, and ``ring_degree``
+    each vertex's count of ``unique_edges`` (consumed), which the deterministic ring is built from.
     """
     device = vertices.device
     n_vertices = vertices.size
@@ -838,13 +896,21 @@ def _smooth_pass(
     vertex_areas = od.laplacian.mass_matrix_entries(vertices, faces)
     # The same vertex-face CSR the collapse stage builds for its own fold veto, and for the same
     # reason: ``unique_edges`` above carries a vertex's *neighbours*, never its faces.
-    vertex_faces, face_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    incident_faces, face_offsets = (
+        vertex_faces
+        if vertex_faces is not None
+        else od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    )
 
     if is_deterministic():
         # Each vertex sums its ring over its neighbour row sorted ascending, in one fixed order, so
         # the pass returns the same bits on every run; the atomic scatter below does not on CUDA.
-        ring_neighbors, ring_offsets = od.graph.edges_to_neighbor_lists(
-            n_vertices, unique_edges, validate=False, sort_rows=True
+        ring_neighbors, ring_offsets = (
+            od.graph.edges_to_neighbor_lists_from_counts(unique_edges, ring_degree, sort_rows=True)
+            if ring_degree is not None
+            else od.graph.edges_to_neighbor_lists(
+                n_vertices, unique_edges, validate=False, sort_rows=True
+            )
         )
         ring_sum = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
         ring_weight = _launch.empty(n_vertices, dtype=wp.float32, device=device)
@@ -875,7 +941,7 @@ def _smooth_pass(
             ring_sum,
             ring_weight,
             face_offsets,
-            vertex_faces,
+            incident_faces,
             wp.float32(1.0),
             wp.int32(0 if reproject_onto is None else 1),
             wp.uint64(0 if reproject_onto is None else reproject_onto.id),

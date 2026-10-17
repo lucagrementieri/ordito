@@ -329,6 +329,8 @@ def vertex_face_adjacency(
 
     See Also
     --------
+    [`vertex_face_adjacency_from_counts`][ordito.adjacency.vertex_face_adjacency_from_counts]
+        The same CSR from per-vertex corner counts the caller already holds.
     [`face_adjacency`][ordito.adjacency.face_adjacency]
     [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]
     ``igl.vertex_triangle_adjacency``
@@ -352,13 +354,13 @@ def vertex_face_adjacency(
     n_faces = faces.size // 3
     row_count = od.array.index_bound(faces) if n_vertices is None else int(n_vertices)
 
-    offsets = _launch.zeros(row_count + 1, dtype=wp.int32, device=device)
     if n_faces == 0 or row_count == 0:
         # ``row_count == 0`` with faces present (reachable only via an explicit ``n_vertices=0``)
         # would otherwise hand back an unwritten ``3 * n_faces`` buffer of allocator garbage.
-        return _launch.zeros(3 * n_faces, dtype=wp.int32, device=device), offsets
-
-    vertex_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+        return (
+            _launch.zeros(3 * n_faces, dtype=wp.int32, device=device),
+            _launch.zeros(row_count + 1, dtype=wp.int32, device=device),
+        )
 
     counts = _launch.zeros(row_count, dtype=wp.int32, device=device)
     # A flat face buffer *is* the corner -> vertex map, so one launch over all 3 * n_faces corners
@@ -366,6 +368,70 @@ def vertex_face_adjacency(
     _launch.launch(
         kernel_scatter.count_occurrences, dim=3 * n_faces, inputs=[faces, counts], device=device
     )
+    return vertex_face_adjacency_from_counts(faces, counts)
+
+
+def vertex_face_adjacency_from_counts(
+    faces: wp.array[wp.int32], counts: wp.array[wp.int32]
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] from counts already taken.
+
+    The second half of that function, for a caller whose own kernel visits every corner in a pass
+    it makes anyway and counts each vertex's corners there: the corner histogram is the one launch
+    this skips. ``counts`` is trusted, not checked -- it must be exactly each vertex's number of
+    corners in ``faces`` -- and it is **consumed**: its buffer becomes the scan's input and, when
+    rows are filled by atomics, their per-row cursor, so its contents are unspecified afterwards.
+
+    Parameters
+    ----------
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer, every index in ``[0, n_vertices)``.
+    counts
+        ``(n_vertices,)`` ``int32`` number of corners of ``faces`` naming each vertex, on
+        ``faces.device``. Overwritten.
+
+    Returns
+    -------
+    vertex_faces : wp.array[wp.int32]
+        ``(3 * n_faces,)`` face indices grouped by vertex, ordered as in
+        [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency].
+    offsets : wp.array[wp.int32]
+        ``(n_vertices + 1,)`` row offsets on ``faces.device``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``faces`` and ``counts`` are not on one device.
+
+    See Also
+    --------
+    [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency]
+    [`ordito.graph.edges_to_neighbor_lists_from_counts`][ordito.graph.edges_to_neighbor_lists_from_counts]
+        The same split for an edge list's neighbour lists.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    faces = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32)
+    counts = wp.array([1, 2, 2, 1], dtype=wp.int32)
+    vertex_faces, offsets = od.adjacency.vertex_face_adjacency_from_counts(faces, counts)
+    print(offsets.numpy().tolist())  # [0, 1, 3, 5, 6]
+    print(sorted(vertex_faces.numpy()[offsets.numpy()[1] : offsets.numpy()[2]].tolist()))  # [0, 1]
+    ```
+    """
+    require_same_device(faces=faces, counts=counts)
+    device = faces.device
+    n_faces = faces.size // 3
+    row_count = counts.size
+    offsets = _launch.zeros(row_count + 1, dtype=wp.int32, device=device)
+    if n_faces == 0 or row_count == 0:
+        return _launch.zeros(3 * n_faces, dtype=wp.int32, device=device), offsets
+    vertex_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     # Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is 3 * n_faces, known on the host). Converting for
     # symmetry would add a device synchronization where there is currently none.
