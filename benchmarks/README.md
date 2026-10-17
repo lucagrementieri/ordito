@@ -283,16 +283,13 @@ process — `benchmarks/devices.py` runs the CUDA pass (with every reference) an
 unnarrowed second pass would time them twice and duplicate the rows. `tests/devices.py` is the same
 idea for the test suite.
 
-A full default run is **~18 minutes** on an RTX 5090 (measured: 1 097 s across all 33 modules, one
-process each, 999 cases plus 139 skipped). The four slowest modules were `test_reconstruction`
-(235 s), `test_laplacian` (95 s), `test_proximity` (85 s, then dominated by the brute-force
-`O(Q x F)` winding number, which is now an exact hierarchy sub-linear in the face count per query)
-and `test_smoothing` (70 s).
+A full default run takes **tens of minutes** on an RTX 5090 (one process per module). The slowest
+modules are `test_reconstruction`, `test_laplacian`, `test_proximity` and `test_smoothing`.
 
-The **pymeshlab** rows add roughly **six minutes** on top of that, spread over 26 modules; the
-largest single contributions are `test_heat_distance` (+40 s, its heat solver at `setup=full` rebuilds the
-factorization every round), `test_proximity` (+3 s even capped at `bunny`), `test_combine` (+18 s, the
-1 630 ms-per-call component split on `parts_1024`) and `test_curvature` (+9 s). Three groups are
+The **pymeshlab** rows add several minutes on top of that, spread over most modules; the largest
+contributions are `test_heat_distance` (its heat solver at `setup=full` rebuilds the factorization
+every round), `test_combine` (the component split on `parts_1024`), `test_curvature` and
+`test_proximity` (even capped at `bunny`). Three groups are
 explicitly capped for that reason — see the pymeshlab hazards below.
 
 That measurement predates the six modules added with the potpourri3d port
@@ -542,9 +539,9 @@ APIs used here are CPU-only (only `open3d.t` has GPU kernels). `scipy` covers th
 radius searches (`spatial.KDTree`) and the graph traversals (`sparse.csgraph`), which is where
 trimesh itself delegates. `potpourri3d` is CPU-only (geometry-central) and is the **only** reference
 for the heat-method family, tangent spaces and isocontours. `pymeshlab` is CPU-only (MeshLab /
-VCGlib) and is the **broadest** — it reaches 26 modules, more than any other single reference.
-`pyvista` is CPU-only, single-threaded VTK 9.6 and is the newest; it reaches 47 groups across 26
-modules (see its section below). **A group carries `pyvista` or `vedo`, never both** — they wrap the
+VCGlib) and is the **broadest** — it reaches more modules than any other single reference.
+`pyvista` is CPU-only, single-threaded VTK 9.6 and is the newest; it reaches dozens of groups
+across most modules (see its section below). **A group carries `pyvista` or `vedo`, never both** — they wrap the
 same VTK, so two rows would double-count one implementation; where a group would take both, `vedo`
 gets `noparity(..., oracle="pyvista")`. `meshlib` is the only **multi-threaded** CPU reference, so a
 `ordito-cuda` vs `meshlib` ratio is a fair fight where the other CPU ratios are not; `pymeshfix` is
@@ -594,8 +591,8 @@ comparable:
 `reason` is mandatory and is checked for substance (≥ 40 chars, ≥ 6 words, no `"see above"`-class
 filler). `oracle=` names the library that *is* the oracle, and the gate then requires **that** pair to
 be covered — so an exemption is a checked claim rather than an escape hatch. Both markers take string
-literals only; a computed argument is invisible to the static scan and is rejected. Twenty-seven of the
-346 pairs are exempt.
+literals only; a computed argument is invisible to the static scan and is rejected. Exemptions are a small minority of
+the pairs; `python -m tests.parity` prints the current count.
 
 **Exemptions are for results that cannot be compared, not comparisons that are awkward.** Three rows
 here were heading for exemptions on an 8%-of-displacement Laplacian disagreement until MeshLab's
@@ -799,11 +796,10 @@ wheel before planning a row around it. Two that do not, and will be looked for b
 `ordito.repair` carries functions named after them: **`collapse_small_triangles` and
 `resolve_duplicated_faces` are not bound** (`AttributeError`), so neither group can have an igl row.
 
-#### Coverage: 74 pairs over 25 modules
+#### Coverage
 
-igl reaches **74** of the matrix's 273 `(group, library)` pairs — **the most-covered reference in
-the suite** (trimesh and pymeshlab are next at 71 each), up from 27 before the coverage pass and 53
-before the twelve igl-parity ports landed. Nine of its groups did not exist before
+igl is **among the most-covered references in the suite**, alongside trimesh and pymeshlab, after a
+coverage pass and a set of igl-parity ports. Nine of its groups did not exist before
 the coverage pass: `sample_surface`, `face_angles`, `vertex_defects`,
 `face_connected_component_labels`, `ears`, `is_edge_manifold`, `remove_unreferenced_vertices`,
 `unique_faces`, plus the `icosahedron` case of `platonic_solids` — and the port pass added the
@@ -940,8 +936,8 @@ The first two fail *silently* rather than raising:
 
 VTK through pyvista 0.48 / VTK 9.6, and the registration cost nothing: `pyvista>=0.48` was already in
 the `test` dependency group. `PolyData`'s callable surface is **142 distinct filter names** across its
-three mixins; 28 of them map onto something ordito already has, and those 28 carry **47 group rows**
-across 26 modules (one filter often answers several groups — `cell_quality` alone covers
+three mixins; 28 of them map onto something ordito already has, and those carry group rows
+across most modules (one filter often answers several groups — `cell_quality` alone covers
 `face_quality` and `face_angles`, and `find_closest_cell` answers both `closest_point_on_mesh` and
 `polyline_point_distance`). Every one is single-threaded CPU VTK, so `pyvista` is `cpu_bound` and the
 heavy filters carry explicit caps.

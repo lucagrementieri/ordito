@@ -41,7 +41,7 @@ and falls back to CPU otherwise, with the same code.
 
 - **One dependency.** The runtime depends on `warp-lang` alone; NumPy comes with Warp; nothing else
   (no SciPy, PyTorch or trimesh) is needed at runtime.
-- **Broad coverage.** 50 public modules and over 500 functions spanning primitives, topology,
+- **Broad coverage.** Hundreds of functions across dozens of public modules, spanning primitives, topology,
   repair, remeshing, spatial queries, discrete differential operators, geodesics, sampling,
   surface reconstruction, and registration.
 - **Stays on the device.** Functions take Warp arrays and return Warp arrays, so pipelines compose
@@ -131,10 +131,10 @@ round the set out to the eleven reference implementations the suite measures aga
 These libraries are not runtime dependencies; they are **test oracles**. Wherever one of them
 computes the same quantity as an ordito function, a regression test compares the two outputs
 value by value. A parity gate in the test suite fails the build if any library the benchmarks
-time against ordito is neither compared in a test nor exempted with a written reason. Today the
-benchmark suite has 357 groups and 584 `(group, library)` pairs: 554 are covered by a value test,
-30 carry a written exemption (typically a different algorithm answering a related question), and
-none are uncovered. Where ordito and a reference disagree by definition rather than by rounding
+time against ordito is neither compared in a test nor exempted with a written reason. Every
+`(group, library)` pair in the benchmark suite is either covered by a value test or carries a
+written exemption (typically a different algorithm answering a related question); none are
+uncovered, and `python -m tests.parity` prints the current matrix. Where ordito and a reference disagree by definition rather than by rounding
 (a sign convention, a squared distance), the docstring says so and the test pins the difference.
 
 ## Development
