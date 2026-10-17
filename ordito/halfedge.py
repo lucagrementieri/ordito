@@ -389,9 +389,12 @@ def _walk_one_rings(
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
-    ring_halfedges = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
     if n_halfedges == 0 or n_vertices == 0:
+        ring_halfedges = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
         return ring_halfedges, offsets, _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+    # Every slot lies in one vertex's row, which the walk writes whole -- the halfedges it reached,
+    # then ``-1`` where a pinched vertex's walk closed early -- so the buffer needs no fill.
+    ring_halfedges = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
 
     # One pass over the halfedges sizes the CSR and picks every vertex's two start candidates (row
     # 0 over all outgoing halfedges, row 1 over the boundary ones): every face contributes exactly

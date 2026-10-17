@@ -513,3 +513,7 @@ def write_one_rings(
         h = nxt
     if count != degree:
         wp.atomic_add(out_incomplete, 0, 1)
+        # The row is this thread's alone, so the slots a closed-early walk left are marked ``-1``
+        # here rather than by a fill of the whole buffer beforehand.
+        for j in range(begin + count, begin + degree):
+            out_halfedges[j] = wp.int32(-1)
