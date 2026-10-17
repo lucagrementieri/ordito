@@ -3729,6 +3729,8 @@
       
         
       
+        
+      
     
     
     
@@ -3926,6 +3928,33 @@
     
   
   constants
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  config
 
     
   </span>
@@ -5556,7 +5585,14 @@ modulo a full turn:</p>
 <span class="normal">397</span>
 <span class="normal">398</span>
 <span class="normal">399</span>
-<span class="normal">400</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
+<span class="normal">400</span>
+<span class="normal">401</span>
+<span class="normal">402</span>
+<span class="normal">403</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -5632,19 +5668,26 @@ modulo a full turn:</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="o">=</span><span class="n">twins</span><span class="p">,</span> <span class="n">tangent_angles</span><span class="o">=</span><span class="n">tangent_angles</span><span class="p">)</span>
-    <span class="n">require_matching_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_halfedges</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
+    <span class="k">if</span> <span class="n">tangent_angles</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="c1"># Otherwise ``vertex_one_rings`` below checks a supplied table with its own readback.</span>
+        <span class="n">require_matching_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">)</span>
     <span class="n">rho</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">rho</span>
 
     <span class="n">n</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
-    <span class="k">if</span> <span class="n">twins</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">twins</span> <span class="o">=</span> <span class="n">halfedge_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">tangent_angles</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">rings</span> <span class="o">=</span> <span class="n">vertex_one_rings</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="o">=</span><span class="n">twins</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">)</span>
-        <span class="n">tangent_angles</span> <span class="o">=</span> <span class="n">halfedge_tangent_angles</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">rings</span><span class="o">=</span><span class="n">rings</span><span class="p">)</span>
+        <span class="c1"># The rings and the twins they are walked over come back together, for one readback.</span>
+        <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">,</span> <span class="n">twins</span> <span class="o">=</span> <span class="n">vertex_one_rings</span><span class="p">(</span>
+            <span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="o">=</span><span class="n">twins</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">,</span> <span class="n">return_twins</span><span class="o">=</span><span class="kc">True</span>
+        <span class="p">)</span>
+        <span class="n">tangent_angles</span> <span class="o">=</span> <span class="n">halfedge_tangent_angles</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">rings</span><span class="o">=</span><span class="p">(</span><span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">)</span>
+        <span class="p">)</span>
+    <span class="k">elif</span> <span class="n">twins</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">twins</span> <span class="o">=</span> <span class="n">halfedge_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">)</span>
 
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">halfedge_transport_angles</span><span class="p">,</span>

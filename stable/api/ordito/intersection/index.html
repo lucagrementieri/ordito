@@ -3828,6 +3828,8 @@
       
         
       
+        
+      
     
     
     
@@ -4025,6 +4027,33 @@
     
   
   constants
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  config
 
     
   </span>
@@ -9390,7 +9419,10 @@ the <em>near</em> side, so the field enters negated:</p>
 <span class="normal">1970</span>
 <span class="normal">1971</span>
 <span class="normal">1972</span>
-<span class="normal">1973</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
+<span class="normal">1973</span>
+<span class="normal">1974</span>
+<span class="normal">1975</span>
+<span class="normal">1976</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -9560,17 +9592,20 @@ the <em>near</em> side, so the field enters negated:</p>
     <span class="p">)</span>
     <span class="n">rim</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">boundary</span><span class="o">.</span><span class="n">oriented_boundary_edges</span><span class="p">(</span><span class="n">new_vertices</span><span class="p">,</span> <span class="n">touching</span><span class="p">)</span>
     <span class="c1"># Host bookkeeping over the touching faces' rim alone: its edges and their section flags cross</span>
-    <span class="c1"># in two small copies, and the section edges go back in one.</span>
-    <span class="k">if</span> <span class="n">rim</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="c1"># in one small copy, and the section edges go back in one.</span>
+    <span class="n">n_rim</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">rim</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+    <span class="k">if</span> <span class="n">n_rim</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span>
-    <span class="n">on_section</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">rim</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">rim_rows</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_rim</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_intersections</span><span class="o">.</span><span class="n">section_rim_edges</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">rim</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">rim</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">shifted</span><span class="p">,</span> <span class="n">on_section</span><span class="p">],</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n_rim</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">rim</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">shifted</span><span class="p">,</span> <span class="n">rim_rows</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">section_np</span> <span class="o">=</span> <span class="n">rim</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="n">on_section</span><span class="o">.</span><span class="n">numpy</span><span class="p">()]</span>
+    <span class="c1"># Readback: the section edges are chained on the host.</span>
+    <span class="n">rim_rows_np</span> <span class="o">=</span> <span class="n">rim_rows</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+    <span class="n">section_np</span> <span class="o">=</span> <span class="n">rim_rows_np</span><span class="p">[</span><span class="n">rim_rows_np</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">]</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">,</span> <span class="p">:</span><span class="mi">2</span><span class="p">]</span>
     <span class="k">if</span> <span class="n">section_np</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span>
     <span class="c1"># The section's vertices are numbered compactly for the chaining, so its tables are sized by</span>
@@ -9824,10 +9859,7 @@ result is as watertight as the input:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2047</span>
-<span class="normal">2048</span>
-<span class="normal">2049</span>
-<span class="normal">2050</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2050</span>
 <span class="normal">2051</span>
 <span class="normal">2052</span>
 <span class="normal">2053</span>
@@ -9919,7 +9951,10 @@ result is as watertight as the input:</p>
 <span class="normal">2139</span>
 <span class="normal">2140</span>
 <span class="normal">2141</span>
-<span class="normal">2142</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_faces_along_field</span><span class="p">(</span>
+<span class="normal">2142</span>
+<span class="normal">2143</span>
+<span class="normal">2144</span>
+<span class="normal">2145</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_faces_along_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>

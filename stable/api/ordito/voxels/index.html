@@ -4037,6 +4037,8 @@
       
         
       
+        
+      
     
     
     
@@ -4234,6 +4236,33 @@
     
   
   constants
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  config
 
     
   </span>
@@ -5322,9 +5351,7 @@ contained in this one.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 97</span>
-<span class="normal"> 98</span>
-<span class="normal"> 99</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 99</span>
 <span class="normal">100</span>
 <span class="normal">101</span>
 <span class="normal">102</span>
@@ -5479,7 +5506,9 @@ contained in this one.</p>
 <span class="normal">251</span>
 <span class="normal">252</span>
 <span class="normal">253</span>
-<span class="normal">254</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxelize_mesh</span><span class="p">(</span>
+<span class="normal">254</span>
+<span class="normal">255</span>
+<span class="normal">256</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxelize_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -5587,25 +5616,25 @@ contained in this one.</p>
     <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_empty_grid</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 
-    <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">counts_f32</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The counts go straight into the tail of the ``n_faces + 1`` offsets buffer and are scanned in</span>
+    <span class="c1"># place, in int64: each count saturates just past the budget, so the scanned total is exact</span>
+    <span class="c1"># whenever it is within the budget and over it otherwise, for any ``voxel_size``.</span>
+    <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_faces</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">offsets</span><span class="p">[</span><span class="mi">1</span><span class="p">:])</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_voxels</span><span class="o">.</span><span class="n">count_triangle_candidates</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="mf">1.0</span> <span class="o">/</span> <span class="n">voxel_size</span><span class="p">),</span> <span class="n">counts</span><span class="p">,</span> <span class="n">counts_f32</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="mf">1.0</span> <span class="o">/</span> <span class="n">voxel_size</span><span class="p">),</span> <span class="n">max_candidates</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">counts</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="c1"># The budget check runs on the float32 copy: the exact count can overflow ``int32`` for an</span>
-    <span class="c1"># absurd voxel_size, and the whole point of the guard is to catch exactly that case before the</span>
-    <span class="c1"># prefix sum is asked to represent it.</span>
-    <span class="n">approximate_total</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">counts_f32</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">approximate_total</span> <span class="o">&gt;</span> <span class="nb">float</span><span class="p">(</span><span class="n">max_candidates</span><span class="p">):</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">total</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="n">index</span><span class="o">=-</span><span class="mi">1</span><span class="p">))</span>  <span class="c1"># checks the budget and sizes the candidate launch</span>
+    <span class="k">if</span> <span class="n">total</span> <span class="o">&gt;</span> <span class="n">max_candidates</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">"voxelize_mesh would test </span><span class="si">{</span><span class="n">approximate_total</span><span class="si">:</span><span class="s2">.3g</span><span class="si">}</span><span class="s2"> (triangle, cell) pairs, above "</span>
-            <span class="sa">f</span><span class="s2">"max_candidates=</span><span class="si">{</span><span class="n">max_candidates</span><span class="si">}</span><span class="s2">: voxel_size=</span><span class="si">{</span><span class="n">voxel_size</span><span class="si">:</span><span class="s2">.6g</span><span class="si">}</span><span class="s2"> is too small for this "</span>
-            <span class="s2">"mesh (the count grows as its reciprocal cubed)"</span>
+            <span class="sa">f</span><span class="s2">"voxelize_mesh would test more than max_candidates=</span><span class="si">{</span><span class="n">max_candidates</span><span class="si">}</span><span class="s2"> (triangle, cell) "</span>
+            <span class="sa">f</span><span class="s2">"pairs: voxel_size=</span><span class="si">{</span><span class="n">voxel_size</span><span class="si">:</span><span class="s2">.6g</span><span class="si">}</span><span class="s2"> is too small for this mesh (the count grows as "</span>
+            <span class="s2">"its reciprocal cubed)"</span>
         <span class="p">)</span>
-    <span class="n">offsets</span><span class="p">,</span> <span class="n">total</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">counts_to_offsets</span><span class="p">(</span><span class="n">counts</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">total</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_empty_grid</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 
@@ -5808,9 +5837,7 @@ collapses repeated cells itself.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">257</span>
-<span class="normal">258</span>
-<span class="normal">259</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">259</span>
 <span class="normal">260</span>
 <span class="normal">261</span>
 <span class="normal">262</span>
@@ -5861,7 +5888,9 @@ collapses repeated cells itself.</p>
 <span class="normal">307</span>
 <span class="normal">308</span>
 <span class="normal">309</span>
-<span class="normal">310</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxelize_points</span><span class="p">(</span>
+<span class="normal">310</span>
+<span class="normal">311</span>
+<span class="normal">312</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxelize_points</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6168,9 +6197,7 @@ use atomics directly, since those are order-independent for floats.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">333</span>
 <span class="normal">334</span>
 <span class="normal">335</span>
 <span class="normal">336</span>
@@ -6299,7 +6326,9 @@ use atomics directly, since those are order-independent for floats.</p>
 <span class="normal">459</span>
 <span class="normal">460</span>
 <span class="normal">461</span>
-<span class="normal">462</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxel_down_sample</span><span class="p">(</span>
+<span class="normal">462</span>
+<span class="normal">463</span>
+<span class="normal">464</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxel_down_sample</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6639,9 +6668,7 @@ landed in are zero, for every <code>pooling</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">545</span>
-<span class="normal">546</span>
-<span class="normal">547</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">547</span>
 <span class="normal">548</span>
 <span class="normal">549</span>
 <span class="normal">550</span>
@@ -6703,7 +6730,9 @@ landed in are zero, for every <code>pooling</code>.</p>
 <span class="normal">606</span>
 <span class="normal">607</span>
 <span class="normal">608</span>
-<span class="normal">609</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pool_by_voxel</span><span class="p">(</span>
+<span class="normal">609</span>
+<span class="normal">610</span>
+<span class="normal">611</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">pool_by_voxel</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -6942,9 +6971,7 @@ else here returns an opaque <code>warp.Volume</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">714</span>
-<span class="normal">715</span>
-<span class="normal">716</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">716</span>
 <span class="normal">717</span>
 <span class="normal">718</span>
 <span class="normal">719</span>
@@ -7021,7 +7048,10 @@ else here returns an opaque <code>warp.Volume</code>.</p>
 <span class="normal">790</span>
 <span class="normal">791</span>
 <span class="normal">792</span>
-<span class="normal">793</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">order</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"grid"</span><span class="p">,</span> <span class="s2">"sorted"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"grid"</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
+<span class="normal">793</span>
+<span class="normal">794</span>
+<span class="normal">795</span>
+<span class="normal">796</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">order</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"grid"</span><span class="p">,</span> <span class="s2">"sorted"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"grid"</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Integer cell coordinates of every active voxel, one row per voxel.</span>
 
@@ -7092,14 +7122,15 @@ else here returns an opaque <code>warp.Volume</code>.</p>
     <span class="c1"># The corner pair stays on the device: ``pack_cell_keys`` derives the per-axis shift and the</span>
     <span class="c1"># radix from these two three-element buffers itself, so this whole stage is readback-free.</span>
     <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">minmax</span><span class="p">(</span><span class="n">rows</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-    <span class="n">keys</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_voxels</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">keys</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_voxels</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">payload</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_voxels</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_voxels</span><span class="o">.</span><span class="n">pack_cell_keys</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_voxels</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">rows</span><span class="p">,</span> <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">,</span> <span class="n">keys</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">rows</span><span class="p">,</span> <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">payload</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">_sorted_keys</span><span class="p">,</span> <span class="n">permutation</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">sort_and_argsort</span><span class="p">(</span><span class="n">keys</span><span class="p">)</span>
+    <span class="n">_sorted_keys</span><span class="p">,</span> <span class="n">permutation</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">sort_and_argsort_in_place</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">payload</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span><span class="n">rows</span><span class="p">,</span> <span class="n">permutation</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -7278,10 +7309,7 @@ ends in. Repeated rows are collapsed by the builder, so the input need not be un
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">796</span>
-<span class="normal">797</span>
-<span class="normal">798</span>
-<span class="normal">799</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">799</span>
 <span class="normal">800</span>
 <span class="normal">801</span>
 <span class="normal">802</span>
@@ -7339,7 +7367,10 @@ ends in. Repeated rows are collapsed by the builder, so the input need not be un
 <span class="normal">854</span>
 <span class="normal">855</span>
 <span class="normal">856</span>
-<span class="normal">857</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">from_cells</span><span class="p">(</span><span class="n">cells</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
+<span class="normal">857</span>
+<span class="normal">858</span>
+<span class="normal">859</span>
+<span class="normal">860</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">from_cells</span><span class="p">(</span><span class="n">cells</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Build an index grid from integer cell coordinates.</span>
 
@@ -7540,10 +7571,7 @@ world position of the lower corner of cell <code>(0, 0, 0)</code> — the same a
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">860</span>
-<span class="normal">861</span>
-<span class="normal">862</span>
-<span class="normal">863</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">863</span>
 <span class="normal">864</span>
 <span class="normal">865</span>
 <span class="normal">866</span>
@@ -7587,7 +7615,10 @@ world position of the lower corner of cell <code>(0, 0, 0)</code> — the same a
 <span class="normal">904</span>
 <span class="normal">905</span>
 <span class="normal">906</span>
-<span class="normal">907</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">grid_transform</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">907</span>
+<span class="normal">908</span>
+<span class="normal">909</span>
+<span class="normal">910</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">grid_transform</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Cell width and world origin of an index grid.</span>
 
@@ -7889,10 +7920,7 @@ rule on its own.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 928</span>
-<span class="normal"> 929</span>
-<span class="normal"> 930</span>
-<span class="normal"> 931</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 931</span>
 <span class="normal"> 932</span>
 <span class="normal"> 933</span>
 <span class="normal"> 934</span>
@@ -8018,7 +8046,10 @@ rule on its own.</p>
 <span class="normal">1054</span>
 <span class="normal">1055</span>
 <span class="normal">1056</span>
-<span class="normal">1057</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resolve_voxel_grid</span><span class="p">(</span>
+<span class="normal">1057</span>
+<span class="normal">1058</span>
+<span class="normal">1059</span>
+<span class="normal">1060</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resolve_voxel_grid</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8310,10 +8341,7 @@ explicitly rather than a grid because its job is to be used <em>before</em> a gr
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1060</span>
-<span class="normal">1061</span>
-<span class="normal">1062</span>
-<span class="normal">1063</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1063</span>
 <span class="normal">1064</span>
 <span class="normal">1065</span>
 <span class="normal">1066</span>
@@ -8368,7 +8396,10 @@ explicitly rather than a grid because its job is to be used <em>before</em> a gr
 <span class="normal">1115</span>
 <span class="normal">1116</span>
 <span class="normal">1117</span>
-<span class="normal">1118</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cell_indices</span><span class="p">(</span>
+<span class="normal">1118</span>
+<span class="normal">1119</span>
+<span class="normal">1120</span>
+<span class="normal">1121</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cell_indices</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8554,10 +8585,7 @@ explicitly rather than a grid because its job is to be used <em>before</em> a gr
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1121</span>
-<span class="normal">1122</span>
-<span class="normal">1123</span>
-<span class="normal">1124</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1124</span>
 <span class="normal">1125</span>
 <span class="normal">1126</span>
 <span class="normal">1127</span>
@@ -8602,7 +8630,10 @@ explicitly rather than a grid because its job is to be used <em>before</em> a gr
 <span class="normal">1166</span>
 <span class="normal">1167</span>
 <span class="normal">1168</span>
-<span class="normal">1169</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cell_centers</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">1169</span>
+<span class="normal">1170</span>
+<span class="normal">1171</span>
+<span class="normal">1172</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cell_centers</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    World position of the centre of every active voxel.</span>
 
@@ -8809,10 +8840,7 @@ with no host work.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1172</span>
-<span class="normal">1173</span>
-<span class="normal">1174</span>
-<span class="normal">1175</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1175</span>
 <span class="normal">1176</span>
 <span class="normal">1177</span>
 <span class="normal">1178</span>
@@ -8867,7 +8895,10 @@ with no host work.</p>
 <span class="normal">1227</span>
 <span class="normal">1228</span>
 <span class="normal">1229</span>
-<span class="normal">1230</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">occupancy_at_points</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
+<span class="normal">1230</span>
+<span class="normal">1231</span>
+<span class="normal">1232</span>
+<span class="normal">1233</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">occupancy_at_points</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Occupancy mask of the voxel each query point falls in.</span>
 
@@ -9100,10 +9131,7 @@ with isotropic voxels.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1233</span>
-<span class="normal">1234</span>
-<span class="normal">1235</span>
-<span class="normal">1236</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1236</span>
 <span class="normal">1237</span>
 <span class="normal">1238</span>
 <span class="normal">1239</span>
@@ -9164,7 +9192,10 @@ with isotropic voxels.</p>
 <span class="normal">1294</span>
 <span class="normal">1295</span>
 <span class="normal">1296</span>
-<span class="normal">1297</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">occupancy_at_cells</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">cells</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
+<span class="normal">1297</span>
+<span class="normal">1298</span>
+<span class="normal">1299</span>
+<span class="normal">1300</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">occupancy_at_cells</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">cells</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Occupancy mask of a list of integer cells.</span>
 
@@ -9506,10 +9537,7 @@ properties hold exactly and are worth knowing before reading a round trip as a c
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1300</span>
-<span class="normal">1301</span>
-<span class="normal">1302</span>
-<span class="normal">1303</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1303</span>
 <span class="normal">1304</span>
 <span class="normal">1305</span>
 <span class="normal">1306</span>
@@ -9644,7 +9672,10 @@ properties hold exactly and are worth knowing before reading a round trip as a c
 <span class="normal">1435</span>
 <span class="normal">1436</span>
 <span class="normal">1437</span>
-<span class="normal">1438</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">splat_onto_grid</span><span class="p">(</span>
+<span class="normal">1438</span>
+<span class="normal">1439</span>
+<span class="normal">1440</span>
+<span class="normal">1441</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">splat_onto_grid</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span>
     <span class="n">shape</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
@@ -9993,10 +10024,7 @@ yourself if an outside position should be an error.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1441</span>
-<span class="normal">1442</span>
-<span class="normal">1443</span>
-<span class="normal">1444</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1444</span>
 <span class="normal">1445</span>
 <span class="normal">1446</span>
 <span class="normal">1447</span>
@@ -10083,7 +10111,10 @@ yourself if an outside position should be an error.</p>
 <span class="normal">1528</span>
 <span class="normal">1529</span>
 <span class="normal">1530</span>
-<span class="normal">1531</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_grid_trilinear</span><span class="p">(</span>
+<span class="normal">1531</span>
+<span class="normal">1532</span>
+<span class="normal">1533</span>
+<span class="normal">1534</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_grid_trilinear</span><span class="p">(</span>
     <span class="n">field</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">,</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">3</span><span class="p">]],</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -10354,10 +10385,7 @@ box centre.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1565</span>
-<span class="normal">1566</span>
-<span class="normal">1567</span>
-<span class="normal">1568</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1568</span>
 <span class="normal">1569</span>
 <span class="normal">1570</span>
 <span class="normal">1571</span>
@@ -10425,7 +10453,10 @@ box centre.</p>
 <span class="normal">1633</span>
 <span class="normal">1634</span>
 <span class="normal">1635</span>
-<span class="normal">1636</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">grid_points</span><span class="p">(</span>
+<span class="normal">1636</span>
+<span class="normal">1637</span>
+<span class="normal">1638</span>
+<span class="normal">1639</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">grid_points</span><span class="p">(</span>
     <span class="n">shape</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10675,10 +10706,7 @@ another lattice.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1639</span>
-<span class="normal">1640</span>
-<span class="normal">1641</span>
-<span class="normal">1642</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1642</span>
 <span class="normal">1643</span>
 <span class="normal">1644</span>
 <span class="normal">1645</span>
@@ -10743,7 +10771,16 @@ another lattice.</p>
 <span class="normal">1704</span>
 <span class="normal">1705</span>
 <span class="normal">1706</span>
-<span class="normal">1707</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">union</span><span class="p">(</span><span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
+<span class="normal">1707</span>
+<span class="normal">1708</span>
+<span class="normal">1709</span>
+<span class="normal">1710</span>
+<span class="normal">1711</span>
+<span class="normal">1712</span>
+<span class="normal">1713</span>
+<span class="normal">1714</span>
+<span class="normal">1715</span>
+<span class="normal">1716</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">union</span><span class="p">(</span><span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Cells occupied in either grid: ``a | b``.</span>
 
@@ -10802,16 +10839,22 @@ another lattice.</p>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">a</span><span class="o">=</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="o">=</span><span class="n">b</span><span class="p">)</span>
     <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span> <span class="o">=</span> <span class="n">_require_same_lattice</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">,</span> <span class="n">caller</span><span class="o">=</span><span class="s2">"union"</span><span class="p">)</span>
-    <span class="n">rows_a</span> <span class="o">=</span> <span class="n">cells</span><span class="p">(</span><span class="n">a</span><span class="p">)</span>
-    <span class="n">rows_b</span> <span class="o">=</span> <span class="n">cells</span><span class="p">(</span><span class="n">b</span><span class="p">)</span>
-    <span class="n">n_a</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">rows_a</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-    <span class="n">n_b</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">rows_b</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-    <span class="n">both</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_a</span> <span class="o">+</span> <span class="n">n_b</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">rows_a</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">n_a</span> <span class="o">=</span> <span class="n">_voxel_count</span><span class="p">(</span><span class="n">a</span><span class="p">)</span>
+    <span class="n">n_b</span> <span class="o">=</span> <span class="n">_voxel_count</span><span class="p">(</span><span class="n">b</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">n_a</span> <span class="o">+</span> <span class="n">n_b</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_empty_grid</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">a</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># Both cell lists are read straight into one buffer. ``get_voxels`` writes its grid's whole</span>
+    <span class="c1"># capacity, the active voxels first and padding rows after them (see ``cells``), so ``b`` is</span>
+    <span class="c1"># read in after ``a``'s active rows, over ``a``'s padding, and the result ends at ``b``'s last</span>
+    <span class="c1"># active row.</span>
+    <span class="n">capacity_a</span> <span class="o">=</span> <span class="n">a</span><span class="o">.</span><span class="n">get_voxel_count</span><span class="p">()</span> <span class="k">if</span> <span class="n">n_a</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="mi">0</span>
+    <span class="n">capacity_b</span> <span class="o">=</span> <span class="n">b</span><span class="o">.</span><span class="n">get_voxel_count</span><span class="p">()</span> <span class="k">if</span> <span class="n">n_b</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="mi">0</span>
+    <span class="n">both</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="nb">max</span><span class="p">(</span><span class="n">capacity_a</span><span class="p">,</span> <span class="n">n_a</span> <span class="o">+</span> <span class="n">capacity_b</span><span class="p">),</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">a</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_a</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">both</span><span class="p">[:</span><span class="n">n_a</span><span class="p">],</span> <span class="n">rows_a</span><span class="p">)</span>
+        <span class="n">a</span><span class="o">.</span><span class="n">get_voxels</span><span class="p">(</span><span class="n">out</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.int32]"</span><span class="p">,</span> <span class="n">both</span><span class="p">))</span>
     <span class="k">if</span> <span class="n">n_b</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">both</span><span class="p">[</span><span class="n">n_a</span><span class="p">:],</span> <span class="n">rows_b</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">from_cells</span><span class="p">(</span><span class="n">both</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
+        <span class="n">b</span><span class="o">.</span><span class="n">get_voxels</span><span class="p">(</span><span class="n">out</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.int32]"</span><span class="p">,</span> <span class="n">both</span><span class="p">[</span><span class="n">n_a</span><span class="p">:]))</span>
+    <span class="k">return</span> <span class="n">from_cells</span><span class="p">(</span><span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">both</span><span class="p">[:</span> <span class="n">n_a</span> <span class="o">+</span> <span class="n">n_b</span><span class="p">]),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -10980,16 +11023,7 @@ argument when it is passed first.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1710</span>
-<span class="normal">1711</span>
-<span class="normal">1712</span>
-<span class="normal">1713</span>
-<span class="normal">1714</span>
-<span class="normal">1715</span>
-<span class="normal">1716</span>
-<span class="normal">1717</span>
-<span class="normal">1718</span>
-<span class="normal">1719</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1719</span>
 <span class="normal">1720</span>
 <span class="normal">1721</span>
 <span class="normal">1722</span>
@@ -11030,7 +11064,16 @@ argument when it is passed first.</p>
 <span class="normal">1757</span>
 <span class="normal">1758</span>
 <span class="normal">1759</span>
-<span class="normal">1760</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersection</span><span class="p">(</span><span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
+<span class="normal">1760</span>
+<span class="normal">1761</span>
+<span class="normal">1762</span>
+<span class="normal">1763</span>
+<span class="normal">1764</span>
+<span class="normal">1765</span>
+<span class="normal">1766</span>
+<span class="normal">1767</span>
+<span class="normal">1768</span>
+<span class="normal">1769</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intersection</span><span class="p">(</span><span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Cells occupied in both grids: ``a &amp; b``.</span>
 
@@ -11251,16 +11294,7 @@ negated. Asymmetric: <code>difference(a, b)</code> and <code>difference(b, a)</c
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1763</span>
-<span class="normal">1764</span>
-<span class="normal">1765</span>
-<span class="normal">1766</span>
-<span class="normal">1767</span>
-<span class="normal">1768</span>
-<span class="normal">1769</span>
-<span class="normal">1770</span>
-<span class="normal">1771</span>
-<span class="normal">1772</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1772</span>
 <span class="normal">1773</span>
 <span class="normal">1774</span>
 <span class="normal">1775</span>
@@ -11303,7 +11337,16 @@ negated. Asymmetric: <code>difference(a, b)</code> and <code>difference(b, a)</c
 <span class="normal">1812</span>
 <span class="normal">1813</span>
 <span class="normal">1814</span>
-<span class="normal">1815</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">difference</span><span class="p">(</span><span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
+<span class="normal">1815</span>
+<span class="normal">1816</span>
+<span class="normal">1817</span>
+<span class="normal">1818</span>
+<span class="normal">1819</span>
+<span class="normal">1820</span>
+<span class="normal">1821</span>
+<span class="normal">1822</span>
+<span class="normal">1823</span>
+<span class="normal">1824</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">difference</span><span class="p">(</span><span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Cells occupied in ``a`` and not in ``b``: ``a - b``.</span>
 
@@ -11575,16 +11618,7 @@ cell and are exact.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1818</span>
-<span class="normal">1819</span>
-<span class="normal">1820</span>
-<span class="normal">1821</span>
-<span class="normal">1822</span>
-<span class="normal">1823</span>
-<span class="normal">1824</span>
-<span class="normal">1825</span>
-<span class="normal">1826</span>
-<span class="normal">1827</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1827</span>
 <span class="normal">1828</span>
 <span class="normal">1829</span>
 <span class="normal">1830</span>
@@ -11716,7 +11750,16 @@ cell and are exact.</p>
 <span class="normal">1956</span>
 <span class="normal">1957</span>
 <span class="normal">1958</span>
-<span class="normal">1959</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">revoxelize</span><span class="p">(</span>
+<span class="normal">1959</span>
+<span class="normal">1960</span>
+<span class="normal">1961</span>
+<span class="normal">1962</span>
+<span class="normal">1963</span>
+<span class="normal">1964</span>
+<span class="normal">1965</span>
+<span class="normal">1966</span>
+<span class="normal">1967</span>
+<span class="normal">1968</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">revoxelize</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">max_cells</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">28</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -12034,16 +12077,7 @@ rather than against
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1962</span>
-<span class="normal">1963</span>
-<span class="normal">1964</span>
-<span class="normal">1965</span>
-<span class="normal">1966</span>
-<span class="normal">1967</span>
-<span class="normal">1968</span>
-<span class="normal">1969</span>
-<span class="normal">1970</span>
-<span class="normal">1971</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1971</span>
 <span class="normal">1972</span>
 <span class="normal">1973</span>
 <span class="normal">1974</span>
@@ -12136,7 +12170,16 @@ rather than against
 <span class="normal">2061</span>
 <span class="normal">2062</span>
 <span class="normal">2063</span>
-<span class="normal">2064</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fill_cavities</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_cells</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">28</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
+<span class="normal">2064</span>
+<span class="normal">2065</span>
+<span class="normal">2066</span>
+<span class="normal">2067</span>
+<span class="normal">2068</span>
+<span class="normal">2069</span>
+<span class="normal">2070</span>
+<span class="normal">2071</span>
+<span class="normal">2072</span>
+<span class="normal">2073</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fill_cavities</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_cells</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">28</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Fill every enclosed cavity: an empty cell is kept empty only if it reaches the outside.</span>
 
@@ -12404,16 +12447,7 @@ Exceeding it raises rather than allocating.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2067</span>
-<span class="normal">2068</span>
-<span class="normal">2069</span>
-<span class="normal">2070</span>
-<span class="normal">2071</span>
-<span class="normal">2072</span>
-<span class="normal">2073</span>
-<span class="normal">2074</span>
-<span class="normal">2075</span>
-<span class="normal">2076</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2076</span>
 <span class="normal">2077</span>
 <span class="normal">2078</span>
 <span class="normal">2079</span>
@@ -12479,7 +12513,16 @@ Exceeding it raises rather than allocating.</p>
 <span class="normal">2139</span>
 <span class="normal">2140</span>
 <span class="normal">2141</span>
-<span class="normal">2142</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fill_orthographic</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_cells</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">28</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
+<span class="normal">2142</span>
+<span class="normal">2143</span>
+<span class="normal">2144</span>
+<span class="normal">2145</span>
+<span class="normal">2146</span>
+<span class="normal">2147</span>
+<span class="normal">2148</span>
+<span class="normal">2149</span>
+<span class="normal">2150</span>
+<span class="normal">2151</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fill_orthographic</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_cells</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">28</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Fill the intersection of the three axis-aligned solid shadows of the voxel set.</span>
 
@@ -12746,16 +12789,7 @@ is the whole operation and each name is the other one's mistake.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2145</span>
-<span class="normal">2146</span>
-<span class="normal">2147</span>
-<span class="normal">2148</span>
-<span class="normal">2149</span>
-<span class="normal">2150</span>
-<span class="normal">2151</span>
-<span class="normal">2152</span>
-<span class="normal">2153</span>
-<span class="normal">2154</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2154</span>
 <span class="normal">2155</span>
 <span class="normal">2156</span>
 <span class="normal">2157</span>
@@ -12826,7 +12860,16 @@ is the whole operation and each name is the other one's mistake.</p>
 <span class="normal">2222</span>
 <span class="normal">2223</span>
 <span class="normal">2224</span>
-<span class="normal">2225</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">dilate</span><span class="p">(</span>
+<span class="normal">2225</span>
+<span class="normal">2226</span>
+<span class="normal">2227</span>
+<span class="normal">2228</span>
+<span class="normal">2229</span>
+<span class="normal">2230</span>
+<span class="normal">2231</span>
+<span class="normal">2232</span>
+<span class="normal">2233</span>
+<span class="normal">2234</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">dilate</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -13094,16 +13137,7 @@ region always erodes away — the same convention <code>scipy.ndimage.binary_ero
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2228</span>
-<span class="normal">2229</span>
-<span class="normal">2230</span>
-<span class="normal">2231</span>
-<span class="normal">2232</span>
-<span class="normal">2233</span>
-<span class="normal">2234</span>
-<span class="normal">2235</span>
-<span class="normal">2236</span>
-<span class="normal">2237</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2237</span>
 <span class="normal">2238</span>
 <span class="normal">2239</span>
 <span class="normal">2240</span>
@@ -13159,7 +13193,17 @@ region always erodes away — the same convention <code>scipy.ndimage.binary_ero
 <span class="normal">2290</span>
 <span class="normal">2291</span>
 <span class="normal">2292</span>
-<span class="normal">2293</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">erode</span><span class="p">(</span>
+<span class="normal">2293</span>
+<span class="normal">2294</span>
+<span class="normal">2295</span>
+<span class="normal">2296</span>
+<span class="normal">2297</span>
+<span class="normal">2298</span>
+<span class="normal">2299</span>
+<span class="normal">2300</span>
+<span class="normal">2301</span>
+<span class="normal">2302</span>
+<span class="normal">2303</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">erode</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -13220,10 +13264,11 @@ region always erodes away — the same convention <code>scipy.ndimage.binary_ero
     <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span> <span class="o">=</span> <span class="n">grid_transform</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
     <span class="n">_check_iterations</span><span class="p">(</span><span class="n">connectivity</span><span class="p">,</span> <span class="n">iterations</span><span class="p">)</span>
     <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">iterations</span><span class="p">):</span>
-        <span class="n">interior</span> <span class="o">=</span> <span class="n">_interior_flags</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">)</span>
+        <span class="n">voxels</span> <span class="o">=</span> <span class="n">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
+        <span class="n">interior</span> <span class="o">=</span> <span class="n">_interior_flags</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">voxels</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">interior</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span> <span class="n">_empty_grid</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-        <span class="n">grid</span> <span class="o">=</span> <span class="n">_grid_from_flagged_cells</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">interior</span><span class="p">)</span>
+        <span class="n">grid</span> <span class="o">=</span> <span class="n">_allocate_masked</span><span class="p">(</span><span class="n">voxels</span><span class="p">,</span> <span class="n">interior</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">grid</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -13419,17 +13464,7 @@ the array it was handed and erodes a shell off every face of it unless the calle
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2296</span>
-<span class="normal">2297</span>
-<span class="normal">2298</span>
-<span class="normal">2299</span>
-<span class="normal">2300</span>
-<span class="normal">2301</span>
-<span class="normal">2302</span>
-<span class="normal">2303</span>
-<span class="normal">2304</span>
-<span class="normal">2305</span>
-<span class="normal">2306</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2306</span>
 <span class="normal">2307</span>
 <span class="normal">2308</span>
 <span class="normal">2309</span>
@@ -13488,7 +13523,17 @@ the array it was handed and erodes a shell off every face of it unless the calle
 <span class="normal">2362</span>
 <span class="normal">2363</span>
 <span class="normal">2364</span>
-<span class="normal">2365</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closing</span><span class="p">(</span>
+<span class="normal">2365</span>
+<span class="normal">2366</span>
+<span class="normal">2367</span>
+<span class="normal">2368</span>
+<span class="normal">2369</span>
+<span class="normal">2370</span>
+<span class="normal">2371</span>
+<span class="normal">2372</span>
+<span class="normal">2373</span>
+<span class="normal">2374</span>
+<span class="normal">2375</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closing</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -13747,17 +13792,7 @@ extent but lose their corners.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2368</span>
-<span class="normal">2369</span>
-<span class="normal">2370</span>
-<span class="normal">2371</span>
-<span class="normal">2372</span>
-<span class="normal">2373</span>
-<span class="normal">2374</span>
-<span class="normal">2375</span>
-<span class="normal">2376</span>
-<span class="normal">2377</span>
-<span class="normal">2378</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2378</span>
 <span class="normal">2379</span>
 <span class="normal">2380</span>
 <span class="normal">2381</span>
@@ -13811,7 +13846,17 @@ extent but lose their corners.</p>
 <span class="normal">2429</span>
 <span class="normal">2430</span>
 <span class="normal">2431</span>
-<span class="normal">2432</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">opening</span><span class="p">(</span>
+<span class="normal">2432</span>
+<span class="normal">2433</span>
+<span class="normal">2434</span>
+<span class="normal">2435</span>
+<span class="normal">2436</span>
+<span class="normal">2437</span>
+<span class="normal">2438</span>
+<span class="normal">2439</span>
+<span class="normal">2440</span>
+<span class="normal">2441</span>
+<span class="normal">2442</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">opening</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -14039,17 +14084,7 @@ the set is empty by definition.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2435</span>
-<span class="normal">2436</span>
-<span class="normal">2437</span>
-<span class="normal">2438</span>
-<span class="normal">2439</span>
-<span class="normal">2440</span>
-<span class="normal">2441</span>
-<span class="normal">2442</span>
-<span class="normal">2443</span>
-<span class="normal">2444</span>
-<span class="normal">2445</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2445</span>
 <span class="normal">2446</span>
 <span class="normal">2447</span>
 <span class="normal">2448</span>
@@ -14096,7 +14131,18 @@ the set is empty by definition.</p>
 <span class="normal">2489</span>
 <span class="normal">2490</span>
 <span class="normal">2491</span>
-<span class="normal">2492</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">surface_voxels</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
+<span class="normal">2492</span>
+<span class="normal">2493</span>
+<span class="normal">2494</span>
+<span class="normal">2495</span>
+<span class="normal">2496</span>
+<span class="normal">2497</span>
+<span class="normal">2498</span>
+<span class="normal">2499</span>
+<span class="normal">2500</span>
+<span class="normal">2501</span>
+<span class="normal">2502</span>
+<span class="normal">2503</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">surface_voxels</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Keep the occupied voxels that touch an empty one: the boundary shell of the set.</span>
 
@@ -14150,10 +14196,11 @@ the set is empty by definition.</p>
     <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span> <span class="o">=</span> <span class="n">grid_transform</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
     <span class="c1"># ``interior=False`` asks the neighbourhood kernel for the complement it already computes,</span>
     <span class="c1"># rather than launching a second pass to negate the flags it just wrote.</span>
-    <span class="n">boundary</span> <span class="o">=</span> <span class="n">_interior_flags</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">,</span> <span class="n">interior</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="n">voxels</span> <span class="o">=</span> <span class="n">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
+    <span class="n">boundary</span> <span class="o">=</span> <span class="n">_interior_flags</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">voxels</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">,</span> <span class="n">interior</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">boundary</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_empty_grid</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">_grid_from_flagged_cells</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">boundary</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_allocate_masked</span><span class="p">(</span><span class="n">voxels</span><span class="p">,</span> <span class="n">boundary</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -14345,18 +14392,7 @@ occupied cells, measured from <code>origin_cell</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2495</span>
-<span class="normal">2496</span>
-<span class="normal">2497</span>
-<span class="normal">2498</span>
-<span class="normal">2499</span>
-<span class="normal">2500</span>
-<span class="normal">2501</span>
-<span class="normal">2502</span>
-<span class="normal">2503</span>
-<span class="normal">2504</span>
-<span class="normal">2505</span>
-<span class="normal">2506</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2506</span>
 <span class="normal">2507</span>
 <span class="normal">2508</span>
 <span class="normal">2509</span>
@@ -14426,7 +14462,18 @@ occupied cells, measured from <code>origin_cell</code>.</p>
 <span class="normal">2573</span>
 <span class="normal">2574</span>
 <span class="normal">2575</span>
-<span class="normal">2576</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_dense</span><span class="p">(</span>
+<span class="normal">2576</span>
+<span class="normal">2577</span>
+<span class="normal">2578</span>
+<span class="normal">2579</span>
+<span class="normal">2580</span>
+<span class="normal">2581</span>
+<span class="normal">2582</span>
+<span class="normal">2583</span>
+<span class="normal">2584</span>
+<span class="normal">2585</span>
+<span class="normal">2586</span>
+<span class="normal">2587</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_dense</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">origin_cell</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -14708,18 +14755,7 @@ the <code>origin_cell</code> that function returned and the round trip is exact,
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2579</span>
-<span class="normal">2580</span>
-<span class="normal">2581</span>
-<span class="normal">2582</span>
-<span class="normal">2583</span>
-<span class="normal">2584</span>
-<span class="normal">2585</span>
-<span class="normal">2586</span>
-<span class="normal">2587</span>
-<span class="normal">2588</span>
-<span class="normal">2589</span>
-<span class="normal">2590</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2590</span>
 <span class="normal">2591</span>
 <span class="normal">2592</span>
 <span class="normal">2593</span>
@@ -14782,7 +14818,18 @@ the <code>origin_cell</code> that function returned and the round trip is exact,
 <span class="normal">2650</span>
 <span class="normal">2651</span>
 <span class="normal">2652</span>
-<span class="normal">2653</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">from_dense</span><span class="p">(</span>
+<span class="normal">2653</span>
+<span class="normal">2654</span>
+<span class="normal">2655</span>
+<span class="normal">2656</span>
+<span class="normal">2657</span>
+<span class="normal">2658</span>
+<span class="normal">2659</span>
+<span class="normal">2660</span>
+<span class="normal">2661</span>
+<span class="normal">2662</span>
+<span class="normal">2663</span>
+<span class="normal">2664</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">from_dense</span><span class="p">(</span>
     <span class="n">occupancy</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dBool</span><span class="p">,</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
     <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -15042,18 +15089,7 @@ occupied cells' outer faces — the same half-voxel offset trimesh's marching-cu
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2656</span>
-<span class="normal">2657</span>
-<span class="normal">2658</span>
-<span class="normal">2659</span>
-<span class="normal">2660</span>
-<span class="normal">2661</span>
-<span class="normal">2662</span>
-<span class="normal">2663</span>
-<span class="normal">2664</span>
-<span class="normal">2665</span>
-<span class="normal">2666</span>
-<span class="normal">2667</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2667</span>
 <span class="normal">2668</span>
 <span class="normal">2669</span>
 <span class="normal">2670</span>
@@ -15125,7 +15161,18 @@ occupied cells' outer faces — the same half-voxel offset trimesh's marching-cu
 <span class="normal">2736</span>
 <span class="normal">2737</span>
 <span class="normal">2738</span>
-<span class="normal">2739</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_field</span><span class="p">(</span>
+<span class="normal">2739</span>
+<span class="normal">2740</span>
+<span class="normal">2741</span>
+<span class="normal">2742</span>
+<span class="normal">2743</span>
+<span class="normal">2744</span>
+<span class="normal">2745</span>
+<span class="normal">2746</span>
+<span class="normal">2747</span>
+<span class="normal">2748</span>
+<span class="normal">2749</span>
+<span class="normal">2750</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_field</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">pad</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -15387,18 +15434,7 @@ relying on an index into the full lattice: it was not, since the lattice itself 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2742</span>
-<span class="normal">2743</span>
-<span class="normal">2744</span>
-<span class="normal">2745</span>
-<span class="normal">2746</span>
-<span class="normal">2747</span>
-<span class="normal">2748</span>
-<span class="normal">2749</span>
-<span class="normal">2750</span>
-<span class="normal">2751</span>
-<span class="normal">2752</span>
-<span class="normal">2753</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2753</span>
 <span class="normal">2754</span>
 <span class="normal">2755</span>
 <span class="normal">2756</span>
@@ -15495,7 +15531,18 @@ relying on an index into the full lattice: it was not, since the lattice itself 
 <span class="normal">2847</span>
 <span class="normal">2848</span>
 <span class="normal">2849</span>
-<span class="normal">2850</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_boxes</span><span class="p">(</span>
+<span class="normal">2850</span>
+<span class="normal">2851</span>
+<span class="normal">2852</span>
+<span class="normal">2853</span>
+<span class="normal">2854</span>
+<span class="normal">2855</span>
+<span class="normal">2856</span>
+<span class="normal">2857</span>
+<span class="normal">2858</span>
+<span class="normal">2859</span>
+<span class="normal">2860</span>
+<span class="normal">2861</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_boxes</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cull_internal</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -15564,13 +15611,13 @@ relying on an index into the full lattice: it was not, since the lattice itself 
 <span class="sd">    """</span>
     <span class="n">_require_index_grid</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">grid</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">corner_cells</span><span class="p">,</span> <span class="n">cell_corners</span> <span class="o">=</span> <span class="n">voxel_corners</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
+    <span class="n">voxels</span> <span class="o">=</span> <span class="n">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
+    <span class="n">corner_cells</span><span class="p">,</span> <span class="n">cell_corners</span> <span class="o">=</span> <span class="n">_voxel_corners</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">voxels</span><span class="p">)</span>
     <span class="n">n_corners</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">corner_cells</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
     <span class="n">n_voxels</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">cell_corners</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
     <span class="n">vertices</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_corners</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_voxels</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">voxels</span> <span class="o">=</span> <span class="n">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
     <span class="n">neighbors</span> <span class="o">=</span> <span class="n">_face_neighbors</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
     <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_voxels</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="c1"># The corner positions ride the face-count launch.</span>
@@ -15760,18 +15807,7 @@ module needs it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2853</span>
-<span class="normal">2854</span>
-<span class="normal">2855</span>
-<span class="normal">2856</span>
-<span class="normal">2857</span>
-<span class="normal">2858</span>
-<span class="normal">2859</span>
-<span class="normal">2860</span>
-<span class="normal">2861</span>
-<span class="normal">2862</span>
-<span class="normal">2863</span>
-<span class="normal">2864</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2864</span>
 <span class="normal">2865</span>
 <span class="normal">2866</span>
 <span class="normal">2867</span>
@@ -15832,17 +15868,7 @@ module needs it.</p>
 <span class="normal">2922</span>
 <span class="normal">2923</span>
 <span class="normal">2924</span>
-<span class="normal">2925</span>
-<span class="normal">2926</span>
-<span class="normal">2927</span>
-<span class="normal">2928</span>
-<span class="normal">2929</span>
-<span class="normal">2930</span>
-<span class="normal">2931</span>
-<span class="normal">2932</span>
-<span class="normal">2933</span>
-<span class="normal">2934</span>
-<span class="normal">2935</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxel_corners</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">]:</span>
+<span class="normal">2925</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxel_corners</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Build the deduplicated corner lattice of the voxel set, plus each voxel's eight corners.</span>
 
@@ -15903,28 +15929,7 @@ module needs it.</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">_require_index_grid</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
-    <span class="n">device</span> <span class="o">=</span> <span class="n">grid</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">voxels</span> <span class="o">=</span> <span class="n">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
-    <span class="n">n_voxels</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">voxels</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-    <span class="k">if</span> <span class="n">n_voxels</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">(</span>
-            <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">8</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-        <span class="p">)</span>
-
-    <span class="c1"># Deferred: importing ``warp.fem`` here, not at module scope, since only this path needs it.</span>
-    <span class="kn">import</span><span class="w"> </span><span class="nn">warp.fem</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">fem</span>
-
-    <span class="n">corner_grid</span> <span class="o">=</span> <span class="n">fem</span><span class="o">.</span><span class="n">Nanogrid</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span><span class="o">.</span><span class="n">vertex_grid</span>
-    <span class="n">n_corners</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">corner_grid</span><span class="o">.</span><span class="n">get_active_stats</span><span class="p">()</span><span class="o">.</span><span class="n">voxel_count</span><span class="p">)</span>
-    <span class="n">corner_cells</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">corner_grid</span><span class="o">.</span><span class="n">get_voxels</span><span class="p">()[:</span><span class="n">n_corners</span><span class="p">]),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
-    <span class="n">cell_corners</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_voxels</span><span class="p">,</span> <span class="mi">8</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_voxels</span><span class="o">.</span><span class="n">cell_corner_indices</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_voxels</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">corner_grid</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">voxels</span><span class="p">,</span> <span class="n">cell_corners</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="k">return</span> <span class="n">corner_cells</span><span class="p">,</span> <span class="n">cell_corners</span>
+    <span class="k">return</span> <span class="n">_voxel_corners</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">))</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

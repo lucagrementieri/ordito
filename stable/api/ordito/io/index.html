@@ -3801,6 +3801,8 @@
       
         
       
+        
+      
     
     
     
@@ -3998,6 +4000,33 @@
     
   
   constants
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  config
 
     
   </span>
@@ -4662,7 +4691,8 @@ file itself contained per-face normals.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/io.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 65</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 64</span>
+<span class="normal"> 65</span>
 <span class="normal"> 66</span>
 <span class="normal"> 67</span>
 <span class="normal"> 68</span>
@@ -4775,8 +4805,7 @@ file itself contained per-face normals.</p>
 <span class="normal">175</span>
 <span class="normal">176</span>
 <span class="normal">177</span>
-<span class="normal">178</span>
-<span class="normal">179</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">MeshData</span><span class="p">:</span>
+<span class="normal">178</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">MeshData</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Load every mesh attribute ``meshio`` can read from a file into Warp arrays.</span>
 
@@ -4913,8 +4942,9 @@ file itself contained per-face normals.</p>
     <div class="doc doc-contents ">
 
         <p>Load a triangle mesh file into a <code>warp.Mesh</code>.</p>
-<p>Thin wrapper over <a class="autorefs autorefs-internal" title="load_mesh_data" href="./#ordito.io.load_mesh_data"><code>load_mesh_data</code></a> that keeps only the
-vertices and triangle faces and wraps them in a <code>warp.Mesh</code> that owns its buffers.</p>
+<p>Reads only the vertices and triangle faces (the subset
+<a class="autorefs autorefs-internal" title="load_mesh_data" href="./#ordito.io.load_mesh_data"><code>load_mesh_data</code></a> returns) and wraps them in a <code>warp.Mesh</code> that
+owns its buffers.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -5047,7 +5077,8 @@ vertex count does not cover.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/io.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">215</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">214</span>
+<span class="normal">215</span>
 <span class="normal">216</span>
 <span class="normal">217</span>
 <span class="normal">218</span>
@@ -5108,12 +5139,21 @@ vertex count does not cover.</p>
 <span class="normal">273</span>
 <span class="normal">274</span>
 <span class="normal">275</span>
-<span class="normal">276</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">:</span>
+<span class="normal">276</span>
+<span class="normal">277</span>
+<span class="normal">278</span>
+<span class="normal">279</span>
+<span class="normal">280</span>
+<span class="normal">281</span>
+<span class="normal">282</span>
+<span class="normal">283</span>
+<span class="normal">284</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">load_mesh</span><span class="p">(</span><span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Load a triangle mesh file into a ``warp.Mesh``.</span>
 
-<span class="sd">    Thin wrapper over [`load_mesh_data`][ordito.io.load_mesh_data] that keeps only the</span>
-<span class="sd">    vertices and triangle faces and wraps them in a ``warp.Mesh`` that owns its buffers.</span>
+<span class="sd">    Reads only the vertices and triangle faces (the subset</span>
+<span class="sd">    [`load_mesh_data`][ordito.io.load_mesh_data] returns) and wraps them in a ``warp.Mesh`` that</span>
+<span class="sd">    owns its buffers.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -5159,17 +5199,25 @@ vertex count does not cover.</p>
 <span class="sd">    print(loaded.points.shape, loaded.indices.shape)  # (42,) (240,)</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">data</span> <span class="o">=</span> <span class="n">load_mesh_data</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="k">if</span> <span class="s2">"faces"</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">data</span><span class="p">:</span>
+    <span class="n">meshio</span> <span class="o">=</span> <span class="n">_import_meshio</span><span class="p">()</span>
+    <span class="n">mesh</span> <span class="o">=</span> <span class="n">meshio</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+    <span class="n">faces_np</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">cells_dict</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"triangle"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">faces_np</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">faces_np</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Mesh file </span><span class="si">{</span><span class="n">path</span><span class="si">!r}</span><span class="s2"> has no triangle faces; cannot build a wp.Mesh."</span><span class="p">)</span>
-    <span class="n">require_nonempty_mesh</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="s2">"faces"</span><span class="p">],</span> <span class="s2">"load_mesh"</span><span class="p">)</span>
     <span class="c1"># A malformed file (or a meshio decoder bug) can hand back a face index the vertex buffer</span>
-    <span class="c1"># doesn't cover; this is the trust boundary where that first enters ordito, so check it once</span>
-    <span class="c1"># here rather than trusting it through every downstream kernel that indexes ``vertices[faces]``.</span>
-    <span class="n">require_valid_faces</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="s2">"faces"</span><span class="p">],</span> <span class="n">data</span><span class="p">[</span><span class="s2">"vertices"</span><span class="p">]</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="s2">"load_mesh"</span><span class="p">)</span>
-    <span class="c1"># ``load_mesh_data`` allocated both buffers on the line above and nothing else holds</span>
-    <span class="c1"># them, so the mesh can own them directly.</span>
-    <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">data</span><span class="p">[</span><span class="s2">"vertices"</span><span class="p">],</span> <span class="n">indices</span><span class="o">=</span><span class="n">data</span><span class="p">[</span><span class="s2">"faces"</span><span class="p">])</span>
+    <span class="c1"># doesn't cover; this is the trust boundary where that first enters ordito. The check reads</span>
+    <span class="c1"># the decoder's own integers before the ``int32`` narrowing, which would wrap an index at or</span>
+    <span class="c1"># above ``2**31`` into range.</span>
+    <span class="n">_require_valid_faces_host</span><span class="p">(</span><span class="n">faces_np</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="p">),</span> <span class="s2">"load_mesh"</span><span class="p">)</span>
+    <span class="n">vertices_wp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+    <span class="p">)</span>
+    <span class="n">faces_wp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
+        <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">faces_np</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+    <span class="p">)</span>
+    <span class="c1"># Both buffers were allocated on the lines above and nothing else holds them, so the mesh</span>
+    <span class="c1"># can own them directly.</span>
+    <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices_wp</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces_wp</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -5336,15 +5384,7 @@ allocated Warp arrays (no aliasing with <code>vertices</code> / <code>faces</cod
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/io.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">279</span>
-<span class="normal">280</span>
-<span class="normal">281</span>
-<span class="normal">282</span>
-<span class="normal">283</span>
-<span class="normal">284</span>
-<span class="normal">285</span>
-<span class="normal">286</span>
-<span class="normal">287</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">287</span>
 <span class="normal">288</span>
 <span class="normal">289</span>
 <span class="normal">290</span>
@@ -5393,7 +5433,15 @@ allocated Warp arrays (no aliasing with <code>vertices</code> / <code>faces</cod
 <span class="normal">333</span>
 <span class="normal">334</span>
 <span class="normal">335</span>
-<span class="normal">336</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_from_numpy</span><span class="p">(</span>
+<span class="normal">336</span>
+<span class="normal">337</span>
+<span class="normal">338</span>
+<span class="normal">339</span>
+<span class="normal">340</span>
+<span class="normal">341</span>
+<span class="normal">342</span>
+<span class="normal">343</span>
+<span class="normal">344</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_from_numpy</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -5440,16 +5488,16 @@ allocated Warp arrays (no aliasing with <code>vertices</code> / <code>faces</cod
 <span class="sd">    print(f"{mesh.area:.4f}")  # 1.0000</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
+    <span class="c1"># This is the trust boundary where an external caller's raw NumPy connectivity first enters</span>
+    <span class="c1"># ordito. The range is checked on the caller's own integers, before the ``int32`` narrowing</span>
+    <span class="c1"># (which would wrap an index at or above ``2**31`` into range) and before any upload.</span>
+    <span class="n">_require_valid_faces_host</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">vertices</span><span class="p">),</span> <span class="s2">"mesh_from_numpy"</span><span class="p">)</span>
     <span class="n">vertices_wp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
         <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
     <span class="p">)</span>
     <span class="n">faces_wp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
         <span class="n">np</span><span class="o">.</span><span class="n">ascontiguousarray</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
     <span class="p">)</span>
-    <span class="c1"># This is the trust boundary where an external caller's raw NumPy connectivity first enters</span>
-    <span class="c1"># ordito -- check it once here rather than trusting it through every downstream kernel that</span>
-    <span class="c1"># indexes ``vertices[faces]``.</span>
-    <span class="n">require_valid_faces</span><span class="p">(</span><span class="n">faces_wp</span><span class="p">,</span> <span class="n">vertices_wp</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="s2">"mesh_from_numpy"</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">Trimesh</span><span class="p">(</span><span class="n">vertices_wp</span><span class="p">,</span> <span class="n">faces_wp</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>

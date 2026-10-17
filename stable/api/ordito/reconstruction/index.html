@@ -3740,6 +3740,8 @@
       
         
       
+        
+      
     
     
     
@@ -3937,6 +3939,33 @@
     
   
   constants
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  config
 
     
   </span>
@@ -4853,8 +4882,7 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">222</span>
-<span class="normal">223</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">223</span>
 <span class="normal">224</span>
 <span class="normal">225</span>
 <span class="normal">226</span>
@@ -5010,7 +5038,8 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 <span class="normal">376</span>
 <span class="normal">377</span>
 <span class="normal">378</span>
-<span class="normal">379</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
+<span class="normal">379</span>
+<span class="normal">380</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -5587,8 +5616,7 @@ taken from it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">446</span>
-<span class="normal">447</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">447</span>
 <span class="normal">448</span>
 <span class="normal">449</span>
 <span class="normal">450</span>
@@ -5832,7 +5860,8 @@ taken from it.</p>
 <span class="normal">688</span>
 <span class="normal">689</span>
 <span class="normal">690</span>
-<span class="normal">691</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
+<span class="normal">691</span>
+<span class="normal">692</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6329,8 +6358,7 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1747</span>
-<span class="normal">1748</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1748</span>
 <span class="normal">1749</span>
 <span class="normal">1750</span>
 <span class="normal">1751</span>
@@ -6460,7 +6488,8 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="normal">1875</span>
 <span class="normal">1876</span>
 <span class="normal">1877</span>
-<span class="normal">1878</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+<span class="normal">1878</span>
+<span class="normal">1879</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6695,8 +6724,7 @@ star-shaped clouds only).</p>
             <td>
               <div class="doc-md-description">
                 <p>Ball radius. When <code>&lt;= 0</code>, it is auto-guessed as <code>1.5 x</code> the mean nearest-neighbour
-spacing — a device reduction, so the guess is not bit-reproducible between calls and neither
-is the triangulation built from it (see <code>Notes</code>).</p>
+spacing, summed in a fixed order so that the guess repeats from call to call.</p>
               </div>
             </td>
             <td>
@@ -6859,16 +6887,10 @@ build return the same set of triangles, because a wave resolves competing propos
 packed from their own vertices and the wave counter rather than by the order they reached an
 atomic counter -- device state the loop advances deterministically, so the ordering varies
 between waves (which keeps a front edge from being starved by a globally fixed key) without
-varying between runs. Two caveats on how far that reaches:</p>
-<ul>
-<li>the default <code>radius &lt;= 0</code> is <strong>not</strong> covered. The auto-guess averages the nearest-neighbour
-  spacings with a device reduction whose summation order is not fixed, so two calls on one cloud
-  can guess radii a few ULP apart -- enough to tip a borderline pivot and change the triangle
-  set. Pass <code>radius</code> explicitly wherever the result has to be reproducible;</li>
-<li>the face buffer's <em>row order</em> is not pinned -- <code>commit_triangles</code> appends with a
-  <code>wp.atomic_add</code> -- so compare reconstructions as a set of wound triangles, not
-  buffer-to-buffer.</li>
-</ul>
+varying between runs; the default <code>radius &lt;= 0</code> guesses its radius with a fixed-order sum, so
+it is covered too. One caveat on how far that reaches: the face buffer's <em>row order</em> is not
+pinned -- <code>commit_triangles</code> appends with a <code>wp.atomic_add</code> -- so compare reconstructions as
+a set of wound triangles, not buffer-to-buffer.</p>
 <p>Results are not comparable across devices, where floating-point contraction differs.</p>
 <p>The result is <strong>interpolating and edge-manifold</strong>, and on a densely, uniformly sampled closed
 surface it is watertight in practice: a subdivided icosphere reconstructs to exactly <code>2 v - 4</code>
@@ -6908,8 +6930,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1881</span>
-<span class="normal">1882</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1882</span>
 <span class="normal">1883</span>
 <span class="normal">1884</span>
 <span class="normal">1885</span>
@@ -7069,7 +7090,8 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">2039</span>
 <span class="normal">2040</span>
 <span class="normal">2041</span>
-<span class="normal">2042</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">2042</span>
+<span class="normal">2043</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7113,8 +7135,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="sd">        star-shaped clouds only).</span>
 <span class="sd">    radius</span>
 <span class="sd">        Ball radius. When ``&lt;= 0``, it is auto-guessed as ``1.5 x`` the mean nearest-neighbour</span>
-<span class="sd">        spacing — a device reduction, so the guess is not bit-reproducible between calls and neither</span>
-<span class="sd">        is the triangulation built from it (see ``Notes``).</span>
+<span class="sd">        spacing, summed in a fixed order so that the guess repeats from call to call.</span>
 <span class="sd">    clustering</span>
 <span class="sd">        Candidate points closer than ``clustering * radius`` to an edge endpoint are rejected</span>
 <span class="sd">        (vcglib clustering, as a fraction of ``radius``).</span>
@@ -7160,15 +7181,10 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="sd">    packed from their own vertices and the wave counter rather than by the order they reached an</span>
 <span class="sd">    atomic counter -- device state the loop advances deterministically, so the ordering varies</span>
 <span class="sd">    between waves (which keeps a front edge from being starved by a globally fixed key) without</span>
-<span class="sd">    varying between runs. Two caveats on how far that reaches:</span>
-
-<span class="sd">    * the default ``radius &lt;= 0`` is **not** covered. The auto-guess averages the nearest-neighbour</span>
-<span class="sd">      spacings with a device reduction whose summation order is not fixed, so two calls on one cloud</span>
-<span class="sd">      can guess radii a few ULP apart -- enough to tip a borderline pivot and change the triangle</span>
-<span class="sd">      set. Pass ``radius`` explicitly wherever the result has to be reproducible;</span>
-<span class="sd">    * the face buffer's *row order* is not pinned -- ``commit_triangles`` appends with a</span>
-<span class="sd">      ``wp.atomic_add`` -- so compare reconstructions as a set of wound triangles, not</span>
-<span class="sd">      buffer-to-buffer.</span>
+<span class="sd">    varying between runs; the default ``radius &lt;= 0`` guesses its radius with a fixed-order sum, so</span>
+<span class="sd">    it is covered too. One caveat on how far that reaches: the face buffer's *row order* is not</span>
+<span class="sd">    pinned -- ``commit_triangles`` appends with a ``wp.atomic_add`` -- so compare reconstructions as</span>
+<span class="sd">    a set of wound triangles, not buffer-to-buffer.</span>
 
 <span class="sd">    Results are not comparable across devices, where floating-point contraction differs.</span>
 
@@ -7227,7 +7243,13 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
     <span class="n">_bpa_run</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">max_waves</span> <span class="k">if</span> <span class="n">max_waves</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="mi">16</span> <span class="o">*</span> <span class="n">n</span><span class="p">)</span>
 
     <span class="n">count</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">counters</span><span class="p">,</span> <span class="n">kernel_bpa</span><span class="o">.</span><span class="n">CNT_FACE</span><span class="p">))</span>
-    <span class="n">faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">all_faces</span><span class="p">[:</span> <span class="n">count</span> <span class="o">*</span> <span class="mi">3</span><span class="p">]))</span>
+    <span class="c1"># A prefix view, not a copy: nothing writes the face buffer after the run, and the cleanup</span>
+    <span class="c1"># below returns faces of its own, so the view never reaches the caller.</span>
+    <span class="n">faces</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">all_faces</span><span class="p">[:</span> <span class="n">count</span> <span class="o">*</span> <span class="mi">3</span><span class="p">])</span>
+        <span class="k">if</span> <span class="n">count</span> <span class="o">&gt;</span> <span class="mi">0</span>
+        <span class="k">else</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="p">)</span>
     <span class="c1"># Orientation is not re-derived (``orient=False``): every triangle is already wound from the</span>
     <span class="c1"># normals, and ``make_normals_outward`` would rewind an inward-normal cloud's mesh outward.</span>
     <span class="k">return</span> <span class="n">_clean_reconstruction</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">crit_hole_length</span><span class="p">,</span> <span class="n">orient</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>

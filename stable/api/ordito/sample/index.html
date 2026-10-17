@@ -3773,6 +3773,8 @@
       
         
       
+        
+      
     
     
     
@@ -3970,6 +3972,33 @@
     
   
   constants
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  config
 
     
   </span>
@@ -4400,11 +4429,7 @@ more even than independent random sampling for the same <code>count</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">51</span>
-<span class="normal">52</span>
-<span class="normal">53</span>
-<span class="normal">54</span>
-<span class="normal">55</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">55</span>
 <span class="normal">56</span>
 <span class="normal">57</span>
 <span class="normal">58</span>
@@ -4440,7 +4465,11 @@ more even than independent random sampling for the same <code>count</code>.</p>
 <span class="normal">88</span>
 <span class="normal">89</span>
 <span class="normal">90</span>
-<span class="normal">91</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_sphere</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">91</span>
+<span class="normal">92</span>
+<span class="normal">93</span>
+<span class="normal">94</span>
+<span class="normal">95</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_sphere</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Generate near-uniform unit vectors on the sphere via the Fibonacci spiral.</span>
 
@@ -4606,11 +4635,7 @@ directions.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 94</span>
-<span class="normal"> 95</span>
-<span class="normal"> 96</span>
-<span class="normal"> 97</span>
-<span class="normal"> 98</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 98</span>
 <span class="normal"> 99</span>
 <span class="normal">100</span>
 <span class="normal">101</span>
@@ -4645,7 +4670,11 @@ directions.</p>
 <span class="normal">130</span>
 <span class="normal">131</span>
 <span class="normal">132</span>
-<span class="normal">133</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_hemisphere</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">133</span>
+<span class="normal">134</span>
+<span class="normal">135</span>
+<span class="normal">136</span>
+<span class="normal">137</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_hemisphere</span><span class="p">(</span><span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Generate near-uniform unit vectors on the positive-``z`` hemisphere.</span>
 
@@ -4854,11 +4883,7 @@ reproduces <a class="autorefs autorefs-internal" title="sample_fibonacci_sphere"
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">136</span>
-<span class="normal">137</span>
-<span class="normal">138</span>
-<span class="normal">139</span>
-<span class="normal">140</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">140</span>
 <span class="normal">141</span>
 <span class="normal">142</span>
 <span class="normal">143</span>
@@ -4910,7 +4935,11 @@ reproduces <a class="autorefs autorefs-internal" title="sample_fibonacci_sphere"
 <span class="normal">189</span>
 <span class="normal">190</span>
 <span class="normal">191</span>
-<span class="normal">192</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_cone</span><span class="p">(</span>
+<span class="normal">192</span>
+<span class="normal">193</span>
+<span class="normal">194</span>
+<span class="normal">195</span>
+<span class="normal">196</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_fibonacci_cone</span><span class="p">(</span>
     <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">half_angle</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -4993,7 +5022,7 @@ reproduces <a class="autorefs autorefs-internal" title="sample_fibonacci_sphere"
     <div class="doc doc-contents ">
 
         <p>Sample points uniformly on a triangle mesh surface (area-weighted faces).</p>
-<p>Uses <code>face_normals_and_areas</code> for default triangle weights. Builds a CDF and
+<p>Weights faces by their area by default. Builds a CDF and
 draws triangle indices by inverse-transform sampling it, then uniform points with
 <code>wp.sample_triangle</code> (same scheme as <a class="autorefs autorefs-external" href="https://trimesh.org/trimesh.sample.html#trimesh.sample.sample_surface"><code>trimesh.sample.sample_surface</code></a>).</p>
 
@@ -5067,7 +5096,7 @@ draws triangle indices by inverse-transform sampling it, then uniform points wit
             <td>
               <div class="doc-md-description">
                 <p><code>(n_faces,)</code> per-face weights. If <code>None</code>,
-triangle areas from <code>face_normals_and_areas</code> are used.</p>
+the triangle areas are used.</p>
               </div>
             </td>
             <td>
@@ -5161,6 +5190,12 @@ faces and <code>count &gt; 0</code>, or if the total face weight is not positive
     </table>
 
 
+<details class="note" open>
+  <summary>Notes</summary>
+  <p>A seeded draw repeats bit for bit on CUDA while <a class="autorefs autorefs-internal" title="deterministic" href="../config/#ordito.config.deterministic"><code>deterministic</code></a>
+is on (the default).</p>
+</details>
+
 <p><span class="doc-section-title">Examples:</span></p>
     <p>Every sample lies on the unit cube's surface, on the face it reports:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
@@ -5188,11 +5223,7 @@ faces and <code>count &gt; 0</code>, or if the total face weight is not positive
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">230</span>
-<span class="normal">231</span>
-<span class="normal">232</span>
-<span class="normal">233</span>
-<span class="normal">234</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">234</span>
 <span class="normal">235</span>
 <span class="normal">236</span>
 <span class="normal">237</span>
@@ -5271,32 +5302,7 @@ faces and <code>count &gt; 0</code>, or if the total face weight is not positive
 <span class="normal">310</span>
 <span class="normal">311</span>
 <span class="normal">312</span>
-<span class="normal">313</span>
-<span class="normal">314</span>
-<span class="normal">315</span>
-<span class="normal">316</span>
-<span class="normal">317</span>
-<span class="normal">318</span>
-<span class="normal">319</span>
-<span class="normal">320</span>
-<span class="normal">321</span>
-<span class="normal">322</span>
-<span class="normal">323</span>
-<span class="normal">324</span>
-<span class="normal">325</span>
-<span class="normal">326</span>
-<span class="normal">327</span>
-<span class="normal">328</span>
-<span class="normal">329</span>
-<span class="normal">330</span>
-<span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
-<span class="normal">334</span>
-<span class="normal">335</span>
-<span class="normal">336</span>
-<span class="normal">337</span>
-<span class="normal">338</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface</span><span class="p">(</span>
+<span class="normal">313</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
@@ -5306,7 +5312,7 @@ faces and <code>count &gt; 0</code>, or if the total face weight is not positive
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Sample points uniformly on a triangle mesh surface (area-weighted faces).</span>
 
-<span class="sd">    Uses ``face_normals_and_areas`` for default triangle weights. Builds a CDF and</span>
+<span class="sd">    Weights faces by their area by default. Builds a CDF and</span>
 <span class="sd">    draws triangle indices by inverse-transform sampling it, then uniform points with</span>
 <span class="sd">    ``wp.sample_triangle`` (same scheme as [`trimesh.sample.sample_surface`][]).</span>
 
@@ -5320,7 +5326,7 @@ faces and <code>count &gt; 0</code>, or if the total face weight is not positive
 <span class="sd">        Number of samples.</span>
 <span class="sd">    face_weight</span>
 <span class="sd">        ``(n_faces,)`` per-face weights. If ``None``,</span>
-<span class="sd">        triangle areas from ``face_normals_and_areas`` are used.</span>
+<span class="sd">        the triangle areas are used.</span>
 <span class="sd">    seed</span>
 <span class="sd">        RNG seed for ``wp.rand_init``. If ``None``, a random seed is chosen.</span>
 
@@ -5338,6 +5344,11 @@ faces and <code>count &gt; 0</code>, or if the total face weight is not positive
 <span class="sd">        faces and ``count &gt; 0``, or if the total face weight is not positive.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces`` and ``face_weight`` are not all on one device.</span>
+
+<span class="sd">    Notes</span>
+<span class="sd">    -----</span>
+<span class="sd">    A seeded draw repeats bit for bit on CUDA while [`deterministic`][ordito.config.deterministic]</span>
+<span class="sd">    is on (the default).</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -5369,42 +5380,8 @@ faces and <code>count &gt; 0</code>, or if the total face weight is not positive
             <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">),</span>
             <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">),</span>
         <span class="p">)</span>
-    <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="c1"># Without this, an empty ``weights``/``cdf`` reaches ``read_scalar``'s tail read below and</span>
-        <span class="c1"># raises an unrelated ``IndexError`` (CPU) or a Warp slicing error (CUDA) instead.</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"mesh has no faces; cannot sample its surface"</span><span class="p">)</span>
-
-    <span class="k">if</span> <span class="n">face_weight</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">_</span><span class="p">,</span> <span class="n">weights</span> <span class="o">=</span> <span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-    <span class="k">else</span><span class="p">:</span>
-        <span class="n">weights</span> <span class="o">=</span> <span class="n">face_weight</span>
-
-    <span class="c1"># ``array_scan`` is inclusive by default, so the total is the scan's last element -- a 4-byte</span>
-    <span class="c1"># tail read instead of a whole second reduction over the weights. Same trick as</span>
-    <span class="c1"># ``array.flatnonzero`` and ``array.counts_to_offsets``.</span>
-    <span class="n">cdf</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">weights</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">cdf</span><span class="p">)</span>
-    <span class="n">total</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">cdf</span><span class="p">))</span>
-    <span class="k">if</span> <span class="n">total</span> <span class="o">&lt;=</span> <span class="mf">0.0</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"total face weight must be positive"</span><span class="p">)</span>
-
-    <span class="n">out_points</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">out_face_indices</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_sample</span><span class="o">.</span><span class="n">sample_surface</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">count</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
-            <span class="n">vertices</span><span class="p">,</span>
-            <span class="n">faces</span><span class="p">,</span>
-            <span class="n">cdf</span><span class="p">,</span>
-            <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">total</span><span class="p">),</span>
-            <span class="n">resolve_seed</span><span class="p">(</span><span class="n">seed</span><span class="p">),</span>
-            <span class="n">out_points</span><span class="p">,</span>
-            <span class="n">out_face_indices</span><span class="p">,</span>
-        <span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="k">return</span> <span class="n">out_points</span><span class="p">,</span> <span class="n">out_face_indices</span>
+    <span class="n">cdf</span><span class="p">,</span> <span class="n">total</span> <span class="o">=</span> <span class="n">_face_cdf</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_weight</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_draw_surface_samples</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cdf</span><span class="p">,</span> <span class="n">total</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">seed</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -5644,7 +5621,32 @@ is chosen.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">341</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">316</span>
+<span class="normal">317</span>
+<span class="normal">318</span>
+<span class="normal">319</span>
+<span class="normal">320</span>
+<span class="normal">321</span>
+<span class="normal">322</span>
+<span class="normal">323</span>
+<span class="normal">324</span>
+<span class="normal">325</span>
+<span class="normal">326</span>
+<span class="normal">327</span>
+<span class="normal">328</span>
+<span class="normal">329</span>
+<span class="normal">330</span>
+<span class="normal">331</span>
+<span class="normal">332</span>
+<span class="normal">333</span>
+<span class="normal">334</span>
+<span class="normal">335</span>
+<span class="normal">336</span>
+<span class="normal">337</span>
+<span class="normal">338</span>
+<span class="normal">339</span>
+<span class="normal">340</span>
+<span class="normal">341</span>
 <span class="normal">342</span>
 <span class="normal">343</span>
 <span class="normal">344</span>
@@ -5788,27 +5790,7 @@ is chosen.</p>
 <span class="normal">482</span>
 <span class="normal">483</span>
 <span class="normal">484</span>
-<span class="normal">485</span>
-<span class="normal">486</span>
-<span class="normal">487</span>
-<span class="normal">488</span>
-<span class="normal">489</span>
-<span class="normal">490</span>
-<span class="normal">491</span>
-<span class="normal">492</span>
-<span class="normal">493</span>
-<span class="normal">494</span>
-<span class="normal">495</span>
-<span class="normal">496</span>
-<span class="normal">497</span>
-<span class="normal">498</span>
-<span class="normal">499</span>
-<span class="normal">500</span>
-<span class="normal">501</span>
-<span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface_poisson_disk</span><span class="p">(</span>
+<span class="normal">485</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface_poisson_disk</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
@@ -5887,14 +5869,19 @@ is chosen.</p>
 
     <span class="n">init_count</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">init_factor</span> <span class="o">*</span> <span class="n">count</span><span class="p">),</span> <span class="n">count</span><span class="p">)</span>
 
-    <span class="c1"># 1. Initial uniform surface samples</span>
-    <span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span> <span class="o">=</span> <span class="n">sample_surface</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">init_count</span><span class="p">,</span> <span class="n">face_weight</span><span class="o">=</span><span class="n">face_weight</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="n">seed</span>
-    <span class="p">)</span>
-
-    <span class="c1"># 2. Surface area (for radius computation)</span>
-    <span class="n">_</span><span class="p">,</span> <span class="n">areas</span> <span class="o">=</span> <span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-    <span class="n">surface_area</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">cast</span><span class="p">(</span><span class="s2">"float"</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">array_sum</span><span class="p">(</span><span class="n">areas</span><span class="p">)))</span>
+    <span class="c1"># 1. Initial uniform surface samples, and 2. the surface area for the radius: the total of the</span>
+    <span class="c1"># area CDF the pool is drawn from, unless the pool is drawn by other weights.</span>
+    <span class="k">if</span> <span class="n">face_weight</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">cdf</span><span class="p">,</span> <span class="n">surface_area</span> <span class="o">=</span> <span class="n">_face_cdf</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+        <span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span> <span class="o">=</span> <span class="n">_draw_surface_samples</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cdf</span><span class="p">,</span> <span class="n">surface_area</span><span class="p">,</span> <span class="n">init_count</span><span class="p">,</span> <span class="n">seed</span>
+        <span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span> <span class="o">=</span> <span class="n">sample_surface</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">init_count</span><span class="p">,</span> <span class="n">face_weight</span><span class="o">=</span><span class="n">face_weight</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="n">seed</span>
+        <span class="p">)</span>
+        <span class="n">_</span><span class="p">,</span> <span class="n">areas</span> <span class="o">=</span> <span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+        <span class="n">surface_area</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">cast</span><span class="p">(</span><span class="s2">"float"</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">array_sum</span><span class="p">(</span><span class="n">areas</span><span class="p">)))</span>
 
     <span class="c1"># 3. Poisson disk radii (Öztireli &amp; Gross 2012 constants)</span>
     <span class="c1">#</span>
@@ -6187,7 +6174,27 @@ usually chosen from. Ask for a <em>count</em> with
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">560</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">540</span>
+<span class="normal">541</span>
+<span class="normal">542</span>
+<span class="normal">543</span>
+<span class="normal">544</span>
+<span class="normal">545</span>
+<span class="normal">546</span>
+<span class="normal">547</span>
+<span class="normal">548</span>
+<span class="normal">549</span>
+<span class="normal">550</span>
+<span class="normal">551</span>
+<span class="normal">552</span>
+<span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
 <span class="normal">561</span>
 <span class="normal">562</span>
 <span class="normal">563</span>
@@ -6262,25 +6269,7 @@ usually chosen from. Ask for a <em>count</em> with
 <span class="normal">632</span>
 <span class="normal">633</span>
 <span class="normal">634</span>
-<span class="normal">635</span>
-<span class="normal">636</span>
-<span class="normal">637</span>
-<span class="normal">638</span>
-<span class="normal">639</span>
-<span class="normal">640</span>
-<span class="normal">641</span>
-<span class="normal">642</span>
-<span class="normal">643</span>
-<span class="normal">644</span>
-<span class="normal">645</span>
-<span class="normal">646</span>
-<span class="normal">647</span>
-<span class="normal">648</span>
-<span class="normal">649</span>
-<span class="normal">650</span>
-<span class="normal">651</span>
-<span class="normal">652</span>
-<span class="normal">653</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface_blue_noise</span><span class="p">(</span>
+<span class="normal">635</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_surface_blue_noise</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6358,8 +6347,8 @@ usually chosen from. Ask for a <em>count</em> with
             <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
         <span class="p">)</span>
 
-    <span class="n">_</span><span class="p">,</span> <span class="n">areas</span> <span class="o">=</span> <span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-    <span class="n">surface_area</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">cast</span><span class="p">(</span><span class="s2">"float"</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">array_sum</span><span class="p">(</span><span class="n">areas</span><span class="p">)))</span>
+    <span class="c1"># The surface area is the total of the area CDF the pool is drawn from below.</span>
+    <span class="n">cdf</span><span class="p">,</span> <span class="n">surface_area</span> <span class="o">=</span> <span class="n">_face_cdf</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
     <span class="n">expected</span> <span class="o">=</span> <span class="n">surface_area</span> <span class="o">*</span> <span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">pi</span> <span class="o">*</span> <span class="n">math</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="mf">3.0</span><span class="p">)</span> <span class="o">/</span> <span class="mf">6.0</span><span class="p">)</span> <span class="o">/</span> <span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">pi</span> <span class="o">*</span> <span class="n">radius</span> <span class="o">*</span> <span class="n">radius</span> <span class="o">/</span> <span class="mf">4.0</span><span class="p">)</span>
     <span class="n">nx</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="mf">30.0</span> <span class="o">*</span> <span class="n">expected</span><span class="p">))</span>
 
@@ -6372,7 +6361,9 @@ usually chosen from. Ask for a <em>count</em> with
     <span class="c1"># correlation while staying a deterministic function of the caller's own seed.</span>
     <span class="n">pool_seed</span> <span class="o">=</span> <span class="n">resolve_seed</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span>
     <span class="n">priority_seed</span> <span class="o">=</span> <span class="p">(</span><span class="n">pool_seed</span> <span class="o">^</span> <span class="mh">0x2545F491</span><span class="p">)</span> <span class="o">&amp;</span> <span class="mh">0x7FFFFFFF</span>
-    <span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span> <span class="o">=</span> <span class="n">sample_surface</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">nx</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="n">pool_seed</span><span class="p">)</span>
+    <span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span> <span class="o">=</span> <span class="n">_draw_surface_samples</span><span class="p">(</span>
+        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cdf</span><span class="p">,</span> <span class="n">surface_area</span><span class="p">,</span> <span class="n">nx</span><span class="p">,</span> <span class="n">pool_seed</span>
+    <span class="p">)</span>
     <span class="k">return</span> <span class="n">_dart_throw_blue_noise</span><span class="p">(</span><span class="n">init_points</span><span class="p">,</span> <span class="n">init_face_indices</span><span class="p">,</span> <span class="n">radius</span><span class="p">,</span> <span class="n">priority_seed</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -6574,53 +6565,7 @@ e.g. a torus), or the mesh has no faces and <code>count &gt; 0</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 899</span>
-<span class="normal"> 900</span>
-<span class="normal"> 901</span>
-<span class="normal"> 902</span>
-<span class="normal"> 903</span>
-<span class="normal"> 904</span>
-<span class="normal"> 905</span>
-<span class="normal"> 906</span>
-<span class="normal"> 907</span>
-<span class="normal"> 908</span>
-<span class="normal"> 909</span>
-<span class="normal"> 910</span>
-<span class="normal"> 911</span>
-<span class="normal"> 912</span>
-<span class="normal"> 913</span>
-<span class="normal"> 914</span>
-<span class="normal"> 915</span>
-<span class="normal"> 916</span>
-<span class="normal"> 917</span>
-<span class="normal"> 918</span>
-<span class="normal"> 919</span>
-<span class="normal"> 920</span>
-<span class="normal"> 921</span>
-<span class="normal"> 922</span>
-<span class="normal"> 923</span>
-<span class="normal"> 924</span>
-<span class="normal"> 925</span>
-<span class="normal"> 926</span>
-<span class="normal"> 927</span>
-<span class="normal"> 928</span>
-<span class="normal"> 929</span>
-<span class="normal"> 930</span>
-<span class="normal"> 931</span>
-<span class="normal"> 932</span>
-<span class="normal"> 933</span>
-<span class="normal"> 934</span>
-<span class="normal"> 935</span>
-<span class="normal"> 936</span>
-<span class="normal"> 937</span>
-<span class="normal"> 938</span>
-<span class="normal"> 939</span>
-<span class="normal"> 940</span>
-<span class="normal"> 941</span>
-<span class="normal"> 942</span>
-<span class="normal"> 943</span>
-<span class="normal"> 944</span>
-<span class="normal"> 945</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 945</span>
 <span class="normal"> 946</span>
 <span class="normal"> 947</span>
 <span class="normal"> 948</span>
@@ -6683,7 +6628,63 @@ e.g. a torus), or the mesh has no faces and <code>count &gt; 0</code>.</p>
 <span class="normal">1005</span>
 <span class="normal">1006</span>
 <span class="normal">1007</span>
-<span class="normal">1008</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_volume</span><span class="p">(</span>
+<span class="normal">1008</span>
+<span class="normal">1009</span>
+<span class="normal">1010</span>
+<span class="normal">1011</span>
+<span class="normal">1012</span>
+<span class="normal">1013</span>
+<span class="normal">1014</span>
+<span class="normal">1015</span>
+<span class="normal">1016</span>
+<span class="normal">1017</span>
+<span class="normal">1018</span>
+<span class="normal">1019</span>
+<span class="normal">1020</span>
+<span class="normal">1021</span>
+<span class="normal">1022</span>
+<span class="normal">1023</span>
+<span class="normal">1024</span>
+<span class="normal">1025</span>
+<span class="normal">1026</span>
+<span class="normal">1027</span>
+<span class="normal">1028</span>
+<span class="normal">1029</span>
+<span class="normal">1030</span>
+<span class="normal">1031</span>
+<span class="normal">1032</span>
+<span class="normal">1033</span>
+<span class="normal">1034</span>
+<span class="normal">1035</span>
+<span class="normal">1036</span>
+<span class="normal">1037</span>
+<span class="normal">1038</span>
+<span class="normal">1039</span>
+<span class="normal">1040</span>
+<span class="normal">1041</span>
+<span class="normal">1042</span>
+<span class="normal">1043</span>
+<span class="normal">1044</span>
+<span class="normal">1045</span>
+<span class="normal">1046</span>
+<span class="normal">1047</span>
+<span class="normal">1048</span>
+<span class="normal">1049</span>
+<span class="normal">1050</span>
+<span class="normal">1051</span>
+<span class="normal">1052</span>
+<span class="normal">1053</span>
+<span class="normal">1054</span>
+<span class="normal">1055</span>
+<span class="normal">1056</span>
+<span class="normal">1057</span>
+<span class="normal">1058</span>
+<span class="normal">1059</span>
+<span class="normal">1060</span>
+<span class="normal">1061</span>
+<span class="normal">1062</span>
+<span class="normal">1063</span>
+<span class="normal">1064</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample_volume</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6749,33 +6750,43 @@ e.g. a torus), or the mesh has no faces and <code>count &gt; 0</code>.</p>
             <span class="s2">"mesh is not watertight; tetrahedral decomposition requires a closed surface"</span>
         <span class="p">)</span>
 
-    <span class="n">center</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">measures</span><span class="o">.</span><span class="n">surface_centroid</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-
-    <span class="n">signed_vols</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_signed_volumes</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">center</span><span class="p">)</span>
-
-    <span class="c1"># One device reduction, not two: the star-shaped test genuinely needs a ``min``, but the total</span>
-    <span class="c1"># is the inclusive scan's last element and comes for free with the CDF this builds anyway.</span>
-    <span class="c1"># ``n_faces &gt; 0`` guards the empty mesh, where "no negative volumes" holds vacuously and</span>
-    <span class="c1"># ``reduce.min`` would otherwise raise its own unrelated "requires a non-empty array" error.</span>
-    <span class="k">if</span> <span class="n">n_faces</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">min</span><span class="p">(</span><span class="n">signed_vols</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mf">0.0</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-            <span class="s2">"mesh is not star-shaped with respect to its centroid (e.g. a torus); "</span>
-            <span class="s2">"tetrahedral decomposition cannot sample it without rejection"</span>
+    <span class="c1"># The signed tetrahedron volumes are written straight into the CDF buffer, whose one extra slot</span>
+    <span class="c1"># flags a negative volume; the scan turns the face slots into the CDF in place, and one</span>
+    <span class="c1"># readback brings back the total (the scan's last element) and the flag together, so the</span>
+    <span class="c1"># star-shaped test needs no separate ``min`` reduction. The empty mesh, where "no negative</span>
+    <span class="c1"># volumes" holds vacuously, launches nothing.</span>
+    <span class="n">cdf</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_faces</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">total_vol</span> <span class="o">=</span> <span class="mf">0.0</span>
+    <span class="n">center</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">n_faces</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">center</span> <span class="o">=</span> <span class="n">_surface_centroid_on_device</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">n_faces</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_sample</span><span class="o">.</span><span class="n">tetrahedron_volumes_flag_negative</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">center</span><span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">cdf</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
+        <span class="n">face_slots</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">cdf</span><span class="p">[:</span><span class="n">n_faces</span><span class="p">])</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">face_slots</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">face_slots</span><span class="p">)</span>
+        <span class="c1"># Sizes nothing but decides two raises and scales the sampling kernel's draws.</span>
+        <span class="n">total_vol</span><span class="p">,</span> <span class="n">negative</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">cdf</span><span class="p">,</span> <span class="n">n_faces</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">negative</span> <span class="o">!=</span> <span class="mf">0.0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">"mesh is not star-shaped with respect to its centroid (e.g. a torus); "</span>
+                <span class="s2">"tetrahedral decomposition cannot sample it without rejection"</span>
+            <span class="p">)</span>
 
     <span class="k">if</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="c1"># Without this, an empty ``signed_vols``/``cdf`` reaches ``read_scalar``'s tail read below</span>
-        <span class="c1"># and raises an unrelated ``IndexError`` (CPU) or a Warp slicing error (CUDA) instead.</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"mesh has no faces; cannot sample its volume"</span><span class="p">)</span>
 
-    <span class="n">cdf</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">signed_vols</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">cdf</span><span class="p">)</span>
-    <span class="n">total_vol</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">cdf</span><span class="p">))</span>
     <span class="k">if</span> <span class="n">total_vol</span> <span class="o">==</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"mesh has zero volume"</span><span class="p">)</span>
+    <span class="n">cdf</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">cdf</span><span class="p">[:</span><span class="n">n_faces</span><span class="p">])</span>
+    <span class="k">assert</span> <span class="n">center</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>  <span class="c1"># n_faces &gt; 0 here, so the volume pass computed it</span>
 
     <span class="n">out_points</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
@@ -6914,57 +6925,57 @@ rule on its own.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/sample.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1011</span>
-<span class="normal">1012</span>
-<span class="normal">1013</span>
-<span class="normal">1014</span>
-<span class="normal">1015</span>
-<span class="normal">1016</span>
-<span class="normal">1017</span>
-<span class="normal">1018</span>
-<span class="normal">1019</span>
-<span class="normal">1020</span>
-<span class="normal">1021</span>
-<span class="normal">1022</span>
-<span class="normal">1023</span>
-<span class="normal">1024</span>
-<span class="normal">1025</span>
-<span class="normal">1026</span>
-<span class="normal">1027</span>
-<span class="normal">1028</span>
-<span class="normal">1029</span>
-<span class="normal">1030</span>
-<span class="normal">1031</span>
-<span class="normal">1032</span>
-<span class="normal">1033</span>
-<span class="normal">1034</span>
-<span class="normal">1035</span>
-<span class="normal">1036</span>
-<span class="normal">1037</span>
-<span class="normal">1038</span>
-<span class="normal">1039</span>
-<span class="normal">1040</span>
-<span class="normal">1041</span>
-<span class="normal">1042</span>
-<span class="normal">1043</span>
-<span class="normal">1044</span>
-<span class="normal">1045</span>
-<span class="normal">1046</span>
-<span class="normal">1047</span>
-<span class="normal">1048</span>
-<span class="normal">1049</span>
-<span class="normal">1050</span>
-<span class="normal">1051</span>
-<span class="normal">1052</span>
-<span class="normal">1053</span>
-<span class="normal">1054</span>
-<span class="normal">1055</span>
-<span class="normal">1056</span>
-<span class="normal">1057</span>
-<span class="normal">1058</span>
-<span class="normal">1059</span>
-<span class="normal">1060</span>
-<span class="normal">1061</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resolve_seed</span><span class="p">(</span><span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1100</span>
+<span class="normal">1101</span>
+<span class="normal">1102</span>
+<span class="normal">1103</span>
+<span class="normal">1104</span>
+<span class="normal">1105</span>
+<span class="normal">1106</span>
+<span class="normal">1107</span>
+<span class="normal">1108</span>
+<span class="normal">1109</span>
+<span class="normal">1110</span>
+<span class="normal">1111</span>
+<span class="normal">1112</span>
+<span class="normal">1113</span>
+<span class="normal">1114</span>
+<span class="normal">1115</span>
+<span class="normal">1116</span>
+<span class="normal">1117</span>
+<span class="normal">1118</span>
+<span class="normal">1119</span>
+<span class="normal">1120</span>
+<span class="normal">1121</span>
+<span class="normal">1122</span>
+<span class="normal">1123</span>
+<span class="normal">1124</span>
+<span class="normal">1125</span>
+<span class="normal">1126</span>
+<span class="normal">1127</span>
+<span class="normal">1128</span>
+<span class="normal">1129</span>
+<span class="normal">1130</span>
+<span class="normal">1131</span>
+<span class="normal">1132</span>
+<span class="normal">1133</span>
+<span class="normal">1134</span>
+<span class="normal">1135</span>
+<span class="normal">1136</span>
+<span class="normal">1137</span>
+<span class="normal">1138</span>
+<span class="normal">1139</span>
+<span class="normal">1140</span>
+<span class="normal">1141</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span>
+<span class="normal">1144</span>
+<span class="normal">1145</span>
+<span class="normal">1146</span>
+<span class="normal">1147</span>
+<span class="normal">1148</span>
+<span class="normal">1149</span>
+<span class="normal">1150</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resolve_seed</span><span class="p">(</span><span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Concrete non-negative ``int32``-range RNG seed, drawn at random when none was given.</span>
 
