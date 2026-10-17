@@ -1496,15 +1496,15 @@ def _structure(
         outputs=[parent, column_end],
         device=device,
     )
-    height = _launch.zeros(n, dtype=wp.int32, device=device)
+    # ``parent`` is the dissection tree's; its heights order the elimination tree's rounds below.
+    dissection_height = _launch.zeros(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_cholesky.supernode_heights,
         dim=n,
         inputs=[parent],
-        outputs=[height, header],
+        outputs=[dissection_height, header],
         device=device,
     )
-    # The elimination order: a stable sort of the vertices by their node's first position.
     keys = _launch.empty(2 * n, dtype=wp.int32, device=device)
     vertices = _launch.empty(2 * n, dtype=wp.int32, device=device)
     pos = _launch.empty(n, dtype=wp.int32, device=device)
@@ -1525,6 +1525,32 @@ def _structure(
         device=device,
     )
     perm = odt.as_dense(vertices[:n])
+    # The supernodal elimination tree, which the row structure and the factorization follow: one
+    # round per dissection height, leaves first (``kernel_cholesky.elimination_tree_hook``). A
+    # supernode's height in the dissection tree is below ``depths + 2``, its node's depth bound,
+    # so that many rounds cover every height with no read of the count. The dissection's levels
+    # are then reset and the heights taken again over the elimination tree.
+    ancestor = arange(n, device=device)
+    parent = _launch.full(n, -1, dtype=wp.int32, device=device)
+    for level in range(depths + 2):
+        _launch.launch(
+            kernel_cholesky.elimination_tree_hook,
+            dim=n,
+            inputs=[offsets, columns, pos, owner, c0, dissection_height, wp.int32(level),
+                    ancestor],
+            outputs=[parent],
+            device=device,
+        )  # fmt: skip
+    levels_slot = int(kernel_cholesky.HEADER_LEVELS)
+    _launch.zero_(header[levels_slot : levels_slot + 1])
+    height = _launch.zeros(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_cholesky.supernode_heights,
+        dim=n,
+        inputs=[parent],
+        outputs=[height, header],
+        device=device,
+    )
     # The operator's lower entries in the new order, for the entry maps and the estimate, and
     # whether its pattern is structurally symmetric.
     lower_ends = _launch.empty(n, dtype=wp.int32, device=device)

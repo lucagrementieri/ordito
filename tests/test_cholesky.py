@@ -498,6 +498,60 @@ def test_symbolic_structure_is_the_factors_fill(device: str, case: str) -> None:
         assert np.array_equal(got, expected)
 
 
+def _sinuous_ribbon() -> tuple[np.ndarray, np.ndarray]:
+    """Return a 801 x 21 grid strip bent into four sine periods: coordinate cuts slice it apart."""
+    u, w = np.meshgrid(np.linspace(0.0, 8.0 * np.pi, 801), np.linspace(0.0, 1.0, 21), indexing="ij")
+    vertices_np = np.stack([u, 3.0 * np.sin(u), w], axis=-1).reshape(-1, 3)
+    iu, iw = np.meshgrid(np.arange(800), np.arange(20), indexing="ij")
+    a = (iu * 21 + iw).ravel()
+    faces_np = np.concatenate(
+        [np.stack([a, a + 21, a + 1], 1), np.stack([a + 1, a + 21, a + 22], 1)]
+    )
+    return vertices_np, faces_np.astype(np.int32)
+
+
+def test_symbolic_structure_follows_the_elimination_tree(device: str) -> None:
+    """
+    Not a library comparison: rows pass up the supernodal elimination tree, not the dissection's.
+
+    No reference exposes a supernodal structure. The oracle is the supernodal symbolic
+    factorization written out in NumPy over the plan's own order and supernodes: in elimination
+    order, a supernode's rows are its operator entries' rows past its columns and its
+    children's rows past its columns, and its parent is the owner of its first row. On the
+    dense-elimination cases above it agrees to the row.
+
+    A coordinate cut slices the sinuous ribbon into pieces, so some dissection child is not
+    connected to its dissection parent. Passing rows up the dissection tree gave two of its
+    supernodes rows their columns never fill, on both devices (and +1.5 % factor entries on
+    ``dragon``); the dense elimination is too slow to check a mesh this size, so the test above
+    could not see it. Mutation probe: walking the dissection tree instead (the code before the
+    elimination tree) fails it on CUDA and CPU, at a supernode the dissection hangs one level
+    too low.
+    """
+    vertices_np, faces_np = _sinuous_ribbon()
+    points, faces = numpy_to_warp(vertices_np, faces_np.ravel(), device)
+    system_np = bsr_to_csr(od.heat.heat_operators(points, faces)[0])
+    n = system_np.shape[0]
+    plan = od.cholesky._plan_cholesky(scipy_to_bsr(system_np, device), points)  # pyright: ignore[reportPrivateUsage]
+    perm = plan.perm.numpy()[:n]
+    ncol, c0, front_size = plan.ncol.numpy(), plan.c0.numpy(), plan.front_size.numpy()
+    row_offsets, rows, parent = plan.row_offsets.numpy(), plan.rows.numpy(), plan.parent.numpy()
+    lower = sp.tril(system_np[perm][:, perm], format="csc")
+    owner = np.repeat(np.arange(ncol.size), ncol)
+    expected: dict[int, np.ndarray] = {}
+    children: list[list[int]] = [[] for _ in range(ncol.size)]
+    for k in np.argsort(c0):
+        last = c0[k] + ncol[k]
+        own = lower.indices[lower.indptr[c0[k]] : lower.indptr[last]]
+        parts = [own[own >= last], *(expected[c][expected[c] >= last] for c in children[k])]
+        expected[k] = np.unique(np.concatenate(parts))
+        got = rows[row_offsets[k] : row_offsets[k] + front_size[k] - ncol[k]]
+        assert np.array_equal(got, expected[k])
+        if expected[k].size:
+            children[owner[expected[k][0]]].append(int(k))
+            assert parent[k] == owner[expected[k][0]]
+
+
 def _held_bytes(*objects: object) -> int:
     """
     Return the summed capacity of every distinct allocation reachable from ``objects``.

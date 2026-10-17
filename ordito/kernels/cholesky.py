@@ -1651,6 +1651,52 @@ def supernode_links(
 
 
 @wp.kernel
+def elimination_tree_hook(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    pos: wp.array[wp.int32],
+    owner: wp.array[wp.int32],
+    c0: wp.array[wp.int32],
+    dissection_height: wp.array[wp.int32],
+    level: wp.int32,
+    ancestor: wp.array[wp.int32],
+    out_parent: wp.array[wp.int32],
+) -> None:
+    # One round of the supernodal elimination tree (Liu's algorithm on supernodes): every operator
+    # row of a supernode at dissection height ``level`` finds, for each entry in an earlier
+    # supernode, the root of that supernode's set and, unless it is its own, makes itself that
+    # root's parent. The dissection tree is not the elimination tree: a dissection child not
+    # connected to its tree parent hangs, in the elimination tree, from the owner of its first row
+    # higher up, and walking rows up the dissection tree gave its parent rows its columns never
+    # fill (+1.5 % factor entries and +6 % update flops on ``dragon``).
+    #
+    # Rounds go up the dissection heights, so a supernode's lower neighbours -- all inside its
+    # dissection subtree, a separator being eliminated after both halves -- are hooked before it,
+    # which is the sequential order's invariant, and the supernodes of one round have disjoint
+    # subtrees, so their finds touch disjoint sets. Rows of one supernode may find the same root
+    # and write the same parent; path halving only ever moves a pointer up its own set.
+    i = wp.int32(wp.tid())
+    r = pos[i]
+    sn = owner[r]
+    if dissection_height[sn] != level:
+        return
+    first = c0[sn]
+    for e in range(offsets[i], offsets[i + 1]):
+        j = pos[columns[e]]
+        if j < first:
+            x = owner[j]
+            a = ancestor[x]
+            while a != x:
+                grand = ancestor[a]
+                ancestor[x] = grand
+                x = a
+                a = grand
+            if x != sn:
+                out_parent[x] = sn
+                ancestor[x] = sn
+
+
+@wp.kernel
 def supernode_heights(
     parent: wp.array[wp.int32], out_height: wp.array[wp.int32], out_header: wp.array[wp.int32]
 ) -> None:
