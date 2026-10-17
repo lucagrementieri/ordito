@@ -1384,7 +1384,15 @@ class _BoundaryHalfedges:
         device = self.faces.device
         k = self.count()
         out_edges = odt.empty_2d((k, 2), wp.int32, device=device)
-        if k > 0:
+        if k > 0 and self.key_order is not None:
+            # The flags were scanned in key order: the rows are stored at their ranks directly.
+            _launch.launch(
+                kernel_boundary.emit_key_ordered_boundary_edges,
+                dim=self.n,
+                inputs=[self._inclusive, self.key_order, self.faces, sort_pair, out_edges],
+                device=device,
+            )
+        elif k > 0:
             assert self._inclusive is not None
             halfedges = od.halfedge.key_ordered_halfedges(
                 self.faces, self._inclusive, k, key_order=self.key_order, n_vertices=self.n_vertices
