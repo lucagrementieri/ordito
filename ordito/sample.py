@@ -762,14 +762,15 @@ def _dart_throw_blue_noise(
     # every later one is a prefix of it, so nothing here is reallocated per round.
     alive = _launch.empty(n_pool, dtype=wp.int32, device=device)
     # Per-cell summaries that let each round's two sweeps skip a shell cell whole; see the kernel
-    # module for what each one summarises and why the accepted set is unchanged. Both are refilled
-    # per round rather than accumulated, so a cell stops pruning the moment it stops being empty;
-    # every later round's priority summary is folded into the compaction that produces its work
-    # list (see ``dart_compact_alive``).
+    # module for what each one summarises and why the accepted set is unchanged. Both are rebuilt
+    # per round rather than accumulated, so a cell stops pruning the moment it stops being empty:
+    # each is cleared by a launch that no longer reads it (``dart_cover_neighbors`` the priority
+    # summary, ``dart_compact_alive`` the acceptances) and every later round's priority summary is
+    # folded into the compaction that produces its work list, so neither is refilled per round.
     cell_min_priority = _launch.full(
         n_cells, kernel_blue_noise.DART_NO_PRIORITY, dtype=wp.uint32, device=device
     )
-    cell_accepted = _launch.empty(n_cells, dtype=wp.bool, device=device)
+    cell_accepted = _launch.zeros(n_cells, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_blue_noise.dart_point_setup,
         dim=n_pool,
@@ -785,7 +786,6 @@ def _dart_throw_blue_noise(
 
     while alive_count > 0:
         view = alive[:alive_count]
-        _launch.fill_(cell_accepted, False)
         # The survivor flags are written by the covering sweep itself, as each thread's last word
         # on its point's state this round.
         alive_flags = survivor_flag[:alive_count]
@@ -820,6 +820,7 @@ def _dart_throw_blue_noise(
                 rr,
                 state,
                 alive_flags,
+                cell_min_priority,
             ],
             device=device,
         )
@@ -839,7 +840,6 @@ def _dart_throw_blue_noise(
         _launch.array_scan(alive_flags, out_array=alive_positions, inclusive=True)
         total = int(read_scalar(positions, alive_count - 1))
         if total > 0:
-            _launch.fill_(cell_min_priority, kernel_blue_noise.DART_NO_PRIORITY)
             _launch.launch(
                 kernel_blue_noise.dart_compact_alive,
                 dim=alive_count,
@@ -851,6 +851,7 @@ def _dart_throw_blue_noise(
                     sorted_cell,
                     next_alive[:total],
                     cell_min_priority,
+                    cell_accepted,
                 ],
                 device=device,
             )

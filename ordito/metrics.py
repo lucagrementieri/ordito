@@ -1224,20 +1224,21 @@ def _max_of_both(forward: wp.array[wp.float32], backward: wp.array[wp.float32]) 
     """
     Largest of two non-empty distance arrays in one readback, for the symmetric ``"max"`` forms.
 
-    Both arrays fold into one seeded slot with ``reduce.max``'s own tiled kernel (its update is an
-    ``atomic_max``), so the symmetric maximum is the same float as the larger of two
-    [`reduce.max`][ordito.reduce.max] calls, at one sync rather than two.
+    Both arrays fold into one seeded slot in one launch (an ``atomic_max`` per block), so the
+    symmetric maximum is the same float as the larger of two [`reduce.max`][ordito.reduce.max]
+    calls, at one launch and one sync rather than two of each.
     """
     device = forward.device
     out = _launch.full(1, -math.inf, dtype=wp.float32, device=device)
-    for distances in (forward, backward):
-        _launch.launch_tiled(
-            kernel_reduce.MAX1D_TILED[wp.float32],
-            dim=[kernel_reduce.blocks_1d(distances.size)],
-            inputs=[distances, out],
-            block_dim=TILE_1D,
-            device=device,
-        )
+    forward_blocks = kernel_reduce.blocks_1d(forward.size)
+    _launch.launch_tiled(
+        kernel_metrics.max_of_pair,
+        dim=[forward_blocks + kernel_reduce.blocks_1d(backward.size)],
+        inputs=[forward, backward, forward_blocks],
+        outputs=[out],
+        block_dim=TILE_1D,
+        device=device,
+    )
     return float(out.numpy()[0])  # the reduced value is the function's answer
 
 

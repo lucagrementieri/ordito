@@ -47,6 +47,7 @@ from ordito._device import (
 from ordito.constants import INT32_MAX, INT64_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import edges as kernel_edges
+from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import triangles as kernel_triangles
@@ -693,7 +694,7 @@ def mesh_to_mesh_distance(
     n_blocks = kernel_reduce.blocks_1d(n_faces_a)
     result = _launch.full(3, INT64_MAX, dtype=wp.int64, device=device)
     _launch.launch_tiled(
-        kernel_proximity.nearest_face_pair,
+        kernel_neighbors.nearest_key_pair,
         dim=n_blocks,
         inputs=[distance_sq, witness, n_blocks, result],
         block_dim=TILE_1D,
@@ -1685,15 +1686,15 @@ def containing_faces_2d(
     if n_faces == 0:
         return _launch.full(m, -1, dtype=wp.int32, device=device)
 
-    lifted = _launch.empty(vertices.size, dtype=wp.vec3, device=device)
-    _launch.map(kernel_array.lift_vec2, vertices, wp.float32(0.0), out=lifted)
     # The search radius has to be in the triangulation's own units, so the kernel scales it off
-    # the box this reduces, on the device.
+    # the box the lifting launch reduces, on the device.
+    lifted = _launch.empty(vertices.size, dtype=wp.vec3, device=device)
     corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
     _launch.launch(
-        kernel_reduce.minmax_vec3_chunked,
-        dim=kernel_reduce.chunks_1d(lifted.size),
-        inputs=[lifted, corners],
+        kernel_proximity.lift_vec2_and_bound,
+        dim=kernel_reduce.chunks_1d(vertices.size),
+        inputs=[vertices],
+        outputs=[lifted, corners],
         device=device,
     )
     require_nonempty_mesh(faces, "containing_faces_2d")

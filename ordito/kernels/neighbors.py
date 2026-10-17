@@ -6,7 +6,7 @@ from ordito.constants import FLOAT32_INF_CONSTANT, INT64_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels.algorithms import bfs as kernel_bfs
 from ordito.kernels.array import declare_map_signatures, map_probe, map_probe_single
-from ordito.kernels.reduce import block_chunk_1d, block_min
+from ordito.kernels.reduce import block_chunk_1d, block_min, thread_fence
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1230,8 +1230,7 @@ def query_weighted_nearest_neighbors(
 
 
 # The empty ``pack_nearest_key`` (no element yet): above every real key, since ``pack_nearest_key``
-# is non-negative for any non-negative distance. The seed of ``nearest_key_argmin``'s result and of
-# ``proximity.nearest_face_pair``'s slots.
+# is non-negative for any non-negative distance. The seed of ``nearest_key_pair``'s slots.
 NO_NEAREST_KEY = wp.int64(INT64_MAX)
 
 
@@ -1240,7 +1239,7 @@ def block_nearest_key(distances: wp.array[wp.float32], chunk: wp.int32, lane: wp
     # The smallest ``pack_nearest_key(distances[i], i)`` over block ``chunk``'s
     # ``ITEMS_PER_BLOCK_1D`` chunk, on every lane; ``NO_NEAREST_KEY`` for an empty chunk. Lanes
     # stride the chunk by ``wp.block_dim()``, so the CPU device's single lane covers it.
-    # Block-collective. Shared by ``nearest_key_argmin`` and ``proximity.nearest_face_pair``.
+    # Block-collective. ``nearest_key_pair``'s fold.
     offset, count = block_chunk_1d(distances.shape[0], chunk)
     best = NO_NEAREST_KEY
     for k in range(lane, count, wp.block_dim()):
@@ -1250,39 +1249,37 @@ def block_nearest_key(distances: wp.array[wp.float32], chunk: wp.int32, lane: wp
 
 
 @wp.kernel
-def nearest_key_argmin(distances: wp.array[wp.float32], out_result: wp.array[wp.int64]) -> None:
-    # The smallest ``pack_nearest_key(distances[i], i)`` over ``i``: which element carries the
-    # smallest distance, lowest index on a tie, with that distance's own float32 bits in the high
-    # half. ``out_result[0]`` must arrive seeded at ``NO_NEAREST_KEY``; slot 1 belongs to
-    # ``nearest_key_partner``.
+def nearest_key_pair(
+    distances: wp.array[wp.float32],
+    partners: wp.array[wp.int32],
+    n_blocks: wp.int32,
+    out_result: wp.array[wp.int64],
+) -> None:
+    # A "global argmin plus its partner" answer in one launch: the smallest
+    # ``pack_nearest_key(distances[i], i)`` -- which element carries the smallest distance, lowest
+    # index on a tie, with that distance's own float32 bits in the high half -- into
+    # ``out_result[0]``, and ``partners`` of its winner into ``out_result[1]``, so the pair comes
+    # back in one readback. Shared by ``neighbors.closest_pair`` (column 1 of a ``k=2`` self-query,
+    # both strided views, only ever indexed) and ``proximity.mesh_to_mesh_distance`` (per-face
+    # squared distances and witnesses).
     #
-    # The one kernel two "global argmin plus its partner" answers reduce through --
-    # ``neighbors.closest_pair`` over column 1 of a ``k=2`` self-query, and
-    # ``proximity.mesh_to_mesh_distance`` over its per-face squared distances. Each used to write a
-    # whole ``int64`` key array for ``reduce.min`` to read back; here the key is packed where it is
-    # compared and never stored, and the result stays on the device for ``nearest_key_partner``, so
-    # the pair costs one readback between them rather than two or three.
-    #
-    # ``distances`` may be a strided column view; it is only ever indexed. Launched
-    # ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)`` (``block_nearest_key``). An empty
-    # chunk's block commits ``NO_NEAREST_KEY``, which changes nothing.
+    # The block that draws the last ticket (``out_result[2]``, counting down from ``INT64_MAX``;
+    # all three slots arrive seeded at ``INT64_MAX``) has seen every block's ``atomic_min`` land, so
+    # it reads the winner (atomically, past any cached copy) and writes its partner. The fence
+    # publishes a block's minimum before its ticket. Integer atomics, so the answer is exact
+    # whatever the arrival order. Launched ``wp.launch_tiled(dim=n_blocks, block_dim=TILE_1D)``
+    # with ``n_blocks = blocks_1d(n)`` (``block_nearest_key``); an empty chunk's block commits
+    # ``NO_NEAREST_KEY``, which changes nothing.
     chunk, lane = wp.tid()
     block_best = block_nearest_key(distances, chunk, lane)
     if lane == 0:
         wp.atomic_min(out_result, 0, block_best)
-
-
-@wp.kernel
-def nearest_key_partner(
-    result: wp.array[wp.int64], partners: wp.array[wp.int32], out_result: wp.array[wp.int64]
-) -> None:
-    # ``out_result[1] = partners[winner]``, the winner being the low half of ``result[0]`` --
-    # ``nearest_key_argmin``'s answer. ``dim=1``. ``result`` and ``out_result`` are the *same*
-    # two-slot buffer at every call site, passed twice so the kernel reads slot 0 and writes slot 1
-    # of it: that is what lets the key and its partner come back in one readback. The single thread
-    # reads before it writes, and the two touch different slots.
-    winner = wp.int32(result[0] & wp.int64(0xFFFFFFFF))
-    out_result[1] = wp.int64(partners[winner])
+        thread_fence()
+        ticket = wp.atomic_add(out_result, 2, wp.int64(-1))
+        if ticket == NO_NEAREST_KEY - wp.int64(n_blocks - 1):
+            thread_fence()
+            key = wp.atomic_min(out_result, 0, NO_NEAREST_KEY)
+            out_result[1] = wp.int64(partners[wp.int32(key & wp.int64(0xFFFFFFFF))])
 
 
 @wp.kernel

@@ -2042,23 +2042,18 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
 
     device = points.device
     indices, distances = query_nearest(points, points, k=2)
-    # Column 1 of the table, as strided views -- column 0 is each point itself. The two kernels only
-    # index them, so neither needs a dense copy.
-    result = _launch.full(2, INT64_MAX, dtype=wp.int64, device=device)
+    # Column 1 of the table, as strided views -- column 0 is each point itself. The kernel only
+    # indexes them, so neither needs a dense copy.
+    n_blocks = kernel_reduce.blocks_1d(n)
+    result = _launch.full(3, INT64_MAX, dtype=wp.int64, device=device)
     _launch.launch_tiled(
-        kernel_neighbors.nearest_key_argmin,
-        dim=kernel_reduce.blocks_1d(n),
-        inputs=[distances[:, 1], result],
+        kernel_neighbors.nearest_key_pair,
+        dim=n_blocks,
+        inputs=[distances[:, 1], indices[:, 1], n_blocks, result],
         block_dim=TILE_1D,
         device=device,
     )
-    _launch.launch(
-        kernel_neighbors.nearest_key_partner,
-        dim=1,
-        inputs=[result, indices[:, 1], result],
-        device=device,
-    )
-    key, index_b = (int(value) for value in result.numpy())
+    key, index_b, _ticket = (int(value) for value in result.numpy())
     # The key's high half is the distance's own float32 bits, so it decodes on the host for free.
     distance = float(np.array([key >> 32], dtype=np.uint32).view(np.float32)[0])
     return key & 0xFFFFFFFF, index_b, distance
