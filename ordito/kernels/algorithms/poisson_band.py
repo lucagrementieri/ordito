@@ -19,6 +19,30 @@ around them, so every ghost and every restriction target exists; misses are coun
 
 **What is solved per band level** is the band's own equations with every out-of-band neighbour fixed
 at the prolonged coarse solution: ``A_band x = b - A_ghost g``, started from ``g`` itself.
+
+**FAS tau-correction.** The cascade alone leaves every ghost at a coarse solution of the coarse
+level's *rediscretized* operator, which near the surface is not the restriction of the fine
+solution; that gap does not shrink with band width or rounds (on ``dragon`` at depth 9 a brick of
+extra dilation, or 30 more finest rounds at 1.9x the call, closed under a third of it). One full
+approximation scheme cycle (Brandt's local-refinement form) follows the cascade, finest to base and
+back: ``band_residual`` forms a band's composite residual ``r_f`` (ghosts folded in as the solve
+saw them); ``fas_inject`` overwrites every coarse node whose whole ``P^T`` footprint lies in the
+finer band with the fine solution there (``fas_covered``), keeping that start ``x~``; ``fas_rhs``
+replaces the coarse right-hand side at those nodes by ``A_c x~ + P^T r_f`` -- the restricted data
+plus ``tau = A_c x~ - P^T A_f x_f`` -- so the coarse fixed point *is* the injected fine solution
+where the band covers it and the coarse equations elsewhere see it as their boundary. Going up,
+``band_level_setup`` adds ``P (x_c - x~)`` to each band's solution and re-solves it with the new
+ghosts. With a band covering the whole lattice this is a multigrid solver for the finest system:
+each cycle divides the field's distance to the dense backend's solution by about 15 (to the
+``float32`` floor in five). On a real band the composite residual falls 4-10x a cycle to a fixed
+point a few thousandths of a cell from the dense surface. One cycle with 8 finest rounds each way
+and 4 base rounds takes the band's distance to the dense surface from 0.011-0.022 cells to
+0.003-0.007 on ``dragon`` and ``bunny`` at depths 7-9 (0.108 -> 0.024 on ``bunny_decimated`` at 9)
+for 1.2-1.45x the call; more rounds or cycles move it little. Against the input it now tracks the
+dense surface: it closes the cascade's gap on ``dragon`` (depth 9: 1.12x the dense backend's mean
+distance to 1.02x), and where the lattice outruns the samples (``bunny_decimated`` at depths 9-10,
+``bunny`` at 10) it gives up the smoothing the coarse ghosts had applied by accident and resolves
+the sample-scale dimples the fine system has (``bunny_decimated`` depth 9: 0.92x -> 0.99x dense).
 """
 
 import warp as wp
@@ -39,8 +63,10 @@ from ordito.kernels.levelset import (
 )
 from ordito.kernels.reconstruction import (
     normalized_field_component,
+    poisson_grid_coordinates,
     poisson_grid_index,
     poisson_prolong_node,
+    screened_laplacian_row,
     screened_laplacian_scaled_inverse_diagonal,
 )
 from ordito.kernels.reduce import block_sum
@@ -534,38 +560,23 @@ def band_row(
     return lap * (deg * xc - acc) + screen * weights[n] * xc
 
 
-@wp.kernel
-def band_level_setup(
-    brick_coords: wp.array[wp.vec3i],
+@wp.func
+def band_ghost_sum(
     brick_map: wp.array[wp.int32],
     nbk: wp.int32,
     res: wp.int32,
-    lap: wp.float32,
-    weights: wp.array[wp.float32],
-    screen: wp.float32,
     coarse_map: wp.array[wp.int32],
     coarse: wp.array[wp.float32],
     nbk_c: wp.int32,
     res_c: wp.int32,
-    b: wp.array[wp.float32],
-    out_x: wp.array[wp.float32],
-    out_inv_diag: wp.array[wp.float32],
-    out_missing: wp.array[wp.int32],
-) -> None:
-    # Moves every out-of-band neighbour's Dirichlet value onto the right-hand side in place
-    # (``b += lap * sum ghosts``), starts the solution at the prolonged coarse one, and writes the
-    # Jacobi inverse diagonal ``1 / (lap * deg + screen * W)``. Overhanging slots are all zero. A
-    # coarse node a ghost or the start reads but the coarse band lacks is counted.
-    n = wp.int32(wp.tid())
-    g = band_coordinates(brick_coords, n)
-    if not node_live(g, res):
-        b[n] = 0.0
-        out_x[n] = 0.0
-        out_inv_diag[n] = 0.0
-        return
-    i = g[0]
-    j = g[1]
-    k = g[2]
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
+) -> wp.vec3:
+    # ``(degree, sum of the out-of-band neighbours' Dirichlet values, found)`` at band node
+    # ``(i, j, k)``: what a band row moves onto its right-hand side. ``found`` is 0 when a ghost
+    # read a coarse node the coarse band lacks. Shared by the solve's setup (``band_level_setup``)
+    # and the residual the FAS restriction reads (``band_residual``), so both fold the same ghosts.
     deg = wp.float32(0.0)
     ghosts = wp.vec2(0.0, 1.0)
     if i + 1 < res:
@@ -592,12 +603,207 @@ def band_level_setup(
         deg += 1.0
         ghost = band_ghost(brick_map, nbk, coarse_map, coarse, nbk_c, res_c, i, j, k - 1)
         ghosts = wp.vec2(ghosts[0] + ghost[0], wp.min(ghosts[1], ghost[1]))
+    return wp.vec3(deg, ghosts[0], ghosts[1])
+
+
+@wp.kernel
+def band_level_setup(
+    brick_coords: wp.array[wp.vec3i],
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    res: wp.int32,
+    lap: wp.float32,
+    weights: wp.array[wp.float32],
+    screen: wp.float32,
+    coarse_map: wp.array[wp.int32],
+    coarse: wp.array[wp.float32],
+    previous: wp.array[wp.float32],
+    nbk_c: wp.int32,
+    res_c: wp.int32,
+    b: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    out_rhs: wp.array[wp.float32],
+    out_inv_diag: wp.array[wp.float32],
+    out_missing: wp.array[wp.int32],
+) -> None:
+    # The band solve's right-hand side ``b + lap * sum ghosts`` (every out-of-band neighbour's
+    # Dirichlet value moved onto it), its start ``x`` and the Jacobi inverse diagonal
+    # ``1 / (lap * deg + screen * W)``. The start is the prolonged coarse solution when
+    # ``previous`` is empty (the cascade); otherwise ``x`` is corrected in place by the prolonged
+    # change of the coarse solution since ``previous`` (an FAS cycle's coarse-grid correction).
+    # Overhanging slots are all zero. A coarse node a ghost or the start reads but the coarse band
+    # lacks is counted.
+    n = wp.int32(wp.tid())
+    g = band_coordinates(brick_coords, n)
+    if not node_live(g, res):
+        out_rhs[n] = 0.0
+        x[n] = 0.0
+        out_inv_diag[n] = 0.0
+        return
+    i = g[0]
+    j = g[1]
+    k = g[2]
+    ghosts = band_ghost_sum(brick_map, nbk, res, coarse_map, coarse, nbk_c, res_c, i, j, k)
     start = band_prolong(coarse_map, coarse, nbk_c, res_c, i, j, k)
-    if ghosts[1] == 0.0 or start[1] == 0.0:
+    if ghosts[2] == 0.0 or start[1] == 0.0:
         wp.atomic_add(out_missing, 0, 1)
-    b[n] = b[n] + lap * ghosts[0]
-    out_x[n] = start[0]
-    out_inv_diag[n] = 1.0 / (lap * deg + screen * weights[n])
+    out_rhs[n] = b[n] + lap * ghosts[1]
+    if previous.shape[0] == 0:
+        x[n] = start[0]
+    else:
+        x[n] = x[n] + (start[0] - band_prolong(coarse_map, previous, nbk_c, res_c, i, j, k)[0])
+    out_inv_diag[n] = 1.0 / (lap * ghosts[0] + screen * weights[n])
+
+
+# ---------------------------------------------------------------------------------------------
+# FAS tau-correction: the coarse level sees the fine band's solution where the band covers it
+# ---------------------------------------------------------------------------------------------
+
+
+@wp.kernel
+def band_residual(
+    brick_coords: wp.array[wp.vec3i],
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    res: wp.int32,
+    lap: wp.float32,
+    weights: wp.array[wp.float32],
+    screen: wp.float32,
+    coarse_map: wp.array[wp.int32],
+    coarse: wp.array[wp.float32],
+    nbk_c: wp.int32,
+    res_c: wp.int32,
+    b: wp.array[wp.float32],
+    x: wp.array[wp.float32],
+    out_r: wp.array[wp.float32],
+) -> None:
+    # The band level's composite residual ``b + lap * sum ghosts - A_band x``: its own equations
+    # with the out-of-band neighbours at the prolonged coarse solution (``band_level_setup``'s
+    # right-hand side, recomputed rather than stored). Zero on an overhanging slot.
+    n = wp.int32(wp.tid())
+    g = band_coordinates(brick_coords, n)
+    if not node_live(g, res):
+        out_r[n] = 0.0
+        return
+    ghosts = band_ghost_sum(brick_map, nbk, res, coarse_map, coarse, nbk_c, res_c, g[0], g[1], g[2])
+    out_r[n] = (
+        b[n]
+        + lap * ghosts[1]
+        - band_row(brick_coords, brick_map, nbk, res, lap, weights, screen, x, n)
+    )
+
+
+@wp.func
+def level_coordinates(brick_coords: wp.array[wp.vec3i], res: wp.int32, n: wp.int32) -> wp.vec3i:
+    # Lattice node of storage index ``n`` on a level that is a band (``brick_coords`` non-empty)
+    # or the dense ``res**3`` grid.
+    if brick_coords.shape[0] > 0:
+        return band_coordinates(brick_coords, n)
+    return poisson_grid_coordinates(n, res)
+
+
+@wp.func
+def fas_covered(
+    fine_map: wp.array[wp.int32], nbk_f: wp.int32, res_f: wp.int32, g: wp.vec3i
+) -> wp.bool:
+    # Whether coarse node ``g``'s whole restriction footprint -- the fine nodes ``2 g + d``,
+    # ``d`` in ``{-1, 0, 1}^3``, that are on the lattice -- is in the fine band, so the residual it
+    # restricts and the value it injects are both the fine level's own.
+    for di in range(-1, 2):
+        a = 2 * g[0] + di
+        if a >= 0 and a < res_f:
+            for dj in range(-1, 2):
+                c = 2 * g[1] + dj
+                if c >= 0 and c < res_f:
+                    for dk in range(-1, 2):
+                        e = 2 * g[2] + dk
+                        if e >= 0 and e < res_f:
+                            if band_node(fine_map, nbk_f, a, c, e) < 0:
+                                return False
+    return True
+
+
+@wp.kernel
+def fas_inject(
+    coarse_coords: wp.array[wp.vec3i],
+    res_c: wp.int32,
+    fine_map: wp.array[wp.int32],
+    nbk_f: wp.int32,
+    res_f: wp.int32,
+    fine_x: wp.array[wp.float32],
+    coarse_x: wp.array[wp.float32],
+    out_previous: wp.array[wp.float32],
+) -> None:
+    # The FAS cycle's coarse start: every covered coarse node (``fas_covered``) takes the fine
+    # solution at its coincident node, in place; ``out_previous`` keeps the result, against which
+    # the coarse solve's change is later prolonged as the fine correction. The coarse level is a
+    # band (``coarse_coords``) or the dense ``res_c**3`` grid.
+    n = wp.int32(wp.tid())
+    g = level_coordinates(coarse_coords, res_c, n)
+    value = coarse_x[n]
+    if node_live(g, res_c):
+        if fas_covered(fine_map, nbk_f, res_f, g):
+            value = fine_x[band_node(fine_map, nbk_f, 2 * g[0], 2 * g[1], 2 * g[2])]
+            coarse_x[n] = value
+    out_previous[n] = value
+
+
+@wp.kernel
+def fas_rhs(
+    coarse_coords: wp.array[wp.vec3i],
+    coarse_map: wp.array[wp.int32],
+    nbk_c: wp.int32,
+    res_c: wp.int32,
+    lap_c: wp.float32,
+    weights_c: wp.array[wp.float32],
+    screen: wp.float32,
+    data_c: wp.array[wp.float32],
+    previous: wp.array[wp.float32],
+    fine_map: wp.array[wp.int32],
+    nbk_f: wp.int32,
+    res_f: wp.int32,
+    fine_r: wp.array[wp.float32],
+    scale: wp.float32,
+    out_rhs: wp.array[wp.float32],
+) -> None:
+    # The tau-corrected coarse right-hand side, times ``scale``: ``A_c x~ + P^T r_f`` at a covered
+    # node (``x~`` the injected start ``fas_inject`` kept, ``r_f`` the fine composite residual),
+    # which is ``P^T b_f`` plus the tau correction ``A_c x~ - P^T A_f x_f``, and the level's own
+    # data ``data_c`` elsewhere. ``A_c`` is the band row or, on the dense base, the grid row.
+    n = wp.int32(wp.tid())
+    g = level_coordinates(coarse_coords, res_c, n)
+    value = wp.float32(0.0)
+    if node_live(g, res_c):
+        value = data_c[n]
+        if fas_covered(fine_map, nbk_f, res_f, g):
+            row = wp.float32(0.0)
+            if coarse_coords.shape[0] > 0:
+                row = band_row(
+                    coarse_coords, coarse_map, nbk_c, res_c, lap_c, weights_c, screen, previous, n
+                )
+            else:
+                row = screened_laplacian_row(
+                    lap_c, previous, weights_c, screen, res_c, g[0], g[1], g[2]
+                )
+            restricted = wp.float32(0.0)
+            for di in range(-1, 2):
+                a = 2 * g[0] + di
+                if a >= 0 and a < res_f:
+                    for dj in range(-1, 2):
+                        c = 2 * g[1] + dj
+                        if c >= 0 and c < res_f:
+                            for dk in range(-1, 2):
+                                e = 2 * g[2] + dk
+                                if e >= 0 and e < res_f:
+                                    # ``P^T``'s weight: a half per axis the offset is odd on.
+                                    weight = wp.float32(
+                                        (2 - wp.abs(di)) * (2 - wp.abs(dj)) * (2 - wp.abs(dk))
+                                    )
+                                    restricted += (
+                                        0.125 * weight * fine_r[band_node(fine_map, nbk_f, a, c, e)]
+                                    )
+            value = row + restricted
+    out_rhs[n] = scale * value
 
 
 @wp.kernel
