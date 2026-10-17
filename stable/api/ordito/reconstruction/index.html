@@ -6892,6 +6892,9 @@ it is covered too. One caveat on how far that reaches: the face buffer's <em>row
 pinned -- <code>commit_triangles</code> appends with a <code>wp.atomic_add</code> -- so compare reconstructions as
 a set of wound triangles, not buffer-to-buffer.</p>
 <p>Results are not comparable across devices, where floating-point contraction differs.</p>
+<p>A ball resting on four or more points at once -- the corners of every cell of a regular grid --
+is resolved by a fixed rule on the points' indices rather than by rounding, so such a cloud
+reconstructs to one consistently wound triangulation of each cell on every device.</p>
 <p>The result is <strong>interpolating and edge-manifold</strong>, and on a densely, uniformly sampled closed
 surface it is watertight in practice: a subdivided icosphere reconstructs to exactly <code>2 v - 4</code>
 faces with no boundary edge at all. Watertightness is not <em>guaranteed</em> -- the wave-parallel
@@ -7091,7 +7094,11 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">2040</span>
 <span class="normal">2041</span>
 <span class="normal">2042</span>
-<span class="normal">2043</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">2043</span>
+<span class="normal">2044</span>
+<span class="normal">2045</span>
+<span class="normal">2046</span>
+<span class="normal">2047</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7187,6 +7194,10 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="sd">    a set of wound triangles, not buffer-to-buffer.</span>
 
 <span class="sd">    Results are not comparable across devices, where floating-point contraction differs.</span>
+
+<span class="sd">    A ball resting on four or more points at once -- the corners of every cell of a regular grid --</span>
+<span class="sd">    is resolved by a fixed rule on the points' indices rather than by rounding, so such a cloud</span>
+<span class="sd">    reconstructs to one consistently wound triangulation of each cell on every device.</span>
 
 <span class="sd">    The result is **interpolating and edge-manifold**, and on a densely, uniformly sampled closed</span>
 <span class="sd">    surface it is watertight in practice: a subdivided icosphere reconstructs to exactly ``2 v - 4``</span>

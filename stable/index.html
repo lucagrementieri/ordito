@@ -4108,7 +4108,7 @@ and falls back to CPU otherwise, with the same code.</p>
 <ul>
 <li><strong>One dependency.</strong> The runtime depends on <code>warp-lang</code> alone; NumPy comes with Warp; nothing else
   (no SciPy, PyTorch or trimesh) is needed at runtime.</li>
-<li><strong>Broad coverage.</strong> 50 public modules and over 500 functions spanning primitives, topology,
+<li><strong>Broad coverage.</strong> Hundreds of functions across dozens of public modules, spanning primitives, topology,
   repair, remeshing, spatial queries, discrete differential operators, geodesics, sampling,
   surface reconstruction, and registration.</li>
 <li><strong>Stays on the device.</strong> Functions take Warp arrays and return Warp arrays, so pipelines compose
@@ -4234,10 +4234,10 @@ round the set out to the eleven reference implementations the suite measures aga
 <p>These libraries are not runtime dependencies; they are <strong>test oracles</strong>. Wherever one of them
 computes the same quantity as an ordito function, a regression test compares the two outputs
 value by value. A parity gate in the test suite fails the build if any library the benchmarks
-time against ordito is neither compared in a test nor exempted with a written reason. Today the
-benchmark suite has 357 groups and 584 <code>(group, library)</code> pairs: 554 are covered by a value test,
-30 carry a written exemption (typically a different algorithm answering a related question), and
-none are uncovered. Where ordito and a reference disagree by definition rather than by rounding
+time against ordito is neither compared in a test nor exempted with a written reason. Every
+<code>(group, library)</code> pair in the benchmark suite is either covered by a value test or carries a
+written exemption (typically a different algorithm answering a related question); none are
+uncovered, and <code>python -m tests.parity</code> prints the current matrix. Where ordito and a reference disagree by definition rather than by rounding
 (a sign convention, a squared distance), the docstring says so and the test pins the difference.</p>
 <h2 id="development">Development</h2>
 <div class="highlight"><pre><span></span><code>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/lucagrementieri/ordito
