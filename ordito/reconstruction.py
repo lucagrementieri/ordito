@@ -1976,9 +1976,11 @@ def ball_pivoting(
 
     Results are not comparable across devices, where floating-point contraction differs.
 
-    A ball resting on four or more points at once -- the corners of every cell of a regular grid --
-    is resolved by a fixed rule on the points' indices rather than by rounding, so such a cloud
-    reconstructs to one consistently wound triangulation of each cell on every device.
+    A point closer to a ball's sphere than single precision can resolve is placed in double
+    precision, and a ball resting on four or more points at once -- the corners of every cell of a
+    regular grid -- is resolved by a fixed rule on the points' indices rather than by rounding. So
+    four points sampled co-circular, exactly or nearly, get exactly one triangulation, consistently
+    wound, on every device.
 
     The result is **interpolating and edge-manifold**, and on a densely, uniformly sampled closed
     surface it is watertight in practice: a subdivided icosphere reconstructs to exactly ``2 v - 4``

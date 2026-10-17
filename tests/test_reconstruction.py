@@ -1783,7 +1783,7 @@ def test_ball_pivoting_triangulates_an_unjittered_grid(
     Every cell of a regular grid has four co-circular corners, so both of its triangulations have an
     empty ball and the rotation from one triangle's ball to the other's is zero: no reference is an
     oracle here, since each settles the tie by rounding (Open3D tests ``radius - 1e-16``). Before
-    the tie rule (``kernel_bpa.tie_plane``) and the rotation clamp (``pivot_candidate``),
+    the tie rule (``kernel_bpa.band_point_inside``) and the rotation clamp (``pivot_candidate``),
     rounding settled it here too, differently per triangle and per device: pivots took the other
     diagonal's triangle on top of their own, wound against the normals, and on the axis-aligned
     grid the cleanup raised ``non-orientable duplicate face group`` (cpu, and cuda with the chain);
@@ -1801,7 +1801,7 @@ def test_ball_pivoting_triangulates_an_unjittered_grid(
     chain is the 31-point Morton chain of
     ``test_ball_pivoting_on_a_bvh_leaf_past_the_tile_walk_buffer``, which the reported reproducer
     appended; it is far from the grid and never triangulated. The rotated, translated frame moves
-    the ball centres away from the origin, where the float32 round-off the tie shell must absorb
+    the ball centres away from the origin, where the float32 round-off the band must absorb
     grows with the coordinates.
     """
     radius = 0.05
@@ -1825,7 +1825,95 @@ def test_ball_pivoting_triangulates_an_unjittered_grid(
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
     vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+    _assert_grid_triangulation(vertices_wp, faces_wp, side, spacing, normal_np, face_rtol=1e-3)
 
+
+@pytest.mark.parametrize("frame", ["axis_aligned", "rotated_offset"])
+@pytest.mark.parametrize("deviation", [5e-6, 3e-5, 9e-5])
+def test_ball_pivoting_triangulates_a_near_co_circular_grid(
+    device: str, deviation: float, frame: Literal["axis_aligned", "rotated_offset"]
+) -> None:
+    """
+    Not a library comparison: cells co-circular to within ``deviation * radius`` triangulate once.
+
+    One corner of every cell (the interior points with both indices odd) is shifted along ``x`` so
+    that it lies ``deviation * radius`` off the ball through the cell's other three corners, inside
+    or outside by the cell. Every such cell is a near-tie: it has exactly one empty-ball
+    triangulation, but only by that margin. The empty-ball test used to count a point up to
+    ``1e-4 * radius`` inside the sphere as outside, so every cell passed both triangulations and
+    pivots wound faces against the normals; every case here failed then except the rotated 5e-6,
+    which fell inside the float32 band where an index rule already decided. Now a point within
+    float32 round-off of the sphere is placed in float64, and anything further by its float32
+    distance alone, so each cell gets its one triangulation. In the axis-aligned frame 5e-6 lies
+    inside that band (about 2e-5 there) and 3e-5 and 9e-5 outside it; in the rotated, translated
+    frame the band is wider than all three. Both paths are reached. Same invariants as
+    ``test_ball_pivoting_triangulates_an_unjittered_grid``; the axis-aligned arm also checks the
+    construction, in float64 on the float32 coordinates the reconstruction is given.
+    """
+    side, spacing, radius = 40, 0.0125, 0.05
+    positions = spacing * np.arange(side)
+    grid_x, grid_y = np.meshgrid(positions, positions, indexing="ij")
+    points_np = np.stack([grid_x.ravel(), grid_y.ravel(), np.zeros(grid_x.size)], axis=1)
+    index = np.arange(side)
+    interior_odd = (index % 2 == 1) & (index < side - 1)
+    shifted = (interior_odd[:, None] & interior_odd[None, :]).ravel()
+    # A corner moved by ``shift`` along a cell diagonal's x component moves ``shift / sqrt(2)``
+    # off the circumcircle (radius ``spacing / sqrt(2)``), which moves it ``radius`` times
+    # ``circumradius / radius**2`` as far off the ball's sphere, relative to ``radius``.
+    points_np[shifted, 0] += 2.0 * deviation * radius**2 / spacing
+
+    if frame == "axis_aligned":
+        corners_np = points_np.astype(np.float32).astype(np.float64)
+        for i, j in [(0, 0), (1, 1), (2, 5), (17, 22)]:
+            cell = corners_np[[i * side + j, (i + 1) * side + j, (i + 1) * side + j + 1]]
+            fourth = corners_np[i * side + j + 1]
+            center = _ball_center_float64(cell, radius)
+            assert abs(np.linalg.norm(fourth - center) / radius - 1.0) == pytest.approx(
+                deviation, rel=0.05
+            )
+
+    normal_np = np.array([0.0, 0.0, 1.0])
+    if frame == "rotated_offset":
+        from scipy.spatial.transform import Rotation
+
+        rotation_np = Rotation.from_euler("xyz", [0.4, -0.7, 1.1]).as_matrix()
+        points_np = points_np @ rotation_np.T + np.array([3.0, -2.0, 1.5])
+        normal_np = rotation_np @ normal_np
+    normals_np = np.tile(normal_np, (points_np.shape[0], 1))
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+
+    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+    _assert_grid_triangulation(vertices_wp, faces_wp, side, spacing, normal_np, face_rtol=5e-3)
+
+
+def _ball_center_float64(corners_np: np.ndarray, radius: float) -> np.ndarray:
+    """Return the centre of the ``radius`` ball on three ``z = 0`` corners, on the ``+z`` side."""
+    a, b, c = corners_np
+    ab, ac = b - a, c - a
+    normal = np.cross(ab, ac)
+    circumcenter = a + (np.cross(normal, ab) * ac.dot(ac) + np.cross(ac, normal) * ab.dot(ab)) / (
+        2.0 * normal.dot(normal)
+    )
+    height = math.sqrt(radius**2 - float(np.sum((circumcenter - a) ** 2)))
+    return circumcenter + height * np.array([0.0, 0.0, 1.0])
+
+
+def _assert_grid_triangulation(
+    vertices_wp: wp.array[wp.vec3],
+    faces_wp: wp.array[wp.int32],
+    side: int,
+    spacing: float,
+    normal_np: np.ndarray,
+    face_rtol: float,
+) -> None:
+    """
+    Assert that a reconstructed ``side x side`` planar grid is its exact triangulation.
+
+    The exact face count and the outline's area rule out both a missing triangle and an
+    overlapping pair (with every face wound with the normal, an overlap adds area); ordito's
+    validators and an independent count of edge incidences and directed half-edges rule out a
+    non-manifold or inconsistently wound result.
+    """
     assert od.validation.is_edge_manifold(faces_wp)
     assert od.validation.is_winding_consistent(faces_wp)
     vertices_np = vertices_wp.numpy().astype(np.float64)
@@ -1844,7 +1932,7 @@ def test_ball_pivoting_triangulates_an_unjittered_grid(
         corners_np[:, 1] - corners_np[:, 0], corners_np[:, 2] - corners_np[:, 0]
     )
     assert np.all(face_area_np @ normal_np > 0.0)  # wound with the normals
-    assert np.allclose(face_area_np @ normal_np, 0.5 * spacing**2, rtol=1e-3)
+    assert np.allclose(face_area_np @ normal_np, 0.5 * spacing**2, rtol=face_rtol)
     assert math.isclose(
         float(np.sum(face_area_np @ normal_np)), ((side - 1) * spacing) ** 2, rel_tol=1e-4
     )

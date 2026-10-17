@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import Literal, cast, overload
+from typing import Literal, NamedTuple, cast, overload
 
 import numpy as np
 import warp as wp
@@ -82,6 +82,15 @@ from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPr
 # bounding-box diagonal. The same order as ``offset.offset_mesh``'s automatic floor, and the field
 # it allocates is cubic in it; a caller who needs the surface resolved finer passes ``voxel_size``.
 _VOXEL_REBUILD_RESOLUTION = 128
+
+# ``remove_tunnels``' search through the basis vertices: the ball rows a root starts with, how much
+# wider a root whose ball outgrew them is searched again, the scratch entries one launch may
+# allocate across its roots (about 40 bytes each), and the relative slack on the kernel's own
+# float32 length test, which the measured length then decides.
+_TUNNEL_BALL_CAPACITY = 1024
+_TUNNEL_BALL_GROWTH = 8
+_TUNNEL_SCRATCH_ENTRIES = 1 << 22
+_TUNNEL_LENGTH_SLACK = 1e-4
 
 
 def make_solid(
@@ -2797,22 +2806,18 @@ def remove_tunnels(
     ([`homology_generators`][ordito.homology.homology_generators]), so a handle near the root comes
     out as its own short loop. One far from the root can come out only inside a combination with
     other classes, which no shortening within the class can separate again; so when no loop of that
-    basis is short enough, the basis is computed again from one vertex of each of its loops in turn,
-    shortest loop first, until one of them yields a short loop. The call that finds nothing, which
-    is the last one of the documented loop, therefore computes up to ``2 * genus + 1`` bases.
+    basis is short enough, every vertex of the shortened basis is searched for the shortest
+    non-separating loop through it, along mesh edges and within ``max_length / 2`` of it. Every
+    non-separating loop crosses the basis, so this search finds the shortest one on the surface:
+    a call returns ``0`` only when **no** non-separating edge loop is within ``max_length``, and
+    every handle whose girth along the edges is under ``max_length`` is removed by calling it until
+    then. The loops this search finds are shortest-path loops already and are cut as found. Its
+    cost grows with the number of vertices within ``max_length / 2`` of the basis, and the call
+    that finds nothing, the last one of the documented loop, always runs it.
 
     Nothing is removed when no loop is short enough, and the input is returned unchanged -- so this
     is safe to run on a mesh whose genus is intended, provided ``max_length`` is below the scale of
     its real handles.
-
-    !!! warning "A short handle can still be missed"
-        The search is over loops through the roots tried, not over every loop of the surface: the
-        short loop of a handle is found when one of the roots lies on or near it. A handle whose
-        short loop passes near none of them, and that every basis carries only in combination, is
-        reported as not short and stays. On a slab whose tunnels sit a narrow bar from its edge,
-        one of eight such bars can survive at a ``max_length`` just above the bar's girth. The
-        loops that are cut are always non-separating and under ``max_length``; only the
-        completeness is not guaranteed.
 
     !!! note "One disjoint pass per call"
         The loops kept are pairwise **vertex-disjoint**, shortest first. Cutting along two loops
@@ -2901,23 +2906,16 @@ def remove_tunnels(
     require_same_device(vertices=vertices, faces=faces)
     if max_length < 0.0:
         raise ValueError(f"max_length must be non-negative, got {max_length}")
-    short = _shortened_basis(vertices, faces, None, max_iter)
-    if not short:
+    basis = _shortened_basis(vertices, faces, max_iter)
+    if basis is None:
         return vertices, faces, 0
-    selected = _disjoint_loops([loop for length, loop in short if length <= max_length])
+    selected = _disjoint_loops([loop for length, loop in basis.short if length <= max_length])
     if not selected:
         # The basis is the greedy one through its root, so a handle far from the root can appear
-        # only inside a longer combination of classes. Before answering "nothing is short", base a
-        # basis on one vertex of each loop found, shortest first: a root near a handle finds that
-        # handle's own short loop first.
-        roots = list(dict.fromkeys(int(loop[0]) for _, loop in short))
-        for root in roots:
-            candidates = _shortened_basis(vertices, faces, root, max_iter)
-            selected = _disjoint_loops(
-                [loop for length, loop in candidates if length <= max_length]
-            )
-            if selected:
-                break
+        # only inside a longer combination of classes. Before answering "nothing is short", search
+        # every vertex of the basis for the shortest non-separating loop through it: every
+        # non-separating loop crosses some basis loop, so a short one passes through one of them.
+        selected = _disjoint_loops(_short_loops_through_basis(vertices, faces, basis, max_length))
     if not selected:
         return vertices, faces, 0
 
@@ -2939,26 +2937,191 @@ def remove_tunnels(
     )
 
 
-def _shortened_basis(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], root: int | None, max_iter: int
-) -> list[tuple[float, np.ndarray]]:
-    """
-    Shorten and measure the homology basis through ``root``, as ``(length, loop)`` pairs.
+class _TunnelBasis(NamedTuple):
+    """A shortened homology basis, with what the search through its vertices reuses."""
 
-    Sorted shortest first; the sort is stable, so equal lengths stay in basis order. Empty for a
-    sphere. The basis stays packed from the generators through the shortening to the measuring, so
-    no per-loop array is built and split again on the way; a basis has ``2 * genus`` loops of a
-    handful of indices each, so everything after the measuring runs on the host, over one readback
-    of them all.
+    short: list[tuple[float, np.ndarray]]
+    """``(length, loop)`` pairs, shortest first; the sort is stable, so ties keep basis order."""
+    loops: wp.array[wp.int32]
+    """The generators before shortening, packed: simple cycles, as the cocycle needs them."""
+    loop_offsets: wp.array[wp.int32]
+    ring_halfedges: wp.array[wp.int32]
+    ring_offsets: wp.array[wp.int32]
+    twins: wp.array[wp.int32]
+
+
+def _shortened_basis(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_iter: int
+) -> _TunnelBasis | None:
     """
-    loops, loop_offsets = od.homology.homology_generators_with_offsets(vertices, faces, root=root)
+    Shorten and measure the homology basis, or ``None`` for a sphere.
+
+    The basis stays packed from the generators through the shortening to the measuring, so no
+    per-loop array is built and split again on the way; a basis has ``2 * genus`` loops of a
+    handful of indices each, so everything after the measuring runs on the host, over one readback
+    of them all. The one-rings the shortening walks are built here, once, so the search through
+    the basis vertices reuses them.
+    """
+    loops, loop_offsets = od.homology.homology_generators_with_offsets(vertices, faces)
     if loop_offsets.size == 1:
-        return []
+        return None
+    ring_halfedges, ring_offsets, is_boundary, twins = od.halfedge.vertex_one_rings(
+        faces, n_vertices=vertices.size, return_twins=True
+    )
     shortened, shortened_offsets, _sweeps = od.geodesic_walk.shorten_loop_with_offsets(
-        vertices, faces, loops, loop_offsets, max_iter=max_iter
+        vertices,
+        faces,
+        loops,
+        loop_offsets,
+        max_iter=max_iter,
+        rings=(ring_halfedges, ring_offsets, is_boundary),
     )
     lengths, loops_np = _measure_loops(vertices, shortened, shortened_offsets)
-    return sorted(zip(lengths, loops_np, strict=True), key=lambda pair: pair[0])
+    short = sorted(zip(lengths, loops_np, strict=True), key=lambda pair: pair[0])
+    return _TunnelBasis(short, loops, loop_offsets, ring_halfedges, ring_offsets, twins)
+
+
+def _short_loops_through_basis(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], basis: _TunnelBasis, max_length: float
+) -> list[np.ndarray]:
+    """
+    Find the shortest non-separating loop through each basis vertex; keep those within the bound.
+
+    Sorted shortest first, stably, each distinct cycle once. A non-separating loop crosses some
+    loop of any homology basis -- the intersection form of a closed orientable surface is
+    non-degenerate -- and two edge loops that cross share a vertex, so every non-separating loop
+    passes through a vertex of the shortened basis; and Erickson and Whittlesey's argument
+    (``kernels/repair.shortest_nontrivial_loop_per_root``) makes the shortest one through a root a
+    shortest-path-tree loop of that root. So the shortest non-separating loop of the surface is
+    among these whenever it is within ``max_length``.
+    """
+    device = faces.device
+    n_vertices = vertices.size
+    # Every basis loop's cocycle, on every halfedge: zero means "crosses an even number of times".
+    cocycle = _launch.zeros(faces.size, dtype=wp.uint64, device=device)
+    _launch.launch(
+        kernel_repair.tunnel_loop_cocycle,
+        dim=basis.loops.size,
+        inputs=[
+            faces,
+            basis.ring_offsets,
+            basis.ring_halfedges,
+            basis.twins,
+            basis.loops,
+            basis.loop_offsets,
+        ],
+        outputs=[cocycle],
+        device=device,
+    )
+    roots_np = np.unique(np.concatenate([loop for _, loop in basis.short])).astype(np.int32)
+    # The kernel compares in float32 sums of its own; the slack only widens the candidates, and
+    # the measured length below is the test that decides.
+    bound = max_length * (1.0 + _TUNNEL_LENGTH_SLACK)
+    found: list[np.ndarray] = []
+    capacity = min(_TUNNEL_BALL_CAPACITY, n_vertices)
+    while roots_np.size > 0:
+        chunk = max(1, _TUNNEL_SCRATCH_ENTRIES // capacity)
+        overflowed: list[np.ndarray] = []
+        for start in range(0, roots_np.size, chunk):
+            part = roots_np[start : start + chunk]
+            loops_np, missed_np = _root_loop_search(
+                vertices, faces, basis, cocycle, part, bound, capacity
+            )
+            found.extend(loops_np)
+            overflowed.append(missed_np)
+        roots_np = np.concatenate(overflowed)
+        # A ball that outgrew its rows is searched again in wider ones; at ``n_vertices`` none can.
+        capacity = min(capacity * _TUNNEL_BALL_GROWTH, n_vertices)
+    if not found:
+        return []
+
+    # One cycle reached from several of its own vertices is one candidate.
+    unique: dict[bytes, np.ndarray] = {}
+    for loop in found:
+        unique.setdefault(np.sort(loop).tobytes(), loop)
+    candidates = list(unique.values())
+    sizes = np.array([0, *(loop.size for loop in candidates)], dtype=np.int32)
+    packed = _launch.array(np.concatenate(candidates), dtype=wp.int32, device=device)
+    offsets = _launch.array(np.cumsum(sizes, dtype=np.int32), dtype=wp.int32, device=device)
+    lengths, loops_np = _measure_loops(vertices, packed, offsets)
+    return [
+        loop
+        for length, loop in sorted(zip(lengths, loops_np, strict=True), key=lambda pair: pair[0])
+        if length <= max_length
+    ]
+
+
+def _root_loop_search(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    basis: _TunnelBasis,
+    cocycle: wp.array[wp.uint64],
+    roots_np: np.ndarray,
+    bound: float,
+    capacity: int,
+) -> tuple[list[np.ndarray], np.ndarray]:
+    """
+    Search ``roots_np`` in balls of up to ``capacity`` vertices: loops found, and roots missed.
+
+    A missed root is one whose ball outgrew ``capacity``; a root with no loop within ``bound`` is
+    neither.
+    """
+    device = faces.device
+    n_roots = int(roots_np.size)
+    roots = _launch.array(roots_np, dtype=wp.int32, device=device)
+    # Open addressing over a power of two at least twice the rows, so the table stays half empty.
+    table_size = 1 << (2 * capacity - 1).bit_length()
+    table = odt.as_array2d(
+        _launch.full((n_roots, table_size), -1, dtype=wp.int32, device=device), wp.int32
+    )
+    heap = odt.empty_2d((n_roots, capacity), wp.int32, device=device)
+    counts = _launch.empty(n_roots, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.shortest_nontrivial_loop_per_root,
+        dim=n_roots,
+        inputs=[
+            vertices,
+            faces,
+            basis.ring_offsets,
+            basis.ring_halfedges,
+            cocycle,
+            roots,
+            wp.float32(0.5 * bound),
+            wp.float32(bound),
+            table,
+            odt.empty_2d((n_roots, capacity), wp.int32, device=device),
+            odt.empty_2d((n_roots, capacity), wp.float32, device=device),
+            odt.empty_2d((n_roots, capacity), wp.int32, device=device),
+            odt.empty_2d((n_roots, capacity), wp.uint64, device=device),
+            heap,
+            odt.empty_2d((n_roots, capacity), wp.int32, device=device),
+        ],
+        outputs=[counts],
+        device=device,
+    )
+    # Which roots found a loop, and how long it is, sizes the packed buffer; a few bytes a root.
+    counts_np = counts.numpy()
+    missed_np = roots_np[counts_np < 0]
+    sizes_np = np.maximum(counts_np, 0)
+    total = int(sizes_np.sum())
+    if total == 0:
+        return [], missed_np
+    bounds_np = np.concatenate([[0], np.cumsum(sizes_np)]).astype(np.int32)
+    packed = _launch.empty(total, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.pack_root_loops,
+        dim=n_roots,
+        inputs=[heap, _launch.array(bounds_np, dtype=wp.int32, device=device)],
+        outputs=[packed],
+        device=device,
+    )
+    # The cycles go to the host to be told apart; a few dozen indices a root.
+    packed_np = packed.numpy()
+    return [
+        packed_np[start:stop]
+        for start, stop in zip(bounds_np[:-1].tolist(), bounds_np[1:].tolist(), strict=True)
+        if stop > start
+    ], missed_np
 
 
 def _measure_loops(

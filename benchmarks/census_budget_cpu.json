@@ -2438,8 +2438,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cpu-2]": {
   "counts": {
-   "launch": 449,
-   "alloc": 166,
+   "launch": 450,
+   "alloc": 168,
    "h2h": 4,
    "readback": 8,
    "scan": 25,
@@ -2458,8 +2458,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle-ordito-cpu-2]": {
   "counts": {
-   "launch": 443,
-   "alloc": 166,
+   "launch": 444,
+   "alloc": 168,
    "h2h": 4,
    "readback": 8,
    "scan": 25,
@@ -2478,8 +2478,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cpu-2]": {
   "counts": {
-   "launch": 316,
-   "alloc": 166,
+   "launch": 317,
+   "alloc": 168,
    "h2h": 4,
    "readback": 8,
    "scan": 23,

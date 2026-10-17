@@ -77,12 +77,14 @@ re-searched over its whole neighbourhood. An edge is retired only when the *sear
 when it merely lost the claim.
 """
 
+from typing import Any
+
 import warp as wp
 
 from ordito.constants import TWO_PI, UINT64_MAX_CONSTANT
 from ordito.kernels.array import pack_edge_key
 from ordito.kernels.grouping import hash_find, hash_find_or_insert
-from ordito.kernels.predicates import dihedral_angle, triangle_normal
+from ordito.kernels.predicates import dihedral_angle, float_inf, triangle_normal
 from ordito.kernels.proximity import flag_overfull_leaf, meets_overfull_leaf, straggler_slab
 from ordito.kernels.reduce import block_argmin
 
@@ -94,18 +96,21 @@ MAX_SEED_NEIGHBORS = 64
 # ``SEED_UNKNOWN`` nothing yet, and ``SEED_EXHAUSTED`` a point that can never seed (see there).
 SEED_UNKNOWN = wp.constant(wp.int32(-1))
 SEED_EXHAUSTED = wp.constant(wp.int32(-2))
-# Relative slack on the empty-ball test: absorbs float32 round-off so the three defining points
-# (exactly on the ball in exact arithmetic) do not spuriously read as "inside".
-BALL_EPS = wp.constant(wp.float32(1e-4))
-# Half-width of the shell around the ball's sphere inside which a fourth point counts as lying *on*
-# it (``tie_plane``), in float32 rounding units of the ball centre's largest coordinate. A
-# co-circular grid corner's distance from the computed centre is off by at most ``1.25`` such units
-# (measured on translated and rotated planar grids, on both devices), so 4 is a 3x margin. Narrow on
-# purpose: a near-tie wider than the round-off is one float32 *can* decide, and the shell would
-# overrule that answer -- at 8 units it did, on a scan cloud, and opened a hole where the plain test
-# was right.
-BALL_TIE_ULPS = wp.float32(4.0)
+# Half-width of the band around the ball's sphere, in float32 rounding units of the ball centre's
+# largest coordinate (``sphere_band_width``), inside which float32 cannot be trusted to say which
+# side of the sphere a point is on, so ``band_point_inside`` decides it in float64. A co-circular
+# grid corner's float32 distance from the computed centre is off by at most 1.25 such units
+# (measured on translated and rotated planar grids, on both devices); 16 is a wide margin, and a
+# wider band only refines more points, never changes an answer.
+BALL_BAND_ULPS = wp.float32(16.0)
 FLOAT32_EPS = wp.float32(1.1920929e-07)  # numpy.finfo(numpy.float32).eps
+# Half-width of the float64 tie, in float64 rounding units of the squared scale of the centre
+# (``band_point_inside``): a point whose float64 power against the ball is smaller than this is on
+# the sphere, and the symbolic index rule decides it. Only an exactly co-spherical input (a grid
+# whose coordinates are exact in binary) lands there; float32 rounding of the input coordinates
+# alone already moves a nominal tie a million times further.
+BALL_TIE_ULPS64 = wp.float64(64.0)
+FLOAT64_EPS = wp.float64(2.220446049250313e-16)  # numpy.finfo(numpy.float64).eps
 # The largest float32 below ``TWO_PI``: the ceiling ``pivot_candidate`` clamps a rotation to, so
 # that no candidate ties the ``TWO_PI`` "nothing found" sentinel it is compared against.
 PIVOT_ANGLE_MAX = wp.float32(6.283185)
@@ -166,13 +171,14 @@ class BpaEdgeTable:
 
 
 @wp.func
-def compute_ball_center(
-    v1: wp.vec3, v2: wp.vec3, v3: wp.vec3, normal_sum: wp.vec3, radius: wp.float32
-) -> wp.vec3:
+def compute_ball_center(v1: Any, v2: Any, v3: Any, normal_sum: Any, radius: wp.Float):
     # Center of the radius-``radius`` ball touching all three points, on the ``normal_sum`` side.
     # Returns a sentinel of (inf, inf, inf) when the ball does not exist (points too far apart or
-    # nearly collinear), which the caller treats as failure.
-    fail = wp.vec3(wp.inf, wp.inf, wp.inf)
+    # nearly collinear), which the caller treats as failure. Generic over the precision: the
+    # pivot works in float32, and ``refined_ball_center`` re-forms a centre in float64 to decide
+    # a point lying within float32 round-off of the sphere.
+    inf = float_inf(radius)
+    fail = type(v1)(inf, inf, inf)
     c = wp.length_sq(v2 - v1)
     b = wp.length_sq(v1 - v3)
     a = wp.length_sq(v3 - v2)
@@ -180,7 +186,7 @@ def compute_ball_center(
     beta = b * (a + c - b)
     gamma = c * (a + b - c)
     abg = alpha + beta + gamma
-    if abg < 1e-16:
+    if abg < type(radius)(1e-16):
         return fail
     circ_center = (alpha * v1 + beta * v2 + gamma * v3) / abg
     circ_radius2 = a * b * c
@@ -188,15 +194,15 @@ def compute_ball_center(
     sb = wp.sqrt(b)
     sc = wp.sqrt(c)
     denom = (sa + sb + sc) * (sb + sc - sa) * (sc + sa - sb) * (sa + sb - sc)
-    if denom <= 0.0:
+    if denom <= type(radius)(0.0):
         return fail
     circ_radius2 = circ_radius2 / denom
     height = radius * radius - circ_radius2
-    if height < 0.0:
+    if height < type(radius)(0.0):
         return fail
     tr_norm = triangle_normal(v1, v2, v3)
     pt_norm = wp.normalize(normal_sum)
-    if wp.dot(tr_norm, pt_norm) < 0.0:
+    if wp.dot(tr_norm, pt_norm) < type(radius)(0.0):
         tr_norm = -tr_norm
     return circ_center + wp.sqrt(height) * tr_norm
 
@@ -215,41 +221,87 @@ def is_compatible(
 
 
 @wp.func
-def tie_shell_width(center: wp.vec3, radius: wp.float32) -> wp.float32:
-    # Half-width of the shell around the sphere of the ball centred at ``center`` inside which a
-    # point counts as lying on the sphere: ``BALL_TIE_ULPS`` rounding units of the centre's largest
-    # coordinate (plus the radius, for a centre near the origin), since that is what the centre
-    # is computed to.
+def sphere_band_width(center: wp.vec3, radius: wp.float32) -> wp.float32:
+    # Half-width of the band around the sphere of the ball centred at ``center`` inside which
+    # float32 cannot place a point: ``BALL_BAND_ULPS`` rounding units of the centre's largest
+    # coordinate (plus the radius, for a centre near the origin), since that is what the centre is
+    # computed to.
     scale = wp.max(wp.max(wp.abs(center[0]), wp.abs(center[1])), wp.abs(center[2])) + radius
-    return BALL_TIE_ULPS * FLOAT32_EPS * scale
+    return BALL_BAND_ULPS * FLOAT32_EPS * scale
 
 
 @wp.func
-def tie_plane(
-    points: wp.array[wp.vec3], center: wp.vec3, a: wp.int32, b: wp.int32, c: wp.int32
-) -> tuple[wp.int32, wp.vec3, wp.float32]:
-    # The tie rule for the ball through ``a``, ``b`` and ``c`` (centre ``center``): a point ``j`` on
-    # its sphere to within rounding counts as inside it when ``j > m`` and ``j`` lies on the same
-    # side of the plane through ``center`` with normal ``plane`` as ``m`` (side ``side_m``), for the
-    # returned ``(m, plane, side_m)``. Without a rule, four or more co-spherical
-    # points -- the four corners of every cell of an unjittered grid -- leave the answer to
-    # rounding, which differs per triangle, per device and per call site: both triangulations of a
-    # cell then pass, the pivot from one triangle picks the other diagonal's triangle on top of it
-    # (its ball centre is the same, so the rotation angle is zero up to rounding), and the overlap
-    # surfaces as a triangle emitted with both windings.
+def refined_ball_center(
+    points: wp.array[wp.vec3],
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+    center: wp.vec3,
+    radius: wp.float32,
+) -> wp.vec3d:
+    # The float32 ball centre ``center`` of ``a``, ``b`` and ``c``, re-formed in float64 from the
+    # same (exact) float32 coordinates. The side of the triangle is the float32 centre's, read off
+    # the direction from the triangle's centroid to it; the two balls through three points are
+    # mirror images, so that direction cannot be mistaken unless the centre lies in the plane,
+    # where the two coincide. Infinite when the float64 ball does not exist (a triangle whose
+    # circumradius is ``radius`` to within float32 round-off).
+    pa = wp.vec3d(points[a])
+    pb = wp.vec3d(points[b])
+    pc = wp.vec3d(points[c])
+    centroid = (pa + pb + pc) / wp.float64(3.0)
+    return compute_ball_center(pa, pb, pc, wp.vec3d(center) - centroid, wp.float64(radius))
+
+
+@wp.func
+def band_point_inside(
+    points: wp.array[wp.vec3],
+    center64: wp.vec3d,
+    radius: wp.float32,
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+    j: wp.int32,
+) -> wp.bool:
+    # Whether point ``j``, within float32 round-off of the sphere of the ball through ``a``, ``b``
+    # and ``c`` (``sphere_band_width``), lies inside it: decided in float64 against the refined
+    # centre ``center64`` (``refined_ball_center``), and, for a point on the sphere even there, by a
+    # symbolic index rule.
     #
-    # The rule is a symbolic perturbation (simulation of simplicity): the lowest-indexed of the
-    # four points is pushed radially outward by an infinitesimal amount. If that is ``j``, it
+    # Deciding the band by "outside" instead -- or by any tolerance wider than round-off -- made
+    # every triangle of four (near-)co-spherical points pass, so a grid cell, or any quadrilateral
+    # sampled co-circular to within the tolerance, got both triangulations, wound against each
+    # other. A geometric answer is consistent across the triangles of one such set, so exactly one
+    # triangulation passes; the float64 answer is that answer for every input float32 can hold
+    # except an exact tie, which the index rule settles.
+    #
+    # The index rule is a symbolic perturbation (simulation of simplicity): the lowest-indexed of
+    # the four points is pushed radially outward by an infinitesimal amount. If that is ``j``, it
     # leaves the sphere and ``j`` is outside. If it is a vertex ``m`` of the triangle, the ball
     # follows it: the centre moves along the circle of centres equidistant from the other two
-    # vertices ``u`` and ``v``, towards ``m``'s side of the plane through ``center``, ``u`` and
-    # ``v``, so ``j`` falls inside exactly when it is on ``m``'s side of that plane. Every
-    # triangle of a co-spherical set is judged by the same perturbation, so exactly one
-    # triangulation of the set has every ball empty -- for a planar convex cell, the one whose
-    # diagonal avoids the lowest-indexed corner -- whatever order the tests run in. Like the rest
-    # of the empty-ball test it is pure geometry and indices, so the monotonicity that retires a
-    # front edge and caches its candidate (module docstring) is untouched.
+    # vertices ``u`` and ``v``, towards ``m``'s side of the plane through the centre, ``u`` and
+    # ``v``, so ``j`` falls inside exactly when it is on ``m``'s side of that plane. Every triangle
+    # of a co-spherical set is judged by the same perturbation, so exactly one triangulation of the
+    # set has every ball empty -- for a planar convex cell, the one whose diagonal avoids the
+    # lowest-indexed corner -- whatever order the tests run in. Pure geometry and indices, like the
+    # rest of the empty-ball test, so the monotonicity that retires a front edge and caches its
+    # candidate (module docstring) is untouched.
+    pj = wp.vec3d(points[j])
+    if center64[0] == wp.float64(wp.inf):
+        # No float64 ball: the triangle's circumradius is the radius to within float32 round-off.
+        # The point counts as outside, as it would on the sphere of a ball that barely exists.
+        return False
+    radius64 = wp.float64(radius)
+    power = wp.length_sq(pj - center64) - radius64 * radius64
+    scale = wp.max(wp.max(wp.abs(center64[0]), wp.abs(center64[1])), wp.abs(center64[2]))
+    scale = scale + radius64
+    tolerance = BALL_TIE_ULPS64 * FLOAT64_EPS * scale * scale
+    if power < -tolerance:
+        return True
+    if power > tolerance:
+        return False
     m = wp.min(wp.min(a, b), c)
+    if j < m:
+        return False
     u = b
     v = c
     if m == b:
@@ -258,43 +310,10 @@ def tie_plane(
     elif m == c:
         u = a
         v = b
-    plane = wp.cross(points[u] - center, points[v] - center)
-    return m, plane, wp.dot(plane, points[m] - center)
-
-
-@wp.func
-def tie_shell_bounds(
-    center: wp.vec3, radius: wp.float32
-) -> tuple[wp.float32, wp.float32, wp.float32]:
-    # ``(inner_sq, outer_sq, outer)``: the squared inner and outer radii of the tie shell
-    # (``tie_shell_width``) around the ball's sphere, and the outer radius a walk must reach.
-    shell = tie_shell_width(center, radius)
-    inner = wp.max(radius - shell, wp.float32(0.0))
-    outer = radius + shell
-    return inner * inner, outer * outer, outer
-
-
-@wp.func
-def tie_point_inside(
-    points: wp.array[wp.vec3],
-    center: wp.vec3,
-    j: wp.int32,
-    distance_sq: wp.float32,
-    inner_sq: wp.float32,
-    outer_sq: wp.float32,
-    m: wp.int32,
-    plane: wp.vec3,
-    side_m: wp.float32,
-) -> wp.bool:
-    # ``tie_plane``'s rule for a point ``j`` (not a vertex of the ball's triangle) at squared
-    # distance ``distance_sq`` from the centre: inside when it lies in the shell, is not the
-    # lowest-indexed of the four (which, pushed off the sphere, is outside), and is on ``m``'s side.
-    # Nested ``if``s so a point outside the shell pays two comparisons and nothing else.
-    if distance_sq < outer_sq:
-        if distance_sq >= inner_sq:
-            if j > m:
-                return wp.dot(plane, points[j] - center) * side_m > 0.0
-    return False
+    plane = wp.cross(wp.vec3d(points[u]) - center64, wp.vec3d(points[v]) - center64)
+    side_j = wp.dot(plane, pj - center64)
+    side_m = wp.dot(plane, wp.vec3d(points[m]) - center64)
+    return side_j * side_m > wp.float64(0.0)
 
 
 @wp.func
@@ -307,23 +326,23 @@ def ball_holds_point(
     b: wp.int32,
     c: wp.int32,
 ) -> wp.bool:
-    # Whether a point other than ``a``, ``b`` and ``c`` lies inside the ball by distance alone,
-    # nearer than ``BALL_EPS`` inside its sphere: ``ball_is_empty`` less the tie rule, for
-    # ``seed_triangles``, which applies the rule (``ball_tie_blocks``) outside its pair loop. The
-    # two together are ``ball_is_empty``'s predicate exactly.
-    threshold = radius - BALL_EPS * radius
-    threshold_sq = threshold * threshold
+    # Whether a point other than ``a``, ``b`` and ``c`` lies inside the ball beyond float32
+    # round-off: ``ball_is_empty`` less the band, for ``seed_triangles``, which decides the band
+    # (``ball_band_blocks``) outside its pair loop. The two together are ``ball_is_empty``'s
+    # predicate exactly.
+    inner = radius - sphere_band_width(center, radius)
+    inner_sq = inner * inner
     query = wp.hash_grid_query(grid_id, center, radius)
     j = wp.int32(-1)
     while wp.hash_grid_query_next(query, j):
         if j != a and j != b and j != c:
-            if wp.length_sq(center - points[j]) < threshold_sq:
+            if wp.length_sq(center - points[j]) < inner_sq:
                 return True
     return False
 
 
 @wp.func
-def ball_tie_blocks(
+def ball_band_blocks(
     grid_id: wp.uint64,
     points: wp.array[wp.vec3],
     center: wp.vec3,
@@ -332,19 +351,28 @@ def ball_tie_blocks(
     b: wp.int32,
     c: wp.int32,
 ) -> wp.bool:
-    # Whether a point on the ball's sphere counts as inside it by the tie rule
-    # (``tie_point_inside``): the other half of ``ball_is_empty``'s predicate, as a walk of its own.
-    inner_sq, outer_sq, outer = tie_shell_bounds(center, radius)
-    m, plane, side_m = tie_plane(points, center, a, b, c)
+    # Whether a point in the band around the ball's sphere lies inside it (``band_point_inside``):
+    # the other half of ``ball_is_empty``'s predicate, as a walk of its own. The float64 centre is
+    # formed only once a band point turns up.
+    band = sphere_band_width(center, radius)
+    inner = radius - band
+    inner_sq = inner * inner
+    outer = radius + band
+    outer_sq = outer * outer
+    refined = wp.bool(False)
+    center64 = wp.vec3d(0.0)
     query = wp.hash_grid_query(grid_id, center, outer)
     j = wp.int32(-1)
     while wp.hash_grid_query_next(query, j):
         if j != a and j != b and j != c:
             distance_sq = wp.length_sq(center - points[j])
-            if tie_point_inside(
-                points, center, j, distance_sq, inner_sq, outer_sq, m, plane, side_m
-            ):
-                return True
+            if distance_sq >= inner_sq:
+                if distance_sq < outer_sq:
+                    if not refined:
+                        center64 = refined_ball_center(points, a, b, c, center, radius)
+                        refined = wp.bool(True)
+                    if band_point_inside(points, center64, radius, a, b, c, j):
+                        return True
     return False
 
 
@@ -369,43 +397,47 @@ def ball_is_empty(
     # **``wp.bvh_query_sphere`` (Warp 1.17) was built here and reverted: it is a large loss.** It
     # looks like the ideal fit -- the point BVH's bounds are degenerate, so an exact sphere-AABB
     # test at the shrunk radius *is* this predicate, with no narrow phase and no second radius,
-    # where the grid must query at ``radius`` and filter at ``threshold`` because a cell walk
-    # cannot express either radius exactly. It was also *correct*, returning an equal face buffer.
-    # It is simply slower, because this is a *small-radius, well-centred* query, which is the hash
-    # grid's best case and not the BVH's: the grid was built with cell width ``radius``, so a probe
-    # reaches its cells by address arithmetic and stops, while the BVH pays a root-to-leaf descent
-    # per call and there are millions of calls.
+    # where the grid must query at ``radius`` and filter at the band's inner edge because a cell
+    # walk cannot express either radius exactly. It was also *correct*, returning an equal face
+    # buffer. It is simply slower, because this is a *small-radius, well-centred* query, which is
+    # the hash grid's best case and not the BVH's: the grid was built with cell width ``radius``, so
+    # a probe reaches its cells by address arithmetic and stops, while the BVH pays a root-to-leaf
+    # descent per call and there are millions of calls.
     #
     # **Do not read the win ``pivot_front_edges`` gets from ``wp.tile_bvh_query_aabb`` as
     # transferring to here**: that one is a *block-cooperative* walk over a ``2 * radius`` reach
     # with enough candidates to split across 32 lanes, and every part of that description is
     # load-bearing.
     #
-    # A point in the thin shell straddling the sphere is a tie, which ``tie_point_inside`` breaks by
-    # index. The shell is only ever *added* to the inside: a point nearer than ``threshold`` is
-    # inside whatever the shell's width, so off-tie clouds, which put no point in the shell, see the
-    # test they always did. The walk reaches the shell's outer edge, so a tie just past ``radius``
-    # is not missed by the cell walk, and the per-ball tie state is formed once, before it.
+    # A point nearer the sphere than float32 can resolve (``sphere_band_width``) is decided by
+    # ``band_point_inside``, in float64 and, at an exact tie, by index; every other point by its
+    # float32 distance, with no tolerance beyond round-off (Open3D's test is ``radius - 1e-16`` in
+    # double). The walk reaches the band's outer edge, so a point just past ``radius`` is not
+    # missed by the cell walk.
     #
-    # One walk serves both halves here, for ``pivot_front_edges``, where a second walk per passing
-    # ball would cost more than this one (every cached candidate's re-validation passes).
-    # ``seed_triangles`` splits them instead (``ball_holds_point``, ``ball_tie_blocks``): there this
-    # walk's tie state inside the pair loop slowed the kernel by about half.
-    threshold = radius - BALL_EPS * radius
-    threshold_sq = threshold * threshold
-    inner_sq, outer_sq, outer = tie_shell_bounds(center, radius)
-    m, plane, side_m = tie_plane(points, center, a, b, c)
+    # The float64 decision runs in a second walk (``ball_band_blocks``), and only for a ball this
+    # one found a band point in, which is rare off exact ties: inline in this walk it cost
+    # ``pivot_front_edges`` about an eighth of its time, and a second walk for every ball that
+    # passes (every cached candidate's re-validation does) a fifth. ``seed_triangles`` goes further
+    # and tests only the inside in its pair loop (``ball_holds_point``): there even this walk's
+    # band flag slowed the kernel by about half.
+    band = sphere_band_width(center, radius)
+    inner = radius - band
+    inner_sq = inner * inner
+    outer = radius + band
+    outer_sq = outer * outer
+    in_band = wp.bool(False)
     query = wp.hash_grid_query(grid_id, center, outer)
     j = wp.int32(-1)
     while wp.hash_grid_query_next(query, j):
         if j != a and j != b and j != c:
             distance_sq = wp.length_sq(center - points[j])
-            if distance_sq < threshold_sq:
+            if distance_sq < inner_sq:
                 return False
-            if tie_point_inside(
-                points, center, j, distance_sq, inner_sq, outer_sq, m, plane, side_m
-            ):
-                return False
+            if distance_sq < outer_sq:
+                in_band = wp.bool(True)
+    if in_band:
+        return not ball_band_blocks(grid_id, points, center, radius, a, b, c)
     return True
 
 
@@ -582,7 +614,7 @@ def seed_triangles(
     # ``ball_is_empty`` for why one module must not spell one predicate two ways.
     min_cluster_sq = clustering * radius * clustering * radius
     # The pair loop tests occupancy by distance alone (``ball_holds_point``) and the tie rule
-    # (``ball_tie_blocks``) runs outside it, once per pair that passes, resuming the loop after a
+    # (``ball_band_blocks``) runs outside it, once per pair that passes, resuming the loop after a
     # pair a tie rejects: the same predicate as ``ball_is_empty``, but with the tie walk out of the
     # loop nest, which keeps it as fast as the plain test was. ``resume`` is the flat index
     # ``i0 * MAX_SEED_NEIGHBORS + i1`` of the first pair still to try.
@@ -621,7 +653,7 @@ def seed_triangles(
         if found_a >= 0:
             a = found_a
             b = found_b
-            if ball_tie_blocks(grid_id, points, found_center, radius, p, a, b):
+            if ball_band_blocks(grid_id, points, found_center, radius, p, a, b):
                 resume = found_pair + 1
             else:
                 # Wound so its normal agrees with the point normals (Open3D's ``CreateTriangle``

@@ -7,6 +7,7 @@ from ordito.kernels.algorithms.connected_components import (
     write_corner_component_rank,
 )
 from ordito.kernels.array import (
+    binary_search_index,
     binary_search_sorted_contains,
     declare_map_signatures,
     map_probe,
@@ -17,6 +18,7 @@ from ordito.kernels.array import (
     update_argmin_pair,
 )
 from ordito.kernels.bounds import packed_box_diagonal
+from ordito.kernels.grouping import hash_slot, next_slot
 from ordito.kernels.halfedge import (
     HALFEDGE_DEFECT_NONE,
     halfedge_destination,
@@ -990,6 +992,347 @@ def sever_barrier_pairs(
     out_pairs[k, 0] = f0
     out_pairs[k, 1] = wp.where(cut, f0, adjacency[k, 1])
     out_barrier[k] = cut
+
+
+# ``remove_tunnels``' complete search: the shortest non-separating loop through each root.
+#
+# A loop is non-separating exactly when its mod-2 homology class is non-zero, and that class is
+# read off a **cocycle**: an integer per edge whose sum around every face is even, so it sums to
+# the same parity around any two homologous loops. For a simple loop ``b`` of a consistently wound
+# surface, marking every edge that leaves ``b`` to its left (an edge whose both ends leave ``b`` to
+# the left counted twice) is one: a face meets ``b``'s left side in two such edges or none. Its sum
+# around a loop ``g`` is the parity of ``g`` crossing ``b``, and the crossing parities with a basis
+# of loops determine ``g``'s class, since the intersection form of a closed orientable surface is
+# non-degenerate. So every basis loop ``i`` adds its own 64-bit word ``tunnel_loop_word(i)`` to the
+# edges it marks, xor being addition mod 2, and a loop's class is non-zero exactly when the xor of
+# its edges' words is (but for a 2**-64 chance per class that a non-empty set of words xors to
+# zero, which can only hide a loop, never present a separating one as non-separating).
+
+# The ``splitmix64`` finalizer: distinct well-mixed words for consecutive loop indices.
+_LOOP_WORD_INCREMENT = wp.uint64(0x9E3779B97F4A7C15)
+_LOOP_WORD_MIX_1 = wp.uint64(0xBF58476D1CE4E5B9)
+_LOOP_WORD_MIX_2 = wp.uint64(0x94D049BB133111EB)
+
+
+@wp.func
+def tunnel_loop_word(i: wp.int32) -> wp.uint64:
+    """Return basis loop ``i``'s cocycle word: ``splitmix64`` of ``i + 1``."""
+    z = wp.uint64(i + 1) * _LOOP_WORD_INCREMENT
+    z = (z ^ (z >> wp.uint64(30))) * _LOOP_WORD_MIX_1
+    z = (z ^ (z >> wp.uint64(27))) * _LOOP_WORD_MIX_2
+    return z ^ (z >> wp.uint64(31))
+
+
+@wp.func
+def ring_slot_toward(
+    faces: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    start: wp.int32,
+    end: wp.int32,
+    target: wp.int32,
+) -> wp.int32:
+    """Ring slot in ``[start, end)`` of the halfedge ending at ``target``, or ``-1``."""
+    for slot in range(start, end):
+        if halfedge_destination(faces, ring_halfedges[slot]) == target:
+            return slot
+    return wp.int32(-1)
+
+
+@wp.kernel
+def tunnel_loop_cocycle(
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    loops: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    out_cocycle: wp.array[wp.uint64],
+) -> None:
+    # One thread per loop position ``u``, with loop neighbours ``p`` before and ``n`` after: the
+    # halfedges counter-clockwise strictly between ``u -> n`` and ``u -> p`` leave the loop to its
+    # left, and each takes the loop's word on both of its halfedges, so a traversal reads the
+    # edge's whole class from whichever end it starts. ``out_cocycle`` is zeroed by the caller;
+    # loops are simple and at least three long, as the homology generators are.
+    j = wp.int32(wp.tid())
+    i = binary_search_index(loop_offsets, j) - 1
+    start = loop_offsets[i]
+    size = loop_offsets[i + 1] - start
+    position = j - start
+    u = loops[j]
+    after = loops[start + (position + 1) % size]
+    before = loops[start + (position + size - 1) % size]
+    ring_start = ring_offsets[u]
+    degree = ring_offsets[u + 1] - ring_start
+    toward_after = ring_slot_toward(faces, ring_halfedges, ring_start, ring_start + degree, after)
+    toward_before = ring_slot_toward(faces, ring_halfedges, ring_start, ring_start + degree, before)
+    if toward_after < 0 or toward_before < 0:
+        return
+    word = tunnel_loop_word(i)
+    slot = ring_start + (toward_after - ring_start + 1) % degree
+    while slot != toward_before:
+        h = ring_halfedges[slot]
+        wp.atomic_xor(out_cocycle, h, word)
+        wp.atomic_xor(out_cocycle, twins[h], word)
+        slot = ring_start + (slot - ring_start + 1) % degree
+
+
+@wp.func
+def tunnel_slot_find(
+    table: wp.array[wp.int32], slot_vertex: wp.array[wp.int32], vertex: wp.int32
+) -> wp.int32:
+    """Return the root's slot holding ``vertex``, or ``-1``; the table maps vertices to slots."""
+    mask = table.shape[0] - 1
+    h = hash_slot(vertex, mask)
+    stored = table[h]
+    while stored >= 0:
+        if slot_vertex[stored] == vertex:
+            return stored
+        h = next_slot(h, mask)
+        stored = table[h]
+    return wp.int32(-1)
+
+
+@wp.func
+def tunnel_slot_insert(table: wp.array[wp.int32], vertex: wp.int32, slot: wp.int32) -> None:
+    """Record ``vertex -> slot``; the vertex must be absent and the table less than full."""
+    mask = table.shape[0] - 1
+    h = hash_slot(vertex, mask)
+    while table[h] >= 0:
+        h = next_slot(h, mask)
+    table[h] = slot
+
+
+@wp.func
+def tunnel_heap_before(dist: wp.array[wp.float32], a: wp.int32, b: wp.int32) -> wp.bool:
+    """Heap order: nearer first, the earlier slot on a tie, so the search is deterministic."""
+    return dist[a] < dist[b] or (dist[a] == dist[b] and a < b)
+
+
+@wp.func
+def tunnel_heap_sift_up(
+    heap: wp.array[wp.int32], position: wp.array[wp.int32], dist: wp.array[wp.float32], k: wp.int32
+) -> None:
+    """Move heap entry ``k`` toward the top until its parent comes first."""
+    slot = heap[k]
+    while k > 0:
+        parent = (k - 1) // 2
+        above = heap[parent]
+        if not tunnel_heap_before(dist, slot, above):
+            break
+        heap[k] = above
+        position[above] = k
+        k = parent
+    heap[k] = slot
+    position[slot] = k
+
+
+@wp.func
+def tunnel_heap_pop(
+    heap: wp.array[wp.int32],
+    position: wp.array[wp.int32],
+    dist: wp.array[wp.float32],
+    size: wp.int32,
+) -> wp.int32:
+    """Remove and return the top slot of a heap of ``size >= 1``, marking it settled (``-1``)."""
+    top = heap[0]
+    position[top] = wp.int32(-1)
+    last = size - 1
+    if last == 0:
+        return top
+    slot = heap[last]
+    k = wp.int32(0)
+    while True:
+        child = 2 * k + 1
+        if child >= last:
+            break
+        if child + 1 < last and tunnel_heap_before(dist, heap[child + 1], heap[child]):
+            child += 1
+        if not tunnel_heap_before(dist, heap[child], slot):
+            break
+        heap[k] = heap[child]
+        position[heap[k]] = k
+        k = child
+    heap[k] = slot
+    position[slot] = k
+    return top
+
+
+@wp.func
+def tunnel_tree_depth(parent: wp.array[wp.int32], slot: wp.int32) -> wp.int32:
+    """Hops from ``slot`` up to the root of its search tree."""
+    depth = wp.int32(0)
+    while parent[slot] >= 0:
+        slot = parent[slot]
+        depth += 1
+    return depth
+
+
+@wp.func
+def tunnel_write_loop(
+    parent: wp.array[wp.int32],
+    slot_vertex: wp.array[wp.int32],
+    s: wp.int32,
+    t: wp.int32,
+    out_loop: wp.array[wp.int32],
+) -> wp.int32:
+    """
+    Write the simple cycle that edge ``(s, t)`` closes in the search tree; return its length.
+
+    The loop through the root is the two tree paths and the edge; the stretch both paths share
+    from the root to their lowest common ancestor is walked twice and cancels mod 2, so the cycle
+    written is the rest -- the ancestor, down to ``s``, across to ``t`` and back up -- in the same
+    class and no longer.
+    """
+    depth_s = tunnel_tree_depth(parent, s)
+    depth_t = tunnel_tree_depth(parent, t)
+    a = s
+    b = t
+    for _ in range(depth_t, depth_s):
+        a = parent[a]
+    for _ in range(depth_s, depth_t):
+        b = parent[b]
+    while a != b:
+        a = parent[a]
+        b = parent[b]
+    ancestor_depth = tunnel_tree_depth(parent, a)
+    side_s = depth_s - ancestor_depth
+    side_t = depth_t - ancestor_depth
+    out_loop[0] = slot_vertex[a]
+    walk = s
+    for k in range(side_s, 0, -1):
+        out_loop[k] = slot_vertex[walk]
+        walk = parent[walk]
+    walk = t
+    for k in range(side_s + 1, side_s + side_t + 1):
+        out_loop[k] = slot_vertex[walk]
+        walk = parent[walk]
+    return side_s + side_t + 1
+
+
+@wp.kernel
+def shortest_nontrivial_loop_per_root(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    cocycle: wp.array[wp.uint64],
+    roots: wp.array[wp.int32],
+    radius: wp.float32,
+    bound: wp.float32,
+    table: wp.array2d[wp.int32],
+    slot_vertex: wp.array2d[wp.int32],
+    slot_dist: wp.array2d[wp.float32],
+    slot_parent: wp.array2d[wp.int32],
+    slot_class: wp.array2d[wp.uint64],
+    heap: wp.array2d[wp.int32],
+    heap_position: wp.array2d[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # One thread per root, over its own scratch rows (``table`` pre-filled with ``-1``): Dijkstra
+    # over edge lengths, truncated at ``radius``, looking for the shortest loop "tree path, edge,
+    # tree path" whose class is non-zero (``tunnel_loop_cocycle``; a tree edge closes nothing and
+    # reads zero by construction). Erickson and Whittlesey's argument, which needs no unique
+    # shortest paths: walking a shortest non-separating closed walk through the root, the first
+    # prefix whose closure by a tree path is non-separating ends on an edge whose tree loop is
+    # non-separating and exactly as long. So the minimum over roots on a loop is that loop's
+    # length, and a loop of length at most ``bound`` stays within ``bound / 2`` of its root, which
+    # is ``radius``.
+    #
+    # An edge is tested when the later of its two ends settles, both distances then being final.
+    # A loop through an end at distance ``d`` is at least ``2 d`` long, so once a loop of length
+    # ``best`` is found nothing farther than ``best / 2`` is inserted, and the search stops when
+    # the settled distance reaches it: a root near a short loop explores only that far.
+    #
+    # ``out_count`` is the written cycle's vertex count, ``0`` when no loop is non-separating within
+    # ``bound``, and ``-1`` when the ball outgrew the rows, which the caller re-runs wider. The
+    # cycle is written over the root's ``heap`` row, which the search no longer reads.
+    r = wp.int32(wp.tid())
+    row_table = table[r]
+    row_vertex = slot_vertex[r]
+    row_dist = slot_dist[r]
+    row_parent = slot_parent[r]
+    row_class = slot_class[r]
+    row_heap = heap[r]
+    row_position = heap_position[r]
+    capacity = row_vertex.shape[0]
+
+    root = roots[r]
+    row_vertex[0] = root
+    row_dist[0] = wp.float32(0.0)
+    row_parent[0] = wp.int32(-1)
+    row_class[0] = wp.uint64(0)
+    tunnel_slot_insert(row_table, root, wp.int32(0))
+    row_heap[0] = wp.int32(0)
+    row_position[0] = wp.int32(0)
+    heap_size = wp.int32(1)
+    count = wp.int32(1)
+    overflow = wp.bool(False)
+    best = wp.float32(wp.inf)
+    best_s = wp.int32(-1)
+    best_t = wp.int32(-1)
+    reach_limit = radius
+    while heap_size > 0 and not overflow:
+        s = tunnel_heap_pop(row_heap, row_position, row_dist, heap_size)
+        heap_size -= 1
+        settled = row_dist[s]
+        if wp.float32(2.0) * settled >= best:
+            break
+        u = row_vertex[s]
+        position_u = vertices[u]
+        for k in range(ring_offsets[u], ring_offsets[u + 1]):
+            h = ring_halfedges[k]
+            w = halfedge_destination(faces, h)
+            edge = wp.length(vertices[w] - position_u)
+            t = tunnel_slot_find(row_table, row_vertex, w)
+            if t >= 0 and row_position[t] < 0:
+                if (row_class[s] ^ row_class[t] ^ cocycle[h]) != wp.uint64(0):
+                    length = settled + edge + row_dist[t]
+                    if length <= bound and length < best:
+                        best = length
+                        best_s = s
+                        best_t = t
+                        reach_limit = wp.min(radius, wp.float32(0.5) * best)
+                continue
+            reach = settled + edge
+            if reach > reach_limit:
+                continue
+            if t < 0:
+                if count == capacity:
+                    overflow = wp.bool(True)
+                    break
+                t = count
+                count += 1
+                row_vertex[t] = w
+                tunnel_slot_insert(row_table, w, t)
+                row_dist[t] = reach
+                row_parent[t] = s
+                row_class[t] = row_class[s] ^ cocycle[h]
+                row_heap[heap_size] = t
+                tunnel_heap_sift_up(row_heap, row_position, row_dist, heap_size)
+                heap_size += 1
+            elif reach < row_dist[t]:
+                row_dist[t] = reach
+                row_parent[t] = s
+                row_class[t] = row_class[s] ^ cocycle[h]
+                tunnel_heap_sift_up(row_heap, row_position, row_dist, row_position[t])
+    if overflow:
+        out_count[r] = wp.int32(-1)
+        return
+    if best_s < 0:
+        out_count[r] = wp.int32(0)
+        return
+    out_count[r] = tunnel_write_loop(row_parent, row_vertex, best_s, best_t, row_heap)
+
+
+@wp.kernel
+def pack_root_loops(
+    rows: wp.array2d[wp.int32], offsets: wp.array[wp.int32], out_loops: wp.array[wp.int32]
+) -> None:
+    # Root ``r``'s cycle, the head of its row, into its slice of the packed buffer.
+    r = wp.int32(wp.tid())
+    start = offsets[r]
+    for k in range(offsets[r + 1] - start):
+        out_loops[start + k] = rows[r, k]
 
 
 @wp.kernel

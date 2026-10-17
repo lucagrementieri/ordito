@@ -58,6 +58,7 @@ import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
+from ordito.cholesky import held_nbytes
 from ordito.constants import TILE_1D
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
@@ -2179,8 +2180,12 @@ class HeatSolver:
 
     @property
     def nbytes(self) -> int:
-        """Device memory this solver's kept factorizations hold, in bytes."""
-        return sum(kept.factorization.nbytes for kept in self._systems.values())
+        """Device memory this solver's kept factorizations hold, in bytes (shared analyses once)."""
+        return held_nbytes(
+            kept.factorization.factorization
+            for kept in self._systems.values()
+            if kept.factorization.factorization is not None
+        )
 
     def release(self) -> None:
         """

@@ -498,6 +498,106 @@ def test_symbolic_structure_is_the_factors_fill(device: str, case: str) -> None:
         assert np.array_equal(got, expected)
 
 
+def _held_bytes(*objects: object) -> int:
+    """
+    Return the summed capacity of every distinct allocation reachable from ``objects``.
+
+    A view counts its owner's allocation, once however many views share it. The operator a
+    factorization was handed (``matrix``, ``_matrix``) is the caller's and is skipped; the copy a
+    repeated ``refactor`` keeps is reached through its own attribute.
+    """
+    seen: set[int] = set()
+    owners: dict[int, int] = {}
+
+    def walk(item: object) -> None:
+        if id(item) in seen:
+            return
+        seen.add(id(item))
+        if isinstance(item, wp.array):
+            owner: Any = item
+            while isinstance(getattr(owner, "_ref", None), wp.array):
+                owner = owner._ref
+            owners[id(owner)] = int(owner.capacity)
+        elif isinstance(item, (list, tuple)):
+            for value in cast("list[object] | tuple[object, ...]", item):
+                walk(value)
+        elif isinstance(item, dict):
+            for value in cast("dict[object, object]", item).values():
+                walk(value)
+        elif type(item).__module__.startswith(("ordito", "warp._src.codegen")):
+            # Ordito's objects, and Warp structs: the kept operator copy is a ``BsrMatrix`` one.
+            for name, value in vars(item).items():
+                if name not in ("matrix", "_matrix"):
+                    walk(value)
+
+    for item in objects:
+        walk(item)
+    return sum(owners.values())
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded", "empty", "one_leaf"])
+def test_nbytes_is_the_memory_the_factorization_holds(
+    request: pytest.FixtureRequest, device: str, monkeypatch: pytest.MonkeyPatch, mesh_name: str
+) -> None:
+    """
+    Not a library comparison: ``nbytes`` against the allocations the factorization holds.
+
+    No reference reports a factorization's memory. ``nbytes`` must equal, to the byte, the summed
+    capacity of every distinct device allocation reachable from the factorization: once built,
+    after a solve at one right-hand-side count and at another, after one replaced by another
+    tolerance, and after a repeated ``refactor`` keeps its operator copy and fronts arena. The
+    memory budget is the first factorization's peak -- what it holds plus the larger of the
+    transient fronts arena and a one-column solve's scratch, each read off the measured
+    allocations -- so a budget of exactly that admits it and one byte less refuses it. A
+    second factorization sharing the analysis holds only its own factor:
+    ``held_nbytes`` counts the analysis once. An estimate pricing ``float64`` entries at 4 bytes,
+    or leaving out the solve scratch or the refactor storage, fails the first equality.
+    """
+    if mesh_name == "empty":
+        system = scipy_to_bsr(sp.csr_matrix((0, 0)), device)
+        coordinates = None
+    elif mesh_name == "one_leaf":
+        # Twelve rows: one leaf, one supernode, no extend-add.
+        _, mesh_wp = request.getfixturevalue("icosahedron")
+        system, coordinates = _heat_system(mesh_wp), mesh_wp.points
+    else:
+        _, mesh_wp = request.getfixturevalue(mesh_name)
+        system, coordinates = _heat_system(mesh_wp), mesh_wp.points
+    n = int(system.nrow)
+    factor = od.cholesky.sparse_cholesky(system, coordinates)
+    built = factor.nbytes
+    assert built == _held_bytes(factor) > 0
+    if n == 0:
+        return
+    rhs = wp.ones(n, dtype=wp.float64, device=device)
+    factor.solve(rhs, wp.zeros_like(rhs))
+    solve_scratch = factor.nbytes - built
+    assert factor.nbytes == _held_bytes(factor)
+    assert solve_scratch > 0
+    columns = wp.ones(3 * n, dtype=wp.float64, device=device).reshape((3, n))
+    factor.solve(columns, wp.zeros_like(columns), componentwise=True)
+    assert factor.nbytes == _held_bytes(factor)
+    factor.solve(rhs, wp.zeros_like(rhs), tol=1e-10)  # replaces the one-column configuration
+    assert factor.nbytes == _held_bytes(factor)
+    before = factor.nbytes
+    factor.refactor(system)
+    fronts = factor._fronts  # pyright: ignore[reportPrivateUsage]
+    assert fronts is not None
+    assert factor.nbytes == _held_bytes(factor) > before + fronts.capacity
+    # The budget: the peak of a first factorization, to the byte.
+    peak = built + max(fronts.capacity, solve_scratch)
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", peak - 1)
+    with pytest.raises(ValueError, match=f"needs {peak} bytes"):
+        od.cholesky.sparse_cholesky(system, coordinates)
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", peak)
+    fresh = od.cholesky.sparse_cholesky(system, coordinates)
+    assert fresh.nbytes == built
+    # A shared analysis, counted once.
+    sibling = fresh.with_operator(system)
+    together = od.cholesky.held_nbytes([fresh, sibling, fresh])
+    assert together == _held_bytes(fresh, sibling) < fresh.nbytes + sibling.nbytes
+
+
 def test_landmark_coordinates_match_the_host_search(device: str) -> None:
     """
     Ordito against ordito: the device's breadth-first searches give the host's coordinates.

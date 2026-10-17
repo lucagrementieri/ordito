@@ -33,6 +33,7 @@ order, so solves are reproducible on both devices.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -53,8 +54,10 @@ CHOLESKY_LEAF_ROWS = 32
 # The top of each dissection tree is merged into one supernode while it holds at most this many
 # rows: fewer levels for every solve, one dense front for the factorization.
 CHOLESKY_TOP_ROWS = 512
-# Device memory a factorization may take, in bytes; ``sparse_cholesky`` refuses a larger one.
-CHOLESKY_MEMORY_BUDGET = 2 << 30
+# Device memory a factorization may take at its peak, in bytes -- what it holds once built plus the
+# transient arena its first numeric factorization works in (or a first solve's scratch, when that
+# is larger); ``sparse_cholesky`` refuses a larger one.
+CHOLESKY_MEMORY_BUDGET = 4 << 30
 # Refinement rounds a solve runs at most.
 CHOLESKY_REFINE_ROUNDS = 12
 
@@ -108,7 +111,13 @@ class SparseCholesky:
     device : wp.context.Device
         Device the factor lives on.
     nbytes : int
-        Device memory the factorization holds, in bytes.
+        Device memory the factorization holds, in bytes: its analysis (shared with every
+        factorization [`with_operator`][ordito.cholesky.SparseCholesky.with_operator] builds from
+        it; [`held_nbytes`][ordito.cholesky.held_nbytes] counts it once), its factor, the scratch
+        of every right-hand-side count solved so far, and the storage a repeated
+        [`refactor`][ordito.cholesky.SparseCholesky.refactor] keeps. Building also takes a
+        transient arena, not held, which
+        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] counts.
     negated : bool
         Whether ``-matrix`` was factored (a negative semi-definite operator).
     records_at_once : bool
@@ -134,7 +143,7 @@ class SparseCholesky:
         self.records_at_once = False
         self.n = plan.n
         self.device = plan.device
-        self.nbytes = plan.nbytes
+        self.nbytes = plan.nbytes + plan.numeric_nbytes()
         self._plan = plan
         self._numeric = plan.numeric()
         self._solves: dict[int, _Solve] = {}
@@ -261,8 +270,9 @@ class SparseCholesky:
             stable.values = _launch.clone(matrix.values)
             stable.row_counts = None
             stable.notify_nnz_changed(nnz=int(matrix.nnz))
-            self.nbytes += 4 * (stable.offsets.size + stable.columns.size)
-            self.nbytes += 8 * stable.values.size
+            self.nbytes += sum(
+                held.capacity for held in (stable.offsets, stable.columns, stable.values)
+            )
             self._stable = stable
         elif self._plan.n_stored:
             # The pattern's entries only: a caller's storage may be larger than the pattern.
@@ -397,6 +407,8 @@ class SparseCholesky:
         key = (n_columns, float(tol), bool(componentwise))
         solve = self._solves.get(n_columns)
         if solve is None or solve.key != key:
+            if solve is not None:
+                self.nbytes -= self._plan.solve_nbytes(n_columns)
             solve = _Solve(
                 self._plan,
                 self._numeric,
@@ -407,6 +419,7 @@ class SparseCholesky:
                 -1.0 if self.negated else 1.0,
             )
             self._solves[n_columns] = solve
+            self.nbytes += self._plan.solve_nbytes(n_columns)
         solve.run(rhs.flatten(), solution.flatten(), self.records_at_once)
 
 
@@ -450,8 +463,8 @@ def sparse_cholesky(
     ------
     ValueError
         If ``matrix`` is not square scalar ``float64``, its stored pattern is not symmetric,
-        ``coordinates`` does not have ``n`` rows, or the factorization would exceed
-        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
+        ``coordinates`` does not have ``n`` rows, or the factorization's peak device memory would
+        exceed [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
     NotPositiveDefiniteError
         If the operator is not positive definite (with ``negated=None``: neither sign is).
     RuntimeError
@@ -534,6 +547,47 @@ def _leading_diagonal_negative(matrix: odt.BsrMatrix[wp.float64]) -> bool:
     )  # fmt: skip
     # Read back: which sign to factor first is the host's choice of launch arguments.
     return float(read_scalar(total, 0)) < 0.0
+
+
+def held_nbytes(factorizations: Iterable[SparseCholesky]) -> int:
+    """
+    Device memory several factorizations hold together, in bytes: a shared analysis counted once.
+
+    Each factorization's [`nbytes`][ordito.cholesky.SparseCholesky] counts its analysis, which
+    every factorization built from it by
+    [`with_operator`][ordito.cholesky.SparseCholesky.with_operator] holds too; summing ``nbytes``
+    counts that analysis once a factorization.
+
+    Parameters
+    ----------
+    factorizations
+        The factorizations, each counted once however often it appears.
+
+    Returns
+    -------
+    int
+        The bytes of every distinct allocation the factorizations hold.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    short = od.cholesky.sparse_cholesky(od.heat.heat_operators(vertices, faces, t=0.01)[0])
+    long = short.with_operator(od.heat.heat_operators(vertices, faces, t=0.1)[0])
+    together = od.cholesky.held_nbytes([short, long])
+    print(short.nbytes < together < short.nbytes + long.nbytes)  # True
+    ```
+    """
+    analyses: dict[int, int] = {}
+    own = 0
+    for factor in {id(factor): factor for factor in factorizations}.values():
+        # The analysis is this module's own state of a factorization.
+        plan = factor._plan  # pyright: ignore[reportPrivateUsage]
+        analyses[id(plan)] = plan.nbytes
+        own += factor.nbytes - plan.nbytes
+    return own + sum(analyses.values())
 
 
 def _plan_cholesky(
@@ -726,12 +780,32 @@ class _Plan:
         self.n_backward_parts = max(b_parts, 1)
         self.n_stored = s.n_stored
         n_entries = s.n_entries
-        # The budget also bounds every count the maps index in ``int32``: each costs at least 8
-        # bytes an item in the estimate, so one past ``2^31`` is past any budget below 16 GiB.
-        self._estimate(front_entries, block_entries, f_tasks, b_tasks, n_entries)
-        if self.nbytes > CHOLESKY_MEMORY_BUDGET:
+        n_f, n_r, n_b, n_c = (int(value) for value in last_terms[5:9])
+        widest = max(int(levels[h][1]) for h in range(n_levels))
+        n_components = s.n_components
+        self.chunk_bound = n_components + n // int(kernel_cholesky.NULL_SPACE_CHUNK)
+        self.n_components = n_components
+        self.nbytes = _analysis_nbytes(
+            n=n,
+            n_sn=n_sn,
+            row_capacity=s.rows.size,
+            n_rows=n_rows,
+            n_entries=n_entries,
+            # The task totals from the header, which no ``int32`` level sum wraps; the front rows
+            # are at most ``front_entries``, refused below long before they could wrap.
+            tasks=(f_tasks, max(n_r, 0), b_tasks, n_c),
+            widest=widest,
+            n_components=n_components,
+            extends=n_groups > 0,
+        )
+        # The budget is the first factorization's peak: what it holds plus the larger of the
+        # transient fronts arena and a one-column solve's scratch. It also bounds every count the
+        # maps index in ``int32``: each costs at least 8 bytes an item there, so one past ``2^31``
+        # is past any budget below 16 GiB.
+        needed = self.nbytes + self.numeric_nbytes() + max(8 * front_entries, self.solve_nbytes(1))
+        if needed > CHOLESKY_MEMORY_BUDGET:
             raise ValueError(
-                f"sparse_cholesky: the factorization needs {self.nbytes} bytes, above "
+                f"sparse_cholesky: the factorization needs {needed} bytes, above "
                 f"CHOLESKY_MEMORY_BUDGET ({CHOLESKY_MEMORY_BUDGET})"
             )
         self.front_offset = _launch.view(front_offset, 0, n_sn)
@@ -772,7 +846,6 @@ class _Plan:
         f_offsets, r_offsets, b_offsets, c_offsets = (
             odt.as_dense(level_offsets[k]) for k in range(4)
         )
-        n_f, n_r, n_b, n_c = (int(value) for value in last_terms[5:9])
         f_block, f_stride, f_count_d, f_source, f_slot = (
             empty(n_f, wp.int64),
             *(empty(n_f, wp.int32) for _ in range(4)),
@@ -860,55 +933,41 @@ class _Plan:
             (c_slot, c_stride, c_first, c_count, c_target),
         )
         # ``factor_panel_tiled``'s panel inverses: one ``PANEL``-square tile a front of a level.
-        widest = max(int(levels[h][1]) for h in range(n_levels))
         self.panel_inverse = _launch.empty(widest * panel * panel, dtype=wp.float64, device=device)
         self.panel_inverse_tiles = self.panel_inverse.reshape((widest * panel, panel))
         self.panel_scratch = odt.empty_2d((widest * panel, panel), wp.float64, device=device)
         # Each component's label, start and last-eliminated row.
         self.labels = labels
-        n_components = s.n_components
-        if n:
-            self.component_label = _launch.empty(n_components, dtype=wp.int32, device=device)
-            self.component_offsets = _launch.full(
-                n_components + 1, n, dtype=wp.int32, device=device
-            )
-            self.component_last = _launch.full(n_components, -1, dtype=wp.int32, device=device)
-            _launch.launch(
-                kernel_cholesky.component_tables,
-                dim=n,
-                inputs=[component_keys, flags, ends, component_rows, s.pos],
-                outputs=[self.component_label, self.component_offsets, self.component_last],
-                device=device,
-            )
-            # The null-space projection's chunks: each component's rows in ``NULL_SPACE_CHUNK``s,
-            # at most ``chunk_bound`` of them, so no count is read back.
-            self.chunk_offsets = _launch.zeros(n_components + 1, dtype=wp.int32, device=device)
-            _launch.launch(
-                kernel_cholesky.component_chunk_counts,
-                dim=n_components,
-                inputs=[self.component_offsets],
-                outputs=[self.chunk_offsets],
-                device=device,
-            )
-            _launch.array_scan(self.chunk_offsets, self.chunk_offsets, inclusive=True)
-            self.chunk_bound = n_components + n // int(kernel_cholesky.NULL_SPACE_CHUNK)
-            self.component_diagonal = _launch.empty(n_components, dtype=wp.int64, device=device)
-            _launch.launch(
-                kernel_cholesky.component_diagonals,
-                dim=n_components,
-                inputs=[self.component_last, self.owner, self.front_offset, self.c0,
-                        self.front_size],
-                outputs=[self.component_diagonal],
-                device=device,
-            )  # fmt: skip
-        else:
-            self.component_label = _launch.empty(0, dtype=wp.int32, device=device)
-            self.component_offsets = _launch.zeros(1, dtype=wp.int32, device=device)
-            self.chunk_offsets = _launch.zeros(1, dtype=wp.int32, device=device)
-            self.chunk_bound = 0
-            self.component_last = _launch.empty(0, dtype=wp.int32, device=device)
-            self.component_diagonal = _launch.empty(0, dtype=wp.int64, device=device)
-        self.n_components = n_components
+        self.component_label = _launch.empty(n_components, dtype=wp.int32, device=device)
+        self.component_offsets = _launch.full(n_components + 1, n, dtype=wp.int32, device=device)
+        self.component_last = _launch.full(n_components, -1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_cholesky.component_tables,
+            dim=n,
+            inputs=[component_keys, flags, ends, component_rows, s.pos],
+            outputs=[self.component_label, self.component_offsets, self.component_last],
+            device=device,
+        )
+        # The null-space projection's chunks: each component's rows in ``NULL_SPACE_CHUNK``s,
+        # at most ``chunk_bound`` of them, so no count is read back.
+        self.chunk_offsets = _launch.zeros(n_components + 1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_cholesky.component_chunk_counts,
+            dim=n_components,
+            inputs=[self.component_offsets],
+            outputs=[self.chunk_offsets],
+            device=device,
+        )
+        _launch.array_scan(self.chunk_offsets, self.chunk_offsets, inclusive=True)
+        self.component_diagonal = _launch.empty(n_components, dtype=wp.int64, device=device)
+        _launch.launch(
+            kernel_cholesky.component_diagonals,
+            dim=n_components,
+            inputs=[self.component_last, self.owner, self.front_offset, self.c0,
+                    self.front_size],
+            outputs=[self.component_diagonal],
+            device=device,
+        )  # fmt: skip
 
     def numeric(self) -> _Numeric:
         """Allocate the per-factorization state of this pattern."""
@@ -922,23 +981,17 @@ class _Plan:
             blocks=_launch.zeros(self.block_entries, dtype=wp.float64, device=device),
         )
 
-    def _estimate(
-        self,
-        front_entries: int,
-        block_entries: int,
-        forward_tasks: int,
-        backward_tasks: int,
-        entries: int,
-    ) -> None:
-        self.nbytes = (
-            4 * front_entries
-            + 4 * block_entries
-            + 8 * (self.n_forward_parts + self.n_backward_parts + self.n_pairs)
-            + 24 * forward_tasks
-            + 32 * backward_tasks
-            + 20 * entries
-            + 64 * self.n
-        )
+    def numeric_nbytes(self) -> int:
+        """Device memory [`numeric`][ordito.cholesky._Plan.numeric] allocates, in bytes."""
+        return 12 * self.n + 8 + 8 * self.block_entries
+
+    def solve_nbytes(self, n_columns: int) -> int:
+        """Device memory one ``n_columns`` solve configuration (``_Solve``) allocates, in bytes."""
+        # ``rhs``, ``solution``, ``initial`` and ``residual``, and the work's ``gathered``,
+        # ``forward`` and ``correction``: seven ``n * n_columns`` arrays.
+        per_column = 7 * self.n + 1 + self.n_forward_parts + self.n_backward_parts + self.n_pairs
+        null_space = max(self.chunk_bound * n_columns, 1) + max(self.n_components * n_columns, 1)
+        return 8 * (per_column * n_columns + null_space) + 12
 
     def _empty(self, labels: wp.array[wp.int32]) -> None:
         """Plan an operator with no rows: every table empty, no level, no component."""
@@ -951,7 +1004,6 @@ class _Plan:
         self.front_entries = self.block_entries = 0
         self.n_stored = 0
         self.n_pairs = self.n_forward_parts = self.n_backward_parts = 1
-        self._estimate(0, 0, 0, 0, 0)
         self.perm, self.owner, self.ncol, self.c0, self.front_size, self.parent = (
             empty(wp.int32) for _ in range(6)
         )
@@ -981,6 +1033,11 @@ class _Plan:
         self.component_last = nothing
         self.component_diagonal = empty(wp.int64)
         self.n_components = 0
+        self.nbytes = sum(
+            held.capacity
+            for held in (self.rows, self.parent_local, self.forward_maps[1], self.panel_inverse,
+                         self.panel_scratch, self.component_offsets, self.chunk_offsets)
+        )  # fmt: skip
 
     def factor(
         self,
@@ -1173,6 +1230,45 @@ class _Plan:
                 outputs=[work.correction],
                 device=device,
             )  # fmt: skip
+
+
+def _analysis_nbytes(
+    *,
+    n: int,
+    n_sn: int,
+    row_capacity: int,
+    n_rows: int,
+    n_entries: int,
+    tasks: tuple[int, int, int, int],
+    widest: int,
+    n_components: int,
+    extends: bool,
+) -> int:
+    """
+    Device memory a ``_Plan`` of these counts holds once built, in bytes, before it allocates it.
+
+    Every array the plan keeps, by its own allocation (a view counts its owner's): the labels and
+    the components' rows, sort width; the supernode tables and the level order, the extend-add
+    members (held only when some level extends); the elimination order (sort width), positions'
+    owners, columns and first columns (one a row); the row structure (``row_capacity``, sized by
+    the structure pairs) and each supernode's first row; the entry maps; the parents' local rows;
+    the four solve task maps; the forward gather's offsets and pairs; the panel inverses and their
+    scratch; and the component tables.
+    """
+    n_f, n_r, n_b, n_c = tasks
+    # Labels; the components' rows and the elimination order (both of sort width); owners,
+    # columns and first columns.
+    per_row = 4 * n + 8 * n + 8 * n + 3 * 4 * n
+    # Front sizes, parents and first rows; the level order (sort width); the front and solve-block
+    # offsets; the extend-add members (sort width).
+    per_supernode = 3 * 4 * n_sn + 8 * n_sn + 2 * 8 * (n_sn + 1) + (8 * n_sn if extends else 0)
+    # The row structure; the parents' local rows; the forward gather's pairs and offsets.
+    structure = 4 * row_capacity + 4 * (n_rows + 1) + 8 * n_rows + 4 * (n + 1)
+    task_maps = 24 * n_f + 16 * n_r + 32 * n_b + 20 * n_c
+    panels = 2 * 8 * widest * int(kernel_cholesky.PANEL) ** 2
+    # Each component's label, last row and diagonal slot; its offsets and its chunks' offsets.
+    components = (4 + 4 + 8) * n_components + 2 * 4 * (n_components + 1)
+    return per_row + per_supernode + structure + 20 * n_entries + task_maps + panels + components
 
 
 @dataclass

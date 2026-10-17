@@ -3627,7 +3627,9 @@ def slab_with_nine_tunnels(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     Build a 16 x 16 x 1 slab with 3 x 3 tunnels: genus 9, every short loop around a bar of it.
 
     The bars between neighbouring tunnels are about 6.3 round and the walls of the tunnels about
-    10, so a ``max_length`` of 11 makes every handle a thin one.
+    10, so a ``max_length`` of 11 makes every handle a thin one. The bars between the outer tunnels
+    and the slab's rim are thinner, 4.13 to 4.4 round along the edges: at a ``max_length`` of 5
+    exactly the eight outer tunnels are thin, and the centre one, ringed by 6.3 bars, stays.
     """
     vertices_np, faces_np = handles_slab(3, max_edge=0.3)
     mesh = tm.Trimesh(vertices_np, faces_np, process=False)
@@ -3636,7 +3638,11 @@ def slab_with_nine_tunnels(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
 
 @pytest.mark.parametrize(
     ("mesh_name", "max_length", "genus_after"),
-    [("torus_with_thin_handles", 2.0, 1), ("slab_with_nine_tunnels", 11.0, 0)],
+    [
+        ("torus_with_thin_handles", 2.0, 1),
+        ("slab_with_nine_tunnels", 11.0, 0),
+        ("slab_with_nine_tunnels", 5.0, 1),
+    ],
 )
 def test_remove_tunnels_cuts_every_handle_under_max_length(
     request: pytest.FixtureRequest, mesh_name: str, max_length: float, genus_after: int
@@ -3651,7 +3657,9 @@ def test_remove_tunnels_cuts_every_handle_under_max_length(
 
     A homology basis can carry a far handle only inside a combination of classes, and shortening
     within the class cannot undo that: before the greedy basis and the re-rooting, the torus stopped
-    at genus 2 (one handle never cut at any ``max_length`` up to 2.0) and the slab at genus 6.
+    at genus 2 (one handle never cut at any ``max_length`` up to 2.0) and the slab at genus 6. The
+    slab at 5 is the case re-rooting the basis still missed (it stopped at genus 2, one rim bar of
+    4.13 uncut), which the search through every basis vertex closes.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -3669,6 +3677,28 @@ def test_remove_tunnels_cuts_every_handle_under_max_length(
     assert od.validation.is_edge_manifold(faces_wp)
     labels_np = od.adjacency.face_connected_component_labels(faces_wp).numpy()
     assert np.unique(labels_np).size == 1
+
+
+def test_remove_tunnels_cuts_nothing_just_under_the_thinnest_bar(
+    slab_with_nine_tunnels: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the search through every basis vertex cuts nothing over the bound.
+
+    At 4.0 every loop of the slab is longer -- its thinnest rim bar is 4.13 round along the edges
+    and every shortened basis loop is longer still -- so the call takes the complete search and
+    must return the input unchanged. At 4.2 the same search must find a rim bar, the non-vacuity
+    half: the bound, not the search, is what stops the first call.
+    """
+    _, mesh_wp = slab_with_nine_tunnels
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    kept_vertices_wp, kept_faces_wp, removed = od.repair.remove_tunnels(vertices_wp, faces_wp, 4.0)
+    assert removed == 0
+    assert np.array_equal(kept_faces_wp.numpy(), faces_wp.numpy())
+    assert np.array_equal(kept_vertices_wp.numpy(), vertices_wp.numpy())
+    _, cut_faces_wp, removed = od.repair.remove_tunnels(vertices_wp, faces_wp, 4.2)
+    assert removed >= 1
+    assert _genus(cut_faces_wp) == _genus(faces_wp) - removed
 
 
 def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(

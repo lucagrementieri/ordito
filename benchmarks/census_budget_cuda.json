@@ -2670,8 +2670,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cuda-2]": {
   "counts": {
-   "launch": 449,
-   "alloc": 167,
+   "launch": 450,
+   "alloc": 169,
    "memset": 51,
    "d2d": 4,
    "d2h": 10,
@@ -2693,8 +2693,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle-ordito-cuda-2]": {
   "counts": {
-   "launch": 443,
-   "alloc": 167,
+   "launch": 444,
+   "alloc": 169,
    "memset": 51,
    "d2d": 4,
    "d2h": 10,
@@ -2716,8 +2716,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cuda-2]": {
   "counts": {
-   "launch": 316,
-   "alloc": 167,
+   "launch": 317,
+   "alloc": 169,
    "memset": 51,
    "d2d": 4,
    "d2h": 10,
