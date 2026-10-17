@@ -175,6 +175,9 @@ Each launch argument costs ~1 µs of host time (§13.1). Bundle the invariant ta
   Put a helper reached from a second module in the one it belongs to; never make unrelated modules
   import an algorithm module to reach geometry.
 - `ordito/__init__.py` is lazy (PEP 562 `__getattr__`) and must stay so.
+- The radix sort is stable under both deterministic settings, so with an identity payload each
+  class's first occurrence sits at the start of its run: a grouping that needs representatives
+  reads them off the emit pass (`grouping._unique_keys_core`), not `first_occurrence_indices`.
 - The three searches in `kernels/array.py` differ silently: `binary_search_index` is
   `searchsorted(side="right")` (`slot + 1` on an exact hit), `binary_search_index_left` is
   `side="left"` (for a lookup add `index < n and values[index] == v`),
@@ -879,6 +882,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 - **Timing hygiene:** interleave A and B in one loop and report the minimum beside the median; baselines drift 10-30 %, so re-run both arms back to back. Batch launches and sync once. Use one pytest process per module. Re-run a failing configuration in a fresh process before blaming the product.
 - **`wp.timing_begin` sees no graph-replayed kernels**, so every CG solve reads host-bound. Re-run with capture disabled and carry the device total back.
 - **Census** host calls by monkeypatching Warp (`Function.__call__`, `wp.array.numpy`, `wp.zeros`, `wp.empty`), not by grepping. Read the slope across two iteration counts, and watch for capture hiding loops.
+- **A census count must not depend on what ran before the row.** Two sources made the gate flaky, both now neutralized in `benchmarks/census.py`: Warp pools a `BsrMatrix`'s pinned `nnz` transfer buffer and returns it from a `weakref.finalize`, so cyclic-GC timing decided whether a call allocated (`multigrid_preconditioner` 149-154 allocations between runs; the counted call now runs after `gc.collect()` with the collector off); and `linalg._cached_solver` records a pooled state on the second operator of a shape and replays from the third, so one warm call left the counted call recording or replaying by session history (`heat_geodesic[sphere_med-full]` 18 or 79 launches; two warm calls now). A new process-wide cache that changes what a call issues needs the same check: run the row alone and inside its file, and compare.
 
 ---
 
@@ -892,6 +896,7 @@ The full per-component detail is in `reference/component-status.md`; read the co
 - **A settled CG iterate is not a solved one.** On ill-conditioned systems (graded meshes) the settle rule stops on round-off. `solve_spd_settled` verifies the componentwise backward error and falls back to a Cholesky factorization held on a caller-owned object. Never trust a residual or a settle test alone for the heat family.
 - **A CG that hits its cap or stalls does not warn when `check_every=0`.** `min_quad_with_fixed` therefore runs the verified path (iterate, check backward error, factor from zero on failure). `harmonic` at `k >= 3` uses the direct solver.
 - **Never size anything off `matrix.nnz` or a Warp `*_count`**; both are capacities (§3.7). `fem.integrate` / `bsr_axpy` on stale `nnz` once exhausted memory and surfaced as CUDA error 700.
+- **`--cpu-blocks` segfaults in `mesh_to_mesh_distance`** (`tests/test_proximity.py::test_mesh_to_mesh_distance_matches_pymeshlab`, inside `invoke_cpu_blocks`), on main before the 2026-10-17 round-2 sweep as after it; the CUDA and plain CPU passes are clean. Open: the persistent straggler blocks or the own `wp.tile_stack` walk under every-lane CPU execution are the suspects.
 - **Fail-silently families:** a wrong binary search on an argsort payload returns a valid index of the wrong element (§3.1); `NaN` poisons `side="right"` search; an `int32` scan of large triplet counts wraps (use `int64`); an out-of-bounds write on CPU corrupts the heap later.
 - **Heat method on obtuse-heavy meshes is wrong by the method's own error** (and so is potpourri3d's). `geodesic_path` strands on spurious minima and then finishes along mesh edges with a warning. `extend_scalar` warns when the field leaves the source range; `filter_mut_dif_laplacian` and `robust_laplacian` warn about ill-conditioned input. These warnings are the contract, not noise.
 - **A degenerate-face threshold that is absolute (`TOLERANCE_MERGE`) removes marching-cubes slivers and opens the mesh**; `marching_cubes(edge_margin=)` is the fix, and every extraction of a level set passes `kernels/levelset.lattice_edge_margin` (`screened_poisson`, `resample_uniform` and `offset_mesh` through `signed_distance_level_set(edge_margin=)`). Lattice nodes landing exactly on the level (a unit box on a 0.05 grid) is the trigger; Warp's `sparse_marching_cubes` has no margin, so a positive margin takes the dense path.
