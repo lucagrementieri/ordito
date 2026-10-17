@@ -852,8 +852,8 @@ def uv_sphere(
     fast = _revolve_regular(profile, n_sections, transform, device)
     if fast is not None:
         return fast
-    return revolve(
-        _upload_points(profile, wp.vec2, device), sections=longitude, transform=transform
+    return _revolve_profile(
+        profile, _upload_points(profile, wp.vec2, device), None, False, longitude, transform
     )
 
 
@@ -1052,8 +1052,8 @@ def capsule(
     fast = _revolve_regular(profile, n_sections, transform, device)
     if fast is not None:
         return fast
-    return revolve(
-        _upload_points(profile, wp.vec2, device), sections=longitude, transform=transform
+    return _revolve_profile(
+        profile, _upload_points(profile, wp.vec2, device), None, False, longitude, transform
     )
 
 
@@ -1311,7 +1311,9 @@ def annulus(
     fast = _revolve_regular(profile, n_sections, transform, device)
     if fast is not None:
         return fast
-    return revolve(_upload_points(profile, wp.vec2, device), sections=sections, transform=transform)
+    return _revolve_profile(
+        profile, _upload_points(profile, wp.vec2, device), None, False, sections, transform
+    )
 
 
 def torus(
@@ -1379,8 +1381,8 @@ def torus(
     fast = _revolve_regular(profile, n_sections, transform, device)
     if fast is not None:
         return fast
-    return revolve(
-        _upload_points(profile, wp.vec2, device), sections=major_sections, transform=transform
+    return _revolve_profile(
+        profile, _upload_points(profile, wp.vec2, device), None, False, major_sections, transform
     )
 
 
@@ -1482,6 +1484,24 @@ def revolve(
     ```
     """
     odt.ensure_ndim(linestring, 1, dtype=wp.vec2)
+    # Host readback: the layout below is decided from the profile on the host.
+    return _revolve_profile(linestring.numpy(), linestring, angle, cap, sections, transform)
+
+
+def _revolve_profile(
+    profile_np: np.ndarray,
+    linestring: wp.array[wp.vec2],
+    angle: float | None,
+    cap: bool,
+    sections: int | None,
+    transform: wp.mat44 | None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    [`revolve`][ordito.creation.revolve] given the profile both on the host and on the device.
+
+    ``profile_np`` holds ``linestring``'s values (a host table that was uploaded as it, or
+    ``linestring``'s own readback), so a caller that built the profile on the host skips the read.
+    """
     device = linestring.device
     per = linestring.size
     if per < 2:
@@ -1501,8 +1521,9 @@ def revolve(
     # Everything that depends only on the profile is decided on the host, from at most a few dozen
     # points: which template triangles survive, and where each (slice, profile point) pair lands in
     # the merged output. The two kernels below then write their final layout directly, with no
-    # compaction pass and no device-to-host synchronization.
-    profile_np = linestring.numpy().astype(np.float64)
+    # compaction pass and no device-to-host synchronization. The table is taken at the uploaded
+    # ``float32`` values, which is what a readback of ``linestring`` holds.
+    profile_np = np.asarray(profile_np, dtype=np.float32).astype(np.float64)
     capped = cap and not closed
     if capped and per > 2 and not _repeats_first_point(profile_np):
         # A capped profile is the boundary of its cap polygon, so its closing segment is a wall
@@ -2606,15 +2627,16 @@ def random_soup(
     """
     n = 3 * max(int(face_count), 0)
     vertices = _launch.empty(n, dtype=wp.vec3, device=device)
+    faces = _launch.empty(n, dtype=wp.int32, device=device)
     if n > 0:
         resolved_seed = od.sample.resolve_seed(seed)
         _launch.launch(
-            kernel_creation.random_soup_vertices,
+            kernel_creation.random_soup_mesh,
             dim=n,
-            inputs=[wp.int32(resolved_seed), vertices],
+            inputs=[wp.int32(resolved_seed), vertices, faces],
             device=device,
         )
-    return vertices, od.array.arange(n, device=vertices.device)
+    return vertices, faces
 
 
 # --- private helpers ---------------------------------------------------------------------
