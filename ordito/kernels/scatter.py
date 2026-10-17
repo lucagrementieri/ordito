@@ -214,10 +214,10 @@ def sum_sorted_corner_values(
     # ``add_corner_triple``'s atomics commit in arrival order -- the deterministic form of that
     # scatter for ``float64`` values, which have no exact atomic sum.
     #
-    # The runs are also the vertex-face incidence CSR of ``adjacency.vertex_face_adjacency``, with
-    # each row in ascending face order rather than arbitrary order, so a caller that wants those
-    # rows passes non-empty ``out_offsets`` (``(n_vertices + 1,)``) and ``out_vertex_faces``
-    # (``(3 * n_faces,)``) and gets them from the same walk.
+    # The runs are also the vertex-face incidence CSR ``adjacency.vertex_face_adjacency`` returns
+    # in deterministic mode, each row in ascending face order, so a caller that wants those rows
+    # passes non-empty ``out_offsets`` (``(n_vertices + 1,)``) and ``out_vertex_faces``
+    # (``(3 * n_faces,)``) and gets them from the same walk instead of a second sort.
     v = wp.int32(wp.tid())
     n = sorted_vertices.shape[0]
     rows = out_offsets.shape[0] > 0

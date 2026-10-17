@@ -29,6 +29,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
+from ordito.config import is_deterministic
 from ordito.constants import INDEX_RADIX_PAIR, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import array as kernel_array
@@ -321,7 +322,9 @@ def vertex_face_adjacency(
     Returns
     -------
     vertex_faces : wp.array[wp.int32]
-        ``(3 * n_faces,)`` face indices, grouped by vertex, arbitrary order within a row.
+        ``(3 * n_faces,)`` face indices, grouped by vertex. Under
+        [`is_deterministic`][ordito.config.is_deterministic] each row is in ascending face order,
+        the same on every run; otherwise the order within a row is arbitrary.
     offsets : wp.array[wp.int32]
         ``(n_vertices + 1,)`` row offsets on ``faces.device``.
 
@@ -368,6 +371,15 @@ def vertex_face_adjacency(
     # this function never needs it (it is 3 * n_faces, known on the host). Converting for
     # symmetry would add a device synchronization where there is currently none.
     _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
+    if is_deterministic():
+        # The stable sort of the face buffer lists each vertex's corners in ascending order, so its
+        # permutation's faces are the rows in ascending face order: the same on every run, where
+        # the scatter below fills each row in the order its atomics commit.
+        _, corner_order = od.array.sort_and_argsort(
+            faces, end_bit=max(1, (row_count - 1).bit_length())
+        )
+        _launch.map(kernel_adjacency.corner_face, corner_order, out=vertex_faces)
+        return vertex_faces, offsets
     # The counts are spent once scanned, so their buffer becomes the scatter's per-row cursor:
     # re-zeroing it in stream order is a memset where a second zeroed buffer was an allocation too.
     cursor = counts

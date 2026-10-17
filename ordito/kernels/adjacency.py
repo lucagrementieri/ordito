@@ -2,7 +2,7 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.algorithms.connected_components import ecl_hook_pair, ecl_prehook_pair
-from ordito.kernels.array import pack_edge_key, scanned_count
+from ordito.kernels.array import declare_map_signatures, map_probe, pack_edge_key, scanned_count
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
 from ordito.kernels.triangles import corner_triple, face_normals_and_area
@@ -342,13 +342,22 @@ def scatter_vertex_faces(
     cursor: wp.array[wp.int32],
     out_vertex_faces: wp.array[wp.int32],
 ) -> None:
-    # Vertex-to-face CSR payload. Row order is thread-order and therefore arbitrary, which is what
-    # the wrapper documents: a rotational order would need halfedge twins and would refuse a
+    # Vertex-to-face CSR payload. Row order is thread-order and therefore arbitrary: the wrapper's
+    # path when ``ordito.config`` does not ask for reproducible results (``corner_face`` below is
+    # the other). A rotational order would need halfedge twins and would refuse a
     # vertex-non-manifold mesh, which the decimator that consumes this must not do.
     f = wp.int32(wp.tid())
     for k in range(3):
         v = faces[f * 3 + k]
         out_vertex_faces[offsets[v] + wp.atomic_add(cursor, v, 1)] = f
+
+
+@wp.func
+def corner_face(corner: wp.int32) -> wp.int32:
+    """Return the face a flat face-buffer corner belongs to."""
+    # Mapped over the stable sort of the face buffer, it gives ``scatter_vertex_faces``' payload
+    # with every row in ascending face order: its reproducible form.
+    return corner // 3
 
 
 @wp.func
@@ -503,3 +512,17 @@ def emit_sorted_angles(
         vertices, faces, order[i], order[i + 1]
     )
     out_angles[row] = vector_angle(normal_low, normal_high)
+
+
+def _declare_map_kernels() -> None:
+    """
+    Pre-declare this module's forking ``wp.map`` signatures so each builds one module, not three.
+
+    See ``kernels/array.py::declare_map_signatures`` for why this exists, how the table was
+    derived and what forks a ``wp.map`` module. ``corner_face`` maps a corner permutation, whose
+    length is a multiple of three, so only the dense form is reachable.
+    """
+    declare_map_signatures([(corner_face, (map_probe(wp.int32),), wp.int32)])
+
+
+_declare_map_kernels()

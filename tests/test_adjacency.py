@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -298,6 +299,32 @@ def test_vertex_face_adjacency_matches_igl(request: pytest.FixtureRequest, mesh_
             row_wp = payload_np[bounds_np[vertex] : bounds_np[vertex + 1]]
             row_igl = np.asarray(payload_igl).ravel()[bounds_np[vertex] : bounds_np[vertex + 1]]
             assert np.array_equal(np.sort(row_wp), np.sort(row_igl))
+
+
+def test_vertex_face_adjacency_rows_follow_the_deterministic_setting(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a parity assert: deterministic rows are ascending and repeat between calls.
+
+    The arrival-order mode holds the same faces per row, so only the order within a row depends
+    on the setting. The row *contents* are compared with igl above.
+    """
+    _, mesh_wp = sphere_irregular
+    faces_wp, n_vertices = mesh_wp.indices, mesh_wp.points.size
+    with od.config.deterministic(True):
+        first_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=n_vertices)
+        second_wp, _ = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=n_vertices)
+    with od.config.deterministic(False):
+        arrival_wp, arrival_offsets_wp = od.adjacency.vertex_face_adjacency(
+            faces_wp, n_vertices=n_vertices
+        )
+    first_np, offsets_np, arrival_np = first_wp.numpy(), offsets_wp.numpy(), arrival_wp.numpy()
+    assert np.array_equal(second_wp.numpy(), first_np)
+    assert np.array_equal(arrival_offsets_wp.numpy(), offsets_np)
+    for start, stop in itertools.pairwise(offsets_np):
+        assert np.all(np.diff(first_np[start:stop]) > 0)
+        assert np.array_equal(np.sort(arrival_np[start:stop]), first_np[start:stop])
 
 
 def test_vertex_face_adjacency_unreferenced_vertex(device: str) -> None:
