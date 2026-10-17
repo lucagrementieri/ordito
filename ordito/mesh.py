@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import weakref
 from collections.abc import Callable
 from typing import Generic, NoReturn, TypeVar, cast, overload
 
@@ -13,6 +14,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_nonempty_mesh
+from ordito.config import is_deterministic
 from ordito.kernels import mesh as kernel_mesh
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -286,6 +288,46 @@ class _CachedProperty(Generic[_R]):
 
     def __set__(self, obj: Trimesh, value: object) -> NoReturn:
         raise AttributeError(f"'{self._key}' is read-only; call invalidate() after in-place edits")
+
+
+class _RowOrderedCachedProperty(_CachedProperty[tuple[wp.array[wp.int32], wp.array[wp.int32]]]):
+    """
+    `_CachedProperty` for a ``(values, offsets)`` CSR whose order within a row the setting decides.
+
+    Under [`is_deterministic`][ordito.config.is_deterministic] such a property's rows are
+    ascending, which a reproducible consumer relies on; with the setting off they are in arrival
+    order. A value cached with the setting off is therefore rebuilt on its first read with it on,
+    and the ascending one replaces it, serving both settings from then on. Which cached values are
+    ascending is recorded on their ``values`` array, so the mark travels with the value when
+    `with_vertices` or `transform` carries it forward and goes when `invalidate` drops it.
+    """
+
+    @overload
+    def __get__(self, obj: None, objtype: type | None = None) -> _RowOrderedCachedProperty: ...
+    @overload
+    def __get__(
+        self, obj: Trimesh, objtype: type | None = None
+    ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]: ...
+    def __get__(
+        self, obj: Trimesh | None, objtype: type | None = None
+    ) -> _RowOrderedCachedProperty | tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+        if obj is None:
+            return self
+        cache = obj._cache  # pyright: ignore[reportPrivateUsage]  # the owner class's own cache
+        ordered = is_deterministic()
+        cached = cast("tuple[wp.array[wp.int32], wp.array[wp.int32]] | None", cache.get(self._key))
+        if cached is not None and (not ordered or cached[0] in _ASCENDING_ROWS):
+            return cached
+        value = self._func(obj)
+        if ordered:
+            _ASCENDING_ROWS.add(value[0])
+        cache[self._key] = value
+        return value
+
+
+# The ``values`` arrays of the row-ordered values `_RowOrderedCachedProperty` built with the
+# deterministic setting on, by identity.
+_ASCENDING_ROWS: weakref.WeakSet[wp.array[wp.int32]] = weakref.WeakSet()
 
 
 class Trimesh:
@@ -1227,7 +1269,7 @@ class Trimesh:
         # The count is the returned host integer.
         return int(read_scalar(count, 0))
 
-    @_CachedProperty
+    @_RowOrderedCachedProperty
     def vertex_face_adjacency(self) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
         """
         Incidence CSR of the faces touching each vertex, as ``(vertex_faces, offsets)``.

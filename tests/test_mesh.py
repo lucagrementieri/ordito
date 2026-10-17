@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -880,6 +881,36 @@ def test_with_faces_starts_with_empty_cache(sphere_irregular: tuple[tm.Trimesh, 
     new_mesh = mesh.with_faces(wp.clone(mesh.faces))
     assert new_mesh._cache == {}
     assert np.array_equal(new_mesh.edges.numpy(), mesh.edges.numpy())
+
+
+def test_vertex_face_adjacency_cached_off_is_rebuilt_ascending_once_on(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: the cached incidence follows the deterministic setting it is read under.
+
+    The function's own rows are compared with igl in ``tests/test_adjacency.py``. Here: a value
+    cached with the setting off is replaced on the first read with it on, by ascending rows, and
+    that one then serves both settings and survives ``with_vertices`` without a rebuild.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
+    with od.config.deterministic(False):
+        arrival = mesh.vertex_face_adjacency
+        assert mesh.vertex_face_adjacency is arrival
+    with od.config.deterministic(True):
+        ascending = mesh.vertex_face_adjacency
+        assert ascending is not arrival
+        assert mesh.vertex_face_adjacency is ascending
+        moved = _translated(mesh)
+        assert moved.vertex_face_adjacency is ascending
+    with od.config.deterministic(False):
+        assert mesh.vertex_face_adjacency is ascending
+
+    vertex_faces_np, offsets_np = ascending[0].numpy(), ascending[1].numpy()
+    assert np.array_equal(offsets_np, arrival[1].numpy())
+    for start, stop in itertools.pairwise(offsets_np):
+        assert np.all(np.diff(vertex_faces_np[start:stop]) > 0)
 
 
 def test_warp_mesh_supports_ray_queries(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
