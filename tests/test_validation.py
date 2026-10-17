@@ -1191,6 +1191,17 @@ def _minimum_forest_flip_mask(faces_np: np.ndarray) -> np.ndarray:
         if count == 2
     ]
     pairs.sort(key=min)
+    signed_pairs = [(int(h0) // 3, int(h1) // 3, int(tails[h0] == tails[h1])) for h0, h1 in pairs]
+    return _minimum_forest_parity(n_faces, signed_pairs)
+
+
+def _minimum_forest_parity(n_faces: int, signed_pairs: list[tuple[int, int, int]]) -> np.ndarray:
+    """
+    Build the parity over the minimum spanning forest of signed face pairs listed in key order.
+
+    Kruskal in list order picks the forest; each tree's smallest face is at ``0`` and every other
+    face takes its tree path's parity.
+    """
     parent = list(range(n_faces))
 
     def find(x: int) -> int:
@@ -1200,13 +1211,11 @@ def _minimum_forest_flip_mask(faces_np: np.ndarray) -> np.ndarray:
         return x
 
     tree: list[list[tuple[int, int]]] = [[] for _ in range(n_faces)]
-    for h0, h1 in pairs:
-        f0, f1 = int(h0) // 3, int(h1) // 3
+    for f0, f1, sign in signed_pairs:
         root0, root1 = find(f0), find(f1)
         if root0 == root1:
             continue
         parent[max(root0, root1)] = min(root0, root1)
-        sign = int(tails[h0] == tails[h1])
         tree[f0].append((f1, sign))
         tree[f1].append((f0, sign))
     flip = np.zeros(n_faces, dtype=bool)
@@ -1301,6 +1310,48 @@ def test_face_orientation_bits_leave_edges_unsatisfied_only_when_non_orientable(
 
     assert bool(od.validation.is_orientable(mesh_wp.indices)) is orientable
     assert (int(frustrated_np.sum()) == 0) is orientable
+
+
+@pytest.mark.parametrize("mesh_name", ["mobius", "boy_surface", "sphere_irregular"])
+@pytest.mark.parametrize("flipped", [False, True], ids=["as_built", "half_flipped"])
+def test_face_orientation_bits_are_reproducible_on_non_orientable_input(
+    request: pytest.FixtureRequest, mesh_name: str, flipped: bool
+) -> None:
+    """
+    Not a library comparison: the deterministic setting's bits are the minimum-forest parity.
+
+    No reference returns these bits on a non-orientable mesh (the flood fills of trimesh and igl
+    each answer with their own traversal), so the oracle is the contract written out in NumPy
+    (``_minimum_forest_parity``) over the returned adjacency rows keyed by row index, each tree's
+    smallest face at ``0``; ``face_flip_mask``'s test above does the same over the halfedge pairs.
+    On orientable ``sphere_irregular`` that is the fast path's answer. Before the forest, a CUDA
+    call raced its parity hooks and 26 of 30 calls on ``mobius`` gave distinct bits, so the
+    repeated call fails there; CPU was already stable. Non-vacuity: the half-flipped meshes flip
+    faces, and the non-orientable ones leave adjacency rows unsatisfied.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = np.asarray(mesh_tm.faces)
+    if flipped:
+        faces_np = _flip_half(faces_np)
+    _, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_np, mesh_wp.device)
+    orient_wp, signed_edges_wp, signs_wp, m = od.validation.face_orientation_bits(faces_wp)
+    orient_np, edges_np, signs_np = orient_wp.numpy(), signed_edges_wp.numpy(), signs_wp.numpy()
+    for _ in range(3):
+        again_wp, again_edges_wp, again_signs_wp, again_m = od.validation.face_orientation_bits(
+            faces_wp
+        )
+        assert np.array_equal(again_wp.numpy(), orient_np)
+        assert np.array_equal(again_edges_wp.numpy(), edges_np)
+        assert np.array_equal(again_signs_wp.numpy(), signs_np)
+        assert again_m == m
+    signed_pairs = [
+        (int(f0), int(f1), int(sign)) for (f0, f1), sign in zip(edges_np, signs_np, strict=True)
+    ]
+    assert np.array_equal(orient_np, _minimum_forest_parity(faces_np.shape[0], signed_pairs))
+    if flipped:
+        assert bool(orient_np.any())
+    frustrated_np = (orient_np[edges_np[:, 0]] ^ orient_np[edges_np[:, 1]]) != signs_np
+    assert bool(frustrated_np.any()) is (mesh_name != "sphere_irregular")
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)

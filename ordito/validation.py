@@ -877,6 +877,15 @@ def face_orientation_bits(
     [ordito.graph.connected_component_parity_from_edges]) in a fixed three launches. Cost
     therefore depends on the mesh's *size*, not on the diameter of its face-adjacency graph.
 
+    On a non-orientable component no potential exists, and some adjacency edges are left
+    unsatisfied. Which ones depends on the setting of
+    [`is_deterministic`][ordito.config.is_deterministic]: on, the bits are the parity over the
+    minimum spanning forest of the adjacency rows keyed by row index, each tree's lowest-indexed
+    face at ``0``, the same on every run and on either device, for one more pass and a host read
+    on every input, and a few passes more on a non-orientable one; off, they follow whichever
+    spanning forest the parallel union-find builds, which on CUDA can differ between runs. On an
+    orientable mesh the bits are the same either way.
+
     Parameters
     ----------
     faces
@@ -950,10 +959,12 @@ def face_orientation_bits(
     # readbacks for work bounded by a few milliseconds of bandwidth.
     # ``signed_edges`` holds face ids this function just built from ``adjacency`` (itself bounded
     # by ``n_faces`` by construction) and every sign is ``0`` or ``1``, so nothing is range-checked.
-    orient = _solve_orientation(
+    words = _orientation_words(
         n_faces, kernel_connected_components.ecl_hook_parity, m, [signed_edges, signs], device
     )
-    return orient, signed_edges, signs, m
+    if is_deterministic():
+        words = _reproducible_orientation_words(faces, None, signed_edges, signs, words)
+    return _flatten_orientation(words), signed_edges, signs, m
 
 
 def is_orientable(
@@ -1141,7 +1152,7 @@ def face_flip_mask(
     # The flip mask is the parity itself, so the flatten writes it as a ``bool`` directly.
     words, mates = _orientation_words_from_mates(faces, n_vertices, mates)
     if is_deterministic():
-        words = _reproducible_orientation_words(faces, mates, words)
+        words = _reproducible_orientation_words(faces, mates, None, None, words)
     mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_validation.flatten_parity_flip_mask, dim=n_faces, inputs=[words, mask], device=device
@@ -1150,36 +1161,55 @@ def face_flip_mask(
 
 
 def _reproducible_orientation_words(
-    faces: wp.array[wp.int32], mates: wp.array[wp.int32], words: wp.array[wp.int32]
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32] | None,
+    edges: odt.Array2dInt32 | None,
+    signs: wp.array[wp.int32] | None,
+    words: wp.array[wp.int32],
 ) -> wp.array[wp.int32]:
     """
     Parity words that are a function of ``faces`` alone, for the deterministic setting.
 
-    ``words`` from the racing parity union-find already are on a consistent mesh, which one
-    conflict test and a readback confirm. Otherwise the parity is re-solved over the mates' unique
-    minimum spanning forest (``kernels/validation``'s Boruvka rounds, one readback each to stop),
-    whose parity is the same on every run and, on each consistent component, the racing answer.
+    The signed face graph is the halfedge ``mates``' pairs (``face_flip_mask``) or, given
+    ``edges`` and ``signs``, that edge list (``face_orientation_bits``); the other pair is
+    ``None``. ``words`` from the racing parity union-find over it already are on a consistent
+    mesh, which one conflict test and a readback confirm. Otherwise the parity is re-solved over
+    the graph's unique minimum spanning forest, keyed by edge index (``kernels/validation``'s
+    Boruvka rounds, one readback each to stop), whose parity is the same on every run and, on each
+    consistent component, the racing answer.
     """
     device = faces.device
     n_faces = words.size
-    n_halfedges = mates.size
     conflict = _launch.zeros(1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_validation.mate_orientation_conflict,
-        dim=n_halfedges,
-        inputs=[faces, mates, _flatten_orientation(words), conflict],
-        device=device,
-    )
+    orient = _flatten_orientation(words)
+    if edges is None:
+        assert mates is not None
+        n_edges = mates.size
+        _launch.launch(
+            kernel_validation.mate_orientation_conflict,
+            dim=n_edges,
+            inputs=[faces, mates, orient, conflict],
+            device=device,
+        )
+    else:
+        n_edges = int(edges.shape[0])
+        _launch.launch(
+            kernel_validation.signed_edge_orientation_conflict,
+            dim=n_edges,
+            inputs=[edges, signs, orient, conflict],
+            device=device,
+        )
     # Unavoidable: whether any pair contradicts the parity decides whether the forest is needed.
     if int(read_scalar(conflict, 0)) == 0:
         return words
 
+    graph = [faces, mates, edges, signs]
     parents = od.array.arange(n_faces, device=device)
     labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
     best = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    in_forest = _launch.zeros(n_halfedges, dtype=wp.int32, device=device)
+    in_forest = _launch.zeros(n_edges, dtype=wp.int32, device=device)
     hooked = conflict
-    # Each round hooks every component with an outgoing pair, so at least halves their number:
+    # Each round hooks every component with an outgoing edge, so at least halves their number:
     # ``log2(n_faces) + 1`` rounds bound it, and a round that hooks nothing ends it sooner.
     for _ in range(n_faces.bit_length() + 1):
         _launch.launch(
@@ -1189,16 +1219,16 @@ def _reproducible_orientation_words(
             device=device,
         )
         _launch.launch(
-            kernel_validation.mate_forest_candidates,
-            dim=n_halfedges,
-            inputs=[faces, mates, labels, best],
+            kernel_validation.signed_forest_candidates,
+            dim=n_edges,
+            inputs=[*graph, labels, best],
             device=device,
         )
         _launch.zero_(hooked)
         _launch.launch(
-            kernel_validation.mate_forest_hook,
+            kernel_validation.signed_forest_hook,
             dim=n_faces,
-            inputs=[mates, labels, best, parents, in_forest, hooked],
+            inputs=[*graph, labels, best, parents, in_forest, hooked],
             device=device,
         )
         # Unavoidable: the round count is the components' merge depth, known only on the device.
@@ -1212,9 +1242,9 @@ def _reproducible_orientation_words(
         device=device,
     )
     _launch.launch(
-        kernel_validation.mate_hook_parity_forest,
-        dim=n_halfedges,
-        inputs=[faces, mates, in_forest, forest_words],
+        kernel_validation.signed_forest_hook_parity,
+        dim=n_edges,
+        inputs=[*graph, in_forest, forest_words],
         device=device,
     )
     return forest_words
@@ -1260,23 +1290,6 @@ def _orientation_words_from_mates(
         faces.device,
     )
     return words, mates
-
-
-def _solve_orientation(
-    n_faces: int,
-    hook: odt.Kernel,
-    n_edges: int,
-    hook_inputs: Sequence[object],
-    device: wp.DeviceLike,
-) -> wp.array[wp.int32]:
-    """
-    Z2 potential of a signed face graph: the parity union-find, returning the parity alone.
-
-    [`connected_component_parity_from_edges`][ordito.graph.connected_component_parity_from_edges]'s
-    three launches with ``hook`` in place of its edge-list hook and no label table, which neither
-    orientation caller reads. ``hook_inputs`` precede the packed words in ``hook``'s signature.
-    """
-    return _flatten_orientation(_orientation_words(n_faces, hook, n_edges, hook_inputs, device))
 
 
 def _orientation_words(
