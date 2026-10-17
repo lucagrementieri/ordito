@@ -1591,13 +1591,22 @@ def project_turning_angle(
     )
 
 
+@wp.func
+def fan_face(k: wp.int32) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # Face ``k`` of the convex fast path's fan from ring point 0. Shared by ``fan_triangulate``,
+    # ``triangulate_rings`` (offset to its loop) and the cap writers of ``kernels/creation``, which
+    # form a convex ring's fan where they read it rather than from a buffer.
+    return wp.int32(0), k + 1, k + 2
+
+
 @wp.kernel
 def fan_triangulate(out_faces: wp.array2d[wp.int32]) -> None:
     # Convex fast-path: fan from vertex 0. dim == n - 2.
     k = wp.int32(wp.tid())
-    out_faces[k, 0] = wp.int32(0)
-    out_faces[k, 1] = k + 1
-    out_faces[k, 2] = k + 2
+    a, b, c = fan_face(k)
+    out_faces[k, 0] = a
+    out_faces[k, 1] = b
+    out_faces[k, 2] = c
 
 
 # The ear loop's state buffer: ``array.LOOP_ROUND`` / ``LOOP_CONDITION``, then the running face
@@ -2031,7 +2040,7 @@ def ear_clip_ring(
     ring: wp.array2d[wp.int32],
     count: wp.array[wp.int32],
     count_slot: wp.int32,
-) -> None:
+) -> wp.int32:
     # ``init_ear_clip`` plus every round of ``compute_ears`` -> ``select_independent`` ->
     # ``clip_selected`` -> ``ear_loop_continue`` on the ring ``points2d[start : start + n]``, by
     # one block whose lanes stride the ring by ``wp.block_dim()`` -- so on the CPU device, where a
@@ -2044,7 +2053,8 @@ def ear_clip_ring(
     #
     # ``ring`` is ``(5, *)`` scratch indexed like ``points2d``: rows ``left``, ``right``,
     # ``active``, ``is_ear``, ``selected``. Faces hold ``points2d`` indices and are appended at
-    # the slot ``count[count_slot]`` hands out, which the caller seeds before a barrier.
+    # the slot ``count[count_slot]`` hands out, which the caller seeds before a barrier. Returns the
+    # faces clipped, the same on every lane.
     left = ring[0]
     right = ring[1]
     active = ring[2]
@@ -2076,6 +2086,7 @@ def ear_clip_ring(
                 clipped += 1
         clipped_total += block_sum(clipped)
         rounds += 1
+    return clipped_total
 
 
 @wp.kernel(enable_backward=False)
@@ -2107,6 +2118,7 @@ def triangulate_rings(
     out_faces: wp.array2d[wp.int32],
     out_ring: wp.array2d[wp.int32],
     out_count: wp.array[wp.int32],
+    out_face_counts: wp.array[wp.int32],
 ) -> None:
     # ``polyline_triangulate`` of every packed loop ``polylines[offsets[r] : offsets[r + 1]]`` at
     # once, one block per loop (``dim=(n_loops,)`` at ``EAR_BLOCK_DIM``), each loop's
@@ -2120,7 +2132,8 @@ def triangulate_rings(
     # and ``out_count[r]`` ends holding that base plus its face count. A loop of fewer than three
     # points or more than ``max_ring`` (left to the round loop) gets no faces here.
     # ``out_points2d`` and ``out_ring`` (``(5, offsets[-1])``) are scratch indexed like
-    # ``polylines``.
+    # ``polylines``. Unless null, the zeroed ``(n_loops + 1,)`` ``out_face_counts`` gets loop
+    # ``r``'s face count in slot ``r + 1``, ready for an in-place scan into face offsets.
     ring_id, lane = wp.tid()
     start = offsets[ring_id]
     n = offsets[ring_id + 1] - start
@@ -2142,18 +2155,22 @@ def triangulate_rings(
     turn = block_sum(local)
     mirror = wp.where(turn[0] < wp.float32(0.0), wp.int32(1), wp.int32(0))
     reflex = wp.where(mirror != 0, turn[2], turn[1])
+    n_clipped = n_ring - 2
     if reflex == wp.float32(0.0):
         # ``fan_triangulate``'s fan from the loop's first point.
         for k in range(lane, n_ring - 2, wp.block_dim()):
-            out_faces[face_base + k, 0] = start
-            out_faces[face_base + k, 1] = start + k + 1
-            out_faces[face_base + k, 2] = start + k + 2
+            a, b, c = fan_face(k)
+            out_faces[face_base + k, 0] = start + a
+            out_faces[face_base + k, 1] = start + b
+            out_faces[face_base + k, 2] = start + c
         if lane == 0:
             out_count[ring_id] = face_base + n_ring - 2
     else:
-        ear_clip_ring(
+        n_clipped = ear_clip_ring(
             out_points2d, start, n_ring, mirror, lane, out_faces, out_ring, out_count, ring_id
         )
+    if lane == 0 and out_face_counts.shape[0] > 0:
+        out_face_counts[ring_id + 1] = n_clipped
 
 
 @wp.kernel
@@ -2169,16 +2186,6 @@ def reserved_ring_rows(
     out_bases[r + 1] = wp.max(n - 2, 0)
     if n > max_ring:
         wp.atomic_add(out_bases, out_bases.shape[0] - 1, 1)
-
-
-@wp.kernel
-def ring_face_counts(
-    bases: wp.array[wp.int32], ends: wp.array[wp.int32], out_face_offsets: wp.array[wp.int32]
-) -> None:
-    # Loop ``r``'s face count -- ``triangulate_rings``' end row less its reserved base -- into
-    # ``out_face_offsets[r + 1]`` of the zeroed ``(n_loops + 1,)`` buffer, for an in-place scan.
-    r = wp.int32(wp.tid())
-    out_face_offsets[r + 1] = ends[r] - bases[r]
 
 
 @wp.kernel

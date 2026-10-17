@@ -1480,7 +1480,8 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
         block_dim=TILE_1D,
         device=device,
     )
-    _, faces = _triangulate_ring(points2d, sums)
+    _, faces, _ = _triangulate_ring(points2d, sums, write_fan=True)
+    assert faces is not None
     return faces
 
 
@@ -1574,13 +1575,7 @@ def polyline_triangulate_from_offsets(
     face_offsets = _launch.zeros(n_loops + 1, dtype=wp.int32, device=device)
     if n_reserved == 0:
         return odt.empty_2d((0, 3), wp.int32, device=device), face_offsets
-    faces, ends = _triangulate_short_rings(polylines, offsets, bases, n_reserved)
-    _launch.launch(
-        kernel_polyline.ring_face_counts,
-        dim=n_loops,
-        inputs=[bases, ends, face_offsets],
-        device=device,
-    )
+    faces, ends = _triangulate_short_rings(polylines, offsets, bases, n_reserved, face_offsets)
     _launch.array_scan(face_offsets, out_array=face_offsets, inclusive=True)
     # Sizes the output: the faces the loops actually wrote.
     n_rows = int(read_scalar(face_offsets))
@@ -1620,7 +1615,7 @@ def _triangulate_from_offsets_on_host(
     loop_faces: list[np.ndarray] = [np.empty((0, 3), dtype=np.int32)] * n_loops
     if short.any():
         bases_wp = _launch.array(bases[:-1].astype(np.int32), dtype=wp.int32, device=device)
-        faces, counts = _triangulate_short_rings(polylines, offsets, bases_wp, int(bases[-1]))
+        faces, counts = _triangulate_short_rings(polylines, offsets, bases_wp, int(bases[-1]), None)
         # Readbacks: each loop's face count, then the reserved rows, compacted below.
         ends_np = counts.numpy()
         faces_np = faces.numpy()
@@ -1652,12 +1647,14 @@ def _triangulate_short_rings(
     offsets: wp.array[wp.int32],
     bases: wp.array[wp.int32],
     n_reserved: int,
+    face_counts: wp.array[wp.int32] | None,
 ) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
     """
     One block per loop of at most ``EAR_ONE_BLOCK_MAX`` points: ``(reserved faces, end rows)``.
 
     Loop ``r`` writes its faces from row ``bases[r]`` of the ``(max(n_reserved, 1), 3)`` buffer and
-    ``ends[r]`` is the row after its last; longer and shorter-than-three loops write none.
+    ``ends[r]`` is the row after its last; longer and shorter-than-three loops write none. A
+    zeroed ``(n_loops + 1,)`` ``face_counts`` also gets each loop's face count in slot ``r + 1``.
     """
     device = polylines.device
     n_loops = offsets.size - 1
@@ -1687,6 +1684,7 @@ def _triangulate_short_rings(
             faces,
             ring,
             ends,
+            face_counts,
         ],
         block_dim=kernel_polyline.EAR_BLOCK_DIM,
         device=device,
@@ -1750,10 +1748,28 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
     ```
     """
     odt.ensure_ndim(polygon, 1, dtype=wp.vec2)
+    ring, faces, _ = _triangulate_polygon(polygon, write_fan=True)
+    assert faces is not None
+    return ring, faces
+
+
+def _triangulate_polygon(
+    polygon: wp.array[wp.vec2], *, write_fan: bool
+) -> tuple[wp.array[wp.vec2], wp.array[wp.int32] | None, bool]:
+    """
+    ``triangulate_polygon``, also returning whether the ring runs clockwise: ``(ring, faces, cw)``.
+
+    Every face is wound like the ring (an ear is convex in the ring's own sense), so ``cw`` is the
+    sign of their total signed area unless the faces enclose no area beyond rounding;
+    [`extrude_polygon`][ordito.creation.extrude_polygon] reads it instead of summing the area.
+    Without ``write_fan``, ``faces`` is ``None`` for a convex ring, whose triangulation is the fan
+    ``(0, k + 1, k + 2)`` (``kernels/polyline.fan_face``) the caller then forms where it reads it,
+    and no fan launch runs.
+    """
     device = polygon.device
     n = polygon.size
     if n < 3:
-        return polygon, _launch.empty(0, dtype=wp.int32, device=device)
+        return polygon, _launch.empty(0, dtype=wp.int32, device=device), False
 
     sums = _launch.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
     _launch.launch_tiled(
@@ -1763,22 +1779,24 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
         block_dim=TILE_1D,
         device=device,
     )
-    n_ring, faces = _triangulate_ring(polygon, sums)
+    n_ring, faces, clockwise = _triangulate_ring(polygon, sums, write_fan=write_fan)
     # The ring is the input minus any repeated closing point, i.e. a prefix of it.
-    return polygon[:n_ring].contiguous(), faces.reshape((-1,))
+    ring = polygon[:n_ring].contiguous()
+    return ring, None if faces is None else faces.reshape((-1,)), clockwise
 
 
 def _triangulate_ring(
-    points2d: wp.array[wp.vec2], sums: wp.array[wp.float32]
-) -> tuple[int, odt.Array2dInt32]:
+    points2d: wp.array[wp.vec2], sums: wp.array[wp.float32], *, write_fan: bool
+) -> tuple[int, odt.Array2dInt32 | None, bool]:
     """
-    Ear-clip a 2D ring whose turning pass has run: ``(ring length, (m, 3) faces)``.
+    Ear-clip a 2D ring whose turning pass has run: ``(ring length, (m, 3) faces, clockwise)``.
 
     ``points2d`` holds the ring plus, possibly, a repeated closing point; the caller's turning
     pass (``kernels/polyline.accumulate_turning_angle`` or ``project_turning_angle``) has written
     the closing flag, the turning angle, the reflex counts and the ring's box into ``sums``, and
     the one readback of ``sums`` carries them together. ``points2d`` is never written: a clockwise
-    ring is read mirrored by the ear tests.
+    ring is read mirrored by the ear tests. A convex ring's faces are ``None`` unless
+    ``write_fan`` (see ``_triangulate_polygon``).
     """
     device = points2d.device
     n = points2d.size
@@ -1789,18 +1807,21 @@ def _triangulate_ring(
         sums, int(kernel_polyline.RING_TURNING), 8
     )
     n_ring = n - int(closing)
-    if n_ring < 3:
-        return n_ring, odt.empty_2d((0, 3), wp.int32, device=device)
-
-    out_faces = odt.empty_2d((n_ring - 2, 3), wp.int32, device=device)
     # A clockwise ring is mirrored before the ear tests, and its reflex count is the mirror's.
-    clockwise = turning < 0.0
+    clockwise = bool(turning < 0.0)
+    if n_ring < 3:
+        return n_ring, odt.empty_2d((0, 3), wp.int32, device=device), clockwise
+
     if (reflex_mirrored if clockwise else reflex) == 0.0:
+        if not write_fan:
+            return n_ring, None, clockwise
         # The fan's faces are index triples, so a convex ring needs no orientation fix-up at all.
+        out_faces = odt.empty_2d((n_ring - 2, 3), wp.int32, device=device)
         _launch.launch(
             kernel_polyline.fan_triangulate, dim=n_ring - 2, inputs=[out_faces], device=device
         )
-        return n_ring, odt.as_array2d(out_faces, wp.int32)
+        return n_ring, odt.as_array2d(out_faces, wp.int32), clockwise
+    out_faces = odt.empty_2d((n_ring - 2, 3), wp.int32, device=device)
 
     # The ear tests read a clockwise ring mirrored (``kernels/polyline.ring_point``), so it is never
     # written mirrored, and a caller's ring needs no copy.
@@ -1819,7 +1840,7 @@ def _triangulate_ring(
             device=device,
         )
         count = int(read_scalar(count_wp, 0))
-        return n_ring, _clipped_faces(out_faces, count, n_ring)
+        return n_ring, _clipped_faces(out_faces, count, n_ring), clockwise
 
     # The ear grid (see ``kernels/polyline.ear_grade_grid``): square cells, about
     # ``EAR_GRID_CELLS_PER_POINT`` per ring point over the ring's box, read back with the turning
@@ -1911,7 +1932,7 @@ def _triangulate_ring(
     run_device_loop(device, condition, clip_round)
 
     count = int(read_scalar(state, int(kernel_polyline.EAR_COUNT)))
-    return n_ring, _clipped_faces(out_faces, count, n_ring)
+    return n_ring, _clipped_faces(out_faces, count, n_ring), clockwise
 
 
 def _clipped_faces(faces: odt.Array2dInt32, count: int, n_tips: int) -> odt.Array2dInt32:

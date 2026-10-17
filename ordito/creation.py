@@ -46,6 +46,7 @@ from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import array as kernel_array
 from ordito.kernels import creation as kernel_creation
 from ordito.kernels import reduce as kernel_reduce
+from ordito.polyline import _triangulate_polygon  # pyright: ignore[reportPrivateUsage]
 
 # Default number of pie wedges per full revolution, matching trimesh.
 DEFAULT_SECTIONS = 32
@@ -1753,7 +1754,8 @@ def extrude_triangulation(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    return _extrude(vertices, faces, height, transform, ring_walls=False)
+    odt.ensure_ndim(vertices, 1, dtype=wp.vec2)
+    return _extrude(vertices, faces, height, transform, clockwise=None)
 
 
 def extrude_polygon(
@@ -1809,7 +1811,8 @@ def extrude_polygon(
     print(f"{od.measures.volume(vertices, faces):.4f}")  # 6.0000
     ```
     """
-    ring, faces = od.polyline.triangulate_polygon(polygon)
+    odt.ensure_ndim(polygon, 1, dtype=wp.vec2)
+    ring, faces, clockwise = _triangulate_polygon(polygon, write_fan=False)
     if mid_plane:
         translation = np.eye(4)
         translation[2, 3] = abs(float(height)) / -2.0
@@ -1818,34 +1821,38 @@ def extrude_polygon(
         else:
             composed = od.transform.matrix_to_numpy(transform).dot(translation)
             transform = wp.mat44(*composed.flatten())
-    # A full triangulation of the ring is bounded by the ring edges themselves; a partial one (a
-    # degenerate ring) has its boundary derived, as ``extrude_triangulation`` does.
-    full = faces.size // 3 == ring.size - 2
-    return _extrude(ring, faces, height, transform, ring_walls=full)
+    # A full triangulation of the ring (a convex ring's fan, passed as ``None``, is one) is bounded
+    # by the ring edges themselves and wound like the ring; a partial one (a degenerate ring) has
+    # its boundary and winding derived, as ``extrude_triangulation`` does.
+    full = faces is None or faces.size // 3 == ring.size - 2
+    return _extrude(ring, faces, height, transform, clockwise=clockwise if full else None)
 
 
 def _extrude(
     vertices: wp.array[wp.vec2],
-    faces: wp.array[wp.int32],
+    faces: wp.array[wp.int32] | None,
     height: float,
     transform: wp.mat44 | None,
     *,
-    ring_walls: bool,
+    clockwise: bool | None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Shared body of ``extrude_triangulation`` and ``extrude_polygon``.
 
-    ``ring_walls`` says ``faces`` is a full ``n - 2`` triangulation of the ring ``vertices``, whose
-    boundary is then the ring edges and is not derived. Whether the triangulation is re-wound to
-    agree with the sign of ``height`` is decided on the device, from its total signed area.
+    A ``clockwise`` that is not ``None`` says ``faces`` is a full ``n - 2`` triangulation of the
+    ring ``vertices`` (``None`` for its fan ``(0, k + 1, k + 2)``) wound like the ring, which runs
+    clockwise or not: its boundary is then the ring edges and its winding is known, so the whole
+    extrusion is one launch. Otherwise the boundary is derived and whether the triangulation is
+    re-wound to agree with the sign of ``height`` is decided on the device, from its total signed
+    area.
     """
-    odt.ensure_ndim(vertices, 1, dtype=wp.vec2)
-    odt.ensure_ndim(faces, 1, dtype=wp.int32)
     device = vertices.device
     n = vertices.size
-    n_faces = faces.size // 3
-    if faces.size % 3 != 0:
-        raise ValueError(f"faces size must be a multiple of 3, got {faces.size}")
+    n_faces = n - 2 if faces is None else faces.size // 3
+    if faces is not None:
+        odt.ensure_ndim(faces, 1, dtype=wp.int32)
+        if faces.size % 3 != 0:
+            raise ValueError(f"faces size must be a multiple of 3, got {faces.size}")
     height_f = float(height)
     if abs(height_f) < TOLERANCE_MERGE:
         raise ValueError(f"height must be nonzero, got {height_f}")
@@ -1855,9 +1862,30 @@ def _extrude(
             0, dtype=wp.int32, device=device
         )
 
-    # Both layers, ``z = 0`` then ``z = height``, and the triangulation's signed area in one pass.
     matrix, transform_mode = _placement(transform)
     layers = _launch.empty(2 * n, dtype=wp.vec3, device=device)
+    if clockwise is not None:
+        # The winding is the ring's, so the triangulation is re-wound exactly when the ring runs
+        # clockwise and the height is positive or the other way round.
+        out_faces = _launch.empty((2 * n_faces + 2 * n) * 3, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_creation.extrude_ring,
+            dim=2 * n_faces + n,
+            inputs=[
+                vertices,
+                faces,
+                wp.float32(height_f),
+                matrix,
+                transform_mode,
+                clockwise != (height_f < 0.0),
+            ],
+            outputs=[layers, out_faces],
+            device=device,
+        )
+        return layers, out_faces
+    assert faces is not None
+
+    # Both layers, ``z = 0`` then ``z = height``, and the triangulation's signed area in one pass.
     area = _launch.zeros(1, dtype=wp.float32, device=device)
     _launch.launch_tiled(
         kernel_creation.lift_layers_and_signed_area,
@@ -1867,13 +1895,10 @@ def _extrude(
         device=device,
     )
 
-    boundary = None
-    n_boundary = n
-    if not ring_walls:
-        # The lower layer is a contiguous prefix, so the boundary walk reads it as a view. The
-        # boundary of the triangulation as given; a re-wound one reverses each edge on the device.
-        boundary = od.boundary.oriented_boundary_edges(odt.as_dense(layers[:n]), faces)
-        n_boundary = int(boundary.shape[0])
+    # The lower layer is a contiguous prefix, so the boundary walk reads it as a view. The boundary
+    # of the triangulation as given; a re-wound one reverses each edge on the device.
+    boundary = od.boundary.oriented_boundary_edges(odt.as_dense(layers[:n]), faces)
+    n_boundary = int(boundary.shape[0])
 
     # Bottom cap winding is reversed; the top cap keeps it and is offset by one vertex block.
     out_faces = _launch.empty((2 * n_faces + 2 * n_boundary) * 3, dtype=wp.int32, device=device)
@@ -1965,11 +1990,14 @@ def sweep_polygon(
             f"angles must have one entry per path point ({n_path}), got {angles.shape}"
         )
 
-    ring, cap_faces = od.polyline.triangulate_polygon(polygon)
+    odt.ensure_ndim(polygon, 1, dtype=wp.vec2)
+    # A convex ring's fan comes back as ``None``; ``sweep_mesh`` forms its faces as it reads them.
+    ring, cap_faces, _ = _triangulate_polygon(polygon, write_fan=False)
     stride = ring.size
+    n_ring_faces = stride - 2 if cap_faces is None else cap_faces.size // 3
     boundary = None
     n_boundary = stride
-    if cap_faces.size // 3 != stride - 2:
+    if cap_faces is not None and n_ring_faces != stride - 2:
         # Only a partial triangulation (a ring that is not simple) can be bounded by anything but
         # the ring edges. ``oriented_boundary_edges`` only uses the vertex count, as its row-hash
         # base, so a zero buffer of the right length is enough.
@@ -1993,7 +2021,7 @@ def sweep_polygon(
     # A connected closed path drops its duplicate final slice and wraps onto the first instead.
     n_slices = n_path - 1
     n_vertices = (n_slices if connect_closed else n_path) * stride
-    n_cap = 0 if connect_closed or not cap else cap_faces.size // 3
+    n_cap = 0 if connect_closed or not cap else n_ring_faces
     vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     faces = _launch.empty(
         (2 * n_slices * n_boundary + 2 * n_cap) * 3, dtype=wp.int32, device=device

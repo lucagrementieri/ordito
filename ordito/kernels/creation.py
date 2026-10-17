@@ -4,7 +4,7 @@ import warp as wp
 
 from ordito.constants import TILE_1D, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.array import lift_vec2
-from ordito.kernels.polyline import segment_displacement
+from ordito.kernels.polyline import fan_face, segment_displacement
 from ordito.kernels.predicates import orient2d
 from ordito.kernels.reduce import block_chunk, commit_block_total
 from ordito.kernels.triangles import corner_triple, face_vertices, write_corner_triple_reversible
@@ -703,8 +703,28 @@ def revolve_mesh(
 
 
 @wp.func
+def cap_face_count(cap_faces: wp.array[wp.int32], n_ring: wp.int32) -> wp.int32:
+    # The faces of a cap triangulation: the caller's flat buffer, or -- when it passed none (a null
+    # array reads shape 0) because the ring is convex -- the ``n_ring - 2`` of its fan.
+    if cap_faces.shape[0] == 0:
+        return n_ring - 2
+    return cap_faces.shape[0] // 3
+
+
+@wp.func
+def cap_triple(cap_faces: wp.array[wp.int32], t: wp.int32) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # Cap face ``t``: row ``t`` of the caller's triangulation, or the convex ring's fan face
+    # (``polyline.fan_face``, which ``polyline.fan_triangulate`` would have written) when it passed
+    # none -- see ``cap_face_count``.
+    if cap_faces.shape[0] == 0:
+        return fan_face(t)
+    return corner_triple(cap_faces, t)
+
+
+@wp.func
 def write_cap_face(
     cap_faces: wp.array[wp.int32],
+    n_cap: wp.int32,
     t: wp.int32,
     end: wp.int32,
     far_offset: wp.int32,
@@ -716,11 +736,11 @@ def write_cap_face(
     # ``row_base + end * n_cap + t``. End 0 is the near cap -- no vertex offset, winding reversed so
     # its normals point outward -- and end 1 the far cap, shifted by ``far_offset`` and keeping the
     # input winding. ``flip`` reverses the input triangulation first (trimesh's ``np.fliplr``), so
-    # it swaps which of the two ends is reversed. Shared by ``extrude_faces`` and ``sweep_mesh``,
-    # whose callers write both caps into adjacent blocks of one buffer.
-    n_cap = cap_faces.shape[0] // 3
+    # it swaps which of the two ends is reversed. ``cap_faces`` holds ``n_cap`` faces, or is null
+    # for a convex ring's fan (``cap_triple``). Shared by ``extrude_faces``, ``extrude_ring`` and
+    # ``sweep_mesh``, whose callers write both caps into adjacent blocks of one buffer.
     offset = wp.where(end == 0, wp.int32(0), far_offset)
-    a, b, c = corner_triple(cap_faces, t)
+    a, b, c = cap_triple(cap_faces, t)
     write_corner_triple_reversible(
         out_faces,
         row_base + end * n_cap + t,
@@ -763,6 +783,23 @@ def wall_edge(
     return boundary[e, 0], boundary[e, 1]
 
 
+@wp.func
+def lift_layer_pair(
+    vertices: wp.array[wp.vec2],
+    i: wp.int32,
+    height: wp.float32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+) -> None:
+    # Ring vertex ``i`` of an extrusion on both layers, placed: ``z = 0`` into slot ``i`` and
+    # ``z = height`` into slot ``n + i``. Shared by ``lift_layers_and_signed_area`` and
+    # ``extrude_ring``.
+    n = vertices.shape[0]
+    out_vertices[i] = place_point(lift_vec2(vertices[i], wp.float32(0.0)), matrix, transform_mode)
+    out_vertices[n + i] = place_point(lift_vec2(vertices[i], height), matrix, transform_mode)
+
+
 @wp.kernel
 def lift_layers_and_signed_area(
     vertices: wp.array[wp.vec2],
@@ -773,13 +810,12 @@ def lift_layers_and_signed_area(
     out_vertices: wp.array[wp.vec3],
     out_area: wp.array[wp.float32],
 ) -> None:
-    # Both vertex layers of an extrusion -- ``z = 0`` into the first ``n`` slots, ``z = height``
-    # into the next ``n`` -- and, in the same pass, twice the triangulation's total signed area
-    # into ``out_area[0]``, whose sign decides on the device whether ``extrude_faces`` re-winds the
-    # triangulation to agree with the sign of the extrusion. One element per lane over
-    # ``max(n, n_faces)``: the kernel writes per vertex, so it keeps one tile per block (the fold
-    # would collapse the grid) and commits one atomic per block. Lane-strided by ``wp.block_dim()``
-    # so the CPU device's single lane covers the chunk.
+    # Both vertex layers of an extrusion (``lift_layer_pair``) and, in the same pass, twice the
+    # triangulation's total signed area into ``out_area[0]``, whose sign decides on the device
+    # whether ``extrude_faces`` re-winds the triangulation to agree with the sign of the extrusion.
+    # One element per lane over ``max(n, n_faces)``: the kernel writes per vertex, so it keeps one
+    # tile per block (the fold would collapse the grid) and commits one atomic per block.
+    # Lane-strided by ``wp.block_dim()`` so the CPU device's single lane covers the chunk.
     chunk, lane = wp.tid()
     n = vertices.shape[0]
     n_faces = faces.shape[0] // 3
@@ -790,16 +826,48 @@ def lift_layers_and_signed_area(
     for k in range(lane, remaining, wp.block_dim()):
         i = offset + k
         if i < n:
-            out_vertices[i] = place_point(
-                lift_vec2(vertices[i], wp.float32(0.0)), matrix, transform_mode
-            )
-            out_vertices[n + i] = place_point(
-                lift_vec2(vertices[i], height), matrix, transform_mode
-            )
+            lift_layer_pair(vertices, i, height, matrix, transform_mode, out_vertices)
         if i < n_faces:
             p0, p1, p2 = face_vertices(vertices, faces, i)
             area += orient2d(p0, p1, p2)
     commit_block_total(lane, area, out_area, 0)
+
+
+@wp.func
+def write_extrusion_cap(
+    faces: wp.array[wp.int32],
+    n_faces: wp.int32,
+    r: wp.int32,
+    stride: wp.int32,
+    flip: wp.bool,
+    transform_mode: wp.int32,
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # Cap row ``r < 2 n_faces`` of an extrusion (``write_cap_face``), the near cap first. A
+    # mirroring placement reverses every triangle: the cap's own flip, inverted.
+    cap_flip = flip != placement_mirrors(transform_mode)
+    write_cap_face(faces, n_faces, r % n_faces, r // n_faces, stride, cap_flip, 0, out_faces)
+
+
+@wp.func
+def write_extrusion_wall(
+    a: wp.int32,
+    b: wp.int32,
+    e: wp.int32,
+    n_faces: wp.int32,
+    stride: wp.int32,
+    flip: wp.bool,
+    transform_mode: wp.int32,
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # The two wall triangles of boundary edge ``e = (a, b)``, bridging the bottom layer (``a, b``)
+    # and the top (``a + stride, b + stride``) at rows ``2 n_faces + 2 e`` and the next. A re-wound
+    # triangulation's boundary is the same edges reversed, which is the swap below.
+    if flip:
+        a, b = b, a
+    row = 2 * n_faces + e * 2
+    write_placed_triangle(out_faces, row, b + stride, a + stride, b, transform_mode)
+    write_placed_triangle(out_faces, row + 1, b, a + stride, a, transform_mode)
 
 
 @wp.kernel
@@ -813,29 +881,53 @@ def extrude_faces(
     out_faces: wp.array[wp.int32],
 ) -> None:
     # Every face of an extrusion in one launch: rows ``[0, 2 n_faces)`` are the two caps
-    # (``write_cap_face``) and each row past them two wall triangles bridging boundary edge
-    # ``(a, b)`` between the bottom layer (``a, b``) and the top (``a + stride, b + stride``).
-    # trimesh builds the walls from a 4-vertex soup per edge and relies on its vertex merge to fuse
-    # them onto the caps; indexing the caps directly makes the result watertight with no merge.
+    # (``write_extrusion_cap``) and each row past them two wall triangles bridging a boundary edge
+    # (``write_extrusion_wall``). trimesh builds the walls from a 4-vertex soup per edge and relies
+    # on its vertex merge to fuse them onto the caps; indexing the caps directly makes the result
+    # watertight with no merge.
     #
     # The triangulation is re-wound when its signed area (``lift_layers_and_signed_area``) and the
-    # height disagree in sign, so both caps and the walls face outward. A re-wound triangulation's
-    # boundary is the same edges reversed, which is the swap below.
+    # height disagree in sign, so both caps and the walls face outward. ``extrude_ring`` is the
+    # same rows for a full ring triangulation whose winding the host already knows.
     r = wp.int32(wp.tid())
     n_faces = faces.shape[0] // 3
     flip = (area[0] < wp.float32(0.0)) != height_negative
     if r < 2 * n_faces:
-        # A mirroring placement reverses every triangle: the cap's own flip, inverted.
-        cap_flip = flip != placement_mirrors(transform_mode)
-        write_cap_face(faces, r % n_faces, r // n_faces, stride, cap_flip, 0, out_faces)
+        write_extrusion_cap(faces, n_faces, r, stride, flip, transform_mode, out_faces)
         return
     e = r - 2 * n_faces
     a, b = wall_edge(boundary, e, stride)
-    if flip:
-        a, b = b, a
-    row = 2 * n_faces + e * 2
-    write_placed_triangle(out_faces, row, b + stride, a + stride, b, transform_mode)
-    write_placed_triangle(out_faces, row + 1, b, a + stride, a, transform_mode)
+    write_extrusion_wall(a, b, e, n_faces, stride, flip, transform_mode, out_faces)
+
+
+@wp.kernel
+def extrude_ring(
+    vertices: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    height: wp.float32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
+    flip: wp.bool,
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # A whole extrusion of a full ``n - 2`` triangulation of an ``n``-ring in one launch, dim ==
+    # ``2 (n - 2) + n``: ``lift_layers_and_signed_area``'s vertex layers on the first ``n`` threads
+    # and ``extrude_faces``' rows on every thread. It differs from that pair in what it is told:
+    # the host knows the triangulation's winding (``polyline.triangulate_polygon``'s orientation),
+    # so ``flip`` arrives decided and no area is summed, and the boundary is the ring edges
+    # (``ring_boundary_edge``). ``faces`` is null for a convex ring's fan (``cap_triple``).
+    r = wp.int32(wp.tid())
+    n = vertices.shape[0]
+    n_faces = n - 2
+    if r < n:
+        lift_layer_pair(vertices, r, height, matrix, transform_mode, out_vertices)
+    if r < 2 * n_faces:
+        write_extrusion_cap(faces, n_faces, r, n, flip, transform_mode, out_faces)
+        return
+    e = r - 2 * n_faces
+    a, b = ring_boundary_edge(e, n)
+    write_extrusion_wall(a, b, e, n_faces, n, flip, transform_mode, out_faces)
 
 
 @wp.func
@@ -960,10 +1052,10 @@ def sweep_mesh(
         out_faces[base + 5] = b % n_vertices
         return
     c = w - n_slices * n_boundary
-    n_cap = cap_faces.shape[0] // 3
+    n_cap = cap_face_count(cap_faces, stride)
     far = stride * n_slices
     write_cap_face(
-        cap_faces, c % n_cap, c // n_cap, far, False, 2 * n_slices * n_boundary, out_faces
+        cap_faces, n_cap, c % n_cap, c // n_cap, far, False, 2 * n_slices * n_boundary, out_faces
     )
 
 
