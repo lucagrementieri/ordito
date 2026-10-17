@@ -38,7 +38,12 @@ from ordito.kernels import graph as kernel_graph
 from ordito.kernels import halfedge as kernel_halfedge
 
 
-def boundary_edges(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> odt.Array2dInt32:
+def boundary_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
+) -> odt.Array2dInt32:
     """
     Undirected boundary edges (each row min-first), without preserving orientation.
 
@@ -52,6 +57,11 @@ def boundary_edges(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> od
         index must be below ``n_vertices``.
     faces
         ``(3 * n_faces,)`` face index buffer.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -63,6 +73,8 @@ def boundary_edges(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> od
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Examples
     --------
@@ -77,12 +89,15 @@ def boundary_edges(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> od
     print(od.boundary.boundary_edges(vertices, faces).shape)  # (0, 2)
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
-    return _boundary_edges_impl(faces, vertices.size, oriented=False)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
+    return _boundary_edges_impl(faces, vertices.size, mates, oriented=False)
 
 
 def oriented_boundary_edges(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> odt.Array2dInt32:
     """
     Directed boundary edges, preserving the orientation from the face winding.
@@ -97,6 +112,11 @@ def oriented_boundary_edges(
         index must be below ``n_vertices``.
     faces
         ``(3 * n_faces,)`` face index buffer.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -108,6 +128,8 @@ def oriented_boundary_edges(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Examples
     --------
@@ -124,12 +146,12 @@ def oriented_boundary_edges(
     print(sorted(edges.numpy().tolist()))  # [[0, 1], [1, 2], [2, 0]]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
-    return _boundary_edges_impl(faces, vertices.size, oriented=True)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
+    return _boundary_edges_impl(faces, vertices.size, mates, oriented=True)
 
 
 def _boundary_edges_impl(
-    faces: wp.array[wp.int32], n_vertices: int, *, oriented: bool
+    faces: wp.array[wp.int32], n_vertices: int, mates: wp.array[wp.int32] | None, *, oriented: bool
 ) -> odt.Array2dInt32:
     """
     Shared body of [`boundary_edges`][ordito.boundary.boundary_edges] and its oriented form.
@@ -140,11 +162,15 @@ def _boundary_edges_impl(
     n_faces = faces.size // 3
     if n_faces == 0:
         return odt.empty_2d((0, 2), wp.int32, device=faces.device)
-    return _BoundaryHalfedges(faces, n_vertices or None).edges(sort_pair=not oriented)
+    return _BoundaryHalfedges(faces, n_vertices or None, mates).edges(sort_pair=not oriented)
 
 
 def boundary_loops(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, copy: bool = False
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    copy: bool = False,
+    mates: wp.array[wp.int32] | None = None,
 ) -> list[wp.array[wp.int32]]:
     """
     Ordered vertex-index loops along each mesh boundary.
@@ -175,6 +201,11 @@ def boundary_loops(
         ``(3 * n_faces,)`` face index buffer.
     copy
         Return independent buffers instead of views into the packed result.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -187,6 +218,8 @@ def boundary_loops(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Notes
     -----
@@ -230,13 +263,16 @@ def boundary_loops(
     print([loop.numpy().tolist() for loop in loops])  # [[0, 1, 2], [3, 4, 5]]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
-    flat_loops, offsets = boundary_loops_with_offsets(vertices, faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
+    flat_loops, offsets = boundary_loops_with_offsets(vertices, faces, mates=mates)
     return od.array.split(flat_loops, offsets, copy=copy)
 
 
 def boundary_loops_with_offsets(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Every boundary loop at once, packed into one buffer plus per-loop offsets.
@@ -257,6 +293,11 @@ def boundary_loops_with_offsets(
         size and the edge-key radix, so every face index must be below it.
     faces
         ``(3 * n_faces,)`` face index buffer.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -272,6 +313,8 @@ def boundary_loops_with_offsets(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -300,7 +343,7 @@ def boundary_loops_with_offsets(
     print(offsets.numpy().tolist())  # [0, 3, 6]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
@@ -309,7 +352,7 @@ def boundary_loops_with_offsets(
     n_vertices = vertices.size
     # One boundary detection for every edge view below; ``boundary_edges`` /
     # ``oriented_boundary_edges`` / ``boundary_vertex_indices`` would each redo the pairing.
-    boundary = _BoundaryHalfedges(faces, n_vertices)
+    boundary = _BoundaryHalfedges(faces, n_vertices, mates)
     has_seam, has_pinch = _boundary_defects(boundary, n_vertices)
     if boundary.count() == 0:
         return _launch.empty_packed(wp.int32, device)
@@ -939,7 +982,10 @@ def _pack_loop_segments(
 
 
 def longest_boundary_loop(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.int32]:
     """
     Ordered vertex-index loop along the longest mesh boundary.
@@ -955,6 +1001,11 @@ def longest_boundary_loop(
     ----------
     vertices, faces
         Forwarded to [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets].
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -967,6 +1018,8 @@ def longest_boundary_loop(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -994,9 +1047,9 @@ def longest_boundary_loop(
     print(od.boundary.longest_boundary_loop(vertices, faces).numpy().tolist())  # [0, 1, 3, 2]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     device = faces.device
-    flat_loops, offsets = boundary_loops_with_offsets(vertices, faces)
+    flat_loops, offsets = boundary_loops_with_offsets(vertices, faces, mates=mates)
     n_loops = offsets.size - 1
     if n_loops == 0:
         return _launch.empty(0, dtype=wp.int32, device=device)
@@ -1019,7 +1072,10 @@ def longest_boundary_loop(
 
 
 def boundary_vertex_indices(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.int32]:
     """
     Sorted unique vertex indices lying on the mesh boundary.
@@ -1033,6 +1089,11 @@ def boundary_vertex_indices(
         below it).
     faces
         ``(3 * n_faces,)`` face index buffer.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -1044,6 +1105,8 @@ def boundary_vertex_indices(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Examples
     --------
@@ -1057,16 +1120,21 @@ def boundary_vertex_indices(
     print(rim.numpy().tolist())  # [0, 1, 2, 3, 5, 6, 7, 8]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     if faces.size // 3 == 0:
         return _launch.empty(0, dtype=wp.int32, device=faces.device)
     # The endpoints are vertex indices below ``len(vertices)``, so a per-vertex flag array and its
     # scan give the sorted unique set directly -- no edge list and no ``unique_1d``.
     n_vertices = vertices.size
-    return _BoundaryHalfedges(faces, n_vertices).vertex_indices(n_vertices)
+    return _BoundaryHalfedges(faces, n_vertices, mates).vertex_indices(n_vertices)
 
 
-def boundary_vertices(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> wp.array[wp.vec3]:
+def boundary_vertices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
+) -> wp.array[wp.vec3]:
     """
     Coordinates of the vertices lying on the mesh boundary.
 
@@ -1076,6 +1144,11 @@ def boundary_vertices(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
         ``(n_vertices,)`` vertex positions.
     faces
         ``(3 * n_faces,)`` face index buffer.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -1087,6 +1160,8 @@ def boundary_vertices(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Examples
     --------
@@ -1099,14 +1174,17 @@ def boundary_vertices(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     print(rim.numpy()[0])  # [-0.5 -0.5  0. ]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     if faces.size // 3 == 0:
         return _launch.empty(0, dtype=wp.vec3, device=faces.device)
-    return _BoundaryHalfedges(faces, vertices.size).vertex_positions(vertices)
+    return _BoundaryHalfedges(faces, vertices.size, mates).vertex_positions(vertices)
 
 
 def ears(
-    faces: wp.array[wp.int32], *, n_vertices: int | None = None
+    faces: wp.array[wp.int32],
+    *,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Find ear faces (triangles with exactly two boundary edges).
@@ -1130,6 +1208,11 @@ def ears(
         Optional vertex count, forwarded to
         [`halfedge_mates`][ordito.halfedge.halfedge_mates]: it narrows the sort that pairs the
         halfedges. Trusted, not checked: it must exceed every index in ``faces``.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -1139,6 +1222,11 @@ def ears(
     ear_opp : wp.array[wp.int32]
         ``(n_ears,)`` local edge index of the interior edge for each ear face, same length as
         ``ear``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -1158,6 +1246,7 @@ def ears(
     print(faces.numpy().tolist())  # [0, 2, 3, 0, 3, 1]
     ```
     """
+    require_same_device(faces=faces, mates=mates)
     n_faces = faces.size // 3
     device = faces.device
     empty = _launch.empty(0, dtype=wp.int32, device=device)
@@ -1165,7 +1254,7 @@ def ears(
         return empty, empty
 
     # A boundary edge is a halfedge with no mate, read per corner: no mask, scan or readback.
-    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    mates = mates if mates is not None else od.halfedge.halfedge_mates(faces, n_vertices)
 
     # Flag, scan in place, and emit at the scan's steps: ascending face order, one readback.
     inclusive = _launch.empty(n_faces, dtype=wp.int32, device=device)
@@ -1200,13 +1289,24 @@ class _BoundaryHalfedges:
     boundary sort orders only the bits a key can occupy.
     """
 
-    def __init__(self, faces: wp.array[wp.int32], n_vertices: int | None = None) -> None:
+    def __init__(
+        self,
+        faces: wp.array[wp.int32],
+        n_vertices: int | None = None,
+        mates: wp.array[wp.int32] | None = None,
+    ) -> None:
         self.faces = faces
         self.n = faces.size // 3 * 3
         self.n_vertices = n_vertices
-        self.mates, self.key_order = od.halfedge.halfedge_mates(
-            faces, n_vertices, return_key_order=True
-        )
+        # Given mates come without a key order, as the bucketed pairing's do: the flags are then
+        # read in halfedge order and ``key_ordered_halfedges`` sorts only the boundary halfedges.
+        self.key_order: wp.array[wp.int32] | None = None
+        if mates is not None:
+            self.mates = mates
+        else:
+            self.mates, self.key_order = od.halfedge.halfedge_mates(
+                faces, n_vertices, return_key_order=True
+            )
         self._inclusive: wp.array[wp.int32] | None = None
         self._count = 0
         self.defects = (False, False)

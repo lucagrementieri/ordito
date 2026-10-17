@@ -383,11 +383,25 @@ def test_crouzeix_raviart_shared_edge_numbering(saddle_graded: tuple[tm.Trimesh,
         )
     ).toarray()
     assert np.array_equal(derived, supplied)
+    curved_derived = bsr_to_csr(
+        od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices)
+    ).toarray()
+    curved_supplied = bsr_to_csr(
+        od.energies.curved_hessian_energy(
+            mesh_wp.points, mesh_wp.indices, unique_edges=unique_edges, edge_map=edge_map
+        )
+    ).toarray()
+    # The curved energy's float64 assembly sums in arrival order on CUDA, so two calls agree
+    # to round-off rather than bit for bit, with or without the supplied numbering.
+    scale = np.abs(curved_derived).max()
+    assert np.allclose(curved_supplied, curved_derived, rtol=1e-9, atol=1e-9 * scale)
 
     with pytest.raises(ValueError, match="together"):
         od.energies.crouzeix_raviart_massmatrix(
             mesh_wp.points, mesh_wp.indices, unique_edges=unique_edges
         )
+    with pytest.raises(ValueError, match="together"):
+        od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices, edge_map=edge_map)
 
 
 def test_operator_family_empty_mesh(device: str) -> None:

@@ -638,7 +638,12 @@ def hessian_energy(
 
 
 def curved_hessian_energy(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type[odt.Block] = wp.float64
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    dtype: type[odt.Block] = wp.float64,
+    *,
+    unique_edges: odt.Array2dInt32 | None = None,
+    edge_map: wp.array[wp.int32] | None = None,
 ) -> odt.BsrMatrix[odt.Block]:
     """
     Curved Hessian smoothness energy on the Crouzeix-Raviart discretization.
@@ -667,6 +672,12 @@ def curved_hessian_energy(
         Scalar block type of the assembled matrix: ``wp.float64`` (default) or ``wp.float32``,
         with float64 the default for the same conditioning reason as
         [`hessian_energy`][ordito.energies.hessian_energy].
+    unique_edges, edge_map
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` optional precomputed edge numbering from
+        [`edges_unique`][ordito.edges.edges_unique] — pass both or neither — to spare the sort
+        that otherwise builds it. [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique] and
+        [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] are the cached
+        ones to pass.
 
     Returns
     -------
@@ -677,9 +688,11 @@ def curved_hessian_energy(
     Raises
     ------
     ValueError
-        If the mesh is not edge-manifold (some edge is shared by more than two faces).
+        If the mesh is not edge-manifold (some edge is shared by more than two faces), or if only
+        one of ``unique_edges`` and ``edge_map`` is passed.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``unique_edges`` and ``edge_map`` are not all on one
+        device.
 
     See Also
     --------
@@ -704,14 +717,16 @@ def curved_hessian_energy(
     print(np.abs((energy @ ones).numpy()).max() < 1e-8)  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(
+        vertices=vertices, faces=faces, unique_edges=unique_edges, edge_map=edge_map
+    )
     n_vertices = vertices.size
     n_faces = faces.size // 3
     device = vertices.device
     if n_faces == 0:
         return od.array.empty_square_bsr(n_vertices, dtype, device)
 
-    unique_edges, inverse = edges_unique(faces, n_vertices=n_vertices, validate=False)
+    unique_edges, inverse = _edge_numbering(vertices, faces, unique_edges, edge_map)
     n_edges = int(unique_edges.shape[0])
 
     angles = _launch.empty((n_faces, 3), dtype=wp.float64, device=device)

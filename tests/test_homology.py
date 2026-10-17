@@ -345,7 +345,8 @@ def test_homology_generators_is_its_packed_form_split(
 
     ``homology_generators`` carries the MeshLib count comparison and the invariants above; this
     pins ``homology_generators_with_offsets`` to it -- the same basis in the same order, with
-    ``[0]`` offsets for the sphere.
+    ``[0]`` offsets for the sphere -- and pins the precomputed ``unique_edges`` / ``edge_map`` to
+    the derived numbering; half a pair raises.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
@@ -359,3 +360,12 @@ def test_homology_generators_is_its_packed_form_split(
     flat_np = flat_wp.numpy()
     for i, loop_wp in enumerate(loops_wp):
         assert np.array_equal(loop_wp.numpy(), flat_np[offsets_np[i] : offsets_np[i + 1]])
+
+    unique_edges, edge_map = od.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
+    flat_supplied_wp, offsets_supplied_wp = od.homology.homology_generators_with_offsets(
+        mesh_wp.points, mesh_wp.indices, unique_edges=unique_edges, edge_map=edge_map
+    )
+    assert np.array_equal(flat_supplied_wp.numpy(), flat_np)
+    assert np.array_equal(offsets_supplied_wp.numpy(), offsets_np)
+    with pytest.raises(ValueError, match="together"):
+        od.homology.homology_generators(mesh_wp.points, mesh_wp.indices, edge_map=edge_map)

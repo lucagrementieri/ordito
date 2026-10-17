@@ -1700,3 +1700,68 @@ def test_face_defective_mask_matches_meshlib(
     )
     assert int(patch_wp.sum()) == 1
     assert int(patch_ml.sum()) == 3
+
+
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "saddle_graded", "mobius", "boy_surface"]
+)
+def test_validation_functions_take_precomputed_mates(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: given ``mates`` reproduce what each predicate derives itself.
+
+    The derived answers are pinned to the reference libraries above; this pins the ``mates``
+    keyword to them over a closed, an open and two non-orientable fixtures, so each predicate
+    sees both of its answers across the set. ``face_flip_mask`` is compared only where the mesh
+    is orientable: on a non-orientable one its bits are not reproducible on CUDA from one call to
+    the next, with or without ``mates``.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+    verdicts = {
+        "is_vertex_manifold": (
+            od.validation.is_vertex_manifold(faces_wp),
+            od.validation.is_vertex_manifold(faces_wp, mates=mates_wp),
+        ),
+        "is_winding_consistent": (
+            od.validation.is_winding_consistent(faces_wp),
+            od.validation.is_winding_consistent(faces_wp, mates=mates_wp),
+        ),
+        "is_orientable": (
+            od.validation.is_orientable(faces_wp),
+            od.validation.is_orientable(faces_wp, mates=mates_wp),
+        ),
+        "is_watertight": (
+            od.validation.is_watertight(vertices_wp, faces_wp),
+            od.validation.is_watertight(vertices_wp, faces_wp, mates=mates_wp),
+        ),
+        "is_volume": (
+            od.validation.is_volume(vertices_wp, faces_wp),
+            od.validation.is_volume(vertices_wp, faces_wp, mates=mates_wp),
+        ),
+    }
+    for name, (derived, supplied) in verdicts.items():
+        assert supplied == derived, name
+    masks = {
+        "edge_manifold_mask": (
+            od.validation.edge_manifold_mask(faces_wp),
+            od.validation.edge_manifold_mask(faces_wp, mates=mates_wp),
+        ),
+        "vertex_manifold_mask": (
+            od.validation.vertex_manifold_mask(vertices_wp, faces_wp),
+            od.validation.vertex_manifold_mask(vertices_wp, faces_wp, mates=mates_wp),
+        ),
+        "face_defective_mask": (
+            od.validation.face_defective_mask(vertices_wp, faces_wp),
+            od.validation.face_defective_mask(vertices_wp, faces_wp, mates=mates_wp),
+        ),
+    }
+    if verdicts["is_orientable"][0]:
+        masks["face_flip_mask"] = (
+            od.validation.face_flip_mask(faces_wp),
+            od.validation.face_flip_mask(faces_wp, mates=mates_wp),
+        )
+    for name, (derived_wp, supplied_wp) in masks.items():
+        assert np.array_equal(supplied_wp.numpy(), derived_wp.numpy()), name

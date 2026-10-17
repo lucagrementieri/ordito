@@ -1006,3 +1006,45 @@ def _assert_no_boundary(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.in
     ear_wp, ear_opp_wp = od.boundary.ears(faces_wp)
     assert ear_wp.shape == (0,)
     assert ear_opp_wp.shape == (0,)
+
+
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular_holes", "mobius"])
+def test_boundary_functions_take_precomputed_mates(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: given ``mates`` reproduce what each function derives itself.
+
+    The derived results are pinned to the reference libraries above; this pins the ``mates``
+    keyword to them. Given mates carry no key order, so the boundary rows are re-sorted from the
+    boundary halfedges alone -- the path the bucketed pairing takes on a large CUDA mesh.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+    assert od.boundary.boundary_edges(vertices_wp, faces_wp).shape[0] > 0  # not vacuous
+    for function in (
+        od.boundary.boundary_edges,
+        od.boundary.oriented_boundary_edges,
+        od.boundary.boundary_vertex_indices,
+        od.boundary.boundary_vertices,
+        od.boundary.longest_boundary_loop,
+    ):
+        derived_np = function(vertices_wp, faces_wp).numpy()
+        supplied_np = function(vertices_wp, faces_wp, mates=mates_wp).numpy()
+        assert np.array_equal(supplied_np, derived_np), function.__name__
+    for derived_wp, supplied_wp in zip(
+        od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp),
+        od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp, mates=mates_wp),
+        strict=True,
+    ):
+        assert np.array_equal(supplied_wp.numpy(), derived_wp.numpy())
+    derived_loops = od.boundary.boundary_loops(vertices_wp, faces_wp)
+    supplied_loops = od.boundary.boundary_loops(vertices_wp, faces_wp, mates=mates_wp)
+    assert [loop.numpy().tolist() for loop in supplied_loops] == [
+        loop.numpy().tolist() for loop in derived_loops
+    ]
+    for derived_wp, supplied_wp in zip(
+        od.boundary.ears(faces_wp), od.boundary.ears(faces_wp, mates=mates_wp), strict=True
+    ):
+        assert np.array_equal(supplied_wp.numpy(), derived_wp.numpy())

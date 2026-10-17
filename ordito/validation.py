@@ -145,6 +145,7 @@ def edge_manifold_mask(
     *,
     n_vertices: int | None = None,
     validate: bool = True,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.bool]:
     """
     Per-face flag: whether all three of each face's undirected edges are edge-manifold.
@@ -172,6 +173,11 @@ def edge_manifold_mask(
         ``ordito.reduce.minmax`` whose host readback serialises the device pipeline. Pass
         ``False`` only where both bounds are structurally guaranteed -- a face buffer this package
         produced itself, or one an entry point has already validated.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -182,6 +188,8 @@ def edge_manifold_mask(
     ------
     ValueError
         If ``validate`` is ``True`` and a face index is negative or reaches the vertex count.
+    RuntimeError
+        If ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -202,6 +210,7 @@ def edge_manifold_mask(
     print(od.validation.edge_manifold_mask(faces).numpy().tolist())  # [False, False, True, False]
     ```
     """
+    require_same_device(faces=faces, mates=mates)
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
@@ -209,8 +218,12 @@ def edge_manifold_mask(
 
     # The share count of each edge is its halfedges' mate code, read in place: no unique-edge
     # table, inverse or count array, and no host read of the unique count.
-    mates = od.halfedge.halfedge_mates(
-        faces, _validated_vertex_bound(faces, n_vertices, validate, "edge_manifold_mask")
+    mates = (
+        mates
+        if mates is not None
+        else od.halfedge.halfedge_mates(
+            faces, _validated_vertex_bound(faces, n_vertices, validate, "edge_manifold_mask")
+        )
     )
     out_mask = _launch.full(n_faces, True, dtype=wp.bool, device=device)
     _launch.launch(
@@ -246,6 +259,7 @@ def is_vertex_manifold(
     face_adjacency: odt.Array2dInt32 | None = None,
     face_adjacency_edges: odt.Array2dInt32 | None = None,
     n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> bool:
     """
     Whether every vertex up to ``max(faces)`` is used and has a single edge-connected fan of faces.
@@ -276,6 +290,11 @@ def is_vertex_manifold(
         ``max(faces) + 1`` and is not checked. It sizes the working tables only and does not change
         the answer: vertices past ``max(faces)`` are still not considered. When ``None``,
         ``max(faces) + 1`` is inferred with a device-host sync.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -288,7 +307,8 @@ def is_vertex_manifold(
     ValueError
         If exactly one of ``face_adjacency`` / ``face_adjacency_edges`` is provided.
     RuntimeError
-        If ``faces``, ``face_adjacency`` and ``face_adjacency_edges`` are not all on one device.
+        If ``faces``, ``face_adjacency``, ``face_adjacency_edges`` and ``mates`` are not all on
+        one device.
 
     See Also
     --------
@@ -323,7 +343,10 @@ def is_vertex_manifold(
     ```
     """
     require_same_device(
-        faces=faces, face_adjacency=face_adjacency, face_adjacency_edges=face_adjacency_edges
+        faces=faces,
+        face_adjacency=face_adjacency,
+        face_adjacency_edges=face_adjacency_edges,
+        mates=mates,
     )
     # Checked before the empty-mesh guard so a caller passing only one half of the pair is told
     # about it whatever the mesh is; resolved after it, because on an empty buffer the resolve is
@@ -338,7 +361,10 @@ def is_vertex_manifold(
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     if face_adjacency is None:
         parents = _corner_parents_from_mates(
-            faces, od.halfedge.halfedge_mates(faces, n_vertices), False, None
+            faces,
+            (mates if mates is not None else od.halfedge.halfedge_mates(faces, n_vertices)),
+            False,
+            None,
         )
     else:
         assert face_adjacency_edges is not None
@@ -388,7 +414,10 @@ def _corner_parents_from_adjacency(
 
 
 def vertex_manifold_mask(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.bool]:
     """
     Per-vertex flag: whether each vertex has a single edge-connected fan of faces.
@@ -405,6 +434,11 @@ def vertex_manifold_mask(
         trailing unreferenced vertices are reported (``False``).
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -414,7 +448,7 @@ def vertex_manifold_mask(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -436,14 +470,17 @@ def vertex_manifold_mask(
     print(mask.numpy().tolist())  # [False, True, True, True, True, False]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     n_vertices = vertices.size
     if faces.size // 3 == 0:
         return _launch.zeros(n_vertices, dtype=wp.bool, device=faces.device)
     # The corner graph straight off the halfedge mates, with its pair check off: no thread indexes
     # the violation flag, so none is allocated.
     parents = _corner_parents_from_mates(
-        faces, od.halfedge.halfedge_mates(faces, n_vertices), False, None
+        faces,
+        (mates if mates is not None else od.halfedge.halfedge_mates(faces, n_vertices)),
+        False,
+        None,
     )
     mask = _launch.zeros(n_vertices, dtype=wp.bool, device=faces.device)
     _vertex_manifold_check(faces, n_vertices, parents, mask, None)
@@ -657,7 +694,12 @@ def _mark_self_intersections(
     )
 
 
-def is_winding_consistent(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -> bool:
+def is_winding_consistent(
+    faces: wp.array[wp.int32],
+    *,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
+) -> bool:
     """
     Whether every shared edge is traversed in opposite directions by its two faces.
 
@@ -674,12 +716,22 @@ def is_winding_consistent(faces: wp.array[wp.int32], *, n_vertices: int | None =
         Optional exclusive bound on the vertex indices, forwarded to
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it. It does
         not change the answer, and it is trusted, not checked: it must exceed every index.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
     bool
         ``True`` when winding is consistent across all shared edges. Vacuously ``True`` for an empty
         mesh or a mesh with no shared edges.
+
+    Raises
+    ------
+    RuntimeError
+        If ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -706,13 +758,14 @@ def is_winding_consistent(faces: wp.array[wp.int32], *, n_vertices: int | None =
     print(od.validation.is_orientable(faces))  # True
     ```
     """
+    require_same_device(faces=faces, mates=mates)
     n_faces = faces.size // 3
     if n_faces == 0:
         return True
 
     # ``edge_winding_consistent_mask``'s per-pair test read straight off the halfedge mates, so
     # the verdict needs no group table, no host read of its length and no reduction over a mask.
-    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    mates = mates if mates is not None else od.halfedge.halfedge_mates(faces, n_vertices)
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     _launch.launch(
         kernel_validation.mate_pair_winding_violation,
@@ -902,7 +955,12 @@ def face_orientation_bits(
     return orient, signed_edges, signs, m
 
 
-def is_orientable(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -> bool:
+def is_orientable(
+    faces: wp.array[wp.int32],
+    *,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
+) -> bool:
     """
     Whether the faces admit a consistent orientation (allowing per-face flips).
 
@@ -922,11 +980,21 @@ def is_orientable(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -
         Optional exclusive bound on the vertex indices, forwarded to
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it. It does
         not change the answer, and it is trusted, not checked: it must exceed every index.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
     bool
         ``True`` when a consistent orientation exists. Vacuously ``True`` for an empty mesh.
+
+    Raises
+    ------
+    RuntimeError
+        If ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -957,11 +1025,12 @@ def is_orientable(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -
     print(od.validation.is_orientable(mobius))  # False
     ```
     """
+    require_same_device(faces=faces, mates=mates)
     n_faces = faces.size // 3
     if n_faces == 0:
         return True
 
-    orient, mates = _orientation_bits_from_mates(faces, n_vertices)
+    orient, mates = _orientation_bits_from_mates(faces, n_vertices, mates)
     device = faces.device
     conflict = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
@@ -974,7 +1043,10 @@ def is_orientable(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -
 
 
 def face_flip_mask(
-    faces: wp.array[wp.int32], *, n_vertices: int | None = None
+    faces: wp.array[wp.int32],
+    *,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.bool]:
     """
     Per-face flag: whether a face must be flipped to make winding consistent within its patch.
@@ -994,11 +1066,21 @@ def face_flip_mask(
         Optional exclusive bound on the vertex indices, forwarded to
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it. It does
         not change the answer, and it is trusted, not checked: it must exceed every index.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
     wp.array[wp.bool]
         ``(n_faces,)`` mask on ``faces.device``. Empty for an empty mesh.
+
+    Raises
+    ------
+    RuntimeError
+        If ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -1039,13 +1121,14 @@ def face_flip_mask(
     print(int(flips.sum()), bool(flips[0]))  # 11 False
     ```
     """
+    require_same_device(faces=faces, mates=mates)
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.bool, device=device)
 
     # The flip mask is the parity itself, so the flatten writes it as a ``bool`` directly.
-    words, _ = _orientation_words_from_mates(faces, n_vertices)
+    words, _ = _orientation_words_from_mates(faces, n_vertices, mates)
     mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_validation.flatten_parity_flip_mask, dim=n_faces, inputs=[words, mask], device=device
@@ -1054,7 +1137,7 @@ def face_flip_mask(
 
 
 def _orientation_bits_from_mates(
-    faces: wp.array[wp.int32], n_vertices: int | None
+    faces: wp.array[wp.int32], n_vertices: int | None, mates: wp.array[wp.int32] | None
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Flip bits, with the signed edges formed straight off the halfedge mates.
@@ -1062,14 +1145,14 @@ def _orientation_bits_from_mates(
     The bits [`face_orientation_bits`][ordito.validation.face_orientation_bits] returns, for
     [`is_orientable`][ordito.validation.is_orientable], which consumes the bits and not the table.
     ``faces`` must be non-empty; ``n_vertices`` is ``halfedge_mates``' optional bound. The mates
-    are returned too, so a caller can re-form the same edges.
+    are returned too, so a caller can re-form the same edges; given ``mates`` are used as they are.
     """
-    words, mates = _orientation_words_from_mates(faces, n_vertices)
+    words, mates = _orientation_words_from_mates(faces, n_vertices, mates)
     return _flatten_orientation(words), mates
 
 
 def _orientation_words_from_mates(
-    faces: wp.array[wp.int32], n_vertices: int | None
+    faces: wp.array[wp.int32], n_vertices: int | None, mates: wp.array[wp.int32] | None
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Build the parity union-find's hooked words over the signed edges of the halfedge mates.
@@ -1081,7 +1164,8 @@ def _orientation_words_from_mates(
     (``_flatten_orientation``) or [`face_flip_mask`][ordito.validation.face_flip_mask]'s mask.
     Returned with the mates.
     """
-    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    if mates is None:
+        mates = od.halfedge.halfedge_mates(faces, n_vertices)
     # Every endpoint is a face id derived in the thread from a halfedge index, bounded by
     # ``n_faces`` by construction, and every sign is ``0`` or ``1``.
     words = _orientation_words(
@@ -1148,6 +1232,7 @@ def is_watertight(
     faces: wp.array[wp.int32],
     *,
     mesh: wp.Mesh | Callable[[], wp.Mesh] | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> bool:
     """
     Whether the mesh bounds a closed volume with no self-intersections.
@@ -1170,6 +1255,11 @@ def is_watertight(
         returning one, called only once both manifold tests have passed, so a caller that caches
         the mesh builds it only when the answer needs it. Purely an optimization, and not checked
         against ``vertices`` / ``faces``.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -1180,7 +1270,7 @@ def is_watertight(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces`` and a ``wp.Mesh`` ``mesh`` are not all on one device.
+        If ``vertices``, ``faces``, a ``wp.Mesh`` ``mesh`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -1217,7 +1307,10 @@ def is_watertight(
     ```
     """
     require_same_device(
-        vertices=vertices, faces=faces, mesh=mesh if isinstance(mesh, wp.Mesh) else None
+        vertices=vertices,
+        faces=faces,
+        mesh=mesh if isinstance(mesh, wp.Mesh) else None,
+        mates=mates,
     )
     n_faces = faces.size // 3
     if n_faces == 0:
@@ -1233,7 +1326,10 @@ def is_watertight(
     n_vertices = vertices.size
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     parents = _corner_parents_from_mates(
-        faces, od.halfedge.halfedge_mates(faces, n_vertices), True, violation
+        faces,
+        (mates if mates is not None else od.halfedge.halfedge_mates(faces, n_vertices)),
+        True,
+        violation,
     )
     _vertex_manifold_check(faces, n_vertices, parents, None, violation, require_referenced=False)
     if int(read_scalar(violation)) != 0:
@@ -1301,7 +1397,11 @@ def face_watertight_mask(
 
 
 def is_volume(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, edges: odt.Array2dInt32 | None = None
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    edges: odt.Array2dInt32 | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> bool:
     """
     Whether the mesh is a valid closed volume with outward-facing normals.
@@ -1321,6 +1421,11 @@ def is_volume(
         ``(3 * n_faces, 2)`` precomputed directed edges in
         [`faces_to_edges`][ordito.edges.faces_to_edges] row order. When ``None``, built from
         ``faces``.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -1331,7 +1436,7 @@ def is_volume(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces`` and ``edges`` are not all on one device.
+        If ``vertices``, ``faces``, ``edges`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -1367,7 +1472,7 @@ def is_volume(
     print(od.validation.is_volume(vertices, inverted))  # False
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, edges=edges)
+    require_same_device(vertices=vertices, faces=faces, edges=edges, mates=mates)
     n_faces = faces.size // 3
     if n_faces == 0:
         return False
@@ -1375,7 +1480,7 @@ def is_volume(
     # Watertightness and winding consistency are one pass over the halfedge mates: a halfedge
     # without a mate is on an edge not shared by exactly two faces, and each pair's two directed
     # copies must be reversed. One flag, one readback, and the volume only if it passes.
-    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    mates = mates if mates is not None else od.halfedge.halfedge_mates(faces, vertices.size)
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     _launch.launch(
         kernel_validation.mate_pair_winding_violation,
@@ -1397,6 +1502,7 @@ def face_defective_mask(
     max_normal_angle: float | None = None,
     max_fold_angle: float | None = None,
     face_normals: wp.array[wp.vec3] | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.bool]:
     """
     Flag faces that are thin, misoriented relative to their neighbourhood, or folded over it.
@@ -1436,6 +1542,11 @@ def face_defective_mask(
         [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]; recomputed when
         ``None``. Only the two angle criteria read them, so this is the one geometry pass a caller
         already holding normals can skip.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
+        the halfedges. Not checked against ``faces``.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
@@ -1448,7 +1559,7 @@ def face_defective_mask(
     ValueError
         If ``max_normal_angle`` or ``max_fold_angle`` is outside ``(0, 180]``.
     RuntimeError
-        If ``vertices``, ``faces`` and ``face_normals`` are not all on one device.
+        If ``vertices``, ``faces``, ``face_normals`` and ``mates`` are not all on one device.
 
     Notes
     -----
@@ -1504,7 +1615,7 @@ def face_defective_mask(
     print(np.flatnonzero(mask.numpy()).tolist())  # [5]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, face_normals=face_normals)
+    require_same_device(vertices=vertices, faces=faces, face_normals=face_normals, mates=mates)
     for name, angle in (("max_normal_angle", max_normal_angle), ("max_fold_angle", max_fold_angle)):
         if angle is not None and not 0.0 < angle <= 180.0:
             raise ValueError(f"{name} must be in (0, 180] degrees, got {angle}")
@@ -1522,7 +1633,7 @@ def face_defective_mask(
     if max_normal_angle is not None or max_fold_angle is not None:
         if face_normals is None:
             face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
-        mates = od.halfedge.halfedge_mates(faces, vertices.size)
+        mates = mates if mates is not None else od.halfedge.halfedge_mates(faces, vertices.size)
     else:
         face_normals = None
 

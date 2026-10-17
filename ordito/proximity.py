@@ -418,6 +418,7 @@ def mesh_to_mesh_distance(
     faces_b: wp.array[wp.int32],
     *,
     upper_bound: float | None = None,
+    mesh_b: wp.Mesh | None = None,
 ) -> tuple[float, int, int]:
     """
     Smallest distance between two triangle meshes, with the pair of faces that achieves it.
@@ -449,6 +450,11 @@ def mesh_to_mesh_distance(
         you have it -- from a previous frame, or from a bounding-volume gap -- and the sampled query
         that would otherwise derive it is skipped. **Too small a bound gives a wrong answer**, not a
         slow one: it culls the pair that would have won. ``None`` derives a sound bound.
+    mesh_b
+        A ``wp.Mesh`` already built over ``vertices_b`` and ``faces_b``, to spare the build each
+        call otherwise pays (worth it when the second mesh is measured against repeatedly). Not
+        checked against them: the answer is for the geometry it holds.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one to pass.
 
     Returns
     -------
@@ -464,7 +470,8 @@ def mesh_to_mesh_distance(
     ValueError
         If ``upper_bound`` is negative.
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b`` and ``mesh_b`` are not all on
+        one device.
 
     See Also
     --------
@@ -502,7 +509,11 @@ def mesh_to_mesh_distance(
     ```
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mesh_b=mesh_b,
     )
     if upper_bound is not None and upper_bound < 0.0:
         raise ValueError(f"upper_bound must be non-negative, got {upper_bound}")
@@ -515,8 +526,9 @@ def mesh_to_mesh_distance(
     # One structure over B, shared by both phases. It is bound to a name for the whole call because
     # the kernels read its BVH by id through ``wp.mesh_get_bvh``, and a collected ``wp.Mesh`` would
     # leave them a dangling id.
-    require_nonempty_mesh(faces_b, "mesh_to_mesh_distance")
-    mesh_b = wp.Mesh(points=vertices_b, indices=faces_b)
+    if mesh_b is None:
+        require_nonempty_mesh(faces_b, "mesh_to_mesh_distance")
+        mesh_b = wp.Mesh(points=vertices_b, indices=faces_b)
 
     # The walk's three running scalars in one buffer (``kernels.proximity.*_SLOT``): the published
     # prune limit, the corner seed and the upper bound that grows every face's query box.

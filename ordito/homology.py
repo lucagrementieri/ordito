@@ -40,6 +40,8 @@ def homology_generators(
     *,
     root: int | None = None,
     copy: bool = False,
+    unique_edges: odt.Array2dInt32 | None = None,
+    edge_map: wp.array[wp.int32] | None = None,
 ) -> list[wp.array[wp.int32]]:
     """
     Non-contractible loops of the surface, as ordered vertex-index cycles.
@@ -74,6 +76,12 @@ def homology_generators(
         (the same one on every call and device). Must be a referenced vertex.
     copy
         Return independent buffers instead of views into one packed allocation.
+    unique_edges, edge_map
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` optional precomputed edge numbering from
+        [`edges_unique`][ordito.edges.edges_unique] — pass both or neither — to spare the sort
+        that otherwise builds it. [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique] and
+        [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] are the cached
+        ones to pass.
 
     Returns
     -------
@@ -87,10 +95,10 @@ def homology_generators(
         If the mesh has a boundary, since a surface with boundary has a different homology basis
         (every boundary loop contributes one, and the tree-cotree count no longer applies), or if
         its referenced vertices are not all in one connected component, since the count is then a
-        sum over components that a single pair of spanning trees does not produce, or if ``root``
-        is not a referenced vertex.
+        sum over components that a single pair of spanning trees does not produce, if ``root``
+        is not a referenced vertex, or if only one of ``unique_edges`` and ``edge_map`` is passed.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``unique_edges`` and ``edge_map`` are not all on one device.
 
     See Also
     --------
@@ -119,12 +127,19 @@ def homology_generators(
     print(len(od.homology.homology_generators(vertices, faces)))  # 0
     ```
     """
-    loops, offsets = homology_generators_with_offsets(vertices, faces, root=root)
+    loops, offsets = homology_generators_with_offsets(
+        vertices, faces, root=root, unique_edges=unique_edges, edge_map=edge_map
+    )
     return od.array.split(loops, offsets, copy=copy)
 
 
 def homology_generators_with_offsets(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, root: int | None = None
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    root: int | None = None,
+    unique_edges: odt.Array2dInt32 | None = None,
+    edge_map: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Non-contractible loops of the surface, packed: every loop's vertices, then their offsets.
@@ -142,6 +157,12 @@ def homology_generators_with_offsets(
     root
         Vertex the loops are based at, or ``None`` for a referenced vertex the connectivity fixes
         (the same one on every call and device). Must be a referenced vertex.
+    unique_edges, edge_map
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` optional precomputed edge numbering from
+        [`edges_unique`][ordito.edges.edges_unique] — pass both or neither — to spare the sort
+        that otherwise builds it. [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique] and
+        [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] are the cached
+        ones to pass.
 
     Returns
     -------
@@ -156,10 +177,10 @@ def homology_generators_with_offsets(
     ------
     ValueError
         If the mesh has a boundary, its referenced vertices are not all in one connected
-        component, or ``root`` is not a referenced vertex (see
-        [`homology_generators`][ordito.homology.homology_generators]).
+        component, ``root`` is not a referenced vertex, or only one of ``unique_edges`` and
+        ``edge_map`` is passed (see [`homology_generators`][ordito.homology.homology_generators]).
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``unique_edges`` and ``edge_map`` are not all on one device.
 
     See Also
     --------
@@ -179,12 +200,16 @@ def homology_generators_with_offsets(
     print(loops.shape)  # (24,)
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(
+        vertices=vertices, faces=faces, unique_edges=unique_edges, edge_map=edge_map
+    )
     device = faces.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
     if root is not None and not 0 <= root < n_vertices:
         raise ValueError(f"root must index a vertex in [0, {n_vertices}), got {root}")
+    if (unique_edges is None) != (edge_map is None):
+        raise ValueError("pass unique_edges and edge_map together, or neither.")
     if n_vertices == 0 or n_faces == 0:
         return _launch.empty_packed(wp.int32, device)
 
@@ -192,7 +217,10 @@ def homology_generators_with_offsets(
     # unique edge, and one scatter over it fills both the per-edge face count and the two incident
     # faces. That is the whole dual graph, indexed by unique edge — which is why nothing here needs
     # to locate a shared edge's row afterwards.
-    unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+    if unique_edges is None or edge_map is None:
+        unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+    else:
+        inverse = edge_map
     n_edges = int(unique_edges.shape[0])
     if n_edges == 0:
         # A face carries three edges, so no edges means no faces: vacuously closed, nothing to span

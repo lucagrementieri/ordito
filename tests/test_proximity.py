@@ -585,6 +585,14 @@ def test_mesh_to_mesh_distance_matches_pymeshlab(
     distance, _face_a, _face_b = od.proximity.mesh_to_mesh_distance(
         a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
     )
+    distance_prebuilt, _, _ = od.proximity.mesh_to_mesh_distance(
+        a_vertices_wp,
+        a_faces_wp,
+        b_vertices_wp,
+        b_faces_wp,
+        mesh_b=wp.Mesh(b_vertices_wp, b_faces_wp),
+    )
+    assert distance_prebuilt == distance
 
     meshset_pml = ml.MeshSet()
     for mesh_tm in (a_tm, b_tm):

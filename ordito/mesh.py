@@ -51,6 +51,7 @@ _TOPOLOGY_KEYS: frozenset[str] = frozenset(
         "face_connected_component_labels",
         "vertex_face_adjacency",
         "halfedge_twins",
+        "halfedge_mates",
         "vertex_one_rings",
         "boundary_edges",
         "oriented_boundary_edges",
@@ -100,6 +101,7 @@ _ORIENTATION_DEPENDENT_KEYS: frozenset[str] = frozenset(
         "edges_sorted",
         "edges_unique_inverse",
         "halfedge_twins",  # halfedge `3f + k` names a different corner
+        "halfedge_mates",  # likewise
         "vertex_one_rings",  # and the rotation around each vertex runs the other way
         "oriented_boundary_edges",  # directed by construction
         "boundary_loops",  # so the loops come back reversed
@@ -1267,6 +1269,22 @@ class Trimesh:
         return od.halfedge.halfedge_twins(self._faces, n_vertices=self.n_vertices)
 
     @_CachedProperty
+    def halfedge_mates(self) -> wp.array[wp.int32]:
+        """
+        ``(3 * n_faces,)`` partner of every halfedge on its undirected edge, with no validation.
+
+        The pairing the boundary and validity properties share: each is computed from this one
+        table instead of pairing the halfedges again. Pass it as ``mates=`` to the
+        [`ordito.boundary`][] and [`ordito.validation`][] functions that take it.
+
+        See Also
+        --------
+        [`ordito.halfedge.halfedge_mates`][]
+        [`halfedge_twins`][ordito.mesh.Trimesh.halfedge_twins]
+        """
+        return od.halfedge.halfedge_mates(self._faces, self.n_vertices)
+
+    @_CachedProperty
     def vertex_one_rings(self) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]:
         """
         Counter-clockwise outgoing halfedges per vertex: ``(ring_halfedges, offsets, is_boundary)``.
@@ -1303,7 +1321,7 @@ class Trimesh:
         --------
         [`ordito.boundary.boundary_edges`][]
         """
-        return od.boundary.boundary_edges(self._vertices, self._faces)
+        return od.boundary.boundary_edges(self._vertices, self._faces, mates=self.halfedge_mates)
 
     @_CachedProperty
     def oriented_boundary_edges(self) -> odt.Array2dInt32:
@@ -1314,7 +1332,9 @@ class Trimesh:
         --------
         [`ordito.boundary.oriented_boundary_edges`][]
         """
-        return od.boundary.oriented_boundary_edges(self._vertices, self._faces)
+        return od.boundary.oriented_boundary_edges(
+            self._vertices, self._faces, mates=self.halfedge_mates
+        )
 
     @_CachedProperty
     def boundary_loops(self) -> list[wp.array[wp.int32]]:
@@ -1340,7 +1360,7 @@ class Trimesh:
         print(od.Trimesh(*od.creation.box()).boundary_loops)  # []
         ```
         """
-        return od.boundary.boundary_loops(self._vertices, self._faces)
+        return od.boundary.boundary_loops(self._vertices, self._faces, mates=self.halfedge_mates)
 
     @_CachedProperty
     def boundary_vertex_indices(self) -> wp.array[wp.int32]:
@@ -1351,7 +1371,9 @@ class Trimesh:
         --------
         [`ordito.boundary.boundary_vertex_indices`][]
         """
-        return od.boundary.boundary_vertex_indices(self._vertices, self._faces)
+        return od.boundary.boundary_vertex_indices(
+            self._vertices, self._faces, mates=self.halfedge_mates
+        )
 
     @_CachedProperty
     def euler_characteristic(self) -> int:
@@ -1410,7 +1432,9 @@ class Trimesh:
         [`ordito.validation.is_vertex_manifold`][]
         """
         if "face_adjacency" not in self._cache:
-            return od.validation.is_vertex_manifold(self._faces, n_vertices=self.n_vertices)
+            return od.validation.is_vertex_manifold(
+                self._faces, n_vertices=self.n_vertices, mates=self.halfedge_mates
+            )
         return od.validation.is_vertex_manifold(
             self._faces,
             face_adjacency=self.face_adjacency,
@@ -1432,7 +1456,9 @@ class Trimesh:
         [`ordito.validation.is_winding_consistent`][]
         [`trimesh.Trimesh.is_winding_consistent`][]
         """
-        return od.validation.is_winding_consistent(self._faces, n_vertices=self.n_vertices)
+        return od.validation.is_winding_consistent(
+            self._faces, n_vertices=self.n_vertices, mates=self.halfedge_mates
+        )
 
     @_CachedProperty
     def is_orientable(self) -> bool:
@@ -1450,7 +1476,9 @@ class Trimesh:
         --------
         [`ordito.validation.is_orientable`][]
         """
-        return od.validation.is_orientable(self._faces, n_vertices=self.n_vertices)
+        return od.validation.is_orientable(
+            self._faces, n_vertices=self.n_vertices, mates=self.halfedge_mates
+        )
 
     @_CachedProperty
     def is_watertight(self) -> bool:
@@ -1483,6 +1511,7 @@ class Trimesh:
             self._vertices,
             self._faces,
             mesh=cast("wp.Mesh", mesh) if mesh is not None else lambda: self.warp_mesh,
+            mates=self.halfedge_mates,
         )
 
     @_CachedProperty
@@ -1523,7 +1552,7 @@ class Trimesh:
         [`ordito.validation.is_volume`][]
         [`trimesh.Trimesh.is_volume`][]
         """
-        return od.validation.is_volume(self._vertices, self._faces)
+        return od.validation.is_volume(self._vertices, self._faces, mates=self.halfedge_mates)
 
     # Discrete operators: the assemblies every solve over this mesh shares. Heavier than everything
     # above (a sparse build each, and the two heat bundles several) and reached by fewer callers,
