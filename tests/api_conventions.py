@@ -523,11 +523,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The other half of the same round's twin-table update: every halfedge not touched directly by
     # ``commit_intrinsic_flips`` reads and, where its neighbor moved, corrects its own twin pointer.
     ("remesh", "fixup_twin_remap"): frozenset({"twin"}),
-    # ``rhs`` arrives already holding ``-A_ub x_b`` from ``linalg.assemble_interior_system`` (which
-    # eliminates a quadratic form with no linear term of its own), and this kernel only ever
-    # accumulates the linear term on top -- an in-place accumulator, not a
-    # fresh per-call answer.
-    ("smoothing", "interior_mass_rhs_and_seed"): frozenset({"rhs"}),
     ("smoothing", "mut_dif_volume_correct"): frozenset({"slope"}),
     # ``state`` is ``smoothing._VolumeConstraint``'s persistent device state: the scale and centre
     # this kernel writes for the rescale, from totals it reads off the constraint's block partials.
@@ -535,12 +530,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``angle_sums`` is ``filter_spikes``' accumulator: read for the spike test, then re-zeroed in
     # place for the next pass's scatter.
     ("smoothing", "mark_spikes"): frozenset({"angle_sums"}),
-    # ``filter_normals`` folds one pass's normalization into the next pass's seed, and both act on
-    # the same accumulator slot: the thread reads its own entry and overwrites it in the same
-    # launch, so ``out_`` would misread it as write-only. The answer is ``out_normals``.
-    ("smoothing", "renormalize_and_reseed"): frozenset({"accumulated"}),
     # scratch / persistent state
     ("adjacency", "scatter_vertex_faces"): frozenset({"cursor"}),
+    ("smoothing", "scatter_incidence_rows"): frozenset({"cursor"}),
     # ``state`` is ``shorten_loop_with_offsets``' device-side loop word: every sweep kernel reads
     # its parity and stop flag, and this one counts the sweep's accepted replacements into it for
     # ``shorten_loop_advance`` to read and clear. The answers are the count and arc tables.

@@ -2021,8 +2021,13 @@ def filter_implicit_fairing(
     # after every iterated pass; the conformalized flow's stiffness is the input's, so its first
     # pass speaks for every later one.
     fairing = _FairingSolver(vertices, dirichlet, redecide=not conformalized)
+    interior_pattern: odt.BsrMatrix[wp.float64] | None = None
+    interior_rhs: odt.Array2dFloat64 | None = None
+    # The first pass reads the input itself: ``positions`` is its exact widening. Every pass then
+    # writes the next one's ``wp.vec3`` positions beside its ``wp.vec3d`` ones, and the last pass's
+    # are the answer.
+    current = vertices
     for _ in range(iterations):
-        current = _as_vec3(positions)
         # Otherwise rebuilt every pass: the cotangent weights depend on ``current``, which the
         # fairing step moves, so the ordinary flow re-linearises on the moving surface.
         stiffness = (
@@ -2033,30 +2038,29 @@ def filter_implicit_fairing(
 
         mass = laplacian.mass_matrix_entries(current, faces, dtype=wp.float64)
 
-        # A = M - lamb L (SPD: L has a negative diagonal, so subtracting it adds to the diagonal),
-        # written over L's own pattern: every referenced vertex's row stores its diagonal, and an
-        # unreferenced one has no mass, so the pattern merge ``bsr_axpy`` against a ``bsr_diag``
-        # performs would only add stored zeros.
-        system_values = _launch.empty_like(stiffness.values)
-        _launch.launch(
-            kernel_linalg.SHIFTED_SYSTEM_VALUES[wp.float64],
-            dim=n,
-            inputs=[
-                stiffness.offsets,
-                stiffness.columns,
-                stiffness.values,
-                mass,
-                wp.float64(-float(lamb)),
-                None,
-                wp.int32(0),
-                wp.int32(0),
-            ],
-            outputs=[system_values, None],
-            device=device,
-        )
-        system = twl.bsr_with_values(stiffness, system_values)
-
         if dirichlet is None:
+            # A = M - lamb L (SPD: L has a negative diagonal, so subtracting it adds to the
+            # diagonal), written over L's own pattern: every referenced vertex's row stores its
+            # diagonal, and an unreferenced one has no mass, so the pattern merge ``bsr_axpy``
+            # against a ``bsr_diag`` performs would only add stored zeros.
+            system_values = _launch.empty_like(stiffness.values)
+            _launch.launch(
+                kernel_linalg.SHIFTED_SYSTEM_VALUES[wp.float64],
+                dim=n,
+                inputs=[
+                    stiffness.offsets,
+                    stiffness.columns,
+                    stiffness.values,
+                    mass,
+                    wp.float64(-float(lamb)),
+                    None,
+                    wp.int32(0),
+                    wp.int32(0),
+                ],
+                outputs=[system_values, None],
+                device=device,
+            )
+            system = twl.bsr_with_values(stiffness, system_values)
             # Right-hand side b = M V and the CG seed in one pass. The seed is the current
             # positions, not ``b = M V``: an unreferenced vertex has an all-zero row and a zero
             # right-hand side, so CG never writes its entry and it would keep whatever the seed
@@ -2072,33 +2076,57 @@ def filter_implicit_fairing(
             # ``M - lamb L`` over the whole mesh, a solve long enough for the polynomial
             # preconditioner; the Dirichlet branch below is the same system less the pinned rows.
             fairing.solve(system, rhs, solutions, maxiter=10 * n)
+            current = _launch.empty(n, dtype=wp.vec3, device=device)
             _launch.map(
-                kernel_smoothing.combine_components,
+                kernel_smoothing.combine_components_narrowed,
                 solution_rows[0],
                 solution_rows[1],
                 solution_rows[2],
-                out=positions,
+                out=[positions, current],
             )
             continue
 
-        # Dirichlet pass: eliminate the pinned rows and columns, then solve over the interior.
-        # ``assemble_interior_system`` supplies ``-A_ub x_b``; the linear term ``(M V)_u`` is added
-        # on top, since that helper eliminates a quadratic form which has none of its own.
-        interior_system, interior_rhs = twl.assemble_interior_system(
-            system, dirichlet.fixed_mask, dirichlet.free_map, dirichlet.pinned, dirichlet.n_free
-        )
-        # Add ``(M V)_u`` and seed CG with the free vertices' current positions, exactly as the
-        # unreduced branch above does -- the right-hand side is not a position, and an unreferenced
-        # vertex whose row and right-hand side are both zero would be left wherever the seed put it.
+        # Dirichlet pass: the interior block of ``M - lamb L`` with the pinned rows and columns
+        # eliminated, its right-hand side ``(M V)_u - A_ub x_b`` and the CG seed (the free
+        # vertices' current positions, exactly as the unreduced branch above seeds), all formed
+        # from the stiffness row in one launch. The interior pattern depends on the connectivity
+        # and the pinned set alone, so it is extracted once, from the first pass's stiffness; that
+        # extraction's values are a buffer of the right size for the first pass to overwrite.
+        if interior_pattern is None:
+            interior_pattern, _ = twl.assemble_interior_system(
+                stiffness,
+                dirichlet.fixed_mask,
+                dirichlet.free_map,
+                odt.empty_2d((0, n), wp.float64, device=device),
+                dirichlet.n_free,
+            )
+            interior_values = interior_pattern.values
+            interior_rhs = _component_columns(dirichlet.n_free, device)
+        else:
+            interior_values = _launch.empty_like(interior_pattern.values)
+        assert interior_rhs is not None
         solution_2d = dirichlet.solution
         _launch.launch(
-            kernel_smoothing.interior_mass_rhs_and_seed,
+            kernel_smoothing.interior_fairing_system,
             dim=n,
-            inputs=[dirichlet.fixed_mask, dirichlet.free_map, mass, positions, interior_rhs],
-            outputs=[solution_2d],
+            inputs=[
+                stiffness.offsets,
+                stiffness.columns,
+                stiffness.values,
+                mass,
+                wp.float64(-float(lamb)),
+                dirichlet.fixed_mask,
+                dirichlet.free_map,
+                dirichlet.pinned,
+                positions,
+                interior_pattern.offsets,
+            ],
+            outputs=[interior_values, interior_rhs, solution_2d],
             device=device,
         )
+        interior_system = twl.bsr_with_values(interior_pattern, interior_values)
         fairing.solve(interior_system, interior_rhs, solution_2d, maxiter=10 * dirichlet.n_free)
+        current = _launch.empty(n, dtype=wp.vec3, device=device)
         _launch.launch(
             kernel_smoothing.scatter_free_positions,
             dim=n,
@@ -2109,11 +2137,12 @@ def filter_implicit_fairing(
                 solution_2d[1],
                 solution_2d[2],
                 positions,
+                current,
             ],
             device=device,
         )
 
-    return _as_vec3(positions)
+    return current
 
 
 class _FairingSolver:
@@ -3433,8 +3462,8 @@ def filter_normals(
         ``60``. Must be in ``[0, 180]``.
     face_adjacency
         ``(m, 2)`` adjacency from [`face_adjacency`][ordito.adjacency.face_adjacency], or
-        ``None`` to recompute it. Pass it to
-        hoist the build out of a loop — the topology never changes here, so it is safe to reuse.
+        ``None`` to derive the same neighbours from ``faces``. A supplied table may list any
+        pairs; each is averaged across, subject to the threshold.
     face_normals
         ``(n_faces,)`` optional unit face normals and matching areas from
         [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]; recomputed together
@@ -3490,65 +3519,28 @@ def filter_normals(
     if not 0.0 <= threshold <= 180.0:
         raise ValueError(f"threshold must be in [0, 180] degrees, got {threshold}")
 
-    device = vertices.device
     n_faces = faces.size // 3
-    # Each pass rewrites the normal field in place, so a caller-supplied buffer is copied rather
-    # than clobbered -- ``Trimesh.face_normals`` is one array shared with every other reader. One
-    # computed here is this call's own.
-    if face_normals is None or face_areas is None:
+    # A computed field is this call's own; a caller-supplied one is never written --
+    # ``Trimesh.face_normals`` is one array shared with every other reader -- so the passes start
+    # from it and write elsewhere.
+    computed = face_normals is None or face_areas is None
+    if computed:
         normals, areas = face_normals_and_areas(vertices, faces)
     else:
-        normals, areas = _launch.clone(face_normals), face_areas
+        assert face_normals is not None
+        assert face_areas is not None
+        normals, areas = face_normals, face_areas
     if n_faces == 0 or iterations <= 0:
-        return normals
+        return normals if computed else _launch.clone(normals)
 
     if face_adjacency is None:
-        face_adjacency = od.adjacency.face_adjacency(faces, n_vertices=vertices.size)
-    m = int(face_adjacency.shape[0])
-    threshold_cos = wp.float32(math.cos(math.radians(threshold)))
-
-    accumulated = _launch.empty(n_faces, dtype=wp.vec3, device=device)
-    # The map is hoisted out of the pass loop: a cached ``wp.map`` call re-resolves its kernel in
-    # Python every time, which adds up over many passes.
-    seed = cast(
-        "wp.Kernel",
-        wp.map(
-            kernel_smoothing.seed_weighted_normal,
-            normals,
-            areas,
-            out=accumulated,
-            return_kernel=True,
-        ),
-    )
-    renormalize = cast(
-        "wp.Kernel", wp.map(wp.normalize, accumulated, out=normals, return_kernel=True)
-    )
-    # Two launches per pass rather than three. A pass is seed -> crease-gated neighbour
-    # accumulation -> normalize, and the scatter in the middle needs the whole seeded buffer, so the
-    # fusable pair is the normalization with the *next* pass's seed. Peeling the first seed off the
-    # front is what puts them next to each other.
-    _launch.launch(seed, dim=n_faces, inputs=[normals, areas], outputs=[accumulated], device=device)
-    for index in range(iterations):
-        if m > 0:
-            _launch.launch(
-                kernel_smoothing.accumulate_smoothed_normals,
-                dim=m,
-                inputs=[normals, areas, face_adjacency, threshold_cos, accumulated],
-                device=device,
-            )
-        if index == iterations - 1:
-            _launch.launch(
-                renormalize, dim=n_faces, inputs=[accumulated], outputs=[normals], device=device
-            )
-        else:
-            _launch.launch(
-                kernel_smoothing.renormalize_and_reseed,
-                dim=n_faces,
-                inputs=[areas, accumulated],
-                outputs=[normals],
-                device=device,
-            )
-    return normals
+        # The pairs ``face_adjacency`` would list are the halfedges' mates, read three to a face.
+        mates = od.halfedge.halfedge_mates(faces, vertices.size)
+        passes = (kernel_smoothing.smooth_face_normals_over_mates, [mates])
+    else:
+        pair_offsets, face_pairs = _incidence_rows(face_adjacency.flatten(), 2, n_faces)
+        passes = (kernel_smoothing.smooth_face_normals, [face_adjacency, pair_offsets, face_pairs])
+    return _smoothed_face_normals(normals, areas, *passes, threshold, iterations, owned=computed)
 
 
 def filter_two_step(
@@ -3645,40 +3637,128 @@ def filter_two_step(
     device = vertices.device
     n = vertices.size
     n_faces = faces.size // 3
-    out = _launch.clone(vertices)
     if n == 0 or n_faces == 0 or iterations <= 0:
-        return out
+        return _launch.clone(vertices)
+    if not 0.0 <= threshold <= 180.0:
+        raise ValueError(f"threshold must be in [0, 180] degrees, got {threshold}")
 
-    # The topology is fixed, so the adjacency is built once for every pass of both halves.
-    adjacency = od.adjacency.face_adjacency(faces, n_vertices=n)
-    # Zeroed once: ``apply_fit_step_and_reset`` leaves every slot zero behind it, so each fit
-    # iteration's scatter starts from an empty accumulator without a clear of its own. The
-    # incident-face count is fixed by the topology, so it is taken once rather than per iteration,
-    # and by a launch of its own: folding it into the first fit launch would carry its two
-    # arguments on every fit launch of the loop, at more host cost than the launch it saves.
-    delta = _launch.zeros(n, dtype=wp.vec3, device=device)
-    counts = _launch.zeros(n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_scatter.count_occurrences, dim=3 * n_faces, inputs=[faces, counts], device=device
-    )
+    # The topology is fixed, so both incidence tables are built once for every pass of both halves:
+    # the halfedge mates the normal passes read their neighbours off, and the vertex -> face rows
+    # the fit steps gather over, whose lengths are the incident-face counts that set the step.
+    mates = od.halfedge.halfedge_mates(faces, n)
+    vf_offsets, vertex_faces = _incidence_rows(faces, 3, n)
+    # The fit steps ping-pong between two buffers of this call; the input is only ever read.
+    positions = vertices
+    spare: wp.array[wp.vec3] | None = None
+    # The normal passes' second buffer, lent to every outer pass: the field it held is spent by
+    # the time the next pass filters.
+    spare_normals: wp.array[wp.vec3] | None = None
     for _ in range(iterations):
-        normals = filter_normals(
-            out, faces, iterations=normal_iterations, threshold=threshold, face_adjacency=adjacency
-        )
+        normals, normal_areas = face_normals_and_areas(positions, faces)
+        if normal_iterations > 0:
+            if spare_normals is None:
+                spare_normals = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+            normals = _smoothed_face_normals(
+                normals,
+                normal_areas,
+                kernel_smoothing.smooth_face_normals_over_mates,
+                [mates],
+                threshold,
+                normal_iterations,
+                owned=True,
+                target=spare_normals,
+            )
         for _fit in range(fit_iterations):
+            if spare is None:
+                spare = _launch.empty(n, dtype=wp.vec3, device=device)
             _launch.launch(
                 kernel_smoothing.fit_vertices_to_normals,
-                dim=n_faces,
-                inputs=[out, faces, normals, delta],
-                device=device,
-            )
-            _launch.launch(
-                kernel_smoothing.apply_fit_step_and_reset,
                 dim=n,
-                inputs=[counts, out, delta],
+                inputs=[positions, faces, normals, vertex_faces, vf_offsets],
+                outputs=[spare],
                 device=device,
             )
-    return out
+            positions, spare = spare, (None if positions is vertices else positions)
+    return _launch.clone(vertices) if positions is vertices else positions
+
+
+def _smoothed_face_normals(
+    normals: wp.array[wp.vec3],
+    areas: wp.array[wp.float32],
+    kernel: odt.Kernel,
+    adjacency_inputs: list[odt.ArrayNd],
+    threshold: float,
+    iterations: int,
+    *,
+    owned: bool,
+    target: wp.array[wp.vec3] | None = None,
+) -> wp.array[wp.vec3]:
+    """
+    Run ``iterations >= 1`` crease-gated normal passes from ``normals``, one launch each.
+
+    ``kernel`` is ``kernels.smoothing``'s pass over the adjacency table ``adjacency_inputs`` names.
+    The passes ping-pong between two buffers: ``target`` (allocated when ``None``) and ``normals``
+    itself only when ``owned``, so a caller's field is read and never written. The result is one
+    of the two; the other is free once this returns.
+    """
+    device = normals.device
+    n_faces = normals.size
+    threshold_cos = wp.float32(math.cos(math.radians(threshold)))
+    source = normals
+    if target is None:
+        target = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    for index in range(iterations):
+        _launch.launch(
+            kernel,
+            dim=n_faces,
+            inputs=[source, areas, *adjacency_inputs, threshold_cos],
+            outputs=[target],
+            device=device,
+        )
+        if index == iterations - 1:
+            break
+        if source is normals and not owned:
+            source, target = target, _launch.empty(n_faces, dtype=wp.vec3, device=device)
+        else:
+            source, target = target, source
+    return target
+
+
+def _incidence_rows(
+    indices: odt.ArrayNd, arity: int, n_rows: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Incidence CSR of a flat ``arity``-wide index buffer, as ``(offsets, items)``.
+
+    Row ``r`` lists the item ``e // arity`` of every entry ``e`` naming ``r``, once per entry: a
+    vertex's faces from the face buffer (``arity = 3``), a face's adjacency rows from the flattened
+    pairs (``arity = 2``). Items ascend within each row on the CPU device, and on a CUDA device
+    under the deterministic setting; otherwise they come in the order the fill's atomics commit.
+    """
+    device = indices.device
+    n_entries = indices.size
+    offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
+    items = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    if n_entries == 0:
+        return offsets, items
+    counts = _launch.zeros(n_rows, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_scatter.count_occurrences, dim=n_entries, inputs=[indices, counts], device=device
+    )
+    # The total is the entry count, known on the host, so the scan needs no readback; the counts
+    # stay intact, as the fill's per-row cursor.
+    _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
+    _launch.launch(
+        kernel_smoothing.scatter_incidence_rows,
+        dim=n_entries,
+        inputs=[indices, arity, offsets, counts, items],
+        device=device,
+    )
+    if is_deterministic():
+        _launch.launch(
+            kernel_array.sort_segments, dim=n_rows, inputs=[offsets, items], device=device
+        )
+    return offsets, items
 
 
 def filter_sharpen(
