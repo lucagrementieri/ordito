@@ -55,9 +55,10 @@ from ordito.config import is_deterministic
 from ordito.edges import edges_unique, edges_unique_length
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import energies as kernel_energies
+from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
-from ordito.laplacian import MeshOperatorPattern, cotmatrix, cotmatrix_entries, mass_matrix_entries
+from ordito.laplacian import MeshOperatorPattern, cotmatrix, cotmatrix_entries
 
 
 def edge_length_loss(
@@ -281,7 +282,7 @@ def laplacian_smoothing_loss(
     if n_vertices == 0 or faces.size == 0:
         return 0.0
     device = vertices.device
-    mass = None
+    area_sums = None
     if method == "uniform":
         operator = od.laplacian.laplacian(vertices, faces, equal_weight=True)
         selector = kernel_energies.SMOOTHING_UNIFORM
@@ -289,7 +290,15 @@ def laplacian_smoothing_loss(
         operator = cotmatrix(vertices, faces)
         selector = kernel_energies.SMOOTHING_COT
         if method == "cotcurv":
-            mass = mass_matrix_entries(vertices, faces)
+            # ``mass_matrix_entries``' exact area sums; the row kernel divides them by three.
+            area_sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+            _launch.launch(
+                kernel_scatter.scatter_face_areas_exact,
+                dim=faces.size // 3,
+                inputs=[vertices, faces, None],
+                outputs=[area_sums],
+                device=device,
+            )
             selector = kernel_energies.SMOOTHING_COTCURV
     # Each method's per-row scales are formed in the row's own thread, so no scale buffer exists.
     norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
@@ -301,7 +310,7 @@ def laplacian_smoothing_loss(
             operator.columns,
             operator.values,
             vertices,
-            mass,
+            area_sums,
             selector,
             norms,
         ],
@@ -429,14 +438,14 @@ def k_harmonic(
     else:
         if mass.dtype != dtype:
             mass = od.array.astype(mass, dtype)
+        # Formed from ``mass`` by the first sandwich's count pass.
         inverse_mass = _launch.empty(n_rows, dtype=dtype, device=device)
-        _launch.map(kernel_energies.reciprocal_or_zero, mass, out=inverse_mass)
 
     # Every factor of ``-L`` is read as ``L`` with its sign carried into the product: the first
     # sandwich ``(-L) M^-1 (-L)`` is ``L M^-1 L`` (``sign = 1``), and each later one multiplies an
     # already signed product by ``-L`` (``sign = -1``). Negation is exact, so the entries are the
     # ones a negated copy of ``L`` would give, without that copy.
-    operator = _diagonal_sandwich(laplacian, inverse_mass, laplacian, 1.0)
+    operator = _diagonal_sandwich(laplacian, inverse_mass, laplacian, 1.0, mass=mass)
     for _ in range(k - 2):
         operator = _diagonal_sandwich(operator, inverse_mass, laplacian, -1.0)
     return operator
@@ -447,9 +456,14 @@ def _diagonal_sandwich(
     inverse_mass: wp.array[wp.Float],
     b: odt.BsrMatrix[wp.Float],
     sign: float,
+    *,
+    mass: odt.ArrayNdFloat | None = None,
 ) -> odt.BsrMatrix[wp.Float]:
     """
     Assemble ``sign * A diag(inverse_mass) B`` for symmetric ``A``, ``B`` by one triplet pass.
+
+    Given ``mass``, ``inverse_mass`` is written here, as ``mass``'s ``reciprocal_or_zero``, by
+    the count pass that first reads it.
 
     Row ``t`` of the product is the outer product of ``A``'s and ``B``'s rows ``t`` scaled by the
     diagonal weight, so the whole product is one count kernel, one scan, one emission kernel and a
@@ -463,7 +477,13 @@ def _diagonal_sandwich(
     _launch.launch(
         kernel_energies.SANDWICH_ROW_COUNTS[inverse_mass.dtype],
         dim=n_rows,
-        inputs=[a.offsets, b.offsets, inverse_mass, counts],
+        inputs=[
+            a.offsets,
+            b.offsets,
+            inverse_mass if mass is None else mass,
+            wp.int32(mass is not None),
+        ],
+        outputs=[counts, None if mass is None else inverse_mass],
         device=device,
     )
     # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
@@ -1032,10 +1052,23 @@ def crouzeix_raviart_massmatrix(
     )
     unique_edges, edge_map = _edge_numbering(vertices, faces, unique_edges, edge_map)
     n_edges = int(unique_edges.shape[0])
-
+    device = faces.device
+    if n_edges == 0:
+        return od.array.empty_square_bsr(0, dtype, device)
+    # The diagonal is the matrix's value array as it stands, under a diagonal pattern.
+    values = _cr_mass_diagonal(vertices, faces, edge_map, n_edges, dtype)
+    offsets = _launch.empty(n_edges + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(n_edges, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_laplacian.diagonal_pattern,
+        dim=n_edges,
+        inputs=[],
+        outputs=[offsets, columns],
+        device=device,
+    )
     return cast(
         "odt.BsrMatrix[wp.float32]",
-        odt.bsr_diag(diag=_cr_mass_diagonal(vertices, faces, edge_map, n_edges, dtype)),
+        od.array.bsr_from_csr(n_edges, n_edges, offsets, columns, values, nnz=n_edges),
     )
 
 

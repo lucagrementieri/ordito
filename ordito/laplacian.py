@@ -1607,12 +1607,12 @@ def mass_matrix_entries(
     n_vertices = vertices.size
     device = vertices.device
     n_faces = faces.size // 3
-    if face_areas is not None and n_faces > 0 and face_areas.size != n_faces:
-        raise ValueError(f"face_areas must have length n_faces={n_faces}, got {face_areas.size}")
     if n_faces == 0:
         return _launch.zeros(n_vertices, dtype=dtype, device=device)
-    if face_areas is not None and face_areas.dtype != wp.float32:
+    sums = _exact_area_sums(vertices, faces, face_areas)
+    if sums is None:
         # ``float64`` areas have no exact ``float64`` sum: rounded thirds, committed atomically.
+        assert face_areas is not None
         mass = _launch.zeros(n_vertices, dtype=dtype, device=device)
         _launch.launch(
             kernel_scatter.SCATTER_FACE_THIRDS[face_areas.dtype, dtype],
@@ -1621,15 +1621,7 @@ def mass_matrix_entries(
             device=device,
         )
         return mass
-    # ``float32`` areas summed exactly in ``float64`` -- the same bits whatever order the atomics
-    # commit in -- then divided by three once, in the requested precision.
-    sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    _launch.launch(
-        kernel_scatter.scatter_face_areas_exact,
-        dim=n_faces,
-        inputs=[vertices, faces, face_areas, sums],
-        device=device,
-    )
+    # Divided by three once, in the requested precision.
     mass = sums if dtype == wp.float64 else _launch.empty(n_vertices, dtype=dtype, device=device)
     _launch.launch(
         kernel_scatter.SCALE_FACE_SUMS[dtype],
@@ -1702,9 +1694,64 @@ def mass_matrix(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, face_areas=face_areas)
-    # ``mass_matrix_entries`` resolves its return by overload, which a ``Block`` cannot select.
-    diagonal = cast(
-        "wp.array[odt.Block]",
-        mass_matrix_entries(vertices, faces, dtype=cast("type", dtype), face_areas=face_areas),
-    )
-    return odt.bsr_diag(diag=diagonal)
+    n_vertices = vertices.size
+    device = vertices.device
+    if n_vertices == 0:
+        return od.array.empty_square_bsr(0, dtype, device)
+    # The diagonal written straight into compressed rows: the values, their columns and offsets in
+    # one launch after the area sums, with no diagonal array copied into a matrix.
+    offsets = _launch.empty(n_vertices + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    sums = _exact_area_sums(vertices, faces, face_areas)
+    if sums is None:
+        # ``mass_matrix_entries`` resolves its return by overload, which a ``Block`` cannot select.
+        values = cast(
+            "wp.array[odt.Block]",
+            mass_matrix_entries(vertices, faces, dtype=cast("type", dtype), face_areas=face_areas),
+        )
+        _launch.launch(
+            kernel_laplacian.diagonal_pattern,
+            dim=n_vertices,
+            inputs=[],
+            outputs=[offsets, columns],
+            device=device,
+        )
+    else:
+        values = cast(
+            "wp.array[odt.Block]",
+            sums if dtype == wp.float64 else _launch.empty(n_vertices, dtype=dtype, device=device),
+        )
+        _launch.launch(
+            kernel_laplacian.MASS_DIAGONAL_ROWS[dtype],
+            dim=n_vertices,
+            inputs=[sums, wp.float64(3.0)],
+            outputs=[offsets, columns, values],
+            device=device,
+        )
+    return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values, nnz=n_vertices)
+
+
+def _exact_area_sums(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_areas: wp.array[wp.float32] | None
+) -> wp.array[wp.float64] | None:
+    """
+    Each vertex's summed incident ``float32`` face areas, exact in ``float64``, or ``None``.
+
+    The same bits whatever order the atomics commit in. ``None`` for ``float64`` ``face_areas``,
+    which have no exact ``float64`` sum. Raises ``ValueError`` if ``face_areas`` is not one entry
+    a face.
+    """
+    n_faces = faces.size // 3
+    if face_areas is not None and n_faces > 0 and face_areas.size != n_faces:
+        raise ValueError(f"face_areas must have length n_faces={n_faces}, got {face_areas.size}")
+    if face_areas is not None and face_areas.dtype != wp.float32:
+        return None
+    sums = _launch.zeros(vertices.size, dtype=wp.float64, device=vertices.device)
+    if n_faces > 0:
+        _launch.launch(
+            kernel_scatter.scatter_face_areas_exact,
+            dim=n_faces,
+            inputs=[vertices, faces, face_areas, sums],
+            device=vertices.device,
+        )
+    return sums

@@ -423,17 +423,19 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # tiled factor stages its diagonal block in ``scratch`` and flags a bad pivot in ``status``.
     ("cholesky", "extend_add"): frozenset({"fronts"}),
     ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
-    ("cholesky", "seed_blocks"): frozenset({"blocks"}),
+    ("cholesky", "mark_components_and_seed_blocks"): frozenset({"blocks"}),
     ("cholesky", "update_panel"): frozenset({"fronts", "blocks"}),
     ("cholesky", "refine_start"): frozenset({"state", "rhs_scale"}),
     ("cholesky", "residual_test"): frozenset({"state"}),
     ("cholesky", "refine_advance"): frozenset({"state"}),
     ("cholesky", "backward_finalize"): frozenset({"refined"}),
     ("cholesky", "null_space_shift"): frozenset({"solution"}),
-    # The dissection's per-depth state, carried across its depths in place: the crossing counts
-    # each segment clears once read, and the depth's table and node / depth words its last launch
-    # clears and advances. The breadth-first search's distances and loop state, advanced in place
-    # level by level inside a recorded loop.
+    # The dissection's per-depth state, carried across its depths in place: the partial moments'
+    # per-segment tickets and the crossing counts, each cleared by the block that reads it last,
+    # and the depth's table and node / depth words its last launch clears and advances. The
+    # breadth-first search's distances and loop state, advanced in place level by level inside a
+    # recorded loop.
+    ("cholesky", "dissection_partials"): frozenset({"tickets"}),
     ("cholesky", "dissection_bookkeeping"): frozenset({"state"}),
     ("cholesky", "dissection_compact"): frozenset({"state"}),
     ("cholesky", "breadth_first_level"): frozenset({"distance", "state"}),

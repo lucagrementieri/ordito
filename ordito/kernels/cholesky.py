@@ -34,7 +34,7 @@ from ordito.kernels.array import (
     ordered_float_bits,
     scanned_count,
 )
-from ordito.kernels.reduce import block_barrier, block_sum
+from ordito.kernels.reduce import block_barrier, block_sum, last_ticket, take_ticket
 
 wp.set_module_options({"enable_backward": False})
 
@@ -56,12 +56,17 @@ REFINE_ROUND = wp.constant(2)
 
 
 @wp.kernel
-def mark_nonsingular_components(
+def mark_components_and_seed_blocks(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
     labels: wp.array[wp.int32],
     tolerance: wp.float64,
+    block_offset: wp.array[wp.int64],
+    front_size: wp.array[wp.int32],
+    owner: wp.array[wp.int32],
+    c0: wp.array[wp.int32],
+    blocks: wp.array[wp.float64],
     out_singular: wp.array[wp.int32],
     out_pinned: wp.array[wp.int32],
     out_dropped: wp.array[wp.int32],
@@ -70,7 +75,13 @@ def mark_nonsingular_components(
     # space); ``out_singular`` is seeded with ones and any row that does not sum to zero clears its
     # component. An empty row (an unreferenced vertex) sums to zero: a component of one. Row ``i``
     # also clears its two pin flags, which ``pin_singular_components`` then sets.
+    #
+    # Every solve block starts as ``[I; 0]``: thread ``i`` also sets the diagonal of elimination
+    # position ``i`` in the zeroed ``blocks`` arena.
     i = wp.int32(wp.tid())
+    k = owner[i]
+    local = wp.int64(i - c0[k])
+    blocks[block_offset[k] + local * wp.int64(front_size[k]) + local] = wp.float64(1.0)
     out_pinned[i] = 0
     out_dropped[i] = 0
     total = wp.float64(0.0)
@@ -271,21 +282,6 @@ def substitute_panel(
                     total -= values[q2] * fronts[front_index(base, m64, j, first + wp.int32(q2))]
             values[q1] = total / fronts[front_index(base, m64, j, j)]
             target[target_base + wp.int64(j)] = values[q1]
-
-
-@wp.kernel
-def seed_blocks(
-    block_offset: wp.array[wp.int64],
-    front_size: wp.array[wp.int32],
-    owner: wp.array[wp.int32],
-    c0: wp.array[wp.int32],
-    blocks: wp.array[wp.float64],
-) -> None:
-    # Every solve block starts as ``[I; 0]``: the zeroed arena's diagonal set, one row per thread.
-    i = wp.int32(wp.tid())
-    k = owner[i]
-    local = wp.int64(i - c0[k])
-    blocks[block_offset[k] + local * wp.int64(front_size[k]) + local] = wp.float64(1.0)
 
 
 @wp.kernel
@@ -991,59 +987,17 @@ def dissection_task(
     return s, begin, wp.min(begin + chunk, segment_start[s + 1])
 
 
-@wp.kernel
-def dissection_partials(
-    order: wp.array[wp.int32],
-    coordinates: wp.array[wp.vec3],
-    segment_start: wp.array[wp.int32],
-    tasks: wp.array[wp.int32],
-    chunk: wp.int32,
-    out_partials: wp.array[moment_vector],
-) -> None:
-    # One chunk of one segment, one block: the first and second moments of its points about the
-    # segment's reference point, each lane summing a strided share and the block reducing them
-    # (the block reduction and the segment's sum in task order are both fixed, so the axis is the
-    # same on every run). Launched over a bound on the depth's task count; a block past the depth's
-    # tasks returns whole.
-    t, lane = wp.tid()
-    if t + live_count(segment_start) >= tasks[tasks.shape[0] - 1]:
-        return
-    s, begin, end = dissection_task(segment_start, tasks, chunk, t)
-    reference = segment_reference(order, coordinates, segment_start[s])
-    m = moment_vector()
-    p = begin + lane
-    while p < end:
-        d = shifted_point(coordinates, order[p], reference)
-        m[0] += d[0]
-        m[1] += d[1]
-        m[2] += d[2]
-        m[3] += d[0] * d[0]
-        m[4] += d[0] * d[1]
-        m[5] += d[0] * d[2]
-        m[6] += d[1] * d[1]
-        m[7] += d[1] * d[2]
-        m[8] += d[2] * d[2]
-        p += wp.block_dim()
-    total = block_sum(m)
-    if lane == 0:
-        out_partials[t] = total
-
-
-@wp.kernel
-def dissection_axes(
+@wp.func
+def segment_axis(
     order: wp.array[wp.int32],
     coordinates: wp.array[wp.vec3],
     segment_start: wp.array[wp.int32],
     tasks: wp.array[wp.int32],
     partials: wp.array[moment_vector],
-    out_centre: wp.array[wp.vec3d],
-    out_axis: wp.array[wp.vec3d],
-) -> None:
-    # A segment's centroid and the principal axis of its covariance: the eigenvector of the
-    # largest eigenvalue. An empty segment slot has neither.
-    s = wp.int32(wp.tid())
-    if segment_start[s + 1] == segment_start[s]:
-        return
+    s: wp.int32,
+) -> tuple[wp.vec3d, wp.vec3d]:
+    # A non-empty segment's centroid and the principal axis of its covariance (the eigenvector of
+    # the largest eigenvalue), from its tasks' partial moments summed in task order.
     live = live_count(segment_start)
     m = moment_vector()
     for t in range(tasks[s], tasks[s + 1]):
@@ -1065,10 +1019,66 @@ def dissection_axes(
     for q in range(1, 3):
         if values[q] > values[best]:
             best = wp.int32(q)
-    out_centre[s] = segment_reference(order, coordinates, segment_start[s]) + mean
-    out_axis[s] = wp.vec3d(
+    centre = segment_reference(order, coordinates, segment_start[s]) + mean
+    axis = wp.vec3d(
         wp.float64(vectors[0, best]), wp.float64(vectors[1, best]), wp.float64(vectors[2, best])
     )
+    return centre, axis
+
+
+@wp.kernel
+def dissection_partials(
+    order: wp.array[wp.int32],
+    coordinates: wp.array[wp.vec3],
+    segment_start: wp.array[wp.int32],
+    tasks: wp.array[wp.int32],
+    chunk: wp.int32,
+    tickets: wp.array[wp.int32],
+    out_partials: wp.array[moment_vector],
+    out_centre: wp.array[wp.vec3d],
+    out_axis: wp.array[wp.vec3d],
+) -> None:
+    # One chunk of one segment, one block: the first and second moments of its points about the
+    # segment's reference point, each lane summing a strided share and the block reducing them
+    # (the block reduction and the segment's sum in task order are both fixed, so the axis is the
+    # same on every run). Launched over a bound on the depth's task count; a block past the depth's
+    # tasks returns whole.
+    #
+    # The block storing a segment's last partial (``take_ticket`` on the segment's slot of the
+    # zeroed ``tickets``, which it clears again for the next depth) forms the segment's centre and
+    # axis from them in task order (``segment_axis``), so the axes need no launch of their own. An
+    # empty segment slot has no task, so its centre and axis are not written.
+    t, lane = wp.tid()
+    if t + live_count(segment_start) >= tasks[tasks.shape[0] - 1]:
+        return
+    s, begin, end = dissection_task(segment_start, tasks, chunk, t)
+    reference = segment_reference(order, coordinates, segment_start[s])
+    m = moment_vector()
+    p = begin + lane
+    while p < end:
+        d = shifted_point(coordinates, order[p], reference)
+        m[0] += d[0]
+        m[1] += d[1]
+        m[2] += d[2]
+        m[3] += d[0] * d[0]
+        m[4] += d[0] * d[1]
+        m[5] += d[0] * d[2]
+        m[6] += d[1] * d[1]
+        m[7] += d[1] * d[2]
+        m[8] += d[2] * d[2]
+        p += wp.block_dim()
+    total = block_sum(m)
+    if lane != 0:
+        return
+    out_partials[t] = total
+    ticket = take_ticket(tickets, s, wp.int32(0))
+    if last_ticket(ticket, tasks[s + 1] - tasks[s]) == 0:
+        return
+    tickets[s] = 0
+    if segment_start[s + 1] > segment_start[s]:
+        centre, axis = segment_axis(order, coordinates, segment_start, tasks, out_partials, s)
+        out_centre[s] = centre
+        out_axis[s] = axis
 
 
 @wp.kernel
@@ -2447,25 +2457,24 @@ def component_tables(
 
 
 @wp.kernel
-def component_chunk_counts(
-    component_offsets: wp.array[wp.int32], out_chunk_offsets: wp.array[wp.int32]
-) -> None:
-    # A component's ``NULL_SPACE_CHUNK`` count, into the tail of its chunk offsets (scanned after).
-    c = wp.int32(wp.tid())
-    count = component_offsets[c + 1] - component_offsets[c]
-    out_chunk_offsets[c + 1] = (count + NULL_SPACE_CHUNK - 1) // NULL_SPACE_CHUNK
-
-
-@wp.kernel
-def component_diagonals(
+def component_chunks_and_diagonals(
+    component_offsets: wp.array[wp.int32],
     last: wp.array[wp.int32],
     owner: wp.array[wp.int32],
     front_offset: wp.array[wp.int64],
     c0: wp.array[wp.int32],
     front_size: wp.array[wp.int32],
+    out_chunk_offsets: wp.array[wp.int32],
     out_diagonal: wp.array[wp.int64],
 ) -> None:
+    # A component's ``NULL_SPACE_CHUNK`` count, into the tail of its chunk offsets (scanned after;
+    # component 0 writes the leading zero), and where its last-eliminated row's diagonal sits in
+    # the fronts arena.
     c = wp.int32(wp.tid())
+    if c == 0:
+        out_chunk_offsets[0] = 0
+    count = component_offsets[c + 1] - component_offsets[c]
+    out_chunk_offsets[c + 1] = (count + NULL_SPACE_CHUNK - 1) // NULL_SPACE_CHUNK
     i = last[c]
     k = owner[i]
     local = i - c0[k]

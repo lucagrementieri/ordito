@@ -949,25 +949,19 @@ class _Plan:
             device=device,
         )
         # The null-space projection's chunks: each component's rows in ``NULL_SPACE_CHUNK``s,
-        # at most ``chunk_bound`` of them, so no count is read back.
-        self.chunk_offsets = _launch.zeros(n_components + 1, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_cholesky.component_chunk_counts,
-            dim=n_components,
-            inputs=[self.component_offsets],
-            outputs=[self.chunk_offsets],
-            device=device,
-        )
-        _launch.array_scan(self.chunk_offsets, self.chunk_offsets, inclusive=True)
+        # at most ``chunk_bound`` of them, so no count is read back. The same launch finds each
+        # component's pinned diagonal in the fronts arena.
+        self.chunk_offsets = _launch.empty(n_components + 1, dtype=wp.int32, device=device)
         self.component_diagonal = _launch.empty(n_components, dtype=wp.int64, device=device)
         _launch.launch(
-            kernel_cholesky.component_diagonals,
+            kernel_cholesky.component_chunks_and_diagonals,
             dim=n_components,
-            inputs=[self.component_last, self.owner, self.front_offset, self.c0,
-                    self.front_size],
-            outputs=[self.component_diagonal],
+            inputs=[self.component_offsets, self.component_last, self.owner, self.front_offset,
+                    self.c0, self.front_size],
+            outputs=[self.chunk_offsets, self.component_diagonal],
             device=device,
         )  # fmt: skip
+        _launch.array_scan(self.chunk_offsets, self.chunk_offsets, inclusive=True)
 
     def numeric(self) -> _Numeric:
         """Allocate the per-factorization state of this pattern."""
@@ -1056,11 +1050,13 @@ class _Plan:
         n = self.n
         _launch.zero_(numeric.status)
         _launch.fill_(numeric.singular, 1)
+        _launch.zero_(numeric.blocks)
         _launch.launch(
-            kernel_cholesky.mark_nonsingular_components,
+            kernel_cholesky.mark_components_and_seed_blocks,
             dim=n,
             inputs=[matrix.offsets, matrix.columns, matrix.values, self.labels,
-                    wp.float64(_SINGULAR_ROW_SUM)],
+                    wp.float64(_SINGULAR_ROW_SUM), self.block_offset, self.front_size, self.owner,
+                    self.c0, numeric.blocks],
             outputs=[numeric.singular, numeric.pinned, numeric.dropped],
             device=device,
         )  # fmt: skip
@@ -1084,13 +1080,6 @@ class _Plan:
             outputs=[fronts],
             device=device,
         )  # fmt: skip
-        _launch.zero_(numeric.blocks)
-        _launch.launch(
-            kernel_cholesky.seed_blocks,
-            dim=self.n,
-            inputs=[self.block_offset, self.front_size, self.owner, self.c0, numeric.blocks],
-            device=device,
-        )
         tables = [self.front_offset, self.ncol, self.front_size]
         cuda = wp.get_device(device).is_cuda
         panel = int(kernel_cholesky.PANEL)
@@ -1717,6 +1706,8 @@ def _nested_dissection(
     partials = _launch.empty(max_tasks, dtype=kernel_cholesky.moment_vector, device=device)
     centre = _launch.empty(slots, dtype=wp.vec3d, device=device)
     axis = _launch.empty(slots, dtype=wp.vec3d, device=device)
+    # Each segment's count of stored partials, cleared by the block that stores its last one.
+    tickets = _launch.zeros(slots, dtype=wp.int32, device=device)
     keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
     vertices = _launch.empty(2 * n, dtype=wp.int32, device=device)
     # The crossing counts start zeroed; ``dissection_link`` clears each segment's once read.
@@ -1764,16 +1755,9 @@ def _nested_dissection(
         _launch.launch_tiled(
             kernel_cholesky.dissection_partials,
             dim=[min(live + n // chunk + 1, max_tasks)],
-            inputs=[order, coordinates, segment_start, tasks, wp.int32(chunk)],
-            outputs=[partials],
+            inputs=[order, coordinates, segment_start, tasks, wp.int32(chunk), tickets],
+            outputs=[partials, centre, axis],
             block_dim=block_dim,
-            device=device,
-        )
-        _launch.launch(
-            kernel_cholesky.dissection_axes,
-            dim=live,
-            inputs=[order, coordinates, segment_start, tasks, partials],
-            outputs=[centre, axis],
             device=device,
         )
         _launch.launch(

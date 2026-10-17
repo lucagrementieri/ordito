@@ -87,7 +87,7 @@ def laplacian_smoothing_norms(
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
     vertices: wp.array[wp.vec3],
-    mass: wp.array[wp.float32],
+    area_sums: wp.array[wp.float64],
     method: wp.int32,
     out_norms: wp.array[wp.float32],
 ) -> None:
@@ -101,10 +101,13 @@ def laplacian_smoothing_norms(
     #   (an obtuse ring whose weights cancel, or an isolated vertex) the averaging is undefined and
     #   the residual falls back to ``-v_i``, which is what the reference's ``norm_w = 0`` branch
     #   amounts to.
-    # - ``SMOOTHING_COTCURV``: the stiffness residual over six times the lumped area ``mass[i]``,
+    # - ``SMOOTHING_COTCURV``: the stiffness residual over six times the lumped area ``mass_i``,
     #   with ``reciprocal_scaled_or_zero``'s convention that a zero-area vertex contributes nothing.
+    #   ``mass_i`` is ``laplacian.mass_matrix_entries``' ``float32`` entry, formed here from the
+    #   vertex's exact ``area_sums`` (``kernels/scatter.scatter_face_areas_exact``) by the one
+    #   division and rounding ``kernels/scatter.scale_face_sums`` makes.
     #
-    # ``mass`` is read only by the last; the others pass a null array.
+    # ``area_sums`` is read only by the last; the others pass a null array.
     #
     # **The diagonal is read during the row walk deliberately, and this is the fourth spelling of
     # "get the diagonal" in the tree.** The other three are ``linalg._multigrid_levels`` (through
@@ -133,7 +136,8 @@ def laplacian_smoothing_norms(
             row_scale = 1.0 / row_sum
             self_scale = wp.float32(0.0)
     elif method == SMOOTHING_COTCURV:
-        row_scale = reciprocal_scaled_or_zero(mass[i], wp.float32(1.0 / 6.0))
+        mass = wp.float32(area_sums[i] / wp.float64(3.0))
+        row_scale = reciprocal_scaled_or_zero(mass, wp.float32(1.0 / 6.0))
         self_scale = wp.float32(0.0)
     out_norms[i] = wp.length(row_scale * accumulator + self_scale * vertices[i])
 
@@ -148,13 +152,22 @@ DIHEDRAL_SUM = term_sum_1d(dihedral_term, DihedralTerms, "dihedral_sum")
 def sandwich_row_counts(
     a_offsets: wp.array[wp.int32],
     b_offsets: wp.array[wp.int32],
-    inv_mass: wp.array[wp.Float],
+    weights: wp.array[wp.Float],
+    invert: wp.int32,
     out_counts: wp.array[wp.int32],
+    out_inv_mass: wp.array[wp.Float],
 ) -> None:
     # Triplets emitted by row ``t`` of the product ``A diag(inv_mass) B``: the full outer product
-    # of the two CSR rows, or nothing when the diagonal weight is zero.
+    # of the two CSR rows, or nothing when the diagonal weight is zero. With ``invert`` set,
+    # ``weights`` is the mass and the row forms its own ``reciprocal_or_zero`` weight, storing it
+    # in ``out_inv_mass`` for the emission pass and every later sandwich; otherwise ``weights`` is
+    # already ``inv_mass`` and ``out_inv_mass`` is not written.
     t = wp.int32(wp.tid())
-    if inv_mass[t] > type(inv_mass[0])(0.0):
+    weight = weights[t]
+    if invert != 0:
+        weight = reciprocal_or_zero(weight)
+        out_inv_mass[t] = weight
+    if weight > type(weight)(0.0):
         out_counts[t] = (a_offsets[t + 1] - a_offsets[t]) * (b_offsets[t + 1] - b_offsets[t])
     else:
         out_counts[t] = 0
@@ -966,7 +979,8 @@ def _register_overloads() -> None:
         },
     )
     SANDWICH_ROW_COUNTS = OverloadTable(
-        sandwich_row_counts, {d: [i32, i32, wp.array[d], i32] for d in _MATRIX_DTYPES}
+        sandwich_row_counts,
+        {d: [i32, i32, wp.array[d], wp.int32, i32, wp.array[d]] for d in _MATRIX_DTYPES},
     )
     SANDWICH_ROW_TRIPLETS = OverloadTable(
         sandwich_row_triplets,
