@@ -908,7 +908,10 @@ def _projection_tables(
 
 
 def face_connected_component_labels(
-    faces: wp.array[wp.int32], *, n_vertices: int | None = None
+    faces: wp.array[wp.int32],
+    *,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.int32]:
     """
     Connected-component label per face (face-adjacency graph).
@@ -931,11 +934,23 @@ def face_connected_component_labels(
         Optional exclusive bound on the vertex indices, forwarded to
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it. It does
         not change the answer, and it is trusted, not checked: it must exceed every index.
+    mates
+        ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare building them here (and
+        ``n_vertices`` is then unused). Not checked against ``faces`` beyond its length.
+        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
 
     Returns
     -------
     wp.array[wp.int32]
         ``(n_faces,)`` component labels on ``faces.device``.
+
+    Raises
+    ------
+    ValueError
+        If ``mates`` is given and its length is not ``3 * n_faces``.
+    RuntimeError
+        If ``faces`` and ``mates`` are not on one device.
 
     See Also
     --------
@@ -957,7 +972,12 @@ def face_connected_component_labels(
     print(od.adjacency.face_connected_component_labels(faces).numpy().tolist())  # [0, 0, 2]
     ```
     """
+    require_same_device(faces=faces, mates=mates)
     n_faces = faces.size // 3
+    if mates is not None and mates.size != 3 * n_faces:
+        raise ValueError(
+            f"mates must have one entry per halfedge, got {mates.size} for {n_faces} faces"
+        )
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.int32, device=faces.device)
     # The adjacency pairs straight off the halfedge mates, one union-find edge per halfedge (a
@@ -965,7 +985,8 @@ def face_connected_component_labels(
     # table, no host read of its length, and no per-halfedge edge table written only to be read
     # back twice. The labels are each component's smallest face id whatever edges are hooked.
     device = faces.device
-    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    if mates is None:
+        mates = od.halfedge.halfedge_mates(faces, n_vertices)
     n = mates.size
     parents = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
