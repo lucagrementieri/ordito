@@ -48,6 +48,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
 from ordito.kernels import levelset as kernel_levelset
+from ordito.kernels import scatter as kernel_scatter
 
 # Bounds on the automatic ``voxel_size``, both expressed as a sample count across a span, and both
 # load-bearing rather than defensive. The spans differ, which is the part to read carefully: the
@@ -820,11 +821,14 @@ def _cone_components(
     _launch.launch(
         kernel_levelset.mark_run_starts, dim=m, inputs=[sorted_keys, flags], device=device
     )
-    # The component count sizes the cone tables.
-    first = od.array.flatnonzero(flags)
-    n_components = first.size
+    # The run starts are compacted straight into the offsets they begin: the flags are scanned in
+    # place (sort scratch, as above), and their total, the component count, sizes the cone tables.
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
+    n_components = int(read_scalar(flags))
     starts = _launch.full(n_components + 1, m, dtype=wp.int32, device=device)
-    _launch.copy(starts, first, count=n_components)
+    _launch.launch(
+        kernel_scatter.scatter_index_where_scanned, dim=m, inputs=[flags, starts], device=device
+    )
     radius = _launch.empty(n_components, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_levelset.cone_bounds,

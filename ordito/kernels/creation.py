@@ -1022,10 +1022,14 @@ def truncated_prism_geometry(
 
 
 @wp.kernel
-def random_soup_vertices(seed: wp.int32, out_vertices: wp.array[wp.vec3]) -> None:
+def random_soup_mesh(
+    seed: wp.int32, out_vertices: wp.array[wp.vec3], out_faces: wp.array[wp.int32]
+) -> None:
+    # Each vertex is its own corner, so the face buffer is the identity written beside it.
     i = wp.int32(wp.tid())
     state = wp.rand_init(seed, i)
     out_vertices[i] = wp.vec3(wp.randf(state) - 0.5, wp.randf(state) - 0.5, wp.randf(state) - 0.5)
+    out_faces[i] = i
 
 
 # --- parametric surfaces -----------------------------------------------------------------
