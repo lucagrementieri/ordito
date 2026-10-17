@@ -8,6 +8,7 @@ from ordito.kernels.algorithms.connected_components import (
     ecl_prehook_pair,
     find_representative,
     find_representative_parity,
+    parity_root_word,
 )
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
@@ -253,23 +254,62 @@ def mate_corner_link(
     return c0, c1, wp.bool(False)
 
 
+@wp.func
+def lower_face_corner_parents(
+    p0: wp.int32, p1: wp.int32, p2: wp.int32, base: wp.int32, c0: wp.int32, c1: wp.int32
+) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # ``ecl_prehook_pair``'s ``atomic_min`` of link ``(c0, c1)``, kept in the registers of the face
+    # whose corners are ``base`` to ``base + 2``: the larger end, when it is one of them, points at
+    # the smaller if that is lower than where it points already.
+    hi = wp.max(c0, c1)
+    lo = wp.min(c0, c1)
+    if hi == base:
+        p0 = wp.min(p0, lo)
+    elif hi == base + 1:
+        p1 = wp.min(p1, lo)
+    elif hi == base + 2:
+        p2 = wp.min(p2, lo)
+    return p0, p1, p2
+
+
 @wp.kernel
 def mate_corner_prehook(
     faces: wp.array[wp.int32],
     mates: wp.array[wp.int32],
     require_pairs: wp.bool,
-    parents: wp.array[wp.int32],
+    out_parents: wp.array[wp.int32],
     out_violation: wp.array[wp.int32],
 ) -> None:
-    # ``connected_components.ecl_init_parent_edges`` over ``mate_corner_link``'s edges. With
-    # ``require_pairs`` an edge not shared by exactly two faces raises ``out_violation[0]``: the
-    # edge half of ``is_watertight``, folded into the same pass; without it the flag is never
-    # indexed.
-    h = wp.int32(wp.tid())
-    c0, c1, unpaired = mate_corner_link(faces, mates, h)
-    if unpaired and require_pairs:
+    # ``connected_components.ecl_init_parent_edges`` over ``mate_corner_link``'s edges, from no
+    # identity forest: one thread per face writes its three corners' parents. A link lies between
+    # the faces of a halfedge and of its mate, so the links touching this face's corners are those
+    # of its three halfedges and of their mates (every one, as ``mates[mates[h]] == h``); folding
+    # each into the corner it lowers gives exactly the ``atomic_min``s an identity forest would
+    # have taken, with no ``arange`` launch before it. Every link folded is one ``mate_corner_hook``
+    # also hooks, so the forest stays valid whatever ``mates`` holds. With ``require_pairs`` an
+    # edge not shared by exactly two faces raises ``out_violation[0]``: the edge half of
+    # ``is_watertight``, folded into the same pass; without it the flag is never indexed.
+    f = wp.int32(wp.tid())
+    base = wp.int32(3) * f
+    p0 = base
+    p1 = base + 1
+    p2 = base + 2
+    unpaired_any = wp.bool(False)
+    for k in range(3):
+        h = base + k
+        c0, c1, unpaired = mate_corner_link(faces, mates, h)
+        if unpaired:
+            unpaired_any = True
+        p0, p1, p2 = lower_face_corner_parents(p0, p1, p2, base, c0, c1)
+        mate = mates[h]
+        if mate >= 0:
+            m0, m1, _unpaired = mate_corner_link(faces, mates, mate)
+            p0, p1, p2 = lower_face_corner_parents(p0, p1, p2, base, m0, m1)
+    if unpaired_any and require_pairs:
         out_violation[0] = 1
-    ecl_prehook_pair(parents, c0, c1)
+    out_parents[base] = p0
+    out_parents[base + 1] = p1
+    out_parents[base + 2] = p2
 
 
 @wp.kernel
@@ -358,20 +398,29 @@ def pair_flip_sign(
 
 
 @wp.kernel
-def build_signed_face_edges(
+def face_pair_signs_and_roots(
     faces: wp.array[wp.int32],
     adjacency: wp.array2d[wp.int32],
     adjacency_edges: wp.array2d[wp.int32],
-    out_edges: wp.array2d[wp.int32],
+    n_faces: wp.int32,
     out_sign: wp.array[wp.int32],
+    out_words: wp.array[wp.int32],
 ) -> None:
-    """Face-pair edges with a Z2 flip bit (``pair_flip_sign``) for orientability propagation."""
-    r = wp.int32(wp.tid())
-    f0 = adjacency[r, 0]
-    f1 = adjacency[r, 1]
-    out_edges[r, 0] = f0
-    out_edges[r, 1] = f1
-    out_sign[r] = pair_flip_sign(faces, f0, f1, adjacency_edges[r, 0], adjacency_edges[r, 1])
+    """
+    Z2 flip bit (``pair_flip_sign``) of every face-adjacency row, and the parity forest's roots.
+
+    The signed face graph is the adjacency table itself, whose rows are already ascending face
+    pairs, so only the signs are written. Launched over ``max(m, n_faces)``: the parity
+    union-find's identity words (``connected_components.ecl_init_parent_parity``) are laid down
+    by the same launch rather than one of their own.
+    """
+    i = wp.int32(wp.tid())
+    if i < adjacency.shape[0]:
+        out_sign[i] = pair_flip_sign(
+            faces, adjacency[i, 0], adjacency[i, 1], adjacency_edges[i, 0], adjacency_edges[i, 1]
+        )
+    if i < n_faces:
+        out_words[i] = parity_root_word(i)
 
 
 @wp.func
@@ -379,7 +428,7 @@ def mate_signed_edge(
     faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.int32
 ) -> tuple[wp.int32, wp.int32, wp.int32]:
     """
-    ``build_signed_face_edges``' row for halfedge ``h``, with no adjacency table.
+    ``face_pair_signs_and_roots``' signed row for halfedge ``h``, with no adjacency table.
 
     A pair's lower halfedge gives the row the adjacency table would hold -- the ascending face
     pair and the flip bit over that halfedge's edge -- and every other halfedge a self-loop with
@@ -448,7 +497,7 @@ def signed_edge_orientation_conflict(
     orient: wp.array[wp.int32],
     out_conflict: wp.array[wp.int32],
 ) -> None:
-    # ``mate_orientation_conflict`` over a signed edge list (``build_signed_face_edges``'), for
+    # ``mate_orientation_conflict`` over a signed edge list (``face_pair_signs_and_roots``'), for
     # ``face_orientation_bits`` under the deterministic setting.
     e = wp.int32(wp.tid())
     if signed_edge_violated(orient, edges[e, 0], edges[e, 1], signs[e]) != 0:

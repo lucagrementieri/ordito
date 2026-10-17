@@ -111,9 +111,16 @@ def region_boundary_edges(
     # Sizes the output: the one host readback.
     n_seam = int(read_scalar(inclusive))
     out_edges = odt.empty_2d((n_seam, 2), wp.int32, device=device)
-    if n_seam > 0:
+    if n_seam > 0 and key_order is not None:
+        _launch.launch(
+            kernel_selection.emit_key_ordered_region_seam,
+            dim=n,
+            inputs=[inclusive, key_order, mates, faces, face_mask, oriented, out_edges],
+            device=device,
+        )
+    elif n_seam > 0:
         halfedges = od.halfedge.key_ordered_halfedges(
-            faces, inclusive, n_seam, key_order=key_order, n_vertices=n_vertices
+            faces, inclusive, n_seam, n_vertices=n_vertices
         )
         _launch.launch(
             kernel_selection.emit_region_seam,
@@ -248,12 +255,13 @@ def faces_left_of_contour(
     # formed across ``twins`` in the thread rather than listed: a pre-hook (with the seeding), a
     # hook, and a flatten that also flags each seeded root.
     n_halfedges = 3 * n_faces
-    seeds = _launch.zeros(n_faces, dtype=wp.bool, device=device)
-    parents = od.array.arange(n_faces, device=device)
+    seeds = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    parents = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_selection.seed_and_prehook_dual,
-        dim=n_halfedges,
-        inputs=[faces, twins, contour_keys, base, parents, seeds],
+        dim=n_faces,
+        inputs=[faces, twins, contour_keys, base],
+        outputs=[parents, seeds],
         device=device,
     )
     if n_faces >= kernel_connected_components.ECL_COMPRESS_FROM:
@@ -1485,10 +1493,11 @@ def _dilate_vertex_mask(
     ``True`` dilates the selection and ``False`` erodes it.
 
     Several rounds share one ``int32`` buffer holding the round each vertex was first reached in,
-    grown in place by one launch per round, and a final pass turns it into the mask; so a round
-    costs a launch and no copy. A single round skips the two conversions: it seeds a copy of the
-    mask and spreads into it directly. The caller's ``mask`` is never written. ``hops`` must be
-    positive.
+    grown in place by one launch per round that also writes ``value`` into the answer at every
+    vertex it reaches, the answer having been seeded with the mask beside the hops; so a round
+    costs a launch and no copy, and nothing converts the hops afterwards. A single round skips the
+    hop buffer: it seeds a copy of the mask and spreads into it directly. The caller's ``mask``
+    is never written. ``hops`` must be positive.
     """
     device = mask.device
     n_vertices = mask.size
@@ -1504,10 +1513,12 @@ def _dilate_vertex_mask(
             )
         return out_mask
     hop_of = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    out_mask = _launch.empty(n_vertices, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_selection.vertex_hops_from_mask,
         dim=n_vertices,
-        inputs=[mask, value, hop_of],
+        inputs=[mask, value],
+        outputs=[hop_of, out_mask],
         device=device,
     )
     if n_faces > 0:
@@ -1515,16 +1526,9 @@ def _dilate_vertex_mask(
             _launch.launch(
                 kernel_selection.dilate_vertex_hops,
                 dim=n_faces,
-                inputs=[faces, hop, hop_of],
+                inputs=[faces, hop, value, hop_of, out_mask],
                 device=device,
             )
-    out_mask = _launch.empty(n_vertices, dtype=wp.bool, device=device)
-    _launch.launch(
-        kernel_selection.vertex_mask_from_hops,
-        dim=n_vertices,
-        inputs=[hop_of, hops, value, out_mask],
-        device=device,
-    )
     return out_mask
 
 

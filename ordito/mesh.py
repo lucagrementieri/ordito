@@ -1331,7 +1331,8 @@ class Trimesh:
         """
         Counter-clockwise outgoing halfedges per vertex: ``(ring_halfedges, offsets, is_boundary)``.
 
-        Built from the cached `halfedge_twins`, so accessing either first pays for that array once.
+        Built from the cached `halfedge_twins`, or together with it (and caching it) when it is not
+        cached yet, so accessing either first pays for that array once.
 
         Raises
         ------
@@ -1350,9 +1351,18 @@ class Trimesh:
         [`halfedge_twins`][ordito.mesh.Trimesh.halfedge_twins]
         [`vertex_face_adjacency`][ordito.mesh.Trimesh.vertex_face_adjacency]
         """
-        return od.halfedge.vertex_one_rings(
-            self._faces, twins=self.halfedge_twins, n_vertices=self.n_vertices
+        twins = cast("wp.array[wp.int32] | None", self._cache.get("halfedge_twins"))
+        if twins is not None:
+            return od.halfedge.vertex_one_rings(
+                self._faces, twins=twins, n_vertices=self.n_vertices
+            )
+        # Built here, the twin table comes back with the rings for one synchronization, rather than
+        # one for its own check and another for the check of passing it back in.
+        ring_halfedges, offsets, is_boundary, twins = od.halfedge.vertex_one_rings(
+            self._faces, n_vertices=self.n_vertices, return_twins=True
         )
+        self._cache.setdefault("halfedge_twins", twins)
+        return ring_halfedges, offsets, is_boundary
 
     @_CachedProperty
     def boundary_edges(self) -> odt.Array2dInt32:

@@ -1,7 +1,7 @@
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
-from ordito.kernels.algorithms.connected_components import ecl_hook_pair, ecl_prehook_pair
+from ordito.kernels.algorithms.connected_components import ecl_hook_pair
 from ordito.kernels.array import declare_map_signatures, map_probe, pack_edge_key, scanned_count
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
@@ -207,11 +207,21 @@ def mate_pair_faces(mates: wp.array[wp.int32], h: wp.int32) -> tuple[wp.int32, w
 
 
 @wp.kernel
-def mate_pair_prehook(mates: wp.array[wp.int32], parents: wp.array[wp.int32]) -> None:
+def mate_pair_prehook(mates: wp.array[wp.int32], out_parents: wp.array[wp.int32]) -> None:
     # ``connected_components.ecl_init_parent_edges`` over ``mate_pair_faces``' edges, formed in
-    # the thread: no ``(3 n_faces, 2)`` edge table is written only to be read back twice.
-    f0, f1 = mate_pair_faces(mates, wp.int32(wp.tid()))
-    ecl_prehook_pair(parents, f0, f1)
+    # the thread, from no identity forest: one thread per face writes its own parent. The edges
+    # touching face ``f`` are its halfedges' pairs, each hooked by the pair's lower halfedge, so
+    # the smallest face across them is exactly what the ``atomic_min``s over an ``arange`` would
+    # have left, without that launch. A mate below ``h`` counts only when it names ``h`` back,
+    # the pair ``mate_pair_hook`` hooks from its side, so every edge folded here is a hooked one.
+    f = wp.int32(wp.tid())
+    parent = f
+    for k in range(3):
+        h = wp.int32(3) * f + k
+        mate = mates[h]
+        if mate > h or (mate >= 0 and mates[mate] == h):
+            parent = wp.min(parent, mate // 3)
+    out_parents[f] = parent
 
 
 @wp.kernel
@@ -346,10 +356,14 @@ def scatter_vertex_faces(
     # path when ``ordito.config`` does not ask for reproducible results (``corner_face`` below is
     # the other). A rotational order would need halfedge twins and would refuse a
     # vertex-non-manifold mesh, which the decimator that consumes this must not do.
+    #
+    # ``cursor`` is the counting pass's per-vertex count and counts *down*, as in
+    # ``graph.scatter_neighbor_lists``: the atomic returns how many slots of the row are still
+    # free, so ``offsets[v + 1]`` minus it is the next free slot from the front.
     f = wp.int32(wp.tid())
     for k in range(3):
         v = faces[f * 3 + k]
-        out_vertex_faces[offsets[v] + wp.atomic_add(cursor, v, 1)] = f
+        out_vertex_faces[offsets[v + 1] - wp.atomic_add(cursor, v, -1)] = f
 
 
 @wp.func

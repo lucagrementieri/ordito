@@ -389,9 +389,12 @@ def _walk_one_rings(
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
-    ring_halfedges = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
     if n_halfedges == 0 or n_vertices == 0:
+        ring_halfedges = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
         return ring_halfedges, offsets, _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+    # Every slot lies in one vertex's row, which the walk writes whole -- the halfedges it reached,
+    # then ``-1`` where a pinched vertex's walk closed early -- so the buffer needs no fill.
+    ring_halfedges = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
 
     # One pass over the halfedges sizes the CSR and picks every vertex's two start candidates (row
     # 0 over all outgoing halfedges, row 1 over the boundary ones): every face contributes exactly
@@ -714,14 +717,17 @@ def _edge_buckets(
     """
     device = faces.device
     n_halfedges = faces.size // 3 * 3
-    degrees = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    # Both counters start at zero, so they share one zeroed allocation: the degrees, then the
+    # cursors.
+    counters = _launch.zeros(2 * n_vertices + 1, dtype=wp.int32, device=device)
+    degrees = odt.as_dense(counters[:n_vertices])
     _launch.launch(
         kernel_scatter.count_occurrences, dim=n_halfedges, inputs=[faces, degrees], device=device
     )
     # Bucket ``v`` is counted into ``cursors[v + 1]``; the inclusive scan in place turns the counts
     # into bucket ends there, which leaves ``cursors[v]`` holding bucket ``v``'s start for the
     # scatter to advance to its end.
-    cursors = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
+    cursors = odt.as_dense(counters[n_vertices:])
     _launch.launch(
         kernel_halfedge.count_edge_buckets,
         dim=n_halfedges,

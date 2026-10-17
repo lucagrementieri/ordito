@@ -293,13 +293,21 @@ def ecl_hook_edge_parity(
     return root_v, par_v
 
 
+@wp.func
+def parity_root_word(v: wp.int32) -> wp.int32:
+    # Node ``v``'s packed word as its own root at parity 0: ``ecl_init_parent_parity``'s entry,
+    # shared with the kernels that lay the forest down beside other work of the same launch
+    # (``validation.face_pair_signs_and_roots``).
+    return v << 1
+
+
 @wp.kernel
 def ecl_init_parent_parity(out_words: wp.array[wp.int32]) -> None:
     # Every node its own root at parity 0. The plain ``ecl_init_parent`` also pre-hooks each node
     # to its smallest neighbour, which needs the edge's sign and so would need a signed CSR; the
     # hook kernel below is edge-parallel and does the same work in one pass anyway.
     v = wp.int32(wp.tid())
-    out_words[v] = v << 1
+    out_words[v] = parity_root_word(v)
 
 
 @wp.func
