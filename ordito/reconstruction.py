@@ -1184,14 +1184,13 @@ class _PoissonMultigrid:
 # handful of rounds settles it. The finest level is the most expensive and the least in need of
 # rounds, since every coarser level has already placed the surface. The cascade alone leaves each
 # band at its coarse level's rediscretized operator -- the gap to the dense backend's surface that
-# no band width or round count closes -- so ``_BAND_FAS_CYCLES`` FAS cycles follow it: restrict
+# no band width or round count closes -- so one FAS cycle follows it: restrict
 # each band's composite residual with its solution injected where it covers the level below,
 # solve the dense base's tau-corrected system (a few rounds from that start), then correct and
 # re-solve each band (``kernels/algorithms/poisson_band`` has the scheme and its measurements).
 _BAND_DENSE_LEVELS_BELOW = 2
 _BAND_ROUNDS = 30
 _BAND_ROUNDS_FINEST = 8
-_BAND_FAS_CYCLES = 1
 _BAND_FAS_ROUNDS = 30
 _BAND_FAS_ROUNDS_FINEST = 8
 _BAND_FAS_BASE_ROUNDS = 4
@@ -1241,7 +1240,7 @@ def _screened_poisson_band(
     Two passes: the band of the bricks the samples touch carries all the data, so the dense base is
     solved from its restriction; then the bricks the base's iso-surface crosses are added -- where
     the surface closes a hole the samples leave open -- and the band levels are solved coarse to
-    fine, then ``_BAND_FAS_CYCLES`` FAS cycles make each coarser level's solution the finer one's
+    fine, then one FAS cycle makes each coarser level's solution the finer one's
     where the finer band covers it (``kernels/algorithms/poisson_band``). The surface is extracted
     from the composite field (band values, prolonged coarse ones off the band) over the finest band
     grown by a brick, with ``levelset.marching_cubes``' numbering and edge margin. Two counts are
@@ -1350,7 +1349,7 @@ def _screened_poisson_band(
     bands = dict(zip(final_levels, final_built, strict=True))
     _warn_if_unconverged(res_b, base_iterations, base_residual, solver_iterations)
 
-    # The band levels, coarse to fine, each from the prolonged level below it; then the FAS cycles.
+    # The band levels, coarse to fine, each from the prolonged level below it; then the FAS cycle.
     states: dict[int, _BandState] = {}
     for level in range(base + 1, depth + 1):
         band = bands[level]
@@ -1386,109 +1385,99 @@ def _screened_poisson_band(
             device,
         )
     base_previous = base_x
-    for _cycle in range(_BAND_FAS_CYCLES):
-        # Down: each level's composite residual restricted, with its solution injected where it
-        # covers the level below, into that level's tau-corrected right-hand side.
-        for level in range(depth, base, -1):
-            fine, coarse = states[level], states.get(level - 1)
-            residual = _launch.empty(fine.band.n_nodes, dtype=wp.float32, device=device)
-            _launch.launch(
-                kernel_poisson_band.band_residual,
-                dim=fine.band.n_nodes,
-                inputs=[
-                    *_band_level_args(fine, screen),
-                    *_band_coarse_args(coarse, base_x, res_b),
-                    fine.rhs,
-                    fine.x,
-                ],
-                outputs=[residual],
-                device=device,
-            )
-            if coarse is None:
-                base_previous = _launch.empty(res_b**3, dtype=wp.float32, device=device)
-                coarse_args = [None, None, 0, res_b, wp.float32(lap_b), base_w, wp.float32(screen)]
-                coarse_x, coarse_data, previous, out_rhs, scale = (
-                    base_x,
-                    base_b,
-                    base_previous,
-                    rhs,
-                    1.0 / lap_b,
-                )
-            else:
-                if coarse.previous is None:
-                    states[level - 1] = coarse = coarse._replace(
-                        rhs=_launch.empty(coarse.band.n_nodes, dtype=wp.float32, device=device),
-                        previous=_launch.empty(
-                            coarse.band.n_nodes, dtype=wp.float32, device=device
-                        ),
-                    )
-                assert coarse.previous is not None
-                coarse_args = [
-                    coarse.band.brick_coords,
-                    coarse.band.brick_map,
-                    coarse.band.nbk,
-                    coarse.band.res,
-                    wp.float32(coarse.lap),
-                    coarse.weights,
-                    wp.float32(screen),
-                ]
-                coarse_x, coarse_data, previous, out_rhs, scale = (
-                    coarse.x,
-                    coarse.data,
-                    coarse.previous,
-                    coarse.rhs,
-                    1.0,
-                )
-            fine_args = [fine.band.brick_map, fine.band.nbk, fine.band.res]
-            _launch.launch(
-                kernel_poisson_band.fas_inject,
-                dim=previous.size,
-                inputs=[coarse_args[0], coarse_args[3], *fine_args, fine.x, coarse_x],
-                outputs=[previous],
-                device=device,
-            )
-            _launch.launch(
-                kernel_poisson_band.fas_rhs,
-                dim=previous.size,
-                inputs=[
-                    *coarse_args,
-                    coarse_data,
-                    previous,
-                    *fine_args,
-                    residual,
-                    wp.float32(scale),
-                ],
-                outputs=[out_rhs],
-                device=device,
-            )
-        _solve_screened_poisson(
-            base_w,
-            screen / lap_b,
-            res_b,
-            rhs,
-            smoother,
-            base_x,
-            min(_BAND_FAS_BASE_ROUNDS, solver_iterations),
-            solver_tolerance,
-            _launch.empty(1, dtype=wp.int32, device=device),
-            device,
+    # The FAS cycle. Down: each level's composite residual restricted, with its solution injected
+    # where it covers the level below, into that level's tau-corrected right-hand side.
+    for level in range(depth, base, -1):
+        fine, coarse = states[level], states.get(level - 1)
+        residual = _launch.empty(fine.band.n_nodes, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_poisson_band.band_residual,
+            dim=fine.band.n_nodes,
+            inputs=[
+                *_band_level_args(fine, screen),
+                *_band_coarse_args(coarse, base_x, res_b),
+                fine.rhs,
+                fine.x,
+            ],
+            outputs=[residual],
+            device=device,
         )
-        # Up: each band level corrected by its coarse level's change and solved again.
-        for level in range(base + 1, depth + 1):
-            rounds = _BAND_FAS_ROUNDS_FINEST if level == depth else _BAND_FAS_ROUNDS
-            coarse = states.get(level - 1)
-            _band_level_solve(
-                states[level],
-                coarse,
+        if coarse is None:
+            base_previous = _launch.empty(res_b**3, dtype=wp.float32, device=device)
+            coarse_args = [None, None, 0, res_b, wp.float32(lap_b), base_w, wp.float32(screen)]
+            coarse_x, coarse_data, previous, out_rhs, scale = (
                 base_x,
-                res_b,
-                screen,
-                min(rounds, solver_iterations),
-                solver_tolerance,
-                missing,
-                device,
-                previous=base_previous if coarse is None else coarse.previous,
+                base_b,
+                base_previous,
+                rhs,
+                1.0 / lap_b,
             )
+        else:
+            if coarse.previous is None:
+                states[level - 1] = coarse = coarse._replace(
+                    rhs=_launch.empty(coarse.band.n_nodes, dtype=wp.float32, device=device),
+                    previous=_launch.empty(coarse.band.n_nodes, dtype=wp.float32, device=device),
+                )
+            assert coarse.previous is not None
+            coarse_args = [
+                coarse.band.brick_coords,
+                coarse.band.brick_map,
+                coarse.band.nbk,
+                coarse.band.res,
+                wp.float32(coarse.lap),
+                coarse.weights,
+                wp.float32(screen),
+            ]
+            coarse_x, coarse_data, previous, out_rhs, scale = (
+                coarse.x,
+                coarse.data,
+                coarse.previous,
+                coarse.rhs,
+                1.0,
+            )
+        fine_args = [fine.band.brick_map, fine.band.nbk, fine.band.res]
+        _launch.launch(
+            kernel_poisson_band.fas_inject,
+            dim=previous.size,
+            inputs=[coarse_args[0], coarse_args[3], *fine_args, fine.x, coarse_x],
+            outputs=[previous],
+            device=device,
+        )
+        _launch.launch(
+            kernel_poisson_band.fas_rhs,
+            dim=previous.size,
+            inputs=[*coarse_args, coarse_data, previous, *fine_args, residual, wp.float32(scale)],
+            outputs=[out_rhs],
+            device=device,
+        )
+    _solve_screened_poisson(
+        base_w,
+        screen / lap_b,
+        res_b,
+        rhs,
+        smoother,
+        base_x,
+        min(_BAND_FAS_BASE_ROUNDS, solver_iterations),
+        solver_tolerance,
+        _launch.empty(1, dtype=wp.int32, device=device),
+        device,
+    )
+    # Up: each band level corrected by its coarse level's change and solved again.
+    for level in range(base + 1, depth + 1):
+        rounds = _BAND_FAS_ROUNDS_FINEST if level == depth else _BAND_FAS_ROUNDS
+        coarse = states.get(level - 1)
+        _band_level_solve(
+            states[level],
+            coarse,
+            base_x,
+            res_b,
+            screen,
+            min(rounds, solver_iterations),
+            solver_tolerance,
+            missing,
+            device,
+            previous=base_previous if coarse is None else coarse.previous,
+        )
 
     fine_x = states[depth].x
     coarse_state = states.get(depth - 1)
@@ -1578,7 +1567,7 @@ def _screened_poisson_band(
 
 class _BandState(NamedTuple):
     """
-    One band level's system and solution through the cascade and the FAS cycles.
+    One band level's system and solution through the cascade and the FAS cycle.
 
     ``data`` is the level's restricted data, ``rhs`` the right-hand side it solves before the ghost
     fold (``data`` itself until an FAS cycle tau-corrects it), ``x`` its solution and ``previous``

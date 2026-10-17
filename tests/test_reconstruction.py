@@ -1071,26 +1071,27 @@ def test_poisson_adaptive_matches_dense(request: pytest.FixtureRequest, mesh_nam
         warp_to_trimesh(vertices_dense, faces_dense), warp_to_trimesh(vertices_band, faces_band)
     )
     # Measured 0.0021-0.0026 cells mean and 0.05-0.07 cells worst on both devices; the bounds are
-    # 3x and 3.5x that. The cascade without its FAS cycle (``_BAND_FAS_CYCLES = 0``, 16 finest
-    # rounds: the coarse levels' rediscretized operators fixing the ghosts) puts the mean at
+    # 3x and 3.5x that. The cascade without its FAS cycle (16 finest rounds: the coarse levels'
+    # rediscretized operators fixing the ghosts) puts the mean at
     # 0.010-0.011 cells, and not solving the band levels at all (``_BAND_ROUNDS = 0``) at 0.09-0.11
     # on CUDA, so the mean bound bites on both.
     assert mean_distance < 0.008 * cell
     assert max_distance < 0.25 * cell
 
 
-def test_poisson_band_fas_cycles_converge_to_the_dense_solution(
+def test_poisson_band_fas_cycle_tracks_the_dense_solution(
     device: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Ordito against ordito: the band backend's FAS fixed point is the dense backend's fine solution.
+    Ordito against ordito: the band backend's FAS cycle puts its surface on the dense backend's.
 
-    With every brick in every band there are no ghosts, so the band levels' FAS cycles (inject the
-    fine solution, restrict the composite residual, solve the tau-corrected coarse level, prolong
-    its change, re-solve) are a multigrid solver for the finest lattice's own system -- the one the
-    dense backend solves. Its surface must converge onto the dense one. Without the tau correction
-    the coarse levels solve their rediscretized operators instead, and the bands' fixed handful of
-    rounds leaves the surface where that put it. The dense backend carries the library comparisons.
+    With every brick in every band there are no ghosts, so the FAS cycle (inject the fine solution,
+    restrict the composite residual, solve the tau-corrected coarse level, prolong its change,
+    re-solve) is a multigrid cycle for the finest lattice's own system -- the one the dense backend
+    solves -- and each such cycle divides the field's error by about 15. Without the tau
+    correction the coarse levels solve their rediscretized operators instead, and the bands' fixed
+    handful of rounds leaves the surface where that put it. The dense backend carries the library
+    comparisons.
     """
     points_np, _normals_np = _sphere_cloud(4)
     radius_np = 1.0 + 0.15 * np.sin(5.0 * points_np[:, 0]) * np.cos(4.0 * points_np[:, 1])
@@ -1112,21 +1113,14 @@ def test_poisson_band_fas_cycles_converge_to_the_dense_solution(
         return band_hierarchy_flags(flags, finest, base, flags_device)
 
     monkeypatch.setattr(od.reconstruction, "_band_hierarchy_flags", whole_lattice)
-    distances: dict[int, float] = {}
-    for cycles in (0, 4):
-        monkeypatch.setattr(od.reconstruction, "_BAND_FAS_CYCLES", cycles)
-        vertices_band, faces_band = od.reconstruction.screened_poisson(
-            points_wp, normals_wp, depth=depth, full_depth=4, method="adaptive"
-        )
-        distances[cycles] = symmetric_surface_distance(
-            dense_tm, warp_to_trimesh(vertices_band, faces_band)
-        )[0]
-    # Measured without the correction 0.008 cells mean on the CPU (depth 6) and 0.021 on CUDA
-    # (depth 7), and under 1e-5 after four cycles on both (each cycle divides the field's error by
-    # about 15); the first bound is 100x the converged distance, the second a third of the
-    # uncorrected one.
-    assert distances[4] < 1e-3 * cell
-    assert distances[0] > 2.5e-3 * cell
+    vertices_band, faces_band = od.reconstruction.screened_poisson(
+        points_wp, normals_wp, depth=depth, full_depth=4, method="adaptive"
+    )
+    distance = symmetric_surface_distance(dense_tm, warp_to_trimesh(vertices_band, faces_band))[0]
+    # Measured 0.0017 cells mean on CUDA (depth 7) and 0.00066 on the CPU (depth 6); the cascade
+    # without the FAS cycle measured 0.021 and 0.008, so the bound, 3x the CUDA value, bites on
+    # both.
+    assert distance < 5e-3 * cell
 
 
 def test_poisson_band_nests_and_extracts_closed(device: str) -> None:
@@ -1136,10 +1130,9 @@ def test_poisson_band_nests_and_extracts_closed(device: str) -> None:
     ``_screened_poisson_band`` counts, on the device, every coarse node a restriction or a
     Dirichlet ghost found missing from the coarser band, and every crossing cell its extraction
     band could not own, and warns when either is nonzero; on a sphere cloud both are impossible by
-    the bands' nesting, so it must not warn (``test_poisson_adaptive_warns_on_extraction_holes``
-    shows the warning fires). The raw extraction, before ``screened_poisson``'s cleanup, must
-    already be watertight and free of degenerate faces -- the property the band's composite field
-    and edge margin are for.
+    the bands' nesting, so it must not warn. The raw extraction, before ``screened_poisson``'s
+    cleanup, must already be watertight and free of degenerate faces -- the property the band's
+    composite field and edge margin are for.
     """
     points_np, normals_np = _sphere_cloud(4)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
@@ -1161,30 +1154,6 @@ def test_poisson_band_nests_and_extracts_closed(device: str) -> None:
     assert faces_wp.size > 0
     assert np.all(od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp).numpy())
     assert od.validation.is_watertight(vertices_wp, faces_wp)
-
-
-def test_poisson_adaptive_warns_on_extraction_holes(
-    device: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """
-    Not a library comparison: the adaptive extraction warns when it drops crossing cells.
-
-    Three coplanar samples make a base surface whose crossing cells the extraction band cannot own
-    once the bands are solved by the cascade alone (over a hundred at depth 6 with 16 finest
-    rounds); each is a hole in the output, and the warning is the only sign of it. The FAS cycle
-    keeps every measured degenerate cloud's surface inside its band (three and four coplanar
-    points, a planar patch, depths 5-7), so the cascade-only schedule is what reaches the warning
-    here. ``test_poisson_band_nests_and_extracts_closed`` pins the silent case on a sphere cloud.
-    """
-    monkeypatch.setattr(od.reconstruction, "_BAND_FAS_CYCLES", 0)
-    monkeypatch.setattr(od.reconstruction, "_BAND_ROUNDS_FINEST", 16)
-    points_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-    normals_np = np.array([[0.0, 0.0, 1.0]] * 3)
-    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
-    with pytest.warns(UserWarning, match=r"dropped [1-9]\d* crossing cell"):
-        od.reconstruction.screened_poisson(
-            points_wp, normals_wp, depth=6, full_depth=4, method="adaptive"
-        )
 
 
 def test_poisson_adaptive_confidence_runs(device: str):
