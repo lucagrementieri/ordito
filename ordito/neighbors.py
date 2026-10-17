@@ -1392,6 +1392,8 @@ def query_nearest(
     if resolved is None:
         bins = _resolve_grid_bins(grid_bins, n)
         cell_size = _knn_cell_size(initial_radius, min_bound, max_bound, bins)
+        if grid_bins is None and k > 1:
+            cell_size, bins = _knn_unfolded_grid(cell_size, min_bound, max_bound, bins, n)
         grid = hashgrid_from_points(points, cell_size, bins)
     else:
         grid = resolved
@@ -1621,6 +1623,42 @@ def _knn_cell_size(
     return min(max(initial_radius, extent / grid_bins), extent)
 
 
+def _knn_unfolded_grid(
+    cell_size: float, min_bound: wp.vec3, max_bound: wp.vec3, grid_bins: int, n: int
+) -> tuple[float, int]:
+    """
+    Grow the default hash-grid bins so no ``k > 1`` walk from inside the cloud wraps a period.
+
+    ``wp.HashGrid`` folds cell coordinates modulo its bins, so a walk whose cells run past one
+    period of the table also enumerates a cell a period away. With the cloud filling the period (a
+    cell at the ``extent / grid_bins`` floor, where a solid cloud's small-``k`` estimate lands) a
+    walk stepping off one face read the opposite face's points; an unfilled row took one as its
+    ``k``-th distance and was deferred with a ball of the cloud's width (a 1 M uniform cube at
+    ``k = 2``: 278 ms instead of 1.3; at ``k = 7`` with a small ``initial_radius``, 3 s instead of
+    3 ms). The cloud spans up to ``extent / cell + 1`` cells and a walk no wider than
+    ``_knn_widest_grid_radius`` reaches its span (rounded up) plus one cell past either face; the
+    bins grow to hold them all (no further: the table's build is the cost, about 0.1 ms from 128
+    to 160 bins), and past ``_GRID_BINS_MAX`` the cell widens instead. A ``k = 1`` row is filled
+    by any one point, so a folded one cannot strand it, and those searches keep the grid as it
+    was.
+
+    Measured against the alternatives, each of which slowed the searches it did not fix: widening
+    the cell to fit cost 0.84-0.91x on ``k = 2 .. 7`` ``lucy`` queries (those sit at the floor too
+    and a wider cell loads more points a walk), and filtering the walks' far candidates in the
+    kernel cost 0.39-0.53x on ``k = 1`` queries off a 1 M cube, whose far rows the folded points
+    hand over early.
+    """
+    lower, upper = odt.vec3_floats(min_bound), odt.vec3_floats(max_bound)
+    extent = max(upper[axis] - lower[axis] for axis in range(3))
+    reach = 2 * (math.ceil(_knn_walk_span(n)) + 1)
+    needed = math.ceil(extent / cell_size) + 1 + reach
+    if needed <= grid_bins:
+        return cell_size, grid_bins
+    if needed <= _GRID_BINS_MAX:
+        return cell_size, needed
+    return max(cell_size, extent / max(grid_bins - 1 - reach, 1)), grid_bins
+
+
 def _knn_widest_grid_radius(cell_size: float, n: int) -> float:
     """
     Radius past which an exact linear scan beats widening the hash-grid walk.
@@ -1632,9 +1670,14 @@ def _knn_widest_grid_radius(cell_size: float, n: int) -> float:
     break-even span grow as ``n ** (1/3)`` -- a small cloud needs only one cell of slack, a much
     larger one several. A fixed span gets one of those two badly wrong.
     """
+    return _knn_walk_span(n) * cell_size
+
+
+def _knn_walk_span(n: int) -> float:
+    """Widest hash-grid walk radius in cells, for ``n`` points (see ``_knn_widest_grid_radius``)."""
     span = 0.5 * ((n / _CELL_PROBE_POINTS) ** (1.0 / 3.0) - 1.0)
     # Never below one cell: the 3x3x3 walk is what the grid was built for and is cheap at any n.
-    return max(span, 1.0) * cell_size
+    return max(span, 1.0)
 
 
 def _validate_nearest(k: int, max_radius: float, initial_radius: float | None) -> None:

@@ -1288,6 +1288,45 @@ def test_query_nearest_defers_unfinished_rows_to_a_tree(
         assert np.isinf(distances_wp.numpy()[~in_range]).all()
 
 
+def test_query_nearest_grid_filling_its_table_defers_nothing(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``scipy.spatial.KDTree``: a cloud filling one hash period stays in the grid.
+
+    A cell width at the ``extent / grid_bins`` floor makes the cloud fill one period of
+    ``wp.HashGrid``'s table, so a walk stepping off one face also enumerates the opposite face's
+    bucket. Those far points used to fill the rows of the queries near a face, which were then
+    deferred with a ball of the cloud's width: a tree build and a near-whole-cloud search per row
+    (a 1 M uniform cube at ``k = 2`` took 288 ms instead of 1.5). The walks now admit only points
+    their cells can hold (``kernel_neighbors.grid_walk_reach``). Counting the tree builds is the
+    bite: without the filter this case builds the BVH, with it nothing is deferred, and the answer
+    is exact either way.
+    """
+    rng = np.random.default_rng(31)
+    # A million points: fewer and the widest walk under the floor cell is shorter than a row's
+    # ``k``-th distance, so rows defer by design and the count cannot tell.
+    points_np = rng.random((1_000_000, 3), dtype=np.float32)
+    points_wp = points_to_warp(points_np, device)
+    builds: list[str] = []
+    bvh_from_points = od.neighbors.bvh_from_points
+
+    def counting_bvh(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
+        builds.append("bvh")
+        return bvh_from_points(points, leaf_size)
+
+    monkeypatch.setattr(od.neighbors, "bvh_from_points", counting_bvh)
+    # Under the floor (``extent / 128``), so the cell is the floor and the cloud fills the period.
+    indices_wp, distances_wp = od.neighbors.query_nearest(
+        points_wp, points_wp, k=4, backend="hashgrid", initial_radius=0.004
+    )
+    assert builds == []
+    distances_np = KDTree(points_np).query(points_np, k=4)[0]
+    assert np.allclose(distances_wp.numpy(), distances_np, rtol=1e-5, atol=1e-6)
+    named = np.linalg.norm(points_np[indices_wp.numpy()] - points_np[:, None], axis=2)
+    assert np.allclose(named, distances_np, rtol=1e-5, atol=1e-6)
+
+
 def test_query_nearest_samples_its_start_radius(
     device: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
