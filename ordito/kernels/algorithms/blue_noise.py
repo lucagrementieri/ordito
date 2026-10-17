@@ -36,8 +36,9 @@ the round count is the whole difference.
 vetoes a candidate on a single property of the points in a neighbouring cell -- an acceptance for
 the covering sweep, a smaller priority for the selection sweep -- so a per-cell summary of that
 property decides the whole cell without loading a point from it. Two summaries are rebuilt per
-round, at a cost of two fills and one atomic pass over the work list (after the first round that
-pass rides on the previous round's compaction); they remove work whose outcome
+round, at no launch or fill of their own: each is cleared by a sweep that no longer reads it and
+refilled by the next one (the priority summary's atomic pass rides on the previous round's
+compaction); they remove work whose outcome
 was already determined, so the accepted set is identical by construction rather than by tolerance,
 and together they are worth roughly 2x.
 
@@ -305,10 +306,16 @@ def dart_cover_neighbors(
     rr: wp.float32,
     out_state: wp.array[wp.int32],
     out_flag: wp.array[wp.int32],
+    out_cell_min_priority: wp.array[wp.uint32],
 ) -> None:
     # Retire every still-alive point within ``r`` of a point this round accepted. This is what makes
     # the result maximal — a survivor is a point no accepted point covers, so the loop cannot stop
     # while an uncovered gap of radius ``r`` remains.
+    #
+    # Every thread first clears its point's cell in the selection sweep's priority summary, which
+    # that sweep has finished reading: every cell the summary marks holds a point of this round's
+    # work list, so this leaves it all ``DART_NO_PRIORITY`` for ``dart_compact_alive`` to refill
+    # over the survivors, with no fill between the launches. Every writer stores the same value.
     #
     # As above, only the thread's own slot is written, and a slot going ``ALIVE -> COVERED`` cannot
     # change another thread's ``== ACCEPTED`` test.
@@ -322,6 +329,7 @@ def dart_cover_neighbors(
     # the whole rest of a round.
     t = wp.int32(wp.tid())
     i = alive[t]
+    out_cell_min_priority[point_cell[i]] = DART_NO_PRIORITY
     if out_state[i] != DART_ALIVE:
         out_flag[t] = 0
         return
@@ -357,6 +365,7 @@ def dart_compact_alive(
     point_cell: wp.array[wp.int32],
     out_next: wp.array[wp.int32],
     out_cell_min_priority: wp.array[wp.uint32],
+    out_cell_accepted: wp.array[wp.bool],
 ) -> None:
     # Next round's work list, from this round's: survivors keep their relative order, so the loop
     # walks a shrinking prefix instead of the whole pool. ``positions`` is the **inclusive** scan of
@@ -365,13 +374,19 @@ def dart_compact_alive(
     # work of two.
     #
     # The survivors are exactly the next round's alive set, so this is also where that round's
-    # per-cell priority summary is built (the caller refills it to ``DART_NO_PRIORITY`` first):
-    # one pass over this round's list instead of a second launch over the next one's.
+    # per-cell priority summary is built (``dart_cover_neighbors`` left it all
+    # ``DART_NO_PRIORITY``): one pass over this round's list instead of a second launch over the
+    # next one's. And it clears the covering sweep's summary for the next round: every cell it
+    # marks holds a point this round accepted, which is on this round's list, and nothing here reads
+    # it, so no fill precedes the next selection sweep. Every writer stores the same value.
     t = wp.int32(wp.tid())
     i = alive[t]
-    if state[i] == DART_ALIVE:
+    state_i = state[i]
+    if state_i == DART_ALIVE:
         out_next[positions[t] - 1] = i
         summarize_min_priority(priority, point_cell, i, out_cell_min_priority)
+    elif state_i == DART_ACCEPTED:
+        out_cell_accepted[point_cell[i]] = False
 
 
 @wp.kernel
