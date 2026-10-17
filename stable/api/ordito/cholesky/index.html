@@ -3197,6 +3197,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#ordito.cholesky.held_nbytes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        held_nbytes
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -4096,6 +4107,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#ordito.cholesky.held_nbytes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        held_nbytes
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -4210,6 +4232,14 @@ order, so solves are reproducible on both devices.</p>
                 </div>
               </td>
             </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="held_nbytes (ordito.cholesky.held_nbytes)" href="./#ordito.cholesky.held_nbytes">held_nbytes</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Device memory several factorizations hold together, in bytes: a shared analysis counted once.</p>
+                </div>
+              </td>
+            </tr>
       </tbody>
     </table>
 
@@ -4283,16 +4313,16 @@ order, so solves are reproducible on both devices.</p>
   </span>
 
 </h2>
-<div class="doc-signature highlight"><pre><span></span><code><span class="n">CHOLESKY_MEMORY_BUDGET</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">&lt;&lt;</span> <span class="mi">30</span>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">CHOLESKY_MEMORY_BUDGET</span> <span class="o">=</span> <span class="mi">4</span> <span class="o">&lt;&lt;</span> <span class="mi">30</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 8 places</summary>
+      <summary>Referenced by 9 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../heat/#ordito.heat.HeatSolver">HeatSolver</a> › <a href="../heat/#ordito.heat.HeatSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.sparse_cholesky">sparse_cholesky</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg.OperatorFactorization">OperatorFactorization</a> › <a href="../linalg/#ordito.linalg.OperatorFactorization.factor">factor</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a> › <a href="../linalg/#ordito.linalg.min_quad_with_fixed">min_quad_with_fixed</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a> › <a href="../linalg/#ordito.linalg.min_quad_with_fixed_precompute">min_quad_with_fixed_precompute</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a> › <a href="../linalg/#ordito.linalg.solve_spd_settled">solve_spd_settled</a></span> · <span class="ordito-backlink"><a href="../parametrization/#ordito.parametrization">parametrization</a> › <a href="../parametrization/#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="../parametrization/#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="../parametrization/#ordito.parametrization.FixedVertexSolver.factor">factor</a></span></p>
+<span class="ordito-backlink"><a href="../heat/#ordito.heat.HeatSolver">HeatSolver</a> › <a href="../heat/#ordito.heat.HeatSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.sparse_cholesky">sparse_cholesky</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg.OperatorFactorization">OperatorFactorization</a> › <a href="../linalg/#ordito.linalg.OperatorFactorization.factor">factor</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a> › <a href="../linalg/#ordito.linalg.min_quad_with_fixed">min_quad_with_fixed</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a> › <a href="../linalg/#ordito.linalg.min_quad_with_fixed_precompute">min_quad_with_fixed_precompute</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a> › <a href="../linalg/#ordito.linalg.solve_spd_settled">solve_spd_settled</a></span> · <span class="ordito-backlink"><a href="../parametrization/#ordito.parametrization">parametrization</a> › <a href="../parametrization/#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a></span> · <span class="ordito-backlink"><a href="../parametrization/#ordito.parametrization.FixedVertexSolver">FixedVertexSolver</a> › <a href="../parametrization/#ordito.parametrization.FixedVertexSolver.factor">factor</a></span></p>
     </details>
 
     </div>
@@ -4471,7 +4501,18 @@ what conjugate gradient converges on as well.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Device memory the factorization holds, in bytes.</p>
+                <p>Device memory the factorization holds, in bytes: its analysis (shared with every
+factorization <a class="autorefs autorefs-internal" title="with_operator" href="./#ordito.cholesky.SparseCholesky.with_operator"><code>with_operator</code></a> builds from
+it; <a class="autorefs autorefs-internal" title="held_nbytes" href="./#ordito.cholesky.held_nbytes"><code>held_nbytes</code></a> counts it once), its factor, the scratch
+of every right-hand-side count solved so far, and the storage a repeated
+<a class="autorefs autorefs-internal" title="refactor" href="./#ordito.cholesky.SparseCholesky.refactor"><code>refactor</code></a> keeps. Building also takes a
+transient arena, not held, which
+<a class="autorefs autorefs-internal" title="CHOLESKY_MEMORY_BUDGET
+
+
+  
+      module-attribute
+  " href="./#ordito.cholesky.CHOLESKY_MEMORY_BUDGET"><code>CHOLESKY_MEMORY_BUDGET</code></a> counts.</p>
               </div>
             </td>
           </tr>
@@ -4526,14 +4567,19 @@ one-shot solve then runs its rounds directly and records nothing).</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 2 places</summary>
+      <summary>Referenced by 3 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.sparse_cholesky">sparse_cholesky</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.held_nbytes">held_nbytes</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.sparse_cholesky">sparse_cholesky</a></span></p>
     </details>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Returned by 2 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
 <span class="ordito-backlink"><a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a> › <a href="./#ordito.cholesky.SparseCholesky.with_operator">with_operator</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.sparse_cholesky">sparse_cholesky</a></span></p>
+    </details>
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Used by 1 place</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.held_nbytes">held_nbytes</a></span></p>
     </details>
 
 
@@ -4584,16 +4630,7 @@ one-shot solve then runs its rounds directly and records nothing).</p>
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/cholesky.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">131</span>
-<span class="normal">132</span>
-<span class="normal">133</span>
-<span class="normal">134</span>
-<span class="normal">135</span>
-<span class="normal">136</span>
-<span class="normal">137</span>
-<span class="normal">138</span>
-<span class="normal">139</span>
-<span class="normal">140</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">140</span>
 <span class="normal">141</span>
 <span class="normal">142</span>
 <span class="normal">143</span>
@@ -4607,13 +4644,22 @@ one-shot solve then runs its rounds directly and records nothing).</p>
 <span class="normal">151</span>
 <span class="normal">152</span>
 <span class="normal">153</span>
-<span class="normal">154</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">plan</span><span class="p">:</span> <span class="n">_Plan</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span>
+<span class="normal">163</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">plan</span><span class="p">:</span> <span class="n">_Plan</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Factor ``matrix`` (or its negation) over ``plan``'s structure."""</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">negated</span> <span class="o">=</span> <span class="n">negated</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">records_at_once</span> <span class="o">=</span> <span class="kc">False</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">n</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">n</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">device</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">device</span>
-    <span class="bp">self</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">nbytes</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">+</span> <span class="n">plan</span><span class="o">.</span><span class="n">numeric_nbytes</span><span class="p">()</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_plan</span> <span class="o">=</span> <span class="n">plan</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">numeric</span><span class="p">()</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_solves</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">_Solve</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
@@ -4749,7 +4795,7 @@ one-shot solve then runs its rounds directly and records nothing).</p>
   </span>
 
 </h3>
-<div class="doc-signature highlight"><pre><span></span><code><span class="n">nbytes</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">nbytes</span>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">nbytes</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">+</span> <span class="n">plan</span><span class="o">.</span><span class="n">numeric_nbytes</span><span class="p">()</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4877,24 +4923,15 @@ is not positive).</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 5 places</summary>
+      <summary>Referenced by 6 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.NotPositiveDefiniteError">NotPositiveDefiniteError</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a> › <a href="./#ordito.cholesky.SparseCholesky.solve">solve</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a> › <a href="./#ordito.cholesky.SparseCholesky.with_operator">with_operator</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.sparse_cholesky">sparse_cholesky</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.NotPositiveDefiniteError">NotPositiveDefiniteError</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a> › <a href="./#ordito.cholesky.SparseCholesky.solve">solve</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a> › <a href="./#ordito.cholesky.SparseCholesky.with_operator">with_operator</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.sparse_cholesky">sparse_cholesky</a></span></p>
     </details>
 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/cholesky.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">156</span>
-<span class="normal">157</span>
-<span class="normal">158</span>
-<span class="normal">159</span>
-<span class="normal">160</span>
-<span class="normal">161</span>
-<span class="normal">162</span>
-<span class="normal">163</span>
-<span class="normal">164</span>
-<span class="normal">165</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">165</span>
 <span class="normal">166</span>
 <span class="normal">167</span>
 <span class="normal">168</span>
@@ -4964,7 +5001,16 @@ is not positive).</p>
 <span class="normal">232</span>
 <span class="normal">233</span>
 <span class="normal">234</span>
-<span class="normal">235</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refactor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">235</span>
+<span class="normal">236</span>
+<span class="normal">237</span>
+<span class="normal">238</span>
+<span class="normal">239</span>
+<span class="normal">240</span>
+<span class="normal">241</span>
+<span class="normal">242</span>
+<span class="normal">243</span>
+<span class="normal">244</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refactor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Factor a new operator of the same sparsity pattern in place.</span>
 
@@ -5200,20 +5246,16 @@ pattern this factorization was built for.</p>
 </code></pre></div>
 
           
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 2 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a></span> · <span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.held_nbytes">held_nbytes</a></span></p>
+    </details>
+
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/cholesky.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">272</span>
-<span class="normal">273</span>
-<span class="normal">274</span>
-<span class="normal">275</span>
-<span class="normal">276</span>
-<span class="normal">277</span>
-<span class="normal">278</span>
-<span class="normal">279</span>
-<span class="normal">280</span>
-<span class="normal">281</span>
-<span class="normal">282</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">282</span>
 <span class="normal">283</span>
 <span class="normal">284</span>
 <span class="normal">285</span>
@@ -5252,7 +5294,17 @@ pattern this factorization was built for.</p>
 <span class="normal">318</span>
 <span class="normal">319</span>
 <span class="normal">320</span>
-<span class="normal">321</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">with_operator</span><span class="p">(</span>
+<span class="normal">321</span>
+<span class="normal">322</span>
+<span class="normal">323</span>
+<span class="normal">324</span>
+<span class="normal">325</span>
+<span class="normal">326</span>
+<span class="normal">327</span>
+<span class="normal">328</span>
+<span class="normal">329</span>
+<span class="normal">330</span>
+<span class="normal">331</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">with_operator</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">negated</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SparseCholesky</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -5494,17 +5546,7 @@ stands, without a warning.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/cholesky.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">323</span>
-<span class="normal">324</span>
-<span class="normal">325</span>
-<span class="normal">326</span>
-<span class="normal">327</span>
-<span class="normal">328</span>
-<span class="normal">329</span>
-<span class="normal">330</span>
-<span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">333</span>
 <span class="normal">334</span>
 <span class="normal">335</span>
 <span class="normal">336</span>
@@ -5581,7 +5623,20 @@ stands, without a warning.</p>
 <span class="normal">407</span>
 <span class="normal">408</span>
 <span class="normal">409</span>
-<span class="normal">410</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span>
+<span class="normal">414</span>
+<span class="normal">415</span>
+<span class="normal">416</span>
+<span class="normal">417</span>
+<span class="normal">418</span>
+<span class="normal">419</span>
+<span class="normal">420</span>
+<span class="normal">421</span>
+<span class="normal">422</span>
+<span class="normal">423</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span>
     <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span>
@@ -5658,6 +5713,8 @@ stands, without a warning.</p>
     <span class="n">key</span> <span class="o">=</span> <span class="p">(</span><span class="n">n_columns</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">tol</span><span class="p">),</span> <span class="nb">bool</span><span class="p">(</span><span class="n">componentwise</span><span class="p">))</span>
     <span class="n">solve</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_solves</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">n_columns</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">solve</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">solve</span><span class="o">.</span><span class="n">key</span> <span class="o">!=</span> <span class="n">key</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">solve</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">-=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_plan</span><span class="o">.</span><span class="n">solve_nbytes</span><span class="p">(</span><span class="n">n_columns</span><span class="p">)</span>
         <span class="n">solve</span> <span class="o">=</span> <span class="n">_Solve</span><span class="p">(</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_plan</span><span class="p">,</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">_numeric</span><span class="p">,</span>
@@ -5668,6 +5725,7 @@ stands, without a warning.</p>
             <span class="o">-</span><span class="mf">1.0</span> <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">negated</span> <span class="k">else</span> <span class="mf">1.0</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_solves</span><span class="p">[</span><span class="n">n_columns</span><span class="p">]</span> <span class="o">=</span> <span class="n">solve</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">+=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_plan</span><span class="o">.</span><span class="n">solve_nbytes</span><span class="p">(</span><span class="n">n_columns</span><span class="p">)</span>
     <span class="n">solve</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">rhs</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span> <span class="n">solution</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span> <span class="bp">self</span><span class="o">.</span><span class="n">records_at_once</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -5819,8 +5877,8 @@ analysis: the sign of the leading diagonal is tried first.</p>
             <td>
               <div class="doc-md-description">
                 <p>If <code>matrix</code> is not square scalar <code>float64</code>, its stored pattern is not symmetric,
-<code>coordinates</code> does not have <code>n</code> rows, or the factorization would exceed
-<a class="autorefs autorefs-internal" title="CHOLESKY_MEMORY_BUDGET
+<code>coordinates</code> does not have <code>n</code> rows, or the factorization's peak device memory would
+exceed <a class="autorefs autorefs-internal" title="CHOLESKY_MEMORY_BUDGET
 
 
   
@@ -5901,20 +5959,7 @@ singular constant component is solved up to a constant:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/cholesky.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">413</span>
-<span class="normal">414</span>
-<span class="normal">415</span>
-<span class="normal">416</span>
-<span class="normal">417</span>
-<span class="normal">418</span>
-<span class="normal">419</span>
-<span class="normal">420</span>
-<span class="normal">421</span>
-<span class="normal">422</span>
-<span class="normal">423</span>
-<span class="normal">424</span>
-<span class="normal">425</span>
-<span class="normal">426</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">426</span>
 <span class="normal">427</span>
 <span class="normal">428</span>
 <span class="normal">429</span>
@@ -5992,7 +6037,20 @@ singular constant component is solved up to a constant:</p>
 <span class="normal">501</span>
 <span class="normal">502</span>
 <span class="normal">503</span>
-<span class="normal">504</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sparse_cholesky</span><span class="p">(</span>
+<span class="normal">504</span>
+<span class="normal">505</span>
+<span class="normal">506</span>
+<span class="normal">507</span>
+<span class="normal">508</span>
+<span class="normal">509</span>
+<span class="normal">510</span>
+<span class="normal">511</span>
+<span class="normal">512</span>
+<span class="normal">513</span>
+<span class="normal">514</span>
+<span class="normal">515</span>
+<span class="normal">516</span>
+<span class="normal">517</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sparse_cholesky</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
     <span class="n">coordinates</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6032,8 +6090,8 @@ singular constant component is solved up to a constant:</p>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``matrix`` is not square scalar ``float64``, its stored pattern is not symmetric,</span>
-<span class="sd">        ``coordinates`` does not have ``n`` rows, or the factorization would exceed</span>
-<span class="sd">        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].</span>
+<span class="sd">        ``coordinates`` does not have ``n`` rows, or the factorization's peak device memory would</span>
+<span class="sd">        exceed [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].</span>
 <span class="sd">    NotPositiveDefiniteError</span>
 <span class="sd">        If the operator is not positive definite (with ``negated=None``: neither sign is).</span>
 <span class="sd">    RuntimeError</span>
@@ -6084,6 +6142,185 @@ singular constant component is solved up to a constant:</p>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">matrix</span><span class="o">=</span><span class="n">matrix</span><span class="p">,</span> <span class="n">coordinates</span><span class="o">=</span><span class="n">coordinates</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_factored</span><span class="p">(</span><span class="n">_plan_cholesky</span><span class="p">(</span><span class="n">matrix</span><span class="p">,</span> <span class="n">coordinates</span><span class="p">),</span> <span class="n">matrix</span><span class="p">,</span> <span class="n">negated</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.cholesky.held_nbytes" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">held_nbytes</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">held_nbytes</span><span class="p">(</span>
+    <span class="n">factorizations</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="n">SparseCholesky</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Device memory several factorizations hold together, in bytes: a shared analysis counted once.</p>
+<p>Each factorization's <a class="autorefs autorefs-internal" title="SparseCholesky" href="./#ordito.cholesky.SparseCholesky"><code>nbytes</code></a> counts its analysis, which
+every factorization built from it by
+<a class="autorefs autorefs-internal" title="with_operator" href="./#ordito.cholesky.SparseCholesky.with_operator"><code>with_operator</code></a> holds too; summing <code>nbytes</code>
+counts that analysis once a factorization.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>factorizations</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="collections.abc.Iterable" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Iterable">Iterable</a>[<a class="autorefs autorefs-internal" title="SparseCholesky (ordito.cholesky.SparseCholesky)" href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The factorizations, each counted once however often it appears.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The bytes of every distinct allocation the factorizations hold.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">icosphere</span><span class="p">(</span><span class="n">subdivisions</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+<span class="n">short</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">cholesky</span><span class="o">.</span><span class="n">sparse_cholesky</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">heat_operators</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">t</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)[</span><span class="mi">0</span><span class="p">])</span>
+<span class="n">long</span> <span class="o">=</span> <span class="n">short</span><span class="o">.</span><span class="n">with_operator</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">heat_operators</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">t</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)[</span><span class="mi">0</span><span class="p">])</span>
+<span class="n">together</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">cholesky</span><span class="o">.</span><span class="n">held_nbytes</span><span class="p">([</span><span class="n">short</span><span class="p">,</span> <span class="n">long</span><span class="p">])</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">short</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">&lt;</span> <span class="n">together</span> <span class="o">&lt;</span> <span class="n">short</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">+</span> <span class="n">long</span><span class="o">.</span><span class="n">nbytes</span><span class="p">)</span>  <span class="c1"># True</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 1 place</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.cholesky">cholesky</a> › <a href="./#ordito.cholesky.SparseCholesky">SparseCholesky</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/cholesky.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">552</span>
+<span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span>
+<span class="normal">580</span>
+<span class="normal">581</span>
+<span class="normal">582</span>
+<span class="normal">583</span>
+<span class="normal">584</span>
+<span class="normal">585</span>
+<span class="normal">586</span>
+<span class="normal">587</span>
+<span class="normal">588</span>
+<span class="normal">589</span>
+<span class="normal">590</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">held_nbytes</span><span class="p">(</span><span class="n">factorizations</span><span class="p">:</span> <span class="n">Iterable</span><span class="p">[</span><span class="n">SparseCholesky</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Device memory several factorizations hold together, in bytes: a shared analysis counted once.</span>
+
+<span class="sd">    Each factorization's [`nbytes`][ordito.cholesky.SparseCholesky] counts its analysis, which</span>
+<span class="sd">    every factorization built from it by</span>
+<span class="sd">    [`with_operator`][ordito.cholesky.SparseCholesky.with_operator] holds too; summing ``nbytes``</span>
+<span class="sd">    counts that analysis once a factorization.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    factorizations</span>
+<span class="sd">        The factorizations, each counted once however often it appears.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    int</span>
+<span class="sd">        The bytes of every distinct allocation the factorizations hold.</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    ```python</span>
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    vertices, faces = od.creation.icosphere(subdivisions=2)</span>
+<span class="sd">    short = od.cholesky.sparse_cholesky(od.heat.heat_operators(vertices, faces, t=0.01)[0])</span>
+<span class="sd">    long = short.with_operator(od.heat.heat_operators(vertices, faces, t=0.1)[0])</span>
+<span class="sd">    together = od.cholesky.held_nbytes([short, long])</span>
+<span class="sd">    print(short.nbytes &lt; together &lt; short.nbytes + long.nbytes)  # True</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="n">analyses</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">own</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">for</span> <span class="n">factor</span> <span class="ow">in</span> <span class="p">{</span><span class="nb">id</span><span class="p">(</span><span class="n">factor</span><span class="p">):</span> <span class="n">factor</span> <span class="k">for</span> <span class="n">factor</span> <span class="ow">in</span> <span class="n">factorizations</span><span class="p">}</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
+        <span class="c1"># The analysis is this module's own state of a factorization.</span>
+        <span class="n">plan</span> <span class="o">=</span> <span class="n">factor</span><span class="o">.</span><span class="n">_plan</span>  <span class="c1"># pyright: ignore[reportPrivateUsage]</span>
+        <span class="n">analyses</span><span class="p">[</span><span class="nb">id</span><span class="p">(</span><span class="n">plan</span><span class="p">)]</span> <span class="o">=</span> <span class="n">plan</span><span class="o">.</span><span class="n">nbytes</span>
+        <span class="n">own</span> <span class="o">+=</span> <span class="n">factor</span><span class="o">.</span><span class="n">nbytes</span> <span class="o">-</span> <span class="n">plan</span><span class="o">.</span><span class="n">nbytes</span>
+    <span class="k">return</span> <span class="n">own</span> <span class="o">+</span> <span class="nb">sum</span><span class="p">(</span><span class="n">analyses</span><span class="o">.</span><span class="n">values</span><span class="p">())</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

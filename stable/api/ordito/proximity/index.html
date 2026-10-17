@@ -5279,6 +5279,7 @@ shape is lost.</p>
     <span class="n">faces_b</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">upper_bound</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">mesh_b</span><span class="p">:</span> <span class="n">Mesh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span>
 </code></pre></div>
 
@@ -5395,6 +5396,25 @@ slow one: it culls the pair that would have won. <code>None</code> derives a sou
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>mesh_b</code>
+            </td>
+            <td>
+                  <code><span title="warp.Mesh">Mesh</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A <code>wp.Mesh</code> already built over <code>vertices_b</code> and <code>faces_b</code>, to spare the build each
+call otherwise pays (worth it when the second mesh is measured against repeatedly). Not
+checked against them: the answer is for the geometry it holds.
+<a class="autorefs autorefs-internal" title="warp_mesh" href="../mesh/#ordito.mesh.Trimesh.warp_mesh"><code>Trimesh.warp_mesh</code></a> is the cached one to pass.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -5467,7 +5487,8 @@ slow one: it culls the pair that would have won. <code>None</code> derives a sou
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices_a</code>, <code>faces_a</code>, <code>vertices_b</code> and <code>faces_b</code> are not all on one device.</p>
+                <p>If <code>vertices_a</code>, <code>faces_a</code>, <code>vertices_b</code>, <code>faces_b</code> and <code>mesh_b</code> are not all on
+one device.</p>
               </div>
             </td>
           </tr>
@@ -5800,13 +5821,26 @@ implementation, and faces only where the configuration is generic.</p>
 <span class="normal">690</span>
 <span class="normal">691</span>
 <span class="normal">692</span>
-<span class="normal">693</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_to_mesh_distance</span><span class="p">(</span>
+<span class="normal">693</span>
+<span class="normal">694</span>
+<span class="normal">695</span>
+<span class="normal">696</span>
+<span class="normal">697</span>
+<span class="normal">698</span>
+<span class="normal">699</span>
+<span class="normal">700</span>
+<span class="normal">701</span>
+<span class="normal">702</span>
+<span class="normal">703</span>
+<span class="normal">704</span>
+<span class="normal">705</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_to_mesh_distance</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">upper_bound</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">mesh_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Smallest distance between two triangle meshes, with the pair of faces that achieves it.</span>
@@ -5838,6 +5872,11 @@ implementation, and faces only where the configuration is generic.</p>
 <span class="sd">        you have it -- from a previous frame, or from a bounding-volume gap -- and the sampled query</span>
 <span class="sd">        that would otherwise derive it is skipped. **Too small a bound gives a wrong answer**, not a</span>
 <span class="sd">        slow one: it culls the pair that would have won. ``None`` derives a sound bound.</span>
+<span class="sd">    mesh_b</span>
+<span class="sd">        A ``wp.Mesh`` already built over ``vertices_b`` and ``faces_b``, to spare the build each</span>
+<span class="sd">        call otherwise pays (worth it when the second mesh is measured against repeatedly). Not</span>
+<span class="sd">        checked against them: the answer is for the geometry it holds.</span>
+<span class="sd">        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one to pass.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -5853,7 +5892,8 @@ implementation, and faces only where the configuration is generic.</p>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``upper_bound`` is negative.</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.</span>
+<span class="sd">        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b`` and ``mesh_b`` are not all on</span>
+<span class="sd">        one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -5891,7 +5931,11 @@ implementation, and faces only where the configuration is generic.</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span>
-        <span class="n">vertices_a</span><span class="o">=</span><span class="n">vertices_a</span><span class="p">,</span> <span class="n">faces_a</span><span class="o">=</span><span class="n">faces_a</span><span class="p">,</span> <span class="n">vertices_b</span><span class="o">=</span><span class="n">vertices_b</span><span class="p">,</span> <span class="n">faces_b</span><span class="o">=</span><span class="n">faces_b</span>
+        <span class="n">vertices_a</span><span class="o">=</span><span class="n">vertices_a</span><span class="p">,</span>
+        <span class="n">faces_a</span><span class="o">=</span><span class="n">faces_a</span><span class="p">,</span>
+        <span class="n">vertices_b</span><span class="o">=</span><span class="n">vertices_b</span><span class="p">,</span>
+        <span class="n">faces_b</span><span class="o">=</span><span class="n">faces_b</span><span class="p">,</span>
+        <span class="n">mesh_b</span><span class="o">=</span><span class="n">mesh_b</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">if</span> <span class="n">upper_bound</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">upper_bound</span> <span class="o">&lt;</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"upper_bound must be non-negative, got </span><span class="si">{</span><span class="n">upper_bound</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
@@ -5904,8 +5948,9 @@ implementation, and faces only where the configuration is generic.</p>
     <span class="c1"># One structure over B, shared by both phases. It is bound to a name for the whole call because</span>
     <span class="c1"># the kernels read its BVH by id through ``wp.mesh_get_bvh``, and a collected ``wp.Mesh`` would</span>
     <span class="c1"># leave them a dangling id.</span>
-    <span class="n">require_nonempty_mesh</span><span class="p">(</span><span class="n">faces_b</span><span class="p">,</span> <span class="s2">"mesh_to_mesh_distance"</span><span class="p">)</span>
-    <span class="n">mesh_b</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices_b</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces_b</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">mesh_b</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">require_nonempty_mesh</span><span class="p">(</span><span class="n">faces_b</span><span class="p">,</span> <span class="s2">"mesh_to_mesh_distance"</span><span class="p">)</span>
+        <span class="n">mesh_b</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices_b</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces_b</span><span class="p">)</span>
 
     <span class="c1"># The walk's three running scalars in one buffer (``kernels.proximity.*_SLOT``): the published</span>
     <span class="c1"># prune limit, the corner seed and the upper bound that grows every face's query box.</span>
@@ -6274,19 +6319,7 @@ convention.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">696</span>
-<span class="normal">697</span>
-<span class="normal">698</span>
-<span class="normal">699</span>
-<span class="normal">700</span>
-<span class="normal">701</span>
-<span class="normal">702</span>
-<span class="normal">703</span>
-<span class="normal">704</span>
-<span class="normal">705</span>
-<span class="normal">706</span>
-<span class="normal">707</span>
-<span class="normal">708</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">708</span>
 <span class="normal">709</span>
 <span class="normal">710</span>
 <span class="normal">711</span>
@@ -6370,7 +6403,19 @@ convention.</p>
 <span class="normal">789</span>
 <span class="normal">790</span>
 <span class="normal">791</span>
-<span class="normal">792</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">normals_at_closest_faces</span><span class="p">(</span>
+<span class="normal">792</span>
+<span class="normal">793</span>
+<span class="normal">794</span>
+<span class="normal">795</span>
+<span class="normal">796</span>
+<span class="normal">797</span>
+<span class="normal">798</span>
+<span class="normal">799</span>
+<span class="normal">800</span>
+<span class="normal">801</span>
+<span class="normal">802</span>
+<span class="normal">803</span>
+<span class="normal">804</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">normals_at_closest_faces</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6816,19 +6861,7 @@ ray parity, so such a mesh is refused.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">795</span>
-<span class="normal">796</span>
-<span class="normal">797</span>
-<span class="normal">798</span>
-<span class="normal">799</span>
-<span class="normal">800</span>
-<span class="normal">801</span>
-<span class="normal">802</span>
-<span class="normal">803</span>
-<span class="normal">804</span>
-<span class="normal">805</span>
-<span class="normal">806</span>
-<span class="normal">807</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">807</span>
 <span class="normal">808</span>
 <span class="normal">809</span>
 <span class="normal">810</span>
@@ -6983,7 +7016,19 @@ ray parity, so such a mesh is refused.</p>
 <span class="normal">959</span>
 <span class="normal">960</span>
 <span class="normal">961</span>
-<span class="normal">962</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_on_mesh</span><span class="p">(</span>
+<span class="normal">962</span>
+<span class="normal">963</span>
+<span class="normal">964</span>
+<span class="normal">965</span>
+<span class="normal">966</span>
+<span class="normal">967</span>
+<span class="normal">968</span>
+<span class="normal">969</span>
+<span class="normal">970</span>
+<span class="normal">971</span>
+<span class="normal">972</span>
+<span class="normal">973</span>
+<span class="normal">974</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_on_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -7454,19 +7499,7 @@ outward, closed:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 992</span>
-<span class="normal"> 993</span>
-<span class="normal"> 994</span>
-<span class="normal"> 995</span>
-<span class="normal"> 996</span>
-<span class="normal"> 997</span>
-<span class="normal"> 998</span>
-<span class="normal"> 999</span>
-<span class="normal">1000</span>
-<span class="normal">1001</span>
-<span class="normal">1002</span>
-<span class="normal">1003</span>
-<span class="normal">1004</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1004</span>
 <span class="normal">1005</span>
 <span class="normal">1006</span>
 <span class="normal">1007</span>
@@ -7587,7 +7620,19 @@ outward, closed:</p>
 <span class="normal">1122</span>
 <span class="normal">1123</span>
 <span class="normal">1124</span>
-<span class="normal">1125</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_grid</span><span class="p">(</span>
+<span class="normal">1125</span>
+<span class="normal">1126</span>
+<span class="normal">1127</span>
+<span class="normal">1128</span>
+<span class="normal">1129</span>
+<span class="normal">1130</span>
+<span class="normal">1131</span>
+<span class="normal">1132</span>
+<span class="normal">1133</span>
+<span class="normal">1134</span>
+<span class="normal">1135</span>
+<span class="normal">1136</span>
+<span class="normal">1137</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_grid</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7912,19 +7957,7 @@ without sampling it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1128</span>
-<span class="normal">1129</span>
-<span class="normal">1130</span>
-<span class="normal">1131</span>
-<span class="normal">1132</span>
-<span class="normal">1133</span>
-<span class="normal">1134</span>
-<span class="normal">1135</span>
-<span class="normal">1136</span>
-<span class="normal">1137</span>
-<span class="normal">1138</span>
-<span class="normal">1139</span>
-<span class="normal">1140</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1140</span>
 <span class="normal">1141</span>
 <span class="normal">1142</span>
 <span class="normal">1143</span>
@@ -7990,7 +8023,19 @@ without sampling it:</p>
 <span class="normal">1203</span>
 <span class="normal">1204</span>
 <span class="normal">1205</span>
-<span class="normal">1206</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_lattice</span><span class="p">(</span>
+<span class="normal">1206</span>
+<span class="normal">1207</span>
+<span class="normal">1208</span>
+<span class="normal">1209</span>
+<span class="normal">1210</span>
+<span class="normal">1211</span>
+<span class="normal">1212</span>
+<span class="normal">1213</span>
+<span class="normal">1214</span>
+<span class="normal">1215</span>
+<span class="normal">1216</span>
+<span class="normal">1217</span>
+<span class="normal">1218</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_lattice</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8272,19 +8317,7 @@ left-to-right summation makes it the exact-sum reference.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1209</span>
-<span class="normal">1210</span>
-<span class="normal">1211</span>
-<span class="normal">1212</span>
-<span class="normal">1213</span>
-<span class="normal">1214</span>
-<span class="normal">1215</span>
-<span class="normal">1216</span>
-<span class="normal">1217</span>
-<span class="normal">1218</span>
-<span class="normal">1219</span>
-<span class="normal">1220</span>
-<span class="normal">1221</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1221</span>
 <span class="normal">1222</span>
 <span class="normal">1223</span>
 <span class="normal">1224</span>
@@ -8380,7 +8413,19 @@ left-to-right summation makes it the exact-sum reference.</p>
 <span class="normal">1314</span>
 <span class="normal">1315</span>
 <span class="normal">1316</span>
-<span class="normal">1317</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">winding_number</span><span class="p">(</span>
+<span class="normal">1317</span>
+<span class="normal">1318</span>
+<span class="normal">1319</span>
+<span class="normal">1320</span>
+<span class="normal">1321</span>
+<span class="normal">1322</span>
+<span class="normal">1323</span>
+<span class="normal">1324</span>
+<span class="normal">1325</span>
+<span class="normal">1326</span>
+<span class="normal">1327</span>
+<span class="normal">1328</span>
+<span class="normal">1329</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">winding_number</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -8689,19 +8734,7 @@ the three sides meeting there; a box away from the cube overlaps none:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1478</span>
-<span class="normal">1479</span>
-<span class="normal">1480</span>
-<span class="normal">1481</span>
-<span class="normal">1482</span>
-<span class="normal">1483</span>
-<span class="normal">1484</span>
-<span class="normal">1485</span>
-<span class="normal">1486</span>
-<span class="normal">1487</span>
-<span class="normal">1488</span>
-<span class="normal">1489</span>
-<span class="normal">1490</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1490</span>
 <span class="normal">1491</span>
 <span class="normal">1492</span>
 <span class="normal">1493</span>
@@ -8799,7 +8832,19 @@ the three sides meeting there; a box away from the cube overlaps none:</p>
 <span class="normal">1585</span>
 <span class="normal">1586</span>
 <span class="normal">1587</span>
-<span class="normal">1588</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_mesh_aabb_with_offsets</span><span class="p">(</span>
+<span class="normal">1588</span>
+<span class="normal">1589</span>
+<span class="normal">1590</span>
+<span class="normal">1591</span>
+<span class="normal">1592</span>
+<span class="normal">1593</span>
+<span class="normal">1594</span>
+<span class="normal">1595</span>
+<span class="normal">1596</span>
+<span class="normal">1597</span>
+<span class="normal">1598</span>
+<span class="normal">1599</span>
+<span class="normal">1600</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_mesh_aabb_with_offsets</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">query_lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">query_upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -9101,19 +9146,7 @@ same triangulation pays for it each time -- there is no prebuilt-index entry poi
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1591</span>
-<span class="normal">1592</span>
-<span class="normal">1593</span>
-<span class="normal">1594</span>
-<span class="normal">1595</span>
-<span class="normal">1596</span>
-<span class="normal">1597</span>
-<span class="normal">1598</span>
-<span class="normal">1599</span>
-<span class="normal">1600</span>
-<span class="normal">1601</span>
-<span class="normal">1602</span>
-<span class="normal">1603</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1603</span>
 <span class="normal">1604</span>
 <span class="normal">1605</span>
 <span class="normal">1606</span>
@@ -9216,7 +9249,19 @@ same triangulation pays for it each time -- there is no prebuilt-index entry poi
 <span class="normal">1703</span>
 <span class="normal">1704</span>
 <span class="normal">1705</span>
-<span class="normal">1706</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">containing_faces_2d</span><span class="p">(</span>
+<span class="normal">1706</span>
+<span class="normal">1707</span>
+<span class="normal">1708</span>
+<span class="normal">1709</span>
+<span class="normal">1710</span>
+<span class="normal">1711</span>
+<span class="normal">1712</span>
+<span class="normal">1713</span>
+<span class="normal">1714</span>
+<span class="normal">1715</span>
+<span class="normal">1716</span>
+<span class="normal">1717</span>
+<span class="normal">1718</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">containing_faces_2d</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
