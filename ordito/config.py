@@ -1,24 +1,31 @@
 """
-Runtime configuration: whether floating-point reductions and scans repeat bit for bit.
+Runtime configuration: whether results repeat bit for bit, and come back in the same order.
 
 On CUDA, a floating-point sum whose blocks commit in arrival order, or a ``float32`` scan whose
-blocks combine in arrival order, can change its last bits from one call to the next. With
-determinism on (the default) every such sum in ordito adds its per-block partials in one fixed
-order and every ``float32`` scan takes a fixed-order tile scan, so repeated calls on the same input
-return identical bits, and a seeded sampler draws the same points. Off, the arrival-order forms are
-used, which saves a few microseconds per reduction and matters only on short calls.
+blocks combine in arrival order, can change its last bits from one call to the next, and an output
+filled through atomic slots can list its entries in a different order. With determinism on every
+such sum in ordito adds its per-block partials in one fixed order, every ``float32`` scan takes a
+fixed-order tile scan and those outputs come back in a fixed order, so repeated calls on the same
+input return identical arrays, and a seeded sampler draws the same points. Off (the default), the
+arrival-order forms are used, which saves a few microseconds per reduction and a sort per ordered
+output.
 
-What the setting governs:
+What the setting governs, on the CUDA device (the CPU device runs its blocks in turn and is
+deterministic either way):
 
 - floating-point block reductions (sums, means, moments, fits, the reductions inside the energies,
   metrics, measures, registration and solver loops) and ``float32`` scans (the CDF behind every
-  sampler, arc lengths, resampling) on the CUDA device. The CPU device runs its blocks in turn and
-  is deterministic either way.
+  sampler, arc lengths, resampling);
+- the per-vertex sums of [`hessian_energy`][ordito.energies.hessian_energy],
+  [`curved_hessian_energy`][ordito.energies.curved_hessian_energy] and
+  [`vertex_defects`][ordito.vertices.vertex_defects];
+- the order within each row of
+  [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] (ascending when on).
 
 What it does not govern:
 
-- floating-point atomic scatters, such as the face-to-vertex accumulation of vertex normals or
-  areas, which stay in arrival order on CUDA whatever the setting;
+- the other floating-point atomic scatters, which stay in arrival order on CUDA whatever the
+  setting (the vertex areas and normals sum exactly, and so repeat anyway);
 - integer reductions and scans, which are exact in any order.
 
 The setting is read when a reduction launches. Two consequences follow:
@@ -50,7 +57,7 @@ if TYPE_CHECKING:
 # ``with deterministic(...)`` block changes only its own thread or ``asyncio`` task: a new thread
 # starts from an empty context and sees the process default, a new task copies its creator's
 # context and so inherits an active override. ``None`` means "no override, read the default".
-_process_default = True
+_process_default = False
 _override: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
     "ordito_deterministic", default=None
 )
@@ -58,7 +65,7 @@ _override: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
 
 def set_deterministic(enabled: bool) -> None:
     """
-    Set the process-wide default for reproducible floating-point reductions and scans.
+    Set the process-wide default for reproducible results (see [`ordito.config`][ordito.config]).
 
     Every thread and task without an active [`deterministic`][ordito.config.deterministic]
     override sees the new value from its next reduction on. An active override is not changed.
@@ -66,9 +73,10 @@ def set_deterministic(enabled: bool) -> None:
     Parameters
     ----------
     enabled
-        ``True`` (the default at import) adds per-block partial sums in one fixed order and takes
-        the fixed-order ``float32`` scan, so repeated calls return identical bits on CUDA.
-        ``False`` takes the faster arrival-order forms.
+        ``True`` adds per-block partial sums in one fixed order, takes the fixed-order
+        ``float32`` scan and fixes the order of the outputs the setting governs, so repeated calls
+        return identical arrays on CUDA. ``False`` (the default at import) takes the faster
+        arrival-order forms.
 
     See Also
     --------
@@ -80,10 +88,10 @@ def set_deterministic(enabled: bool) -> None:
     ```python
     import ordito as od
 
-    od.config.set_deterministic(False)
-    print(od.config.is_deterministic())  # False
     od.config.set_deterministic(True)
     print(od.config.is_deterministic())  # True
+    od.config.set_deterministic(False)
+    print(od.config.is_deterministic())  # False
     ```
     """
     global _process_default
@@ -92,7 +100,7 @@ def set_deterministic(enabled: bool) -> None:
 
 def is_deterministic() -> bool:
     """
-    Whether floating-point reductions and scans are reproducible in the current context.
+    Whether results are reproducible in the current context (see [`ordito.config`][ordito.config]).
 
     Returns
     -------
@@ -106,7 +114,8 @@ def is_deterministic() -> bool:
     ```python
     import ordito as od
 
-    print(od.config.is_deterministic())  # True
+    with od.config.deterministic(True):
+        print(od.config.is_deterministic())  # True
     ```
     """
     override = _override.get()
@@ -124,8 +133,8 @@ def deterministic(enabled: bool = True) -> Generator[None, None, None]:
     Parameters
     ----------
     enabled
-        ``True`` for reproducible floating-point reductions and ``float32`` scans, ``False`` for
-        the faster arrival-order forms (see [`ordito.config`][ordito.config]).
+        ``True`` for reproducible results, ``False`` for the faster arrival-order forms (see
+        [`ordito.config`][ordito.config]).
 
     Yields
     ------
@@ -143,9 +152,10 @@ def deterministic(enabled: bool = True) -> Generator[None, None, None]:
 
     vertices, faces = od.creation.icosphere(subdivisions=2)
     with od.config.deterministic(False):
+        with od.config.deterministic(True):
+            print(od.config.is_deterministic())  # True
+            points, _ = od.sample.sample_surface(vertices, faces, 100, seed=0)
         print(od.config.is_deterministic())  # False
-        points, _ = od.sample.sample_surface(vertices, faces, 100, seed=0)
-    print(od.config.is_deterministic())  # True
     print(points.shape)  # (100,)
     ```
     """

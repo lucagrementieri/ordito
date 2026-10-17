@@ -316,6 +316,21 @@ def deterministic(request: pytest.FixtureRequest) -> Iterator[bool]:
         yield enabled
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_by_default() -> None:
+    """
+    Start every test with ``od.config`` deterministic; the library default is off.
+
+    A test's result should not move between runs on CUDA, so every test sees fixed-order
+    reductions and outputs; one that exercises the arrival-order forms asks for them with
+    ``deterministic(False)``. Set as the process default, not an override, so a test that sets the
+    default itself (``tests/test_config.py``) sees its own value, and reset before each test, so a
+    default one test leaves behind does not reach the next. The benchmarks keep the library
+    default (``benchmarks/conftest.py``).
+    """
+    od.config.set_deterministic(True)
+
+
 @pytest.fixture
 def icosahedron(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     icosahedron = tm.creation.icosahedron()
