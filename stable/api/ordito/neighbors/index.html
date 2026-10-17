@@ -4493,17 +4493,7 @@ centre has four neighbours at distance 1, a corner two:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">102</span>
-<span class="normal">103</span>
-<span class="normal">104</span>
-<span class="normal">105</span>
-<span class="normal">106</span>
-<span class="normal">107</span>
-<span class="normal">108</span>
-<span class="normal">109</span>
-<span class="normal">110</span>
-<span class="normal">111</span>
-<span class="normal">112</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">112</span>
 <span class="normal">113</span>
 <span class="normal">114</span>
 <span class="normal">115</span>
@@ -4543,7 +4533,17 @@ centre has four neighbours at distance 1, a corner two:</p>
 <span class="normal">149</span>
 <span class="normal">150</span>
 <span class="normal">151</span>
-<span class="normal">152</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">leaf_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">:</span>
+<span class="normal">152</span>
+<span class="normal">153</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">leaf_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Build a bounding-volume hierarchy over ``points`` for radius queries.</span>
 
@@ -4735,17 +4735,7 @@ mutate them while it is in use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">155</span>
-<span class="normal">156</span>
-<span class="normal">157</span>
-<span class="normal">158</span>
-<span class="normal">159</span>
-<span class="normal">160</span>
-<span class="normal">161</span>
-<span class="normal">162</span>
-<span class="normal">163</span>
-<span class="normal">164</span>
-<span class="normal">165</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">165</span>
 <span class="normal">166</span>
 <span class="normal">167</span>
 <span class="normal">168</span>
@@ -4800,7 +4790,17 @@ mutate them while it is in use.</p>
 <span class="normal">217</span>
 <span class="normal">218</span>
 <span class="normal">219</span>
-<span class="normal">220</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">:</span>
+<span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span>
+<span class="normal">226</span>
+<span class="normal">227</span>
+<span class="normal">228</span>
+<span class="normal">229</span>
+<span class="normal">230</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Build a ``warp.Mesh`` over ``points`` whose triangles each collapse onto one point.</span>
 
@@ -5017,17 +5017,7 @@ search (<code>warp.HashGrid</code> itself does not keep it).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">223</span>
-<span class="normal">224</span>
-<span class="normal">225</span>
-<span class="normal">226</span>
-<span class="normal">227</span>
-<span class="normal">228</span>
-<span class="normal">229</span>
-<span class="normal">230</span>
-<span class="normal">231</span>
-<span class="normal">232</span>
-<span class="normal">233</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">233</span>
 <span class="normal">234</span>
 <span class="normal">235</span>
 <span class="normal">236</span>
@@ -5074,7 +5064,17 @@ search (<code>warp.HashGrid</code> itself does not keep it).</p>
 <span class="normal">277</span>
 <span class="normal">278</span>
 <span class="normal">279</span>
-<span class="normal">280</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hashgrid_from_points</span><span class="p">(</span>
+<span class="normal">280</span>
+<span class="normal">281</span>
+<span class="normal">282</span>
+<span class="normal">283</span>
+<span class="normal">284</span>
+<span class="normal">285</span>
+<span class="normal">286</span>
+<span class="normal">287</span>
+<span class="normal">288</span>
+<span class="normal">289</span>
+<span class="normal">290</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hashgrid_from_points</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">grid_bins</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">HashGrid</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -5296,17 +5296,7 @@ broad-phase intersection tests.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">283</span>
-<span class="normal">284</span>
-<span class="normal">285</span>
-<span class="normal">286</span>
-<span class="normal">287</span>
-<span class="normal">288</span>
-<span class="normal">289</span>
-<span class="normal">290</span>
-<span class="normal">291</span>
-<span class="normal">292</span>
-<span class="normal">293</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">293</span>
 <span class="normal">294</span>
 <span class="normal">295</span>
 <span class="normal">296</span>
@@ -5345,7 +5335,17 @@ broad-phase intersection tests.</p>
 <span class="normal">329</span>
 <span class="normal">330</span>
 <span class="normal">331</span>
-<span class="normal">332</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_bounds</span><span class="p">(</span>
+<span class="normal">332</span>
+<span class="normal">333</span>
+<span class="normal">334</span>
+<span class="normal">335</span>
+<span class="normal">336</span>
+<span class="normal">337</span>
+<span class="normal">338</span>
+<span class="normal">339</span>
+<span class="normal">340</span>
+<span class="normal">341</span>
+<span class="normal">342</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_bounds</span><span class="p">(</span>
     <span class="n">lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">leaf_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -5583,17 +5583,7 @@ hurts most.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">335</span>
-<span class="normal">336</span>
-<span class="normal">337</span>
-<span class="normal">338</span>
-<span class="normal">339</span>
-<span class="normal">340</span>
-<span class="normal">341</span>
-<span class="normal">342</span>
-<span class="normal">343</span>
-<span class="normal">344</span>
-<span class="normal">345</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">345</span>
 <span class="normal">346</span>
 <span class="normal">347</span>
 <span class="normal">348</span>
@@ -5690,7 +5680,17 @@ hurts most.</p>
 <span class="normal">439</span>
 <span class="normal">440</span>
 <span class="normal">441</span>
-<span class="normal">442</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_ball</span><span class="p">(</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span>
+<span class="normal">450</span>
+<span class="normal">451</span>
+<span class="normal">452</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_ball</span><span class="p">(</span>
     <span class="n">bvh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">,</span> <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6002,17 +6002,7 @@ the four grid points <code>(-2..-1, -2..-1)</code> on its corners:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">445</span>
-<span class="normal">446</span>
-<span class="normal">447</span>
-<span class="normal">448</span>
-<span class="normal">449</span>
-<span class="normal">450</span>
-<span class="normal">451</span>
-<span class="normal">452</span>
-<span class="normal">453</span>
-<span class="normal">454</span>
-<span class="normal">455</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">455</span>
 <span class="normal">456</span>
 <span class="normal">457</span>
 <span class="normal">458</span>
@@ -6113,7 +6103,17 @@ the four grid points <code>(-2..-1, -2..-1)</code> on its corners:</p>
 <span class="normal">553</span>
 <span class="normal">554</span>
 <span class="normal">555</span>
-<span class="normal">556</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_box</span><span class="p">(</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_box</span><span class="p">(</span>
     <span class="n">bvh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">,</span> <span class="n">query_lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">query_upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6602,17 +6602,7 @@ holds it and its four axis neighbours; about a corner, three points:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">591</span>
-<span class="normal">592</span>
-<span class="normal">593</span>
-<span class="normal">594</span>
-<span class="normal">595</span>
-<span class="normal">596</span>
-<span class="normal">597</span>
-<span class="normal">598</span>
-<span class="normal">599</span>
-<span class="normal">600</span>
-<span class="normal">601</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">601</span>
 <span class="normal">602</span>
 <span class="normal">603</span>
 <span class="normal">604</span>
@@ -6761,7 +6751,17 @@ holds it and its four axis neighbours; about a corner, three points:</p>
 <span class="normal">747</span>
 <span class="normal">748</span>
 <span class="normal">749</span>
-<span class="normal">750</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball</span><span class="p">(</span>
+<span class="normal">750</span>
+<span class="normal">751</span>
+<span class="normal">752</span>
+<span class="normal">753</span>
+<span class="normal">754</span>
+<span class="normal">755</span>
+<span class="normal">756</span>
+<span class="normal">757</span>
+<span class="normal">758</span>
+<span class="normal">759</span>
+<span class="normal">760</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">r</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -7172,17 +7172,7 @@ broad phase ran, so the count does not depend on <code>backend</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">753</span>
-<span class="normal">754</span>
-<span class="normal">755</span>
-<span class="normal">756</span>
-<span class="normal">757</span>
-<span class="normal">758</span>
-<span class="normal">759</span>
-<span class="normal">760</span>
-<span class="normal">761</span>
-<span class="normal">762</span>
-<span class="normal">763</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">763</span>
 <span class="normal">764</span>
 <span class="normal">765</span>
 <span class="normal">766</span>
@@ -7263,7 +7253,17 @@ broad phase ran, so the count does not depend on <code>backend</code>.</p>
 <span class="normal">841</span>
 <span class="normal">842</span>
 <span class="normal">843</span>
-<span class="normal">844</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_count</span><span class="p">(</span>
+<span class="normal">844</span>
+<span class="normal">845</span>
+<span class="normal">846</span>
+<span class="normal">847</span>
+<span class="normal">848</span>
+<span class="normal">849</span>
+<span class="normal">850</span>
+<span class="normal">851</span>
+<span class="normal">852</span>
+<span class="normal">853</span>
+<span class="normal">854</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_count</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">r</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -7649,17 +7649,7 @@ disagree slightly with pure <code>float64</code> SciPy runs.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">847</span>
-<span class="normal">848</span>
-<span class="normal">849</span>
-<span class="normal">850</span>
-<span class="normal">851</span>
-<span class="normal">852</span>
-<span class="normal">853</span>
-<span class="normal">854</span>
-<span class="normal">855</span>
-<span class="normal">856</span>
-<span class="normal">857</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">857</span>
 <span class="normal">858</span>
 <span class="normal">859</span>
 <span class="normal">860</span>
@@ -7762,7 +7752,17 @@ disagree slightly with pure <code>float64</code> SciPy runs.</p>
 <span class="normal">957</span>
 <span class="normal">958</span>
 <span class="normal">959</span>
-<span class="normal">960</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_with_offsets</span><span class="p">(</span>
+<span class="normal">960</span>
+<span class="normal">961</span>
+<span class="normal">962</span>
+<span class="normal">963</span>
+<span class="normal">964</span>
+<span class="normal">965</span>
+<span class="normal">966</span>
+<span class="normal">967</span>
+<span class="normal">968</span>
+<span class="normal">969</span>
+<span class="normal">970</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_with_offsets</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">r</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -8032,17 +8032,7 @@ point gives <code>inf</code>, one complete scan:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1049</span>
-<span class="normal">1050</span>
-<span class="normal">1051</span>
-<span class="normal">1052</span>
-<span class="normal">1053</span>
-<span class="normal">1054</span>
-<span class="normal">1055</span>
-<span class="normal">1056</span>
-<span class="normal">1057</span>
-<span class="normal">1058</span>
-<span class="normal">1059</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1059</span>
 <span class="normal">1060</span>
 <span class="normal">1061</span>
 <span class="normal">1062</span>
@@ -8107,7 +8097,17 @@ point gives <code>inf</code>, one complete scan:</p>
 <span class="normal">1121</span>
 <span class="normal">1122</span>
 <span class="normal">1123</span>
-<span class="normal">1124</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">knn_initial_radius</span><span class="p">(</span>
+<span class="normal">1124</span>
+<span class="normal">1125</span>
+<span class="normal">1126</span>
+<span class="normal">1127</span>
+<span class="normal">1128</span>
+<span class="normal">1129</span>
+<span class="normal">1130</span>
+<span class="normal">1131</span>
+<span class="normal">1132</span>
+<span class="normal">1133</span>
+<span class="normal">1134</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">knn_initial_radius</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8267,21 +8267,20 @@ not depend on <code>backend</code>. The candidate row is register-resident for <
 <p><code>"hashgrid"</code> (the default) is the faster broad phase when the query scale matches the
 cloud's density, because <code>initial_radius</code> sets the cell width: the walk visits
 <code>(2 ceil(r / cell) + 1) ** 3</code> cells, so a radius <strong>f</strong> times too large costs <code>f ** 3</code>.
-A row the walk cannot certify within a few cells is finished another way. At <code>k == 1</code>
-that is a closest-point query over a tree of the cloud, whose cost does not grow with how
-far the query is from it. Above it, a query that sits on a point of the cloud -- a
-self-query, in a part of the cloud sparser than the cell was sized for -- goes to the
-BVH's radius search, so a cloud whose density is not uniform costs its sparse rows a tree
-search rather than a scan; any other row falls back to an exact linear scan of the cloud.</p>
+A row the walk cannot certify within a few cells is finished by a tree over the cloud
+rather than by a scan of every point. A row whose walk found points goes to the BVH's
+radius search, started where the walk stopped; a row whose first walks found nothing goes
+to a closest-point query over <a class="autorefs autorefs-internal" title="mesh_from_points" href="./#ordito.neighbors.mesh_from_points"><code>mesh_from_points</code></a>,
+whose cost does not grow with how far the query is from the cloud -- the answer itself at
+<code>k == 1</code>, and the radius search's starting distance above it. So a query beside a sparse
+patch of the cloud, or far from it, costs a tree search. Clouds under 8192 points, and
+<code>k</code> above 64, finish such rows with an exact linear scan of the cloud instead.</p>
 <p><code>"bvh"</code> has no cell width to get wrong, so it is the one to reach for when the query scale
-is unknown and the queries do not sit on the cloud. Its own cost grows with <code>k</code> faster
-than the grid's. At <code>k == 1</code> with no <code>accelerator</code> it is not a radius search at all but
-a closest-point query over <a class="autorefs autorefs-internal" title="mesh_from_points" href="./#ordito.neighbors.mesh_from_points"><code>mesh_from_points</code></a>, whose
-cost does not grow with the queries' distance from the cloud.</p>
-<p><strong>For queries off the cloud at moderate <code>k</code>, the grid's cost is non-monotonic in cloud
-size</strong>: a row whose true <code>k</code>-th distance runs past the widest walk takes the linear scan,
-and how much of the query set falls in that tail moves with <code>n</code>. The tree's cost stays
-monotonic over the same range.</p>
+is far from the cloud's own density and no <code>initial_radius</code> can say it. Its own cost
+grows with <code>k</code> faster than the grid's. At <code>k == 1</code> with no <code>accelerator</code> it is not a
+radius search at all but a closest-point query over
+<a class="autorefs autorefs-internal" title="mesh_from_points" href="./#ordito.neighbors.mesh_from_points"><code>mesh_from_points</code></a>, whose cost does not grow with the
+queries' distance from the cloud.</p>
 <p>Both are exact; this is a cost choice only. Reuse the structure across calls by passing it
 as <code>accelerator</code> when several queries share one cloud.</p>
 </div>
@@ -8435,7 +8434,7 @@ distance <code>inf</code>). Defaults to unbounded.</p>
 (larger leaves for larger clouds, where the walk is faster with them). Ignored whenever
 <code>accelerator</code> is given and at <code>k == 1</code> under <code>backend="bvh"</code>, where the tree is a
 <a class="autorefs autorefs-internal" title="mesh_from_points" href="./#ordito.neighbors.mesh_from_points"><code>mesh_from_points</code></a>. The default <code>"hashgrid"</code>
-backend builds a BVH only to finish the queries that land on the cloud.</p>
+backend builds a BVH only to finish the rows its cell walk cannot certify.</p>
               </div>
             </td>
             <td>
@@ -8454,7 +8453,10 @@ backend builds a BVH only to finish the queries that land on the cloud.</p>
                 <p>First search radius. Defaults to
 <a class="autorefs autorefs-internal" title="knn_initial_radius" href="./#ordito.neighbors.knn_initial_radius"><code>knn_initial_radius</code></a>, which estimates it from the
 <em>cloud's</em> density -- so pass it explicitly when the queries are at a different scale, since
-under <code>"hashgrid"</code> this also sets the cell width.</p>
+under <code>"hashgrid"</code> this also sets the cell width. With the default, <code>"hashgrid"</code> and
+a million queries or more, the first walk starts instead at the fraction of the estimate
+that a sample of the queries needs, which is smaller on a surface sample; the cell width
+stays the estimate's. Either way the value affects speed only.</p>
               </div>
             </td>
             <td>
@@ -8603,17 +8605,7 @@ contradicts the type of <code>accelerator</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1171</span>
-<span class="normal">1172</span>
-<span class="normal">1173</span>
-<span class="normal">1174</span>
-<span class="normal">1175</span>
-<span class="normal">1176</span>
-<span class="normal">1177</span>
-<span class="normal">1178</span>
-<span class="normal">1179</span>
-<span class="normal">1180</span>
-<span class="normal">1181</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1181</span>
 <span class="normal">1182</span>
 <span class="normal">1183</span>
 <span class="normal">1184</span>
@@ -8867,7 +8859,61 @@ contradicts the type of <code>accelerator</code>.</p>
 <span class="normal">1432</span>
 <span class="normal">1433</span>
 <span class="normal">1434</span>
-<span class="normal">1435</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_nearest</span><span class="p">(</span>
+<span class="normal">1435</span>
+<span class="normal">1436</span>
+<span class="normal">1437</span>
+<span class="normal">1438</span>
+<span class="normal">1439</span>
+<span class="normal">1440</span>
+<span class="normal">1441</span>
+<span class="normal">1442</span>
+<span class="normal">1443</span>
+<span class="normal">1444</span>
+<span class="normal">1445</span>
+<span class="normal">1446</span>
+<span class="normal">1447</span>
+<span class="normal">1448</span>
+<span class="normal">1449</span>
+<span class="normal">1450</span>
+<span class="normal">1451</span>
+<span class="normal">1452</span>
+<span class="normal">1453</span>
+<span class="normal">1454</span>
+<span class="normal">1455</span>
+<span class="normal">1456</span>
+<span class="normal">1457</span>
+<span class="normal">1458</span>
+<span class="normal">1459</span>
+<span class="normal">1460</span>
+<span class="normal">1461</span>
+<span class="normal">1462</span>
+<span class="normal">1463</span>
+<span class="normal">1464</span>
+<span class="normal">1465</span>
+<span class="normal">1466</span>
+<span class="normal">1467</span>
+<span class="normal">1468</span>
+<span class="normal">1469</span>
+<span class="normal">1470</span>
+<span class="normal">1471</span>
+<span class="normal">1472</span>
+<span class="normal">1473</span>
+<span class="normal">1474</span>
+<span class="normal">1475</span>
+<span class="normal">1476</span>
+<span class="normal">1477</span>
+<span class="normal">1478</span>
+<span class="normal">1479</span>
+<span class="normal">1480</span>
+<span class="normal">1481</span>
+<span class="normal">1482</span>
+<span class="normal">1483</span>
+<span class="normal">1484</span>
+<span class="normal">1485</span>
+<span class="normal">1486</span>
+<span class="normal">1487</span>
+<span class="normal">1488</span>
+<span class="normal">1489</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_nearest</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
@@ -8891,23 +8937,21 @@ contradicts the type of <code>accelerator</code>.</p>
 <span class="sd">        ``"hashgrid"`` (the default) is the faster broad phase when the query scale matches the</span>
 <span class="sd">        cloud's density, because ``initial_radius`` sets the cell width: the walk visits</span>
 <span class="sd">        ``(2 ceil(r / cell) + 1) ** 3`` cells, so a radius **f** times too large costs ``f ** 3``.</span>
-<span class="sd">        A row the walk cannot certify within a few cells is finished another way. At ``k == 1``</span>
-<span class="sd">        that is a closest-point query over a tree of the cloud, whose cost does not grow with how</span>
-<span class="sd">        far the query is from it. Above it, a query that sits on a point of the cloud -- a</span>
-<span class="sd">        self-query, in a part of the cloud sparser than the cell was sized for -- goes to the</span>
-<span class="sd">        BVH's radius search, so a cloud whose density is not uniform costs its sparse rows a tree</span>
-<span class="sd">        search rather than a scan; any other row falls back to an exact linear scan of the cloud.</span>
+<span class="sd">        A row the walk cannot certify within a few cells is finished by a tree over the cloud</span>
+<span class="sd">        rather than by a scan of every point. A row whose walk found points goes to the BVH's</span>
+<span class="sd">        radius search, started where the walk stopped; a row whose first walks found nothing goes</span>
+<span class="sd">        to a closest-point query over [`mesh_from_points`][ordito.neighbors.mesh_from_points],</span>
+<span class="sd">        whose cost does not grow with how far the query is from the cloud -- the answer itself at</span>
+<span class="sd">        ``k == 1``, and the radius search's starting distance above it. So a query beside a sparse</span>
+<span class="sd">        patch of the cloud, or far from it, costs a tree search. Clouds under 8192 points, and</span>
+<span class="sd">        ``k`` above 64, finish such rows with an exact linear scan of the cloud instead.</span>
 
 <span class="sd">        ``"bvh"`` has no cell width to get wrong, so it is the one to reach for when the query scale</span>
-<span class="sd">        is unknown and the queries do not sit on the cloud. Its own cost grows with ``k`` faster</span>
-<span class="sd">        than the grid's. At ``k == 1`` with no ``accelerator`` it is not a radius search at all but</span>
-<span class="sd">        a closest-point query over [`mesh_from_points`][ordito.neighbors.mesh_from_points], whose</span>
-<span class="sd">        cost does not grow with the queries' distance from the cloud.</span>
-
-<span class="sd">        **For queries off the cloud at moderate ``k``, the grid's cost is non-monotonic in cloud</span>
-<span class="sd">        size**: a row whose true ``k``-th distance runs past the widest walk takes the linear scan,</span>
-<span class="sd">        and how much of the query set falls in that tail moves with ``n``. The tree's cost stays</span>
-<span class="sd">        monotonic over the same range.</span>
+<span class="sd">        is far from the cloud's own density and no ``initial_radius`` can say it. Its own cost</span>
+<span class="sd">        grows with ``k`` faster than the grid's. At ``k == 1`` with no ``accelerator`` it is not a</span>
+<span class="sd">        radius search at all but a closest-point query over</span>
+<span class="sd">        [`mesh_from_points`][ordito.neighbors.mesh_from_points], whose cost does not grow with the</span>
+<span class="sd">        queries' distance from the cloud.</span>
 
 <span class="sd">        Both are exact; this is a cost choice only. Reuse the structure across calls by passing it</span>
 <span class="sd">        as ``accelerator`` when several queries share one cloud.</span>
@@ -8940,12 +8984,15 @@ contradicts the type of <code>accelerator</code>.</p>
 <span class="sd">        (larger leaves for larger clouds, where the walk is faster with them). Ignored whenever</span>
 <span class="sd">        ``accelerator`` is given and at ``k == 1`` under ``backend="bvh"``, where the tree is a</span>
 <span class="sd">        [`mesh_from_points`][ordito.neighbors.mesh_from_points]. The default ``"hashgrid"``</span>
-<span class="sd">        backend builds a BVH only to finish the queries that land on the cloud.</span>
+<span class="sd">        backend builds a BVH only to finish the rows its cell walk cannot certify.</span>
 <span class="sd">    initial_radius</span>
 <span class="sd">        First search radius. Defaults to</span>
 <span class="sd">        [`knn_initial_radius`][ordito.neighbors.knn_initial_radius], which estimates it from the</span>
 <span class="sd">        *cloud's* density -- so pass it explicitly when the queries are at a different scale, since</span>
-<span class="sd">        under ``"hashgrid"`` this also sets the cell width.</span>
+<span class="sd">        under ``"hashgrid"`` this also sets the cell width. With the default, ``"hashgrid"`` and</span>
+<span class="sd">        a million queries or more, the first walk starts instead at the fraction of the estimate</span>
+<span class="sd">        that a sample of the queries needs, which is smaller on a surface sample; the cell width</span>
+<span class="sd">        stays the estimate's. Either way the value affects speed only.</span>
 <span class="sd">    bounds</span>
 <span class="sd">        ``(min_bound, max_bound)`` of ``points``, to skip</span>
 <span class="sd">        [`ordito.bounds.aabb`][ordito.bounds.aabb] and its readback. **Trusted, not validated, and</span>
@@ -9060,6 +9107,7 @@ contradicts the type of <code>accelerator</code>.</p>
     <span class="k">if</span> <span class="n">bounds</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">bounds</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">bounds</span><span class="o">.</span><span class="n">aabb</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
     <span class="n">min_bound</span><span class="p">,</span> <span class="n">max_bound</span> <span class="o">=</span> <span class="n">bounds</span>
+    <span class="n">estimated</span> <span class="o">=</span> <span class="n">initial_radius</span> <span class="ow">is</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">initial_radius</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">initial_radius</span> <span class="o">=</span> <span class="n">knn_initial_radius</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">)</span>
     <span class="n">search</span> <span class="o">=</span> <span class="p">[</span><span class="n">points</span><span class="p">,</span> <span class="n">queries</span><span class="p">]</span>
@@ -9083,25 +9131,63 @@ contradicts the type of <code>accelerator</code>.</p>
     <span class="k">else</span><span class="p">:</span>
         <span class="n">grid</span> <span class="o">=</span> <span class="n">resolved</span>
         <span class="n">cell_size</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="s2">"cell_width"</span><span class="p">,</span> <span class="n">initial_radius</span><span class="p">))</span>
-    <span class="c1"># At ``k == 1`` a row the cell walk cannot certify is *deferred* rather than finished by a</span>
-    <span class="c1"># linear scan over the whole cloud: that scan is what a query far from the cloud costs the</span>
-    <span class="c1"># grid, and a closest-point descent answers the same row in time that does not grow with the</span>
-    <span class="c1"># distance. So the walk stays the fast path for queries on or near the cloud, and only the rows</span>
-    <span class="c1"># it gives up on pay for the tree. The walk gives up at the same radius it hands over to the</span>
-    <span class="c1"># scan at: bringing that in shortens a displaced row's walk, but it also defers the odd outlier</span>
-    <span class="c1"># of an on-surface query set, and one deferred row pays for the whole tree.</span>
+    <span class="c1"># A row the cell walk cannot certify is *deferred* to a tree rather than finished by a linear</span>
+    <span class="c1"># scan over the whole cloud. That scan runs on the row's one thread, so even a single such row</span>
+    <span class="c1"># -- a query beside a sparse patch of a scanned cloud -- holds the launch for ``n`` point</span>
+    <span class="c1"># tests, while a tree answers it in time that grows with the size of its answer's ball. So the</span>
+    <span class="c1"># walk stays the fast path for queries on or near the cloud, and only the rows it gives up on</span>
+    <span class="c1"># pay for a tree. The walk gives up at the same radius it hands over to the scan at: bringing</span>
+    <span class="c1"># that in shortens a displaced row's walk, but it also defers the odd outlier of an on-surface</span>
+    <span class="c1"># query set, and one deferred row pays for the whole tree. Above ``k == 1`` a row whose first</span>
+    <span class="c1"># walks all came back empty is handed over before the costly widest ones</span>
+    <span class="c1"># (``kernel_neighbors.FAR_AFTER_EMPTY_WALKS``).</span>
     <span class="c1">#</span>
-    <span class="c1"># Above ``k == 1`` a row is deferred only when the query sits on a point of the cloud -- a</span>
-    <span class="c1"># self-query -- in a part sparser than the cell width was sized for: the sparse end of a cloud</span>
-    <span class="c1"># whose density is not uniform. Those rows go to the BVH's radius search, which stays small</span>
-    <span class="c1"># there; without it each one would scan every point. A query off the cloud keeps the scan,</span>
-    <span class="c1"># which is the cheaper finish for it (``kernel_neighbors.DEFER_NEAR``). A cloud smaller than</span>
-    <span class="c1"># ``_KNN_DEFER_MIN_POINTS`` and the global-row kernel past the largest register bucket never</span>
-    <span class="c1"># defer above ``k == 1``.</span>
+    <span class="c1"># The tree's ball starts from what the walk learned, or from the nearest distance when it</span>
+    <span class="c1"># learned nothing (``kernel_neighbors.DEFERRED_ROW``): grown from the query instead, a row off</span>
+    <span class="c1"># the cloud doubles past the surface and encloses a cap of it several times the answer's. A</span>
+    <span class="c1"># cloud smaller than ``_KNN_DEFER_MIN_POINTS`` and the global-row kernel past the largest</span>
+    <span class="c1"># register bucket never defer above ``k == 1``.</span>
     <span class="n">defer</span> <span class="o">=</span> <span class="n">k</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">or</span> <span class="p">(</span><span class="n">k</span> <span class="o">&lt;=</span> <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">KNN_ROW_BUCKETS</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="ow">and</span> <span class="n">n</span> <span class="o">&gt;=</span> <span class="n">_KNN_DEFER_MIN_POINTS</span><span class="p">)</span>
-    <span class="c1"># The deferral counter exists only when rows may be deferred; otherwise the kernel never</span>
-    <span class="c1"># touches it and takes a null descriptor.</span>
-    <span class="n">deferred</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span> <span class="k">if</span> <span class="n">defer</span> <span class="k">else</span> <span class="kc">None</span>
+    <span class="c1"># The deferral counters exist only when rows may be deferred; otherwise the kernel never</span>
+    <span class="c1"># touches them and takes a null descriptor. Slot 0 counts ``DEFERRED_FAR_ROW`` rows, the only</span>
+    <span class="c1"># kind at ``k == 1``, slot 1 ``DEFERRED_ROW`` rows.</span>
+    <span class="n">counters</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span> <span class="k">if</span> <span class="n">k</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="mi">2</span><span class="p">)</span> <span class="k">if</span> <span class="n">defer</span> <span class="k">else</span> <span class="mi">0</span>
+    <span class="c1"># The estimated initial radius models a solid cloud; a surface sample's neighbours sit several</span>
+    <span class="c1"># times closer. So when the radius is the estimate, the walk's start is measured instead: one</span>
+    <span class="c1"># short launch counts the neighbours of a strided sample of the rows, and the main launch</span>
+    <span class="c1"># starts each row from a quantile of their histogram, read on the device</span>
+    <span class="c1"># (``kernel_neighbors.knn_start_sample``). The cell width stays the estimate's. The histogram</span>
+    <span class="c1"># takes the deferral counters' zeroed buffer, after them.</span>
+    <span class="n">sample</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">estimated</span>
+        <span class="ow">and</span> <span class="mi">1</span> <span class="o">&lt;</span> <span class="n">k</span> <span class="o">&lt;=</span> <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">KNN_ROW_BUCKETS</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+        <span class="ow">and</span> <span class="n">m</span> <span class="o">&gt;=</span> <span class="n">_KNN_START_SAMPLE_MIN_QUERIES</span>
+    <span class="p">)</span>
+    <span class="n">deferred</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">start_histogram</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">sample</span><span class="p">:</span>
+        <span class="n">scratch</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
+            <span class="n">counters</span> <span class="o">+</span> <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">START_BEYOND</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+        <span class="p">)</span>
+        <span class="n">deferred</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">scratch</span><span class="p">[:</span><span class="n">counters</span><span class="p">])</span> <span class="k">if</span> <span class="n">defer</span> <span class="k">else</span> <span class="kc">None</span>
+        <span class="n">start_histogram</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">scratch</span><span class="p">[</span><span class="n">counters</span><span class="p">:])</span>
+        <span class="n">sample_rows</span> <span class="o">=</span> <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">START_SAMPLE_ROWS</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">knn_start_sample</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">sample_rows</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+                <span class="n">points</span><span class="p">,</span>
+                <span class="n">queries</span><span class="p">,</span>
+                <span class="n">grid</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">k</span><span class="p">),</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">initial_radius</span><span class="p">),</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">m</span> <span class="o">//</span> <span class="n">sample_rows</span><span class="p">),</span>
+                <span class="n">start_histogram</span><span class="p">,</span>
+            <span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">elif</span> <span class="n">defer</span><span class="p">:</span>
+        <span class="n">deferred</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">counters</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">hashgrid_nearest_kernel</span><span class="p">(</span><span class="n">k</span><span class="p">),</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
@@ -9113,6 +9199,10 @@ contradicts the type of <code>accelerator</code>.</p>
             <span class="n">min_bound</span><span class="p">,</span>
             <span class="n">max_bound</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="mi">1</span> <span class="k">if</span> <span class="n">defer</span> <span class="k">else</span> <span class="mi">0</span><span class="p">),</span>
+            <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">START_OFF</span>
+            <span class="k">if</span> <span class="n">start_histogram</span> <span class="ow">is</span> <span class="kc">None</span>
+            <span class="k">else</span> <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">START_SCALED</span><span class="p">,</span>
+            <span class="n">start_histogram</span><span class="p">,</span>
             <span class="n">deferred</span><span class="p">,</span>
             <span class="o">*</span><span class="n">outputs</span><span class="p">,</span>
         <span class="p">],</span>
@@ -9384,75 +9474,7 @@ beats the unweighted site at distance 1; from <code>x = -1</code> it does not:</
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1650</span>
-<span class="normal">1651</span>
-<span class="normal">1652</span>
-<span class="normal">1653</span>
-<span class="normal">1654</span>
-<span class="normal">1655</span>
-<span class="normal">1656</span>
-<span class="normal">1657</span>
-<span class="normal">1658</span>
-<span class="normal">1659</span>
-<span class="normal">1660</span>
-<span class="normal">1661</span>
-<span class="normal">1662</span>
-<span class="normal">1663</span>
-<span class="normal">1664</span>
-<span class="normal">1665</span>
-<span class="normal">1666</span>
-<span class="normal">1667</span>
-<span class="normal">1668</span>
-<span class="normal">1669</span>
-<span class="normal">1670</span>
-<span class="normal">1671</span>
-<span class="normal">1672</span>
-<span class="normal">1673</span>
-<span class="normal">1674</span>
-<span class="normal">1675</span>
-<span class="normal">1676</span>
-<span class="normal">1677</span>
-<span class="normal">1678</span>
-<span class="normal">1679</span>
-<span class="normal">1680</span>
-<span class="normal">1681</span>
-<span class="normal">1682</span>
-<span class="normal">1683</span>
-<span class="normal">1684</span>
-<span class="normal">1685</span>
-<span class="normal">1686</span>
-<span class="normal">1687</span>
-<span class="normal">1688</span>
-<span class="normal">1689</span>
-<span class="normal">1690</span>
-<span class="normal">1691</span>
-<span class="normal">1692</span>
-<span class="normal">1693</span>
-<span class="normal">1694</span>
-<span class="normal">1695</span>
-<span class="normal">1696</span>
-<span class="normal">1697</span>
-<span class="normal">1698</span>
-<span class="normal">1699</span>
-<span class="normal">1700</span>
-<span class="normal">1701</span>
-<span class="normal">1702</span>
-<span class="normal">1703</span>
-<span class="normal">1704</span>
-<span class="normal">1705</span>
-<span class="normal">1706</span>
-<span class="normal">1707</span>
-<span class="normal">1708</span>
-<span class="normal">1709</span>
-<span class="normal">1710</span>
-<span class="normal">1711</span>
-<span class="normal">1712</span>
-<span class="normal">1713</span>
-<span class="normal">1714</span>
-<span class="normal">1715</span>
-<span class="normal">1716</span>
-<span class="normal">1717</span>
-<span class="normal">1718</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1718</span>
 <span class="normal">1719</span>
 <span class="normal">1720</span>
 <span class="normal">1721</span>
@@ -9525,7 +9547,75 @@ beats the unweighted site at distance 1; from <code>x = -1</code> it does not:</
 <span class="normal">1788</span>
 <span class="normal">1789</span>
 <span class="normal">1790</span>
-<span class="normal">1791</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_weighted_nearest</span><span class="p">(</span>
+<span class="normal">1791</span>
+<span class="normal">1792</span>
+<span class="normal">1793</span>
+<span class="normal">1794</span>
+<span class="normal">1795</span>
+<span class="normal">1796</span>
+<span class="normal">1797</span>
+<span class="normal">1798</span>
+<span class="normal">1799</span>
+<span class="normal">1800</span>
+<span class="normal">1801</span>
+<span class="normal">1802</span>
+<span class="normal">1803</span>
+<span class="normal">1804</span>
+<span class="normal">1805</span>
+<span class="normal">1806</span>
+<span class="normal">1807</span>
+<span class="normal">1808</span>
+<span class="normal">1809</span>
+<span class="normal">1810</span>
+<span class="normal">1811</span>
+<span class="normal">1812</span>
+<span class="normal">1813</span>
+<span class="normal">1814</span>
+<span class="normal">1815</span>
+<span class="normal">1816</span>
+<span class="normal">1817</span>
+<span class="normal">1818</span>
+<span class="normal">1819</span>
+<span class="normal">1820</span>
+<span class="normal">1821</span>
+<span class="normal">1822</span>
+<span class="normal">1823</span>
+<span class="normal">1824</span>
+<span class="normal">1825</span>
+<span class="normal">1826</span>
+<span class="normal">1827</span>
+<span class="normal">1828</span>
+<span class="normal">1829</span>
+<span class="normal">1830</span>
+<span class="normal">1831</span>
+<span class="normal">1832</span>
+<span class="normal">1833</span>
+<span class="normal">1834</span>
+<span class="normal">1835</span>
+<span class="normal">1836</span>
+<span class="normal">1837</span>
+<span class="normal">1838</span>
+<span class="normal">1839</span>
+<span class="normal">1840</span>
+<span class="normal">1841</span>
+<span class="normal">1842</span>
+<span class="normal">1843</span>
+<span class="normal">1844</span>
+<span class="normal">1845</span>
+<span class="normal">1846</span>
+<span class="normal">1847</span>
+<span class="normal">1848</span>
+<span class="normal">1849</span>
+<span class="normal">1850</span>
+<span class="normal">1851</span>
+<span class="normal">1852</span>
+<span class="normal">1853</span>
+<span class="normal">1854</span>
+<span class="normal">1855</span>
+<span class="normal">1856</span>
+<span class="normal">1857</span>
+<span class="normal">1858</span>
+<span class="normal">1859</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_weighted_nearest</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">weights</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -9792,69 +9882,69 @@ neighbour. The distances are <code>float32</code> (<code>wp.length</code>), so t
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1804</span>
-<span class="normal">1805</span>
-<span class="normal">1806</span>
-<span class="normal">1807</span>
-<span class="normal">1808</span>
-<span class="normal">1809</span>
-<span class="normal">1810</span>
-<span class="normal">1811</span>
-<span class="normal">1812</span>
-<span class="normal">1813</span>
-<span class="normal">1814</span>
-<span class="normal">1815</span>
-<span class="normal">1816</span>
-<span class="normal">1817</span>
-<span class="normal">1818</span>
-<span class="normal">1819</span>
-<span class="normal">1820</span>
-<span class="normal">1821</span>
-<span class="normal">1822</span>
-<span class="normal">1823</span>
-<span class="normal">1824</span>
-<span class="normal">1825</span>
-<span class="normal">1826</span>
-<span class="normal">1827</span>
-<span class="normal">1828</span>
-<span class="normal">1829</span>
-<span class="normal">1830</span>
-<span class="normal">1831</span>
-<span class="normal">1832</span>
-<span class="normal">1833</span>
-<span class="normal">1834</span>
-<span class="normal">1835</span>
-<span class="normal">1836</span>
-<span class="normal">1837</span>
-<span class="normal">1838</span>
-<span class="normal">1839</span>
-<span class="normal">1840</span>
-<span class="normal">1841</span>
-<span class="normal">1842</span>
-<span class="normal">1843</span>
-<span class="normal">1844</span>
-<span class="normal">1845</span>
-<span class="normal">1846</span>
-<span class="normal">1847</span>
-<span class="normal">1848</span>
-<span class="normal">1849</span>
-<span class="normal">1850</span>
-<span class="normal">1851</span>
-<span class="normal">1852</span>
-<span class="normal">1853</span>
-<span class="normal">1854</span>
-<span class="normal">1855</span>
-<span class="normal">1856</span>
-<span class="normal">1857</span>
-<span class="normal">1858</span>
-<span class="normal">1859</span>
-<span class="normal">1860</span>
-<span class="normal">1861</span>
-<span class="normal">1862</span>
-<span class="normal">1863</span>
-<span class="normal">1864</span>
-<span class="normal">1865</span>
-<span class="normal">1866</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">nearest_neighbor_distance</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1872</span>
+<span class="normal">1873</span>
+<span class="normal">1874</span>
+<span class="normal">1875</span>
+<span class="normal">1876</span>
+<span class="normal">1877</span>
+<span class="normal">1878</span>
+<span class="normal">1879</span>
+<span class="normal">1880</span>
+<span class="normal">1881</span>
+<span class="normal">1882</span>
+<span class="normal">1883</span>
+<span class="normal">1884</span>
+<span class="normal">1885</span>
+<span class="normal">1886</span>
+<span class="normal">1887</span>
+<span class="normal">1888</span>
+<span class="normal">1889</span>
+<span class="normal">1890</span>
+<span class="normal">1891</span>
+<span class="normal">1892</span>
+<span class="normal">1893</span>
+<span class="normal">1894</span>
+<span class="normal">1895</span>
+<span class="normal">1896</span>
+<span class="normal">1897</span>
+<span class="normal">1898</span>
+<span class="normal">1899</span>
+<span class="normal">1900</span>
+<span class="normal">1901</span>
+<span class="normal">1902</span>
+<span class="normal">1903</span>
+<span class="normal">1904</span>
+<span class="normal">1905</span>
+<span class="normal">1906</span>
+<span class="normal">1907</span>
+<span class="normal">1908</span>
+<span class="normal">1909</span>
+<span class="normal">1910</span>
+<span class="normal">1911</span>
+<span class="normal">1912</span>
+<span class="normal">1913</span>
+<span class="normal">1914</span>
+<span class="normal">1915</span>
+<span class="normal">1916</span>
+<span class="normal">1917</span>
+<span class="normal">1918</span>
+<span class="normal">1919</span>
+<span class="normal">1920</span>
+<span class="normal">1921</span>
+<span class="normal">1922</span>
+<span class="normal">1923</span>
+<span class="normal">1924</span>
+<span class="normal">1925</span>
+<span class="normal">1926</span>
+<span class="normal">1927</span>
+<span class="normal">1928</span>
+<span class="normal">1929</span>
+<span class="normal">1930</span>
+<span class="normal">1931</span>
+<span class="normal">1932</span>
+<span class="normal">1933</span>
+<span class="normal">1934</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">nearest_neighbor_distance</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Distance from each point to the closest *other* point of the same cloud.</span>
 
@@ -10058,75 +10148,7 @@ across the bus.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1869</span>
-<span class="normal">1870</span>
-<span class="normal">1871</span>
-<span class="normal">1872</span>
-<span class="normal">1873</span>
-<span class="normal">1874</span>
-<span class="normal">1875</span>
-<span class="normal">1876</span>
-<span class="normal">1877</span>
-<span class="normal">1878</span>
-<span class="normal">1879</span>
-<span class="normal">1880</span>
-<span class="normal">1881</span>
-<span class="normal">1882</span>
-<span class="normal">1883</span>
-<span class="normal">1884</span>
-<span class="normal">1885</span>
-<span class="normal">1886</span>
-<span class="normal">1887</span>
-<span class="normal">1888</span>
-<span class="normal">1889</span>
-<span class="normal">1890</span>
-<span class="normal">1891</span>
-<span class="normal">1892</span>
-<span class="normal">1893</span>
-<span class="normal">1894</span>
-<span class="normal">1895</span>
-<span class="normal">1896</span>
-<span class="normal">1897</span>
-<span class="normal">1898</span>
-<span class="normal">1899</span>
-<span class="normal">1900</span>
-<span class="normal">1901</span>
-<span class="normal">1902</span>
-<span class="normal">1903</span>
-<span class="normal">1904</span>
-<span class="normal">1905</span>
-<span class="normal">1906</span>
-<span class="normal">1907</span>
-<span class="normal">1908</span>
-<span class="normal">1909</span>
-<span class="normal">1910</span>
-<span class="normal">1911</span>
-<span class="normal">1912</span>
-<span class="normal">1913</span>
-<span class="normal">1914</span>
-<span class="normal">1915</span>
-<span class="normal">1916</span>
-<span class="normal">1917</span>
-<span class="normal">1918</span>
-<span class="normal">1919</span>
-<span class="normal">1920</span>
-<span class="normal">1921</span>
-<span class="normal">1922</span>
-<span class="normal">1923</span>
-<span class="normal">1924</span>
-<span class="normal">1925</span>
-<span class="normal">1926</span>
-<span class="normal">1927</span>
-<span class="normal">1928</span>
-<span class="normal">1929</span>
-<span class="normal">1930</span>
-<span class="normal">1931</span>
-<span class="normal">1932</span>
-<span class="normal">1933</span>
-<span class="normal">1934</span>
-<span class="normal">1935</span>
-<span class="normal">1936</span>
-<span class="normal">1937</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1937</span>
 <span class="normal">1938</span>
 <span class="normal">1939</span>
 <span class="normal">1940</span>
@@ -10142,7 +10164,75 @@ across the bus.</p>
 <span class="normal">1950</span>
 <span class="normal">1951</span>
 <span class="normal">1952</span>
-<span class="normal">1953</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_pair</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="normal">1953</span>
+<span class="normal">1954</span>
+<span class="normal">1955</span>
+<span class="normal">1956</span>
+<span class="normal">1957</span>
+<span class="normal">1958</span>
+<span class="normal">1959</span>
+<span class="normal">1960</span>
+<span class="normal">1961</span>
+<span class="normal">1962</span>
+<span class="normal">1963</span>
+<span class="normal">1964</span>
+<span class="normal">1965</span>
+<span class="normal">1966</span>
+<span class="normal">1967</span>
+<span class="normal">1968</span>
+<span class="normal">1969</span>
+<span class="normal">1970</span>
+<span class="normal">1971</span>
+<span class="normal">1972</span>
+<span class="normal">1973</span>
+<span class="normal">1974</span>
+<span class="normal">1975</span>
+<span class="normal">1976</span>
+<span class="normal">1977</span>
+<span class="normal">1978</span>
+<span class="normal">1979</span>
+<span class="normal">1980</span>
+<span class="normal">1981</span>
+<span class="normal">1982</span>
+<span class="normal">1983</span>
+<span class="normal">1984</span>
+<span class="normal">1985</span>
+<span class="normal">1986</span>
+<span class="normal">1987</span>
+<span class="normal">1988</span>
+<span class="normal">1989</span>
+<span class="normal">1990</span>
+<span class="normal">1991</span>
+<span class="normal">1992</span>
+<span class="normal">1993</span>
+<span class="normal">1994</span>
+<span class="normal">1995</span>
+<span class="normal">1996</span>
+<span class="normal">1997</span>
+<span class="normal">1998</span>
+<span class="normal">1999</span>
+<span class="normal">2000</span>
+<span class="normal">2001</span>
+<span class="normal">2002</span>
+<span class="normal">2003</span>
+<span class="normal">2004</span>
+<span class="normal">2005</span>
+<span class="normal">2006</span>
+<span class="normal">2007</span>
+<span class="normal">2008</span>
+<span class="normal">2009</span>
+<span class="normal">2010</span>
+<span class="normal">2011</span>
+<span class="normal">2012</span>
+<span class="normal">2013</span>
+<span class="normal">2014</span>
+<span class="normal">2015</span>
+<span class="normal">2016</span>
+<span class="normal">2017</span>
+<span class="normal">2018</span>
+<span class="normal">2019</span>
+<span class="normal">2020</span>
+<span class="normal">2021</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_pair</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Find the two closest points of a cloud, and the distance between them.</span>
 
@@ -10439,75 +10529,7 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1956</span>
-<span class="normal">1957</span>
-<span class="normal">1958</span>
-<span class="normal">1959</span>
-<span class="normal">1960</span>
-<span class="normal">1961</span>
-<span class="normal">1962</span>
-<span class="normal">1963</span>
-<span class="normal">1964</span>
-<span class="normal">1965</span>
-<span class="normal">1966</span>
-<span class="normal">1967</span>
-<span class="normal">1968</span>
-<span class="normal">1969</span>
-<span class="normal">1970</span>
-<span class="normal">1971</span>
-<span class="normal">1972</span>
-<span class="normal">1973</span>
-<span class="normal">1974</span>
-<span class="normal">1975</span>
-<span class="normal">1976</span>
-<span class="normal">1977</span>
-<span class="normal">1978</span>
-<span class="normal">1979</span>
-<span class="normal">1980</span>
-<span class="normal">1981</span>
-<span class="normal">1982</span>
-<span class="normal">1983</span>
-<span class="normal">1984</span>
-<span class="normal">1985</span>
-<span class="normal">1986</span>
-<span class="normal">1987</span>
-<span class="normal">1988</span>
-<span class="normal">1989</span>
-<span class="normal">1990</span>
-<span class="normal">1991</span>
-<span class="normal">1992</span>
-<span class="normal">1993</span>
-<span class="normal">1994</span>
-<span class="normal">1995</span>
-<span class="normal">1996</span>
-<span class="normal">1997</span>
-<span class="normal">1998</span>
-<span class="normal">1999</span>
-<span class="normal">2000</span>
-<span class="normal">2001</span>
-<span class="normal">2002</span>
-<span class="normal">2003</span>
-<span class="normal">2004</span>
-<span class="normal">2005</span>
-<span class="normal">2006</span>
-<span class="normal">2007</span>
-<span class="normal">2008</span>
-<span class="normal">2009</span>
-<span class="normal">2010</span>
-<span class="normal">2011</span>
-<span class="normal">2012</span>
-<span class="normal">2013</span>
-<span class="normal">2014</span>
-<span class="normal">2015</span>
-<span class="normal">2016</span>
-<span class="normal">2017</span>
-<span class="normal">2018</span>
-<span class="normal">2019</span>
-<span class="normal">2020</span>
-<span class="normal">2021</span>
-<span class="normal">2022</span>
-<span class="normal">2023</span>
-<span class="normal">2024</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2024</span>
 <span class="normal">2025</span>
 <span class="normal">2026</span>
 <span class="normal">2027</span>
@@ -10649,7 +10671,75 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 <span class="normal">2163</span>
 <span class="normal">2164</span>
 <span class="normal">2165</span>
-<span class="normal">2166</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
+<span class="normal">2166</span>
+<span class="normal">2167</span>
+<span class="normal">2168</span>
+<span class="normal">2169</span>
+<span class="normal">2170</span>
+<span class="normal">2171</span>
+<span class="normal">2172</span>
+<span class="normal">2173</span>
+<span class="normal">2174</span>
+<span class="normal">2175</span>
+<span class="normal">2176</span>
+<span class="normal">2177</span>
+<span class="normal">2178</span>
+<span class="normal">2179</span>
+<span class="normal">2180</span>
+<span class="normal">2181</span>
+<span class="normal">2182</span>
+<span class="normal">2183</span>
+<span class="normal">2184</span>
+<span class="normal">2185</span>
+<span class="normal">2186</span>
+<span class="normal">2187</span>
+<span class="normal">2188</span>
+<span class="normal">2189</span>
+<span class="normal">2190</span>
+<span class="normal">2191</span>
+<span class="normal">2192</span>
+<span class="normal">2193</span>
+<span class="normal">2194</span>
+<span class="normal">2195</span>
+<span class="normal">2196</span>
+<span class="normal">2197</span>
+<span class="normal">2198</span>
+<span class="normal">2199</span>
+<span class="normal">2200</span>
+<span class="normal">2201</span>
+<span class="normal">2202</span>
+<span class="normal">2203</span>
+<span class="normal">2204</span>
+<span class="normal">2205</span>
+<span class="normal">2206</span>
+<span class="normal">2207</span>
+<span class="normal">2208</span>
+<span class="normal">2209</span>
+<span class="normal">2210</span>
+<span class="normal">2211</span>
+<span class="normal">2212</span>
+<span class="normal">2213</span>
+<span class="normal">2214</span>
+<span class="normal">2215</span>
+<span class="normal">2216</span>
+<span class="normal">2217</span>
+<span class="normal">2218</span>
+<span class="normal">2219</span>
+<span class="normal">2220</span>
+<span class="normal">2221</span>
+<span class="normal">2222</span>
+<span class="normal">2223</span>
+<span class="normal">2224</span>
+<span class="normal">2225</span>
+<span class="normal">2226</span>
+<span class="normal">2227</span>
+<span class="normal">2228</span>
+<span class="normal">2229</span>
+<span class="normal">2230</span>
+<span class="normal">2231</span>
+<span class="normal">2232</span>
+<span class="normal">2233</span>
+<span class="normal">2234</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">min_count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>

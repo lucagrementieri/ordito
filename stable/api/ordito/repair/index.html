@@ -11682,7 +11682,9 @@ normals outward.</p>
 fail either: the flood-fill orients everything it reaches and the contradiction is left on a
 seam. The seam can even end up with <em>more</em> inconsistent edges than before the pass ran, not
 merely the same ones — so treat the result as unrepaired rather than partly repaired, and test
-with <a class="autorefs autorefs-internal" title="is_orientable" href="../validation/#ordito.validation.is_orientable"><code>is_orientable</code></a> first if that matters.</p>
+with <a class="autorefs autorefs-internal" title="is_orientable" href="../validation/#ordito.validation.is_orientable"><code>is_orientable</code></a> first if that matters. Under
+<a class="autorefs autorefs-internal" title="is_deterministic" href="../config/#ordito.config.is_deterministic"><code>is_deterministic</code></a> the seam is a function of <code>faces</code> too
+(<a class="autorefs autorefs-internal" title="face_flip_mask" href="../validation/#ordito.validation.face_flip_mask"><code>face_flip_mask</code></a> says which).</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -11704,9 +11706,9 @@ so it comes out consistent but inside out:</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 18 places</summary>
+      <summary>Referenced by 19 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.fill_cone">fill_cone</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.fill_fan">fill_fan</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.fill_min_weight">fill_min_weight</a></span> · <span class="ordito-backlink"><a href="../levelset/#ordito.levelset">levelset</a> › <a href="../levelset/#ordito.levelset.thicken_mesh">thicken_mesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.make_normals_outward">make_normals_outward</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.make_solid">make_solid</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.make_volume">make_volume</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.reverse_winding">reverse_winding</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.split_non_manifold_vertices">split_non_manifold_vertices</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_orientation_bits">face_orientation_bits</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.marching_triangles">marching_triangles</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.marching_triangles_with_offsets">marching_triangles_with_offsets</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.fill_cone">fill_cone</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.fill_fan">fill_fan</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.fill_min_weight">fill_min_weight</a></span> · <span class="ordito-backlink"><a href="../levelset/#ordito.levelset">levelset</a> › <a href="../levelset/#ordito.levelset.thicken_mesh">thicken_mesh</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.make_normals_outward">make_normals_outward</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.make_solid">make_solid</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.make_volume">make_volume</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.reverse_winding">reverse_winding</a></span> · <span class="ordito-backlink"><a href="./#ordito.repair">repair</a> › <a href="./#ordito.repair.split_non_manifold_vertices">split_non_manifold_vertices</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_orientation_bits">face_orientation_bits</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.marching_triangles">marching_triangles</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.marching_triangles_with_offsets">marching_triangles_with_offsets</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/repair/#repairing-meshes">Repairing meshes</a> › <a href="../../../examples/repair/#h6">Consistent and outward orientation</a></span> · <span class="ordito-backlink"><a href="../../../examples/repair/#repairing-meshes">Repairing meshes</a> › <a href="../../../examples/repair/#h10">One-call watertight solid</a></span></p>
     </details>
@@ -11796,7 +11798,9 @@ so it comes out consistent but inside out:</p>
 <span class="normal">2219</span>
 <span class="normal">2220</span>
 <span class="normal">2221</span>
-<span class="normal">2222</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">make_winding_consistent</span><span class="p">(</span>
+<span class="normal">2222</span>
+<span class="normal">2223</span>
+<span class="normal">2224</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">make_winding_consistent</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -11844,7 +11848,9 @@ so it comes out consistent but inside out:</p>
 <span class="sd">    fail either: the flood-fill orients everything it reaches and the contradiction is left on a</span>
 <span class="sd">    seam. The seam can even end up with *more* inconsistent edges than before the pass ran, not</span>
 <span class="sd">    merely the same ones — so treat the result as unrepaired rather than partly repaired, and test</span>
-<span class="sd">    with [`is_orientable`][ordito.validation.is_orientable] first if that matters.</span>
+<span class="sd">    with [`is_orientable`][ordito.validation.is_orientable] first if that matters. Under</span>
+<span class="sd">    [`is_deterministic`][ordito.config.is_deterministic] the seam is a function of ``faces`` too</span>
+<span class="sd">    ([`face_flip_mask`][ordito.validation.face_flip_mask] says which).</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -12065,9 +12071,7 @@ for meshes whose bodies are individually closed.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/repair.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2225</span>
-<span class="normal">2226</span>
-<span class="normal">2227</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2227</span>
 <span class="normal">2228</span>
 <span class="normal">2229</span>
 <span class="normal">2230</span>
@@ -12130,7 +12134,9 @@ for meshes whose bodies are individually closed.</p>
 <span class="normal">2287</span>
 <span class="normal">2288</span>
 <span class="normal">2289</span>
-<span class="normal">2290</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">make_volume</span><span class="p">(</span>
+<span class="normal">2290</span>
+<span class="normal">2291</span>
+<span class="normal">2292</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">make_volume</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">multibody</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -12376,9 +12382,7 @@ independently.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/repair.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2293</span>
-<span class="normal">2294</span>
-<span class="normal">2295</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2295</span>
 <span class="normal">2296</span>
 <span class="normal">2297</span>
 <span class="normal">2298</span>
@@ -12437,7 +12441,9 @@ independently.</p>
 <span class="normal">2351</span>
 <span class="normal">2352</span>
 <span class="normal">2353</span>
-<span class="normal">2354</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">make_normals_outward</span><span class="p">(</span>
+<span class="normal">2354</span>
+<span class="normal">2355</span>
+<span class="normal">2356</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">make_normals_outward</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">multibody</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -12698,9 +12704,7 @@ that <a class="autorefs autorefs-internal" title="ordito.holes" href="../holes/#
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/repair.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2410</span>
-<span class="normal">2411</span>
-<span class="normal">2412</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2412</span>
 <span class="normal">2413</span>
 <span class="normal">2414</span>
 <span class="normal">2415</span>
@@ -12789,7 +12793,9 @@ that <a class="autorefs autorefs-internal" title="ordito.holes" href="../holes/#
 <span class="normal">2498</span>
 <span class="normal">2499</span>
 <span class="normal">2500</span>
-<span class="normal">2501</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remove_folded_faces</span><span class="p">(</span>
+<span class="normal">2501</span>
+<span class="normal">2502</span>
+<span class="normal">2503</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remove_folded_faces</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">angle</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">160.0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -13183,9 +13189,7 @@ triangulation everywhere it did not cut, so a per-vertex attribute survives outs
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/repair.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2504</span>
-<span class="normal">2505</span>
-<span class="normal">2506</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2506</span>
 <span class="normal">2507</span>
 <span class="normal">2508</span>
 <span class="normal">2509</span>
@@ -13373,7 +13377,9 @@ triangulation everywhere it did not cut, so a per-vertex attribute survives outs
 <span class="normal">2691</span>
 <span class="normal">2692</span>
 <span class="normal">2693</span>
-<span class="normal">2694</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fix_self_intersections</span><span class="p">(</span>
+<span class="normal">2694</span>
+<span class="normal">2695</span>
+<span class="normal">2696</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fix_self_intersections</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -13852,9 +13858,7 @@ hole; cutting the short one leaves a sphere:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/repair.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2783</span>
-<span class="normal">2784</span>
-<span class="normal">2785</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2785</span>
 <span class="normal">2786</span>
 <span class="normal">2787</span>
 <span class="normal">2788</span>
@@ -14006,7 +14010,9 @@ hole; cutting the short one leaves a sphere:</p>
 <span class="normal">2934</span>
 <span class="normal">2935</span>
 <span class="normal">2936</span>
-<span class="normal">2937</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remove_tunnels</span><span class="p">(</span>
+<span class="normal">2937</span>
+<span class="normal">2938</span>
+<span class="normal">2939</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remove_tunnels</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">max_length</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -14371,9 +14377,7 @@ which removes the sliver by merging its short edge instead.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/repair.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3295</span>
-<span class="normal">3296</span>
-<span class="normal">3297</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3297</span>
 <span class="normal">3298</span>
 <span class="normal">3299</span>
 <span class="normal">3300</span>
@@ -14453,7 +14457,9 @@ which removes the sliver by merging its short edge instead.</p>
 <span class="normal">3374</span>
 <span class="normal">3375</span>
 <span class="normal">3376</span>
-<span class="normal">3377</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_t_vertices</span><span class="p">(</span>
+<span class="normal">3377</span>
+<span class="normal">3378</span>
+<span class="normal">3379</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_t_vertices</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
