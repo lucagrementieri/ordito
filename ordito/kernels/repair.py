@@ -265,6 +265,20 @@ def mark_face_fate(
 
 
 @wp.kernel
+def mark_nondegenerate_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_keep: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``triangles.face_nondegenerate_mask`` and the submesh compaction's marking in one pass, for
+    # ``remove_degenerate_faces``: ``remap_mark_nondegenerate_faces`` without the remap.
+    f = wp.int32(wp.tid())
+    v0, v1, v2 = face_vertices(vertices, faces, f)
+    mark_face_fate(faces, f, triangle_nondegenerate(v0, v1, v2), out_keep, out_flags)
+
+
+@wp.kernel
 def remap_mark_nondegenerate_faces(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -456,7 +470,8 @@ def halfedge_orientation_slots(
     # *consistently oriented manifold* edge has exactly one of each; anything else -- two forward
     # (a flipped neighbour), three or more of either (a non-manifold edge), or one alone (a
     # boundary) -- is not mergeable, so its corner slot is never read and the ``atomic_max`` only
-    # keeps the write deterministic.
+    # keeps the write deterministic. A mergeable edge's slot holds its one corner, so the slots need
+    # no seed below every corner index: zero, the counts' own seed, does.
     c = wp.int32(wp.tid())
     e = edge_of_corner[c]
     if faces[c] < halfedge_destination(faces, c):

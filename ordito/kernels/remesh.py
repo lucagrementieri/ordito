@@ -1211,8 +1211,9 @@ def _resolve_flip_quad_in_region(
     # Region-restricted rather than universal because two of the four candidate kernels have no
     # region to restrict to: ``valence_flip_candidates`` is whole-mesh by construction (its only
     # caller takes no ``region``) and ``incircle_flip_candidates`` triangulates a planar point set.
+    # An empty ``region_flags`` (``None`` at launch) is the whole mesh.
     f0 = adjacency[k, 0]
-    if region_flags[f0] == 0 or region_flags[adjacency[k, 1]] == 0:
+    if region_flags.shape[0] > 0 and (region_flags[f0] == 0 or region_flags[adjacency[k, 1]] == 0):
         return wp.int32(-1), wp.int32(-1), wp.int32(-1), wp.int32(-1)
     return _resolve_flip_quad_guarded(
         faces,

@@ -725,8 +725,19 @@ def remove_degenerate_faces(
     if n_faces == 0:
         return _launch.clone(vertices), _launch.clone(faces)
 
-    keep_mask = od.triangles.face_nondegenerate_mask(vertices, faces)
-    return od.selection.submesh_from_face_mask(vertices, faces, keep_mask)
+    # The degeneracy test marks the survivors for the compaction in the pass that decides them.
+    keep_mask = _launch.empty(n_faces, dtype=wp.bool, device=faces.device)
+    ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=faces.device)
+    _launch.launch(
+        kernel_repair.mark_nondegenerate_faces,
+        dim=n_faces,
+        inputs=[vertices, faces, keep_mask, ranks],
+        device=faces.device,
+    )
+    new_vertices, new_faces, _vertex_index, _ranks = _compact_marked_submesh(
+        vertices, faces, keep_mask, ranks, keep_masked=True, with_index=False
+    )
+    return new_vertices, new_faces
 
 
 def remove_non_manifold_faces(
@@ -1104,7 +1115,7 @@ def remove_small_components(
         device=device,
     )
     new_vertices, new_faces, _vertex_index, _ranks = _compact_marked_submesh(
-        vertices, faces, keep, ranks, keep_masked=True
+        vertices, faces, keep, ranks, keep_masked=True, with_index=False
     )
     return new_vertices, new_faces
 
@@ -1231,14 +1242,14 @@ def split_non_manifold_vertices(
     )
     n_unique = int(_unique_edges.shape[0])
 
-    # Each direction's count and corner slot are the two halves of one buffer, so the four tables
-    # cost two allocations and two fills.
-    counts = _launch.zeros(2 * n_unique, dtype=wp.int32, device=device)
-    corners = _launch.full(2 * n_unique, -1, dtype=wp.int32, device=device)
-    forward_count = odt.as_dense(counts[:n_unique])
-    backward_count = odt.as_dense(counts[n_unique:])
-    forward_corner = odt.as_dense(corners[:n_unique])
-    backward_corner = odt.as_dense(corners[n_unique:])
+    # The four tables are the quarters of one zeroed buffer. A corner slot is read only where each
+    # direction's count is exactly one, and then the ``atomic_max`` over a non-negative corner index
+    # has left that corner in it whatever it started from, so zero seeds the slots as well as the
+    # counts.
+    tables = _launch.zeros(4 * n_unique, dtype=wp.int32, device=device)
+    forward_count, backward_count, forward_corner, backward_corner = (
+        odt.as_dense(tables[k * n_unique : (k + 1) * n_unique]) for k in range(4)
+    )
     _launch.launch(
         kernel_repair.halfedge_orientation_slots,
         dim=n_corners,
@@ -2501,7 +2512,7 @@ def remove_folded_faces(
         device=faces.device,
     )
     new_vertices, new_faces, _vertex_index, _ranks = _compact_marked_submesh(
-        vertices, faces, folded, ranks, keep_masked=False
+        vertices, faces, folded, ranks, keep_masked=False, with_index=False
     )
     return new_vertices, new_faces
 

@@ -2864,14 +2864,14 @@ def flip_by_objective(
 
 def _flip_setup(
     faces: wp.array[wp.int32], region: wp.array[wp.bool] | None, n_vertices: int
-) -> tuple[wp.array[wp.int32], int, wp.array[wp.int32]] | None:
+) -> tuple[wp.array[wp.int32], int, wp.array[wp.int32] | None] | None:
     """
     Working face buffer, vertex count and per-face region flags shared by the two flip drivers.
 
     Both [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay] and
     [`flip_by_objective`][ordito.remesh.flip_by_objective] flip in place on a clone of the input
-    and gate every candidate on the same ``int32`` region mask, which is all ones when the caller
-    named no region.
+    and gate every candidate on the same ``int32`` region mask, which is ``None`` -- the whole
+    mesh, to the candidate kernels -- when the caller named no region.
 
     Parameters
     ----------
@@ -2885,7 +2885,7 @@ def _flip_setup(
 
     Returns
     -------
-    tuple[wp.array[wp.int32], int, wp.array[wp.int32]] | None
+    tuple[wp.array[wp.int32], int, wp.array[wp.int32] | None] | None
         ``(out_faces, n_vertices, region_flags)``, or ``None`` for an empty mesh.
 
     Raises
@@ -2893,17 +2893,13 @@ def _flip_setup(
     ValueError
         If ``region`` is given and is not length ``n_faces``.
     """
-    device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
         return None
     if region is not None and region.size != n_faces:
         raise ValueError(f"region must have length n_faces={n_faces}, got {region.size}")
 
-    if region is None:
-        region_flags = _launch.full(n_faces, 1, dtype=wp.int32, device=device)
-    else:
-        region_flags = od.array.astype(region, wp.int32)
+    region_flags = None if region is None else od.array.astype(region, wp.int32)
     return _launch.clone(faces), n_vertices, region_flags
 
 
