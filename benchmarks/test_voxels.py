@@ -353,8 +353,8 @@ def _voxel_mask_ml(occupancy_np: np.ndarray) -> mm.VoxelBitSet:
     Load a dense occupancy array into a MeshLib ``VoxelBitSet``, in ``VoxelId`` order.
 
     The benchmark-side twin of ``tests.conversions.numpy_to_meshlib_bitset`` (the two suites do not
-    import each other). ``BitSet.fromBlocks`` takes the packed ``uint64`` blocks through a
-    ``std_vector_unsigned_long``, which is why this is one ``np.packbits`` and not a per-cell
+    import each other). ``BitSet.fromBlocks`` takes the packed ``uint64`` blocks as a Python
+    list, which is why this is one ``np.packbits`` and not a per-cell
     ``set()`` loop -- two orders of magnitude cheaper. ``VolumeIndexer`` decodes
     ``x + dims.x * y + dims.x * dims.y * z``, so ``x`` runs fastest and the array flattens with
     ``order="F"``; ``fromBlocks`` rounds up to whole blocks, so the size is trimmed back after.
@@ -365,7 +365,7 @@ def _voxel_mask_ml(occupancy_np: np.ndarray) -> mm.VoxelBitSet:
     """
     packed_np = np.packbits(occupancy_np.ravel(order="F"), bitorder="little")
     packed_np = np.pad(packed_np, (0, (-packed_np.size) % 8)).view(np.uint64)
-    bitset_ml = mm.BitSet.fromBlocks(mm.std_vector_unsigned_long(packed_np.tolist()))
+    bitset_ml = mm.BitSet.fromBlocks(packed_np.tolist())
     bitset_ml.resize(occupancy_np.size)
     return mm.VoxelBitSet(bitset_ml)
 

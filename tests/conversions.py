@@ -543,9 +543,10 @@ def numpy_to_meshlib_bitset(flags_np: np.ndarray) -> mm.BitSet:
 
     Two mechanical points. ``bitorder="little"`` is not optional: the block's bit *i* is index
     ``i``, which is NumPy's non-default order. And ``fromBlocks`` rejects a NumPy ``uint64`` array
-    with ``TypeError`` -- the bound argument is ``std_vector_unsigned_long``, which accepts a Python
-    list -- then rounds the size up to whole 64-bit blocks, so the ``resize`` trims the padding back
-    to the caller's domain.
+    with ``TypeError`` but takes a Python list, which also sidesteps the bound vector type's
+    platform-dependent name (``std_vector_unsigned_long`` on Linux, ``_long_long`` on macOS) -- then
+    rounds the size up to whole 64-bit blocks, so the ``resize`` trims the padding back to the
+    caller's domain.
 
     ``flags_np`` must already be flattened in the target element's own order; for a
     ``VoxelBitSet`` addressed by a ``VolumeIndexer`` that is ``x`` fastest, i.e.
@@ -560,7 +561,7 @@ def numpy_to_meshlib_bitset(flags_np: np.ndarray) -> mm.BitSet:
     flat_np = np.ascontiguousarray(flags_np, dtype=bool).ravel()
     packed_np = np.packbits(flat_np, bitorder="little")
     packed_np = np.pad(packed_np, (0, (-packed_np.size) % 8)).view(np.uint64)
-    bitset_ml = mm.BitSet.fromBlocks(mm.std_vector_unsigned_long(packed_np.tolist()))
+    bitset_ml = mm.BitSet.fromBlocks(packed_np.tolist())
     bitset_ml.resize(flat_np.size)
     return bitset_ml
 
