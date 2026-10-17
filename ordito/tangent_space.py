@@ -27,12 +27,12 @@ from __future__ import annotations
 
 import warp as wp
 
-import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
 from ordito.halfedge import halfedge_twins, require_matching_twins, vertex_one_rings
 from ordito.kernels import tangent_space as kernel_tangent_space
+from ordito.kernels import vertices as kernel_vertices
 
 
 def vertex_tangent_frames(
@@ -110,19 +110,42 @@ def vertex_tangent_frames(
     n = vertices.size
     basis_x = _launch.empty(n, dtype=wp.vec3, device=device)
     basis_y = _launch.empty(n, dtype=wp.vec3, device=device)
-    if normals is None:
-        normals = od.vertices.vertex_normals(vertices, faces, weighting="angle")
     if n == 0:
+        if normals is None:
+            normals = _launch.empty(0, dtype=wp.vec3, device=device)
         return basis_x, basis_y, normals
 
     if rings is None:
         rings = vertex_one_rings(faces, n_vertices=n)
     ring_halfedges, ring_offsets, _ = rings
 
+    if normals is not None:
+        _launch.launch(
+            kernel_tangent_space.vertex_tangent_frames,
+            dim=n,
+            inputs=[vertices, faces, normals, ring_offsets, ring_halfedges, basis_x, basis_y],
+            device=device,
+        )
+        return basis_x, basis_y, normals
+
+    # ``vertex_normals(weighting="angle")`` with nothing precomputed is one angle-weighted scatter
+    # into a ``float64`` accumulator and one normalizing pass; the pass is folded into the frame
+    # kernel, which writes the same normals.
+    normal_sums = _launch.zeros((n, 3), dtype=wp.float64, device=device)
+    n_faces = faces.size // 3
+    if n_faces > 0:
+        _launch.launch(
+            kernel_vertices.SCATTER_ANGLE_WEIGHTED_NORMALS[wp.float64],
+            dim=n_faces,
+            inputs=[vertices, faces, normal_sums],
+            device=device,
+        )
+    normals = _launch.empty(n, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_tangent_space.vertex_tangent_frames,
+        kernel_tangent_space.vertex_tangent_frames_from_sums,
         dim=n,
-        inputs=[vertices, faces, normals, ring_offsets, ring_halfedges, basis_x, basis_y],
+        inputs=[vertices, faces, normal_sums, ring_offsets, ring_halfedges],
+        outputs=[basis_x, basis_y, normals],
         device=device,
     )
     return basis_x, basis_y, normals
@@ -286,12 +309,19 @@ def halfedge_tangent_angles(
     if n_halfedges == 0 or n == 0:
         return angles
 
-    if face_angles is None:
-        face_angles = od.triangles.face_angles(vertices, faces)
     if rings is None:
         rings = vertex_one_rings(faces, n_vertices=n)
     ring_halfedges, ring_offsets, is_boundary = rings
 
+    if face_angles is None:
+        # The ring walk forms each corner angle itself, as ``triangles.face_angles`` would.
+        _launch.launch(
+            kernel_tangent_space.halfedge_tangent_angles_from_positions,
+            dim=n,
+            inputs=[vertices, faces, ring_offsets, ring_halfedges, is_boundary, angles],
+            device=device,
+        )
+        return angles
     _launch.launch(
         kernel_tangent_space.halfedge_tangent_angles,
         dim=n,
