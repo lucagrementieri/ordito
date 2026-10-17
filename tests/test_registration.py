@@ -439,7 +439,8 @@ def test_icp_point_cloud_matches_pytorch3d(device: str) -> None:
 
     ``estimate_scale=False`` matches ordito's ``scale=False`` default, and the pair is
     correspondence-free on both sides -- each iteration re-runs its own nearest-neighbour search,
-    which is the formulation ``ordito/registration.py``'s docstring credits to pytorch3d.
+    which is the formulation ``ordito/registration.py``'s docstring credits to pytorch3d. A
+    prebuilt ``target_mesh`` (``mesh_from_points`` of the target) converges to the same transform.
     """
     rng = np.random.default_rng(11)
     a_np = rng.normal(size=(300, 3)).astype(np.float32)
@@ -469,6 +470,14 @@ def test_icp_point_cloud_matches_pytorch3d(device: str) -> None:
         matrix_np[:3, :3].T, solution_p3d.RTs.R[0].cpu().numpy(), rtol=1e-5, atol=1e-6
     )
     assert np.allclose(matrix_np[:3, 3], solution_p3d.RTs.T[0].cpu().numpy(), rtol=1e-5, atol=1e-6)
+
+    target_wp = points_to_warp(b_np, device)
+    matrix_prebuilt_wp, _, _ = od.registration.icp(
+        points_to_warp(a_np, device),
+        target_wp,
+        target_mesh=od.neighbors.mesh_from_points(target_wp),
+    )
+    assert np.allclose(matrix_prebuilt_wp.numpy()[0], matrix_np, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parity("icp_point_cloud", "open3d", "trimesh")
@@ -785,6 +794,15 @@ def test_icp_point_to_point_mesh(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> N
     # tangential slide on the curved surface keeps RMS small but non-zero).
     assert cost_od < 1e-3
     assert _rms(transformed_wp.numpy(), vertices_np) < 5e-2
+
+    # A prebuilt ``target_mesh`` gives both variants the transform their own build does.
+    target_mesh = wp.Mesh(vertices_wp, faces_wp)
+    for icp in (od.registration.icp, od.registration.icp_point_to_plane):
+        matrix_wp, _, _ = icp(source_wp, vertices_wp, faces_wp, max_iterations=10)
+        matrix_prebuilt_wp, _, _ = icp(
+            source_wp, vertices_wp, faces_wp, max_iterations=10, target_mesh=target_mesh
+        )
+        assert np.allclose(matrix_prebuilt_wp.numpy(), matrix_wp.numpy(), rtol=1e-5, atol=1e-6)
 
 
 def _p2p_convergence_call(

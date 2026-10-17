@@ -341,8 +341,12 @@ def test_euler_characteristic(request: pytest.FixtureRequest, mesh_name: str) ->
     Class A on an integer, against ``Trimesh.euler_number`` across the fixture set.
 
     Non-vacuous by construction: the parametrisation spans chi = 2, 1 and 0, so a constant
-    answer cannot pass.
+    answer cannot pass. A given ``n_vertices`` (the readback skipped) gives the same count.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     euler_wp = od.measures.euler_characteristic(mesh_wp.indices)
     assert euler_wp == int(mesh_tm.euler_number)
+    euler_bound_wp = od.measures.euler_characteristic(
+        mesh_wp.indices, n_vertices=mesh_wp.points.size
+    )
+    assert euler_bound_wp == int(mesh_tm.euler_number)

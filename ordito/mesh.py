@@ -1373,7 +1373,7 @@ class Trimesh:
             return 0
         unique_edges = self._cache.get("edges_unique")
         if unique_edges is None:
-            return od.measures.euler_characteristic(self._faces)
+            return od.measures.euler_characteristic(self._faces, n_vertices=self.n_vertices)
         # The referenced count is the membership mask's popcount, as in the measures function.
         mask = od.array.indices_to_mask(self._faces, self.n_vertices)
         n_edges = int(cast("odt.Array2dInt32", unique_edges).shape[0])

@@ -216,6 +216,7 @@ def chamfer_points_to_mesh(
     point_reduction: _PointReduction = ...,
     single_directional: bool = ...,
     squared: bool = ...,
+    mesh: wp.Mesh | None = ...,
 ) -> float: ...
 @overload
 def chamfer_points_to_mesh(
@@ -226,6 +227,7 @@ def chamfer_points_to_mesh(
     point_reduction: None,
     single_directional: Literal[True],
     squared: bool = ...,
+    mesh: wp.Mesh | None = ...,
 ) -> odt.Array1dFloat32: ...
 @overload
 def chamfer_points_to_mesh(
@@ -236,6 +238,7 @@ def chamfer_points_to_mesh(
     point_reduction: None,
     single_directional: Literal[False] = ...,
     squared: bool = ...,
+    mesh: wp.Mesh | None = ...,
 ) -> tuple[odt.Array1dFloat32, odt.Array1dFloat32]: ...
 @overload
 def chamfer_points_to_mesh(
@@ -246,6 +249,7 @@ def chamfer_points_to_mesh(
     point_reduction: None,
     single_directional: bool,
     squared: bool = ...,
+    mesh: wp.Mesh | None = ...,
 ) -> _UnreducedChamfer: ...
 def chamfer_points_to_mesh(
     points: wp.array[wp.vec3],
@@ -255,6 +259,7 @@ def chamfer_points_to_mesh(
     point_reduction: _PointReduction | None = "mean",
     single_directional: bool = False,
     squared: bool = False,
+    mesh: wp.Mesh | None = None,
 ) -> float | _UnreducedChamfer:
     """
     Chamfer distance between a point cloud and a triangle mesh.
@@ -281,6 +286,11 @@ def chamfer_points_to_mesh(
         Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
         is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
         misread.
+    mesh
+        A ``wp.Mesh`` already built over ``vertices`` and ``faces``, to spare the BVH build each
+        call otherwise pays (worth it when one mesh is measured repeatedly). Not checked against
+        ``vertices`` / ``faces``: the answer is for the geometry ``mesh`` holds.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one to pass.
 
     Returns
     -------
@@ -295,7 +305,7 @@ def chamfer_points_to_mesh(
     Raises
     ------
     RuntimeError
-        If ``points``, ``vertices`` and ``faces`` are not all on one device.
+        If ``points``, ``vertices``, ``faces`` and ``mesh`` are not all on one device.
     ValueError
         If ``point_reduction`` is not ``"mean"``, ``"sum"``, ``"max"`` or ``None``.
 
@@ -322,9 +332,9 @@ def chamfer_points_to_mesh(
     print(f"{od.metrics.chamfer_points_to_mesh(points, vertices, faces):.4f}")  # 1.6160
     ```
     """
-    require_same_device(points=points, vertices=vertices, faces=faces)
+    require_same_device(points=points, vertices=vertices, faces=faces, mesh=mesh)
     _validate_point_reduction(point_reduction)
-    distances = _distances_points_to_mesh(points, vertices, faces, single_directional)
+    distances = _distances_points_to_mesh(points, vertices, faces, single_directional, mesh)
     if distances is None:
         return _empty_chamfer(point_reduction, single_directional, points.device)
     return _chamfer(distances, point_reduction, single_directional, squared)
@@ -340,6 +350,8 @@ def chamfer_mesh_to_mesh(
     point_reduction: _PointReduction = ...,
     single_directional: bool = ...,
     squared: bool = ...,
+    mesh_a: wp.Mesh | None = ...,
+    mesh_b: wp.Mesh | None = ...,
 ) -> float: ...
 @overload
 def chamfer_mesh_to_mesh(
@@ -351,6 +363,8 @@ def chamfer_mesh_to_mesh(
     point_reduction: None,
     single_directional: Literal[True],
     squared: bool = ...,
+    mesh_a: wp.Mesh | None = ...,
+    mesh_b: wp.Mesh | None = ...,
 ) -> odt.Array1dFloat32: ...
 @overload
 def chamfer_mesh_to_mesh(
@@ -362,6 +376,8 @@ def chamfer_mesh_to_mesh(
     point_reduction: None,
     single_directional: Literal[False] = ...,
     squared: bool = ...,
+    mesh_a: wp.Mesh | None = ...,
+    mesh_b: wp.Mesh | None = ...,
 ) -> tuple[odt.Array1dFloat32, odt.Array1dFloat32]: ...
 @overload
 def chamfer_mesh_to_mesh(
@@ -373,6 +389,8 @@ def chamfer_mesh_to_mesh(
     point_reduction: None,
     single_directional: bool,
     squared: bool = ...,
+    mesh_a: wp.Mesh | None = ...,
+    mesh_b: wp.Mesh | None = ...,
 ) -> _UnreducedChamfer: ...
 def chamfer_mesh_to_mesh(
     vertices_a: wp.array[wp.vec3],
@@ -383,6 +401,8 @@ def chamfer_mesh_to_mesh(
     point_reduction: _PointReduction | None = "mean",
     single_directional: bool = False,
     squared: bool = False,
+    mesh_a: wp.Mesh | None = None,
+    mesh_b: wp.Mesh | None = None,
 ) -> float | _UnreducedChamfer:
     """
     Chamfer distance between two triangle meshes (vertex-to-surface).
@@ -406,6 +426,11 @@ def chamfer_mesh_to_mesh(
         Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
         is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
         misread.
+    mesh_a, mesh_b
+        ``wp.Mesh`` objects already built over mesh ``A`` and mesh ``B``, to spare the BVH build
+        each call otherwise pays per mesh queried (worth it when a mesh is measured repeatedly).
+        Not checked against the arrays: the answer is for the geometry each holds.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one to pass.
 
     Returns
     -------
@@ -419,7 +444,8 @@ def chamfer_mesh_to_mesh(
     Raises
     ------
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mesh_a`` and ``mesh_b``
+        are not all on one device.
     ValueError
         If ``point_reduction`` is not ``"mean"``, ``"sum"``, ``"max"`` or ``None``.
 
@@ -448,11 +474,16 @@ def chamfer_mesh_to_mesh(
     ```
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
     )
     _validate_point_reduction(point_reduction)
     distances = _distances_mesh_to_mesh(
-        vertices_a, faces_a, vertices_b, faces_b, single_directional
+        vertices_a, faces_a, vertices_b, faces_b, single_directional, mesh_a, mesh_b
     )
     if distances is None:
         return _empty_chamfer(point_reduction, single_directional, vertices_a.device)
@@ -604,6 +635,7 @@ def chamfer_points_to_mesh_loss(
     point_reduction: _DiffReduction = "mean",
     single_directional: bool = False,
     squared: bool = False,
+    mesh: wp.Mesh | None = None,
 ) -> wp.array[wp.float32]:
     """
     Differentiable Chamfer loss between a point cloud and a triangle mesh.
@@ -632,6 +664,11 @@ def chamfer_points_to_mesh_loss(
         Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
         is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
         misread.
+    mesh
+        A ``wp.Mesh`` already built over ``vertices`` and ``faces``, to spare the BVH build each
+        call otherwise pays (worth it when one mesh is measured repeatedly). Not checked against
+        ``vertices`` / ``faces``: the answer is for the geometry ``mesh`` holds.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one to pass.
 
     Returns
     -------
@@ -641,7 +678,7 @@ def chamfer_points_to_mesh_loss(
     Raises
     ------
     RuntimeError
-        If ``points``, ``vertices`` and ``faces`` are not all on one device.
+        If ``points``, ``vertices``, ``faces`` and ``mesh`` are not all on one device.
     ValueError
         If ``point_reduction`` is not ``"mean"`` or ``"sum"``.
 
@@ -672,7 +709,7 @@ def chamfer_points_to_mesh_loss(
     print(points.grad.numpy()[0])  # [1. 0. 0.]
     ```
     """
-    require_same_device(points=points, vertices=vertices, faces=faces)
+    require_same_device(points=points, vertices=vertices, faces=faces, mesh=mesh)
     _validate_diff_reduction(point_reduction)
     device = points.device
     n = points.size
@@ -684,7 +721,9 @@ def chamfer_points_to_mesh_loss(
 
     # Non-differentiable closest-face and nearest-neighbor assignment (outside the tape). The
     # backward search is chosen from the forward one's own distances -- see `_backward_nearest`.
-    _, distance_forward, face_id = od.proximity.closest_point_on_mesh(vertices, faces, points)
+    _, distance_forward, face_id = od.proximity.closest_point_on_mesh(
+        vertices, faces, points, mesh=mesh
+    )
     terms = [
         lambda: _launch_surface_term(
             points,
@@ -723,6 +762,8 @@ def chamfer_mesh_to_mesh_loss(
     point_reduction: _DiffReduction = "mean",
     single_directional: bool = False,
     squared: bool = False,
+    mesh_a: wp.Mesh | None = None,
+    mesh_b: wp.Mesh | None = None,
 ) -> wp.array[wp.float32]:
     """
     Differentiable Chamfer loss between two triangle meshes (vertex-to-surface).
@@ -749,6 +790,11 @@ def chamfer_mesh_to_mesh_loss(
         Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
         is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
         misread.
+    mesh_a, mesh_b
+        ``wp.Mesh`` objects already built over mesh ``A`` and mesh ``B``, to spare the BVH build
+        each call otherwise pays per mesh queried (worth it when a mesh is measured repeatedly).
+        Not checked against the arrays: the answer is for the geometry each holds.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one to pass.
 
     Returns
     -------
@@ -758,7 +804,8 @@ def chamfer_mesh_to_mesh_loss(
     Raises
     ------
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mesh_a`` and ``mesh_b``
+        are not all on one device.
     ValueError
         If ``point_reduction`` is not ``"mean"`` or ``"sum"``.
 
@@ -792,7 +839,12 @@ def chamfer_mesh_to_mesh_loss(
     ```
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
     )
     _validate_diff_reduction(point_reduction)
     device = vertices_a.device
@@ -805,7 +857,7 @@ def chamfer_mesh_to_mesh_loss(
         return loss
 
     # Non-differentiable closest-face assignment for each direction (outside the tape).
-    face_id_ab = od.proximity.closest_point_on_mesh(vertices_b, faces_b, vertices_a)[2]
+    face_id_ab = od.proximity.closest_point_on_mesh(vertices_b, faces_b, vertices_a, mesh=mesh_b)[2]
     terms = [
         lambda: _launch_surface_term(
             vertices_a,
@@ -818,7 +870,9 @@ def chamfer_mesh_to_mesh_loss(
         )
     ]
     if not single_directional:
-        face_id_ba = od.proximity.closest_point_on_mesh(vertices_a, faces_a, vertices_b)[2]
+        face_id_ba = od.proximity.closest_point_on_mesh(
+            vertices_a, faces_a, vertices_b, mesh=mesh_a
+        )[2]
         terms.append(
             lambda: _launch_surface_term(
                 vertices_b,
@@ -903,6 +957,7 @@ def hausdorff_points_to_mesh(
     faces: wp.array[wp.int32],
     *,
     single_directional: bool = False,
+    mesh: wp.Mesh | None = None,
 ) -> float:
     """
     Hausdorff distance between a point cloud and a triangle mesh.
@@ -921,6 +976,11 @@ def hausdorff_points_to_mesh(
         ``(3 * n_faces,)`` flat triangle index array.
     single_directional
         If ``True``, return only the directed ``points -> mesh surface`` distance.
+    mesh
+        A ``wp.Mesh`` already built over ``vertices`` and ``faces``, to spare the BVH build each
+        call otherwise pays (worth it when one mesh is measured repeatedly). Not checked against
+        ``vertices`` / ``faces``: the answer is for the geometry ``mesh`` holds.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one to pass.
 
     Returns
     -------
@@ -930,7 +990,7 @@ def hausdorff_points_to_mesh(
     Raises
     ------
     RuntimeError
-        If ``points``, ``vertices`` and ``faces`` are not all on one device.
+        If ``points``, ``vertices``, ``faces`` and ``mesh`` are not all on one device.
 
     See Also
     --------
@@ -954,8 +1014,8 @@ def hausdorff_points_to_mesh(
     print(f"{od.metrics.hausdorff_points_to_mesh(points, vertices, faces):.4f}")  # 1.0000
     ```
     """
-    require_same_device(points=points, vertices=vertices, faces=faces)
-    distances = _distances_points_to_mesh(points, vertices, faces, single_directional)
+    require_same_device(points=points, vertices=vertices, faces=faces, mesh=mesh)
+    distances = _distances_points_to_mesh(points, vertices, faces, single_directional, mesh)
     if distances is None:
         return 0.0
     return _hausdorff(distances, single_directional)
@@ -968,6 +1028,8 @@ def hausdorff_mesh_to_mesh(
     faces_b: wp.array[wp.int32],
     *,
     single_directional: bool = False,
+    mesh_a: wp.Mesh | None = None,
+    mesh_b: wp.Mesh | None = None,
 ) -> float:
     """
     Hausdorff distance between two triangle meshes.
@@ -985,6 +1047,11 @@ def hausdorff_mesh_to_mesh(
         ``(n_vertices_b,)`` vertices and ``(3 * n_faces_b,)`` flat faces of mesh ``B``.
     single_directional
         If ``True``, return only the directed ``A -> surface(B)`` distance.
+    mesh_a, mesh_b
+        ``wp.Mesh`` objects already built over mesh ``A`` and mesh ``B``, to spare the BVH build
+        each call otherwise pays per mesh queried (worth it when a mesh is measured repeatedly).
+        Not checked against the arrays: the answer is for the geometry each holds.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one to pass.
 
     Returns
     -------
@@ -994,7 +1061,8 @@ def hausdorff_mesh_to_mesh(
     Raises
     ------
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mesh_a`` and ``mesh_b``
+        are not all on one device.
 
     See Also
     --------
@@ -1020,10 +1088,15 @@ def hausdorff_mesh_to_mesh(
     ```
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
     )
     distances = _distances_mesh_to_mesh(
-        vertices_a, faces_a, vertices_b, faces_b, single_directional
+        vertices_a, faces_a, vertices_b, faces_b, single_directional, mesh_a, mesh_b
     )
     if distances is None:
         return 0.0
@@ -1235,11 +1308,12 @@ def _distances_points_to_mesh(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     single_directional: bool,
+    mesh: wp.Mesh | None,
 ) -> _Distances | None:
     """Point-to-surface distances forward, cloud nearest-neighbour distances back."""
     if points.size == 0 or vertices.size == 0 or faces.size == 0:
         return None
-    _, d_forward, face_id = od.proximity.closest_point_on_mesh(vertices, faces, points)
+    _, d_forward, face_id = od.proximity.closest_point_on_mesh(vertices, faces, points, mesh=mesh)
     if single_directional:
         return _Distances(d_forward, None, None)
     # The forward half is point-to-*surface*, a lower bound on the point-to-vertex answer the
@@ -1348,6 +1422,8 @@ def _distances_mesh_to_mesh(
     vertices_b: wp.array[wp.vec3],
     faces_b: wp.array[wp.int32],
     single_directional: bool,
+    mesh_a: wp.Mesh | None,
+    mesh_b: wp.Mesh | None,
 ) -> _Distances | None:
     """
     Each mesh's vertices to the other's surface. Vertex-sampled, not a true surface metric.
@@ -1361,10 +1437,12 @@ def _distances_mesh_to_mesh(
     """
     if vertices_a.size == 0 or vertices_b.size == 0 or faces_a.size == 0 or faces_b.size == 0:
         return None
-    d_forward = od.proximity.closest_point_on_mesh(vertices_b, faces_b, vertices_a)[1]
+    d_forward = od.proximity.closest_point_on_mesh(vertices_b, faces_b, vertices_a, mesh=mesh_b)[1]
     d_backward = None
     if not single_directional:
-        d_backward = od.proximity.closest_point_on_mesh(vertices_a, faces_a, vertices_b)[1]
+        d_backward = od.proximity.closest_point_on_mesh(
+            vertices_a, faces_a, vertices_b, mesh=mesh_a
+        )[1]
     return _Distances(d_forward, d_backward, None)
 
 

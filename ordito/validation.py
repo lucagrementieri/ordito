@@ -799,7 +799,7 @@ def edge_winding_consistent_mask(
 
 
 def face_orientation_bits(
-    faces: wp.array[wp.int32],
+    faces: wp.array[wp.int32], *, n_vertices: int | None = None
 ) -> tuple[wp.array[wp.int32], odt.Array2dInt32, wp.array[wp.int32], int]:
     """
     Per-face Z2 orientation bits (relative to each component seed) plus signed face-adjacency edges.
@@ -827,6 +827,10 @@ def face_orientation_bits(
     ----------
     faces
         ``(3 * n_faces,)`` flat triangle index buffer. ``n_faces`` must be positive.
+    n_vertices
+        Optional vertex count, forwarded to
+        [`face_adjacency`][ordito.adjacency.face_adjacency]: it narrows the sort that pairs the
+        faces. Trusted, not checked: it must exceed every index in ``faces``.
 
     Returns
     -------
@@ -862,7 +866,9 @@ def face_orientation_bits(
     """
     device = faces.device
     n_faces = faces.size // 3
-    adjacency, adjacency_edges = od.adjacency.face_adjacency(faces, return_edges=True)
+    adjacency, adjacency_edges = od.adjacency.face_adjacency(
+        faces, return_edges=True, n_vertices=n_vertices
+    )
     m = int(adjacency.shape[0])
 
     if m == 0:

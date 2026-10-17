@@ -1145,6 +1145,10 @@ def test_face_flip_mask_long_path(device: str) -> None:
     bits_wp, _signed_edges_wp, _signs_wp, _m = od.validation.face_orientation_bits(faces_wp)
     mask_np = od.validation.face_flip_mask(faces_wp).numpy()
     assert np.array_equal(mask_np, bits_wp.numpy().astype(bool))
+    bits_bound_wp, _, _, _ = od.validation.face_orientation_bits(
+        faces_wp, n_vertices=vertices_np.shape[0]
+    )
+    assert np.array_equal(bits_bound_wp.numpy(), bits_wp.numpy())
     assert bool(mask_np[0]) is False
     assert np.array_equal(mask_np, scrambled_np != scrambled_np[0])
 

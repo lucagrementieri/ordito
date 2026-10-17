@@ -293,6 +293,7 @@ def icp(
     reflection: bool = False,
     translation: bool = True,
     scale: bool = False,
+    target_mesh: wp.Mesh | None = None,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
     """
     Point-to-point iterative closest point registration.
@@ -343,6 +344,13 @@ def icp(
         Forwarded to [`procrustes`][ordito.registration.procrustes]. Defaults are
         rigid (`reflection=False, scale=False`); set ``scale=True`` for a
         similarity transform.
+    target_mesh
+        The ``wp.Mesh`` the correspondence search queries, already built, to spare the build each
+        call otherwise pays (worth it when one target is registered against repeatedly): over
+        ``target_vertices`` and ``target_faces`` for a mesh target
+        ([`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one), or
+        [`mesh_from_points`][ordito.neighbors.mesh_from_points] of ``target_vertices`` for a
+        point-cloud target. Not checked against them: the search answers for the geometry it holds.
 
     Returns
     -------
@@ -356,7 +364,8 @@ def icp(
     Raises
     ------
     RuntimeError
-        If ``a``, ``target_vertices``, ``target_faces`` and ``initial`` are not all on one device.
+        If ``a``, ``target_vertices``, ``target_faces``, ``initial`` and ``target_mesh`` are not
+        all on one device.
 
     See Also
     --------
@@ -387,7 +396,11 @@ def icp(
     ```
     """
     require_same_device(
-        a=a, target_vertices=target_vertices, target_faces=target_faces, initial=initial
+        a=a,
+        target_vertices=target_vertices,
+        target_faces=target_faces,
+        initial=initial,
+        target_mesh=target_mesh,
     )
     device = a.device
     n = a.size
@@ -405,7 +418,9 @@ def icp(
     if max_iterations <= 0:
         _apply_transform(a, total, transformed)
         return total, transformed, math.inf
-    mesh, query_max, target_index = _resolve_icp_target(target_vertices, target_faces, "icp")
+    mesh, query_max, target_index = _resolve_icp_target(
+        target_vertices, target_faces, "icp", target_mesh
+    )
     search_mesh = mesh if mesh is not None else target_index
     assert search_mesh is not None
 
@@ -537,6 +552,7 @@ def icp_point_to_plane(
     robust_kernel: Literal["none", "huber", "tukey"] = "none",
     robust_scale: float | None = None,
     damping: float = 1e-6,
+    target_mesh: wp.Mesh | None = None,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
     """
     Point-to-plane iterative closest point registration with optional robust loss.
@@ -590,6 +606,13 @@ def icp_point_to_plane(
     damping
         Relative Levenberg damping added to the normal-equations diagonal (scaled
         by its mean magnitude) for conditioning on planar/degenerate targets.
+    target_mesh
+        The ``wp.Mesh`` the correspondence search queries, already built, to spare the build each
+        call otherwise pays (worth it when one target is registered against repeatedly): over
+        ``target_vertices`` and ``target_faces`` for a mesh target
+        ([`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one), or
+        [`mesh_from_points`][ordito.neighbors.mesh_from_points] of ``target_vertices`` for a
+        point-cloud target. Not checked against them: the search answers for the geometry it holds.
 
     Returns
     -------
@@ -615,8 +638,8 @@ def icp_point_to_plane(
         (``target_faces is None``) and ``target_normals`` is not provided, or does not have the
         same length as ``target_vertices``.
     RuntimeError
-        If ``a``, ``target_vertices``, ``target_faces``, ``target_normals`` and ``initial`` are not
-        all on one device.
+        If ``a``, ``target_vertices``, ``target_faces``, ``target_normals``, ``initial`` and
+        ``target_mesh`` are not all on one device.
 
     See Also
     --------
@@ -649,6 +672,7 @@ def icp_point_to_plane(
         target_faces=target_faces,
         target_normals=target_normals,
         initial=initial,
+        target_mesh=target_mesh,
     )
     device = a.device
     n = a.size
@@ -681,7 +705,7 @@ def icp_point_to_plane(
     current = _launch.empty(n, dtype=wp.vec3, device=device)
 
     mesh, query_max, target_index = _resolve_icp_target(
-        target_vertices, target_faces, "icp_point_to_plane"
+        target_vertices, target_faces, "icp_point_to_plane", target_mesh
     )
     face_normals: wp.array[wp.vec3] | None = None
     if is_mesh:
@@ -986,7 +1010,10 @@ def _resolve_initial(
 
 
 def _resolve_icp_target(
-    target_vertices: wp.array[wp.vec3], target_faces: wp.array[wp.int32] | None, caller: str
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32] | None,
+    caller: str,
+    target_mesh: wp.Mesh | None,
 ) -> tuple[wp.Mesh | None, float, wp.Mesh | None]:
     """
     Build the loop-invariant search state for whichever target kind was supplied.
@@ -1003,6 +1030,8 @@ def _resolve_icp_target(
         Flat triangle index buffer, or ``None`` / empty for a point-cloud target.
     caller
         Calling function's name, for ``require_nonempty_mesh``'s error message.
+    target_mesh
+        The caller's prebuilt search structure, returned in place of a new one when given.
 
     Returns
     -------
@@ -1010,12 +1039,13 @@ def _resolve_icp_target(
         ``(mesh, query_max, target_index)``.
     """
     if not _is_mesh_target(target_faces):
-        return None, 0.0, _target_index(target_vertices)
+        index = target_mesh if target_mesh is not None else _target_index(target_vertices)
+        return None, 0.0, index
 
     assert target_faces is not None
     require_nonempty_mesh(target_faces, caller)
     # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
-    mesh = wp.Mesh(points=target_vertices, indices=target_faces)
+    mesh = target_mesh if target_mesh is not None else wp.Mesh(target_vertices, target_faces)
     # An unbounded closest-point query: the correspondence gate is ``max_distance``, applied to
     # the distance the query returns, so the query itself needs no radius.
     return mesh, math.inf, None

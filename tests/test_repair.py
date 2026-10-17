@@ -3476,7 +3476,7 @@ def test_remove_tunnels_keeps_one_of_two_parallel_loops(torus: tuple[tm.Trimesh,
     assert not set(rings[0].tolist()) & set(rings[1].tolist())  # disjoint, as the rule requires
 
     faces_wp = mesh_wp.indices
-    labels_wp, sides = od.repair._cut_face_labels(faces_wp, rings)  # pyright: ignore[reportPrivateUsage]
+    labels_wp, sides = od.repair._cut_face_labels(faces_wp, rings, mesh_wp.points.size)  # pyright: ignore[reportPrivateUsage]
     labels_np = labels_wp.numpy()
     assert np.unique(labels_np).size == 2  # non-vacuity: the pair really is dependent
     kept = od.repair._independent_loops(rings, labels_np, sides())  # pyright: ignore[reportPrivateUsage]

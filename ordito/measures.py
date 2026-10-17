@@ -318,7 +318,7 @@ def moments(
     return total_volume, wp.vec3(*center), wp.mat33d(*inertia.ravel())
 
 
-def euler_characteristic(faces: wp.array[wp.int32]) -> int:
+def euler_characteristic(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -> int:
     """
     Euler characteristic ``V - E + F`` of the mesh (topological invariant).
 
@@ -330,6 +330,10 @@ def euler_characteristic(faces: wp.array[wp.int32]) -> int:
     ----------
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    n_vertices
+        A bound on the indices in ``faces`` (the vertex count), to spare the reduction and
+        readback that otherwise derive it. Trusted, not checked: it must exceed every index in
+        ``faces``.
 
     Returns
     -------
@@ -362,7 +366,8 @@ def euler_characteristic(faces: wp.array[wp.int32]) -> int:
     # The bound is taken once, here, so ``edges_unique`` re-checking it would reduce the same
     # indices twice; ``require_non_negative`` keeps the half of that check a derived bound cannot
     # give, and costs nothing -- both ends come out of the one reduction.
-    n_vertices = od.array.index_bound(faces, require_non_negative=True)
+    if n_vertices is None:
+        n_vertices = od.array.index_bound(faces, require_non_negative=True)
     # The referenced-vertex count is a membership mask's popcount rather than the length of
     # ``unique_1d(faces)``: the indices are bounded by ``n_vertices``, so the mask is the same set
     # without the hash table, compaction and sort, and the count is one read instead of two.

@@ -2926,7 +2926,7 @@ def remove_tunnels(
     # dropping the genus by one per loop. The face labels of the cut mesh say which -- every
     # component after the first is one loop too many -- and they are read before cutting, so the
     # mesh is cut once, along the family that survives.
-    labels, sides = _cut_face_labels(faces, selected)
+    labels, sides = _cut_face_labels(faces, selected, vertices.size)
     labels_np = labels.numpy()
     if np.unique(labels_np).size > 1:
         selected = _independent_loops(selected, labels_np, sides())
@@ -3021,7 +3021,7 @@ def _disjoint_loops(loops: list[np.ndarray]) -> list[np.ndarray]:
 
 
 def _cut_face_labels(
-    faces: wp.array[wp.int32], loops: list[np.ndarray]
+    faces: wp.array[wp.int32], loops: list[np.ndarray], n_vertices: int
 ) -> tuple[wp.array[wp.int32], Callable[[], dict[tuple[int, int], tuple[int, int]]]]:
     """
     Label the faces as cutting along ``loops`` would leave them, without cutting.
@@ -3037,7 +3037,7 @@ def _cut_face_labels(
     a function because only a dependent family needs it, and it costs three readbacks.
     """
     device = faces.device
-    adjacency, shared = od.adjacency.face_adjacency(faces, return_edges=True)
+    adjacency, shared = od.adjacency.face_adjacency(faces, return_edges=True, n_vertices=n_vertices)
     # Each cycle's edges as ascending rows, which is what a cut keys on.
     cut_edges = np.concatenate(
         [np.sort(np.stack([loop, np.roll(loop, -1)], axis=1), axis=1) for loop in loops]

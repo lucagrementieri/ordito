@@ -55,7 +55,7 @@ from ordito.edges import edges_unique, edges_unique_length
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import energies as kernel_energies
 from ordito.kernels import reduce as kernel_reduce
-from ordito.laplacian import cotmatrix, cotmatrix_entries, mass_matrix_entries
+from ordito.laplacian import MeshOperatorPattern, cotmatrix, cotmatrix_entries, mass_matrix_entries
 
 
 def edge_length_loss(
@@ -1031,7 +1031,11 @@ def _cr_mass_diagonal(
 
 
 def lscm_hessian(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    cot_entries: odt.Array2dFloat | None = None,
+    pattern: MeshOperatorPattern | None = None,
 ) -> odt.BsrMatrix[wp.float64]:
     """
     LSCM Hessian ``Q = -repdiag(L, 2) - 2 A``.
@@ -1050,6 +1054,13 @@ def lscm_hessian(
         ``(n_vertices,)`` mesh vertex positions.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
+    cot_entries, pattern
+        Forwarded to [`cotmatrix`][ordito.laplacian.cotmatrix] for ``L``: precomputed
+        half-cotangent weights and sparsity, to spare their build when the Hessian is assembled
+        repeatedly over one mesh.
+        [`Trimesh.cotmatrix_entries`][ordito.mesh.Trimesh.cotmatrix_entries] and
+        [`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern] are the cached
+        ones to pass.
 
     Returns
     -------
@@ -1094,7 +1105,7 @@ def lscm_hessian(
     device = vertices.device
     if n == 0:
         return od.array.empty_square_bsr(0, wp.float64, device)
-    laplacian = cotmatrix(vertices, faces, dtype=wp.float64)
+    laplacian = cotmatrix(vertices, faces, cot_entries, dtype=wp.float64, pattern=pattern)
     area = _vector_area_csr(vertices, faces, -2.0)
     # Capacities, not counts: both buffers may be longer than their stored entries, and the true
     # count is formed on the device, so nothing is read back.

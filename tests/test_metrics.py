@@ -436,7 +436,8 @@ def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh
     ``igl.hausdorff`` is not bound, so its primitive supplies every vertex's squared distance to
     the other surface; the named transform is the mean of each direction summed (Chamfer) and the
     square root of the larger maximum (Hausdorff). The tolerance is ``_MESH_RTOL``: igl consumes
-    float64 vertices where Warp carries float32.
+    float64 vertices where Warp carries float32. The same answer comes back from prebuilt
+    ``mesh_a`` / ``mesh_b``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_a_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
@@ -457,6 +458,27 @@ def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh
     )
     assert np.allclose(chamfer_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
     assert np.allclose(hausdorff_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+
+    mesh_b_wp = wp.Mesh(vertices_b_wp, mesh_wp.indices)
+    chamfer_prebuilt_wp = od.metrics.chamfer_mesh_to_mesh(
+        mesh_wp.points,
+        mesh_wp.indices,
+        vertices_b_wp,
+        mesh_wp.indices,
+        squared=True,
+        mesh_a=mesh_wp,
+        mesh_b=mesh_b_wp,
+    )
+    hausdorff_prebuilt_wp = od.metrics.hausdorff_mesh_to_mesh(
+        mesh_wp.points,
+        mesh_wp.indices,
+        vertices_b_wp,
+        mesh_wp.indices,
+        mesh_a=mesh_wp,
+        mesh_b=mesh_b_wp,
+    )
+    assert np.allclose(chamfer_prebuilt_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+    assert np.allclose(hausdorff_prebuilt_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +682,8 @@ def test_chamfer_and_hausdorff_points_to_mesh(
     largest forward value, the largest ``KDTree`` backward distance).
 
     The tolerance is ``_MESH_RTOL`` rather than ``1e-5`` for a stated reason: igl consumes float64
-    vertices where Warp carries float32, so the two agree only to float32 precision here.
+    vertices where Warp carries float32, so the two agree only to float32 precision here. The same
+    answer comes back from a prebuilt ``mesh``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
@@ -683,6 +706,15 @@ def test_chamfer_and_hausdorff_points_to_mesh(
     hausdorff_wp = od.metrics.hausdorff_points_to_mesh(points_wp, mesh_wp.points, mesh_wp.indices)
     assert np.allclose(chamfer_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
     assert np.allclose(hausdorff_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+
+    chamfer_prebuilt_wp = od.metrics.chamfer_points_to_mesh(
+        points_wp, mesh_wp.points, mesh_wp.indices, squared=True, mesh=mesh_wp
+    )
+    hausdorff_prebuilt_wp = od.metrics.hausdorff_points_to_mesh(
+        points_wp, mesh_wp.points, mesh_wp.indices, mesh=mesh_wp
+    )
+    assert np.allclose(chamfer_prebuilt_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+    assert np.allclose(hausdorff_prebuilt_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
 
 
 # ---------------------------------------------------------------------------
@@ -1253,6 +1285,63 @@ def test_chamfer_loss_no_tape_has_value_but_no_grad(device: str) -> None:
     loss_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp, squared=True)
     reduced = od.metrics.chamfer_points_to_points(x_wp, y_wp, squared=True)
     assert np.allclose(loss_wp.numpy()[0], reduced, rtol=1e-5, atol=1e-5)
+
+
+def test_chamfer_mesh_losses_take_prebuilt_meshes(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: prebuilt meshes give the internally built ones' losses and gradients.
+
+    The finite-difference tests pin the default path's values; this pins the ``mesh`` /
+    ``mesh_a`` / ``mesh_b`` keywords to it.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    device = mesh_wp.device
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    shifted_np = vertices_np + np.array([0.3, -0.15, 0.2], dtype=np.float32)
+    faces_wp = mesh_wp.indices
+
+    def surface_losses(prebuilt: bool) -> list[np.ndarray]:
+        points_wp = wp.array(shifted_np, dtype=wp.vec3, device=device, requires_grad=True)
+        vertices_a_wp = wp.array(vertices_np, dtype=wp.vec3, device=device, requires_grad=True)
+        vertices_b_wp = wp.array(shifted_np, dtype=wp.vec3, device=device, requires_grad=True)
+        mesh_a = wp.Mesh(vertices_a_wp, faces_wp) if prebuilt else None
+        mesh_b = wp.Mesh(vertices_b_wp, faces_wp) if prebuilt else None
+        tape = wp.Tape()
+        point_loss = od.metrics.chamfer_points_to_mesh_loss(
+            points_wp, vertices_a_wp, faces_wp, tape=tape, mesh=mesh_a
+        )
+        mesh_loss = od.metrics.chamfer_mesh_to_mesh_loss(
+            vertices_a_wp,
+            faces_wp,
+            vertices_b_wp,
+            faces_wp,
+            tape=tape,
+            mesh_a=mesh_a,
+            mesh_b=mesh_b,
+        )
+        tape.backward(
+            grads={
+                point_loss: wp.ones(1, dtype=wp.float32, device=device),
+                mesh_loss: wp.ones(1, dtype=wp.float32, device=device),
+            }
+        )
+        assert points_wp.grad is not None
+        assert vertices_a_wp.grad is not None
+        assert vertices_b_wp.grad is not None
+        return [
+            point_loss.numpy(),
+            mesh_loss.numpy(),
+            points_wp.grad.numpy(),
+            vertices_a_wp.grad.numpy(),
+            vertices_b_wp.grad.numpy(),
+        ]
+
+    built = surface_losses(prebuilt=False)
+    assert np.abs(built[3]).max() > 0.0  # the gradients compared below are not all zero
+    for built_np, prebuilt_np in zip(built, surface_losses(prebuilt=True), strict=True):
+        assert np.allclose(prebuilt_np, built_np, rtol=1e-5, atol=1e-5)
 
 
 def test_chamfer_points_to_points_loss_guards_and_empty(device: str) -> None:

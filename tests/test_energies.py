@@ -448,11 +448,21 @@ def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str
     The named transform is the extraction, not a value change: igl's ``Q`` is exactly
     ``-repdiag(L, 2) - 2A``, the same matrix ordito assembles, compared over the union of the two
     sparsity patterns because the two builds order their CSR entries differently. This builds the
-    Hessian only, no conjugate-gradient solve.
+    Hessian only, no conjugate-gradient solve. The Hessian from a mesh's cached ``cot_entries``
+    and ``pattern`` is compared too.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    hessian_igl = _lscm_q_igl(mesh_tm)
     hessian_wp = bsr_to_csr(od.energies.lscm_hessian(mesh_wp.points, mesh_wp.indices))
-    assert sparse_allclose(hessian_wp, _lscm_q_igl(mesh_tm), rtol=1e-5, atol=1e-5)
+    assert sparse_allclose(hessian_wp, hessian_igl, rtol=1e-5, atol=1e-5)
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    hessian_cached_wp = od.energies.lscm_hessian(
+        mesh_wp.points,
+        mesh_wp.indices,
+        cot_entries=mesh.cotmatrix_entries,
+        pattern=mesh.mesh_operator_pattern,
+    )
+    assert sparse_allclose(bsr_to_csr(hessian_cached_wp), hessian_igl, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])

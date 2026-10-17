@@ -716,6 +716,9 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
     pairs_igl = np.stack([ear_igl, (np.asarray(ear_opp_igl) + 1) % 3], axis=1)
     pairs_wp = np.stack([ear_wp.numpy(), ear_opp_wp.numpy()], axis=1)
     assert np.array_equal(lexsort_rows(pairs_wp), lexsort_rows(pairs_igl))
+    ear_bound_wp, ear_opp_bound_wp = od.boundary.ears(faces_wp, n_vertices=n_vertices)
+    pairs_bound_wp = np.stack([ear_bound_wp.numpy(), ear_opp_bound_wp.numpy()], axis=1)
+    assert np.array_equal(lexsort_rows(pairs_bound_wp), lexsort_rows(pairs_igl))
 
     oriented_boundary = od.boundary.oriented_boundary_edges(vertices_wp, faces_wp)
     boundary_set = {tuple(row) for row in oriented_boundary.numpy()}

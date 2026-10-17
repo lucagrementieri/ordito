@@ -1485,12 +1485,26 @@ def _fixed_vertex_system(
     factorization refuses.
     """
     vertices, faces = mesh.vertices, mesh.faces
+    # The mesh's cached cotangent weights and sparsity serve the float64 operators too (both are
+    # dtype-free), so a second system over one mesh pays only for its values.
     if method == "lscm":
-        q = od.energies.lscm_hessian(vertices, faces)
+        q = od.energies.lscm_hessian(
+            vertices, faces, cot_entries=mesh.cotmatrix_entries, pattern=mesh.mesh_operator_pattern
+        )
         return _checked_system(q, fixed_mask, vertices, n_fixed, method, factor), "chebyshev"
     if method == "harmonic":
-        laplacian = cotmatrix(vertices, faces, dtype=wp.float64)
-        mass_diag = mass_matrix_entries(vertices, faces, dtype=wp.float64) if k > 1 else None
+        laplacian = cotmatrix(
+            vertices,
+            faces,
+            mesh.cotmatrix_entries,
+            dtype=wp.float64,
+            pattern=mesh.mesh_operator_pattern,
+        )
+        mass_diag = (
+            mass_matrix_entries(vertices, faces, dtype=wp.float64, face_areas=mesh.face_areas)
+            if k > 1
+            else None
+        )
     else:
         laplacian = graph_laplacian(vertices, faces, dtype=wp.float64)
         mass_diag = None

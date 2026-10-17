@@ -1105,7 +1105,9 @@ def boundary_vertices(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     return _BoundaryHalfedges(faces, vertices.size).vertex_positions(vertices)
 
 
-def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+def ears(
+    faces: wp.array[wp.int32], *, n_vertices: int | None = None
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Find ear faces (triangles with exactly two boundary edges).
 
@@ -1124,6 +1126,10 @@ def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int
     ----------
     faces
         ``(3 * n_faces,)`` face index buffer.
+    n_vertices
+        Optional vertex count, forwarded to
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates]: it narrows the sort that pairs the
+        halfedges. Trusted, not checked: it must exceed every index in ``faces``.
 
     Returns
     -------
@@ -1159,7 +1165,7 @@ def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int
         return empty, empty
 
     # A boundary edge is a halfedge with no mate, read per corner: no mask, scan or readback.
-    mates = od.halfedge.halfedge_mates(faces)
+    mates = od.halfedge.halfedge_mates(faces, n_vertices)
 
     # Flag, scan in place, and emit at the scan's steps: ascending face order, one readback.
     inclusive = _launch.empty(n_faces, dtype=wp.int32, device=device)
