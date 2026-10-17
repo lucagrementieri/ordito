@@ -391,13 +391,21 @@ def isotropic_remesh(
             feature_count, _boundary = _classify(
                 current_vertices, current_faces, feature, incidence, boundary=False
             )
+            # Reprojection reads each vertex where the smoothing wrote it, so with both on it runs
+            # inside the smoothing launch.
+            reproject_mesh = original_mesh if reproject else None
             if smooth:
                 current_vertices = _smooth_pass(
-                    current_vertices, current_faces, feature_count, incidence.unique_edges
+                    current_vertices,
+                    current_faces,
+                    feature_count,
+                    incidence.unique_edges,
+                    reproject_onto=reproject_mesh,
+                    max_dist=query_radius,
                 )
-            if reproject and original_mesh is not None:
+            elif reproject_mesh is not None:
                 current_vertices = _reproject_pass(
-                    current_vertices, feature_count, original_mesh, query_radius
+                    current_vertices, feature_count, reproject_mesh, query_radius
                 )
         if clamp_kernel is not None and original_mesh is not None and max_deviation is not None:
             bounded = _launch.empty_like(current_vertices)
@@ -490,33 +498,9 @@ def _classify(
     """
     device = vertices.device
     n_vertices = vertices.size
-    n_faces = faces.size // 3
     boundary_vertex = _launch.zeros(n_vertices, dtype=wp.bool, device=device) if boundary else None
-    if n_faces == 0:
-        return _launch.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
-
-    if incidence is None:
-        incidence = _edge_incidence(faces, n_vertices)
-    m = int(incidence.unique_edges.shape[0])
-    if m == 0:
-        return _launch.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
-
     feature_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_remesh.scatter_feature_edge_counts,
-        dim=m,
-        inputs=[
-            vertices,
-            faces,
-            incidence.unique_edges,
-            incidence.face_count,
-            incidence.faces,
-            feature,
-            feature_count,
-            boundary_vertex,
-        ],
-        device=device,
-    )
+    _scatter_feature_edges(vertices, faces, feature, incidence, feature_count, boundary_vertex)
     return feature_count, boundary_vertex
 
 
@@ -729,8 +713,7 @@ def _valence_flip_pass(
     """
     device = faces.device
     n_vertices = vertices.size
-    _feature_count, boundary_vertex = _classify(vertices, faces, feature, incidence)
-    assert boundary_vertex is not None
+    boundary_vertex = _boundary_vertex_mask(vertices, faces, incidence)
 
     # Valence is the loop's own: seeded by its one build, from the keys that build radix-sorts,
     # and kept current by every committed flip (a flip moves one edge from ``a``, ``c`` to ``b``,
@@ -777,11 +760,62 @@ def _valence_flip_pass(
     return flips, topology
 
 
+def _boundary_vertex_mask(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], incidence: _EdgeIncidence | None
+) -> wp.array[wp.bool]:
+    """``_classify``'s boundary-vertex mask alone, with no feature counts allocated or tested."""
+    boundary_vertex = _launch.zeros(vertices.size, dtype=wp.bool, device=vertices.device)
+    _scatter_feature_edges(vertices, faces, wp.float32(0.0), incidence, None, boundary_vertex)
+    return boundary_vertex
+
+
+def _scatter_feature_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    feature: wp.float32,
+    incidence: _EdgeIncidence | None,
+    feature_count: wp.array[wp.int32] | None,
+    boundary_vertex: wp.array[wp.bool] | None,
+) -> None:
+    """
+    Write ``_classify``'s two tables into the zeroed buffers given, in one launch over the edges.
+
+    Either table may be ``None``, and is then neither written nor, for the counts, tested for:
+    ``kernels/remesh.scatter_feature_edge_counts`` skips the dihedral test without them.
+    """
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        return
+    if incidence is None:
+        incidence = _edge_incidence(faces, vertices.size)
+    m = int(incidence.unique_edges.shape[0])
+    if m == 0:
+        return
+    _launch.launch(
+        kernel_remesh.scatter_feature_edge_counts,
+        dim=m,
+        inputs=[
+            vertices,
+            faces,
+            incidence.unique_edges,
+            incidence.face_count,
+            incidence.faces,
+            feature,
+            feature_count,
+            boundary_vertex,
+        ],
+        device=vertices.device,
+    )
+
+
 def _smooth_pass(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     feature_count: wp.array[wp.int32],
     unique_edges: odt.Array2dInt32 | None = None,
+    *,
+    reproject_onto: wp.Mesh | None = None,
+    max_dist: float = 0.0,
 ) -> wp.array[wp.vec3]:
     """
     One area-equalizing tangential relaxation step over free vertices.
@@ -792,6 +826,9 @@ def _smooth_pass(
     move is vetoed if it would invert an incident face, by the same rule the collapse stage runs --
     see ``kernels/remesh.accumulate_one_ring`` for the quality measurement and
     ``kernels/remesh.smooth_free_vertices`` for why the veto is load-bearing rather than defensive.
+
+    ``reproject_onto``, when given, also snaps each free vertex's new position onto that surface
+    within ``max_dist``, in the same launch: the answer ``_reproject_pass`` gives on this one's.
     """
     device = vertices.device
     n_vertices = vertices.size
@@ -840,6 +877,9 @@ def _smooth_pass(
             face_offsets,
             vertex_faces,
             wp.float32(1.0),
+            wp.int32(0 if reproject_onto is None else 1),
+            wp.uint64(0 if reproject_onto is None else reproject_onto.id),
+            wp.float32(max_dist),
             out_positions,
         ],
         device=device,

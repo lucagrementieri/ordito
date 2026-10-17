@@ -1648,18 +1648,20 @@ def scatter_feature_edge_counts(
     # faces meet at more than ``feature_angle``. One launch over the unique edges answers both
     # questions from the incidence table, where ``_classify`` used to re-group the same 3 * n_faces
     # rows twice (once as boundary edges, once as face adjacency) to ask them separately. An empty
-    # ``out_boundary_vertex`` (``None`` at launch) is not written.
+    # output (``None`` at launch) is not written, and without the counts no dihedral is measured: a
+    # boundary edge is a feature edge by definition, so the mask needs only the face count.
     e = wp.int32(wp.tid())
-    boundary = edge_face_count[e] == 1 and out_boundary_vertex.shape[0] > 0
-    if is_feature_edge(vertices, faces, edge_face_count, edge_faces, e, feature_angle):
-        v0 = unique_edges[e, 0]
-        v1 = unique_edges[e, 1]
+    v0 = unique_edges[e, 0]
+    v1 = unique_edges[e, 1]
+    if out_boundary_vertex.shape[0] > 0 and edge_face_count[e] == 1:
+        # Every writer stores the same value, so the mask needs no atomic.
+        out_boundary_vertex[v0] = True
+        out_boundary_vertex[v1] = True
+    if out_feature_count.shape[0] > 0 and is_feature_edge(
+        vertices, faces, edge_face_count, edge_faces, e, feature_angle
+    ):
         wp.atomic_add(out_feature_count, v0, 1)
         wp.atomic_add(out_feature_count, v1, 1)
-        if boundary:
-            # Every writer stores the same value, so the mask needs no atomic.
-            out_boundary_vertex[v0] = True
-            out_boundary_vertex[v1] = True
 
 
 @wp.func
@@ -2245,6 +2247,20 @@ def tangential_smooth_step(
     return p + lam * tangential
 
 
+@wp.func
+def reproject_vertices(
+    vertex: wp.vec3, feature_count: wp.int32, mesh_id: wp.uint64, max_dist: wp.float32
+) -> wp.vec3:
+    # Snap a free vertex back onto the closest point of the original surface, undoing the drift the
+    # smoothing pass introduces. Pinned vertices and failed queries keep their position.
+    if finalize_vertex_codes(feature_count) != FREE_VERTEX:
+        return vertex
+    query = wp.mesh_query_point_no_sign(mesh_id, vertex, max_dist)
+    if query.result:
+        return wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
+    return vertex
+
+
 @wp.kernel(enable_backward=False)
 def smooth_free_vertices(
     vertices: wp.array[wp.vec3],
@@ -2256,10 +2272,16 @@ def smooth_free_vertices(
     vertex_face_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     lam: wp.float32,
+    reproject: wp.int32,
+    mesh_id: wp.uint64,
+    max_dist: wp.float32,
     out_positions: wp.array[wp.vec3],
 ) -> None:
     # One tangential relaxation step, vetoed per vertex by the same fold rule the two collapse
-    # candidates run -- one decision rule, one spelling.
+    # candidates run -- one decision rule, one spelling. With ``reproject`` (warp-uniform) the
+    # vertex's new position is then snapped onto the surface ``mesh_id`` by ``reproject_vertices``,
+    # the step ``isotropic_remesh`` runs next at the same vertex, so the two take one launch; ``0``
+    # leaves the relaxed position as it is and reads neither ``mesh_id`` nor ``max_dist``.
     #
     # **It is insurance, and the reason to keep it is that it is free**, not that a fixture needs
     # it: veto against no-veto is within noise and the whole remesh suite passes either way. It
@@ -2285,23 +2307,10 @@ def smooth_free_vertices(
         lam,
     )
     if move_flips_normal(vertices, faces, vertex_face_offsets, vertex_faces, v, -1, proposed):
-        out_positions[v] = vertices[v]
-        return
+        proposed = vertices[v]
+    if reproject != 0:
+        proposed = reproject_vertices(proposed, feature_count[v], mesh_id, max_dist)
     out_positions[v] = proposed
-
-
-@wp.func
-def reproject_vertices(
-    vertex: wp.vec3, feature_count: wp.int32, mesh_id: wp.uint64, max_dist: wp.float32
-) -> wp.vec3:
-    # Snap a free vertex back onto the closest point of the original surface, undoing the drift the
-    # smoothing pass introduces. Pinned vertices and failed queries keep their position.
-    if finalize_vertex_codes(feature_count) != FREE_VERTEX:
-        return vertex
-    query = wp.mesh_query_point_no_sign(mesh_id, vertex, max_dist)
-    if query.result:
-        return wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
-    return vertex
 
 
 @wp.func
