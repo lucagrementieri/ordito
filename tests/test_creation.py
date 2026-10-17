@@ -20,12 +20,7 @@ from scipy.spatial import cKDTree
 
 import ordito as od
 from ordito.creation import ParametricSurfaceKind
-from tests.comparisons import (
-    assert_unordered_rows_equal,
-    euler_characteristic,
-    lexsort_rows,
-    open_edge_count,
-)
+from tests.comparisons import euler_characteristic, lexsort_rows, open_edge_count
 from tests.conversions import (
     meshlib_to_trimesh,
     open3d_to_trimesh,
@@ -1394,34 +1389,39 @@ def _star_ring(n: int, clockwise: bool) -> np.ndarray:
     return ring_np[::-1].copy() if clockwise else ring_np
 
 
-@pytest.mark.parametrize("ring_name", ["square", "L", "star", "star_cw"])
+@pytest.mark.parametrize("ring_name", ["square", "square_cw", "L", "star", "star_cw"])
 @pytest.mark.parametrize("height", [0.5, -0.5])
+@pytest.mark.parametrize("mirrored", [False, True], ids=["plain", "mirrored"])
 def test_extrude_polygon_ring_walls_match_the_derived_boundary(
-    device: str, ring_name: str, height: float
+    device: str, ring_name: str, height: float, mirrored: bool
 ) -> None:
     """
-    Ordito against ordito: the ring-edge walls against the derived boundary.
+    Ordito against ordito: the one-launch ring extrusion against the derived boundary and winding.
 
-    ``extrude_polygon`` walls a full ``n - 2`` triangulation from its ring edges and never derives
-    the boundary; ``extrude_triangulation`` derives it from the same triangulation. The derived path
-    carries the oracle (``test_extrude_polygon`` compares it with trimesh), so the two must build
-    the same mesh -- and, on the CPU device, the same buffers row for row, since the ring walls are
-    emitted in the derived boundary's order. On CUDA the ear clip's face order is not reproducible
-    between calls, so there the rows are compared as a set. The star rings reach the ear clip in
-    both orientations, and both height signs re-wind the caps.
+    ``extrude_polygon`` walls a full ``n - 2`` triangulation from its ring edges, takes its winding
+    from the ring's orientation and forms a convex ring's fan where it writes the caps;
+    ``extrude_triangulation`` derives the boundary and the winding (from the signed area) from the
+    same triangulation. The derived path carries the oracle (``test_extrude_polygon`` compares it
+    with trimesh), so the two must build the same buffers row for row: the ring walls are emitted
+    in the derived boundary's order, and with the deterministic setting the ear clip's rows repeat
+    on CUDA too. The squares take the fan and the stars the ear clip, each in both orientations;
+    both height signs re-wind the caps, and a mirroring transform reverses every triangle.
     """
-    rings = {"square": _SQUARE_RING, "L": _L_RING}
+    rings = {"square": _SQUARE_RING, "square_cw": _SQUARE_RING[::-1].copy(), "L": _L_RING}
     ring_np = rings.get(ring_name, _star_ring(12, ring_name == "star_cw"))
-    ring_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
-    assert faces_wp.size // 3 == ring_np.shape[0] - 2
-    derived_v, derived_f = od.creation.extrude_triangulation(ring_wp, faces_wp, height)
-    ring_v, ring_f = od.creation.extrude_polygon(points_to_warp_uv(ring_np, device), height)
+    transform = wp.mat44(*np.diag([-1.0, 1.0, 1.0, 1.0]).flatten()) if mirrored else None
+    with od.config.deterministic(True):
+        ring_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
+        assert faces_wp.size // 3 == ring_np.shape[0] - 2
+        derived_v, derived_f = od.creation.extrude_triangulation(
+            ring_wp, faces_wp, height, transform=transform
+        )
+        ring_v, ring_f = od.creation.extrude_polygon(
+            points_to_warp_uv(ring_np, device), height, transform=transform
+        )
     _assert_closed(ring_v, ring_f)
     assert np.array_equal(ring_v.numpy(), derived_v.numpy())
-    if device == "cpu":
-        assert np.array_equal(ring_f.numpy(), derived_f.numpy())
-    else:
-        assert_unordered_rows_equal(ring_f.numpy().reshape(-1, 3), derived_f.numpy().reshape(-1, 3))
+    assert np.array_equal(ring_f.numpy(), derived_f.numpy())
 
 
 def test_extrude_triangulation_recovers_subdivided_boundary(device: str) -> None:

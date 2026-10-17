@@ -45,6 +45,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
+from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import graph as kernel_graph
@@ -1429,8 +1430,10 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
     count, which sizes the returned slice. The plane frame is accumulated and consumed on
     the device and never crosses to the host.
 
-    Every path produces the same triangulation up to row order, and that row order is not stable on
-    CUDA -- faces are appended through an atomic counter.
+    Every path produces the same triangulation up to row order. Faces are appended through an atomic
+    counter, so on CUDA their row order changes from call to call, unless
+    [`is_deterministic`][ordito.config.is_deterministic]: then the rows are listed by ascending
+    middle index (the tip of the ear each one clipped).
 
     See Also
     --------
@@ -1477,7 +1480,8 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
         block_dim=TILE_1D,
         device=device,
     )
-    _, faces = _triangulate_ring(points2d, sums)
+    _, faces, _ = _triangulate_ring(points2d, sums, write_fan=True)
+    assert faces is not None
     return faces
 
 
@@ -1504,7 +1508,8 @@ def polyline_triangulate_from_offsets(
     faces : odt.Array2dInt32
         ``(m, 3)`` triangle vertex indices into ``polylines`` (not into each loop), loop after
         loop. A simple ``k``-point loop contributes ``k - 2``; a degenerate or self-intersecting
-        one may contribute fewer, and a loop of fewer than three points none.
+        one may contribute fewer, and a loop of fewer than three points none. Each loop's rows are
+        in the order [`polyline_triangulate`][ordito.polyline.polyline_triangulate] describes.
     face_offsets : wp.array[wp.int32]
         ``(n_loops + 1,)`` offsets of each loop's rows in ``faces``, total-terminated.
 
@@ -1570,13 +1575,7 @@ def polyline_triangulate_from_offsets(
     face_offsets = _launch.zeros(n_loops + 1, dtype=wp.int32, device=device)
     if n_reserved == 0:
         return odt.empty_2d((0, 3), wp.int32, device=device), face_offsets
-    faces, ends = _triangulate_short_rings(polylines, offsets, bases, n_reserved)
-    _launch.launch(
-        kernel_polyline.ring_face_counts,
-        dim=n_loops,
-        inputs=[bases, ends, face_offsets],
-        device=device,
-    )
+    faces, ends = _triangulate_short_rings(polylines, offsets, bases, n_reserved, face_offsets)
     _launch.array_scan(face_offsets, out_array=face_offsets, inclusive=True)
     # Sizes the output: the faces the loops actually wrote.
     n_rows = int(read_scalar(face_offsets))
@@ -1588,6 +1587,10 @@ def polyline_triangulate_from_offsets(
             inputs=[faces, bases_scan, ends, face_offsets, out_faces],
             device=device,
         )
+        if is_deterministic() and n_rows > 1:
+            # Each loop's tips lie in its own range of ``polylines``, so one sort of every row by
+            # tip keeps the loops in order and lists each loop's rows by ascending tip.
+            return _faces_in_tip_order(out_faces, polylines.size), face_offsets
     return odt.as_array2d(out_faces, wp.int32), face_offsets
 
 
@@ -1612,12 +1615,15 @@ def _triangulate_from_offsets_on_host(
     loop_faces: list[np.ndarray] = [np.empty((0, 3), dtype=np.int32)] * n_loops
     if short.any():
         bases_wp = _launch.array(bases[:-1].astype(np.int32), dtype=wp.int32, device=device)
-        faces, counts = _triangulate_short_rings(polylines, offsets, bases_wp, int(bases[-1]))
+        faces, counts = _triangulate_short_rings(polylines, offsets, bases_wp, int(bases[-1]), None)
         # Readbacks: each loop's face count, then the reserved rows, compacted below.
         ends_np = counts.numpy()
         faces_np = faces.numpy()
+        ordered = is_deterministic()
         for r in np.flatnonzero(short).tolist():
-            loop_faces[r] = faces_np[bases[r] : ends_np[r]]
+            rows = faces_np[bases[r] : ends_np[r]]
+            # The rows by ascending tip, the order ``_clipped_faces`` gives a single loop.
+            loop_faces[r] = rows[np.argsort(rows[:, 1], kind="stable")] if ordered else rows
     for r in np.flatnonzero(sizes > kernel_polyline.EAR_ONE_BLOCK_MAX).tolist():
         start = int(offsets_np[r])
         local = polyline_triangulate(odt.as_dense(polylines[start : int(offsets_np[r + 1])]))
@@ -1641,12 +1647,14 @@ def _triangulate_short_rings(
     offsets: wp.array[wp.int32],
     bases: wp.array[wp.int32],
     n_reserved: int,
+    face_counts: wp.array[wp.int32] | None,
 ) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
     """
     One block per loop of at most ``EAR_ONE_BLOCK_MAX`` points: ``(reserved faces, end rows)``.
 
     Loop ``r`` writes its faces from row ``bases[r]`` of the ``(max(n_reserved, 1), 3)`` buffer and
-    ``ends[r]`` is the row after its last; longer and shorter-than-three loops write none.
+    ``ends[r]`` is the row after its last; longer and shorter-than-three loops write none. A
+    zeroed ``(n_loops + 1,)`` ``face_counts`` also gets each loop's face count in slot ``r + 1``.
     """
     device = polylines.device
     n_loops = offsets.size - 1
@@ -1676,6 +1684,7 @@ def _triangulate_short_rings(
             faces,
             ring,
             ends,
+            face_counts,
         ],
         block_dim=kernel_polyline.EAR_BLOCK_DIM,
         device=device,
@@ -1714,7 +1723,9 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
       face layout used throughout ordito.
 
     The ring must be a simple (non self-intersecting) polygon. A degenerate ring yields a partial
-    triangulation with fewer than ``n - 2`` triangles rather than raising.
+    triangulation with fewer than ``n - 2`` triangles rather than raising. The faces come in the
+    order [`polyline_triangulate`][ordito.polyline.polyline_triangulate] describes: on CUDA it
+    repeats from call to call only with [`is_deterministic`][ordito.config.is_deterministic].
 
     See Also
     --------
@@ -1737,10 +1748,28 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
     ```
     """
     odt.ensure_ndim(polygon, 1, dtype=wp.vec2)
+    ring, faces, _ = _triangulate_polygon(polygon, write_fan=True)
+    assert faces is not None
+    return ring, faces
+
+
+def _triangulate_polygon(
+    polygon: wp.array[wp.vec2], *, write_fan: bool
+) -> tuple[wp.array[wp.vec2], wp.array[wp.int32] | None, bool]:
+    """
+    ``triangulate_polygon``, also returning whether the ring runs clockwise: ``(ring, faces, cw)``.
+
+    Every face is wound like the ring (an ear is convex in the ring's own sense), so ``cw`` is the
+    sign of their total signed area unless the faces enclose no area beyond rounding;
+    [`extrude_polygon`][ordito.creation.extrude_polygon] reads it instead of summing the area.
+    Without ``write_fan``, ``faces`` is ``None`` for a convex ring, whose triangulation is the fan
+    ``(0, k + 1, k + 2)`` (``kernels/polyline.fan_face``) the caller then forms where it reads it,
+    and no fan launch runs.
+    """
     device = polygon.device
     n = polygon.size
     if n < 3:
-        return polygon, _launch.empty(0, dtype=wp.int32, device=device)
+        return polygon, _launch.empty(0, dtype=wp.int32, device=device), False
 
     sums = _launch.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
     _launch.launch_tiled(
@@ -1750,22 +1779,24 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
         block_dim=TILE_1D,
         device=device,
     )
-    n_ring, faces = _triangulate_ring(polygon, sums)
+    n_ring, faces, clockwise = _triangulate_ring(polygon, sums, write_fan=write_fan)
     # The ring is the input minus any repeated closing point, i.e. a prefix of it.
-    return polygon[:n_ring].contiguous(), faces.reshape((-1,))
+    ring = polygon[:n_ring].contiguous()
+    return ring, None if faces is None else faces.reshape((-1,)), clockwise
 
 
 def _triangulate_ring(
-    points2d: wp.array[wp.vec2], sums: wp.array[wp.float32]
-) -> tuple[int, odt.Array2dInt32]:
+    points2d: wp.array[wp.vec2], sums: wp.array[wp.float32], *, write_fan: bool
+) -> tuple[int, odt.Array2dInt32 | None, bool]:
     """
-    Ear-clip a 2D ring whose turning pass has run: ``(ring length, (m, 3) faces)``.
+    Ear-clip a 2D ring whose turning pass has run: ``(ring length, (m, 3) faces, clockwise)``.
 
     ``points2d`` holds the ring plus, possibly, a repeated closing point; the caller's turning
     pass (``kernels/polyline.accumulate_turning_angle`` or ``project_turning_angle``) has written
     the closing flag, the turning angle, the reflex counts and the ring's box into ``sums``, and
     the one readback of ``sums`` carries them together. ``points2d`` is never written: a clockwise
-    ring is read mirrored by the ear tests.
+    ring is read mirrored by the ear tests. A convex ring's faces are ``None`` unless
+    ``write_fan`` (see ``_triangulate_polygon``).
     """
     device = points2d.device
     n = points2d.size
@@ -1776,18 +1807,21 @@ def _triangulate_ring(
         sums, int(kernel_polyline.RING_TURNING), 8
     )
     n_ring = n - int(closing)
-    if n_ring < 3:
-        return n_ring, odt.empty_2d((0, 3), wp.int32, device=device)
-
-    out_faces = odt.empty_2d((n_ring - 2, 3), wp.int32, device=device)
     # A clockwise ring is mirrored before the ear tests, and its reflex count is the mirror's.
-    clockwise = turning < 0.0
+    clockwise = bool(turning < 0.0)
+    if n_ring < 3:
+        return n_ring, odt.empty_2d((0, 3), wp.int32, device=device), clockwise
+
     if (reflex_mirrored if clockwise else reflex) == 0.0:
+        if not write_fan:
+            return n_ring, None, clockwise
         # The fan's faces are index triples, so a convex ring needs no orientation fix-up at all.
+        out_faces = odt.empty_2d((n_ring - 2, 3), wp.int32, device=device)
         _launch.launch(
             kernel_polyline.fan_triangulate, dim=n_ring - 2, inputs=[out_faces], device=device
         )
-        return n_ring, odt.as_array2d(out_faces, wp.int32)
+        return n_ring, odt.as_array2d(out_faces, wp.int32), clockwise
+    out_faces = odt.empty_2d((n_ring - 2, 3), wp.int32, device=device)
 
     # The ear tests read a clockwise ring mirrored (``kernels/polyline.ring_point``), so it is never
     # written mirrored, and a caller's ring needs no copy.
@@ -1806,7 +1840,7 @@ def _triangulate_ring(
             device=device,
         )
         count = int(read_scalar(count_wp, 0))
-        return n_ring, odt.as_array2d(odt.as_dense(out_faces[0:count]), wp.int32)
+        return n_ring, _clipped_faces(out_faces, count, n_ring), clockwise
 
     # The ear grid (see ``kernels/polyline.ear_grade_grid``): square cells, about
     # ``EAR_GRID_CELLS_PER_POINT`` per ring point over the ring's box, read back with the turning
@@ -1898,4 +1932,41 @@ def _triangulate_ring(
     run_device_loop(device, condition, clip_round)
 
     count = int(read_scalar(state, int(kernel_polyline.EAR_COUNT)))
-    return n_ring, odt.as_array2d(odt.as_dense(out_faces[0:count]), wp.int32)
+    return n_ring, _clipped_faces(out_faces, count, n_ring), clockwise
+
+
+def _clipped_faces(faces: odt.Array2dInt32, count: int, n_tips: int) -> odt.Array2dInt32:
+    """
+    Return the first ``count`` rows of an ear clip's faces, by ascending tip when deterministic.
+
+    The clip appends its faces through an atomic counter, so on CUDA their rows come in arrival
+    order; with [`is_deterministic`][ordito.config.is_deterministic] they are sorted by their middle
+    index (the ear's tip, below ``n_tips`` and distinct per face), the order a fan already has.
+    """
+    clipped = odt.as_array2d(odt.as_dense(faces[0:count]), wp.int32)
+    if not is_deterministic() or count < 2:
+        return clipped
+    return _faces_in_tip_order(clipped, n_tips)
+
+
+def _faces_in_tip_order(faces: odt.Array2dInt32, n_tips: int) -> odt.Array2dInt32:
+    """
+    Return ``faces`` with its rows sorted by their middle index, distinct per row below ``n_tips``.
+
+    One radix sort of the tips over the bits ``n_tips`` needs, then a gather of the rows.
+    """
+    device = faces.device
+    n_faces = faces.shape[0]
+    keys = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    rows = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_polyline.face_tip_keys,
+        dim=n_faces,
+        inputs=[faces],
+        outputs=[keys, rows],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, rows, count=n_faces, end_bit=max(1, (n_tips - 1).bit_length()))
+    ordered = odt.empty_2d((n_faces, 3), wp.int32, device=device)
+    _launch.copy(ordered, faces[odt.as_dense(rows[:n_faces])])
+    return odt.as_array2d(ordered, wp.int32)

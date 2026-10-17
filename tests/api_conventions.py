@@ -220,6 +220,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "do from their own rules; submesh_from_vertex_mask would need the box mask built and "
         "stored by a launch of its own first"
     ),
+    ("creation", "polyline._triangulate_polygon"): (
+        "extrude_polygon and sweep_polygon read the ring orientation triangulate_polygon already "
+        "read back, and take a convex ring's fan unwritten; a public return of either would be "
+        "API no caller outside the two needs"
+    ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "
         "rebuilds connectivity as well, which reconstruction must not do to a fresh triangulation"

@@ -24,6 +24,10 @@ deterministic either way):
   [`vertex_defects`][ordito.vertices.vertex_defects];
 - the order within each row of
   [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] (ascending when on);
+- the row order of the ear-clipped faces of
+  [`polyline_triangulate`][ordito.polyline.polyline_triangulate],
+  [`polyline_triangulate_from_offsets`][ordito.polyline.polyline_triangulate_from_offsets] and
+  [`triangulate_polygon`][ordito.polyline.triangulate_polygon] (by ascending middle index when on);
 - the per-loop sums of [`loop_perimeters`][ordito.boundary.loop_perimeters],
   [`loop_directed_areas`][ordito.boundary.loop_directed_areas] and their packed forms, and the
   hole planes of [`fill_min_weight`][ordito.holes.fill_min_weight] and the fills built on it;
