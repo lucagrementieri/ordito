@@ -2129,6 +2129,33 @@ def accumulate_one_ring(
     wp.atomic_add(out_weight, v, area_u)
 
 
+@wp.kernel
+def gather_one_ring(
+    ring_offsets: wp.array[wp.int32],
+    ring_neighbors: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    vertex_areas: wp.array[wp.float32],
+    out_sum: wp.array[wp.vec3],
+    out_weight: wp.array[wp.float32],
+) -> None:
+    # ``accumulate_one_ring``'s sums as a gather over each vertex's neighbour row, which the caller
+    # sorts ascending: one fixed summation order, so the same bits on every run. The scatter's
+    # float atomics commit in arrival order, and on CUDA the last bits they move tip later split
+    # and collapse decisions, until even ``isotropic_remesh``'s face count differs between runs.
+    # The deterministic setting picks this kernel; the scatter is the fast form when it is off.
+    # Two algorithms for one quantity, so two kernels: the scatter is one thread per edge.
+    v = wp.int32(wp.tid())
+    ring_sum = wp.vec3(0.0)
+    ring_weight = wp.float32(0.0)
+    for slot in range(ring_offsets[v], ring_offsets[v + 1]):
+        w = ring_neighbors[slot]
+        area = vertex_areas[w]
+        ring_sum += area * vertices[w]
+        ring_weight += area
+    out_sum[v] = ring_sum
+    out_weight[v] = ring_weight
+
+
 @wp.func
 def tangential_smooth_step(
     vertex: wp.vec3,

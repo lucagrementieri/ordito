@@ -888,6 +888,31 @@ def test_remesh_never_writes_or_returns_the_input_buffers(device: str, swap: boo
     assert np.array_equal(out_vertices_wp.numpy(), vertices_before)
 
 
+def test_isotropic_remesh_is_reproducible(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Ordito against ordito: repeated runs on one input return byte-identical meshes.
+
+    With the deterministic setting on (every test runs with it), the smoothing stage gathers each
+    vertex's area-weighted ring over its neighbour row sorted ascending, so the centroid has the
+    same bits on every run, and so do the split and collapse decisions downstream of it. **Bug
+    class excluded:** an order-dependent floating-point reduction in any stage. **Mutation probe:**
+    the per-edge float atomic scatter the stage keeps for the setting off gave a different mesh on
+    each of five CUDA runs of this call (on ``saddle_graded``, ``sphere_irregular`` and
+    ``torus_irregular_holes`` alike, at every option arm tried) and fails this test in 3 of 3
+    runs; the CPU device runs one thread order and cannot see the defect.
+    """
+    mesh_tm, mesh_wp = saddle_graded
+    target = float(mesh_tm.edges_unique_length.mean())
+    outputs = []
+    for _ in range(3):
+        out_vertices_wp, out_faces_wp = od.remesh.isotropic_remesh(
+            mesh_wp.points, mesh_wp.indices, target_length=target, iterations=3
+        )
+        outputs.append((out_vertices_wp.numpy().tobytes(), out_faces_wp.numpy().tobytes()))
+    assert len(outputs[0][1]) > 0
+    assert outputs[1:] == outputs[:-1]
+
+
 # ---------------------------------------------------------------------------
 # Vertex-clustering decimation vs open3d / pymeshlab
 # ---------------------------------------------------------------------------

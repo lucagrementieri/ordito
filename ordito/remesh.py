@@ -35,6 +35,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
+from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX, TOLERANCE_MOLLIFY, UINT64_MAX
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import array as kernel_array
@@ -785,14 +786,29 @@ def _smooth_pass(
     # reason: ``unique_edges`` above carries a vertex's *neighbours*, never its faces.
     vertex_faces, face_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
 
-    ring_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
-    ring_weight = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_remesh.accumulate_one_ring,
-        dim=int(unique_edges.shape[0]),
-        inputs=[unique_edges, vertices, vertex_areas, ring_sum, ring_weight],
-        device=device,
-    )
+    if is_deterministic():
+        # Each vertex sums its ring over its neighbour row sorted ascending, in one fixed order, so
+        # the pass returns the same bits on every run; the atomic scatter below does not on CUDA.
+        ring_neighbors, ring_offsets = od.graph.edges_to_neighbor_lists(
+            n_vertices, unique_edges, validate=False, sort_rows=True
+        )
+        ring_sum = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+        ring_weight = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_remesh.gather_one_ring,
+            dim=n_vertices,
+            inputs=[ring_offsets, ring_neighbors, vertices, vertex_areas, ring_sum, ring_weight],
+            device=device,
+        )
+    else:
+        ring_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+        ring_weight = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_remesh.accumulate_one_ring,
+            dim=int(unique_edges.shape[0]),
+            inputs=[unique_edges, vertices, vertex_areas, ring_sum, ring_weight],
+            device=device,
+        )
     out_positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_remesh.smooth_free_vertices,

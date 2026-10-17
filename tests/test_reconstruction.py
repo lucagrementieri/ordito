@@ -1571,10 +1571,15 @@ def test_ball_pivoting_is_reproducible(device: str):
     so the row order is deliberately still arrival-ordered:
 
     * the wave loop's own output, which is the property the key buys;
-    * the public function, whose cleanup tail keeps the winding the wave loop wrote from the
+    * the public function, byte for byte: its cleanup tail emits the faces in ascending
+      unoriented-key order (``repair.resolve_duplicated_faces``), so the returned buffers do not
+      inherit the wave loop's row order, and it keeps the winding the wave loop wrote from the
       normals rather than re-deriving it -- at an explicit radius and at its own guess, which is a
-      fixed-order sum (an atomic one moved the guess a few ULP between calls, enough to tip a
-      borderline pivot).
+      fixed-order sum with the deterministic setting on (an atomic one moved the guess a few ULP
+      between calls, enough to tip a borderline pivot).
+
+    The claim is the setting-on contract, which every test runs under (``tests/conftest.py``);
+    with it off the guess folds by atomics and is not promised to repeat.
     """
     torus_tm = tm.creation.torus(
         major_radius=1.0, minor_radius=0.35, major_sections=64, minor_sections=32
@@ -1602,16 +1607,13 @@ def test_ball_pivoting_is_reproducible(device: str):
     assert raw_runs[0].shape[0] > 0
     assert_unordered_rows_equal(canonical_winding(raw_runs[0]), canonical_winding(raw_runs[1]))
 
-    _vertices, first_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
-    _vertices, second_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
-    assert_unordered_rows_equal(
-        canonical_winding(first_wp.numpy()), canonical_winding(second_wp.numpy())
-    )
-    _vertices, first_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
-    _vertices, second_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
-    assert_unordered_rows_equal(
-        canonical_winding(first_wp.numpy()), canonical_winding(second_wp.numpy())
-    )
+    # ``radius=0`` is the default: the call guesses its own radius.
+    for radius_arg in (radius, 0.0):
+        first = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius_arg)
+        second = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius_arg)
+        assert first[1].size > 0
+        for first_wp, second_wp in zip(first, second, strict=True):
+            assert np.array_equal(first_wp.numpy(), second_wp.numpy())
 
 
 def test_ball_pivoting_grows_the_triangle_budget(device: str):
