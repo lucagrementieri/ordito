@@ -261,14 +261,14 @@ def split_with_offsets(
     )
 
     # Segment boundaries of the label-sorted array: position 0, every label change, and the end.
-    is_start = _launch.empty(n_faces + 1, dtype=wp.bool, device=device)
+    is_start = _launch.empty(n_faces + 1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_combine.label_run_starts,
         dim=n_faces,
         inputs=[sorted_labels, is_start],
         device=device,
     )
-    face_offsets = od.array.flatnonzero(is_start)
+    face_offsets = od.array.flatnonzero_in_place(is_start)
 
     if face_offsets.size == 2:
         component_vertices, component_faces = od.selection.submesh_from_face_indices(

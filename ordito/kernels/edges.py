@@ -4,7 +4,7 @@ from ordito.kernels.adjacency import write_edge_row, write_face_edge_keys
 from ordito.kernels.array import sorted_run_start, unpack_edge_key
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb, side_lengths
-from ordito.kernels.reduce import block_chunk_1d, block_sum
+from ordito.kernels.reduce import block_chunk_1d, block_sum, term_sum_1d
 
 wp.set_module_options({"enable_backward": False})
 
@@ -143,7 +143,7 @@ def halfedge_length(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], h: wp.int32
 ) -> wp.float32:
     # Length of halfedge ``h``, tip minus tail: the one spelling ``halfedge_lengths`` writes and
-    # ``halfedge_length_partials`` folds, so the stored lengths and their mean cannot drift apart.
+    # ``halfedge_length_term`` folds, so the stored lengths and their mean cannot drift apart.
     tail, tip = halfedge_endpoints(faces, h)
     return wp.length(vertices[tip] - vertices[tail])
 
@@ -159,26 +159,27 @@ def halfedge_lengths(
     out_lengths[h] = halfedge_length(vertices, faces, h)
 
 
-@wp.kernel
-def halfedge_length_partials(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    n_halfedges: wp.int32,
-    out_partials: wp.array[wp.float32],
-) -> None:
-    # ``halfedge_lengths`` folded on the fly into one stored sum per block, the first stage of
-    # ``reduce.sum``'s fixed-order tree: ``edges.mean_edge_length`` hands ``out_partials`` to
-    # ``reduce.sum``, so the ``(3 * n_faces,)`` length buffer is never written. Lane-strided by
-    # ``wp.block_dim()`` over the block's ``ITEMS_PER_BLOCK_1D`` halfedges, so the CPU device's
-    # one-lane block walks them all.
-    block, lane = wp.tid()
-    offset, count = block_chunk_1d(n_halfedges, block)
-    total = wp.float32(0.0)
-    for k in range(lane, count, wp.block_dim()):
-        total += halfedge_length(vertices, faces, offset + k)
-    block_total = block_sum(total)
-    if lane == 0:
-        out_partials[block] = block_total
+@wp.struct
+class HalfedgeLengthTerms:
+    """``edges.edge_length_sum``'s halfedge count and the mesh its lengths are read off."""
+
+    n: wp.int32
+    vertices: wp.array[wp.vec3]
+    faces: wp.array[wp.int32]
+
+
+@wp.func
+def halfedge_length_term(
+    local: wp.int32, offset: wp.int32, terms: HalfedgeLengthTerms
+) -> wp.float32:
+    # ``halfedge_length`` of halfedge ``offset + local``, the term ``HALFEDGE_LENGTH_SUM`` folds on
+    # the fly, so the ``(3 * n_faces,)`` length buffer is never written.
+    return halfedge_length(terms.vertices, terms.faces, offset + local)
+
+
+# ``edges.edge_length_sum``'s ``kernels/reduce.TermSum``: ``reduce.sum`` of the halfedge lengths in
+# either determinism setting, one launch while it is off.
+HALFEDGE_LENGTH_SUM = term_sum_1d(halfedge_length_term, HalfedgeLengthTerms, "halfedge_length_sum")
 
 
 @wp.kernel

@@ -13,7 +13,12 @@ from ordito.kernels.array import (
     to_vec3d,
 )
 from ordito.kernels.laplacian import face_half_cotangents, operator_row
-from ordito.kernels.linalg import free_row, selected_row, solve_normal_equations
+from ordito.kernels.linalg import (
+    free_row,
+    selected_row,
+    shifted_scalar_entry,
+    solve_normal_equations,
+)
 from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
 from ordito.kernels.reduce import block_chunk, block_chunk_1d, block_max, store_block_sum
 from ordito.kernels.scatter import add_corner_triple
@@ -783,38 +788,55 @@ def scatter_free_solution(
 
 
 @wp.kernel
-def interior_mass_rhs_and_seed(
+def interior_fairing_system(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    stiffness: wp.array[wp.float64],
+    mass: wp.array[wp.float64],
+    scale: wp.float64,
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
-    mass: wp.array[wp.float64],
+    pinned: wp.array2d[wp.float64],
     positions: wp.array[wp.vec3d],
-    rhs: wp.array2d[wp.float64],
+    interior_offsets: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+    out_rhs: wp.array2d[wp.float64],
     out_solution: wp.array2d[wp.float64],
 ) -> None:
-    # The two per-free-vertex writes the implicit-fairing Dirichlet pass needs before its solve,
-    # from one read of the vertex:
-    #
-    # - Add the linear term ``b_u = (M V)_u`` into the reduced right-hand side, which arrives
-    #   holding only ``-A_ub x_b`` from ``linalg.assemble_interior_system`` (that helper eliminates
-    #   the pinned columns of a quadratic form, which has no linear term of its own). ``rhs`` is
-    #   genuinely in-place -- an accumulator carrying that prior term in, not a fresh answer --
-    #   which is why it does not carry the ``out_`` prefix reserved for write-only outputs.
-    # - Seed the reduced solve with the free vertices' *current* positions: the exact inverse of
-    #   ``scatter_free_positions`` below, and the counterpart of ``gather_free_positions`` above for
-    #   the ``fixed_mask`` partition and the float64 storage the implicit-fairing flow carries.
-    #   Seeding from the right-hand side instead would leave a vertex no face refers to at the
-    #   origin -- it has an all-zero row and so a zero right-hand side, and CG never writes its
-    #   entry -- which is the failure ``gather_free_positions`` exists to avoid on the region
-    #   solves.
+    # One implicit-fairing Dirichlet pass's reduced system, from the stiffness row in one thread per
+    # vertex: the free-free block of ``A = M + scale L`` (``scale = -lamb``) written into the
+    # interior pattern a ``linalg.assemble_interior_system`` call built once for the whole flow,
+    # its right-hand side ``(M V)_u - A_ub x_b`` and the CG seed (the free vertex's current
+    # position). Each entry of ``A`` is ``kernels/linalg.shifted_scalar_entry``'s, as
+    # ``SHIFTED_SYSTEM_VALUES`` forms it; the extraction is ``interior_row_counts`` /
+    # ``interior_system_csr``'s at ``scale = 1`` and three right-hand sides, the pinned columns
+    # subtracted in row order before the mass term is added. What this kernel drops is the
+    # mesh-wide ``A`` those three launches materialize and read back, and the per-pass count, scan
+    # and readback that re-derive a pattern the fixed topology and pinned set never change.
+    # ``interior_offsets`` is that pattern's row offsets; its columns are the first build's.
     v = wp.int32(wp.tid())
     i = free_row(fixed_mask, free_map, v)
     if i < 0:
         return
     m = mass[v]
     p = positions[v]
-    rhs[0, i] = rhs[0, i] + m * p[0]
-    rhs[1, i] = rhs[1, i] + m * p[1]
-    rhs[2, i] = rhs[2, i] + m * p[2]
+    slot = interior_offsets[i]
+    acc0 = wp.float64(0.0)
+    acc1 = wp.float64(0.0)
+    acc2 = wp.float64(0.0)
+    for e in range(offsets[v], offsets[v + 1]):
+        j = columns[e]
+        value = shifted_scalar_entry(stiffness[e], scale, j == v, m)
+        if fixed_mask[j]:
+            acc0 -= value * pinned[0, j]
+            acc1 -= value * pinned[1, j]
+            acc2 -= value * pinned[2, j]
+        else:
+            out_values[slot] = value
+            slot += 1
+    out_rhs[0, i] = acc0 + m * p[0]
+    out_rhs[1, i] = acc1 + m * p[1]
+    out_rhs[2, i] = acc2 + m * p[2]
     out_solution[0, i] = p[0]
     out_solution[1, i] = p[1]
     out_solution[2, i] = p[2]
@@ -828,14 +850,20 @@ def scatter_free_positions(
     sol_y: wp.array[wp.float64],
     sol_z: wp.array[wp.float64],
     out_positions: wp.array[wp.vec3d],
+    out_narrowed: wp.array[wp.vec3],
 ) -> None:
     # Write the reduced solution back to the unpinned vertices only. Pinned ones are left holding
-    # whatever they already have, which is their original position -- they never move.
+    # whatever they already have, which is their original position -- they never move. Every
+    # vertex's position is also written narrowed to ``wp.vec3``, as ``array.astype`` narrows it:
+    # the next pass's cotangent and mass build reads that, and after the last pass it is the
+    # answer, so no conversion pass follows.
     v = wp.int32(wp.tid())
     i = free_row(fixed_mask, free_map, v)
-    if i < 0:
-        return
-    out_positions[v] = wp.vec3d(sol_x[i], sol_y[i], sol_z[i])
+    position = out_positions[v]
+    if i >= 0:
+        position = wp.vec3d(sol_x[i], sol_y[i], sol_z[i])
+        out_positions[v] = position
+    out_narrowed[v] = to_vec3(position)
 
 
 @wp.func
@@ -1340,6 +1368,16 @@ def combine_components(x: wp.float64, y: wp.float64, z: wp.float64) -> wp.vec3d:
     return wp.vec3d(x, y, z)
 
 
+@wp.func
+def combine_components_narrowed(
+    x: wp.float64, y: wp.float64, z: wp.float64
+) -> tuple[wp.vec3d, wp.vec3]:
+    # ``combine_components`` and the same position narrowed as ``array.astype`` narrows it, for
+    # the implicit-fairing pass, whose next pass (or answer) reads the ``wp.vec3`` form.
+    position = wp.vec3d(x, y, z)
+    return position, to_vec3(position)
+
+
 @wp.kernel
 def mark_free_new_vertices(
     first_new: wp.int32, boundary: wp.array[wp.bool], out_free: wp.array[wp.bool]
@@ -1480,49 +1518,94 @@ def diffuse_scalar_pass(
 
 
 @wp.kernel
-def renormalize_and_reseed(
-    areas: wp.array[wp.float32], accumulated: wp.array[wp.vec3], out_normals: wp.array[wp.vec3]
+def scatter_incidence_rows(
+    indices: wp.array[wp.int32],
+    arity: wp.int32,
+    offsets: wp.array[wp.int32],
+    cursor: wp.array[wp.int32],
+    out_items: wp.array[wp.int32],
 ) -> None:
-    # One pass's normalization fused with the *next* pass's seed. The two are adjacent across the
-    # loop boundary rather than inside one iteration -- ``accumulate_smoothed_normals`` sits between
-    # the seed and the normalization and scatters across faces, so it needs the whole seeded buffer
-    # and cannot be folded in -- and both halves are per-face, so a pass loop issues two launches
-    # instead of three once the first seed is peeled off the front.
-    #
-    # ``accumulated`` is in place: this thread reads its own slot and immediately overwrites it with
-    # the next pass's seed, so it is both the input and the result.
-    f = wp.int32(wp.tid())
-    normal = wp.normalize(accumulated[f])
-    out_normals[f] = normal
-    accumulated[f] = seed_weighted_normal(normal, areas[f])
-
-
-@wp.kernel
-def accumulate_smoothed_normals(
-    face_normals: wp.array[wp.vec3],
-    face_areas: wp.array[wp.float32],
-    face_adjacency: wp.array2d[wp.int32],
-    threshold_cos: wp.float32,
-    out_accumulated: wp.array[wp.vec3],
-) -> None:
-    # Area-weighted average of a face's normal with those of its edge-neighbours -- but only the
-    # neighbours pointing *within* ``threshold_cos`` of it. That gate is the whole point: across a
-    # crease the two normals disagree by more than the threshold and simply do not average, so a
-    # sharp edge survives an arbitrary number of passes while noise on a flat region diffuses away.
-    k = wp.int32(wp.tid())
-    f0 = face_adjacency[k, 0]
-    f1 = face_adjacency[k, 1]
-    if wp.dot(face_normals[f0], face_normals[f1]) <= threshold_cos:
-        return
-    wp.atomic_add(out_accumulated, f0, face_areas[f1] * face_normals[f1])
-    wp.atomic_add(out_accumulated, f1, face_areas[f0] * face_normals[f0])
+    # The incidence CSR of a flat ``arity``-wide index buffer: row ``r`` lists every item
+    # ``e // arity`` with an entry ``e`` naming ``r`` -- a vertex's faces from the face buffer
+    # (``arity = 3``), a face's adjacency rows from the flattened ``(m, 2)`` pairs (``arity = 2``).
+    # One thread per entry. ``cursor`` arrives holding each row's length and counts it down, and
+    # the slot is taken from the row's end, so the CPU device, which runs the entries in turn,
+    # fills every row in ascending entry order -- the order the item-major scatters these rows
+    # replace committed their atomics in -- with no cleared cursor; a CUDA device fills in arrival
+    # order unless the caller sorts the rows (the deterministic setting).
+    e = wp.int32(wp.tid())
+    r = indices[e]
+    out_items[offsets[r + 1] - wp.atomic_add(cursor, r, -1)] = e // arity
 
 
 @wp.func
-def seed_weighted_normal(normal: wp.vec3, area: wp.float32) -> wp.vec3:
-    # A face's own area-weighted normal: the seed of the accumulator above, so the face always
-    # contributes to its own average even when every neighbour is across a crease.
-    return area * normal
+def agreeing_neighbor(
+    face_normals: wp.array[wp.vec3],
+    f: wp.int32,
+    f0: wp.int32,
+    f1: wp.int32,
+    threshold_cos: wp.float32,
+) -> wp.int32:
+    # The neighbour face ``f`` averages with across the adjacent pair ``(f0, f1)`` it belongs to,
+    # or ``-1`` when the two normals disagree by more than the crease threshold. That gate is the
+    # whole point of ``filter_normals``: across a crease the two normals disagree and simply do not
+    # average, so a sharp edge survives an arbitrary number of passes while noise on a flat region
+    # diffuses away. The one decision both pass kernels below make, whichever table names the pair.
+    if wp.dot(face_normals[f0], face_normals[f1]) <= threshold_cos:
+        return -1
+    return wp.where(f0 == f, f1, f0)
+
+
+@wp.kernel
+def smooth_face_normals(
+    face_normals: wp.array[wp.vec3],
+    face_areas: wp.array[wp.float32],
+    face_adjacency: wp.array2d[wp.int32],
+    pair_offsets: wp.array[wp.int32],
+    face_pairs: wp.array[wp.int32],
+    threshold_cos: wp.float32,
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # One pass of ``filter_normals`` over a caller's adjacency pairs, gathered per face: the
+    # normalized area-weighted sum of the face's own normal (so a face whose every neighbour is
+    # across a crease keeps its own) and its ``agreeing_neighbor``s, read in the order of the
+    # face's ``scatter_incidence_rows`` row. One launch a pass, where a pair-major scatter into an
+    # accumulator needed a second launch to normalize it; ``face_normals`` and ``out_normals`` are
+    # the caller's two ping-pong buffers. ``smooth_face_normals_over_mates`` is the same pass over
+    # the halfedge mates, for an adjacency this module derives itself.
+    f = wp.int32(wp.tid())
+    accumulated = face_areas[f] * face_normals[f]
+    for slot in range(pair_offsets[f], pair_offsets[f + 1]):
+        k = face_pairs[slot]
+        other = agreeing_neighbor(
+            face_normals, f, face_adjacency[k, 0], face_adjacency[k, 1], threshold_cos
+        )
+        if other >= 0:
+            accumulated += face_areas[other] * face_normals[other]
+    out_normals[f] = wp.normalize(accumulated)
+
+
+@wp.kernel
+def smooth_face_normals_over_mates(
+    face_normals: wp.array[wp.vec3],
+    face_areas: wp.array[wp.float32],
+    mates: wp.array[wp.int32],
+    threshold_cos: wp.float32,
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # ``smooth_face_normals`` with the neighbours read off ``halfedge.halfedge_mates``: the face
+    # across each of the three edges, where exactly two halfedges span it -- the pairs
+    # ``adjacency.face_adjacency`` lists -- in corner order. A fixed three reads per face, with no
+    # face -> pair incidence table to build.
+    f = wp.int32(wp.tid())
+    accumulated = face_areas[f] * face_normals[f]
+    for k in range(3):
+        mate = mates[3 * f + k]
+        if mate >= 0:
+            other = agreeing_neighbor(face_normals, f, f, mate // 3, threshold_cos)
+            if other >= 0:
+                accumulated += face_areas[other] * face_normals[other]
+    out_normals[f] = wp.normalize(accumulated)
 
 
 @wp.kernel
@@ -1530,40 +1613,32 @@ def fit_vertices_to_normals(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     face_normals: wp.array[wp.vec3],
-    out_delta: wp.array[wp.vec3],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3],
 ) -> None:
     # One gradient step of the vertex-fitting half of two-step smoothing (Ohtake et al.): each
     # incident face wants its corner to lie in the plane through the face centroid with the
     # *filtered* normal, and the correction is the component of that offset along the normal.
     #
-    # Summed per vertex and divided by the incident-face count in ``apply_fit_step_and_reset``,
-    # which is the step size that makes the iteration a contraction without a tuning constant. The
-    # count is the topology's, so the caller takes it once with ``scatter.count_occurrences``
-    # rather than re-accumulating it here every fit iteration -- a sum of ones is exact in any
-    # order, so the step is unchanged to the bit.
-    f = wp.int32(wp.tid())
-    i0, i1, i2 = corner_triple(faces, f)
-    normal = face_normals[f]
-    centroid = (vertices[i0] + vertices[i1] + vertices[i2]) / 3.0
-    for k in range(3):
-        v = faces[f * 3 + k]
-        wp.atomic_add(out_delta, v, normal * wp.dot(normal, centroid - vertices[v]))
-
-
-@wp.kernel
-def apply_fit_step_and_reset(
-    counts: wp.array[wp.int32], out_positions: wp.array[wp.vec3], out_delta: wp.array[wp.vec3]
-) -> None:
-    # Move each vertex by its mean correction, then zero its accumulator for the next fit
-    # iteration. The reset rides here because this is the one thread that reads the slot, and it
-    # reads it before overwriting it -- so the fit loop issues two launches per iteration where a
-    # separate ``zero_`` in front of each scatter made three. ``out_positions`` and ``out_delta``
-    # are both in place.
-    i = wp.int32(wp.tid())
-    count = counts[i]
-    if count > 0:
-        out_positions[i] = out_positions[i] + out_delta[i] / wp.float32(count)
-    out_delta[i] = wp.vec3(0.0, 0.0, 0.0)
+    # Gathered per vertex over its vertex -> face ``scatter_incidence_rows`` row (one entry per
+    # corner reference) and divided by the row's length, which is the step size that makes the
+    # iteration a contraction without a tuning constant. ``vertices`` and ``out_positions`` are the
+    # caller's two ping-pong buffers, so every correction reads the previous step's positions.
+    v = wp.int32(wp.tid())
+    position = vertices[v]
+    start = vf_offsets[v]
+    end = vf_offsets[v + 1]
+    delta = wp.vec3(0.0, 0.0, 0.0)
+    for slot in range(start, end):
+        f = vertex_faces[slot]
+        i0, i1, i2 = corner_triple(faces, f)
+        normal = face_normals[f]
+        centroid = (vertices[i0] + vertices[i1] + vertices[i2]) / 3.0
+        delta += normal * wp.dot(normal, centroid - position)
+    if end > start:
+        position = position + delta / wp.float32(end - start)
+    out_positions[v] = position
 
 
 @wp.func

@@ -2200,6 +2200,42 @@ def test_filter_normals_are_unit_and_crease_gated(device: str) -> None:
     assert clean_np.shape[0] > 0
 
 
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular_holes"])
+def test_filter_normals_supplied_adjacency_matches_derived(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: a caller's ``face_adjacency`` and the one derived inside agree.
+
+    The two entry points read the neighbours off different tables -- the supplied pairs through a
+    face -> pair incidence CSR, the derived path off the halfedge mates -- so they add the same
+    neighbours in a different order and agree to rounding. The oracle comparisons above run the
+    derived path only. A caller's normals are read, never written, and the result is a new buffer.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    adjacency_wp = od.adjacency.face_adjacency(faces_wp, n_vertices=vertices_wp.shape[0])
+    normals_wp, areas_wp = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)
+    raw_np = normals_wp.numpy()
+    for iterations in (1, 4):
+        derived_wp = od.smoothing.filter_normals(
+            vertices_wp, faces_wp, iterations=iterations, threshold=30.0
+        )
+        supplied_wp = od.smoothing.filter_normals(
+            vertices_wp,
+            faces_wp,
+            iterations=iterations,
+            threshold=30.0,
+            face_adjacency=adjacency_wp,
+            face_normals=normals_wp,
+            face_areas=areas_wp,
+        )
+        assert supplied_wp.ptr != normals_wp.ptr
+        assert np.allclose(supplied_wp.numpy(), derived_wp.numpy(), rtol=1e-5, atol=1e-5)
+        assert np.abs(derived_wp.numpy() - raw_np).max() > 1e-3
+    assert np.array_equal(normals_wp.numpy(), raw_np)
+
+
 @pytest.mark.parity("filter_normals", "meshlib")
 def test_filter_normals_matches_meshlib(device: str) -> None:
     """

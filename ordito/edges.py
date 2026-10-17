@@ -882,17 +882,14 @@ def edge_length_sum(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> w
     n_halfedges = faces.size // 3 * 3
     if n_halfedges == 0:
         return _launch.zeros(1, dtype=wp.float32, device=device)
-    # Each block's length sum is stored, not committed, and the partials are folded as
-    # ``reduce.sum`` folds its own: no ``(3 * n_faces,)`` length buffer.
-    partials = _launch.empty(kernel_reduce.blocks_1d(n_halfedges), dtype=wp.float32, device=device)
-    _launch.launch_tiled(
-        kernel_edges.halfedge_length_partials,
-        dim=[partials.size],
-        inputs=[vertices, faces, n_halfedges, partials],
-        block_dim=TILE_1D,
-        device=device,
+    # The lengths are formed inside the sum's own blocks: no ``(3 * n_faces,)`` length buffer.
+    terms = kernel_edges.HalfedgeLengthTerms()
+    terms.n = n_halfedges
+    terms.vertices = vertices
+    terms.faces = faces
+    return od.reduce.sum_of_terms(
+        kernel_edges.HALFEDGE_LENGTH_SUM, [terms], n_halfedges, device=device
     )
-    return od.reduce.sum_of_terms(kernel_reduce.ARRAY_SUM, [partials], partials.size)
 
 
 def mean_unique_edge_length(
