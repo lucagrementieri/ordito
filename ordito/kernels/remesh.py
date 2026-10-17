@@ -56,6 +56,7 @@ from ordito.kernels.triangles import (
     face_normals_and_area,
     face_vertices_vec3d,
     local_corner,
+    triangle_mean_ratio,
     triangle_quality,
     write_corner_triple,
     write_row_triple,
@@ -1643,7 +1644,7 @@ def satisfies_link_condition(
 
 
 @wp.func
-def move_flips_normal(
+def move_fold_and_sheet(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_face_offsets: wp.array[wp.int32],
@@ -1651,27 +1652,40 @@ def move_flips_normal(
     moved: wp.int32,
     partner: wp.int32,
     target: wp.vec3,
-) -> wp.bool:
-    # Would moving ``moved`` to ``target`` invert any face it still belongs to? Every incident face
-    # keeps its other two corners and must keep its orientation.
+) -> tuple[wp.bool, wp.vec3, wp.float32]:
+    # One walk over the faces of ``moved``, returning ``(flips, sheet, welded_quality)``:
+    #
+    # - ``flips``: would moving ``moved`` to ``target`` invert any face it still belongs to? Every
+    #   incident face keeps its other two corners and must keep its orientation. This is the guard
+    #   that separates a usable decimator from one that produces self-intersecting geometry, and it
+    #   is why the vertex-face CSR is built at all.
+    # - ``sheet``: the summed area vectors of every face of ``moved``, before the move -- which way
+    #   the surface around ``moved`` faces, read by ``collapse_joins_opposite_sheets``. The faces
+    #   holding ``partner`` count too: summing only the kept ones measured a stronger veto (the
+    #   ``happy_buddha`` 0.01 ``i2o`` p99.9 0.36x where this is 0.47x) that cost 1st-percentile
+    #   quality (0.97x over the 15-cell set, ``bunny`` 0.01 0.80x).
+    # - ``welded_quality``: the worst mean ratio among the faces holding ``partner`` too (1 when
+    #   there are none), the faces a collapse removes.
     #
     # ``partner`` names a vertex whose incident faces are exempt, and it is what makes one helper
-    # serve both callers of this rule. A *collapse* welds ``moved`` onto ``partner``, so the two
+    # serve both callers of the fold rule. A *collapse* welds ``moved`` onto ``partner``, so the two
     # faces holding both endpoints vanish and must be skipped; a *smoothing* step moves one vertex
     # and welds nothing, so it passes ``-1``, which no corner index equals and which therefore
-    # exempts nothing.
-    #
-    # This is the guard that separates a usable decimator from one that produces self-intersecting
-    # geometry, and it is why the vertex-face CSR is built at all.
+    # exempts nothing. A caller reading only ``flips`` pays for nothing else: the other two are dead
+    # code once the function is inlined.
+    sheet = wp.vec3()
+    welded_quality = wp.float32(1.0)
     for slot in range(vertex_face_offsets[moved], vertex_face_offsets[moved + 1]):
         f = vertex_faces[slot]
         i0, i1, i2 = corner_triple(faces, f)
-        if i0 == partner or i1 == partner or i2 == partner:
-            continue
         p0 = vertices[i0]
         p1 = vertices[i1]
         p2 = vertices[i2]
         before = wp.cross(p1 - p0, p2 - p0)
+        sheet = sheet + before
+        if i0 == partner or i1 == partner or i2 == partner:
+            welded_quality = wp.min(welded_quality, triangle_mean_ratio(p0, p1, p2))
+            continue
         if i0 == moved:
             p0 = target
         elif i1 == moved:
@@ -1684,10 +1698,79 @@ def move_flips_normal(
         if before_length <= 0.0:
             continue  # already degenerate: nothing to invert
         if after_length <= 0.0:
-            return True  # the collapse would flatten it outright
+            return True, sheet, welded_quality  # the collapse would flatten it outright
         if wp.dot(before / before_length, after / after_length) < COLLAPSE_MIN_NORMAL_DOT:
-            return True
-    return False
+            return True, sheet, welded_quality
+    return False, sheet, welded_quality
+
+
+@wp.func
+def move_flips_normal(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    moved: wp.int32,
+    partner: wp.int32,
+    target: wp.vec3,
+) -> wp.bool:
+    # The fold rule alone (``move_fold_and_sheet``), for a caller with no use for the rest.
+    flips, _sheet, _welded_quality = move_fold_and_sheet(
+        vertices, faces, vertex_face_offsets, vertex_faces, moved, partner, target
+    )
+    return flips
+
+
+@wp.func
+def collapse_joins_opposite_sheets(
+    sheet_r: wp.vec3, sheet_s: wp.vec3, welded_quality: wp.float32
+) -> wp.bool:
+    # Does a collapse weld two sheets of surface that face away from each other -- the two sides of
+    # a thin part, or the two walls of a narrow slit? ``sheet_r`` and ``sheet_s`` are the summed
+    # area vectors of each endpoint's faces (``move_fold_and_sheet``); they oppose there and
+    # nowhere else on a surface sampled finer than its curvature.
+    #
+    # Such a collapse is cheap for a memoryless quadric when the part is thin, and it is never one
+    # collapse: the welded vertex carries both sheets' planes, its neighbours follow, and the
+    # doubly covered sheet left behind then retracts in its own plane at almost no cost. On the
+    # ``happy_buddha`` scan at 0.01 the worst ``i2o`` input points sat in slits 1e-4 of the
+    # diagonal wide, as deep as 8e-3 of it, all lost that way.
+    #
+    # **Exempt: a collapse that removes a sliver** (a welded face below
+    # ``COLLAPSE_SLIVER_QUALITY``). A scan's thin parts are fringed by the input's own needles,
+    # whose short edges cross the rim; vetoing those too kept them in the output (1st-percentile
+    # quality 0.21x on ``happy_buddha`` at 0.01, 0.89x over the 15-cell set), while removing one
+    # moves the surface by about its own width.
+    if welded_quality < COLLAPSE_SLIVER_QUALITY:
+        return False
+    return wp.dot(sheet_r, sheet_s) < 0.0
+
+
+@wp.func
+def collapse_fold_and_sheets(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    s: wp.int32,
+    r: wp.int32,
+    p: wp.vec3,
+) -> tuple[wp.bool, wp.bool]:
+    # ``(folds, joins_opposite_sheets)`` for an edge collapse welding ``r`` onto ``s`` at ``p``:
+    # both endpoints move to ``p``, so both directions of ``move_fold_and_sheet`` are walked,
+    # unconditionally -- even under a pinned placement, where ``s`` stays put and its half of the
+    # fold test is a no-op. A fold short-circuits, since the collapse is rejected either way.
+    folds, sheet_r, welded_quality = move_fold_and_sheet(
+        vertices, faces, vertex_face_offsets, vertex_faces, r, s, p
+    )
+    if folds:
+        return True, False
+    folds, sheet_s, _welded_quality = move_fold_and_sheet(
+        vertices, faces, vertex_face_offsets, vertex_faces, s, r, p
+    )
+    if folds:
+        return True, False
+    return False, collapse_joins_opposite_sheets(sheet_r, sheet_s, welded_quality)
 
 
 @wp.func
@@ -1700,13 +1783,12 @@ def collapse_folds_a_face(
     r: wp.int32,
     p: wp.vec3,
 ) -> wp.bool:
-    # The fold veto of an edge collapse welding ``r`` onto ``s`` at ``p``: both endpoints move to
-    # ``p``, so both directions of ``move_flips_normal`` are tested, unconditionally -- even under a
-    # pinned placement, where ``s`` stays put and its half is a no-op. One decision rule for both
-    # decimators, ``collapse_candidates`` and ``quadric_collapse_candidates``.
-    return move_flips_normal(
-        vertices, faces, vertex_face_offsets, vertex_faces, r, s, p
-    ) or move_flips_normal(vertices, faces, vertex_face_offsets, vertex_faces, s, r, p)
+    # The fold veto alone (``collapse_fold_and_sheets``). One decision rule for both decimators:
+    # ``collapse_candidates`` reads only this, ``quadric_collapse_candidates`` the sheet test too.
+    folds, _joins = collapse_fold_and_sheets(
+        vertices, faces, vertex_face_offsets, vertex_faces, s, r, p
+    )
+    return folds
 
 
 # ---------------------------------------------------------------------------
@@ -2959,6 +3041,13 @@ BOUNDARY_QUADRIC_WEIGHT = wp.constant(wp.float64(1.0))
 # it is what lets inverted, self-intersecting triangles through.
 COLLAPSE_MIN_NORMAL_DOT = wp.constant(wp.float32(0.5))
 
+# ``collapse_joins_opposite_sheets`` lets a collapse weld two opposing sheets when it removes a face
+# below this mean ratio. Measured over the 15-cell decimation set (five meshes x 0.5 / 0.1 / 0.01,
+# geometric means against no thin-part veto, three tie perturbations each): 0.05 and 0.1 agree
+# within the perturbation noise (``i2o`` p99.9 0.93 / 0.94x, 1st-percentile quality 1.00 / 1.00x);
+# 0.2 is worse on both (``i2o`` p99.9 0.95x, quality 0.99x).
+COLLAPSE_SLIVER_QUALITY = wp.float32(0.05)
+
 
 # A quadric is symmetric, so it is stored as its ten distinct entries rather than as a
 # ``wp.mat44d``: ``[a00, a01, a02, a11, a12, a22, b0, b1, b2, c]`` for ``Q = [[A, b], [b^T, c]]``,
@@ -3523,7 +3612,11 @@ def quadric_collapse_candidates(
         optimum = to_vec3d(vertices[s])
     target = to_vec3(optimum)
 
-    if collapse_folds_a_face(vertices, faces, vertex_face_offsets, vertex_faces, s, r, target):
+    # The fold veto and the thin-part veto (``collapse_joins_opposite_sheets``), from one walk.
+    folds, joins_sheets = collapse_fold_and_sheets(
+        vertices, faces, vertex_face_offsets, vertex_faces, s, r, target
+    )
+    if folds or joins_sheets:
         return
 
     cost = wp.float32(quadric_error(quadric, optimum))

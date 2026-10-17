@@ -1764,8 +1764,8 @@ def quadric_decimate(
         ``(3 * n_out_faces,)`` flat triangle index buffer. The count is ``target_faces`` whenever
         the target is reachable (one face below it at most, when a single interior collapse is
         all that is left); it stops above the target when every remaining edge fails the link
-        condition, the normal-flip guard or the ``feature_angle`` rule -- see Notes. Read the
-        returned count rather than assuming it.
+        condition, the normal-flip guard, the thin-part rule or the ``feature_angle`` rule -- see
+        Notes. Read the returned count rather than assuming it.
     vertex_index : wp.array[wp.int32]
         ``(n_vertices,)`` **output** vertex each input vertex ended up in, or ``-1`` for an input
         vertex that survives in no output face (one that was already unreferenced); only when
@@ -1819,7 +1819,7 @@ def quadric_decimate(
     two provenance maps are folded per pass by two launches and one copy, and the branch is
     evaluated when the pass is *issued*, so the captured graph does not contain it.
 
-    Four consequences to plan around:
+    Five consequences to plan around:
 
     - **The budget is counted in faces.** A pass may remove the whole remaining surplus, cheapest
       collapses first, charging two faces for an interior collapse and one for a boundary one, so
@@ -1832,6 +1832,11 @@ def quadric_decimate(
       self-intersecting triangles an unguarded quadric method produces at high reduction ratios,
       and it is deliberately not exposed as a keyword -- see ``COLLAPSE_MIN_NORMAL_DOT`` in
       ``kernels/remesh.py``.
+    - **A thin part is kept as two sheets.** A collapse whose endpoints' surroundings face opposite
+      ways -- across the two sides of a thin plate, or the two walls of a narrow slit -- is
+      refused, unless it removes a sliver. Without that rule a thin part is welded onto its
+      mid-surface and then shrinks away, since a doubly covered sheet costs a quadric nothing to
+      retract.
     - **The output is reproducible run to run on either device**: each vertex quadric is summed
       over its faces in a fixed order, so every cost, every tie between equal costs and every
       placement repeats. The exceptions are a vertex with more than 64 incident faces and one

@@ -1625,6 +1625,88 @@ def test_quadric_decimate_is_reproducible(device: str, target_ratio: float) -> N
     assert outputs[1:] == outputs[:-1]
 
 
+def test_quadric_decimate_keeps_a_thin_part_without_slivers(device: str) -> None:
+    """
+    Not a library comparison: an invariant on a thin part, which no reference reports.
+
+    A noisy hairpin -- a sheet folded back on itself, its two layers ``gap`` apart, with noise of
+    the same size on the layers -- decimated to 1 % stands for a scan's thin parts and narrow
+    slits. A memoryless quadric finds welding the two layers about as cheap as coarsening either
+    one, and once welded the doubly covered sheet retracts in its own plane: the output loses the
+    fold, and the input then lies far from it. ``collapse_joins_opposite_sheets`` vetoes a collapse
+    whose endpoints face opposite ways, except one that removes a sliver. Over eight noise seeds
+    the median of each output's 99th-percentile input-to-output distance must stay within four
+    noise widths, and the median of each output's worst mean ratio above 0.015.
+
+    Mutation probes, on both devices (they agree bit for bit here): without the veto the
+    distance median is 2.6e-2 (6.5 noise widths; one seed 8.5e-2) against 9.9e-3; without the
+    sliver exemption the distance holds but the worst-triangle median falls to 0.006, against 0.038.
+
+    **Bug class excluded:** a decimation that welds the two sides of a thin part, and a thin-part
+    rule that keeps the input's slivers to do it.
+    """
+    gap = 0.004
+    sigma = 0.004
+    distances = []
+    worst_quality = []
+    for seed in range(8):
+        vertices_np, faces_np = _noisy_hairpin(gap, sigma, seed)
+        vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+        out_vertices_wp, out_faces_wp = od.remesh.quadric_decimate(
+            vertices_wp, faces_wp, target_ratio=0.01
+        )
+        assert out_faces_wp.size // 3 <= faces_np.shape[0] // 50
+        squared_igl, _, _ = igl.point_mesh_squared_distance(
+            vertices_np,
+            out_vertices_wp.numpy().astype(np.float64),
+            out_faces_wp.numpy().reshape(-1, 3).astype(np.int64),
+        )
+        distances.append(float(np.sqrt(np.percentile(np.asarray(squared_igl), 99))))
+        worst_quality.append(
+            float(
+                od.triangles.face_quality(out_vertices_wp, out_faces_wp, metric="mean_ratio")
+                .numpy()
+                .min()
+            )
+        )
+    assert np.median(distances) < 4.0 * sigma
+    assert np.median(worst_quality) > 0.015
+
+
+def _noisy_hairpin(gap: float, sigma: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    # An open unit sheet folded back on itself along ``x = 0``: two square layers ``gap`` apart
+    # joined by a half-cylinder of four segments, as a ``(rows, profile)`` grid. Gaussian noise of
+    # width ``sigma`` moves the layers' vertices off their planes; the bend stays exact.
+    radius = gap / 2.0
+    n = 40
+    bend = np.linspace(-np.pi / 2.0, np.pi / 2.0, 5)
+    profile = np.concatenate(
+        [
+            np.stack([np.linspace(1.0, 0.0, n, endpoint=False), np.full(n, -radius)], axis=1),
+            np.stack([-radius * np.cos(bend), radius * np.sin(bend)], axis=1),
+            np.stack([np.linspace(0.0, 1.0, n + 1)[1:], np.full(n, radius)], axis=1),
+        ]
+    )
+    m = profile.shape[0]
+    rows = np.linspace(0.0, 1.0, n + 1)
+    vertices = np.zeros((rows.size, m, 3))
+    vertices[:, :, 0] = profile[:, 0]
+    vertices[:, :, 1] = rows[:, None]
+    vertices[:, :, 2] = profile[:, 1]
+    vertices = vertices.reshape(-1, 3)
+    rng = np.random.default_rng(seed)
+    layer = np.abs(vertices[:, 0]) > gap
+    vertices[:, 2] += sigma * rng.standard_normal(vertices.shape[0]) * layer
+    corner = (np.arange(rows.size - 1)[:, None] * m + np.arange(m - 1)[None, :]).reshape(-1)
+    faces = np.concatenate(
+        [
+            np.stack([corner, corner + m, corner + 1], axis=1),
+            np.stack([corner + 1, corner + m, corner + m + 1], axis=1),
+        ]
+    )
+    return vertices, faces.astype(np.int64)
+
+
 def test_quadric_decimate_reaches_its_target_and_floors_on_feature_angle(device: str) -> None:
     """
     Not a library comparison: no reference exposes ``feature_angle``'s effect on the floor.
