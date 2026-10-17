@@ -209,7 +209,11 @@ The test environment installs the reference stack (trimesh, libigl, Open3D, potp
 PyMeshLab, PyVista, MeshLib, PyMeshFix, PyTorch3D, SciPy, and more) so the comparison suite runs
 in full.
 Benchmarks live in `benchmarks/` and use `pytest-benchmark`; PyTorch3D is the one reference with
-CUDA kernels of its own, so it is also the suite's only GPU-against-GPU comparison.
+CUDA kernels of its own, so it is also the suite's only GPU-against-GPU comparison. To reproduce
+them, follow [benchmarks/README.md § Reproduce](benchmarks/README.md#reproduce): a two-step install,
+then `uv run pytest benchmarks/`. The scan meshes are downloaded on first use from the
+[`meshes-v1`](https://github.com/lucagrementieri/ordito/releases/tag/meshes-v1) release and checked
+against pinned SHA-256 hashes.
 
 Bug reports, reproductions and pull requests are welcome — see
 [CONTRIBUTING.md](CONTRIBUTING.md) for the development loop, the bar a pull request has to clear,

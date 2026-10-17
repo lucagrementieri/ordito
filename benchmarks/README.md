@@ -13,11 +13,60 @@ here if the two ever disagree.
 These are **not** collected by the normal test run (`pytest`'s `testpaths` is `tests/`); run them
 by pointing pytest at this directory.
 
-## Install
+## Reproduce
+
+**Requirements:** Linux, Python ≥ 3.11, [uv](https://docs.astral.sh/uv/), an NVIDIA GPU, and the
+CUDA 12.8 toolkit (`nvcc`) to compile pytorch3d's CUDA extension. The published figures were taken
+on an RTX 5090. On a different toolkit, change the `pytorch-cu128` index in `pyproject.toml` to
+match your `nvcc`. A torch built for a different CUDA major cannot build the extension, and the
+pytorch3d-cuda rows are then missing.
 
 ```bash
+git clone https://github.com/lucagrementieri/ordito && cd ordito
+
+# 1. Install. Two steps, because pytorch3d builds against the torch installed by the first one
+#    (about 90 s once; uv caches the wheel afterwards).
+uv sync --group bench --no-install-package pytorch3d
 uv sync --group bench
+
+# 2. Optional: download the scan meshes ahead of time (585 MB, SHA-256 checked). Otherwise each
+#    one is downloaded the first time a benchmark uses it.
+uv run python benchmarks/fetch.py
+
+# 3. Run: ordito-cuda against every reference (about 18 min for the full suite).
+uv run pytest benchmarks/
+
+# 4. Optional: also time ordito-cpu. This runs two processes, and the CPU one starts with CUDA
+#    hidden (see "Never time ordito-cpu in a CUDA-initialised process" below).
+uv run python benchmarks/devices.py
 ```
+
+**Saving and summarising results.** Write one JSON per module, so a crash or a stuck row loses only
+that module. `--benchmark-json` is written when the session ends. Then summarise the directory:
+
+```bash
+mkdir -p results
+for f in benchmarks/test_*.py; do
+  uv run pytest "$f" --benchmark-json="results/$(basename "$f" .py).json"
+done
+uv run python -m benchmarks.aggregate results   # unstable cells (median > 1.5x min) first, then the loss table
+uv run python benchmarks/plot_comparison.py results --out charts/
+```
+
+With `benchmarks/devices.py`, the same `--benchmark-json=<path>` flag writes `<path>.cuda.json` and
+`<path>.cpu.json`.
+
+**What makes a run comparable:**
+
+- **The inputs are fixed.** The scan meshes are pinned by SHA-256, and a mismatch is an error, not
+  a skip (see [Scan meshes](#scan-meshes--the-pure-n-axis)). The feature meshes are generated from
+  `trimesh.creation` with fixed parameters.
+- **The environment is fixed.** `uv.lock` pins every package, including the pytorch3d commit.
+- **Determinism is off.** The harness calls `od.config.set_deterministic(False)` for the whole
+  session, so float reductions use the fast commit (see [Notes](#notes)).
+- **Hardware and load matter.** Absolute times depend on the GPU, and baselines drift 10–30 %
+  between sessions. Compare ratios taken in the same run, not raw milliseconds across machines,
+  and run on an idle machine.
 
 ## The rule: one group measures one axis, at 2–3 points
 
