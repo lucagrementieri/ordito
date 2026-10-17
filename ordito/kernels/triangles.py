@@ -118,7 +118,7 @@ def write_corner_triple(
     ``@wp.func`` whose body would be this one's with its parameters permuted (identical code once
     inlined, so the only thing a "reversed" sibling would add is a second name for the same three
     atomics).
-    ``repair.flip_faces_masked`` and ``levelset.shell_faces`` keep corner 0 and swap only corners 1
+    ``repair.write_face_winding`` and ``levelset.shell_faces`` keep corner 0 and swap only corners 1
     and 2 -- a *different* reversal, already cross-referenced to each other, and not an adopter of
     this function: conflating the two conventions behind one flag would be the correctness hazard
     a duplicated decision rule, not a simplification.

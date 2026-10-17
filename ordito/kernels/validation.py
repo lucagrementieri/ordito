@@ -456,15 +456,22 @@ def mate_hook_parity(
     ecl_hook_pair_parity(words, f0, f1, sign)
 
 
+@wp.func
+def face_parity_flip(words: wp.array[wp.int32], v: wp.int32) -> wp.bool:
+    # Does face ``v`` flip, read off the parity union-find's ``words``: a parity is ``0`` or ``1``,
+    # so ``parity != 0`` is ``orient > 0``. Shared by ``flatten_parity_flip_mask`` and
+    # ``repair.flip_faces_by_parity``, which applies the flip where this one stores it.
+    _root, parity = find_representative_parity(words, v)
+    return parity != 0
+
+
 @wp.kernel
 def flatten_parity_flip_mask(words: wp.array[wp.int32], out_flip: wp.array[wp.bool]) -> None:
     # ``connected_components.ecl_flatten_parity`` with the parity written as the flip mask
-    # ``face_flip_mask`` returns -- a parity is ``0`` or ``1``, so ``parity != 0`` is
-    # ``orient > 0`` -- and no label, for the caller that wants the mask alone rather than the
-    # ``int32`` bits.
+    # ``face_flip_mask`` returns and no label, for the caller that wants the mask alone rather than
+    # the ``int32`` bits.
     v = wp.int32(wp.tid())
-    _root, parity = find_representative_parity(words, v)
-    out_flip[v] = parity != 0
+    out_flip[v] = face_parity_flip(words, v)
 
 
 @wp.func
@@ -675,6 +682,51 @@ def neighbor_normals(
     return total, max_angle
 
 
+@wp.func
+def face_defective(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    mates: wp.array[wp.int32],
+    f: wp.int32,
+    min_quality: wp.float32,
+    max_normal_cos: wp.float32,
+    max_fold_cos: wp.float32,
+) -> wp.bool:
+    # Is face ``f`` bad: too thin, too far from its neighbourhood's consensus normal, or folded
+    # back onto its own ring? Each criterion is disabled by passing a cosine of -2 / a quality of
+    # -1, which no real value can reach, so the three gates compose without a separate flag
+    # argument. The decision rule behind ``face_defective_mask`` and ``repair.remove_folded_faces``'
+    # marking pass (``repair.mark_unfolded_faces``).
+    #
+    # The thinness is ``triangles.face_quality``'s ``radius_ratio`` formed from the corners in
+    # registers, and the neighbourhood is gathered through the face's halfedge mates
+    # (``neighbor_normals``) rather than scattered into per-face tables. ``face_normals`` and
+    # ``mates`` are never read when both angle criteria are off, so a caller passes ``None`` for
+    # them then (the branch is warp-uniform).
+    if min_quality > -1.0:
+        v0, v1, v2 = face_vertices(vertices, faces, f)
+        if triangle_radius_ratio(v0, v1, v2) < min_quality:
+            return True
+    if max_normal_cos <= -2.0 and max_fold_cos <= -2.0:
+        return False
+
+    neighbor_sum, max_angle = neighbor_normals(face_normals, mates, f)
+    # Direction of the sum of the neighbouring normals: the local consensus. ``wp.normalize`` of a
+    # zero vector is zero in Warp, which is how an isolated face -- and a face whose neighbours
+    # cancel each other exactly -- ends up with no consensus to disagree with.
+    consensus = wp.normalize(neighbor_sum)
+    agreement = wp.dot(face_normals[f], consensus)
+    if wp.length_sq(consensus) > 0.0 and agreement < max_normal_cos:
+        return True
+
+    # Fold: some neighbour meets this face at nearly pi (an unsigned dihedral, so the gate is on its
+    # cosine) *and* this face is the one facing against its own neighbourhood. Both halves matter --
+    # a fold has two faces and only one of them is the mistake, so flagging both would delete a good
+    # triangle along with it.
+    return wp.cos(max_angle) < max_fold_cos and agreement < 0.0
+
+
 @wp.kernel
 def face_defective_mask(
     vertices: wp.array[wp.vec3],
@@ -686,38 +738,8 @@ def face_defective_mask(
     max_fold_cos: wp.float32,
     out_bad: wp.array[wp.bool],
 ) -> None:
-    # A face is bad if it is too thin, too far from its neighbourhood's consensus normal, or folded
-    # back onto its own ring. Each criterion is disabled by passing a cosine of -2 / a quality of
-    # -1, which no real value can reach, so the three gates compose without a separate flag
-    # argument.
-    #
-    # One thread per face does all of it: the thinness is ``triangles.face_quality``'s
-    # ``radius_ratio`` formed from the corners in registers, and the neighbourhood is gathered
-    # through the face's halfedge mates (``neighbor_normals``) rather than scattered into per-face
-    # tables. ``face_normals`` and ``mates`` are never read when both angle criteria are off, so
-    # the wrapper passes ``None`` for them then (the branch is warp-uniform).
+    # One thread per face does all of ``face_defective``.
     f = wp.int32(wp.tid())
-    if min_quality > -1.0:
-        v0, v1, v2 = face_vertices(vertices, faces, f)
-        if triangle_radius_ratio(v0, v1, v2) < min_quality:
-            out_bad[f] = wp.bool(True)
-            return
-    if max_normal_cos <= -2.0 and max_fold_cos <= -2.0:
-        out_bad[f] = wp.bool(False)
-        return
-
-    neighbor_sum, max_angle = neighbor_normals(face_normals, mates, f)
-    # Direction of the sum of the neighbouring normals: the local consensus. ``wp.normalize`` of a
-    # zero vector is zero in Warp, which is how an isolated face -- and a face whose neighbours
-    # cancel each other exactly -- ends up with no consensus to disagree with.
-    consensus = wp.normalize(neighbor_sum)
-    agreement = wp.dot(face_normals[f], consensus)
-    if wp.length_sq(consensus) > 0.0 and agreement < max_normal_cos:
-        out_bad[f] = wp.bool(True)
-        return
-
-    # Fold: some neighbour meets this face at nearly pi (an unsigned dihedral, so the gate is on its
-    # cosine) *and* this face is the one facing against its own neighbourhood. Both halves matter --
-    # a fold has two faces and only one of them is the mistake, so flagging both would delete a good
-    # triangle along with it.
-    out_bad[f] = wp.cos(max_angle) < max_fold_cos and agreement < 0.0
+    out_bad[f] = face_defective(
+        vertices, faces, face_normals, mates, f, min_quality, max_normal_cos, max_fold_cos
+    )

@@ -69,7 +69,12 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, require_valid_faces
 from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
-from ordito.grouping import hash_vector_rows, unique_1d, unique_faces
+from ordito.grouping import (
+    _unique_keys_core,  # pyright: ignore[reportPrivateUsage]
+    hash_vector_rows,
+    unique_faces,
+)
+from ordito.kernels import array as kernel_array
 from ordito.kernels import polyline as kernel_polyline
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import repair as kernel_repair
@@ -77,6 +82,7 @@ from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import selection as kernel_selection
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPrivateUsage]
+from ordito.validation import _face_flip_words  # pyright: ignore[reportPrivateUsage]
 
 # Lattice resolution for ``fix_self_intersections(method="voxel")``, in samples across the mesh's
 # bounding-box diagonal. The same order as ``offset.offset_mesh``'s automatic floor, and the field
@@ -459,9 +465,8 @@ def remove_duplicated_vertices(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    # The class count comes with the inverse, so the representatives need no reduction to size them.
-    n_unique, inverse = _vertex_classes(vertices, epsilon)
-    unique_indices = od.grouping.first_occurrence_indices(inverse, n_unique)
+    # Each class's first occurrence comes with the inverse, read off the grouping's stable sort.
+    inverse, unique_indices = _vertex_classes(vertices, epsilon)
     unique_vertices = od.array.gather(vertices, unique_indices)
     unique_faces = od.array.remap_indices(faces, inverse)
     return unique_vertices, unique_indices, inverse, unique_faces
@@ -521,20 +526,39 @@ def duplicate_vertex_inverse(vertices: wp.array[wp.vec3], epsilon: float) -> wp.
     print(inverse.shape, int(inverse.numpy().max()) + 1)  # (36,) 8
     ```
     """
-    return _vertex_classes(vertices, epsilon)[1]
+    return _vertex_classes(vertices, epsilon)[0]
 
 
-def _vertex_classes(vertices: wp.array[wp.vec3], epsilon: float) -> tuple[int, wp.array[wp.int32]]:
-    """Return the coincident-vertex class count and each vertex's class, as ``unique_1d`` does."""
+def _vertex_classes(
+    vertices: wp.array[wp.vec3], epsilon: float
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Return each vertex's coincident-vertex class and each class's first vertex.
+
+    The inverse ``unique_1d`` gives for the vertex keys, and the
+    [`first_occurrence_indices`][ordito.grouping.first_occurrence_indices] of it, whose length is
+    the class count.
+    """
     device = vertices.device
-    if vertices.size == 0:
-        return 0, _launch.empty(0, dtype=wp.int32, device=device)
-    # One key per vertex and one ``unique_1d`` over it, at either tolerance: ``hash_vector_rows``
-    # quantizes at ``epsilon > 0`` and packs the relative float buckets at ``0`` -- the same key
-    # ``unique_rows`` would hash the vertices to, without the representative gather it would then
-    # compute.
-    unique, inverse = unique_1d(hash_vector_rows(vertices, epsilon=epsilon), return_inverse=True)
-    return unique.size, inverse
+    n = vertices.size
+    if n == 0:
+        empty = _launch.empty(0, dtype=wp.int32, device=device)
+        return empty, empty
+    # One key per vertex, at either tolerance: ``hash_vector_rows`` quantizes at ``epsilon > 0`` and
+    # packs the relative float buckets at ``0`` -- the same key ``unique_rows`` would hash the
+    # vertices to. The keys and the identity payload go into the leading halves of the sort's
+    # double-width buffers, and the grouping reads each class's first occurrence off the stable
+    # sort in the launch that writes the inverse, as ``unique_rows`` does.
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_array.KEYS_AND_IDENTITY[wp.uint64],
+        dim=n,
+        inputs=[hash_vector_rows(vertices, epsilon=epsilon), keys, order],
+        device=device,
+    )
+    inverse, first, _counts = _unique_keys_core(keys, order, None, False)
+    return inverse, first
 
 
 def resolve_duplicated_faces(
@@ -2114,7 +2138,7 @@ def reverse_winding(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
 
     The corner that stays first is a convention, and this one matches ``np.fliplr`` -- which is
     what ``trimesh.Trimesh.invert`` applies, so the two agree elementwise rather than only up to a
-    rotation of each row. ``kernels.repair.flip_faces_masked``, which the per-face flippers use,
+    rotation of each row. ``kernels.repair.write_face_winding``, which the per-face flippers use,
     keeps corner 0 instead; both reverse orientation and they differ by a cyclic rotation.
 
     See Also
@@ -2228,12 +2252,16 @@ def make_winding_consistent(
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.int32, device=device)
 
-    # The flip mask solves the bits straight off the halfedge mates, with no adjacency table
-    # and no host read of its length -- the bits ``face_orientation_bits`` gives.
-    flip = od.validation.face_flip_mask(faces, n_vertices=n_vertices)
+    # The flip mask's parity words, solved straight off the halfedge mates with no adjacency table
+    # and no host read of its length -- the bits ``face_orientation_bits`` gives -- and read by the
+    # flip itself, so the mask is never stored.
+    words = _face_flip_words(faces, n_vertices, None)
     out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_repair.flip_faces_masked, dim=n_faces, inputs=[faces, flip, out_faces], device=device
+        kernel_repair.flip_faces_by_parity,
+        dim=n_faces,
+        inputs=[faces, words, out_faces],
+        device=device,
     )
     return out_faces
 
@@ -2460,6 +2488,8 @@ def remove_folded_faces(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
+    ValueError
+        If ``angle`` is not in ``(0, 180]``.
 
     See Also
     --------
@@ -2496,23 +2526,34 @@ def remove_folded_faces(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
+    if not 0.0 < angle <= 180.0:
+        raise ValueError(f"angle must be in (0, 180] degrees, got {angle}")
+    device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
         return _launch.clone(vertices), _launch.clone(faces)
-    folded = od.validation.face_defective_mask(
-        vertices, faces, min_quality=None, max_fold_angle=angle
-    )
-    # The submesh extraction keeps the faces whose mask entry is ``False``, so the folded mask is
-    # its input as it stands, with no negated copy.
-    ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=faces.device)
+    face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
+    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    # The fold decision and the submesh extraction's marking pass in one launch; the keep mask it
+    # writes is what the compaction reads.
+    keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_selection.mark_submesh_faces_and_vertices,
+        kernel_repair.mark_unfolded_faces,
         dim=n_faces,
-        inputs=[faces, folded, False, ranks],
-        device=faces.device,
+        inputs=[
+            vertices,
+            faces,
+            face_normals,
+            mates,
+            wp.float32(math.cos(math.radians(angle))),
+            keep,
+            ranks,
+        ],
+        device=device,
     )
     new_vertices, new_faces, _vertex_index, _ranks = _compact_marked_submesh(
-        vertices, faces, folded, ranks, keep_masked=False, with_index=False
+        vertices, faces, keep, ranks, keep_masked=True, with_index=False
     )
     return new_vertices, new_faces
 

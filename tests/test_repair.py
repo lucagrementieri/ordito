@@ -2557,6 +2557,16 @@ def test_remove_folded_faces_drops_exactly_the_folded_pairs(
     assert_unordered_rows_equal(kept_np.reshape(-1, 9), expected_np.reshape(-1, 9))
 
 
+@pytest.mark.parametrize("angle", [0.0, 180.5])
+def test_remove_folded_faces_rejects_an_angle_outside_its_range(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], angle: float
+) -> None:
+    """Not a library comparison: an argument check. Both ends of ``(0, 180]`` are refused."""
+    _, mesh_wp = icosahedron
+    with pytest.raises(ValueError, match="angle must be in"):
+        od.repair.remove_folded_faces(mesh_wp.points, mesh_wp.indices, angle=angle)
+
+
 def _self_intersecting_count_ml(
     vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
 ) -> int:

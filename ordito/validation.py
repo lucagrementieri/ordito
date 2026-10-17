@@ -1157,14 +1157,28 @@ def face_flip_mask(
         return _launch.empty(0, dtype=wp.bool, device=device)
 
     # The flip mask is the parity itself, so the flatten writes it as a ``bool`` directly.
-    words, mates = _orientation_words_from_mates(faces, n_vertices, mates)
-    if is_deterministic():
-        words = _reproducible_orientation_words(faces, mates, None, None, words)
+    words = _face_flip_words(faces, n_vertices, mates)
     mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_validation.flatten_parity_flip_mask, dim=n_faces, inputs=[words, mask], device=device
     )
     return mask
+
+
+def _face_flip_words(
+    faces: wp.array[wp.int32], n_vertices: int | None, mates: wp.array[wp.int32] | None
+) -> wp.array[wp.int32]:
+    """
+    ``face_flip_mask``'s parity words, before the flatten that reads each face's flip off them.
+
+    For a caller whose own per-face kernel reads the flip in place
+    (``kernels/validation.face_parity_flip``), so the mask is never materialized. Nonempty
+    ``faces``; reproducible under the deterministic setting exactly as the mask is.
+    """
+    words, mates = _orientation_words_from_mates(faces, n_vertices, mates)
+    if is_deterministic():
+        words = _reproducible_orientation_words(faces, mates, None, None, words)
+    return words
 
 
 def _reproducible_orientation_words(

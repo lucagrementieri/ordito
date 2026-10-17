@@ -39,6 +39,7 @@ from ordito.kernels.triangles import (
     triangle_quality,
     write_corner_triple,
 )
+from ordito.kernels.validation import face_defective, face_parity_flip
 
 wp.set_module_options({"enable_backward": False})
 
@@ -258,7 +259,7 @@ def mark_face_fate(
     # kept, the face and its three vertices flagged in the zeroed ``(n_faces + n_vertices,)`` rank
     # buffer, as ``selection.mark_submesh_faces_and_vertices`` does from a mask. Shared by the
     # kernels that decide each face's fate inline (``remap_mark_nondegenerate_faces``,
-    # ``mark_kept_components``); they differ only in the decision.
+    # ``mark_kept_components``, ``mark_unfolded_faces``); they differ only in the decision.
     out_keep[f] = keep
     if keep:
         mark_submesh_face(faces, out_keep.shape[0], f, out_flags)
@@ -276,6 +277,25 @@ def mark_nondegenerate_faces(
     f = wp.int32(wp.tid())
     v0, v1, v2 = face_vertices(vertices, faces, f)
     mark_face_fate(faces, f, triangle_nondegenerate(v0, v1, v2), out_keep, out_flags)
+
+
+@wp.kernel
+def mark_unfolded_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    mates: wp.array[wp.int32],
+    max_fold_cos: wp.float32,
+    out_keep: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``validation.face_defective_mask`` at its fold criterion alone and the submesh compaction's
+    # marking in one pass, for ``remove_folded_faces``: a face is kept unless it folds.
+    f = wp.int32(wp.tid())
+    folded = face_defective(
+        vertices, faces, face_normals, mates, f, wp.float32(-1.0), wp.float32(-2.0), max_fold_cos
+    )
+    mark_face_fate(faces, f, not folded, out_keep, out_flags)
 
 
 @wp.kernel
@@ -325,18 +345,20 @@ def write_face_winding(
 
 
 @wp.kernel
-def flip_faces_masked(
-    faces: wp.array[wp.int32], flip: wp.array[wp.bool], out_faces: wp.array[wp.int32]
+def flip_faces_by_parity(
+    faces: wp.array[wp.int32], words: wp.array[wp.int32], out_faces: wp.array[wp.int32]
 ) -> None:
-    """Copy ``faces`` to ``out_faces``, reversing winding (swap corners 1,2) where ``flip``."""
+    """Copy ``faces`` to ``out_faces``, reversing winding (swap corners 1,2) where a face flips."""
+    # ``validation.face_flip_mask``'s flatten and a masked flip in one pass: each face's flip is
+    # read off the parity words where it is applied, so no mask is stored between two launches.
     f = wp.int32(wp.tid())
-    write_face_winding(faces, f, flip[f], out_faces)
+    write_face_winding(faces, f, face_parity_flip(words, f), out_faces)
 
 
 @wp.kernel
 def flip_all_faces(faces: wp.array[wp.int32], out_faces: wp.array[wp.int32]) -> None:
     """Copy ``faces`` to ``out_faces`` with every winding reversed (corners 1 and 2 swapped)."""
-    # ``flip_faces_masked``' convention with the mask constant, so the whole-mesh flip needs no
+    # ``flip_faces_by_parity``' convention with the flip constant, so the whole-mesh flip needs no
     # all-ones flag buffer allocated only to be read back as ``True`` at every face.
     f = wp.int32(wp.tid())
     write_face_winding(faces, f, True, out_faces)
