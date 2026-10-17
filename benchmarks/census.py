@@ -32,6 +32,7 @@ symbols fails the session at startup rather than silently counting zero.
 from __future__ import annotations
 
 import collections
+import gc
 import inspect
 import json
 from pathlib import Path
@@ -215,6 +216,12 @@ def _install(conftest: Any) -> None:
         wp.synchronize_device(device)
         arguments = (setup(),) if setup is not None else ()
         wp.synchronize_device(device)
+        # Warp pools some host buffers (a ``BsrMatrix``'s pinned ``nnz`` transfer buffer) and hands
+        # them back from a ``weakref.finalize``, so an object caught in a reference cycle returns
+        # its buffer whenever the cyclic collector happens to run. Collect before arming and keep
+        # the collector off during the counted call, or the allocation count follows GC timing.
+        gc.collect()
+        gc.disable()
         _COUNTS.clear()
         _SEQUENCE.clear()
         _STATE["cpu_row"] = wp.get_device(device).is_cpu
@@ -223,6 +230,7 @@ def _install(conftest: Any) -> None:
             result = fn(*arguments)
         finally:
             _STATE["armed"] = False
+            gc.enable()
         wp.synchronize_device(device)
         node = self._benchmark.fullname
         _ROWS[node] = {key: _COUNTS[key] for key in GATED if _COUNTS[key]}
