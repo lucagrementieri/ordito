@@ -1,9 +1,10 @@
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE_CONSTANT, TWO_PI
+from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D, TOLERANCE_MERGE_CONSTANT, TWO_PI
 from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels.array import (
     RegisterBlockedTable,
+    atomic_min_packed_box,
     lattice_position,
     lift_vec2,
     morton_code_30,
@@ -13,9 +14,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.neighbors import (
     MAX_SEARCH_ATTEMPTS,
-    NO_NEAREST_KEY,
     attempt_radius,
-    block_nearest_key,
     next_search_radius,
     search_radius_bounds,
 )
@@ -28,7 +27,7 @@ from ordito.kernels.predicates import (
     triangle_aabb,
     triangle_triangle_distance_sq,
 )
-from ordito.kernels.reduce import block_argmin, block_barrier, block_max, block_sum, thread_fence
+from ordito.kernels.reduce import block_argmin, block_barrier, block_chunk, block_max, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1027,32 +1026,6 @@ def face_to_mesh_distance_tiled_overfull(
         )
 
 
-@wp.kernel
-def nearest_face_pair(
-    distances: wp.array[wp.float32],
-    partners: wp.array[wp.int32],
-    n_blocks: wp.int32,
-    out_result: wp.array[wp.int64],
-) -> None:
-    # ``neighbors.nearest_key_argmin`` and ``neighbors.nearest_key_partner`` in one launch, for
-    # ``mesh_to_mesh_distance``: the smallest ``pack_nearest_key(distances[i], i)`` into
-    # ``out_result[0]`` and ``partners`` of its winner into ``out_result[1]``. The block that draws
-    # the last ticket (``out_result[2]``, counting down from ``INT64_MAX``; all three slots arrive
-    # seeded at ``INT64_MAX``) has seen every block's ``atomic_min`` land, so it reads the winner
-    # (atomically, past any cached copy) and writes its partner. The fence publishes a block's
-    # minimum before its ticket. Launched as ``nearest_key_argmin`` is, ``n_blocks`` wide.
-    chunk, lane = wp.tid()
-    block_best = block_nearest_key(distances, chunk, lane)
-    if lane == 0:
-        wp.atomic_min(out_result, 0, block_best)
-        thread_fence()
-        ticket = wp.atomic_add(out_result, 2, wp.int64(-1))
-        if ticket == NO_NEAREST_KEY - wp.int64(n_blocks - 1):
-            thread_fence()
-            key = wp.atomic_min(out_result, 0, NO_NEAREST_KEY)
-            out_result[1] = wp.int64(partners[wp.int32(key & wp.int64(0xFFFFFFFF))])
-
-
 @wp.func
 def closest_face_or_first(mesh_id: wp.uint64, p: wp.vec3, max_dist: wp.float32) -> wp.int32:
     # The face closest to ``p``, or face 0 on a miss -- the wrapper's documented convention, which
@@ -1895,6 +1868,29 @@ def query_mesh_aabb_neighbors(
 
 
 @wp.kernel
+def lift_vec2_and_bound(
+    vertices: wp.array[wp.vec2], out_lifted: wp.array[wp.vec3], out_corners: wp.array[wp.float32]
+) -> None:
+    # ``containing_faces_2d``'s setup in one launch: each 2D vertex lifted to ``z = 0`` (the mesh
+    # ``face_containing_point_2d`` queries) and folded into the packed box ``out_corners`` that
+    # sizes its search radius. ``minmax_vec3_chunked``'s shape -- one thread per ``TILE_1D``
+    # vertices, launched at ``reduce.chunks_1d``, ``out_corners`` seeded ``inf`` -- over the lifted
+    # points it writes, so the box is the one that kernel read off them.
+    offset, count = block_chunk(vertices.shape[0], wp.int32(wp.tid()), TILE_1D)
+    if count <= 0:
+        return
+    lower = lift_vec2(vertices[offset], wp.float32(0.0))
+    upper = lower
+    out_lifted[offset] = lower
+    for k in range(1, count):
+        p = lift_vec2(vertices[offset + k], wp.float32(0.0))
+        out_lifted[offset + k] = p
+        lower = wp.min(lower, p)
+        upper = wp.max(upper, p)
+    atomic_min_packed_box(out_corners, wp.int32(0), lower, upper)
+
+
+@wp.kernel
 def face_containing_point_2d(
     mesh_id: wp.uint64,
     vertices: wp.array[wp.vec2],
@@ -1925,7 +1921,7 @@ def face_containing_point_2d(
     # 1.1-1.2x slower at a million, and 1.2-2.3x slower at every size on the CPU.
     #
     # The radius is ``search_scale`` times the triangulation's box diagonal, read from
-    # ``minmax_vec3_chunked``'s ``corners`` (upper corner negated) in the thread rather than on the
+    # ``lift_vec2_and_bound``'s ``corners`` (upper corner negated) in the thread rather than on the
     # host, so sizing it costs no readback. Since the answer does not depend on the radius beyond
     # its being loose enough, its float32 rounding here is immaterial.
     tid = wp.int32(wp.tid())
