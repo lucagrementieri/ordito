@@ -27,11 +27,15 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device, run_device_loop
-from ordito.constants import INT32_MAX, TILE_1D
+from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import homology as kernel_homology
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
+
+# Where the two device loops' state words sit in ``homology_generators_with_offsets``' one upload.
+_PRIMAL_STATE = slice(0, 3)
+_FOREST_STATE = slice(3, 6)
 
 
 def homology_generators(
@@ -238,14 +242,31 @@ def homology_generators_with_offsets(
     # The vertex graph the primal tree spans. Unsorted rows, which the level loop cannot see: it
     # resolves competing claims by lowest vertex index, not by column position.
     neighbors, offsets = od.graph.edges_to_neighbor_lists(n_vertices, unique_edges, validate=False)
-    parents, distances = _primal_spanning_tree(offsets, neighbors, unique_edges, root)
+    # Every small ``int32`` buffer the decomposition needs, uploaded at once holding its initial
+    # values: the primal level loop's state, the dual forest's, the count slots below and a caller's
+    # root. Each loop's condition starts true because ``wp.capture_while`` reads it before the first
+    # round; the primal loop claims level 1 first, nothing is claimed yet and nothing counted.
+    small = _launch.array(
+        [1, 1, 0, 0, 1, 0, *([0] * kernel_homology.COUNT_SIZE), 0 if root is None else root],
+        dtype=wp.int32,
+        device=device,
+    )
+    count_end = _FOREST_STATE.stop + kernel_homology.COUNT_SIZE
+    labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    parents, distances = _primal_spanning_tree(
+        offsets,
+        neighbors,
+        odt.as_dense(unique_edges[0] if root is None else small[count_end:]),
+        odt.as_dense(small[_PRIMAL_STATE]),
+        labels,
+    )
 
     # Both preconditions are counting questions, and both are answered on the device into one
     # three-slot buffer that is read back once: a guard that raises does not need to raise early,
     # and a separate readback apiece would serialise the pipeline twice more. The interior-edge
     # count rides in the candidate mask below, which already tests ``edge_face_count == 2``, so
     # neither guard costs a pass of its own.
-    counts = _launch.zeros(kernel_homology.COUNT_SIZE, dtype=wp.int32, device=device)
+    counts = odt.as_dense(small[_FOREST_STATE.stop : count_end])
 
     # A generator is an edge in neither tree. ``candidate`` starts as the edges the cotree is
     # allowed to cross -- interior, and not already claimed by the primal tree -- and the forest
@@ -287,15 +308,18 @@ def homology_generators_with_offsets(
             f"{n_reached} of {n_referenced} referenced vertices."
         )
 
-    _remove_dual_spanning_forest(candidate, edge_faces, n_faces, unique_edges, distances)
+    _remove_dual_spanning_forest(
+        candidate, edge_faces, unique_edges, distances, labels, odt.as_dense(small[_FOREST_STATE])
+    )
     return _trace_generator_loops(candidate, unique_edges, parents, distances)
 
 
 def _primal_spanning_tree(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
-    unique_edges: odt.Array2dInt32,
-    root: int | None,
+    seed: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    dual_labels: wp.array[wp.int32],
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Rooted spanning tree of the vertex graph as ``(parents, distances)``.
@@ -306,29 +330,34 @@ def _primal_spanning_tree(
     which the tree never reaches; ``distances`` holds the depth, or ``-1`` for the same vertices.
 
     **The default root is the first vertex of the first unique edge, read on the device rather
-    than handed in** -- one host readback the call does not take; a caller's ``root`` is uploaded
-    instead. Rooting at vertex 0 unconditionally is the bug that avoids: on a mesh whose vertex 0
-    carries no edges the "tree" is a single isolated node, every primal edge becomes a generator,
-    and the count comes back enormous rather than wrong-looking. An endpoint of an edge is
+    than handed in** -- one host readback the call does not take; ``seed`` is that edge's row, or a
+    caller's uploaded ``root``, and only its first entry is read. Rooting at vertex 0
+    unconditionally is the bug that avoids: on a mesh whose vertex 0 carries no edges the "tree"
+    is a single isolated node, every primal edge becomes a generator, and the count comes back
+    enormous rather than wrong-looking. An endpoint of an edge is
     referenced by construction, and [`edges_unique`][ordito.edges.edges_unique]'s row order is a
-    function of ``faces`` alone, so the default is deterministic -- which is what lets the seed be
-    [`scatter_index`][ordito.kernels.scatter.scatter_index] at ``dim=1`` rather than a kernel of
-    its own.
+    function of ``faces`` alone, so the default is deterministic.
+
+    ``state`` is the level loop's round word, uploaded holding ``[1, 1, 0]``. The launch that
+    seeds the tree also writes the identity of ``dual_labels``, the dual forest's starting
+    components, so that setup costs no launch of its own.
 
     The depth is kept although a spanning tree does not need it: it is what lets
     [`_trace_generator_loops`][ordito.homology._trace_generator_loops] size a loop without walking
     it, and the level loop writes it either way.
     """
-    device = unique_edges.device
+    device = offsets.device
     n_vertices = offsets.size - 1
-    parents = _launch.full(n_vertices, INT32_MAX, dtype=wp.int32, device=device)
-    distances = _launch.full(n_vertices, -1, dtype=wp.int32, device=device)
-    # Level 1 is the first to claim; the condition starts true because ``wp.capture_while`` reads
-    # it before the first round; nothing claimed yet. Allocated holding those values rather than
-    # zeroed and then assigned -- the zeroing is thrown away and the assign is a second upload.
-    state = _launch.array([1, 1, 0], dtype=wp.int32, device=device)
-    seed = unique_edges[0] if root is None else _launch.array([root], dtype=wp.int32, device=device)
-    _launch.launch(kernel_scatter.scatter_index, dim=1, inputs=[seed, distances], device=device)
+    parents = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    distances = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    n_faces = dual_labels.size
+    _launch.launch(
+        kernel_homology.seed_root_and_identity_labels,
+        dim=max(n_vertices, n_faces),
+        inputs=[seed, n_vertices, n_faces],
+        outputs=[parents, distances, dual_labels],
+        device=device,
+    )
 
     # A level claims at least one vertex or the loop is over, so ``n_vertices + 1`` bounds it --
     # cheap insurance against a captured loop hanging the device rather than answering wrongly.
@@ -350,9 +379,10 @@ def _primal_spanning_tree(
 def _remove_dual_spanning_forest(
     candidate: wp.array[wp.bool],
     edge_faces: odt.Array2dInt32,
-    n_faces: int,
     unique_edges: odt.Array2dInt32,
     distances: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    state: wp.array[wp.int32],
 ) -> None:
     """
     Clear from ``candidate``, in place, a spanning forest of the dual graph over its edges.
@@ -371,17 +401,17 @@ def _remove_dual_spanning_forest(
     walks the *primal* parents — so the dual side has no root and no parent pointers, and its shape
     is free to choose. Breadth-first is the expensive shape here: the dual graph restricted to
     non-primal-tree edges is already nearly a tree, so its diameter is enormous.
+
+    ``labels`` arrives as the identity over the faces and ``state`` as the round word
+    ``[0, 1, 0]``.
     """
     device = candidate.device
     n_candidates = candidate.size
+    n_faces = labels.size
     if n_candidates == 0 or n_faces == 0:
         return
-    labels = od.array.arange(n_faces, device=device)
     roots = _launch.empty(n_faces, dtype=wp.int32, device=device)
     proposal = _launch.empty(n_faces, dtype=wp.uint64, device=device)
-    # The condition starts true because ``wp.capture_while`` reads it before the first round;
-    # allocated holding that seed rather than zeroed and then assigned.
-    state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
     # The component count at least halves per round, so ``bit_length`` -- ``ceil(log2)`` plus one --
     # caps a loop the halving argument already bounds; it can only be reached by a logic error.
     max_rounds = wp.int32(max(1, n_faces.bit_length()) + 1)

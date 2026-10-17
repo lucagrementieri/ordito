@@ -294,48 +294,58 @@ def dilate_vertex_mask(
 
 @wp.kernel
 def vertex_hops_from_mask(
-    mask: wp.array[wp.bool], value: wp.bool, out_hops: wp.array[wp.int32]
+    mask: wp.array[wp.bool],
+    value: wp.bool,
+    out_hops: wp.array[wp.int32],
+    out_mask: wp.array[wp.bool],
 ) -> None:
     # Seed the hop buffer ``dilate_vertex_hops`` grows in place: ``0`` where the mask already holds
-    # ``value`` (the polarity spread), ``INT32_MAX`` where no round has reached the vertex yet.
+    # ``value`` (the polarity spread), ``INT32_MAX`` where no round has reached the vertex yet. The
+    # answer is seeded beside it as a copy of ``mask``: ``value`` at a seed and its negation at
+    # every vertex no round has reached, so the rounds only ever write ``value`` into it.
     v = wp.int32(wp.tid())
-    out_hops[v] = wp.where(mask[v] == value, 0, INT32_MAX_CONSTANT)
+    seed = mask[v]
+    out_hops[v] = wp.where(seed == value, 0, INT32_MAX_CONSTANT)
+    out_mask[v] = seed
 
 
 @wp.kernel
-def dilate_vertex_hops(faces: wp.array[wp.int32], hop: wp.int32, hops: wp.array[wp.int32]) -> None:
+def dilate_vertex_hops(
+    faces: wp.array[wp.int32],
+    hop: wp.int32,
+    value: wp.bool,
+    hops: wp.array[wp.int32],
+    out_mask: wp.array[wp.bool],
+) -> None:
     # Dilation round ``hop`` (from 1), reached through the faces: on a triangle mesh two vertices
     # share an edge exactly when they share a face, so marking every corner of a face with a reached
     # corner adds precisely the edge neighbours, and no unique-edge table has to exist. Measured
     # against the same round over a caller's unique edges, it is level at a hundred thousand faces
     # and 1.2x at tens of millions, so the edge form was retired rather than kept beside it.
-    # ``vertex_mask_from_hops`` explains the polarity ``value`` the seed spreads.
     #
     # In place, which ``dilate_vertex_mask``'s boolean mask cannot be: a vertex this round reaches
     # reads ``hop``, and only a value *below* ``hop`` (reached by an earlier, finished launch)
     # spreads, so nothing this round writes is read as a source by it. Every racing writer stores
     # the same ``hop`` over a larger value, so the plain stores are benign.
+    #
+    # A vertex a round reaches takes ``value`` in ``out_mask`` too, seeded by
+    # ``vertex_hops_from_mask``, so after the last round it is the dilated mask -- ``value`` where a
+    # round reached the vertex, its negation elsewhere -- with no pass to convert the hops. With
+    # ``value == False`` that dilates the *complement* -- a face with an unselected corner clears
+    # all three -- which is ``shrink_vertex_mask``'s erosion without forming the complement on the
+    # way in or out.
     f = wp.int32(wp.tid())
     a, b, c = corner_triple(faces, f)
     if hops[a] < hop or hops[b] < hop or hops[c] < hop:
         if hops[a] > hop:
             hops[a] = hop
+            out_mask[a] = value
         if hops[b] > hop:
             hops[b] = hop
+            out_mask[b] = value
         if hops[c] > hop:
             hops[c] = hop
-
-
-@wp.kernel
-def vertex_mask_from_hops(
-    hops: wp.array[wp.int32], n_hops: wp.int32, value: wp.bool, out_mask: wp.array[wp.bool]
-) -> None:
-    # The dilated mask: ``value`` where ``n_hops`` rounds reached the vertex, its negation
-    # elsewhere. ``value == False`` therefore dilates the *complement* -- a face with an unselected
-    # corner clears all three -- which is ``shrink_vertex_mask``'s erosion without forming the
-    # complement on the way in or out.
-    v = wp.int32(wp.tid())
-    out_mask[v] = (hops[v] <= n_hops) == value
+            out_mask[c] = value
 
 
 @wp.kernel
@@ -374,6 +384,30 @@ def mark_region_seam(
     out_flags[i] = flag
 
 
+@wp.func
+def write_region_seam_row(
+    h: wp.int32,
+    row: wp.int32,
+    mates: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    oriented: wp.bool,
+    out_edges: wp.array2d[wp.int32],
+) -> None:
+    # Row ``row`` of the seam from its flagged halfedge ``h``: the region face's halfedge --
+    # directed when ``oriented``, which puts the region on its left, else ascending. Shared by
+    # ``emit_region_seam`` and ``emit_key_ordered_region_seam``, which differ only in where the
+    # flagged halfedges come from.
+    if not face_mask[h // 3]:
+        h = mates[h]
+    if oriented:
+        a, b = halfedge_endpoints(faces, h)
+        out_edges[row, 0] = a
+        out_edges[row, 1] = b
+    else:
+        write_edge_row(faces, h, row, out_edges)
+
+
 @wp.kernel
 def emit_region_seam(
     halfedges: wp.array[wp.int32],
@@ -384,18 +418,28 @@ def emit_region_seam(
     out_edges: wp.array2d[wp.int32],
 ) -> None:
     # One thread per seam edge, its flagged halfedge already in ascending key order
-    # (``halfedge.key_ordered_halfedges``): write the region face's halfedge -- directed when
-    # ``oriented``, which puts the region on its left, else ascending.
+    # (``halfedge.key_ordered_halfedges``, which sorted them when the mates came from buckets).
     g = wp.int32(wp.tid())
-    h = halfedges[g]
-    if not face_mask[h // 3]:
-        h = mates[h]
-    if oriented:
-        a, b = halfedge_endpoints(faces, h)
-        out_edges[g, 0] = a
-        out_edges[g, 1] = b
-    else:
-        write_edge_row(faces, h, g, out_edges)
+    write_region_seam_row(halfedges[g], g, mates, faces, face_mask, oriented, out_edges)
+
+
+@wp.kernel
+def emit_key_ordered_region_seam(
+    inclusive: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    oriented: wp.bool,
+    out_edges: wp.array2d[wp.int32],
+) -> None:
+    # ``halfedge.flagged_key_ordered_halfedges`` and ``emit_region_seam`` in one pass, when the
+    # mates came from the edge-key sort: the scanned flags are already in key order, so a flagged
+    # entry writes its row at its rank and no halfedge list is compacted in between.
+    i = wp.int32(wp.tid())
+    row, count = scanned_count(inclusive, i)
+    if count != 0:
+        write_region_seam_row(key_order[i], row, mates, faces, face_mask, oriented, out_edges)
 
 
 @wp.kernel
@@ -494,20 +538,36 @@ def seed_and_prehook_dual(
     twins: wp.array[wp.int32],
     contour_keys_sorted: wp.array[wp.uint64],
     base: wp.uint64,
-    parents: wp.array[wp.int32],
+    out_parents: wp.array[wp.int32],
     out_seeds: wp.array[wp.bool],
 ) -> None:
-    # The flood fill's first pass over halfedges: seed the faces left of the contour and pre-hook
-    # the open dual edges into an identity ``parents``. The union-find is per edge and order-free,
-    # so the dual edges are formed in the thread and never listed -- no cursor, no buffer, no
-    # readback to trim one. The pre-hook is ``ecl_init_parent_edges``' and keeps the hook cheap on
-    # long sequential cycles and hub faces.
-    h = wp.int32(wp.tid())
-    along_contour, twin = open_dual_twin(faces, twins, contour_keys_sorted, base, h)
-    if along_contour:
-        out_seeds[h // 3] = True
-    if twin >= 0:
-        ecl_prehook_pair(parents, h // 3, twin // 3)
+    # The flood fill's first pass, one thread per face: seed the face when one of its halfedges runs
+    # along the contour, and pre-hook it to the smallest face across its open dual edges. The
+    # union-find is per edge and order-free, so the dual edges are formed in the thread and never
+    # listed -- no cursor, no buffer, no readback to trim one. Both outputs are written at the
+    # face's own index, so neither needs an initial value: the parent is the ``atomic_min`` of
+    # ``ecl_init_parent_edges`` over an identity forest, taken in registers. A dual edge is
+    # ``open_dual_twin`` of its lower halfedge, so this face's edges are those of its own
+    # halfedges and those its halfedges' twins open back onto it; each is one ``hook_dual``
+    # hooks, so the forest stays valid whatever ``twins`` holds. The pre-hook keeps the hook cheap
+    # on long sequential cycles and hub faces.
+    f = wp.int32(wp.tid())
+    parent = f
+    seeded = wp.bool(False)
+    for k in range(3):
+        h = wp.int32(3) * f + k
+        along_contour, twin = open_dual_twin(faces, twins, contour_keys_sorted, base, h)
+        if along_contour:
+            seeded = True
+        if twin >= 0:
+            parent = wp.min(parent, twin // 3)
+        lower = twins[h]
+        if lower >= 0 and lower < h:
+            _along, back = open_dual_twin(faces, twins, contour_keys_sorted, base, lower)
+            if back == h:
+                parent = wp.min(parent, lower // 3)
+    out_parents[f] = parent
+    out_seeds[f] = seeded
 
 
 @wp.kernel

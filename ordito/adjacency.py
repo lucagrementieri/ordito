@@ -32,7 +32,6 @@ from ordito._device import read_scalar, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import INDEX_RADIX_PAIR, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels import adjacency as kernel_adjacency
-from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
@@ -380,14 +379,12 @@ def vertex_face_adjacency(
         )
         _launch.map(kernel_adjacency.corner_face, corner_order, out=vertex_faces)
         return vertex_faces, offsets
-    # The counts are spent once scanned, so their buffer becomes the scatter's per-row cursor:
-    # re-zeroing it in stream order is a memset where a second zeroed buffer was an allocation too.
-    cursor = counts
-    _launch.zero_(cursor)
+    # The counts are spent once scanned, so their buffer becomes the scatter's per-row cursor,
+    # counting each row's free slots down to zero: no second buffer and no re-zeroing.
     _launch.launch(
         kernel_adjacency.scatter_vertex_faces,
         dim=n_faces,
-        inputs=[faces, offsets, cursor, vertex_faces],
+        inputs=[faces, offsets, counts, vertex_faces],
         device=device,
     )
     return vertex_faces, offsets
@@ -971,9 +968,8 @@ def face_connected_component_labels(
     mates = od.halfedge.halfedge_mates(faces, n_vertices)
     n = mates.size
     parents = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    _launch.launch(kernel_array.ARANGE[wp.int32], dim=n_faces, inputs=[parents], device=device)
     _launch.launch(
-        kernel_adjacency.mate_pair_prehook, dim=n, inputs=[mates, parents], device=device
+        kernel_adjacency.mate_pair_prehook, dim=n_faces, inputs=[mates, parents], device=device
     )
     if n_faces >= kernel_connected_components.ECL_COMPRESS_FROM:
         _launch.launch(

@@ -939,17 +939,21 @@ def face_orientation_bits(
         signs = _launch.empty(0, dtype=wp.int32, device=device)
         return _launch.zeros(n_faces, dtype=wp.int32, device=device), signed_edges, signs, m
 
-    signed_edges = odt.empty_2d((m, 2), wp.int32, device=device)
+    # The signed edges are the adjacency rows themselves, so only the signs are written, by the
+    # launch that also lays down the parity forest's identity words.
+    signed_edges = adjacency
     signs = _launch.empty(m, dtype=wp.int32, device=device)
+    words = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_validation.build_signed_face_edges,
-        dim=m,
-        inputs=[faces, adjacency, adjacency_edges, signed_edges, signs],
+        kernel_validation.face_pair_signs_and_roots,
+        dim=max(m, n_faces),
+        inputs=[faces, adjacency, adjacency_edges, n_faces],
+        outputs=[signs, words],
         device=device,
     )
 
     # The flip bits *are* a Z2 potential over the signed face-adjacency graph, so a parity-carrying
-    # union-find produces them directly in three launches with no host synchronization
+    # union-find produces them directly, in a hook and a flatten after the signs, with no host sync
     # ([`connected_component_parity_from_edges`]
     # [ordito.graph.connected_component_parity_from_edges]). The bits are unchanged from the
     # edge-by-edge flood fill this replaces: that seeded ``0`` at each component's smallest face id
@@ -959,8 +963,11 @@ def face_orientation_bits(
     # readbacks for work bounded by a few milliseconds of bandwidth.
     # ``signed_edges`` holds face ids this function just built from ``adjacency`` (itself bounded
     # by ``n_faces`` by construction) and every sign is ``0`` or ``1``, so nothing is range-checked.
-    words = _orientation_words(
-        n_faces, kernel_connected_components.ecl_hook_parity, m, [signed_edges, signs], device
+    _launch.launch(
+        kernel_connected_components.ecl_hook_parity,
+        dim=m,
+        inputs=[signed_edges, signs, words],
+        device=device,
     )
     if is_deterministic():
         words = _reproducible_orientation_words(faces, None, signed_edges, signs, words)
@@ -1770,16 +1777,18 @@ def _corner_parents_from_mates(
     The pairs [`face_adjacency`][ordito.adjacency.face_adjacency] would emit are the halfedges
     with a mate, so no adjacency table, run scan or host read of its length is needed, and each
     corner-graph edge is formed inside the pre-hook and the hook rather than written to a table
-    first; every other halfedge links its own corner to itself. With ``require_pairs`` the
-    pre-hook raises ``violation[0]`` on any edge not shared by exactly two faces; without it
+    first; every other halfedge links its own corner to itself. The pre-hook writes every
+    corner's parent itself, so no identity forest is laid down before it. With ``require_pairs``
+    the pre-hook raises ``violation[0]`` on any edge not shared by exactly two faces; without it
     ``violation`` is never read and may be ``None``.
     """
     n = mates.size
-    parents = od.array.arange(n, device=faces.device)
+    parents = _launch.empty(n, dtype=wp.int32, device=faces.device)
     _launch.launch(
         kernel_validation.mate_corner_prehook,
-        dim=n,
-        inputs=[faces, mates, require_pairs, parents, violation],
+        dim=n // 3,
+        inputs=[faces, mates, require_pairs],
+        outputs=[parents, violation],
         device=faces.device,
     )
     if n >= kernel_connected_components.ECL_COMPRESS_FROM:

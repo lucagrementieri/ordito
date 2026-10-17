@@ -97,6 +97,27 @@ COUNT_SIZE = 3
 
 
 @wp.kernel
+def seed_root_and_identity_labels(
+    seed: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    n_faces: wp.int32,
+    out_parents: wp.array[wp.int32],
+    out_distances: wp.array[wp.int32],
+    out_labels: wp.array[wp.int32],
+) -> None:
+    # The two loops' starting state in one launch at ``dim=max(n_vertices, n_faces)``, before
+    # either runs: every vertex unparented (``NO_PARENT``) and unreached (``-1``) but the level
+    # loop's root ``seed[0]``, at depth 0; and the dual forest's identity labels, every face its own
+    # component. Each entry is written once, by its own thread, so nothing is filled first.
+    i = wp.int32(wp.tid())
+    if i < n_vertices:
+        out_parents[i] = NO_PARENT
+        out_distances[i] = wp.where(i == seed[0], 0, -1)
+    if i < n_faces:
+        out_labels[i] = i
+
+
+@wp.kernel
 def bfs_push_level(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
