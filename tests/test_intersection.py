@@ -647,7 +647,7 @@ def test_marching_triangles_level_set_is_the_piecewise_linear_one(
 
 
 def test_marching_triangles_no_crossing(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """An isovalue above the field is no curves, or in packed form no points, ``[0]`` offsets."""
+    """An isovalue above the field (or an empty mesh) is no curves: packed, ``[0]`` offsets."""
     mesh_tm, mesh_wp = sphere_irregular
     values_wp = wp.array(
         np.ascontiguousarray(np.asarray(mesh_tm.vertices)[:, 2]),
@@ -664,13 +664,13 @@ def test_marching_triangles_no_crossing(sphere_irregular: tuple[tm.Trimesh, wp.M
     assert points_wp.size == 0
     assert closed_wp.size == 0
     assert offsets_wp.numpy().tolist() == [0]
-
-
-def test_marching_triangles_empty(device: str) -> None:
-    vertices_wp = warp_empty(0, wp.vec3, device)
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    values_wp = warp_empty(0, wp.float32, device)
-    assert od.intersection.marching_triangles(vertices_wp, faces_wp, values_wp) == ([], [])
+    # An empty mesh is no curves too.
+    device = mesh_wp.device
+    assert od.intersection.marching_triangles(
+        warp_empty(0, wp.vec3, device),
+        warp_empty(0, wp.int32, device),
+        warp_empty(0, wp.float32, device),
+    ) == ([], [])
 
 
 @pytest.mark.parametrize("field", ["plane", "wave"])

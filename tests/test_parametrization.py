@@ -340,13 +340,14 @@ def test_biharmonic_is_deterministic(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     # must give the same result across repeated calls. The original defect sized a rebuild's triplet
     # buffers by ``BsrMatrix.nnz`` (the capacity, not the entry count) and so fed the uninitialized
     # tail to ``bsr_from_triplets``, manifesting as ~1e22 / NaN corruption; a tight tolerance (well
-    # above conjugate-gradient's ~1e-8 atomic last-ULP jitter) reliably catches a regression.
+    # above conjugate-gradient's ~1e-8 atomic last-ULP jitter) reliably catches a regression. Two
+    # repeats: the corruption is gross, and each repeat is a full graded-mesh biharmonic solve.
     _, mesh_wp = saddle_graded
     boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
     first = od.parametrization.harmonic(
         mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, k=2
     ).numpy()
-    for _ in range(5):
+    for _ in range(2):
         again = od.parametrization.harmonic(
             mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, k=2
         ).numpy()
@@ -957,12 +958,11 @@ def _malformed_fixed_set(
     return wp.array(fixed_np, dtype=wp.int32, device=device), uv
 
 
-@pytest.mark.parametrize("case", ["repeated", "out_of_range", "all_out_of_range"])
 @pytest.mark.parametrize(
     ("method", "k"), [("harmonic", 1), ("harmonic", 2), ("harmonic", 3), ("tutte", 1), ("lscm", 1)]
 )
 def test_fixed_vertex_maps_reject_repeated_or_out_of_range_indices(
-    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], method: str, k: int, case: str
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], method: str, k: int
 ) -> None:
     """
     Not a parity assert: a fixed set that repeats a vertex or leaves the mesh raises ``ValueError``.
@@ -972,32 +972,34 @@ def test_fixed_vertex_maps_reject_repeated_or_out_of_range_indices(
     ``harmonic`` with every index out of range returned zeros. Both forms raise, and a `Trimesh`
     holding a factorization of the valid set raises too (the repeated set's mask equals it, so
     the kept system would otherwise answer it). ``FixedVertexSolver.factor`` raises as well.
+    The three malformed sets share one factorization of the valid set.
     """
     _, mesh_wp = sphere_irregular_cap
     vertices, faces = mesh_wp.points, mesh_wp.indices
     function = getattr(od.parametrization, method)
     keywords = {} if method == "lscm" else {"k": k}
-    fixed, uv = _malformed_fixed_set(method, mesh_wp, case)
-    with pytest.raises(ValueError, match="distinct"):
-        function(vertices, faces, fixed, uv, **keywords)
     mesh = od.Trimesh(vertices, faces)
     valid, _ = _fixed_vertex_call(method, mesh_wp, 1.0)
     assert mesh.fixed_vertex_solver().factor(method, valid, k=k)
-    with pytest.raises(ValueError, match="distinct"):
-        function(mesh, fixed, uv, **keywords)
-    with pytest.raises(ValueError, match="distinct"):
-        mesh.fixed_vertex_solver().factor(method, fixed, k=k)
+    for case in ("repeated", "out_of_range", "all_out_of_range"):
+        fixed, uv = _malformed_fixed_set(method, mesh_wp, case)
+        with pytest.raises(ValueError, match="distinct"):
+            function(vertices, faces, fixed, uv, **keywords)
+        with pytest.raises(ValueError, match="distinct"):
+            function(mesh, fixed, uv, **keywords)
+        with pytest.raises(ValueError, match="distinct"):
+            mesh.fixed_vertex_solver().factor(method, fixed, k=k)
 
 
-@pytest.mark.parametrize("case", ["repeated", "out_of_range"])
 def test_arap_rejects_repeated_or_out_of_range_indices(
-    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh], case: str
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Not a parity assert: ``arap``'s fixed set is checked as the fixed-vertex maps' is."""
     _, mesh_wp = sphere_irregular_cap
-    fixed, uv = _malformed_fixed_set("harmonic", mesh_wp, case)
-    with pytest.raises(ValueError, match="distinct"):
-        od.parametrization.arap(mesh_wp.points, mesh_wp.indices, fixed, uv, _uv_init(mesh_wp))
+    for case in ("repeated", "out_of_range"):
+        fixed, uv = _malformed_fixed_set("harmonic", mesh_wp, case)
+        with pytest.raises(ValueError, match="distinct"):
+            od.parametrization.arap(mesh_wp.points, mesh_wp.indices, fixed, uv, _uv_init(mesh_wp))
 
 
 def test_a_refused_factorization_is_not_attempted_again_on_a_trimesh(

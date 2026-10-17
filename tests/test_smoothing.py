@@ -295,10 +295,11 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
         del _junk
     wp.synchronize()
 
+    # One iteration suffices: the system, garbage included, is assembled before the first solve.
     smoothed_wp = od.smoothing.filter_laplacian(
         mesh_wp.points,
         mesh_wp.indices,
-        iterations=2,
+        iterations=1,
         implicit_time_integration=True,
         volume_constraint=False,
         laplacian_operator=unsynced,
@@ -306,7 +307,7 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
     compact_wp = od.smoothing.filter_laplacian(
         mesh_wp.points,
         mesh_wp.indices,
-        iterations=2,
+        iterations=1,
         implicit_time_integration=True,
         volume_constraint=False,
         laplacian_operator=compact,

@@ -1129,23 +1129,19 @@ def test_normals_at_closest_faces_surface(sphere_irregular: tuple[tm.Trimesh, wp
 
 
 def test_normals_at_closest_faces_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """Not a library comparison: no queries give no normals, and no faces NaN, not a segfault."""
     _, mesh_wp = sphere_irregular
     points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
-    normals_wp = od.proximity.normals_at_closest_faces(mesh_wp, points_wp)
-    assert normals_wp.shape == (0,)
-
-
-def test_normals_at_closest_faces_empty_mesh() -> None:
-    """A zero-face mesh reports NaN normals rather than segfaulting."""
-    # A zero-face wp.Mesh is unsafe to build on CUDA, so this is CPU-only by construction,
+    assert od.proximity.normals_at_closest_faces(mesh_wp, points_wp).shape == (0,)
+    # A zero-face wp.Mesh is unsafe to build on CUDA, so this half is CPU-only by construction,
     # not by a `device` fixture choice: reproducing the crash this guards against needs the real
     # object, and building it on CUDA would corrupt allocator state rather than reproduce anything.
-    device = wp.get_device("cpu")
-    vertices = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces = warp_empty(0, wp.int32, device)
-    mesh_wp = wp.Mesh(points=vertices, indices=faces)
-    points_wp = wp.array(np.zeros((2, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    normals_wp = od.proximity.normals_at_closest_faces(mesh_wp, points_wp)
+    cpu = wp.get_device("cpu")
+    empty_mesh = wp.Mesh(
+        points=wp.zeros(1, dtype=wp.vec3, device=cpu), indices=warp_empty(0, wp.int32, cpu)
+    )
+    points_wp = wp.array(np.zeros((2, 3), dtype=np.float32), dtype=wp.vec3, device=cpu)
+    normals_wp = od.proximity.normals_at_closest_faces(empty_mesh, points_wp)
     assert normals_wp.shape == (2,)
     assert np.all(np.isnan(normals_wp.numpy()))
 
@@ -2089,7 +2085,12 @@ def test_containing_faces_2d_degrades_only_on_needle_triangles(device: str) -> N
 
 
 def test_containing_faces_2d_single_triangle(device: str) -> None:
-    """One triangle: inside, outside, and a vertex, with the tolerance carrying no weight."""
+    """
+    Not a library comparison: one triangle locates inside, outside and a vertex; empty inputs.
+
+    The tolerance carries no weight here. No queries give no answers; no faces give ``-1`` for
+    every query.
+    """
     vertices_wp = wp.array(
         np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
         dtype=wp.vec2,
@@ -2101,25 +2102,12 @@ def test_containing_faces_2d_single_triangle(device: str) -> None:
         dtype=wp.vec2,
         device=device,
     )
-
     located_np = od.proximity.containing_faces_2d(vertices_wp, faces_wp, queries_wp).numpy()
-
     assert np.array_equal(located_np, [0, -1, 0, -1])
 
-
-def test_containing_faces_2d_empty(device: str) -> None:
-    """No queries gives no answers; no faces gives ``-1`` for every query."""
-    vertices_wp = wp.array(
-        np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
-        dtype=wp.vec2,
-        device=device,
-    )
-    faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
     no_queries_wp = wp.zeros(0, dtype=wp.vec2, device=device)
     assert od.proximity.containing_faces_2d(vertices_wp, faces_wp, no_queries_wp).size == 0
-
-    queries_wp = wp.array(np.array([[0.25, 0.25]], dtype=np.float32), dtype=wp.vec2, device=device)
     no_faces_wp = wp.zeros(0, dtype=wp.int32, device=device)
     assert np.array_equal(
-        od.proximity.containing_faces_2d(vertices_wp, no_faces_wp, queries_wp).numpy(), [-1]
+        od.proximity.containing_faces_2d(vertices_wp, no_faces_wp, queries_wp).numpy(), [-1] * 4
     )

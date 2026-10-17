@@ -509,7 +509,7 @@ def test_interpolate_from_points_vec3_field(device: str):
     assert np.allclose(interpolated_wp[:, 2], -scalar_wp, rtol=1e-5, atol=1e-5)
 
 
-def test_interpolate_from_points_invalid(device: str):
+def test_interpolate_from_points_guards_and_empty(device: str):
     source_np, values_np, query_np = _scattered_cloud()
     source_wp = points_to_warp(source_np, device)
     values_wp = wp.array(
@@ -525,8 +525,7 @@ def test_interpolate_from_points_invalid(device: str):
     with pytest.raises(ValueError, match="k must be positive"):
         od.interpolation.interpolate_from_points(source_wp, values_wp, query_wp, 0.2, k=0)
 
-
-def test_interpolate_from_points_empty(device: str):
+    # No source points: every query takes ``null_value``, and no queries give nothing.
     empty_points = warp_empty(0, wp.vec3, device)
     empty_values = warp_empty(0, wp.float32, device)
     query_wp = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)

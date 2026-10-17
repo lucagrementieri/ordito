@@ -1464,6 +1464,7 @@ def test_empty_mesh(device: str) -> None:
     assert od.validation.face_self_intersecting_mask(vertices_wp, faces_wp).size == 0
     assert od.validation.face_watertight_mask(faces_wp).size == 0
     assert od.validation.face_flip_mask(faces_wp).size == 0
+    assert od.validation.face_defective_mask(vertices_wp, faces_wp).shape == (0,)
 
 
 def test_is_self_intersecting_fewer_than_two_faces(device: str) -> None:
@@ -1540,7 +1541,7 @@ def test_face_defective_mask_flags_the_misoriented_face(device: str) -> None:
     assert np.array_equal(np.flatnonzero(bad_np), np.array([target]))
 
 
-def test_face_defective_mask_all_criteria_disabled(
+def test_face_defective_mask_all_criteria_disabled_and_invalid(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     _mesh_tm, mesh_wp = sphere_irregular
@@ -1548,20 +1549,10 @@ def test_face_defective_mask_all_criteria_disabled(
         mesh_wp.points, mesh_wp.indices, min_quality=None, max_normal_angle=None
     ).numpy()
     assert not bad_np.any()
-
-
-def test_face_defective_mask_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="max_fold_angle must be in"):
         od.validation.face_defective_mask(mesh_wp.points, mesh_wp.indices, max_fold_angle=200.0)
     with pytest.raises(ValueError, match="max_normal_angle must be in"):
         od.validation.face_defective_mask(mesh_wp.points, mesh_wp.indices, max_normal_angle=0.0)
-
-
-def test_face_defective_mask_empty(device: str) -> None:
-    vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    faces_wp = warp_empty(0, wp.int32, device)
-    assert od.validation.face_defective_mask(vertices_wp, faces_wp).shape == (0,)
 
 
 @pytest.mark.parity("face_defective_mask", "pymeshlab")

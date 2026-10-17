@@ -12,12 +12,6 @@ import ordito.typing as odt
 from tests.conversions import warp_empty
 
 
-def test_ensure_ndim_rejects_1d(device: str) -> None:
-    arr = wp.array([1, 2, 3], dtype=wp.int32, device=device)
-    with pytest.raises(TypeError, match="expected 2D array"):
-        odt.ensure_ndim(arr, 2)
-
-
 def test_as_array2d_accepts_2d(device: str) -> None:
     arr = warp_empty((2, 3), wp.int32, device)
     out = odt.as_array2d(arr, wp.int32)
@@ -97,8 +91,14 @@ def test_the_empty_family_is_one_allocator_at_three_ranks(
     assert str(arr.device) == device
 
 
-def test_the_empty_family_rejects_a_shape_of_the_wrong_rank(device: str) -> None:
-    """The rank each entry point fixes is checked against ``shape``, not merely annotated."""
+def test_typing_rejects_the_wrong_rank(device: str) -> None:
+    """
+    Each entry point rejects an array or shape of a rank other than the one it fixes.
+
+    ``ensure_ndim`` checks the array; the ``empty_*`` family checks ``shape``, not merely annotates.
+    """
+    with pytest.raises(TypeError, match="expected 2D array"):
+        odt.ensure_ndim(wp.array([1, 2, 3], dtype=wp.int32, device=device), 2)
     with pytest.raises(ValueError, match="2D shape must have length 2"):
         odt.empty_2d((2, 3, 4), wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # the wrong rank under test
     with pytest.raises(ValueError, match="3D shape must have length 3"):

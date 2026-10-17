@@ -970,18 +970,18 @@ def test_oriented_bounding_box_chain_seeding_agrees_across_devices(seed_device: 
     )
 
 
-def test_oriented_bounding_box_empty_cloud(device: str) -> None:
-    """An empty cloud gives the identity frame and the same inverted box ``aabb`` returns."""
+def test_oriented_bounding_box_empty_cloud_and_bad_arguments(device: str) -> None:
+    """
+    An empty cloud gives the identity frame and ``aabb``'s inverted box; bad arguments raise.
+
+    All three documented ``ValueError``s are reachable.
+    """
     empty_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(empty_wp)
-
     assert np.array_equal(_frame_np(rotation_wp), np.eye(3))
     assert np.all(np.isposinf(_bounds_np(lower_wp, upper_wp)[0]))
     assert np.all(np.isneginf(_bounds_np(lower_wp, upper_wp)[1]))
 
-
-def test_oriented_bounding_box_rejects_bad_arguments(device: str) -> None:
-    """All three documented ``ValueError``s are reachable, and none is raised for a valid call."""
     points_wp = wp.array(
         np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]], dtype=np.float32), dtype=wp.vec3, device=device
     )

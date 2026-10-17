@@ -184,16 +184,6 @@ def test_unique_1d_max_value(device: str, dtype: type) -> None:
     assert np.array_equal(counts_wp.numpy(), counts_np)
 
 
-def test_unique_1d_max_value_invalid(device: str) -> None:
-    """Not a library comparison: the two inputs ``max_value`` rejects."""
-    ints_wp = wp.array(np.arange(4, dtype=np.int32), dtype=wp.int32, device=device)
-    floats_wp = wp.array(np.arange(4, dtype=np.float32), dtype=wp.float32, device=device)
-    with pytest.raises(ValueError, match="non-negative"):
-        od.grouping.unique_1d(ints_wp, max_value=-1)
-    with pytest.raises(ValueError, match="integer data only"):
-        od.grouping.unique_1d(floats_wp, max_value=3)
-
-
 def test_unique_rows_inverse_counts(device: str):
     data_np = np.array([[0, 1], [2, 3], [0, 1], [2, 3], [4, 5]], dtype=np.int32)
     data_wp = wp.array(data_np, dtype=wp.int32, device=device)
@@ -431,14 +421,6 @@ def test_hash_rows_dispatches_to_the_typed_hashers(device: str, kind: str) -> No
     assert keys_np[0] != keys_np[1]
 
 
-def test_hash_rows_rejects_a_dtype_and_a_width_it_cannot_pack(device: str) -> None:
-    """The two documented ``ValueError`` paths: an unsupported dtype and a non-width-3 float32."""
-    with pytest.raises(ValueError, match="unsupported dtype"):
-        od.grouping.hash_rows(wp.zeros((2, 3), dtype=wp.float64, device=device))
-    with pytest.raises(ValueError, match="width 3"):
-        od.grouping.hash_rows(wp.zeros((2, 2), dtype=wp.float32, device=device))
-
-
 def test_hash_vector_rows(device: str) -> None:
     rng = np.random.default_rng(17)
     n = 256
@@ -521,7 +503,23 @@ def test_hash_indices_rows_valid(device: str) -> None:
     assert np.array_equal(packed_default_wp.numpy(), packed_default_np)
 
 
-def test_hash_indices_rows_invalid(device: str) -> None:
+def test_invalid_arguments_raise(device: str) -> None:
+    """
+    Not a library comparison: each documented ``ValueError``, raised with its message.
+
+    ``unique_1d``'s ``max_value`` takes non-negative integer data only; ``hash_rows`` packs only its
+    dtypes and width-3 ``float32``; ``hash_indices_rows`` range-checks against ``max_index``.
+    """
+    ints_wp = wp.array(np.arange(4, dtype=np.int32), dtype=wp.int32, device=device)
+    floats_wp = wp.array(np.arange(4, dtype=np.float32), dtype=wp.float32, device=device)
+    with pytest.raises(ValueError, match="non-negative"):
+        od.grouping.unique_1d(ints_wp, max_value=-1)
+    with pytest.raises(ValueError, match="integer data only"):
+        od.grouping.unique_1d(floats_wp, max_value=3)
+    with pytest.raises(ValueError, match="unsupported dtype"):
+        od.grouping.hash_rows(wp.zeros((2, 3), dtype=wp.float64, device=device))
+    with pytest.raises(ValueError, match="width 3"):
+        od.grouping.hash_rows(wp.zeros((2, 2), dtype=wp.float32, device=device))
     max_index = 8
     indices_wp = _int_rows([[0, 1, 2], [-3, 4, 1]], device)
 
@@ -534,12 +532,6 @@ def test_hash_indices_rows_invalid(device: str) -> None:
 
     with pytest.raises(ValueError, match="max_index must be positive, got 0"):
         _ = od.grouping.hash_indices_rows(indices_wp, max_index=0)
-
-    indices_np_ok = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.int32)
-    indices_ok = _int_rows(indices_np_ok, device)
-    packed_np = _pack_indices_rows_np(indices_np_ok, max_index)
-    packed_wp = od.grouping.hash_indices_rows(indices_ok, max_index=max_index)
-    assert np.array_equal(packed_wp.numpy(), packed_np)
 
 
 def test_hash_indices_rows_unvalidated(device: str) -> None:

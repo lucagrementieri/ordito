@@ -142,15 +142,17 @@ def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
     assert np.array_equal(hub, np.arange(1, degree + 1, dtype=np.int32))
 
 
-def test_edges_to_neighbor_lists_rejects_an_out_of_range_endpoint(device: str) -> None:
-    """The guard that keeps an unchecked index off a raw ``degree[a]`` write."""
-    edges_wp = _edges_wp(np.array([[0, 1], [1, 5]], dtype=np.int32), device)
+def test_edges_to_neighbor_lists_empty_and_out_of_range(device: str) -> None:
+    """
+    No edges means every row is empty, and the offsets are still the ``n + 1`` CSR form.
+
+    An out-of-range endpoint raises: the guard that keeps an unchecked index off a raw
+    ``degree[a]`` write.
+    """
     with pytest.raises(ValueError, match="edge indices must lie in"):
-        od.graph.edges_to_neighbor_lists(3, edges_wp)
-
-
-def test_edges_to_neighbor_lists_empty(device: str) -> None:
-    """No edges means every row is empty, and the offsets are still the ``n + 1`` CSR form."""
+        od.graph.edges_to_neighbor_lists(
+            3, _edges_wp(np.array([[0, 1], [1, 5]], dtype=np.int32), device)
+        )
     edges_wp = odt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
     neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(4, edges_wp)
     assert neighbors_wp.size == 0
@@ -598,6 +600,12 @@ def test_successor_cycles_single_cycle(device: str) -> None:
 
     assert np.array_equal(flat_wp.numpy(), np.array([2, 7, 3, 5], dtype=np.int32))
     assert np.array_equal(offsets_wp.numpy(), np.array([0, 4], dtype=np.int32))
+    # No edges: no cycles, and the offsets are the empty ``[0]``.
+    flat_wp, offsets_wp = od.graph.successor_cycles(
+        odt.empty_2d((0, 2), wp.int32, device=device), 5
+    )
+    assert flat_wp.shape == (0,)
+    assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
 
 def test_successor_cycles_multiple_cycles(device: str) -> None:
@@ -723,13 +731,6 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
     """
     edges_wp = _edges_wp(np.array([[5, 3], [3, 7]], dtype=np.int32), device)
     flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 8)
-    assert flat_wp.shape == (0,)
-    assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
-
-
-def test_successor_cycles_empty(device: str) -> None:
-    edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
-    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 5)
     assert flat_wp.shape == (0,)
     assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 

@@ -336,7 +336,7 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
     assert np.allclose(locations_wp.numpy()[order_wp], points_o3d, rtol=1e-5, atol=1e-5)
 
 
-def test_intersects_empty_rays(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
+def test_queries_on_no_rays_or_points(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = sphere_irregular
     origins_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     directions_wp = warp_empty(0, wp.vec3, mesh_wp.device)
@@ -347,6 +347,7 @@ def test_intersects_empty_rays(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     assert tri_wp.size == 0
     assert ray_wp.size == 0
     assert od.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
+    assert od.ray.contains_points(mesh_wp, origins_wp).numpy().shape == (0,)
 
 
 @pytest.mark.parametrize("n_origins", [0, 4])
@@ -500,9 +501,3 @@ def test_contains_cavity(sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh]):
     contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
     assert contains_wp.tolist() == [False, True]
     assert np.array_equal(contains_wp, mesh_tm.contains(points_np))
-
-
-def test_contains_empty_points(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = sphere_irregular
-    points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
-    assert od.ray.contains_points(mesh_wp, points_wp).numpy().shape == (0,)

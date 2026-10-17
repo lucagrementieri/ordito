@@ -356,15 +356,6 @@ def test_voxelize_mesh_box_on_cell_planes_matches_exact_count(
     )
 
 
-def test_voxelize_mesh_rejects_too_many_candidates(
-    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
-):
-    """The candidate guard raises before allocating, and names ``voxel_size``."""
-    _mesh_tm, vertices_wp, faces_wp = sphere
-    with pytest.raises(ValueError, match="voxel_size"):
-        od.voxels.voxelize_mesh(vertices_wp, faces_wp, 1e-4, max_candidates=1000)
-
-
 @pytest.mark.parity("voxelize_points", "open3d")
 def test_voxelize_points_matches_open3d(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
@@ -826,31 +817,6 @@ def test_sample_grid_trilinear_matches_pytorch3d(device: str):
     assert np.array_equal(round_trip_wp.numpy(), values_np)
 
 
-def test_splat_onto_grid_invalid_arguments(device: str):
-    """Not a parity assert: the guards ``splat_onto_grid`` and its inverse document."""
-    points_wp = points_to_warp(np.zeros((4, 3), dtype=np.float32), device)
-    values_wp = wp.zeros(4, dtype=wp.float32, device=device)
-    with pytest.raises(ValueError, match="three positive integers"):
-        od.voxels.splat_onto_grid(points_wp, values_wp, (4, 0, 4))
-    with pytest.raises(ValueError, match="same length"):
-        od.voxels.splat_onto_grid(
-            points_wp, wp.zeros(3, dtype=wp.float32, device=device), (4, 4, 4)
-        )
-    with pytest.raises(ValueError, match="min_weight must be positive"):
-        od.voxels.splat_onto_grid(points_wp, values_wp, (4, 4, 4), min_weight=0.0)
-    with pytest.raises(ValueError, match="rank-3 lattice"):
-        od.voxels.sample_grid_trilinear(values_wp, points_wp)  # pyright: ignore[reportArgumentType]  # deliberately rank 1
-
-    # An empty cloud is a zero field and a zero density, not an error.
-    empty_wp = points_to_warp(np.zeros((0, 3), dtype=np.float32), device)
-    field_wp, density_wp = od.voxels.splat_onto_grid(
-        empty_wp, wp.zeros(0, dtype=wp.float32, device=device), (4, 4, 4)
-    )
-    assert not field_wp.numpy().any()
-    assert not density_wp.numpy().any()
-    assert od.voxels.sample_grid_trilinear(field_wp, empty_wp).size == 0
-
-
 @pytest.mark.parametrize("axis", [0, 1, 2])
 def test_splat_and_sample_handle_a_single_slice_axis(device: str, axis: int):
     """
@@ -1101,16 +1067,6 @@ def test_revoxelize_samples_only_the_occupied_box(
         lexsort_rows(od.voxels.cells(resampled).numpy()),
         lexsort_rows(od.voxels.cells(grid).numpy() + offset),
     )
-
-
-def test_revoxelize_rejects_an_unaffordable_lattice(
-    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
-):
-    """The budget guard raises before allocating, and names ``voxel_size`` like its sibling."""
-    _mesh_tm, vertices_wp, faces_wp = sphere
-    grid = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.2)
-    with pytest.raises(ValueError, match="voxel_size"):
-        od.voxels.revoxelize(grid, 1e-4, max_cells=1000)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1536,23 +1492,6 @@ def test_resolve_voxel_grid_zero_extent_input_takes_a_unit_diagonal(
     assert int(grid.get_active_stats().voxel_count) == 1
 
 
-def test_resolve_voxel_grid_rejects_a_non_positive_size_and_names_its_caller(device: str) -> None:
-    """
-    The ``caller`` argument exists so the message names the public entry point, not this helper.
-
-    Both halves are asserted, because a message that silently ignored ``caller`` would still look
-    right at the one call site that does not pass it.
-    """
-    points_wp = wp.array(
-        np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]], dtype=np.float32), dtype=wp.vec3, device=device
-    )
-
-    with pytest.raises(ValueError, match="resolve_voxel_grid requires voxel_size > 0"):
-        od.voxels.resolve_voxel_grid(points_wp, 0.0)
-    with pytest.raises(ValueError, match="cluster_decimate requires voxel_size > 0"):
-        od.voxels.resolve_voxel_grid(points_wp, -1.0, caller="cluster_decimate")
-
-
 # ---------------------------------------------------------------------------------------------
 # Conversion and meshing
 # ---------------------------------------------------------------------------------------------
@@ -1864,44 +1803,25 @@ def test_every_entry_point_survives_an_empty_input(device: str):
         assert int(od.voxels.voxel_corners(grid)[0].shape[0]) == 0
         assert od.voxels.to_boxes(grid)[1].size == 0
     assert od.voxels.voxel_down_sample(no_points).size == 0
+    # An empty cloud splats to a zero field and a zero density, not an error.
+    field_wp, density_wp = od.voxels.splat_onto_grid(
+        no_points, wp.zeros(0, dtype=wp.float32, device=device), (4, 4, 4)
+    )
+    assert not field_wp.numpy().any()
+    assert not density_wp.numpy().any()
+    assert od.voxels.sample_grid_trilinear(field_wp, no_points).size == 0
 
 
-def test_cells_reports_the_active_length_of_a_rebuildable_grid(device: str):
+def test_rebuildable_grids_report_and_merge_only_their_active_voxels(device: str):
     """
-    A rebuildable grid reports its length through ``get_active_stats``, not ``get_voxel_count``.
+    Not a library comparison: ``cells`` and ``union`` read a rebuildable grid's active voxels only.
 
     The trap that would otherwise produce a plausible wrong answer: ``get_voxel_count`` reports the
-    reserved **capacity**, and the tail of ``get_voxels`` is ``[0, 0, 0]`` padding. Nothing in this
-    module builds such a grid, but a caller can hand one in.
-    """
-    cells_np = np.array([[0, 0, 0], [1, 2, 3], [4, 5, 6], [-1, -2, -3]], dtype=np.int32)
-    grid = wp.Volume.allocate_by_voxels(
-        wp.array(cells_np, dtype=wp.int32, device=device),
-        voxel_size=1.0,
-        translation=(0.5, 0.5, 0.5),
-        max_active_voxels=64,
-        max_leaf_nodes=64,
-        max_lower_nodes=64,
-        max_upper_nodes=64,
-        device=device,
-    )
-    assert grid.is_rebuildable
-    grid.rebuild(wp.array(cells_np[:2], dtype=wp.int32, device=device))
-
-    assert grid.get_voxel_count() > 2  # the capacity, padded with [0, 0, 0]
-    rows = od.voxels.cells(grid).numpy()
-    assert len(rows) == 2
-    assert np.array_equal(lexsort_rows(rows), lexsort_rows(cells_np[:2]))
-
-
-def test_union_reads_only_the_active_voxels_of_rebuildable_grids(device: str):
-    """
-    Not a library comparison: ``union`` of two padded rebuildable grids is the union of their cells.
-
-    ``union`` reads both grids' voxels straight into one buffer, and ``get_voxels`` writes a
-    rebuildable grid's whole capacity, padding rows at ``[0, 0, 0]`` after the active ones. No
-    input cell is ``[0, 0, 0]``, so a padding row leaking into the result shows up as an extra cell;
-    both grids are padded, so the first grid's padding must be overwritten and the second's cut.
+    reserved **capacity**, and ``get_voxels`` writes the whole of it, padding rows at ``[0, 0, 0]``
+    after the active ones. Nothing in this module builds such a grid, but a caller can hand one in.
+    ``union`` reads both grids' voxels straight into one buffer; no input cell is ``[0, 0, 0]``, so
+    a padding row leaking into the result shows up as an extra cell, and both grids are padded, so
+    the first grid's padding must be overwritten and the second's cut.
     """
 
     def padded(cells_np: np.ndarray, active: int) -> wp.Volume:
@@ -1915,13 +1835,16 @@ def test_union_reads_only_the_active_voxels_of_rebuildable_grids(device: str):
             max_upper_nodes=64,
             device=device,
         )
+        assert grid.is_rebuildable
         grid.rebuild(wp.array(cells_np[:active], dtype=wp.int32, device=device))
-        assert grid.get_voxel_count() > active
+        assert grid.get_voxel_count() > active  # the capacity, padded with [0, 0, 0]
         return grid
 
     a_np = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int32)
     b_np = np.array([[-1, -2, -3], [4, 5, 6], [10, 0, 1]], dtype=np.int32)
-    merged = od.voxels.union(padded(a_np, 2), padded(b_np, 3))
+    grid_a = padded(a_np, 2)
+    assert np.array_equal(lexsort_rows(od.voxels.cells(grid_a).numpy()), lexsort_rows(a_np[:2]))
+    merged = od.voxels.union(grid_a, padded(b_np, 3))
     expected_np = np.unique(np.concatenate([a_np[:2], b_np]), axis=0)
     assert np.array_equal(lexsort_rows(od.voxels.cells(merged).numpy()), lexsort_rows(expected_np))
 
@@ -1949,7 +1872,7 @@ def test_voxels_imports_warp_fem_lazily():
 
 
 def test_invalid_arguments_raise(device: str):
-    """Each documented ``ValueError`` / ``TypeError`` is reachable."""
+    """Not a library comparison: each documented ``ValueError`` / ``TypeError`` is reachable."""
     points = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
     empty_cells = odt.as_array2d(wp.zeros((0, 3), dtype=wp.int32, device=device), wp.int32)
     grid = od.voxels.voxelize_points(points, 1.0)
@@ -1978,6 +1901,29 @@ def test_invalid_arguments_raise(device: str):
         od.voxels.to_field(grid, pad=-1)
     with pytest.raises(TypeError, match="index"):
         od.voxels.cells(wp.Volume.load_from_numpy(np.ones((2, 2, 2), dtype=np.float32)))
+    # The budget guards raise before allocating and name ``voxel_size``.
+    triangle = points_to_warp(np.eye(3, dtype=np.float32), device)
+    with pytest.raises(ValueError, match="voxel_size"):
+        od.voxels.voxelize_mesh(
+            triangle, wp.array([0, 1, 2], dtype=wp.int32, device=device), 1e-4, max_candidates=1000
+        )
+    with pytest.raises(ValueError, match="voxel_size"):
+        od.voxels.revoxelize(od.voxels.voxelize_points(triangle, 0.2), 1e-4, max_cells=1000)
+    # ``caller`` names the public entry point in the message, and the default names the helper.
+    with pytest.raises(ValueError, match="resolve_voxel_grid requires voxel_size > 0"):
+        od.voxels.resolve_voxel_grid(triangle, 0.0)
+    with pytest.raises(ValueError, match="cluster_decimate requires voxel_size > 0"):
+        od.voxels.resolve_voxel_grid(triangle, -1.0, caller="cluster_decimate")
+    # The guards ``splat_onto_grid`` and its inverse document.
+    values = wp.zeros(1, dtype=wp.float32, device=device)
+    with pytest.raises(ValueError, match="three positive integers"):
+        od.voxels.splat_onto_grid(points, values, (4, 0, 4))
+    with pytest.raises(ValueError, match="same length"):
+        od.voxels.splat_onto_grid(points, wp.zeros(3, dtype=wp.float32, device=device), (4, 4, 4))
+    with pytest.raises(ValueError, match="min_weight must be positive"):
+        od.voxels.splat_onto_grid(points, values, (4, 4, 4), min_weight=0.0)
+    with pytest.raises(ValueError, match="rank-3 lattice"):
+        od.voxels.sample_grid_trilinear(values, points)  # pyright: ignore[reportArgumentType]  # deliberately rank 1
 
 
 def _assert_surfaces_within(surface_a: tm.Trimesh, surface_b: tm.Trimesh, tolerance: float) -> None:

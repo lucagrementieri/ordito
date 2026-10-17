@@ -40,22 +40,60 @@ def test_construction_flat_and_2d_faces_agree(sphere_irregular: tuple[tm.Trimesh
     assert np.array_equal(mesh_flat.faces.numpy(), mesh_2d.faces.numpy())
 
 
+def _empty_warp_mesh(mesh: od.Trimesh) -> object:
+    # A warp.Mesh with zero triangles silently corrupts CUDA state (Warp 1.18); warp_mesh must
+    # raise instead of building one.
+    empty = od.Trimesh(warp_empty(0, wp.vec3, mesh.device), warp_empty(0, wp.int32, mesh.device))
+    return empty.warp_mesh
+
+
+def _faces_of_shape(shape: tuple[int, ...]) -> Callable[[od.Trimesh], object]:
+    def build(mesh: od.Trimesh) -> object:
+        vertices_wp = wp.zeros(12, dtype=wp.vec3, device=mesh.device)
+        return od.Trimesh(vertices_wp, wp.zeros(shape, dtype=wp.int32, device=mesh.device))
+
+    return build
+
+
+# (id, call on a valid mesh, error, match): each documented guard of ``Trimesh``.
+_TRIMESH_GUARD_CASES: list[
+    tuple[str, Callable[[od.Trimesh], object], type[Exception], str | None]
+] = [
+    ("faces-rank-3", _faces_of_shape((4, 3, 1)), TypeError, None),
+    ("faces-four-columns", _faces_of_shape((3, 4)), ValueError, "shape"),
+    ("faces-flat-not-a-multiple-of-three", _faces_of_shape((4,)), ValueError, "multiple of 3"),
+    ("warp-mesh-of-no-faces", _empty_warp_mesh, ValueError, "zero triangles"),
+    ("mesh-for-rays-negative", lambda mesh: mesh.mesh_for_rays(-1), ValueError, "non-negative"),
+    (
+        "submesh-float-selector",
+        lambda mesh: mesh.submesh(wp.zeros(4, dtype=wp.float32, device=mesh.device)),
+        TypeError,
+        r"wp\.int32 or wp\.bool",
+    ),
+    (
+        "with-vertices-wrong-count",
+        lambda mesh: mesh.with_vertices(points_to_warp(mesh.vertices.numpy()[:-1], mesh.device)),
+        ValueError,
+        "vertex count",
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    ("faces_shape", "error", "match"),
-    [
-        pytest.param((4, 3, 1), TypeError, None, id="rank-3"),
-        pytest.param((3, 4), ValueError, "shape", id="four-columns"),
-        pytest.param((4,), ValueError, "multiple of 3", id="flat-not-a-multiple-of-three"),
-    ],
+    ("call", "error", "match"),
+    [case[1:] for case in _TRIMESH_GUARD_CASES],
+    ids=[case[0] for case in _TRIMESH_GUARD_CASES],
 )
-def test_construction_bad_faces_raises(
-    device: str, faces_shape: tuple[int, ...], error: type[Exception], match: str | None
+def test_trimesh_rejects_invalid_arguments(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    call: Callable[[od.Trimesh], object],
+    error: type[Exception],
+    match: str | None,
 ) -> None:
-    """Not a parity assert: a face buffer that is not ``(3 * n_faces,)`` or ``(n_faces, 3)``."""
-    vertices_wp = wp.zeros(12, dtype=wp.vec3, device=device)
-    faces_wp = wp.zeros(faces_shape, dtype=wp.int32, device=device)
+    """Not a parity assert: a malformed face buffer, and each other documented guard."""
+    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(error, match=match):
-        od.Trimesh(vertices_wp, faces_wp)
+        call(od.Trimesh.from_warp_mesh(mesh_wp))
 
 
 def test_from_warp_mesh_seeds_warp_mesh_cache(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -64,16 +102,6 @@ def test_from_warp_mesh_seeds_warp_mesh_cache(sphere_irregular: tuple[tm.Trimesh
     assert mesh.warp_mesh is mesh_wp
     assert mesh.vertices is mesh_wp.points
     assert mesh.faces is mesh_wp.indices
-
-
-def test_warp_mesh_raises_for_empty_mesh(device: str) -> None:
-    # A warp.Mesh with zero triangles silently corrupts CUDA state (Warp 1.18); warp_mesh must
-    # raise instead of building one.
-    vertices_wp = warp_empty(0, wp.vec3, device)
-    faces_wp = warp_empty(0, wp.int32, device)
-    mesh = od.Trimesh(vertices_wp, faces_wp)
-    with pytest.raises(ValueError, match="zero triangles"):
-        _ = mesh.warp_mesh
 
 
 def test_traced_mesh_traces_the_rays_warp_mesh_traces(
@@ -140,14 +168,6 @@ def test_mesh_for_rays_rents_then_buys(
     assert mesh.mesh_for_rays(99) is mesh.warp_mesh
     mesh.invalidate()
     assert mesh.mesh_for_rays(100) is mesh.traced_mesh
-
-
-def test_mesh_for_rays_rejects_a_negative_count(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match="non-negative"):
-        od.Trimesh.from_warp_mesh(mesh_wp).mesh_for_rays(-1)
 
 
 def test_mesh_from_numpy_round_trip(
@@ -349,11 +369,14 @@ def test_sample_lies_on_the_surface(request: pytest.FixtureRequest, mesh_name: s
     Asserts what the sampler must satisfy instead -- every point lies on the face it reports, and
     the reported faces span more than one triangle. The barycentric residual excludes the bug
     class of a point/face index mismatch, which a distance-to-surface check alone would not: a
-    point sampled from face ``j`` and labelled ``i`` still lies on the surface.
+    point sampled from face ``j`` and labelled ``i`` still lies on the surface. A second draw
+    under the same seed pins that the seed is honoured; ``sample_surface``'s own tests cover the
+    arrival-order scan.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     points_wp, face_index_wp = mesh.sample(512, seed=3)
+    assert np.array_equal(mesh.sample(512, seed=3)[0].numpy(), points_wp.numpy())
 
     points_np, faces_np = points_wp.numpy(), face_index_wp.numpy()
     assert np.unique(faces_np).size > 1
@@ -365,25 +388,6 @@ def test_sample_lies_on_the_surface(request: pytest.FixtureRequest, mesh_name: s
     normals_np /= np.linalg.norm(normals_np, axis=1, keepdims=True)
     offsets_np = np.einsum("ij,ij->i", points_np - corners_np[:, 0], normals_np)
     assert np.abs(offsets_np).max() < 1e-4
-
-
-def test_sample_is_reproducible_under_a_seed(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Ordito against ordito: one seed gives one answer.
-
-    The oracle for the sampler's correctness is ``test_sample_lies_on_the_surface``; this pins
-    only that the seed is honoured, which that test cannot see.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    first, first_faces = mesh.sample(64, seed=11)
-    second, _ = mesh.sample(64, seed=11)
-    assert np.array_equal(first.numpy(), second.numpy())
-    # The arrival-order scan of the face CDF rounds differently, so a seeded draw can only move a
-    # sample to a neighbouring entry of the CDF (``test_sample.py`` measures the bound at scale).
-    with od.config.deterministic(False):
-        _fast, fast_faces = mesh.sample(64, seed=11)
-    assert np.abs(fast_faces.numpy() - first_faces.numpy()).max() <= 2
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -407,14 +411,6 @@ def test_submesh_matches_the_free_function(request: pytest.FixtureRequest, mesh_
     assert by_mask.n_faces == keep_np.sum()
     assert np.array_equal(by_mask.vertices.numpy(), by_index.vertices.numpy())
     assert np.array_equal(by_mask.faces.numpy(), by_index.faces.numpy())
-
-
-def test_submesh_bad_dtype_raises(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a parity assert: the guard on a selector that is neither indices nor a mask."""
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    with pytest.raises(TypeError, match=r"wp\.int32 or wp\.bool"):
-        mesh.submesh(wp.zeros(4, dtype=wp.float32, device=mesh.device))
 
 
 def test_split_and_add_round_trip(three_spheres: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -874,14 +870,6 @@ def test_with_vertices_carries_every_topology_key(
 
     assert key in moved._cache, f"{key} was recomputed instead of carried forward"
     assert moved._cache[key] is before
-
-
-def test_with_vertices_wrong_count_raises(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    too_few = points_to_warp(mesh.vertices.numpy()[:-1], mesh.device)
-    with pytest.raises(ValueError, match="vertex count"):
-        mesh.with_vertices(too_few)
 
 
 def test_with_faces_starts_with_empty_cache(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:

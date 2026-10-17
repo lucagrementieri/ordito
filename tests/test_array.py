@@ -517,24 +517,6 @@ def test_allclose_matches_numpy(device: str, dtype_wp: type, dtype_np: type) -> 
     assert od.array.allclose(a_wp, far_wp) == bool(np.allclose(a_np, a_np + dtype_np(1e-2)))
 
 
-def test_allclose_rejects_mismatched_devices() -> None:
-    """
-    Ordito against ordito: a public two-array function must reject a cross-device call.
-
-    Not a library comparison: no reference library shares Warp's device model. This pins the
-    public-boundary contract every function wired to ``_device.require_same_device`` shares --
-    ``allclose`` stands in for the family. See
-    ``test_require_same_device_flags_a_mismatch_and_ignores_none`` below for the shared helper
-    itself.
-    """
-    if not wp.is_cuda_available():
-        pytest.skip("needs both devices to construct a mismatch")
-    a_wp = wp.zeros(3, dtype=wp.float32, device="cpu")
-    b_wp = wp.zeros(3, dtype=wp.float32, device="cuda:0")
-    with pytest.raises(RuntimeError, match="one device"):
-        od.array.allclose(a_wp, b_wp)
-
-
 @pytest.mark.parity("sort_and_argsort", "numpy")
 def test_sort_and_argsort_distinct_keys(device: str) -> None:
     """Class A: with distinct keys the permutation is unique, so it must equal ``numpy.argsort``."""
@@ -1597,9 +1579,9 @@ def test_read_scalar_returns_a_detached_row_for_a_vector_dtype(device: str) -> N
     assert int(_device.read_scalar(counts_wp)) == 6
 
 
-def test_packers_reject_a_cross_device_sequence() -> None:
+def test_cross_device_inputs_are_rejected() -> None:
     """
-    Ordito against ordito: a mixed-device sequence must be rejected, not silently migrated.
+    Ordito against ordito: a mixed-device sequence or pair must be rejected, not silently migrated.
 
     Not a library comparison: no reference library shares Warp's device model. The failure this
     prevents is not a crash -- unlike ``combine.concatenate``, which launches a kernel and so
@@ -1619,6 +1601,10 @@ def test_packers_reject_a_cross_device_sequence() -> None:
         with pytest.raises(RuntimeError, match=r"'arrays\[0\]' is on .+ while 'arrays\[1\]' is on"):
             pack([cpu_wp, cuda_wp])
         pack([cpu_wp, cpu_wp])  # a same-device sequence still goes through
+    # A public two-array function, standing in for every one wired to
+    # ``_device.require_same_device`` (the helper itself is pinned below).
+    with pytest.raises(RuntimeError, match="one device"):
+        od.array.allclose(cpu_wp, cuda_wp)
 
 
 def test_require_same_device_flags_a_mismatch_and_ignores_none(device: str) -> None:

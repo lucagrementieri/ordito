@@ -126,12 +126,6 @@ def test_concatenate_matches_pytorch3d(request: pytest.FixtureRequest, device: s
     assert np.array_equal(faces_wp.numpy().reshape(-1, 3), faces_p3d.numpy())
 
 
-def test_concatenate_empty() -> None:
-    vertices_wp, faces_wp = od.combine.concatenate([])
-    assert vertices_wp.shape == (0,)
-    assert faces_wp.shape == (0,)
-
-
 @pytest.mark.parity("split", "trimesh")
 def test_split_meshes(three_parts: list[MeshPair]) -> None:
     """
@@ -331,7 +325,9 @@ def test_split_single_component(request: pytest.FixtureRequest) -> None:
     assert np.array_equal(split_wp[0][1].numpy(), mesh_tm.faces.reshape(-1))
 
 
-def test_split_empty(device: str) -> None:
+def test_concatenate_and_split_empty(device: str) -> None:
+    concatenated = od.combine.concatenate([])
+    assert [array_wp.shape for array_wp in concatenated] == [(0,), (0,)]
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
     assert od.combine.split(vertices_wp, faces_wp) == []

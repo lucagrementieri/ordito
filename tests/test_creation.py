@@ -572,20 +572,6 @@ def test_box_mirror_transform_keeps_outward_winding(device: str) -> None:
     assert od.validation.is_volume(vertices_wp, faces_wp)
 
 
-def test_box_invalid(device: str) -> None:
-    bounds_np = np.zeros((2, 3))
-    with pytest.raises(ValueError, match="bounds overrides"):
-        od.creation.box(
-            extents=(1.0, 1.0, 1.0),
-            bounds=cast("Sequence[Sequence[float]]", bounds_np),
-            device=device,
-        )
-    with pytest.raises(ValueError, match="bounds must be"):
-        od.creation.box(bounds=cast("Sequence[Sequence[float]]", np.zeros((3, 3))), device=device)
-    with pytest.raises(ValueError, match="extents must be"):
-        od.creation.box(extents=np.zeros(4), device=device)  # pyright: ignore[reportArgumentType]
-
-
 @pytest.mark.parity("platonic_solids", "trimesh", "igl")
 def test_icosahedron(device: str) -> None:
     """
@@ -797,13 +783,6 @@ def test_grid_matches_pymeshlab(device: str) -> None:
     )
 
 
-def test_grid_invalid(device: str) -> None:
-    with pytest.raises(ValueError, match="count must be at least 2"):
-        od.creation.grid(count=(1, 4), device=device)
-    with pytest.raises(ValueError, match="extents must be non-negative"):
-        od.creation.grid(extents=(-1.0, 1.0), device=device)
-
-
 @pytest.mark.parametrize("subdivisions", [0, 1, 2, 3, 4])
 def test_sphere_cap(device: str, subdivisions: int) -> None:
     angle, radius = np.deg2rad(35.0), 1.5
@@ -857,15 +836,6 @@ def test_sphere_cap_matches_pymeshlab_size(device: str) -> None:
         rtol=1e-5,
         atol=1e-5,
     )
-
-
-def test_sphere_cap_invalid(device: str) -> None:
-    with pytest.raises(ValueError, match=r"angle must be in \(0, pi\)"):
-        od.creation.sphere_cap(angle=0.0, device=device)
-    with pytest.raises(ValueError, match=r"angle must be in \(0, pi\)"):
-        od.creation.sphere_cap(angle=np.pi, device=device)
-    with pytest.raises(ValueError, match="subdivisions must be non-negative"):
-        od.creation.sphere_cap(subdivisions=-1, device=device)
 
 
 @pytest.mark.parametrize("subdivisions", [0, 1, 2, 3, 4, 5])
@@ -1311,13 +1281,6 @@ def test_revolve_capped_profile_closes_itself(device: str, repeat_first: bool) -
     _assert_same_solid(vertices_wp, faces_wp, mesh_tm)
 
 
-def test_revolve_invalid(device: str) -> None:
-    with pytest.raises(ValueError, match="at least 2 points"):
-        od.creation.revolve(points_to_warp_uv(np.zeros((1, 2)), device))
-    with pytest.raises(ValueError, match="sections must be at least 1"):
-        od.creation.revolve(points_to_warp_uv(_SQUARE_RING, device), sections=0)
-
-
 def test_revolve_absolute_tolerance_is_scale_dependent(device: str) -> None:
     # Documented limitation: the degenerate-triangle filter compares an absolute area against
     # 1e-8, so a large enough sphere keeps its (near-)zero-area polar triangles. Recorded here so
@@ -1472,14 +1435,6 @@ def test_extrude_triangulation_recovers_subdivided_boundary(device: str) -> None
     assert np.isclose(warp_to_trimesh(solid_v, solid_f).volume, 1.0, rtol=1e-4)
 
 
-def test_extrude_triangulation_invalid(device: str) -> None:
-    ring_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(_SQUARE_RING, device))
-    with pytest.raises(ValueError, match="height must be nonzero"):
-        od.creation.extrude_triangulation(ring_wp, faces_wp, 0.0)
-    with pytest.raises(ValueError, match="multiple of 3"):
-        od.creation.extrude_triangulation(ring_wp, faces_wp[:2].contiguous(), 1.0)
-
-
 _SWEEP_PATHS = {
     "straight": np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]]),
     "bent": np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 2.0], [0.0, 2.0, 2.0]]),
@@ -1579,18 +1534,6 @@ def test_sweep_polygon_open_path_without_caps(device: str) -> None:
     _, faces_wp = od.creation.sweep_polygon(points_to_warp_uv(ring_np, device), path_wp, cap=False)
     assert not od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
     assert faces_wp.size // 3 == 2 * 2 * 4
-
-
-def test_sweep_polygon_invalid(device: str) -> None:
-    ring_wp = points_to_warp_uv(_SQUARE_RING, device)
-    single_wp = wp.array(np.zeros((1, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    with pytest.raises(ValueError, match="at least 2 points"):
-        od.creation.sweep_polygon(ring_wp, single_wp)
-    path_wp = points_to_warp(_SWEEP_PATHS["straight"], device)
-    with pytest.raises(ValueError, match="one entry per path point"):
-        od.creation.sweep_polygon(
-            ring_wp, path_wp, angles=wp.zeros(2, dtype=wp.float32, device=device)
-        )
 
 
 def test_sweep_polygon_rejects_a_non_simple_ring(device: str) -> None:
@@ -1789,15 +1732,6 @@ def test_parametric_surface_topology_is_resolution_independent(
     assert len(invariants) == 1, f"topology moved with the resolution: {invariants}"
 
 
-def test_parametric_surface_invalid(device: str) -> None:
-    with pytest.raises(ValueError, match="unknown kind"):
-        od.creation.parametric_surface("klein_bottle", device=device)  # pyright: ignore[reportArgumentType]
-    with pytest.raises(ValueError, match="at least 2"):
-        od.creation.parametric_surface("mobius", 1, 40, device=device)
-    with pytest.raises(ValueError, match="at least 2"):
-        od.creation.parametric_surface("mobius", 40, 1, device=device)
-
-
 @pytest.mark.parametrize(
     ("surface", "u_resolution", "v_resolution"),
     [("klein", 40, 2), ("pseudosphere", 40, 2), ("bohemian_dome", 2, 40)],
@@ -1843,11 +1777,6 @@ def test_super_ellipsoid_unit_exponents_are_a_sphere(device: str) -> None:
     assert np.linalg.norm(boxy_wp.numpy(), axis=1).max() > 1.3
 
 
-def test_super_ellipsoid_invalid(device: str) -> None:
-    with pytest.raises(ValueError, match="radii must be"):
-        od.creation.super_ellipsoid(radii=(1.0, 1.0), device=device)  # pyright: ignore[reportArgumentType]
-
-
 def test_super_toroid_unit_exponents_are_a_torus(device: str) -> None:
     """``n1 = n2 = 1`` is VTK's (1, 0.5) torus, the genus-1 counterpart of the sphere above."""
     vertices_wp, faces_wp = od.creation.super_toroid(device=device)
@@ -1882,13 +1811,6 @@ def test_random_hills(device: str) -> None:
     assert not od.creation.random_hills(n_hills=0, device=device)[0].numpy()[:, 2].any()
 
 
-def test_random_hills_invalid(device: str) -> None:
-    with pytest.raises(ValueError, match="variances must be positive"):
-        od.creation.random_hills(x_variance=0.0, device=device)
-    with pytest.raises(ValueError, match="at least 2"):
-        od.creation.random_hills(u_resolution=1, device=device)
-
-
 def test_random_soup(device: str) -> None:
     vertices_wp, faces_wp = od.creation.random_soup(50, seed=3, device=device)
     assert vertices_wp.size == 150
@@ -1919,6 +1841,61 @@ def test_empty_results(device: str) -> None:
     )
     assert solid_v.size == 0
     assert solid_f.size == 0
+
+
+def test_invalid_arguments_raise(device: str) -> None:
+    """Not a library comparison: each documented ``ValueError``, raised with its message."""
+    bounds_np = np.zeros((2, 3))
+    with pytest.raises(ValueError, match="bounds overrides"):
+        od.creation.box(
+            extents=(1.0, 1.0, 1.0),
+            bounds=cast("Sequence[Sequence[float]]", bounds_np),
+            device=device,
+        )
+    with pytest.raises(ValueError, match="bounds must be"):
+        od.creation.box(bounds=cast("Sequence[Sequence[float]]", np.zeros((3, 3))), device=device)
+    with pytest.raises(ValueError, match="extents must be"):
+        od.creation.box(extents=np.zeros(4), device=device)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="count must be at least 2"):
+        od.creation.grid(count=(1, 4), device=device)
+    with pytest.raises(ValueError, match="extents must be non-negative"):
+        od.creation.grid(extents=(-1.0, 1.0), device=device)
+    with pytest.raises(ValueError, match=r"angle must be in \(0, pi\)"):
+        od.creation.sphere_cap(angle=0.0, device=device)
+    with pytest.raises(ValueError, match=r"angle must be in \(0, pi\)"):
+        od.creation.sphere_cap(angle=np.pi, device=device)
+    with pytest.raises(ValueError, match="subdivisions must be non-negative"):
+        od.creation.sphere_cap(subdivisions=-1, device=device)
+    with pytest.raises(ValueError, match="at least 2 points"):
+        od.creation.revolve(points_to_warp_uv(np.zeros((1, 2)), device))
+    with pytest.raises(ValueError, match="sections must be at least 1"):
+        od.creation.revolve(points_to_warp_uv(_SQUARE_RING, device), sections=0)
+    ring_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(_SQUARE_RING, device))
+    with pytest.raises(ValueError, match="height must be nonzero"):
+        od.creation.extrude_triangulation(ring_wp, faces_wp, 0.0)
+    with pytest.raises(ValueError, match="multiple of 3"):
+        od.creation.extrude_triangulation(ring_wp, faces_wp[:2].contiguous(), 1.0)
+    ring_wp = points_to_warp_uv(_SQUARE_RING, device)
+    single_wp = wp.array(np.zeros((1, 3), dtype=np.float32), dtype=wp.vec3, device=device)
+    with pytest.raises(ValueError, match="at least 2 points"):
+        od.creation.sweep_polygon(ring_wp, single_wp)
+    path_wp = points_to_warp(_SWEEP_PATHS["straight"], device)
+    with pytest.raises(ValueError, match="one entry per path point"):
+        od.creation.sweep_polygon(
+            ring_wp, path_wp, angles=wp.zeros(2, dtype=wp.float32, device=device)
+        )
+    with pytest.raises(ValueError, match="unknown kind"):
+        od.creation.parametric_surface("klein_bottle", device=device)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="at least 2"):
+        od.creation.parametric_surface("mobius", 1, 40, device=device)
+    with pytest.raises(ValueError, match="at least 2"):
+        od.creation.parametric_surface("mobius", 40, 1, device=device)
+    with pytest.raises(ValueError, match="radii must be"):
+        od.creation.super_ellipsoid(radii=(1.0, 1.0), device=device)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="variances must be positive"):
+        od.creation.random_hills(x_variance=0.0, device=device)
+    with pytest.raises(ValueError, match="at least 2"):
+        od.creation.random_hills(u_resolution=1, device=device)
 
 
 @pytest.mark.parametrize(

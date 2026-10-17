@@ -281,43 +281,33 @@ def test_an_empty_operator_factors_and_solves_nothing(device: str, with_coordina
     assert solution.shape == (0,)
 
 
-def test_sparse_cholesky_rejects_an_indefinite_operator(
-    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+def test_sparse_cholesky_rejects_invalid_inputs(
+    device: str, monkeypatch: pytest.MonkeyPatch, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
-    _, mesh_wp = sphere_irregular
-    negated = scipy_to_bsr(-bsr_to_csr(_heat_system(mesh_wp)), device)
-    with pytest.raises(od.cholesky.NotPositiveDefiniteError, match="not positive definite"):
-        od.cholesky.sparse_cholesky(negated, mesh_wp.points)
+    """
+    Not a library comparison: each guard raises before a factor is used.
 
-
-def test_sparse_cholesky_honours_its_memory_budget(
-    monkeypatch: pytest.MonkeyPatch, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
-) -> None:
-    _, mesh_wp = sphere_irregular
-    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
-    with pytest.raises(ValueError, match="CHOLESKY_MEMORY_BUDGET"):
-        od.cholesky.sparse_cholesky(_heat_system(mesh_wp), mesh_wp.points)
-
-
-def test_sparse_cholesky_rejects_mismatched_inputs(
-    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
-) -> None:
+    An indefinite operator, coordinates of another length, a ``float32`` or mis-sized solve, and a
+    factorization past ``CHOLESKY_MEMORY_BUDGET`` are each refused with their message.
+    """
     _, mesh_wp = sphere_irregular
     system = _heat_system(mesh_wp)
+    negated = scipy_to_bsr(-bsr_to_csr(system), device)
+    with pytest.raises(od.cholesky.NotPositiveDefiniteError, match="not positive definite"):
+        od.cholesky.sparse_cholesky(negated, mesh_wp.points)
     with pytest.raises(ValueError, match="coordinates"):
         od.cholesky.sparse_cholesky(system, odt.as_dense(mesh_wp.points[:3]))
     factor = od.cholesky.sparse_cholesky(system, mesh_wp.points)
     n = int(system.nrow)
-    with pytest.raises(ValueError, match="float64"):
-        factor.solve(
-            wp.zeros(n, dtype=wp.float32, device=device),
-            wp.zeros(n, dtype=wp.float32, device=device),
-        )
-    with pytest.raises(ValueError, match="rows"):
-        factor.solve(
-            wp.zeros(n + 1, dtype=wp.float64, device=device),
-            wp.zeros(n + 1, dtype=wp.float64, device=device),
-        )
+    for dtype, rows, match in ((wp.float32, n, "float64"), (wp.float64, n + 1, "rows")):
+        with pytest.raises(ValueError, match=match):
+            factor.solve(
+                wp.zeros(rows, dtype=dtype, device=device),
+                wp.zeros(rows, dtype=dtype, device=device),
+            )
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
+    with pytest.raises(ValueError, match="CHOLESKY_MEMORY_BUDGET"):
+        od.cholesky.sparse_cholesky(system, mesh_wp.points)
 
 
 def test_sparse_cholesky_rejects_a_one_sided_entry(

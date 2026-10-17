@@ -293,14 +293,10 @@ def test_delaunay_cocircular(device: str):
     assert np.isclose(area, float(ConvexHull(points_np.astype(np.float64)).volume), rtol=1e-5)
 
 
-def test_delaunay_collinear(device: str):
+def test_delaunay_collinear_and_too_few(device: str):
+    # Collinear points triangulate to nothing; fewer than three raise.
     points_np = np.array([[float(i), 0.0] for i in range(5)], dtype=np.float32)
-    points_wp = points_to_warp_uv(points_np, device)
-    faces_wp = od.reconstruction.delaunay_triangulation(points_wp)
-    assert faces_wp.size == 0
-
-
-def test_delaunay_too_few(device: str):
+    assert od.reconstruction.delaunay_triangulation(points_to_warp_uv(points_np, device)).size == 0
     points_wp = wp.array(np.zeros((2, 2), dtype=np.float32), dtype=wp.vec2, device=device)
     with pytest.raises(ValueError, match="at least 3 points"):
         od.reconstruction.delaunay_triangulation(points_wp)
@@ -566,13 +562,6 @@ def test_holes_seal_small_hole(device: str):
     assert od.validation.is_watertight(vertices_filled, faces_filled)
 
 
-def test_empty_cloud(device: str):
-    points_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(points_wp)
-    assert vertices_wp.size == 0
-    assert faces_wp.size == 0
-
-
 def test_too_few_points(device: str):
     """
     Not a library comparison: two points admit no triangle, and nothing else computes this.
@@ -592,7 +581,12 @@ def test_too_few_points(device: str):
     assert np.allclose(points_wp.numpy(), points_np, rtol=1e-5, atol=1e-5)
 
 
-def test_invalid_parameters(device: str):
+def test_empty_cloud_and_invalid_parameters(device: str):
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
+        wp.zeros(0, dtype=wp.vec3, device=device)
+    )
+    assert vertices_wp.size == 0
+    assert faces_wp.size == 0
     points_wp = wp.zeros(4, dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="pass at most one of num_neighbours and radius"):
         od.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=8, radius=1.0)
@@ -914,9 +908,8 @@ def test_poisson_rejects_invalid_arguments(
 
 
 @pytest.mark.parametrize("method", ["dense", "adaptive"])
-@pytest.mark.parametrize("n_normals", [10, 161, 163])
 def test_poisson_rejects_one_normal_per_point_mismatch(
-    device: str, method: Literal["dense", "adaptive"], n_normals: int
+    device: str, method: Literal["dense", "adaptive"]
 ) -> None:
     """
     Not a library comparison: a ``normals`` array not one per point raises ``ValueError``.
@@ -925,13 +918,13 @@ def test_poisson_rejects_one_normal_per_point_mismatch(
     read past its end; the boundary values one short and one long of ``n`` both raise.
     """
     points_np, normals_np = _sphere_cloud(2)
-    normals_np = np.resize(normals_np, (n_normals, 3))
-    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
-    assert points_wp.size == 162
-    with pytest.raises(ValueError, match="one normal per point"):
-        od.reconstruction.screened_poisson(
-            points_wp, normals_wp, depth=5, full_depth=4, method=method
-        )
+    for n_normals in (10, 161, 163):
+        points_wp, normals_wp = _to_warp(points_np, np.resize(normals_np, (n_normals, 3)), device)
+        assert points_wp.size == 162
+        with pytest.raises(ValueError, match="one normal per point"):
+            od.reconstruction.screened_poisson(
+                points_wp, normals_wp, depth=5, full_depth=4, method=method
+            )
 
 
 def test_poisson_cpu_matches_cuda():
@@ -1424,14 +1417,11 @@ def test_resample_uniform_is_watertight_when_nodes_land_on_the_surface(
     assert not (~od.triangles.face_nondegenerate_mask(out_vertices_wp, out_faces_wp).numpy()).any()
 
 
-def test_resample_uniform_invalid(device: str) -> None:
+def test_resample_uniform_invalid_and_empty(device: str) -> None:
     sphere_tm = tm.creation.icosphere(subdivisions=1, radius=1.0)
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
     with pytest.raises(ValueError, match="voxel_size > 0"):
         od.reconstruction.resample_uniform(vertices_wp, faces_wp, voxel_size=0.0)
-
-
-def test_resample_uniform_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
     out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(vertices_wp, faces_wp)

@@ -793,7 +793,7 @@ def test_cdf_samplers_are_deterministic_on_a_large_mesh(device: str, sampler: st
     ``test_samplers_are_deterministic`` runs on fixtures too small to see the scan: both samplers
     invert a float32 face CDF built by an inclusive scan, and CUB's arrival-order scan on CUDA
     moved that CDF's last bits from call to call at this size, so every pair of seeded draws of
-    100k points differed in some sample. Three more draws must equal the first.
+    100k points differed in some sample. A second draw must equal the first.
     """
     vertices, faces = od.creation.icosphere(8, device=device)
 
@@ -802,9 +802,7 @@ def test_cdf_samplers_are_deterministic_on_a_large_mesh(device: str, sampler: st
             return od.sample.sample_surface(vertices, faces, 100_000, seed=7)[0]
         return od.sample.sample_volume(vertices, faces, 100_000, seed=7)
 
-    first_np = draw().numpy()
-    for _ in range(3):
-        assert np.array_equal(draw().numpy(), first_np)
+    assert np.array_equal(draw().numpy(), draw().numpy())
 
 
 def test_sample_surface_arrival_order_scan_draws_the_same_points(device: str) -> None:

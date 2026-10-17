@@ -213,6 +213,15 @@ def test_transforms_accept_a_device_matrix(
             lambda _points, device: od.transform.as_mat44(warp_empty(0, wp.mat44, device)),
             "length-1",
         ),
+        (
+            lambda points, device: od.transform.transform_mesh(
+                points,
+                wp.array([0, 1, 2, 2, 3, 4], dtype=wp.int32, device=device),
+                _ROTATION,
+                out_faces=warp_empty(3, wp.int32, device),
+            ),
+            "out_faces must have length",
+        ),
     ],
     ids=[
         "out_scalar_matrix",
@@ -220,6 +229,7 @@ def test_transforms_accept_a_device_matrix(
         "matrix_array_two",
         "as_mat44_two",
         "as_mat44_empty",
+        "out_faces",
     ],
 )
 def test_mismatched_lengths_raise(
@@ -227,6 +237,8 @@ def test_mismatched_lengths_raise(
 ) -> None:
     """
     Not a parity assert: an undersized ``out`` and a matrix array that is not ``(1,)`` must raise.
+
+    An undersized ``out_faces`` of ``transform_mesh`` raises rather than silently overrunning it.
 
     ``transform_points``'s device-array-matrix path launches straight into ``out`` with no shape
     check of its own (unlike the scalar-matrix ``wp.map`` path, which validates internally) -- the
@@ -402,20 +414,6 @@ def test_transform_mesh_keeps_volume_positive(sphere_irregular: tuple[tm.Trimesh
     assert od.measures.volume(vertices_wp, faces_wp) == pytest.approx(before, rel=1e-5)
 
 
-def test_transform_mesh_mismatched_out_faces_length_raises(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """Not a parity assert: an undersized ``out_faces`` must raise, not silently overrun it."""
-    _mesh_tm, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match="out_faces must have length"):
-        od.transform.transform_mesh(
-            mesh_wp.points,
-            mesh_wp.indices,
-            _ROTATION,
-            out_faces=warp_empty(3, wp.int32, mesh_wp.device),
-        )
-
-
 # ---------------------------------------------------------------------------
 # classification
 # ---------------------------------------------------------------------------
@@ -432,18 +430,47 @@ def test_classify_transform(kind: TransformKind, matrix: wp.mat44) -> None:
     assert od.transform.classify_transform(matrix) == kind
 
 
-def test_classify_transform_mirroring_scale_is_a_similarity() -> None:
-    """
-    Not a library comparison: the one case where orientation and metric class come apart.
+# Matrices whose class a plausible classifier gets wrong, each with the reason it is listed.
+_CLASSIFY_EDGE_CASES = [
+    # A uniform scale of -2 reverses orientation *and* changes lengths, so it is a similarity and
+    # not a reflection -- reporting `REFLECTION` would promise the length preservation that the
+    # cache strata rely on.
+    ("mirroring_scale", od.transform.scale_matrix(-2.0), TransformKind.SIMILARITY),
+    # A determinant-vs-trace-derived-scale singularity test flags a sufficiently anisotropic (but
+    # perfectly invertible) scale as `SINGULAR`, because a non-uniform scale's determinant is
+    # always below its isotropic-scale expectation by an amount that grows with the aspect ratio
+    # (AM-GM). ``diag(1000, 1, 1)`` is the module's own `AFFINE` example, determinant 1000, and was
+    # misclassified `SINGULAR` before the singular-value-ratio test replaced that one.
+    ("anisotropic_scale", od.transform.scale_matrix((1000.0, 1.0, 1.0)), TransformKind.AFFINE),
+    # ``wp.transform_point`` drops the ``w`` divide, so nothing downstream of a non-affine bottom
+    # row is meaningful and the bottom rung is the honest answer.
+    (
+        "projective",
+        wp.mat44(1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0.5, 0, 0, 1.0),
+        TransformKind.SINGULAR,
+    ),
+]
 
-    A uniform scale of -2 reverses orientation *and* changes lengths, so it is a similarity and not
-    a reflection -- reporting `REFLECTION` would promise the length preservation that the cache
-    strata rely on.
+
+@pytest.mark.parametrize(
+    ("matrix", "kind"),
+    [case[1:] for case in _CLASSIFY_EDGE_CASES],
+    ids=[case[0] for case in _CLASSIFY_EDGE_CASES],
+)
+def test_classify_transform_edge_cases(matrix: wp.mat44, kind: TransformKind) -> None:
     """
-    mirroring = od.transform.scale_matrix(-2.0)
-    assert od.transform.classify_transform(mirroring) == TransformKind.SIMILARITY
-    assert od.transform.reverses_orientation(mirroring)
-    assert od.transform.transform_scale(mirroring) == pytest.approx(2.0, rel=1e-5)
+    Not a library comparison: the matrices where a plausible classifier answers wrongly.
+
+    Beside the class, the mirroring scale must still report its orientation reversal and length
+    scale, and the anisotropic scale's normal map (which used the same flawed singularity test
+    independently) must not raise.
+    """
+    assert od.transform.classify_transform(matrix) == kind
+    if kind == TransformKind.SIMILARITY:
+        assert od.transform.reverses_orientation(matrix)
+        assert od.transform.transform_scale(matrix) == pytest.approx(2.0, rel=1e-5)
+    if kind == TransformKind.AFFINE:
+        od.transform.normal_matrix(matrix)
 
 
 def test_classify_transform_survives_composed_float32_rotations() -> None:
@@ -462,34 +489,6 @@ def test_classify_transform_survives_composed_float32_rotations() -> None:
         od.transform.classify_transform(wp.mat44(*composed.flatten().tolist()))
         == TransformKind.RIGID
     )
-
-
-def test_classify_transform_anisotropic_scale_is_affine_not_singular() -> None:
-    """
-    Not a library comparison: the singularity test must be scale-invariant under anisotropy too.
-
-    A determinant-vs-trace-derived-scale singularity test flags a sufficiently anisotropic (but
-    perfectly invertible) scale as `SINGULAR`, because a non-uniform scale's determinant is always
-    below its isotropic-scale expectation by an amount that grows with the aspect ratio (AM-GM).
-    ``diag(1000, 1, 1)`` is exactly the module's own `AFFINE` example and has determinant 1000 --
-    not remotely singular -- but was misclassified `SINGULAR` before the singular-value-ratio test
-    replaced the determinant-vs-scale one.
-    """
-    anisotropic = od.transform.scale_matrix((1000.0, 1.0, 1.0))
-    assert od.transform.classify_transform(anisotropic) == TransformKind.AFFINE
-    # And the normal map, which used the same flawed test independently, must not raise either.
-    od.transform.normal_matrix(anisotropic)
-
-
-def test_classify_transform_projective_matrix_is_singular() -> None:
-    """
-    Not a library comparison: a non-affine bottom row is not applied with a perspective divide.
-
-    ``wp.transform_point`` drops the ``w`` divide, so nothing downstream of such a matrix is
-    meaningful and the bottom rung is the honest answer.
-    """
-    projective = wp.mat44(1.0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 1.0, 0, 0.5, 0, 0, 1.0)
-    assert od.transform.classify_transform(projective) == TransformKind.SINGULAR
 
 
 # ---------------------------------------------------------------------------
@@ -758,7 +757,8 @@ def test_transform_assume_skips_classification(
     Not a parity assert: ``assume=`` selects the stratum the classifier would have picked.
 
     Passing the *correct* promise must reach the same cache as inferring it, which is the only
-    property that can be checked -- an incorrect promise is documented as unchecked.
+    property that can be checked -- an incorrect promise is documented as unchecked. An unknown
+    promise is refused.
     """
     _mesh_tm, mesh_wp = sphere_irregular
     inferred = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp)).transform(_ROTATION)
@@ -766,11 +766,6 @@ def test_transform_assume_skips_classification(
         _ROTATION, assume="rigid"
     )
     assert set(inferred._cache) == set(promised._cache)
-
-
-def test_transform_bad_assume_raises(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a parity assert: the guard on an unknown promise."""
-    _mesh_tm, mesh_wp = sphere_irregular
     with pytest.raises(ValueError, match="isometry"):
         od.Trimesh.from_warp_mesh(mesh_wp).transform(_ROTATION, assume="isometry")
 

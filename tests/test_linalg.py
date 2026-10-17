@@ -258,8 +258,17 @@ def test_min_quad_with_fixed_factors_a_solve_that_misses_its_budget(
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-9, atol=1e-9)
 
 
-def test_min_quad_with_fixed_rejects_off_menu_choices(device: str) -> None:
-    """Off-menu ``solver`` and ``preconditioner`` raise, the latter under the direct solver too."""
+def test_min_quad_with_fixed_rejects_invalid_arguments(device: str) -> None:
+    """
+    Not a library comparison: each guard is refused before any kernel reads past a buffer.
+
+    Off-menu ``solver`` and ``preconditioner`` raise, the latter under the direct solver too. The
+    parameter is typed rank-free, so a rank-1 or ``float32`` ``fixed_values`` raises ``TypeError``
+    at runtime, and the rank-2 ``float64`` buffer it must be is accepted as a plain ``wp.array``.
+    ``fixed_values`` one column short is refused by the one-shot solve and by a precomputed
+    system's ``solve``, which used to skip the check and index past the buffer; a rank-1 buffer is
+    refused there too. A mask of another length than the operator is refused where the two meet.
+    """
     matrix_wp, fixed_wp, values_wp, _ = _pinned_grid(device)
     with pytest.raises(ValueError, match="unknown solver 'cholesky'"):
         od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, values_wp, solver="cholesky")
@@ -268,15 +277,6 @@ def test_min_quad_with_fixed_rejects_off_menu_choices(device: str) -> None:
             matrix_wp, fixed_wp, values_wp, solver="direct", preconditioner="jacobi"
         )
 
-
-def test_min_quad_with_fixed_rejects_values_of_another_rank_or_dtype(device: str) -> None:
-    """
-    Not a library comparison: the parameter is typed rank-free, so the rank is checked at runtime.
-
-    A rank-1 or ``float32`` ``fixed_values`` raises ``TypeError`` before anything is launched, and
-    the rank-2 ``float64`` buffer it must be is accepted as a plain ``wp.array``.
-    """
-    matrix_wp, fixed_wp, values_wp, _ = _pinned_grid(device)
     with pytest.raises(TypeError, match="expected 2D array"):
         od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, values_wp.flatten())
     values_f32_wp = wp.array(values_wp.numpy().astype(np.float32), device=device)
@@ -286,16 +286,6 @@ def test_min_quad_with_fixed_rejects_values_of_another_rank_or_dtype(device: str
     solution_wp, _, n_free = od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, plain_wp)
     assert solution_wp.shape == (values_wp.shape[0], n_free)
 
-
-def test_min_quad_with_fixed_rejects_values_or_an_operator_of_another_size(device: str) -> None:
-    """
-    Not a library comparison: a size mismatch is refused before any kernel reads past a buffer.
-
-    ``fixed_values`` one column short is refused by the one-shot solve and by a precomputed
-    system's ``solve``, which used to skip the check and index past the buffer; a rank-1 buffer is
-    refused there too. A mask of another length than the operator is refused where the two meet.
-    """
-    matrix_wp, fixed_wp, values_wp, _ = _pinned_grid(device)
     short_wp = wp.array(values_wp.numpy()[:, :-1], dtype=wp.float64, device=device)
     with pytest.raises(ValueError, match="fixed_values has 575 columns"):
         od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, short_wp)

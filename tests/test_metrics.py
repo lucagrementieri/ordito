@@ -1255,17 +1255,15 @@ def test_chamfer_loss_no_tape_has_value_but_no_grad(device: str) -> None:
     assert np.allclose(loss_wp.numpy()[0], reduced, rtol=1e-5, atol=1e-5)
 
 
-def test_chamfer_loss_rejects_max_reduction(device: str) -> None:
+def test_chamfer_points_to_points_loss_guards_and_empty(device: str) -> None:
+    """Not a library comparison: ``"max"`` is refused, and an empty side gives a zero loss."""
     x_wp = points_to_warp(np.zeros((3, 3), dtype=np.float32), device)
     y_wp = points_to_warp(np.ones((3, 3), dtype=np.float32), device)
     with pytest.raises(ValueError, match="mean"):
         od.metrics.chamfer_points_to_points_loss(x_wp, y_wp, point_reduction="max", squared=True)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
-
-
-def test_chamfer_points_to_points_loss_empty(device: str) -> None:
-    x_wp = warp_empty(0, wp.vec3, device)
-    y_wp = points_to_warp(np.zeros((4, 3), dtype=np.float32), device)
-    loss_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp, squared=True)
+    loss_wp = od.metrics.chamfer_points_to_points_loss(
+        warp_empty(0, wp.vec3, device), y_wp, squared=True
+    )
     assert loss_wp.shape == (1,)
     assert float(loss_wp.numpy()[0]) == 0.0
 

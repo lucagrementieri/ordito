@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from typing import Any, cast
 
 import numpy as np
@@ -92,13 +93,70 @@ def test_halfedge_twins_boundary_matches_oriented_boundary_edges(
     }
 
 
-def test_halfedge_twins_rejects_non_manifold_edge(device: str) -> None:
-    # Three triangles hinged on the edge (0, 1): "the" opposite halfedge is not defined.
-    faces_wp = wp.array(
-        np.array([0, 1, 2, 0, 1, 3, 0, 1, 4], dtype=np.int32), dtype=wp.int32, device=device
-    )
-    with pytest.raises(ValueError, match="edge-manifold"):
-        od.halfedge.halfedge_twins(faces_wp, n_vertices=5)
+def _faces(values: list[int], device: str) -> wp.array[wp.int32]:
+    return wp.array(np.array(values, dtype=np.int32), dtype=wp.int32, device=device)
+
+
+def _ragged_twins_call(device: str) -> None:
+    faces_wp = _faces([0, 1, 2, 0, 2, 3, 1, 2, 3, 7], device)
+    n_halfedges = faces_wp.size // 3 * 3
+    # Non-vacuity: the trailing entry is what makes the two lengths disagree.
+    assert n_halfedges < faces_wp.size
+    twins_np = np.full(n_halfedges, -1, dtype=np.int32)
+    twins_np[0] = n_halfedges  # in range for faces, out of range for halfedges
+    od.halfedge.require_matching_twins(faces_wp, wp.array(twins_np, dtype=wp.int32, device=device))
+
+
+def _pinched_rings_call(device: str) -> None:
+    faces_wp = _faces([0, 1, 2, 0, 2, 1, 0, 3, 4, 0, 4, 3], device)
+    twins = od.halfedge.halfedge_twins(faces_wp, n_vertices=5)
+    # The twin table is sound: the winding guard has nothing to say, the rotation fails.
+    assert (twins.numpy() >= 0).all()
+    od.halfedge.vertex_one_rings(faces_wp, twins=twins, n_vertices=5)
+
+
+_INVALID_HALFEDGE_CASES: list[tuple[str, Callable[[str], object], str]] = [
+    (
+        "non-manifold-edge",
+        lambda device: od.halfedge.halfedge_twins(
+            _faces([0, 1, 2, 0, 1, 3, 0, 1, 4], device), n_vertices=5
+        ),
+        "edge-manifold",
+    ),
+    (
+        "duplicated-face",
+        lambda device: od.halfedge.halfedge_twins(_faces([0, 1, 2, 0, 1, 2], device), n_vertices=3),
+        "consistently wound",
+    ),
+    ("pinched-vertex", _pinched_rings_call, "vertex-manifold"),
+    ("twin-past-the-halfedge-count", _ragged_twins_call, "opposite halfedge"),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [pytest.param(call, match, id=name) for name, call, match in _INVALID_HALFEDGE_CASES],
+)
+def test_halfedge_rejects_invalid_small_inputs(
+    call: Callable[[str], object], match: str, device: str
+) -> None:
+    """
+    Not a library comparison: trimesh has no halfedge structure, so the oracle is the algebra.
+
+    Three faces hinged on one edge have no "the" opposite halfedge. An *exactly* duplicated face
+    carries all three edges twice the same way, the defect a non-orientable surface produces; a
+    *reversed* duplicate is consistently wound (if degenerate) and must still pair, asserted below.
+    Two closed sheets meeting at vertex 0 alone pair soundly but their rotation closes after one
+    fan, and that diagnosis must stay distinct from the winding guard's. A twin index is bounded
+    by the halfedge count (``faces.shape[0] // 3 * 3``), not the face length: on a ragged buffer a
+    range test against the wrong one lets ``halfedge_destination`` read past the end, a host-heap
+    read on CPU.
+    """
+    with pytest.raises(ValueError, match=match):
+        call(device)
+    assert (
+        od.halfedge.halfedge_twins(_faces([0, 1, 2, 0, 2, 1], device), n_vertices=3).numpy() >= 0
+    ).all()
 
 
 @pytest.mark.parametrize("consistent", [True, False])
@@ -156,47 +214,6 @@ def test_halfedge_twins_rejects_a_non_orientable_surface(
     # The same rejection reaches every consumer that derives the table for itself.
     with pytest.raises(ValueError, match="consistently wound"):
         od.halfedge.vertex_one_rings(mesh_wp.indices, n_vertices=len(mesh_tm.vertices))
-
-
-def test_halfedge_twins_rejects_a_duplicated_face(device: str) -> None:
-    """
-    Not a library comparison: trimesh has no halfedge structure, so the oracle is the algebra.
-
-    Two arms of one distinction the winding guard has to draw. An *exactly* duplicated face makes
-    all three of its edges carry two halfedges pointing the same way, which is the same defect a
-    non-orientable surface produces and is rejected; a *reversed* duplicate is a consistently wound
-    (if degenerate) closed surface, every edge is crossed once each way, and it must still pair.
-    """
-    with pytest.raises(ValueError, match="consistently wound"):
-        od.halfedge.halfedge_twins(
-            wp.array(np.array([0, 1, 2, 0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device),
-            n_vertices=3,
-        )
-    reversed_wp = wp.array(
-        np.array([0, 1, 2, 0, 2, 1], dtype=np.int32), dtype=wp.int32, device=device
-    )
-    assert (od.halfedge.halfedge_twins(reversed_wp, n_vertices=3).numpy() >= 0).all()
-
-
-def test_vertex_one_rings_rejects_a_pinched_vertex(device: str) -> None:
-    """
-    Not a library comparison: trimesh has no halfedge structure, so the oracle is the algebra.
-
-    Two closed degenerate sheets meeting at vertex 0 alone. Every edge is crossed once each way, so
-    the twin table is sound and the winding guard has nothing to say; what fails is the *rotation*,
-    which closes after one fan and leaves the other unvisited. Here so the winding guard added
-    beside it cannot quietly take over this diagnosis -- the two failures are different, and the
-    message the caller gets has to stay different too.
-    """
-    faces_wp = wp.array(
-        np.array([0, 1, 2, 0, 2, 1, 0, 3, 4, 0, 4, 3], dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
-    twins = od.halfedge.halfedge_twins(faces_wp, n_vertices=5)
-    assert (twins.numpy() >= 0).all()
-    with pytest.raises(ValueError, match="vertex-manifold"):
-        od.halfedge.vertex_one_rings(faces_wp, twins=twins, n_vertices=5)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -486,68 +503,32 @@ def test_vertex_one_rings_isolated_vertex_is_empty(device: str) -> None:
     assert np.array_equal(is_boundary_wp.numpy(), np.array([True, True, True, False]))
 
 
-def test_require_matching_twins_rejects_a_table_from_another_mesh(
-    request: pytest.FixtureRequest,
-) -> None:
-    """
-    Ordito against ordito: a ``twins=`` table built for a different mesh must be rejected.
-
-    Not a library comparison: no reference library exposes a caller-supplied halfedge twin table.
-    The table is indexed *by halfedge*, so one cached from a smaller mesh is short rather than
-    merely stale, and the kernels that walk it (``ring_degrees_and_starts``, ``write_one_rings``)
-    index past its end -- which on the CPU device reads the host heap silently rather than raising,
-    a silent hazard. Parametrized over all three public ``twins=`` entry
-    points because the check is one shared validator and a site that skips it is invisible
-    otherwise.
-
-    The accepting arm is asserted too: the matching table must go through, or the guard would pass
-    by rejecting everything.
-    """
-    _, coarse_wp = request.getfixturevalue("sphere_well_shaped")
-    _, fine_wp = request.getfixturevalue("sphere_irregular")
-    coarse_twins_wp = od.halfedge.halfedge_twins(coarse_wp.indices)
-    fine_twins_wp = od.halfedge.halfedge_twins(fine_wp.indices)
-    assert coarse_twins_wp.size < fine_twins_wp.size
-
-    contour_wp = od.selection.region_boundary_edges(
-        fine_wp.indices,
-        wp.array(np.arange(fine_wp.indices.size // 3) < 4, dtype=wp.bool, device=fine_wp.device),
-        oriented=True,
-    )
-    calls = (
-        lambda twins: od.halfedge.vertex_one_rings(fine_wp.indices, twins=twins),
-        lambda twins: od.tangent_space.halfedge_transport_angles(
-            fine_wp.points, fine_wp.indices, twins=twins
-        ),
-        lambda twins: od.selection.faces_left_of_contour(fine_wp.indices, contour_wp, twins=twins),
-    )
-    for call in calls:
-        with pytest.raises(ValueError, match="one entry per halfedge"):
-            call(coarse_twins_wp)
-        call(fine_twins_wp)  # the matching table is accepted
-
-
 @pytest.mark.parametrize(
-    "corruption", ["swapped_pair", "out_of_range", "broken_involution", "all_boundary"]
+    "corruption",
+    ["another_mesh", "swapped_pair", "out_of_range", "broken_involution", "all_boundary"],
 )
 def test_require_matching_twins_rejects_a_table_that_is_not_the_opposite_halfedge(
     corruption: str, request: pytest.FixtureRequest
 ) -> None:
     """
-    Ordito against ordito: a right-length ``twins=`` table whose entries are wrong is rejected.
+    Ordito against ordito: a ``twins=`` table of the wrong length or with wrong entries is rejected.
 
     Not a library comparison: no reference library exposes a caller-supplied halfedge twin table.
-    The sibling above covers the *length* half of the contract; this covers the structural half,
-    over the same three public ``twins=`` entry points, because only one of the three reaches the
-    ring rotation and a check placed there would leave the other two unguarded.
+    ``another_mesh`` is the *length* half of the contract: the table is indexed by halfedge, so one
+    cached from a smaller mesh is short rather than merely stale, and the kernels that walk it
+    (``ring_degrees_and_starts``, ``write_one_rings``) would index past its end -- on the CPU
+    device a silent host-heap read. The rest is the structural half. Every arm goes through all
+    three public ``twins=`` entry points, because the check is one shared validator and a site that
+    skips it is invisible otherwise. The accepting call is asserted too, or the guard would pass by
+    rejecting everything.
 
-    Three of the four corruptions are rejected by the validator and one deliberately is not.
-    ``all_boundary`` -- every entry ``-1`` -- claims each halfedge has no twin, and refuting that
-    means finding out whether another halfedge spans the same edge, which is the radix sort
-    ``halfedge_twins`` runs and precisely the work ``twins=`` exists to skip. It is not silent: a
-    fabricated boundary shortens the fan, so ``vertex_one_rings`` raises on the ring it cannot
-    complete. This arm asserts *that* message rather than the validator's, so a future change that
-    quietly drops the downstream backstop fails here.
+    Of the four structural corruptions, three are rejected by the validator and one deliberately
+    is not. ``all_boundary`` -- every entry ``-1`` -- claims each halfedge has no twin, and
+    refuting that means finding out whether another halfedge spans the same edge, which is the
+    radix sort ``halfedge_twins`` runs and precisely the work ``twins=`` exists to skip. It is not
+    silent: a fabricated boundary shortens the fan, so ``vertex_one_rings`` raises on the ring it
+    cannot complete. This arm asserts *that* message rather than the validator's, so a future
+    change that quietly drops the downstream backstop fails here.
     """
     _, mesh_wp = request.getfixturevalue("sphere_irregular")
     faces_wp = mesh_wp.indices
@@ -556,7 +537,13 @@ def test_require_matching_twins_rejects_a_table_that_is_not_the_opposite_halfedg
     assert (twins_np >= 0).all()
 
     corrupted_np = twins_np.copy()
-    if corruption == "swapped_pair":
+    match = "opposite halfedge"
+    if corruption == "another_mesh":
+        _, coarse_wp = request.getfixturevalue("sphere_well_shaped")
+        corrupted_np = od.halfedge.halfedge_twins(coarse_wp.indices).numpy()
+        assert corrupted_np.size < twins_np.size
+        match = "one entry per halfedge"
+    elif corruption == "swapped_pair":
         corrupted_np[0], corrupted_np[3] = twins_np[3], twins_np[0]
     elif corruption == "out_of_range":
         corrupted_np[0] = 10**6
@@ -585,35 +572,9 @@ def test_require_matching_twins_rejects_a_table_that_is_not_the_opposite_halfedg
     )
     genuine_wp = wp.array(twins_np, dtype=wp.int32, device=faces_wp.device)
     for call in calls:
-        with pytest.raises(ValueError, match="opposite halfedge"):
+        with pytest.raises(ValueError, match=match):
             call(corrupted_wp)
         call(genuine_wp)  # the genuine table is accepted
-
-
-def test_require_matching_twins_bounds_a_twin_against_the_halfedge_count(device: str) -> None:
-    """
-    Ordito against ordito: a twin index is bounded by the halfedge count, not the face length.
-
-    Not a library comparison: no reference library exposes a caller-supplied halfedge twin table.
-    The two lengths differ whenever the face buffer is ragged -- the package defines the halfedge
-    count as ``faces.shape[0] // 3 * 3``, so up to two trailing entries are not halfedges. A twin
-    index landing in that gap is inside ``faces`` and outside the halfedges, so a range test
-    against the wrong one of the two lets ``halfedge_destination`` read one past the end, which on
-    the CPU device is a host-heap read rather than a fault.
-    """
-    faces_wp = wp.array(
-        np.array([0, 1, 2, 0, 2, 3, 1, 2, 3, 7], dtype=np.int32), dtype=wp.int32, device=device
-    )
-    n_halfedges = faces_wp.size // 3 * 3
-    # Non-vacuity: the trailing entry is what makes the two lengths disagree.
-    assert n_halfedges < faces_wp.size
-
-    twins_np = np.full(n_halfedges, -1, dtype=np.int32)
-    twins_np[0] = n_halfedges  # in range for faces, out of range for halfedges
-    with pytest.raises(ValueError, match="opposite halfedge"):
-        od.halfedge.require_matching_twins(
-            faces_wp, wp.array(twins_np, dtype=wp.int32, device=device)
-        )
 
 
 # ---------------------------------------------------------------------------

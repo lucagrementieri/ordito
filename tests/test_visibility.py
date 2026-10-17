@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
@@ -297,35 +298,6 @@ def test_ambient_occlusion_point_major_matches_block_per_point(
     assert np.allclose(point_major_np, default_np, rtol=0.0, atol=1e-6)
 
 
-def test_ambient_occlusion_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match="n_rays >= 1"):
-        od.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, n_rays=0)
-    with pytest.raises(ValueError, match="weight must be"):
-        od.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, weight="lambert")  # pyright: ignore[reportArgumentType]
-    with pytest.raises(ValueError, match="one entry per point"):
-        od.visibility.ambient_occlusion(
-            mesh_wp, mesh_wp.points, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)
-        )
-
-
-def test_ambient_occlusion_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Not a parity assert: an empty ``points`` gives an empty field, and still checks ``normals``.
-
-    The empty early return must not silently skip the ``normals`` length check: a caller passing a
-    stale, wrong-length ``normals`` array alongside an empty ``points`` gets the ``ValueError`` the
-    docstring promises unconditionally, not an empty result.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    points_wp = wp.zeros(0, dtype=wp.vec3, device=mesh_wp.device)
-    assert od.visibility.ambient_occlusion(mesh_wp, points_wp).shape == (0,)
-    with pytest.raises(ValueError, match="one entry per point"):
-        od.visibility.ambient_occlusion(
-            mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)
-        )
-
-
 def test_volumetric_obscurance_approaches_ambient_occlusion_as_tau_falls(
     torus_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -390,12 +362,6 @@ def test_volumetric_obscurance_ranks_like_pymeshlab(
     rank_pml = np.argsort(np.argsort(exposure_pml))
     rank_wp = np.argsort(np.argsort(obscurance_np))
     assert np.corrcoef(rank_pml, rank_wp)[0, 1] < -0.8
-
-
-def test_volumetric_obscurance_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match="tau must be positive"):
-        od.visibility.volumetric_obscurance(mesh_wp, mesh_wp.points, tau=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -608,32 +574,6 @@ def test_shape_diameter_collapses_onto_meshlibs_single_ray(
     # The wide cone is a different measure, and saying so is half the claim.
     wide_np = od.visibility.shape_diameter(mesh_wp, vertices_wp, normals=normals_wp).numpy()
     assert np.median(np.abs(wide_np - thickness_ml) / thickness_ml) > 0.05
-
-
-def test_shape_diameter_invalid(device: str) -> None:
-    _sphere_tm, mesh_wp, normals_wp = _sphere_wp(device, 1.0, subdivisions=1)
-    with pytest.raises(ValueError, match="n_rays >= 1"):
-        od.visibility.shape_diameter(mesh_wp, mesh_wp.points, n_rays=0)
-    with pytest.raises(ValueError, match=r"cone_angle must be in \(0, pi / 2\]"):
-        od.visibility.shape_diameter(mesh_wp, mesh_wp.points, cone_angle=2.0)
-    with pytest.raises(ValueError, match="trim must be non-negative"):
-        od.visibility.shape_diameter(mesh_wp, mesh_wp.points, trim=-1.0)
-    with pytest.raises(ValueError, match="one entry per point"):
-        od.visibility.shape_diameter(
-            mesh_wp, mesh_wp.points, normals=wp.zeros(2, dtype=wp.vec3, device=device)
-        )
-    assert normals_wp.size > 0
-
-
-def test_shape_diameter_empty(device: str) -> None:
-    """Not a parity assert: the empty case of ``test_ambient_occlusion_empty``, both halves."""
-    _sphere_tm, mesh_wp, _normals_wp = _sphere_wp(device, 1.0, subdivisions=1)
-    points_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    assert od.visibility.shape_diameter(mesh_wp, points_wp).shape == (0,)
-    with pytest.raises(ValueError, match="one entry per point"):
-        od.visibility.shape_diameter(
-            mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=device)
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -912,25 +852,6 @@ def test_max_tangent_sphere_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.Mesh
     assert np.corrcoef(diameter_wp, diameter_ml)[0, 1] > 0.93
 
 
-def test_max_tangent_sphere_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Not a parity assert: the empty case of ``test_ambient_occlusion_empty``, both halves.
-
-    ``max_tangent_sphere``'s ``m == 0`` early return sat *after* its inline normals-length check
-    rather than before it, but reached the same bug from the AABB-reduction side: two ``aabb``
-    passes ran before the check regardless. Both are pinned here.
-    """
-    _, mesh_wp = sphere_irregular
-    points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
-    centers_wp, radii_wp = od.visibility.max_tangent_sphere(mesh_wp, points_wp)
-    assert centers_wp.shape == (0,)
-    assert radii_wp.shape == (0,)
-    with pytest.raises(ValueError, match="one entry per point"):
-        od.visibility.max_tangent_sphere(
-            mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)
-        )
-
-
 def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -1019,3 +940,79 @@ def test_max_tangent_sphere_agrees_across_devices(kernel_device: str) -> None:
     _centers_wp, radii_wp = od.visibility.max_tangent_sphere(mesh_wp, points_wp, normals=normals_wp)
     # The inscribed tangent sphere of a unit sphere, from just inside it, is the sphere itself.
     assert np.allclose(radii_wp.numpy(), 0.95, rtol=0.1, atol=0.1)
+
+
+# ---------------------------------------------------------------------------
+# Argument guards and empty queries
+# ---------------------------------------------------------------------------
+
+_INVALID_ARGUMENT_CASES: list[tuple[str, Callable[[wp.Mesh], object], str]] = [
+    (
+        "ambient_occlusion-n_rays",
+        lambda m: od.visibility.ambient_occlusion(m, m.points, n_rays=0),
+        "n_rays >= 1",
+    ),
+    (
+        "ambient_occlusion-weight",
+        lambda m: od.visibility.ambient_occlusion(m, m.points, weight="lambert"),  # pyright: ignore[reportArgumentType]
+        "weight must be",
+    ),
+    (
+        "volumetric_obscurance-tau",
+        lambda m: od.visibility.volumetric_obscurance(m, m.points, tau=0.0),
+        "tau must be positive",
+    ),
+    (
+        "shape_diameter-n_rays",
+        lambda m: od.visibility.shape_diameter(m, m.points, n_rays=0),
+        "n_rays >= 1",
+    ),
+    (
+        "shape_diameter-cone_angle",
+        lambda m: od.visibility.shape_diameter(m, m.points, cone_angle=2.0),
+        r"cone_angle must be in \(0, pi / 2\]",
+    ),
+    (
+        "shape_diameter-trim",
+        lambda m: od.visibility.shape_diameter(m, m.points, trim=-1.0),
+        "trim must be non-negative",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [(case[1], case[2]) for case in _INVALID_ARGUMENT_CASES],
+    ids=[case[0] for case in _INVALID_ARGUMENT_CASES],
+)
+def test_visibility_rejects_invalid_arguments(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], call: Callable[[wp.Mesh], object], match: str
+) -> None:
+    """Not a library comparison: each documented ``ValueError``, raised before any work."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    with pytest.raises(ValueError, match=match):
+        call(mesh_wp)
+
+
+@pytest.mark.parametrize("function", ["ambient_occlusion", "shape_diameter", "max_tangent_sphere"])
+@pytest.mark.parametrize("n_points", [0, 3], ids=["empty", "points"])
+def test_visibility_queries_check_normals_and_return_empty(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], function: str, n_points: int
+) -> None:
+    """
+    Not a parity assert: an empty ``points`` gives empty outputs, and still checks ``normals``.
+
+    The empty early return must not silently skip the ``normals`` length check: a caller passing a
+    stale, wrong-length ``normals`` array alongside an empty ``points`` gets the ``ValueError`` the
+    docstring promises unconditionally, not an empty result. ``max_tangent_sphere``'s ``m == 0``
+    return once sat after its check but behind two ``aabb`` passes, so it is pinned the same way.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    query = getattr(od.visibility, function)
+    points_wp = mesh_wp.points[:n_points] if n_points else warp_empty(0, wp.vec3, mesh_wp.device)
+    with pytest.raises(ValueError, match="one entry per point"):
+        query(mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device))
+    if n_points == 0:
+        result = query(mesh_wp, points_wp)
+        for part in result if isinstance(result, tuple) else (result,):
+            assert part.shape == (0,)

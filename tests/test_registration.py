@@ -1513,19 +1513,6 @@ def test_icp_empty_source(device: str) -> None:
     assert not np.isfinite(cost_od)
 
 
-@pytest.mark.parametrize("n_normals", [None, 40], ids=["missing", "length_mismatch"])
-def test_icp_point_to_plane_validates_target_normals(device: str, n_normals: int | None) -> None:
-    """A point-cloud target needs one normal per point: none at all, or 40 of 50, raises."""
-    rng = np.random.default_rng(16)
-    target_wp = points_to_warp(rng.standard_normal((50, 3)), device)
-    source_wp = points_to_warp(rng.standard_normal((50, 3)), device)
-    normals_wp = (
-        None if n_normals is None else points_to_warp(rng.standard_normal((n_normals, 3)), device)
-    )
-    with pytest.raises(ValueError, match="target_normals"):
-        od.registration.icp_point_to_plane(source_wp, target_wp, None, target_normals=normals_wp)
-
-
 @pytest.mark.parametrize(
     ("method", "max_iterations"),
     [("point", 1), ("point", 2), ("point", 10), ("plane", 10)],
@@ -1681,14 +1668,15 @@ def test_icp_point_to_plane_convergence_stop_matches_the_host_rule(device: str) 
         assert cost == expected_cost
 
 
-def test_icp_point_to_plane_rejects_an_off_menu_robust_kernel(device: str) -> None:
+def test_icp_point_to_plane_validates_its_arguments(device: str) -> None:
     """
-    Not a library comparison: the ``robust_kernel`` menu's own guard.
+    Not a library comparison: the ``robust_kernel`` menu's guard and the ``target_normals`` one.
 
     An unrecognised name used to index ``_ROBUST_KINDS`` directly and surface as a bare
     ``KeyError('bogus')``, which names neither the argument nor the three kernels. All three
     documented names still run, which is what keeps the guard from being a spelling of
-    "reject everything".
+    "reject everything". A point-cloud target also needs one normal per point: none at all, or 40
+    of 60, raises.
     """
     rng = np.random.default_rng(18)
     target_np = rng.standard_normal((60, 3)).astype(np.float32)
@@ -1696,6 +1684,11 @@ def test_icp_point_to_plane_rejects_an_off_menu_robust_kernel(device: str) -> No
     source_wp = points_to_warp(target_np + 0.05, device)
     target_wp = points_to_warp(target_np, device)
     normals_wp = points_to_warp(normals_np, device)
+    for bad_normals_wp in (None, points_to_warp(normals_np[:40], device)):
+        with pytest.raises(ValueError, match="target_normals"):
+            od.registration.icp_point_to_plane(
+                source_wp, target_wp, None, target_normals=bad_normals_wp
+            )
     with pytest.raises(ValueError, match="robust_kernel must be one of"):
         od.registration.icp_point_to_plane(
             source_wp,
