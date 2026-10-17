@@ -2,6 +2,7 @@ import warp as wp
 
 from ordito import constants as twc
 from ordito.kernels.array import cross2, to_vec2d
+from ordito.kernels.laplacian import cotmatrix_offdiagonal
 from ordito.kernels.linalg import free_row
 from ordito.kernels.predicates import squared_edge_lengths
 from ordito.kernels.triangles import corner_triple, face_vertices, row_triple
@@ -74,6 +75,42 @@ def scatter_fixed_uv(
 def fixed_uv(fixed_values: wp.array2d[wp.float64], i: wp.int32) -> wp.vec2:
     # The prescribed position of fixed vertex ``i``, narrowed from the ``(2, n_vertices)`` buffer.
     return wp.vec2(wp.float32(fixed_values[0, i]), wp.float32(fixed_values[1, i]))
+
+
+@wp.kernel
+def negated_cotmatrix_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.float32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # The ``k == 1`` harmonic system ``-L`` over a mesh operator pattern, one thread per row:
+    # ``kernels/laplacian.cotmatrix_rows``' ``float64`` row with each entry negated as it is
+    # written -- every off-diagonal ``-cotmatrix_offdiagonal`` and the diagonal the off-diagonal
+    # sum itself, added in the same column order -- so ``L`` is never stored. Negation is exact, so
+    # the entries are ``energies.k_harmonic(L, k=1)``'s bit for bit.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    if end == start:
+        return
+    total = wp.float64(0.0)
+    slot = wp.int32(-1)
+    for k in range(start, end):
+        if columns[k] == i:
+            slot = k
+            continue
+        value = cotmatrix_offdiagonal(
+            k, run_start, keys, count, order, cot_entries, wp.float64(0.0)
+        )
+        out_values[k] = -value
+        total += value
+    if slot >= 0:
+        out_values[slot] = total
 
 
 @wp.kernel
