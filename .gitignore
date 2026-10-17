@@ -36,3 +36,5 @@ tests/data/
 benchmarks/data/
 # Reference libraries (development only, see .claude/CLAUDE.md §6 and §9)
 reference/
+
+.vscode/
