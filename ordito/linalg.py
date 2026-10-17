@@ -4928,6 +4928,9 @@ def _multigrid_hierarchy(
     """
     levels: list[_MultigridLevel] = []
     operator = matrix
+    # The level operator's stored entry count when the host holds it: every coarse operator leaves
+    # ``_multigrid_galerkin`` with its ``nnz`` synced, the caller's may carry a stale one.
+    stored: int | None = None
     while True:
         level = _MultigridLevel(operator)
         levels.append(level)
@@ -4945,10 +4948,11 @@ def _multigrid_hierarchy(
         # one scaled diagonal and no level reads its spectral radius back to the host.
         level.inverse_diagonal = _multigrid_damped_diagonal(operator, diag, seed)
         level.prolongator = _multigrid_prolongator(
-            operator, label, sizes, n_aggregates, level.inverse_diagonal
+            operator, label, sizes, n_aggregates, level.inverse_diagonal, stored
         )
         level.restrictor = od.array.csr_transpose(level.prolongator)
         operator = _multigrid_galerkin(operator, level.prolongator)
+        stored = int(operator.nnz)
     coarse_inverse = _multigrid_dense_inverse(levels[-1].operator)
     if coarse_inverse is None:
         return None
@@ -5158,6 +5162,7 @@ def _multigrid_prolongator(
     sizes: wp.array[wp.int32],
     n_aggregates: int,
     damped_inverse_diagonal: wp.array[wp.float64],
+    stored: int | None,
 ) -> odt.BsrMatrix[wp.float64]:
     """
     Smoothed prolongator ``(I - omega D^-1 A) P0``, given ``omega D^-1``, for ``P0``.
@@ -5165,13 +5170,16 @@ def _multigrid_prolongator(
     ``P0`` has one entry a row, so the product is ``A``'s entries re-keyed by their column's
     aggregate and summed: one triplet per stored entry plus the identity's, one assembly
     (``kernels/algorithms/multigrid.smoothed_prolongator_triplets``), with no sparse product.
-    Entries that sum to exactly zero are pruned.
+    Entries that sum to exactly zero are pruned. ``stored`` is ``matrix``'s stored entry count
+    when the caller knows it, else ``None``.
     """
     device = matrix.device
     n = int(matrix.nrow)
     # The stored count, not ``matrix.nnz``: that field is a capacity after a triplet build, and the
-    # triplets are laid out at the slots the entries occupy.
-    count = int(read_scalar(matrix.offsets, n)) + n
+    # triplets are laid out at the slots the entries occupy. Read back unless the caller holds it.
+    if stored is None:
+        stored = int(read_scalar(matrix.offsets, n))
+    count = stored + n
     rows = _launch.empty(count, dtype=wp.int32, device=device)
     cols = _launch.empty(count, dtype=wp.int32, device=device)
     values = _launch.empty(count, dtype=wp.float64, device=device)
@@ -5320,8 +5328,9 @@ def _multigrid_dense_inverse(matrix: odt.BsrMatrix[wp.float64]) -> odt.ArrayNd |
     coarsening stalls on isolated rows.
     """
     n = int(matrix.nrow)
-    nnz = int(matrix.nnz_sync())
+    # The offsets are read whole, so their last entry is the stored count ``nnz_sync`` would read.
     offsets = cast("npt.NDArray[np.int32]", matrix.offsets.numpy())[: n + 1]
+    nnz = int(offsets[n])
     columns = cast("npt.NDArray[np.int32]", matrix.columns.numpy())[:nnz]
     values = matrix.values.numpy()[:nnz].astype(np.float64).reshape(nnz)
     dense = np.zeros((n, n), dtype=np.float64)

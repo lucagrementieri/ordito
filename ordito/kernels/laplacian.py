@@ -721,6 +721,41 @@ def add_constant(length: wp.float32, delta: wp.float32) -> wp.float32:
     return length + delta
 
 
+@wp.func
+def diagonal_pattern_row(
+    i: wp.int32, out_offsets: wp.array[wp.int32], out_columns: wp.array[wp.int32]
+) -> None:
+    # Row ``i`` of a diagonal matrix's compressed rows: one entry, at column ``i``. Row 0 also
+    # writes the offsets' leading zero, so the ``n + 1`` offsets need no fill.
+    out_columns[i] = i
+    out_offsets[i + 1] = i + 1
+    if i == 0:
+        out_offsets[0] = 0
+
+
+@wp.kernel
+def mass_diagonal_rows(
+    sums: wp.array[wp.float64],
+    count: wp.float64,
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.Float],
+) -> None:
+    # ``laplacian.mass_matrix`` as compressed rows: each vertex's exact area sum over ``count``
+    # (three), one rounding, in the matrix precision, at the vertex's diagonal. ``out_values`` may
+    # be ``sums`` itself. ``diagonal_pattern`` is the same rows with the values already formed.
+    i = wp.int32(wp.tid())
+    out_values[i] = type(out_values[i])(sums[i] / count)
+    diagonal_pattern_row(i, out_offsets, out_columns)
+
+
+@wp.kernel
+def diagonal_pattern(out_offsets: wp.array[wp.int32], out_columns: wp.array[wp.int32]) -> None:
+    # The compressed rows of a diagonal matrix whose values are stored already, one row a thread.
+    i = wp.int32(wp.tid())
+    diagonal_pattern_row(i, out_offsets, out_columns)
+
+
 # Concrete overloads, registered at import -- see the long-form rationale in
 # ``ordito/kernels/reduce.py``. In short: these kernels are
 # generic, Warp instantiates an overload on the first launch at each new dtype, and a module's hash
@@ -745,6 +780,7 @@ COTMATRIX_ROWS: OverloadTable
 LAPLACIAN_ROWS: OverloadTable
 GRAPH_LAPLACIAN_ROWS: OverloadTable
 CONNECTION_LAPLACIAN_ROWS: OverloadTable
+MASS_DIAGONAL_ROWS: OverloadTable
 
 
 def _register_overloads() -> None:
@@ -752,6 +788,7 @@ def _register_overloads() -> None:
     global COTMATRIX_ENTRIES, COTMATRIX_ENTRIES_INTRINSIC, ROW_NORMALIZE
     global LAPLACIAN_TRIPLETS_SYMMETRIC, LAPLACIAN_TRIPLETS_DIRECTED
     global COTMATRIX_ROWS, CONNECTION_LAPLACIAN_ROWS, LAPLACIAN_ROWS, GRAPH_LAPLACIAN_ROWS
+    global MASS_DIAGONAL_ROWS
     COTMATRIX_ENTRIES = OverloadTable(
         cotmatrix_entries,
         {d: [wp.array[wp.vec3], wp.array[wp.int32], wp.array2d[d]] for d in _MATRIX_DTYPES},
@@ -833,6 +870,19 @@ def _register_overloads() -> None:
                 wp.array2d[d],
                 wp.array[wp.float32],
                 wp.array[wp.mat22d],
+            ]
+            for d in _MATRIX_DTYPES
+        },
+    )
+    MASS_DIAGONAL_ROWS = OverloadTable(
+        mass_diagonal_rows,
+        {
+            d: [
+                wp.array[wp.float64],
+                wp.float64,
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[d],
             ]
             for d in _MATRIX_DTYPES
         },
