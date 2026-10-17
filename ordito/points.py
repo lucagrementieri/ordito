@@ -58,14 +58,13 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device, slice_count
+from ordito._device import require_same_device, slice_count
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_ZERO
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
-from ordito.kernels import scatter as kernel_scatter
 
 # Relative slack, against the support extent along a direction, for recognizing a point as that
 # direction's support point. It cannot be zero: the reducing kernel and the marking kernel compute
@@ -1558,20 +1557,9 @@ def convex_subset(
         return _launch.empty(0, dtype=wp.vec3, device=device)
     # ``convex_subset_mask`` as ``int32`` flags, scanned in place; the compaction then writes the
     # selected points themselves, so neither a mask nor an index array is built.
-    inclusive = _launch.zeros(n_points, dtype=wp.int32, device=device)
-    _mark_hull_support(points, n_directions, tolerance, kernel_points.flag_hull_support, inclusive)
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
-    # Readback: the subset's length sizes the output.
-    n_out = int(read_scalar(inclusive))
-    out_points = _launch.empty(n_out, dtype=wp.vec3, device=device)
-    if n_out > 0:
-        _launch.launch(
-            kernel_scatter.scatter_value_where_scanned,
-            dim=n_points,
-            inputs=[inclusive, points, out_points],
-            device=device,
-        )
-    return out_points
+    flags = _launch.zeros(n_points, dtype=wp.int32, device=device)
+    _mark_hull_support(points, n_directions, tolerance, kernel_points.flag_hull_support, flags)
+    return od.array.compress_in_place(flags, points)
 
 
 def _mark_hull_support(

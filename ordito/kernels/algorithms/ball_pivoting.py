@@ -97,6 +97,18 @@ SEED_EXHAUSTED = wp.constant(wp.int32(-2))
 # Relative slack on the empty-ball test: absorbs float32 round-off so the three defining points
 # (exactly on the ball in exact arithmetic) do not spuriously read as "inside".
 BALL_EPS = wp.constant(wp.float32(1e-4))
+# Half-width of the shell around the ball's sphere inside which a fourth point counts as lying *on*
+# it (``tie_plane``), in float32 rounding units of the ball centre's largest coordinate. A
+# co-circular grid corner's distance from the computed centre is off by at most ``1.25`` such units
+# (measured on translated and rotated planar grids, on both devices), so 4 is a 3x margin. Narrow on
+# purpose: a near-tie wider than the round-off is one float32 *can* decide, and the shell would
+# overrule that answer -- at 8 units it did, on a scan cloud, and opened a hole where the plain test
+# was right.
+BALL_TIE_ULPS = wp.float32(4.0)
+FLOAT32_EPS = wp.float32(1.1920929e-07)  # numpy.finfo(numpy.float32).eps
+# The largest float32 below ``TWO_PI``: the ceiling ``pivot_candidate`` clamps a rotation to, so
+# that no candidate ties the ``TWO_PI`` "nothing found" sentinel it is compared against.
+PIVOT_ANGLE_MAX = wp.float32(6.283185)
 
 # ``counters`` slots. Keeping the wave loop's whole control state on device is what lets the loop
 # body run without a host synchronisation, and ultimately inside a captured CUDA graph.
@@ -203,6 +215,140 @@ def is_compatible(
 
 
 @wp.func
+def tie_shell_width(center: wp.vec3, radius: wp.float32) -> wp.float32:
+    # Half-width of the shell around the sphere of the ball centred at ``center`` inside which a
+    # point counts as lying on the sphere: ``BALL_TIE_ULPS`` rounding units of the centre's largest
+    # coordinate (plus the radius, for a centre near the origin), since that is what the centre
+    # is computed to.
+    scale = wp.max(wp.max(wp.abs(center[0]), wp.abs(center[1])), wp.abs(center[2])) + radius
+    return BALL_TIE_ULPS * FLOAT32_EPS * scale
+
+
+@wp.func
+def tie_plane(
+    points: wp.array[wp.vec3], center: wp.vec3, a: wp.int32, b: wp.int32, c: wp.int32
+) -> tuple[wp.int32, wp.vec3, wp.float32]:
+    # The tie rule for the ball through ``a``, ``b`` and ``c`` (centre ``center``): a point ``j`` on
+    # its sphere to within rounding counts as inside it when ``j > m`` and ``j`` lies on the same
+    # side of the plane through ``center`` with normal ``plane`` as ``m`` (side ``side_m``), for the
+    # returned ``(m, plane, side_m)``. Without a rule, four or more co-spherical
+    # points -- the four corners of every cell of an unjittered grid -- leave the answer to
+    # rounding, which differs per triangle, per device and per call site: both triangulations of a
+    # cell then pass, the pivot from one triangle picks the other diagonal's triangle on top of it
+    # (its ball centre is the same, so the rotation angle is zero up to rounding), and the overlap
+    # surfaces as a triangle emitted with both windings.
+    #
+    # The rule is a symbolic perturbation (simulation of simplicity): the lowest-indexed of the
+    # four points is pushed radially outward by an infinitesimal amount. If that is ``j``, it
+    # leaves the sphere and ``j`` is outside. If it is a vertex ``m`` of the triangle, the ball
+    # follows it: the centre moves along the circle of centres equidistant from the other two
+    # vertices ``u`` and ``v``, towards ``m``'s side of the plane through ``center``, ``u`` and
+    # ``v``, so ``j`` falls inside exactly when it is on ``m``'s side of that plane. Every
+    # triangle of a co-spherical set is judged by the same perturbation, so exactly one
+    # triangulation of the set has every ball empty -- for a planar convex cell, the one whose
+    # diagonal avoids the lowest-indexed corner -- whatever order the tests run in. Like the rest
+    # of the empty-ball test it is pure geometry and indices, so the monotonicity that retires a
+    # front edge and caches its candidate (module docstring) is untouched.
+    m = wp.min(wp.min(a, b), c)
+    u = b
+    v = c
+    if m == b:
+        u = c
+        v = a
+    elif m == c:
+        u = a
+        v = b
+    plane = wp.cross(points[u] - center, points[v] - center)
+    return m, plane, wp.dot(plane, points[m] - center)
+
+
+@wp.func
+def tie_shell_bounds(
+    center: wp.vec3, radius: wp.float32
+) -> tuple[wp.float32, wp.float32, wp.float32]:
+    # ``(inner_sq, outer_sq, outer)``: the squared inner and outer radii of the tie shell
+    # (``tie_shell_width``) around the ball's sphere, and the outer radius a walk must reach.
+    shell = tie_shell_width(center, radius)
+    inner = wp.max(radius - shell, wp.float32(0.0))
+    outer = radius + shell
+    return inner * inner, outer * outer, outer
+
+
+@wp.func
+def tie_point_inside(
+    points: wp.array[wp.vec3],
+    center: wp.vec3,
+    j: wp.int32,
+    distance_sq: wp.float32,
+    inner_sq: wp.float32,
+    outer_sq: wp.float32,
+    m: wp.int32,
+    plane: wp.vec3,
+    side_m: wp.float32,
+) -> wp.bool:
+    # ``tie_plane``'s rule for a point ``j`` (not a vertex of the ball's triangle) at squared
+    # distance ``distance_sq`` from the centre: inside when it lies in the shell, is not the
+    # lowest-indexed of the four (which, pushed off the sphere, is outside), and is on ``m``'s side.
+    # Nested ``if``s so a point outside the shell pays two comparisons and nothing else.
+    if distance_sq < outer_sq:
+        if distance_sq >= inner_sq:
+            if j > m:
+                return wp.dot(plane, points[j] - center) * side_m > 0.0
+    return False
+
+
+@wp.func
+def ball_holds_point(
+    grid_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    center: wp.vec3,
+    radius: wp.float32,
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+) -> wp.bool:
+    # Whether a point other than ``a``, ``b`` and ``c`` lies inside the ball by distance alone,
+    # nearer than ``BALL_EPS`` inside its sphere: ``ball_is_empty`` less the tie rule, for
+    # ``seed_triangles``, which applies the rule (``ball_tie_blocks``) outside its pair loop. The
+    # two together are ``ball_is_empty``'s predicate exactly.
+    threshold = radius - BALL_EPS * radius
+    threshold_sq = threshold * threshold
+    query = wp.hash_grid_query(grid_id, center, radius)
+    j = wp.int32(-1)
+    while wp.hash_grid_query_next(query, j):
+        if j != a and j != b and j != c:
+            if wp.length_sq(center - points[j]) < threshold_sq:
+                return True
+    return False
+
+
+@wp.func
+def ball_tie_blocks(
+    grid_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    center: wp.vec3,
+    radius: wp.float32,
+    a: wp.int32,
+    b: wp.int32,
+    c: wp.int32,
+) -> wp.bool:
+    # Whether a point on the ball's sphere counts as inside it by the tie rule
+    # (``tie_point_inside``): the other half of ``ball_is_empty``'s predicate, as a walk of its own.
+    inner_sq, outer_sq, outer = tie_shell_bounds(center, radius)
+    m, plane, side_m = tie_plane(points, center, a, b, c)
+    query = wp.hash_grid_query(grid_id, center, outer)
+    j = wp.int32(-1)
+    while wp.hash_grid_query_next(query, j):
+        if j != a and j != b and j != c:
+            distance_sq = wp.length_sq(center - points[j])
+            if tie_point_inside(
+                points, center, j, distance_sq, inner_sq, outer_sq, m, plane, side_m
+            ):
+                return True
+    return False
+
+
+@wp.func
 def ball_is_empty(
     grid_id: wp.uint64,
     points: wp.array[wp.vec3],
@@ -234,13 +380,31 @@ def ball_is_empty(
     # transferring to here**: that one is a *block-cooperative* walk over a ``2 * radius`` reach
     # with enough candidates to split across 32 lanes, and every part of that description is
     # load-bearing.
+    #
+    # A point in the thin shell straddling the sphere is a tie, which ``tie_point_inside`` breaks by
+    # index. The shell is only ever *added* to the inside: a point nearer than ``threshold`` is
+    # inside whatever the shell's width, so off-tie clouds, which put no point in the shell, see the
+    # test they always did. The walk reaches the shell's outer edge, so a tie just past ``radius``
+    # is not missed by the cell walk, and the per-ball tie state is formed once, before it.
+    #
+    # One walk serves both halves here, for ``pivot_front_edges``, where a second walk per passing
+    # ball would cost more than this one (every cached candidate's re-validation passes).
+    # ``seed_triangles`` splits them instead (``ball_holds_point``, ``ball_tie_blocks``): there this
+    # walk's tie state inside the pair loop slowed the kernel by about half.
     threshold = radius - BALL_EPS * radius
     threshold_sq = threshold * threshold
-    query = wp.hash_grid_query(grid_id, center, radius)
+    inner_sq, outer_sq, outer = tie_shell_bounds(center, radius)
+    m, plane, side_m = tie_plane(points, center, a, b, c)
+    query = wp.hash_grid_query(grid_id, center, outer)
     j = wp.int32(-1)
     while wp.hash_grid_query_next(query, j):
         if j != a and j != b and j != c:
-            if wp.length_sq(center - points[j]) < threshold_sq:
+            distance_sq = wp.length_sq(center - points[j])
+            if distance_sq < threshold_sq:
+                return False
+            if tie_point_inside(
+                points, center, j, distance_sq, inner_sq, outer_sq, m, plane, side_m
+            ):
                 return False
     return True
 
@@ -417,22 +581,49 @@ def seed_triangles(
     # Squared, matching the same vcglib clustering rule as tested in ``candidate_is_viable``; see
     # ``ball_is_empty`` for why one module must not spell one predicate two ways.
     min_cluster_sq = clustering * radius * clustering * radius
-    for i0 in range(count):
-        a = nbr[i0]
-        for i1 in range(i0 + 1, count):
-            b = nbr[i1]
-            if wp.length_sq(points[a] - points[b]) < min_cluster_sq:
-                continue
-            center = compute_ball_center(
-                points[p], points[a], points[b], normals[p] + normals[a] + normals[b], radius
-            )
-            if center[0] == wp.inf:
-                continue
-            if not is_compatible(
-                points[p], points[a], points[b], normals[p], normals[a], normals[b]
-            ):
-                continue
-            if ball_is_empty(grid_id, points, center, radius, p, a, b):
+    # The pair loop tests occupancy by distance alone (``ball_holds_point``) and the tie rule
+    # (``ball_tie_blocks``) runs outside it, once per pair that passes, resuming the loop after a
+    # pair a tie rejects: the same predicate as ``ball_is_empty``, but with the tie walk out of the
+    # loop nest, which keeps it as fast as the plain test was. ``resume`` is the flat index
+    # ``i0 * MAX_SEED_NEIGHBORS + i1`` of the first pair still to try.
+    resume = wp.int32(0)
+    while resume >= 0:
+        found_a = wp.int32(-1)
+        found_b = wp.int32(-1)
+        found_pair = wp.int32(-1)
+        found_center = wp.vec3(0.0)
+        for i0 in range(count):
+            if found_a >= 0:
+                break
+            a = nbr[i0]
+            for i1 in range(i0 + 1, count):
+                if i0 * MAX_SEED_NEIGHBORS + i1 < resume:
+                    continue
+                b = nbr[i1]
+                if wp.length_sq(points[a] - points[b]) < min_cluster_sq:
+                    continue
+                center = compute_ball_center(
+                    points[p], points[a], points[b], normals[p] + normals[a] + normals[b], radius
+                )
+                if center[0] == wp.inf:
+                    continue
+                if not is_compatible(
+                    points[p], points[a], points[b], normals[p], normals[a], normals[b]
+                ):
+                    continue
+                if not ball_holds_point(grid_id, points, center, radius, p, a, b):
+                    found_a = a
+                    found_b = b
+                    found_pair = i0 * MAX_SEED_NEIGHBORS + i1
+                    found_center = center
+                    break
+        resume = wp.int32(-1)
+        if found_a >= 0:
+            a = found_a
+            b = found_b
+            if ball_tie_blocks(grid_id, points, found_center, radius, p, a, b):
+                resume = found_pair + 1
+            else:
                 # Wound so its normal agrees with the point normals (Open3D's ``CreateTriangle``
                 # rule). Every later triangle inherits this winding across the edge it pivots over
                 # (``pivot_front_edges``), whose rotation sense is read off it. Reversed as
@@ -603,9 +794,18 @@ def pivot_candidate(
     # identically and the winner fell out of float32 rounding, where atan2 stays accurate to many
     # more digits. The two forms agree elsewhere, and this one is also cheaper: the cross product is
     # the same one the sign test needed.
+    #
+    # The clamp keeps a candidate from tying the ``TWO_PI`` sentinel ``best_angle`` starts at. A
+    # candidate on the current ball's sphere -- the far corner of a co-circular grid cell, the
+    # only one whose ball is empty there -- rotates the ball by exactly zero, which rounding can
+    # make a tiny negative angle; folded into [0, 2pi) that rounds onto ``TWO_PI`` itself, the
+    # strict test below rejected the one valid candidate, and the edge retired, leaving a hole
+    # (seen on CUDA, whose contraction gives the negative sign). Clamped, it ranks last but is kept;
+    # every other candidate there has a nonempty ball, since rolling the ball forward at all takes
+    # in the corner.
     angle = dihedral_angle(a_dir, b_dir, axis)
     if angle < 0.0:
-        angle += TWO_PI
+        angle = wp.min(angle + TWO_PI, PIVOT_ANGLE_MAX)
     if angle < best_angle and candidate_accepted(
         points, normals, p_src, p_tgt, tri_norm, src, tgt, c, new_center,
         grid_id, radius, crease_cos, edges,

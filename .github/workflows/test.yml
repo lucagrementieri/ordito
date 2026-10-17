@@ -318,6 +318,16 @@ jobs:
       # and fails here; a fall is printed so the budget is tightened in the same change. Last in
       # the job for the coverage floor's reason. The CUDA budget is refreshed on the maintainer's
       # GPU box (`benchmarks/README.md`).
+      # The smallest size category includes the `bunny` / `bunny_decimated` scan meshes, which
+      # the harness downloads on first use from the `meshes-v1` release (`benchmarks/fetch.py`,
+      # each file pinned by SHA-256). A release is never edited -- a changed mesh is a new tag and
+      # a new hash in `benchmarks/meshes.py` -- so that file's hash is the whole cache key.
+      - name: Cache the benchmark scan meshes
+        uses: actions/cache@v6
+        with:
+          path: benchmarks/data
+          key: benchmark-meshes-${{ hashFiles('benchmarks/meshes.py') }}
+
       - name: Host-traffic census (CPU budget)
         run: >
           uv run python -m pytest benchmarks -p benchmarks.census

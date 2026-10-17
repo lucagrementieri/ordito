@@ -40,11 +40,8 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
-from ordito.constants import TILE_1D
 from ordito.halfedge import halfedge_twins, vertex_one_rings
-from ordito.kernels import edges as kernel_edges
 from ordito.kernels import geodesic_walk as kernel_geodesic_walk
-from ordito.kernels import reduce as kernel_reduce
 from ordito.mesh import Trimesh, mesh_arguments
 
 _DEFAULT_MAX_STEPS = 4096
@@ -1196,24 +1193,11 @@ def _length_epsilon(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> l
     [`mean_edge_length`][ordito.edges.mean_edge_length], which keeps the behaviour invariant under
     a global rescale of the mesh. The per-face edge length total stays on the device and each
     kernel divides it itself (``kernels/geodesic_walk.mean_length_epsilon``), so the floor costs no
-    readback: the total is ``mean_edge_length``'s -- its per-block partials, summed by
-    [`sum_of_terms`][ordito.reduce.sum_of_terms] over ``reduce.sum``'s kernels -- and the floor is
-    the same ``float32`` the host expression ``1e-6 * mean_edge_length(...)`` rounds to.
+    readback: the total is [`edge_length_sum`][ordito.edges.edge_length_sum], the one
+    ``mean_edge_length`` reads back, and the floor is the same ``float32`` the host expression
+    ``1e-6 * mean_edge_length(...)`` rounds to.
     """
-    device = vertices.device
-    n_halfedges = faces.size // 3 * 3
-    if n_halfedges == 0:
-        return [_launch.empty(0, dtype=wp.float32, device=device), 0]
-    partials = _launch.empty(kernel_reduce.blocks_1d(n_halfedges), dtype=wp.float32, device=device)
-    _launch.launch_tiled(
-        kernel_edges.halfedge_length_partials,
-        dim=[partials.size],
-        inputs=[vertices, faces, n_halfedges, partials],
-        block_dim=TILE_1D,
-        device=device,
-    )
-    total = od.reduce.sum_of_terms(kernel_reduce.ARRAY_SUM, [partials], partials.size)
-    return [total, n_halfedges]
+    return [od.edges.edge_length_sum(vertices, faces), faces.size // 3 * 3]
 
 
 def _trace(

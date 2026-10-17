@@ -83,7 +83,7 @@ GATED = (
     "sort",
 )
 
-_STATE: dict[str, Any] = {"armed": False, "depth": 0}
+_STATE: dict[str, Any] = {"armed": False, "depth": 0, "cpu_row": False}
 _COUNTS: collections.Counter[str] = collections.Counter()
 _SEQUENCE: list[tuple[str, str, str]] = []
 _ROWS: dict[str, dict[str, int]] = {}
@@ -117,12 +117,19 @@ def _count_native(core: Any, name: str, key: str) -> None:
 
 
 def _count_readbacks() -> None:
-    """On the CPU device a readback is a host view of the result, taken from ``ordito`` code."""
+    """On a CPU row a readback is a host view of the result, taken from ``ordito`` code."""
     for method in ("numpy", "list"):
         original = getattr(wp.array, method)
 
         def counted(self: Any, *args: Any, _original: Any = original, **kwargs: Any) -> Any:
-            if _STATE["armed"] and self.device is not None and self.device.is_cpu:
+            # Only on a CPU row: on CUDA a readback is the ``d2h`` copy, and the host view of the
+            # pinned scratch ``_device.read_scalar`` copies into would count it twice.
+            if (
+                _STATE["armed"]
+                and _STATE["cpu_row"]
+                and self.device is not None
+                and self.device.is_cpu
+            ):
                 frame = inspect.currentframe()
                 caller = frame.f_back if frame is not None else None
                 if caller is not None and "/ordito/" in caller.f_code.co_filename:
@@ -210,6 +217,7 @@ def _install(conftest: Any) -> None:
         wp.synchronize_device(device)
         _COUNTS.clear()
         _SEQUENCE.clear()
+        _STATE["cpu_row"] = wp.get_device(device).is_cpu
         _STATE["armed"] = True
         try:
             result = fn(*arguments)

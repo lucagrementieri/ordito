@@ -1542,9 +1542,11 @@ def test_ball_pivoting_is_reproducible(device: str):
 
     **The fixture is the load-bearing choice.** Every icosphere is reproducible even *without* the
     fix — a uniformly sampled closed sphere reconstructs to its exact Euler triangulation, so wave
-    order has nothing left to decide — and asserting on one would be vacuous. Measured on this
-    torus, four runs of the pre-fix implementation give 2 980 / 3 036 / 3 042 / 3 089 faces and
-    four different meshes, against a constant 3 269 and one mesh after it.
+    order has nothing left to decide — and asserting on one would be vacuous. So, since co-spherical
+    ties are broken by index, is the regular torus (its exact 4 096-face triangulation), and so is
+    this torus at a jitter of 0.01; at 0.02, four runs with the claim keyed on the arrival slot (the
+    pre-fix priority) give 3 791 / 3 792 / 3 790 / 3 792 faces on cuda, against a constant 3 790
+    and one mesh with ``proposal_key``.
 
     Two assertions, covering different halves, both on the **wound** triangle set -- same
     triangles and same winding. Not compared buffer-to-buffer: ``CNT_FACE`` is a ``wp.atomic_add``,
@@ -1559,7 +1561,10 @@ def test_ball_pivoting_is_reproducible(device: str):
     torus_tm = tm.creation.torus(
         major_radius=1.0, minor_radius=0.35, major_sections=64, minor_sections=32
     )
-    points_wp, normals_wp = _to_warp(torus_tm.vertices, torus_tm.vertex_normals, device)
+    # Jittered: the regular torus's cells are co-circular, and with those ties broken by index it
+    # reconstructs to its exact triangulation, which leaves wave order nothing to decide.
+    jitter_np = np.random.default_rng(0).uniform(-0.02, 0.02, torus_tm.vertices.shape)
+    points_wp, normals_wp = _to_warp(torus_tm.vertices + jitter_np, torus_tm.vertex_normals, device)
     n_points = points_wp.size
     # The wrapper's own auto-radius, recomputed on the host, for the raw wave-loop runs, which take
     # a radius; the last pair of public calls guesses it on the device instead.
@@ -1769,6 +1774,89 @@ def test_ball_pivoting_on_a_bvh_leaf_past_the_tile_walk_buffer(
     assert np.array_equal(chained_vertices_np, patch_vertices_np)
     assert_unordered_rows_equal(
         canonical_winding(chained_faces_np), canonical_winding(patch_faces_np)
+    )
+
+
+@pytest.mark.parametrize("frame", ["axis_aligned", "rotated_offset"])
+@pytest.mark.parametrize("chained", [False, True], ids=["grid", "grid_and_chain"])
+@pytest.mark.parametrize(("side", "spacing"), [(40, 0.0125), (4, 0.03)], ids=["40x40", "4x4"])
+def test_ball_pivoting_triangulates_an_unjittered_grid(
+    device: str,
+    side: int,
+    spacing: float,
+    chained: bool,
+    frame: Literal["axis_aligned", "rotated_offset"],
+) -> None:
+    """
+    Not a library comparison: an unjittered grid must come out as its own exact triangulation.
+
+    Every cell of a regular grid has four co-circular corners, so both of its triangulations have an
+    empty ball and the rotation from one triangle's ball to the other's is zero: no reference is an
+    oracle here, since each settles the tie by rounding (Open3D tests ``radius - 1e-16``). Before
+    the tie rule (``kernel_bpa.tie_plane``) and the rotation clamp (``pivot_candidate``),
+    rounding settled it here too, differently per triangle and per device: pivots took the other
+    diagonal's triangle on top of their own, wound against the normals, and on the axis-aligned
+    grid the cleanup raised ``non-orientable duplicate face group`` (cpu, and cuda with the chain);
+    elsewhere the result was not winding-consistent and missed 100-450 faces. Every 40 x 40 case
+    failed before the fix. The 4 x 4 grid is where the clamp mattered: a cell's far corner rotated
+    by a rounded-negative zero, folded onto the ``TWO_PI`` sentinel, and the cell was left half open
+    (17 faces of 18 on cuda, in one build of the kernel). The sign of that zero follows how nvcc
+    contracts the angle, which moves with unrelated code, so this case guards the clamp rather
+    than probing it.
+
+    The invariants exclude each of those: the exact face count ``2 (side - 1)^2`` and the grid's
+    area rule out both a missing triangle and an overlapping pair (with every face wound with the
+    normals, an overlap adds area); ordito's validators and an independent count of edge
+    incidences and directed half-edges rule out a non-manifold or inconsistently wound result. The
+    chain is the 31-point Morton chain of
+    ``test_ball_pivoting_on_a_bvh_leaf_past_the_tile_walk_buffer``, which the reported reproducer
+    appended; it is far from the grid and never triangulated. The rotated, translated frame moves
+    the ball centres away from the origin, where the float32 round-off the tie shell must absorb
+    grows with the coordinates.
+    """
+    radius = 0.05
+    positions = spacing * np.arange(side)
+    grid_x, grid_y = np.meshgrid(positions, positions, indexing="ij")
+    points_np = np.stack([grid_x.ravel(), grid_y.ravel(), np.zeros(grid_x.size)], axis=1)
+    normal_np = np.array([0.0, 0.0, 1.0])
+    if frame == "rotated_offset":
+        from scipy.spatial.transform import Rotation
+
+        rotation_np = Rotation.from_euler("xyz", [0.4, -0.7, 1.1]).as_matrix()
+        points_np = points_np @ rotation_np.T + np.array([3.0, -2.0, 1.5])
+        normal_np = rotation_np @ normal_np
+    if chained:
+        chain_np = np.array(
+            [np.eye(3)[axis] * 2**bit + 0.5 for bit in range(10) for axis in range(3)]
+            + [np.full(3, 1023.5)]
+        )
+        points_np = np.concatenate([points_np, chain_np])
+    normals_np = np.tile(normal_np, (points_np.shape[0], 1))
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+
+    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+
+    assert od.validation.is_edge_manifold(faces_wp)
+    assert od.validation.is_winding_consistent(faces_wp)
+    vertices_np = vertices_wp.numpy().astype(np.float64)
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    assert vertices_np.shape == (side * side, 3)
+    assert faces_np.shape[0] == 2 * (side - 1) ** 2
+    multiplicity = edge_multiplicity(faces_np)
+    assert int(multiplicity.max()) == 2
+    assert int((multiplicity == 1).sum()) == 4 * (side - 1)  # one rim, around the square
+    half_edges_np = np.concatenate([faces_np[:, [0, 1]], faces_np[:, [1, 2]], faces_np[:, [2, 0]]])
+    assert np.unique(half_edges_np, axis=0).shape[0] == half_edges_np.shape[0]
+    assert warp_to_trimesh(vertices_wp, faces_wp).is_winding_consistent
+
+    corners_np = vertices_np[faces_np]
+    face_area_np = 0.5 * np.cross(
+        corners_np[:, 1] - corners_np[:, 0], corners_np[:, 2] - corners_np[:, 0]
+    )
+    assert np.all(face_area_np @ normal_np > 0.0)  # wound with the normals
+    assert np.allclose(face_area_np @ normal_np, 0.5 * spacing**2, rtol=1e-3)
+    assert math.isclose(
+        float(np.sum(face_area_np @ normal_np)), ((side - 1) * spacing) ** 2, rel_tol=1e-4
     )
 
 

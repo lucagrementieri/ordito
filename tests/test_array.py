@@ -1119,6 +1119,25 @@ def test_flatnonzero_in_place(device: str, density: float) -> None:
     assert od.array.flatnonzero_in_place(warp_empty(0, wp.int32, device)).size == 0
 
 
+@pytest.mark.parametrize("density", [0.0, 0.3, 1.0])
+def test_compress_in_place(device: str, density: float) -> None:
+    """
+    Class A: ``compress_in_place`` equals ``numpy.compress`` and leaves the inclusive scan.
+
+    The value form behind ``boundary``'s boundary-vertex positions and ``points.convex_subset``;
+    the densities reach the empty result, the general case and a full one, and the length crosses
+    several CUDA scan tiles.
+    """
+    rng = np.random.default_rng(37)
+    flags_np = (rng.random(100_003) < density).astype(np.int32)
+    values_np = rng.standard_normal((flags_np.size, 3)).astype(np.float32)
+    flags_wp = wp.array(flags_np, dtype=wp.int32, device=device)
+    values_wp = wp.array(values_np, dtype=wp.vec3, device=device)
+    compressed_np = np.compress(flags_np.astype(bool), values_np, axis=0)
+    assert np.array_equal(od.array.compress_in_place(flags_wp, values_wp).numpy(), compressed_np)
+    assert np.array_equal(flags_wp.numpy(), np.cumsum(flags_np))
+
+
 @pytest.mark.parametrize("invert", [False, True])
 def test_mask_to_compact_ranks_is_the_exclusive_scan_of_the_mask(device: str, invert: bool) -> None:
     """

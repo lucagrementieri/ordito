@@ -32,7 +32,6 @@ from ordito.kernels import array as kernel_array
 from ordito.kernels import bounds as kernel_bounds
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
-from ordito.kernels import scatter as kernel_scatter
 
 # Points reduced per thread by the per-candidate extent reduction in
 # [`oriented_bounding_box`][ordito.bounds.oriented_bounding_box]. Long, and one value for both
@@ -631,16 +630,7 @@ def _box_indices(
     points: wp.array[wp.vec3], min_bound: wp.vec3, max_bound: wp.vec3, rotation: wp.mat33 | None
 ) -> wp.array[wp.int32]:
     """Ascending indices of the points inside the box: the index forms' shared body."""
-    inclusive, n_inside = _scanned_box_flags(points, min_bound, max_bound, rotation)
-    out_indices = _launch.empty(n_inside, dtype=wp.int32, device=points.device)
-    if n_inside > 0:
-        _launch.launch(
-            kernel_scatter.scatter_index_where_scanned,
-            dim=points.size,
-            inputs=[inclusive, out_indices],
-            device=points.device,
-        )
-    return out_indices
+    return od.array.flatnonzero_in_place(_box_flags(points, min_bound, max_bound, rotation))
 
 
 def _scanned_box_flags(
@@ -649,30 +639,43 @@ def _scanned_box_flags(
     """
     Inclusive scan of the inside-the-box flags, scanned in place, and the count inside.
 
-    The flags are written straight as ``int32`` and the one tail read sizes the caller's output,
-    so neither a ``wp.bool`` mask nor its widening copy is ever allocated.
+    For ``crop_points``, whose one compaction writes the kept points and their indices together.
     """
-    device = points.device
-    n = points.size
-    inclusive = _launch.empty(n, dtype=wp.int32, device=device)
-    if n == 0:
+    inclusive = _box_flags(points, min_bound, max_bound, rotation)
+    if inclusive.size == 0:
         return inclusive, 0
-    _launch.launch(
-        kernel_bounds.box_flags,
-        dim=n,
-        inputs=[
-            points,
-            _UNUSED_ROTATION if rotation is None else rotation,
-            min_bound,
-            max_bound,
-            0 if rotation is None else 1,
-            inclusive,
-        ],
-        device=device,
-    )
     _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # One 4-byte tail read: the count sizes every output.
     return inclusive, int(read_scalar(inclusive))
+
+
+def _box_flags(
+    points: wp.array[wp.vec3], min_bound: wp.vec3, max_bound: wp.vec3, rotation: wp.mat33 | None
+) -> wp.array[wp.int32]:
+    """
+    ``(n_points,)`` ``int32`` flags, ``1`` inside the box.
+
+    Written straight as ``int32``, so neither a ``wp.bool`` mask nor its widening copy is ever
+    allocated.
+    """
+    device = points.device
+    n = points.size
+    flags = _launch.empty(n, dtype=wp.int32, device=device)
+    if n > 0:
+        _launch.launch(
+            kernel_bounds.box_flags,
+            dim=n,
+            inputs=[
+                points,
+                _UNUSED_ROTATION if rotation is None else rotation,
+                min_bound,
+                max_bound,
+                0 if rotation is None else 1,
+                flags,
+            ],
+            device=device,
+        )
+    return flags
 
 
 def oriented_bounding_box(

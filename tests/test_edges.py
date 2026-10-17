@@ -27,6 +27,7 @@ from tests.conversions import (
     trimesh_to_pymeshlab,
     trimesh_to_pytorch3d,
     trimesh_to_pyvista,
+    warp_empty,
 )
 
 if TYPE_CHECKING:
@@ -731,3 +732,34 @@ def test_mean_edge_length_arrival_order_agrees_with_the_default(device: str) -> 
         arrival = od.edges.mean_edge_length(vertices_wp, faces_wp)
     assert fixed > 0.0
     assert np.isclose(fixed, arrival, rtol=1e-6, atol=0.0)
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_edge_length_sum_is_the_mean_times_the_edge_count(
+    mesh_name: str, request: pytest.FixtureRequest
+) -> None:
+    """
+    Class A: the device total equals NumPy's sum of the per-face edge lengths, and is the mean's.
+
+    ``mean_edge_length`` reads this very total back, so its value over ``3 * n_faces`` must be the
+    mean bit for bit; the NumPy sum of the ``(3 * n_faces,)`` lengths pins the total itself.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces)
+    lengths_np = np.linalg.norm(
+        vertices_np[np.roll(faces_np, -1, axis=1)] - vertices_np[faces_np], axis=2
+    )
+    total_wp = od.edges.edge_length_sum(mesh_wp.points, mesh_wp.indices)
+    assert total_wp.shape == (1,)
+    assert np.allclose(total_wp.numpy()[0], lengths_np.sum(), rtol=1e-5, atol=1e-5)
+    assert float(total_wp.numpy()[0]) / mesh_wp.indices.size == od.edges.mean_edge_length(
+        mesh_wp.points, mesh_wp.indices
+    )
+
+
+def test_edge_length_sum_of_no_faces_is_zero(device: str) -> None:
+    """Not a library comparison: the empty total is the zero the mean's ``0.0`` stands for."""
+    vertices_wp = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    assert od.edges.edge_length_sum(vertices_wp, faces_wp).numpy().tolist() == [0.0]

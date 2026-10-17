@@ -36,7 +36,6 @@ from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import graph as kernel_graph
 from ordito.kernels import halfedge as kernel_halfedge
-from ordito.kernels import scatter as kernel_scatter
 
 
 def boundary_edges(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> odt.Array2dInt32:
@@ -1292,45 +1291,20 @@ class _BoundaryHalfedges:
 
     def vertex_indices(self, n_vertices: int) -> wp.array[wp.int32]:
         """Sorted unique boundary vertex indices, from a scan of per-vertex flags."""
-        device = self.faces.device
-        flags, n_out = self._scanned_vertex_flags(n_vertices)
-        out = _launch.empty(n_out, dtype=wp.int32, device=device)
-        if n_out > 0:
-            _launch.launch(
-                kernel_scatter.scatter_index_where_scanned,
-                dim=n_vertices,
-                inputs=[flags, out],
-                device=device,
-            )
-        return out
+        return od.array.flatnonzero_in_place(self._vertex_flags(n_vertices))
 
     def vertex_positions(self, vertices: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
         """Gather the boundary vertex positions in ascending index order, with no index buffer."""
-        device = self.faces.device
-        n_vertices = vertices.size
-        flags, n_out = self._scanned_vertex_flags(n_vertices)
-        out = _launch.empty(n_out, dtype=wp.vec3, device=device)
-        if n_out > 0:
-            _launch.launch(
-                kernel_scatter.scatter_value_where_scanned,
-                dim=n_vertices,
-                inputs=[flags, vertices, out],
-                device=device,
-            )
-        return out
+        return od.array.compress_in_place(self._vertex_flags(vertices.size), vertices)
 
-    def _scanned_vertex_flags(self, n_vertices: int) -> tuple[wp.array[wp.int32], int]:
-        """Inclusive scan of the per-vertex boundary flags, and its total (one readback)."""
-        device = self.faces.device
-        flags = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
-        if n_vertices == 0:
-            return flags, 0
-        _launch.launch(
-            kernel_boundary.mark_boundary_vertices,
-            dim=self.n,
-            inputs=[self.mates, self.faces, flags],
-            device=device,
-        )
-        _launch.array_scan(flags, out_array=flags, inclusive=True)
-        # Sizes the output: the one host readback of this path.
-        return flags, int(read_scalar(flags))
+    def _vertex_flags(self, n_vertices: int) -> wp.array[wp.int32]:
+        """``(n_vertices,)`` ``int32`` flags: ``1`` on every vertex of a boundary halfedge."""
+        flags = _launch.zeros(n_vertices, dtype=wp.int32, device=self.faces.device)
+        if n_vertices > 0:
+            _launch.launch(
+                kernel_boundary.mark_boundary_vertices,
+                dim=self.n,
+                inputs=[self.mates, self.faces, flags],
+                device=self.faces.device,
+            )
+        return flags

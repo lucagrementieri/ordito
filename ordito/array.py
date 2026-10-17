@@ -2234,25 +2234,81 @@ def flatnonzero_in_place(flags: wp.array[wp.int32]) -> wp.array[wp.int32]:
     ```
     """
     device = flags.device
-    n = flags.size
-    if n == 0:
-        return _launch.empty(0, dtype=wp.int32, device=device)
+    n_out = _scan_selection(flags)
+    out_indices = _launch.empty(n_out, dtype=wp.int32, device=device)
+    if n_out > 0:
+        _launch.launch(
+            kernel_scatter.scatter_index_where_scanned,
+            dim=flags.size,
+            inputs=[flags, out_indices],
+            device=device,
+        )
+    return out_indices
+
+
+def compress_in_place(flags: wp.array[wp.int32], values: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
+    """
+    Return the values at the ones of a ``0`` / ``1`` flag buffer, scanning it in place.
+
+    ``numpy.compress(flags, values)`` for a caller whose own kernel writes the flags: the
+    [`flatnonzero_in_place`][ordito.array.flatnonzero_in_place] counterpart that writes each
+    selected value to its compact slot, so no index buffer is built and gathered back. The buffer
+    is consumed -- it holds the flags' inclusive scan on return.
+
+    Parameters
+    ----------
+    flags
+        ``(n,)`` ``int32`` buffer of ``0`` / ``1`` flags. Overwritten with its inclusive scan.
+    values
+        ``(n,)`` values on ``flags.device``.
+
+    Returns
+    -------
+    wp.array[wp.vec3]
+        ``(n_selected,)`` the selected values, in ascending index order.
+
+    See Also
+    --------
+    [`flatnonzero_in_place`][ordito.array.flatnonzero_in_place]
+        The indices of the ones instead of the values there.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    flags = wp.array([0, 1, 0, 1], dtype=wp.int32)
+    values = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]],
+                      dtype=wp.vec3)
+    print(od.array.compress_in_place(flags, values).numpy()[:, 0].tolist())  # [1.0, 3.0]
+    ```
+    """
+    device = flags.device
+    n_out = _scan_selection(flags)
+    out_values = _launch.empty(n_out, dtype=wp.vec3, device=device)
+    if n_out > 0:
+        _launch.launch(
+            kernel_scatter.scatter_value_where_scanned,
+            dim=flags.size,
+            inputs=[flags, values, out_values],
+            device=device,
+        )
+    return out_values
+
+
+def _scan_selection(flags: wp.array[wp.int32]) -> int:
+    """Scan ``flags`` in place and return how many were set (one tail readback)."""
+    if flags.size == 0:
+        return 0
     # Scanned in place, which ``wp.utils.array_scan`` supports on both devices -- the host scan is
     # a sequential loop that reads each element before overwriting it, and CUB's device scan
     # accepts aliased input and output. The total is the scan's last element, so one 4-byte tail
     # read sizes the output, and the scatter recovers each flag as the step between neighbouring
     # scan values.
     _launch.array_scan(flags, out_array=flags, inclusive=True)
-    n_out = int(read_scalar(flags))
-    out_indices = _launch.empty(n_out, dtype=wp.int32, device=device)
-    if n_out > 0:
-        _launch.launch(
-            kernel_scatter.scatter_index_where_scanned,
-            dim=n,
-            inputs=[flags, out_indices],
-            device=device,
-        )
-    return out_indices
+    return int(read_scalar(flags))
 
 
 def gather(

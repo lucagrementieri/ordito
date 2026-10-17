@@ -831,19 +831,68 @@ def mean_edge_length(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
     n_halfedges = faces.size // 3 * 3
     if n_halfedges == 0:
         return 0.0
-    # Each block's length sum is stored, not committed, and ``reduce.sum`` folds the partials in
-    # its fixed order: no ``(3 * n_faces,)`` length buffer, and one readback.
-    partials = _launch.empty(
-        kernel_reduce.blocks_1d(n_halfedges), dtype=wp.float32, device=vertices.device
-    )
+    # The total is ``edge_length_sum``'s, read back once.
+    return float(read_scalar(edge_length_sum(vertices, faces), 0)) / n_halfedges
+
+
+def edge_length_sum(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> wp.array[wp.float32]:
+    """
+    Total length of the ``3 * n_faces`` per-face edges, left on the device.
+
+    The sum [`mean_edge_length`][ordito.edges.mean_edge_length] divides by ``3 * n_faces``, for a
+    caller whose kernels consume it on the device and would otherwise wait on a readback to pass
+    the mean in as a scalar. A shared edge counts once per face, as in the mean. Summed in
+    [`sum`][ordito.reduce.sum]'s order: fixed under
+    [`is_deterministic`][ordito.config.is_deterministic], arrival order otherwise.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` vertex positions.
+    faces
+        ``(3 * n_faces,)`` face index buffer.
+
+    Returns
+    -------
+    wp.array[wp.float32]
+        ``(1,)`` the total on ``vertices.device``; ``0`` when ``n_faces == 0``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not all on one device.
+
+    See Also
+    --------
+    [`mean_edge_length`][ordito.edges.mean_edge_length]
+        The same total over the edge count, read back.
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    total = od.edges.edge_length_sum(vertices, faces)
+    print(total.shape, f"{total.numpy()[0] / faces.size:.4f}")  # (1,) 1.1381
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    device = vertices.device
+    n_halfedges = faces.size // 3 * 3
+    if n_halfedges == 0:
+        return _launch.zeros(1, dtype=wp.float32, device=device)
+    # Each block's length sum is stored, not committed, and the partials are folded as
+    # ``reduce.sum`` folds its own: no ``(3 * n_faces,)`` length buffer.
+    partials = _launch.empty(kernel_reduce.blocks_1d(n_halfedges), dtype=wp.float32, device=device)
     _launch.launch_tiled(
         kernel_edges.halfedge_length_partials,
         dim=[partials.size],
         inputs=[vertices, faces, n_halfedges, partials],
         block_dim=TILE_1D,
-        device=vertices.device,
+        device=device,
     )
-    return od.reduce.sum(partials) / n_halfedges
+    return od.reduce.sum_of_terms(kernel_reduce.ARRAY_SUM, [partials], partials.size)
 
 
 def mean_unique_edge_length(

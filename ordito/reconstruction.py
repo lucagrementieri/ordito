@@ -1976,6 +1976,10 @@ def ball_pivoting(
 
     Results are not comparable across devices, where floating-point contraction differs.
 
+    A ball resting on four or more points at once -- the corners of every cell of a regular grid --
+    is resolved by a fixed rule on the points' indices rather than by rounding, so such a cloud
+    reconstructs to one consistently wound triangulation of each cell on every device.
+
     The result is **interpolating and edge-manifold**, and on a densely, uniformly sampled closed
     surface it is watertight in practice: a subdivided icosphere reconstructs to exactly ``2 v - 4``
     faces with no boundary edge at all. Watertightness is not *guaranteed* -- the wave-parallel
