@@ -761,15 +761,13 @@ def test_join_closest_components(bench_case: BenchCase) -> None:
 
     **The axis is the join count, and the face count is very nearly free.** At a fixed face count
     ordito is linear in the ``k - 1`` joins; holding the components fixed and cutting the mesh
-    instead barely moves it, a 4x face reduction costing a percent. That is the shape the function's
-    own Notes predict -- each round rebuilds the component labelling and the rim table from the
-    updated face buffer, and each is a fixed chain of wrapper calls whose launch overhead dominates
-    the per-face work at these sizes.
+    instead barely moves it. The rim table and the component labels are built once and edited on
+    the device, so each round is one launch (``kernels/holes.join_round``: pair, bridge, edit) with
+    nothing read back, and the face count enters only through the one-off setup.
 
-    So this group watches the **round count times the per-round chain**, and anything that moves it
-    will be a launch removed from that chain rather than a faster kernel. One such change is already
-    in: the pair selection and ``bridge_edges``' rim check used to build the same oriented boundary
-    table twice per round, which was a seventh or so of the call.
+    So this group watches the **round count times the per-round launch**. The rounds used to be a
+    host loop of an upload, two launches and a readback each; before that each rebuilt the oriented
+    boundary table, and earlier still twice.
 
     A closed lattice cannot serve this. ``parts_64`` returns **0 bridges** -- a shell with no
     boundary has nothing to bridge to and is left alone by design -- so the ``components`` axis

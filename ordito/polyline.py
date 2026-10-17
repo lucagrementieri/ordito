@@ -1459,8 +1459,8 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
         return odt.empty_2d((0, 3), wp.int32, device=device)
 
     # The plane frame is built and consumed entirely on device: one single-block accumulation, which
-    # also decides whether the last point repeats the first, then a projection whose threads each
-    # read the frame it stored.
+    # also decides whether the last point repeats the first, then the turning pass, which projects
+    # every point into the frame it stored as it reads it.
     sums = _launch.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
     _launch.launch_tiled(
         kernel_polyline.accumulate_loop_frame,
@@ -1470,13 +1470,14 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
         device=device,
     )
     points2d = _launch.empty(n, dtype=wp.vec2, device=device)
-    _launch.launch(
-        kernel_polyline.project_polyline_to_plane,
-        dim=n,
+    _launch.launch_tiled(
+        kernel_polyline.project_turning_angle,
+        dim=kernel_reduce.blocks_1d(n),
         inputs=[polyline, sums, points2d],
+        block_dim=TILE_1D,
         device=device,
     )
-    _, faces = _triangulate_ring(points2d, sums, detect_closing=False)
+    _, faces = _triangulate_ring(points2d, sums)
     return faces
 
 
@@ -1742,32 +1743,32 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
         return polygon, _launch.empty(0, dtype=wp.int32, device=device)
 
     sums = _launch.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
-    n_ring, faces = _triangulate_ring(polygon, sums, detect_closing=True)
+    _launch.launch_tiled(
+        kernel_polyline.accumulate_turning_angle,
+        dim=kernel_reduce.blocks_1d(n),
+        inputs=[polygon, sums],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    n_ring, faces = _triangulate_ring(polygon, sums)
     # The ring is the input minus any repeated closing point, i.e. a prefix of it.
     return polygon[:n_ring].contiguous(), faces.reshape((-1,))
 
 
 def _triangulate_ring(
-    points2d: wp.array[wp.vec2], sums: wp.array[wp.float32], *, detect_closing: bool
+    points2d: wp.array[wp.vec2], sums: wp.array[wp.float32]
 ) -> tuple[int, odt.Array2dInt32]:
     """
-    Ear-clip a 2D ring, from the turning angle onwards: ``(ring length, (m, 3) faces)``.
+    Ear-clip a 2D ring whose turning pass has run: ``(ring length, (m, 3) faces)``.
 
-    ``points2d`` holds the ring plus, possibly, a repeated closing point. With
-    ``detect_closing=False`` the caller's prologue has already written the closing flag into
-    ``sums``; otherwise the turning-angle pass decides it. Either way the one readback of ``sums``
-    carries the ring length, the orientation and the reflex count together. ``points2d`` is never
-    written: a clockwise ring is read mirrored by the ear tests.
+    ``points2d`` holds the ring plus, possibly, a repeated closing point; the caller's turning
+    pass (``kernels/polyline.accumulate_turning_angle`` or ``project_turning_angle``) has written
+    the closing flag, the turning angle, the reflex counts and the ring's box into ``sums``, and
+    the one readback of ``sums`` carries them together. ``points2d`` is never written: a clockwise
+    ring is read mirrored by the ear tests.
     """
     device = points2d.device
     n = points2d.size
-    _launch.launch_tiled(
-        kernel_polyline.accumulate_turning_angle,
-        dim=kernel_reduce.blocks_1d(n),
-        inputs=[points2d, wp.int32(1 if detect_closing else 0), sums],
-        block_dim=TILE_1D,
-        device=device,
-    )
     # The only readback before the convex fast path returns: ring length, turning angle and the
     # reflex count of the oriented loop, all decided on device.
     # The eight slots are adjacent, ``RING_TURNING`` through the ring's box: one offset read.

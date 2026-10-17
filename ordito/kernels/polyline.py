@@ -1,3 +1,5 @@
+from typing import Any
+
 import warp as wp
 
 from ordito.constants import ALLCLOSE_ATOL_CONSTANT, ALLCLOSE_RTOL_CONSTANT, FLOAT32_INF_CONSTANT
@@ -1434,28 +1436,9 @@ def project_to_frame(p: wp.vec3, sums: wp.array[wp.float32], base: wp.int32) -> 
     return wp.vec2(wp.float32(wp.dot(offset, to_vec3d(u))), wp.float32(wp.dot(offset, to_vec3d(v))))
 
 
-@wp.kernel
-def project_polyline_to_plane(
-    polyline: wp.array[wp.vec3], sums: wp.array[wp.float32], out_points2d: wp.array[wp.vec2]
-) -> None:
-    # dim == n (the ring plus, when ``RING_CLOSING`` is set, the repeated closing point, whose
-    # projection nothing reads): ``project_to_frame`` of every point.
-    i = wp.int32(wp.tid())
-    out_points2d[i] = project_to_frame(polyline[i], sums, 0)
-
-
 @wp.func
-def corner_turn(
-    points2d: wp.array[wp.vec2], start: wp.int32, i: wp.int32, n_ring: wp.int32
-) -> wp.vec3:
-    # Ring entry ``i``'s terms of ``accumulate_turning_angle``'s three sums, the ring being
-    # ``points2d[start : start + n_ring]``: the signed exterior angle between segments ``i`` and
-    # ``i + 1``, and whether the turn at vertex ``i + 1`` is reflex in the loop as it stands and in
-    # its mirror image (see ``accumulate_turning_angle``).
-    current = points2d[start + i]
-    i_next = loop_point(i + 1, n_ring)
-    nxt = points2d[start + i_next]
-    after = points2d[start + loop_point(i_next + 1, n_ring)]
+def corner_turn_terms(current: wp.vec2, nxt: wp.vec2, after: wp.vec2) -> wp.vec3:
+    # ``corner_turn`` of the corner at ``nxt``, from its three ring points.
     d1 = nxt - current
     d2 = after - nxt
     # The turn at vertex ``i + 1``, whose ring neighbours are ``current`` and ``after``.
@@ -1470,20 +1453,96 @@ def corner_turn(
     return wp.vec3(wp.atan2(cross2(d1, d2), wp.dot(d1, d2)), reflex, reflex_mirrored)
 
 
+@wp.func
+def corner_turn(
+    points2d: wp.array[wp.vec2], start: wp.int32, i: wp.int32, n_ring: wp.int32
+) -> wp.vec3:
+    # Ring entry ``i``'s terms of ``accumulate_turning_angle``'s three sums, the ring being
+    # ``points2d[start : start + n_ring]``: the signed exterior angle between segments ``i`` and
+    # ``i + 1``, and whether the turn at vertex ``i + 1`` is reflex in the loop as it stands and in
+    # its mirror image (see ``accumulate_turning_angle``).
+    i_next = loop_point(i + 1, n_ring)
+    return corner_turn_terms(
+        points2d[start + i],
+        points2d[start + i_next],
+        points2d[start + loop_point(i_next + 1, n_ring)],
+    )
+
+
+@wp.func
+def stored_ring_point(source: Any, sums: wp.array[wp.float32], i: wp.int32) -> wp.vec2:
+    # Ring point ``i`` of a 2D ring held in ``source``.
+    return source[i]
+
+
+@wp.func
+def projected_ring_point(source: Any, sums: wp.array[wp.float32], i: wp.int32) -> wp.vec2:
+    # Ring point ``i`` of the 3D loop ``source``, in the plane frame at ``sums[0:]``.
+    return project_to_frame(source[i], sums, 0)
+
+
+@wp.func
+def ring_turning_pass(
+    chunk: wp.int32,
+    lane: wp.int32,
+    n_ring: wp.int32,
+    source: Any,
+    out_sums: wp.array[wp.float32],
+    point: wp.Function,
+    out_points2d: wp.array[wp.vec2],
+    store: wp.int32,
+):
+    # Block ``chunk``'s share of the turning sums of a ring of ``n_ring`` points, ring point ``i``
+    # being ``point(source, out_sums, i)``, each stored to ``out_points2d[i]`` by its lane when
+    # ``store``: the turning angle and both reflex counts into ``RING_TURNING``, the ring's box
+    # relative to its first point into ``RING_EXTENT``.
+    offset, count = block_chunk_1d(n_ring, chunk)
+    if count <= 0:
+        return
+    local = wp.float32(0.0)
+    reflex = wp.float32(0.0)
+    reflex_mirrored = wp.float32(0.0)
+    origin = point(source, out_sums, 0)
+    above = wp.vec2()
+    below = wp.vec2()
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        current = point(source, out_sums, i)
+        if store != 0:
+            out_points2d[i] = current
+        above = wp.max(above, current - origin)
+        below = wp.max(below, origin - current)
+        i_next = loop_point(i + 1, n_ring)
+        turn = corner_turn_terms(
+            current,
+            point(source, out_sums, i_next),
+            point(source, out_sums, loop_point(i_next + 1, n_ring)),
+        )
+        local += turn[0]
+        reflex += turn[1]
+        reflex_mirrored += turn[2]
+    commit_block_sum(lane, wp.vec3(local, reflex, reflex_mirrored), out_sums, RING_TURNING)
+    # The ring's box relative to its first point, for the ear grid: ``max(p - p0)`` then
+    # ``max(p0 - p)``, both non-negative, so the zeroed slots are a correct seed for the
+    # ``atomic_max`` commit.
+    extent = wp.vec4(
+        block_max(above[0]), block_max(above[1]), block_max(below[0]), block_max(below[1])
+    )
+    if lane == 0:
+        for c in range(4):
+            wp.atomic_max(out_sums, RING_EXTENT + c, extent[c])
+
+
 @wp.kernel
-def accumulate_turning_angle(
-    points2d: wp.array[wp.vec2], detect_closing: wp.int32, out_sums: wp.array[wp.float32]
-) -> None:
+def accumulate_turning_angle(points2d: wp.array[wp.vec2], out_sums: wp.array[wp.float32]) -> None:
     # Cyclic signed exterior angle at each vertex into ``out_sums[RING_TURNING]``; the sum's sign
     # gives the loop orientation. Lane-strided single-slot reduction -- see
     # ``accumulate_radius_frame`` for the shape and why no device branch is needed.
     #
-    # Over the ring of ``n_ring`` distinct vertices. Where the ring is the caller's own 2D input
-    # (``detect_closing != 0``, ``triangulate_polygon``) this kernel is the first to touch it, so it
-    # detects a repeated closing point itself and publishes the flag in ``RING_CLOSING``; the
-    # predicate is ``polyline_open``'s on the ``z = 0`` lift, which is what that function used to
-    # evaluate. Otherwise (``polyline_triangulate``) ``accumulate_loop_frame`` already decided it on
-    # the 3D input, and this kernel reads the flag it wrote.
+    # Over the ring of ``n_ring`` distinct vertices. The ring is the caller's own 2D input
+    # (``triangulate_polygon``) and this kernel is the first to touch it, so it detects a repeated
+    # closing point itself and publishes the flag in ``RING_CLOSING``; the predicate is
+    # ``polyline_open``'s on the ``z = 0`` lift, which is what that function used to evaluate.
     #
     # The same pass counts the reflex vertices, so the convex test needs no launch of its own. A
     # corner too flat to orient (``corner_is_thin``, either sign) counts as reflex in both counts:
@@ -1499,45 +1558,37 @@ def accumulate_turning_angle(
     # and near-collinear vertices of a fine convex ring then read as reflex. The counts are
     # ``float32`` so every slot shares one buffer and one readback, which is exact for the only
     # question asked of them: a sum of non-negative whole numbers is zero only when every term is.
+    #
+    # ``project_turning_angle`` is the same pass over a 3D loop it projects as it goes, whose
+    # closing flag ``accumulate_loop_frame`` has already decided; the two differ only in where a
+    # ring point comes from (``ring_turning_pass``' ``point``).
     chunk, lane = wp.tid()
     n = points2d.shape[0]
-    closing = wp.int32(0)
-    if detect_closing != 0:
-        zero = wp.float32(0.0)
-        closing = ring_closing_flag(lift_vec2(points2d[0], zero), lift_vec2(points2d[n - 1], zero))
-        if chunk == 0 and lane == 0:
-            out_sums[RING_CLOSING] = wp.float32(closing)
-    else:
-        closing = wp.int32(out_sums[RING_CLOSING])
-    n_ring = n - closing
-    offset, count = block_chunk_1d(n_ring, chunk)
-    if count <= 0:
-        return
-    local = wp.float32(0.0)
-    reflex = wp.float32(0.0)
-    reflex_mirrored = wp.float32(0.0)
-    origin = points2d[0]
-    above = wp.vec2()
-    below = wp.vec2()
-    for k in range(lane, count, wp.block_dim()):
-        i = offset + k
-        current = points2d[i]
-        above = wp.max(above, current - origin)
-        below = wp.max(below, origin - current)
-        turn = corner_turn(points2d, 0, i, n_ring)
-        local += turn[0]
-        reflex += turn[1]
-        reflex_mirrored += turn[2]
-    commit_block_sum(lane, wp.vec3(local, reflex, reflex_mirrored), out_sums, RING_TURNING)
-    # The ring's box relative to its first point, for the ear grid: ``max(p - p0)`` then
-    # ``max(p0 - p)``, both non-negative, so the zeroed slots are a correct seed for the
-    # ``atomic_max`` commit.
-    extent = wp.vec4(
-        block_max(above[0]), block_max(above[1]), block_max(below[0]), block_max(below[1])
+    zero = wp.float32(0.0)
+    closing = ring_closing_flag(lift_vec2(points2d[0], zero), lift_vec2(points2d[n - 1], zero))
+    if chunk == 0 and lane == 0:
+        out_sums[RING_CLOSING] = wp.float32(closing)
+    ring_turning_pass(chunk, lane, n - closing, points2d, out_sums, stored_ring_point, points2d, 0)
+
+
+@wp.kernel
+def project_turning_angle(
+    polyline: wp.array[wp.vec3], sums: wp.array[wp.float32], out_points2d: wp.array[wp.vec2]
+) -> None:
+    # ``polyline_triangulate``'s projection and ``accumulate_turning_angle`` in one pass: each ring
+    # point is projected into the plane frame ``accumulate_loop_frame`` stored at ``sums[0:]``
+    # (``project_to_frame``) where the turning sums need it, written to ``out_points2d`` by the
+    # lane that owns it, and its corner's neighbours projected again in place of a read, which is
+    # the same value bit for bit. ``accumulate_loop_frame`` has already decided ``RING_CLOSING``;
+    # a repeated closing point is projected too, though nothing reads it.
+    chunk, lane = wp.tid()
+    n = polyline.shape[0]
+    closing = wp.int32(sums[RING_CLOSING])
+    if closing != 0 and chunk == 0 and lane == 0:
+        out_points2d[n - 1] = project_to_frame(polyline[n - 1], sums, 0)
+    ring_turning_pass(
+        chunk, lane, n - closing, polyline, sums, projected_ring_point, out_points2d, 1
     )
-    if lane == 0:
-        for c in range(4):
-            wp.atomic_max(out_sums, RING_EXTENT + c, extent[c])
 
 
 @wp.kernel

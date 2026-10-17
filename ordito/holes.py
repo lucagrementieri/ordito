@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from itertools import pairwise
 from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
@@ -243,14 +244,18 @@ def fill_fan(
     flat_loops, loop_offsets = packed.flat_loops, packed.offsets
     n_loops, total = packed.n_loops, packed.total
     n_tri = total - 2 * n_loops
-    fill_faces = _launch.empty(3 * n_tri, dtype=wp.int32, device=device)
+    if n_tri <= 0:
+        return _launch.clone(faces)
+    # The fan is written straight into the tail of the returned buffer, behind a copy of ``faces``.
+    filled = _launch.empty(faces.size + 3 * n_tri, dtype=wp.int32, device=device)
+    _launch.copy(filled, faces, count=faces.size)
     _launch.launch(
         kernel_holes.fan_faces,
         dim=n_loops,
-        inputs=[flat_loops, loop_offsets, fill_faces],
+        inputs=[flat_loops, loop_offsets, odt.as_dense(filled[faces.size :])],
         device=device,
     )
-    return od.array.concatenate([faces, fill_faces])
+    return filled
 
 
 def fill_cone(
@@ -335,15 +340,27 @@ def fill_cone(
     n_loops, total = packed.n_loops, packed.total
     n_vertices = vertices.size
 
-    centroids = _launch.empty(n_loops, dtype=wp.vec3, device=device)
-    fill_faces = _launch.empty(3 * total, dtype=wp.int32, device=device)
+    # The centroids and the cone triangles are written straight into the tails of the returned
+    # buffers, behind copies of ``vertices`` and ``faces``.
+    new_vertices = _launch.empty(n_vertices + n_loops, dtype=wp.vec3, device=device)
+    new_faces = _launch.empty(faces.size + 3 * total, dtype=wp.int32, device=device)
+    if n_vertices > 0:
+        _launch.copy(new_vertices, vertices, count=n_vertices)
+    _launch.copy(new_faces, faces, count=faces.size)
     _launch.launch(
         kernel_holes.cone_fill,
         dim=n_loops,
-        inputs=[vertices, flat_loops, loop_offsets, wp.int32(n_vertices), centroids, fill_faces],
+        inputs=[
+            vertices,
+            flat_loops,
+            loop_offsets,
+            wp.int32(n_vertices),
+            odt.as_dense(new_vertices[n_vertices:]),
+            odt.as_dense(new_faces[faces.size :]),
+        ],
         device=device,
     )
-    return (od.array.concatenate([vertices, centroids]), od.array.concatenate([faces, fill_faces]))
+    return new_vertices, new_faces
 
 
 # Fill-metric name -> kernel selector (must match the METRIC_* constants in
@@ -2568,8 +2585,11 @@ def stitch_loops(
         device=device,
     )
 
-    # Each A edge's best B vertex by the perimeter |a_i - b_j| + |a_{i+1} - b_j|.
-    col_min = _launch.empty(n, dtype=wp.int32, device=device)
+    # Each A edge's best B vertex by the perimeter |a_i - b_j| + |a_{i+1} - b_j|, and the global
+    # minimum's ``(shift_a, shift_b)``, side by side in one buffer: ``[col_0 .. col_{n-1}, shift_a,
+    # shift_b]``, so the host reads the whole answer back once.
+    col_and_shift = _launch.empty(n + 2, dtype=wp.int32, device=device)
+    col_min = odt.as_dense(col_and_shift[:n])
     val_min = _launch.empty(n, dtype=wp.float32, device=device)
     _launch.launch_tiled(
         kernel_holes.row_argmin,
@@ -2579,28 +2599,19 @@ def stitch_loops(
         block_dim=kernel_holes.ROW_ARGMIN_BLOCK,
         device=device,
     )
-
-    # ``[edge_0 .. edge_{n-1}, shift_a, shift_b]`` in one buffer: the edge map reads the two
-    # shifts on the device, so the host reads the whole answer back once rather than the shifts
-    # first and the edge map after.
-    edge_and_shift = _launch.empty(n + 2, dtype=wp.int32, device=device)
-    shift = edge_and_shift[n:]
     _launch.launch(
         kernel_holes.global_argmin,
         dim=1,
-        inputs=[col_min, val_min, wp.int32(n), shift],
+        inputs=[col_min, val_min, wp.int32(n), col_and_shift[n:]],
         device=device,
     )
-    _launch.launch(
-        kernel_holes.rolled_edge_map,
-        dim=n,
-        inputs=[col_min, shift, wp.int32(n), wp.int32(m), edge_and_shift[:n]],
-        device=device,
-    )
-    edge_and_shift_np = edge_and_shift.numpy()
-    edge = edge_and_shift_np[:n]
-    shift_a = int(edge_and_shift_np[n])
-    shift_b = int(edge_and_shift_np[n + 1])
+    col_and_shift_np = col_and_shift.numpy()
+    shift_a = int(col_and_shift_np[n])
+    shift_b = int(col_and_shift_np[n + 1])
+    # Each edge's B vertex after rolling both loops so the global-min pair is first
+    # (``argmin(roll(roll(perimeters, -shift_a, 0), -shift_b, 1), axis=1)``): the host holds the
+    # columns already, so the roll is a host permutation rather than a launch.
+    edge = (np.roll(col_and_shift_np[:n], -shift_a) - shift_b) % m
 
     row_roll = shift_a
     col_roll = shift_b
@@ -2617,21 +2628,30 @@ def stitch_loops(
     # Monotonicity correction: re-pick the B vertex of every edge outside the longest
     # non-decreasing subsequence within the bracket of its stable neighbours, so the matching is
     # order-preserving. The sentinel value ``m`` closes the last bracket.
-    edge_ext = np.append(edge, np.int32(m))
-    out_edge = _launch.array(edge_ext.astype(np.int32), dtype=wp.int32, device=device)
-    if not np.all(np.diff(edge) >= 0):
+    edge_ext = np.append(edge, np.int32(m)).astype(np.int32)
+    if np.all(np.diff(edge) >= 0):
+        out_edge = _launch.array(edge_ext, dtype=wp.int32, device=device)
+    else:
         unsorted_indices = _non_increasing_indices(edge_ext)
         stable_indices = np.delete(np.arange(edge_ext.size), unsorted_indices)
         next_indices = stable_indices[np.searchsorted(stable_indices, unsorted_indices)]
+        # The edge map and the correction's two index lists, uploaded as one buffer.
+        k = unsorted_indices.size
+        upload = _launch.array(
+            np.concatenate([edge_ext, unsorted_indices, next_indices]).astype(np.int32),
+            dtype=wp.int32,
+            device=device,
+        )
+        out_edge = odt.as_dense(upload[: n + 1])
         _launch.launch(
             kernel_holes.resolve_corrections,
             dim=1,
             inputs=[
                 a_pos,
                 b_pos,
-                _launch.array(unsorted_indices.astype(np.int32), dtype=wp.int32, device=device),
-                _launch.array(next_indices.astype(np.int32), dtype=wp.int32, device=device),
-                wp.int32(unsorted_indices.size),
+                odt.as_dense(upload[n + 1 : n + 1 + k]),
+                odt.as_dense(upload[n + 1 + k :]),
+                wp.int32(k),
                 wp.int32(row_roll),
                 wp.int32(col_roll),
                 wp.int32(n),
@@ -2865,22 +2885,33 @@ def stitch_loops_min_weight(
     # Reverse loop A so the two rims wind oppositely (facing), then align both at the closest pair.
     # ``la`` / ``lb`` stay on the host for the sequential band traceback, but the closest-pair
     # search, the reversed and rolled rims and the rim-opposite lookups all run on device. This
-    # preamble (two loop readbacks and the closest pair's) is a fixed cost that the anti-diagonal
-    # DP below dominates and outgrows as the rims lengthen.
+    # preamble (one readback of the loops and the closest pair) is a fixed cost that the
+    # anti-diagonal DP below dominates and outgrows as the rims lengthen.
     a_rim = _launch.empty(n_a, dtype=wp.vec3, device=device)
     b_rim = _launch.empty(n_b, dtype=wp.vec3, device=device)
+    # ``[reversed loop A, loop B, start_a, start_b]``: the traceback's loops and the closest pair,
+    # side by side so the host reads them back once.
+    loops_and_pair = _launch.empty(n_a + n_b + 2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_holes.stitch_rim_positions,
         dim=n_a + n_b,
         inputs=[vertices_a, loop_a, vertices_b, loop_b, wp.int32(0), wp.int32(0)],
-        outputs=[a_rim, b_rim, None, None],
+        outputs=[
+            a_rim,
+            b_rim,
+            odt.as_dense(loops_and_pair[:n_a]),
+            odt.as_dense(loops_and_pair[n_a : n_a + n_b]),
+        ],
         device=device,
     )
-    start_a, start_b = _closest_loop_pair(a_rim, b_rim)
+    _closest_loop_pair(a_rim, b_rim, odt.as_dense(loops_and_pair[n_a + n_b :]))
+    loops_and_pair_np = loops_and_pair.numpy()
+    start_a = int(loops_and_pair_np[n_a + n_b])
+    start_b = int(loops_and_pair_np[n_a + n_b + 1])
     # The traceback's host copies of the rolled loops; the device ones are written alongside
     # their positions, by the same roll.
-    la = np.roll(loop_a.numpy()[::-1], -start_a)
-    lb = np.roll(loop_b.numpy(), -start_b)
+    la = np.roll(loops_and_pair_np[:n_a], -start_a)
+    lb = np.roll(loops_and_pair_np[n_a : n_a + n_b], -start_b)
     la_wp = _launch.empty(n_a, dtype=wp.int32, device=device)
     lb_wp = _launch.empty(n_b, dtype=wp.int32, device=device)
     a_pos = _launch.empty(n_a, dtype=wp.vec3, device=device)
@@ -2982,19 +3013,22 @@ def _run_stitch_dp(
         )
 
 
-def _closest_loop_pair(a_pos: wp.array[wp.vec3], b_pos: wp.array[wp.vec3]) -> tuple[int, int]:
+def _closest_loop_pair(
+    a_pos: wp.array[wp.vec3], b_pos: wp.array[wp.vec3], out_pair: wp.array[wp.int32]
+) -> None:
     """
-    Return the closest vertex pair ``(i, j)`` between the two rims: the band's start pair.
+    Write the closest vertex pair ``(i, j)`` between the two rims (the band start) to ``out_pair``.
 
     Each rim-A vertex's nearest rim-B vertex and the argmin over those run in Warp kernels (the
     same ``row_argmin`` / ``global_argmin`` reduction the greedy zippering uses, at the squared
-    distance rather than the perimeter); only the two winning indices come back to the host. Ties
+    distance rather than the perimeter); the caller reads the two winning indices back with
+    whatever else it needs. Ties
     resolve to the smallest ``i`` then smallest ``j``, matching ``numpy.argmin`` on the flattened
     squared-distance matrix, which is never built.
 
-    ``kernels/holes.reduce_closest_cross_label_pair`` answers the same question in **one** kernel
-    by reducing a ``pack_nearest_key`` atomic over labelled members, but the two are not one
-    function wearing two hats: that kernel takes members and labels over a shared vertex buffer,
+    ``kernels/holes.join_round`` answers the same question in **one** kernel by reducing a
+    ``pack_nearest_key`` atomic over labelled rim rows, but the two are not one function wearing
+    two hats: that kernel takes rows and labels over a shared vertex buffer,
     this takes two separate position arrays, and the launches here reuse ``row_argmin`` /
     ``global_argmin``, which the caller needs anyway for its *perimeter* objective.
     """
@@ -3011,15 +3045,12 @@ def _closest_loop_pair(a_pos: wp.array[wp.vec3], b_pos: wp.array[wp.vec3]) -> tu
         block_dim=kernel_holes.ROW_ARGMIN_BLOCK,
         device=device,
     )
-    pair = _launch.empty(2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_holes.global_argmin,
         dim=1,
-        inputs=[col_min, val_min, wp.int32(n_a), pair],
+        inputs=[col_min, val_min, wp.int32(n_a), out_pair],
         device=device,
     )
-    pair_np = pair.numpy()
-    return int(pair_np[0]), int(pair_np[1])
 
 
 def _stitch_band_triangles(
@@ -3151,10 +3182,22 @@ def _append_bridge_patch(
 ) -> wp.array[wp.int32]:
     """Append the flat patch's one or two triangles to ``faces``."""
     triangles = _bridge_triangles(edge_a, edge_b)
-    patch = _launch.array(
-        np.asarray(triangles, dtype=np.int32).reshape(-1), dtype=wp.int32, device=faces.device
-    )
-    return od.array.concatenate([faces, patch])
+    return _append_host_faces(faces, np.asarray(triangles, dtype=np.int32).reshape(-1))
+
+
+def _append_host_faces(faces: wp.array[wp.int32], tail_np: np.ndarray) -> wp.array[wp.int32]:
+    """
+    Return ``faces`` followed by the host index buffer ``tail_np``, uploaded into place.
+
+    One allocation at the final size, the device copy of ``faces`` and the upload of the tail
+    straight into it, where uploading the tail first and concatenating staged it in a buffer of
+    its own.
+    """
+    appended = _launch.empty(faces.size + tail_np.size, dtype=wp.int32, device=faces.device)
+    _launch.copy(appended, faces, count=faces.size)
+    if tail_np.size > 0:
+        appended[faces.size :].assign(tail_np.astype(np.int32, copy=False))
+    return appended
 
 
 def _bridge_joined_pairs(edge_a: tuple[int, int], edge_b: tuple[int, int]) -> list[tuple[int, int]]:
@@ -3316,12 +3359,8 @@ def bridge_edges_smooth(
         n_vertices + interior_np.shape[0], dtype=wp.vec3, device=device
     )
     _launch.copy(bridged_vertices[:n_vertices], vertices)
-    _launch.copy(
-        bridged_vertices[n_vertices:],
-        _launch.array(interior_np.astype(np.float32), dtype=wp.vec3, device=device),
-    )
-    strip = _launch.array(strip_np.reshape(-1), dtype=wp.int32, device=device)
-    return bridged_vertices, od.array.concatenate([faces, strip])
+    bridged_vertices[n_vertices:].assign(interior_np.astype(np.float32))
+    return bridged_vertices, _append_host_faces(faces, strip_np.reshape(-1))
 
 
 def _bridge_strip(
@@ -3516,11 +3555,11 @@ def join_closest_components(
 
     Notes
     -----
-    The loop is host-sequential over the ``k - 1`` joins. The component labelling and the
-    boundary edges are computed once; each join then edits them as its patch dictates -- the two
-    bridged rim edges close, the patch's two chords open, the two components merge -- which is
-    exactly what recomputing them from the grown face buffer would give, so each round costs one
-    pass over the boundary vertices rather than over the mesh. The pairing itself is on the device.
+    The ``k - 1`` joins are sequential, one device launch each with nothing read back between
+    them. The component labelling and the boundary edges are computed once; each join then edits
+    them as its patch dictates -- the two bridged rim edges close, the patch's two chords open, the
+    two components merge -- which is exactly what recomputing them from the grown face buffer would
+    give, so each round costs one pass over the boundary vertices rather than over the mesh.
 
     A component with no boundary -- a closed shell -- has nothing to bridge to and is left alone, so
     an input of closed shells comes back unchanged rather than raising.
@@ -3555,29 +3594,26 @@ def join_closest_components(
         raise ValueError(f"max_joins must be non-negative, got {max_joins}")
     max_distance_sq = wp.float32(float("inf") if max_distance is None else float(max_distance) ** 2)
 
-    rim = _JoinRim.of(vertices, faces)
-    patch: list[tuple[int, int, int]] = []
-    joins = 0
-    while rim is not None and (max_joins is None or joins < max_joins):
-        pair = rim.closest_cross_component_edges(max_distance_sq)
-        if pair is None:
-            break
-        # ``bridge_edges(..., validate=False)``'s patch: both checks ``validate`` runs hold by
-        # construction, since the edges are rows of the current oriented boundary and lie in
-        # different components, so no chord between them can already be an edge.
-        triangles = _bridge_triangles(*pair)
-        rim.bridge(triangles)
-        patch.extend(triangles)
-        joins += 1
-
-    if joins == 0:
+    rim = _JoinRim.of(vertices, faces, max_joins)
+    if rim is None or rim.rounds == 0:
         return _launch.clone(faces)
-    # Each join appended its patch to the face buffer the next one read; appending them all at
-    # once is the same buffer.
-    patch_wp = _launch.array(
-        np.asarray(patch, dtype=np.int32).reshape(-1), dtype=wp.int32, device=faces.device
-    )
-    return od.array.concatenate([faces, patch_wp])
+    rounds = rim.rounds
+    for done in range(1, rounds + 1):
+        rim.join(max_distance_sq)
+        # Only a distance bound can stop the joins before the components run out: then look at
+        # the device's verdict after rounds 1, 2, 4, ..., so a stop wastes at most as many rounds
+        # as it ran.
+        if max_distance is not None and done < rounds and done & (done - 1) == 0 and rim.done():
+            break
+
+    # The patch triangles, appended in join order: one read of how many there are.
+    n_patch = rim.patch_size()
+    if n_patch == 0:
+        return _launch.clone(faces)
+    joined = _launch.empty(faces.size + n_patch, dtype=wp.int32, device=faces.device)
+    _launch.copy(joined, faces, count=faces.size)
+    _launch.copy(joined, rim.patch, dest_offset=faces.size, count=n_patch)
+    return joined
 
 
 # ``pack_nearest_key`` is non-negative for any real candidate, so the largest ``int64`` is a seed no
@@ -3596,49 +3632,54 @@ class _JoinRim:
     new boundary edges wound as the patch winds them. Every boundary vertex stays one (the chords'
     tails are the bridged edges' tails), and the two components the patch touches merge. The table
     is kept in the order ``boundary.oriented_boundary_edges`` emits it -- ascending undirected key,
-    which packs ``(min, max)`` with the larger index as the high digit -- so the pairing kernel sees
+    which packs ``(min, max)`` with the larger index as the high digit -- so the pairing sees
     exactly the rows, the row order (its tie-break) and the label equalities a regroup would give.
 
     That holds while the boundary is edge-manifold around the joins: a chord between two components
     cannot already be an edge, and a bridged edge occurred once, so the patch's edges are all that
     change in the count of each key.
+
+    The table, the labels and the patch live on the device and each round is one launch of
+    ``kernels/holes.join_round``, which pairs and bridges with nothing crossing to the host; the
+    rim is read once, to rank its labels, and the patch size once at the end.
     """
 
     def __init__(
         self,
         vertices: wp.array[wp.vec3],
-        rows: npt.NDArray[np.int64],
-        labels: npt.NDArray[np.int64],
-        vertex_labels: npt.NDArray[np.int64],
+        table: wp.array[wp.int32],
+        n_rows: int,
         n_labels: int,
+        rounds: int,
     ) -> None:
         self._vertices = vertices
-        self._radix = max(int(vertices.size), 1)
-        self._tails = rows[:, 0].copy()
-        self._heads = rows[:, 1].copy()
-        self._keys = self._key(self._tails, self._heads)
-        self._labels = labels
-        self._vertex_labels = vertex_labels
-        # The current component of each original one: equality is all the pairing reads.
-        self._component = np.arange(n_labels, dtype=np.int64)
-        # The pairing's device buffers, kept across rounds: a join removes two rim rows and adds
-        # two chords, so the table's size does not change (rebuilt only if it ever does), and
-        # ``closest_pair_rows`` re-arms the best key as it decodes it.
-        self._buffers: (
-            tuple[
-                wp.array[wp.int32],
-                odt.Array2dInt32,
-                wp.array[wp.int32],
-                wp.array[wp.int32],
-                wp.array[wp.int32],
-            ]
-            | None
-        ) = None
-        self._best: wp.array[wp.int64] | None = None
+        self._radix = wp.int64(max(int(vertices.size), 1))
+        self._n_rows = n_rows
+        self.rounds = rounds
+        # Views of the one uploaded buffer, in its order: both halves of the rim table, the
+        # component of each original label, each vertex's original label, the round state, each
+        # row's partner and the patch.
+        bounds = np.cumsum(
+            [0, 6 * n_rows, n_labels, vertices.size, kernel_holes.JOIN_STATE_SIZE, n_rows]
+        ).tolist()
+        self._rows = odt.as_dense(table[: bounds[1]]).reshape((2, n_rows, 3))
+        self._component, self._vertex_label, self._state, self._partner = (
+            odt.as_dense(table[start:stop]) for start, stop in pairwise(bounds[1:])
+        )
+        self.patch = odt.as_dense(table[bounds[-1] :])
+        self._best = _launch.full(1, _NEAREST_KEY_SEED, dtype=wp.int64, device=vertices.device)
 
     @staticmethod
-    def of(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> _JoinRim | None:
-        """Build the rim of ``faces``, or return ``None`` when it has no boundary."""
+    def of(
+        vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_joins: int | None = None
+    ) -> _JoinRim | None:
+        """
+        Build the rim of ``faces``, or return ``None`` when it has no boundary.
+
+        Its ``rounds`` is the most joins there can be: each merges at least two of the rim's
+        components, so ``n_labels - 1`` exhaust them, and ``max_joins`` caps it. A round after
+        the last join returns at once on the device.
+        """
         device = faces.device
         boundary = od.boundary.oriented_boundary_edges(vertices, faces)
         n_rows = int(boundary.shape[0])
@@ -3660,114 +3701,76 @@ class _JoinRim:
             inputs=[boundary, vertex_labels, table],
             device=device,
         )
-        # The one host read of the whole loop: the rim rows and each row's tail component. Only
-        # rim vertices are ever looked up (every one is some row's tail), so the compact names are
-        # ranked over the rim alone; ranking keeps their order, and only equality and the merge's
-        # minimum read them.
-        table_np = table.numpy().astype(np.int64)
-        rows = table_np[:, :2]
+        # The one host read of the rim: its rows and each row's tail component, to rank the labels.
+        # Only rim vertices are ever looked up (every one is some row's tail), so the compact names
+        # are ranked over the rim alone; ranking keeps their order, and only equality and the
+        # merge's minimum read them.
+        table_np = table.numpy()
         names, row_labels = np.unique(table_np[:, 2], return_inverse=True)
-        row_labels = row_labels.astype(np.int64).reshape(-1)
-        vertex_compact = np.full(vertices.size, -1, dtype=np.int64)
-        vertex_compact[rows[:, 0]] = row_labels
-        return _JoinRim(vertices, rows, row_labels, vertex_compact, names.size)
+        n_labels = int(names.size)
+        rounds = n_labels - 1 if max_joins is None else min(n_labels - 1, max_joins)
+        # One upload: the rows with their compact labels, the second (written) half of the table,
+        # the identity component map, each rim vertex's label, the round state, and room for the
+        # partners and the patch (at most two triangles a join), which need no values.
+        state = np.zeros(kernel_holes.JOIN_STATE_SIZE, dtype=np.int32)
+        state[kernel_holes.JOIN_COUNT] = n_rows
+        vertex_compact = np.full(vertices.size, -1, dtype=np.int32)
+        vertex_compact[table_np[:, 0]] = row_labels.reshape(-1)
+        host = np.concatenate(
+            [table_np[:, :2], row_labels.reshape(-1, 1).astype(np.int32)], axis=1
+        ).reshape(-1)
+        upload = np.concatenate(
+            [
+                host,
+                np.zeros(3 * n_rows, dtype=np.int32),
+                np.arange(n_labels, dtype=np.int32),
+                vertex_compact,
+                state,
+                np.zeros(n_rows + 6 * max(rounds, 1), dtype=np.int32),
+            ]
+        )
+        table_wp = _launch.array(upload, dtype=wp.int32, device=device)
+        return _JoinRim(vertices, table_wp, n_rows, n_labels, rounds)
 
-    def _key(
-        self, tails: npt.NDArray[np.int64], heads: npt.NDArray[np.int64]
-    ) -> npt.NDArray[np.int64]:
-        return np.maximum(tails, heads) * self._radix + np.minimum(tails, heads)
-
-    def closest_cross_component_edges(
-        self, max_distance_sq: wp.float32
-    ) -> tuple[tuple[int, int], tuple[int, int]] | None:
-        """
-        Pick the two oriented boundary edges to bridge next, or ``None`` when nothing is left.
-
-        ``None`` covers every reason at once: one component, or no cross-component boundary-vertex
-        pair within ``max_distance_sq``. The candidates are the rows' tails, so the winning rows
-        name their own edges, wound as ``bridge_edges`` takes them. One upload of the table and one
-        read of the five-integer answer per call.
-        """
-        device = self._vertices.device
-        n = int(self._keys.size)
-        table = np.empty(3 * n, dtype=np.int32)
-        table[0 : 2 * n : 2] = self._tails
-        table[1 : 2 * n : 2] = self._heads
-        table[2 * n :] = self.row_components()
-        if self._buffers is None or self._buffers[0].size != 3 * n:
-            table_wp = _launch.empty(3 * n, dtype=wp.int32, device=device)
-            rows = odt.as_array2d(odt.as_dense(table_wp[: 2 * n]).reshape((n, 2)), wp.int32)
-            labels = odt.as_dense(table_wp[2 * n :])
-            partner = _launch.empty(n, dtype=wp.int32, device=device)
-            answer = _launch.empty(5, dtype=wp.int32, device=device)
-            self._buffers = (table_wp, rows, labels, partner, answer)
-            self._best = _launch.full(1, _NEAREST_KEY_SEED, dtype=wp.int64, device=device)
-        table_wp, rows, labels, partner, answer = self._buffers
-        best = self._best
-        assert best is not None
-        table_wp.assign(table)
+    def join(self, max_distance_sq: wp.float32) -> None:
+        """Launch one round: bridge the closest cross-component pair, if one is admissible."""
         _launch.launch_tiled(
-            kernel_holes.reduce_closest_cross_label_pair,
-            dim=[n],
-            inputs=[self._vertices, rows, labels, max_distance_sq, best, partner],
+            kernel_holes.join_round,
+            dim=[self._n_rows],
+            inputs=[
+                self._vertices,
+                self._rows,
+                self._component,
+                self._vertex_label,
+                max_distance_sq,
+                self._radix,
+                wp.int64(_NEAREST_KEY_SEED),
+                self._state,
+                self._best,
+                self._partner,
+                self.patch,
+            ],
             block_dim=kernel_holes.CLOSEST_PAIR_BLOCK,
-            device=device,
+            device=self._vertices.device,
         )
-        # The winner decoded on the device into ``[found, a0, a1, b0, b1]``: one readback.
-        _launch.launch(
-            kernel_holes.closest_pair_rows,
-            dim=1,
-            inputs=[best, partner, rows, wp.int64(_NEAREST_KEY_SEED), answer],
-            device=device,
-        )
-        found, a0, a1, b0, b1 = (int(value) for value in read_values(answer, 0, 5))
-        if not found:
-            return None
-        return ((a0, a1), (b0, b1))
 
-    def rows(self) -> npt.NDArray[np.int64]:
+    def done(self) -> bool:
+        """Whether a round has found no admissible pair (a readback)."""
+        return bool(read_scalar(self._state, kernel_holes.JOIN_DONE))
+
+    def patch_size(self) -> int:
+        """Return the patch entries written so far (a readback)."""
+        return int(read_scalar(self._state, kernel_holes.JOIN_PATCH))
+
+    def rows(self) -> npt.NDArray[np.int32]:
         """Return the ``(n_boundary, 2)`` oriented boundary rows, in the table's order."""
-        return np.stack([self._tails, self._heads], axis=1)
+        parity, count = read_values(self._state, kernel_holes.JOIN_PARITY, 2)
+        return self._rows.numpy()[int(parity), : int(count), :2]
 
-    def row_components(self) -> npt.NDArray[np.int64]:
+    def row_components(self) -> npt.NDArray[np.int32]:
         """Return each row's current component, as a name only equality may read."""
-        return self._component[self._labels]
-
-    def bridge(self, triangles: Sequence[tuple[int, int, int]]) -> None:
-        """Apply a bridge patch: edit the rim as its edges dictate, and merge the components."""
-        added: dict[int, tuple[int, int]] = {}
-        removed: list[int] = []
-        touched: list[int] = []
-        for triangle in triangles:
-            for k in range(3):
-                u, v = triangle[k], triangle[(k + 1) % 3]
-                key = max(u, v) * self._radix + min(u, v)
-                slot = int(np.searchsorted(self._keys, key))
-                if slot < self._keys.size and int(self._keys[slot]) == key:
-                    removed.append(slot)  # a rim edge the patch closes
-                elif key in added:
-                    del added[key]  # the patch's own diagonal
-                else:
-                    added[key] = (u, v)
-                touched.append(u)
-        merged = sorted({int(c) for c in self._component[self._vertex_labels[touched]]})
-        for component in merged[1:]:
-            self._component[self._component == component] = merged[0]
-        keep = np.ones(self._keys.size, dtype=bool)
-        keep[removed] = False
-        new_keys = np.fromiter(added.keys(), dtype=np.int64, count=len(added))
-        new_rows = np.asarray(list(added.values()), dtype=np.int64).reshape(-1, 2)
-        keys = np.concatenate([self._keys[keep], new_keys])
-        tails = np.concatenate([self._tails[keep], new_rows[:, 0]])
-        heads = np.concatenate([self._heads[keep], new_rows[:, 1]])
-        labels = np.concatenate([self._labels[keep], self._vertex_labels[new_rows[:, 0]]])
-        order = np.argsort(keys, kind="stable")
-        self._keys, self._tails, self._heads, self._labels = (
-            keys[order],
-            tails[order],
-            heads[order],
-            labels[order],
-        )
+        parity, count = read_values(self._state, kernel_holes.JOIN_PARITY, 2)
+        return self._rows.numpy()[int(parity), : int(count), 2]
 
 
 def _require_distinct_edges(edge_a: tuple[int, int], edge_b: tuple[int, int]) -> None:

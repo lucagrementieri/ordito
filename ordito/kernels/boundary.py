@@ -90,6 +90,20 @@ def mark_boundary_halfedges(
             out_flags[n + 1] = 1
 
 
+@wp.func
+def store_boundary_row(
+    faces: wp.array[wp.int32],
+    sort_pair: wp.bool,
+    h: wp.int32,
+    row: wp.int32,
+    out_edges: wp.array2d[wp.int32],
+):
+    # Boundary halfedge ``h``'s ``boundary_halfedge_pair`` as row ``row`` of ``out_edges``.
+    a, b = boundary_halfedge_pair(faces, sort_pair, h)
+    out_edges[row, 0] = a
+    out_edges[row, 1] = b
+
+
 @wp.kernel
 def emit_boundary_edges(
     halfedges: wp.array[wp.int32],
@@ -101,9 +115,26 @@ def emit_boundary_edges(
     # (``halfedge.key_ordered_halfedges``) -- the order ``grouping.group`` emitted the rows in --
     # each row read from ``faces`` (see ``boundary_halfedge_pair``).
     g = wp.int32(wp.tid())
-    a, b = boundary_halfedge_pair(faces, sort_pair, halfedges[g])
-    out_edges[g, 0] = a
-    out_edges[g, 1] = b
+    store_boundary_row(faces, sort_pair, halfedges[g], g, out_edges)
+
+
+@wp.kernel
+def emit_key_ordered_boundary_edges(
+    inclusive: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    sort_pair: wp.bool,
+    out_edges: wp.array2d[wp.int32],
+) -> None:
+    # ``emit_boundary_edges`` over ``halfedge.key_ordered_halfedges``' rank compaction in one
+    # launch, for flags scanned in the key sort's order (``mark_boundary_halfedges`` given its
+    # ``key_order``): one thread per flag, and where the scan steps, the halfedge's row is stored at
+    # its rank, which is its row of the ascending-key table. The two kernels differ only in where
+    # a row's halfedge and slot come from.
+    j = wp.int32(wp.tid())
+    slot, count = scanned_count(inclusive, j)
+    if count != 0:
+        store_boundary_row(faces, sort_pair, key_ordered_halfedge(key_order, j), slot, out_edges)
 
 
 @wp.func
