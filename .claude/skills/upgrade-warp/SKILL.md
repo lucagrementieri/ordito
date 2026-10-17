@@ -106,6 +106,13 @@ by version, so the first suite run recompiles every module cold. Expect long str
 
   Mirror the new semantics conservatively: when unsure, defer to the public `wp.*` call, which is
   `_launch.py`'s documented fallback.
+- **The census gate patches Warp's native table too** (`benchmarks/census.py`: the `wp_*` launch,
+  copy, memset, alloc, sync, scan and sort entry points, plus `warp._src.context.invoke` /
+  `invoke_cpu_blocks` for CPU kernels). It fails at startup when a symbol is gone, but a symbol
+  that survives with a new role counts wrongly in silence: confirm each still sits on the path it
+  counts (a launch still reaches `wp_cuda_launch_kernel` / `invoke`, a readback still a
+  `wp_memcpy_d2h`), then re-record both budgets (`--census-update`) and explain every row whose
+  counts moved in the hand-over.
 - **Removed and deprecated names**: grep `ordito/`, `tests/` and `benchmarks/` for each one in the
   changelog. Migrate deprecated APIs now, while the old spelling still works. Update the prose that
   names them as well (comments, docstrings, CLAUDE.md), reflowing to 100 columns.
@@ -196,6 +203,7 @@ uv run python -m tests.devices                       # CUDA pass, then CPU pass 
 uv run basedpyright                                  # 0 errors
 uv run zensical build --strict --clean               # "No issues found", and site/ has pages (§6 inotify trap)
 uv run python -m tests.parity                        # pair count == the baseline worktree's
+uv run python -m pytest benchmarks -p benchmarks.census --device=cpu --size small -k ordito-cpu --census-strict  # CPU budget
 uv run ruff format --check ordito tests benchmarks && uv run ruff check ordito tests benchmarks
 ```
 

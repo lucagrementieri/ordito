@@ -326,6 +326,39 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
 | `--size` | `all` | comma-separated size categories for the **scan** sweep (`small,medium,large,extralarge,huge`). Naming a size also lifts the CPU cap for it. Has no effect on axis-driven groups. |
 | `--cpu-max-size` | `large` | CPU-bound libraries (every reference, plus `ordito-cpu`) skip scan meshes larger than this unless the size is named in `--size`. |
 
+## Host-traffic census and its budget
+
+`-p benchmarks.census` turns the suite into a count of what each ordito row costs on the host
+besides its kernels: launches, allocations, memsets, copies by direction, readbacks,
+synchronizations, CUB scans and radix sorts. Each row is called once to compile and once under the
+counters; pytest-benchmark is bypassed and nothing is timed. For a fixed input and code path the
+counts never vary, so they are a gate where a timing cannot be: CI compares the CPU rows with
+`census_budget_cpu.json` and fails on any count that rose.
+
+```bash
+# the CI gate (CPU device, smallest size): fails on a rise, an unbudgeted row or a stale one
+uv run python -m pytest benchmarks -p benchmarks.census --device=cpu --size small -k ordito-cpu \
+    -q -p no:warnings --census-strict
+
+# after a change that moves host traffic: re-record the budget and commit it with the change
+uv run python -m pytest benchmarks -p benchmarks.census --device=cpu --size small -k ordito-cpu \
+    -q -p no:warnings --census-update
+
+# the CUDA budget, on the GPU box (CUDA counts differ by design: tiled reductions, captured loops)
+uv run python -m pytest benchmarks -p benchmarks.census --device=cuda --size small \
+    -k ordito-cuda -q -p no:warnings --census-update
+
+# exploration: every row's counts and launch sequence (kernel, dim, issuing ordito line)
+uv run python -m pytest benchmarks/test_heat.py -p benchmarks.census -k ordito-cuda -q \
+    --census-budget /tmp/scratch.json --census-update --census-report /tmp/heat.jsonl
+```
+
+A rise is the point of the gate: an added readback, a re-validation an inner call repeats, a copy
+of a buffer nothing mutates. A fall is printed so the budget is tightened in the same change. A row
+whose counts follow an iteration count can carry `"exempt": "<reason>"` in the budget file, which
+`--census-update` preserves. The plugin patches Warp's private native table, so a Warp upgrade
+re-records both budgets (the `upgrade-warp` skill's step 3).
+
 ## Notes
 
 - **Every ordito row runs with determinism off.** `benchmarks/conftest.py` calls

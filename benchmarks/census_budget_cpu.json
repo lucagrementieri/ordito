@@ -1,0 +1,4562 @@
+{
+ "benchmarks/test_adjacency.py::test_vertex_face_adjacency[fan_hub-ordito-cpu-inferred]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_adjacency.py::test_vertex_face_adjacency[fan_hub-ordito-cpu-known_nv]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_adjacency.py::test_vertex_face_adjacency[sphere_med-ordito-cpu-inferred]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_adjacency.py::test_vertex_face_adjacency[sphere_med-ordito-cpu-known_nv]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_edges[holes_many-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 6,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_edges[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 6,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_edges[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops[holes_many-ordito-cpu]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 11,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 11,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_vertices[holes_many-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_vertices[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_vertices[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_ears[holes_many-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_ears[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_ears[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_bounds.py::test_crop_mesh[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_bounds.py::test_crop_mesh[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_bounds.py::test_crop_mesh[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_bounds.py::test_crop_points[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_bounds.py::test_crop_points[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_bounds.py::test_crop_points[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_bounds.py::test_points_in_aabb[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_bounds.py::test_points_in_aabb[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_bounds.py::test_points_in_aabb[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_cholesky.py::test_sparse_cholesky[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 269,
+   "alloc": 119,
+   "readback": 4,
+   "scan": 20,
+   "sort": 18
+  }
+ },
+ "benchmarks/test_cholesky.py::test_sparse_cholesky[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 284,
+   "alloc": 119,
+   "readback": 4,
+   "scan": 20,
+   "sort": 18
+  }
+ },
+ "benchmarks/test_cholesky.py::test_sparse_cholesky[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 345,
+   "alloc": 119,
+   "readback": 4,
+   "scan": 21,
+   "sort": 19
+  }
+ },
+ "benchmarks/test_cholesky.py::test_sparse_cholesky[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 216,
+   "alloc": 119,
+   "readback": 4,
+   "scan": 17,
+   "sort": 15
+  }
+ },
+ "benchmarks/test_cholesky.py::test_sparse_cholesky_solve[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "h2h": 3
+  }
+ },
+ "benchmarks/test_cholesky.py::test_sparse_cholesky_solve[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "h2h": 3
+  }
+ },
+ "benchmarks/test_cholesky.py::test_sparse_cholesky_solve[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "h2h": 3
+  }
+ },
+ "benchmarks/test_cholesky.py::test_sparse_cholesky_solve[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "h2h": 3
+  }
+ },
+ "benchmarks/test_combine.py::test_concatenate[sphere_med-ordito-cpu-512]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 6,
+   "h2h": 4
+  }
+ },
+ "benchmarks/test_combine.py::test_concatenate[sphere_med-ordito-cpu-8]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 4,
+   "h2h": 18
+  }
+ },
+ "benchmarks/test_combine.py::test_split[parts_1024-ordito-cpu]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 19,
+   "readback": 4,
+   "scan": 3,
+   "sort": 3
+  }
+ },
+ "benchmarks/test_combine.py::test_split[parts_64-ordito-cpu]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 19,
+   "readback": 4,
+   "scan": 3,
+   "sort": 3
+  }
+ },
+ "benchmarks/test_combine.py::test_split[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 12,
+   "alloc": 14,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_annulus[ordito-cpu-32]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_annulus[ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_annulus[ordito-cpu-512]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_axis[ordito-cpu-identity]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_axis[ordito-cpu-rotated]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_box[ordito-cpu]": {
+  "counts": {
+   "alloc": 2,
+   "h2h": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cone[ordito-cpu-32]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cone[ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cone[ordito-cpu-512]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cylinder[ordito-cpu-32]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cylinder[ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cylinder[ordito-cpu-512]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cylinder_transformed[ordito-cpu-mirror-32]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cylinder_transformed[ordito-cpu-mirror-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cylinder_transformed[ordito-cpu-rigid-32]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_cylinder_transformed[ordito-cpu-rigid-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_extrude_polygon[ordito-cpu-1024]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_extrude_polygon[ordito-cpu-64]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_grid[ordito-cpu-32]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_grid[ordito-cpu-512]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_icosphere[ordito-cpu-3]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_icosphere[ordito-cpu-5]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_icosphere[ordito-cpu-7]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_parametric_surface[ordito-cpu-160-boy]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_parametric_surface[ordito-cpu-160-dini]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_parametric_surface[ordito-cpu-40-boy]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_parametric_surface[ordito-cpu-40-dini]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_parametric_surface[ordito-cpu-640-boy]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_parametric_surface[ordito-cpu-640-dini]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_platonic_solids[ordito-cpu-dodecahedron-create_dodecahedron-36]": {
+  "counts": {
+   "alloc": 2,
+   "h2h": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_platonic_solids[ordito-cpu-icosahedron-create_icosahedron-20]": {
+  "counts": {
+   "alloc": 2,
+   "h2h": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_platonic_solids[ordito-cpu-octahedron-create_octahedron-8]": {
+  "counts": {
+   "alloc": 2,
+   "h2h": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_platonic_solids[ordito-cpu-tetrahedron-create_tetrahedron-4]": {
+  "counts": {
+   "alloc": 2,
+   "h2h": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_random_hills[ordito-cpu-40]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_random_hills[ordito-cpu-640]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_random_soup[ordito-cpu-1024]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_random_soup[ordito-cpu-262144]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_revolve[ordito-cpu-32]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_revolve[ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_revolve[ordito-cpu-512]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_sphere_cap[ordito-cpu-3]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_sphere_cap[ordito-cpu-6]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_super_ellipsoid[ordito-cpu-40]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_super_ellipsoid[ordito-cpu-640]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_super_toroid[ordito-cpu-40]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_super_toroid[ordito-cpu-640]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_sweep_polygon[ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 3
+  }
+ },
+ "benchmarks/test_creation.py::test_torus[ordito-cpu-32]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_torus[ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_torus[ordito-cpu-512]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_truncated_prisms[ordito-cpu-1024]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_truncated_prisms[ordito-cpu-262144]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_creation.py::test_uv_sphere[ordito-cpu-32]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_uv_sphere[ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 4,
+   "h2h": 2,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_creation.py::test_uv_sphere[ordito-cpu-512]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_gaussian_curvature[sphere_large-ordito-cpu-2.0]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_gaussian_curvature[sphere_large-ordito-cpu-4.0]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_gaussian_curvature[sphere_med-ordito-cpu-2.0]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_gaussian_curvature[sphere_med-ordito-cpu-4.0]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_gaussian_curvature[sphere_small-ordito-cpu-2.0]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_gaussian_curvature[sphere_small-ordito-cpu-4.0]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_mean_curvature[sphere_large-ordito-cpu-2.0]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_mean_curvature[sphere_large-ordito-cpu-4.0]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_mean_curvature[sphere_med-ordito-cpu-2.0]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_mean_curvature[sphere_med-ordito-cpu-4.0]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_mean_curvature[sphere_small-ordito-cpu-2.0]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_discrete_mean_curvature[sphere_small-ordito-cpu-4.0]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_principal_curvature[sphere_large-ordito-cpu-3]": {
+  "counts": {
+   "launch": 21,
+   "alloc": 28,
+   "h2h": 3,
+   "readback": 5,
+   "scan": 6,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_principal_curvature[sphere_large-ordito-cpu-8]": {
+  "counts": {
+   "launch": 21,
+   "alloc": 28,
+   "h2h": 3,
+   "readback": 5,
+   "scan": 6,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_principal_curvature[sphere_med-ordito-cpu-3]": {
+  "counts": {
+   "launch": 14,
+   "alloc": 23,
+   "readback": 3,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_principal_curvature[sphere_med-ordito-cpu-8]": {
+  "counts": {
+   "launch": 14,
+   "alloc": 23,
+   "readback": 3,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_principal_curvature[sphere_small-ordito-cpu-3]": {
+  "counts": {
+   "launch": 14,
+   "alloc": 23,
+   "readback": 3,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_principal_curvature[sphere_small-ordito-cpu-8]": {
+  "counts": {
+   "launch": 14,
+   "alloc": 23,
+   "readback": 3,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_edges.py::test_edges_unique_manifold[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_edges.py::test_edges_unique_manifold[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_edges.py::test_edges_unique_manifold[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_crouzeix_raviart_cotmatrix[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 7,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_crouzeix_raviart_cotmatrix[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 7,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_crouzeix_raviart_cotmatrix[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 7,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_crouzeix_raviart_massmatrix[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_crouzeix_raviart_massmatrix[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_crouzeix_raviart_massmatrix[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 21,
+   "readback": 2,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 21,
+   "readback": 2,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 21,
+   "readback": 2,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_energies.py::test_edge_length_loss[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 6,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_edge_length_loss[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 6,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_edge_length_loss[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 6,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_hessian_energy[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 20,
+   "readback": 1,
+   "scan": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_energies.py::test_hessian_energy[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 20,
+   "readback": 1,
+   "scan": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_energies.py::test_hessian_energy[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 20,
+   "readback": 1,
+   "scan": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_energies.py::test_k_harmonic[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_k_harmonic[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_k_harmonic[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_laplacian_smoothing_loss[sphere_large-ordito-cpu-cotcurv]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_laplacian_smoothing_loss[sphere_large-ordito-cpu-uniform]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_laplacian_smoothing_loss[sphere_med-ordito-cpu-cotcurv]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_laplacian_smoothing_loss[sphere_med-ordito-cpu-uniform]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_laplacian_smoothing_loss[sphere_small-ordito-cpu-cotcurv]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_laplacian_smoothing_loss[sphere_small-ordito-cpu-uniform]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_lscm_hessian[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 15,
+   "readback": 1,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_energies.py::test_lscm_hessian[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 15,
+   "readback": 1,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_energies.py::test_lscm_hessian[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 15,
+   "readback": 1,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_energies.py::test_normal_consistency_loss[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 4,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_normal_consistency_loss[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 4,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_energies.py::test_normal_consistency_loss[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 4,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-1]": {
+  "counts": {
+   "launch": 1107,
+   "alloc": 63,
+   "h2h": 8,
+   "readback": 25,
+   "scan": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1310,
+   "alloc": 54,
+   "h2h": 3,
+   "readback": 221,
+   "scan": 5,
+   "sort": 4
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-64]": {
+  "counts": {
+   "launch": 1107,
+   "alloc": 38,
+   "h2h": 2,
+   "readback": 25,
+   "scan": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_shorten_loop[handles_1-ordito-cpu]": {
+  "counts": {
+   "launch": 45,
+   "alloc": 19,
+   "h2h": 4,
+   "readback": 10,
+   "scan": 17,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_shorten_loop[handles_64-ordito-cpu]": {
+  "counts": {
+   "launch": 55,
+   "alloc": 19,
+   "h2h": 4,
+   "readback": 12,
+   "scan": 21,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_shorten_loop_with_offsets[handles_1-ordito-cpu]": {
+  "counts": {
+   "launch": 45,
+   "alloc": 18,
+   "h2h": 3,
+   "readback": 9,
+   "scan": 17,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_shorten_loop_with_offsets[handles_64-ordito-cpu]": {
+  "counts": {
+   "launch": 55,
+   "alloc": 18,
+   "h2h": 3,
+   "readback": 11,
+   "scan": 21,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_trace_from_face[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 10,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_trace_from_face[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 10,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_trace_from_face[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 10,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_trace_locality[ribbon_long-ordito-cpu]": {
+  "counts": {
+   "launch": 12,
+   "alloc": 18,
+   "readback": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_trace_locality[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 12,
+   "alloc": 18,
+   "readback": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_trace_ray_count[sphere_med-ordito-cpu-1]": {
+  "counts": {
+   "launch": 12,
+   "alloc": 18,
+   "readback": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_trace_ray_count[sphere_med-ordito-cpu-4096]": {
+  "counts": {
+   "launch": 12,
+   "alloc": 18,
+   "readback": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_trace_ray_count[sphere_med-ordito-cpu-64]": {
+  "counts": {
+   "launch": 12,
+   "alloc": 18,
+   "readback": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_graph.py::test_connected_component_labels[parts_1024-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_graph.py::test_connected_component_labels[parts_64-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_graph.py::test_connected_component_labels[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_graph.py::test_connected_component_labels_depth[ribbon_long-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_graph.py::test_connected_component_labels_depth[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_graph.py::test_face_connected_component_labels_depth[ribbon_long-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 5,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_graph.py::test_face_connected_component_labels_depth[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 5,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_grouping.py::test_unique_rows[sphere_med-ordito-cpu-allunique]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_grouping.py::test_unique_rows[sphere_med-ordito-cpu-tenth]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_halfedge.py::test_halfedge_twins[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_halfedge.py::test_halfedge_twins[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_halfedge.py::test_halfedge_twins[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_halfedge.py::test_vertex_one_rings[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 9,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_halfedge.py::test_vertex_one_rings[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 9,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_halfedge.py::test_vertex_one_rings_scale[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_halfedge.py::test_vertex_one_rings_scale[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_halfedge.py::test_vertex_one_rings_scale[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_extend_scalar[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 660,
+   "alloc": 30,
+   "h2h": 4,
+   "readback": 22,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_extend_scalar[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 1101,
+   "alloc": 152,
+   "h2h": 4,
+   "readback": 30,
+   "scan": 21,
+   "sort": 19
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic[sphere_large-ordito-cpu-amortized]": {
+  "counts": {
+   "launch": 157,
+   "alloc": 6,
+   "h2h": 6,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic[sphere_large-ordito-cpu-full]": {
+  "counts": {
+   "launch": 2651,
+   "alloc": 45,
+   "h2h": 8,
+   "readback": 42,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic[sphere_med-ordito-cpu-amortized]": {
+  "counts": {
+   "launch": 137,
+   "alloc": 6,
+   "h2h": 6,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic[sphere_med-ordito-cpu-full]": {
+  "counts": {
+   "launch": 1095,
+   "alloc": 20,
+   "h2h": 2,
+   "readback": 22,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic[sphere_small-ordito-cpu-amortized]": {
+  "counts": {
+   "launch": 67,
+   "alloc": 6,
+   "h2h": 6,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic[sphere_small-ordito-cpu-full]": {
+  "counts": {
+   "launch": 495,
+   "alloc": 45,
+   "h2h": 8,
+   "readback": 10,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic_conditioning[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 1587,
+   "alloc": 45,
+   "h2h": 8,
+   "readback": 28,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic_conditioning[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 1327,
+   "alloc": 174,
+   "h2h": 7,
+   "readback": 31,
+   "scan": 21,
+   "sort": 19
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cpu-band]": {
+  "counts": {
+   "launch": 820,
+   "alloc": 66,
+   "h2h": 5,
+   "readback": 17,
+   "scan": 4,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cpu-ring]": {
+  "counts": {
+   "launch": 1761,
+   "alloc": 78,
+   "h2h": 8,
+   "readback": 31,
+   "scan": 4,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_signed_distance_conditioning[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 1335,
+   "alloc": 78,
+   "h2h": 8,
+   "readback": 25,
+   "scan": 4,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_signed_distance_conditioning[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 1557,
+   "alloc": 322,
+   "h2h": 7,
+   "readback": 38,
+   "scan": 45,
+   "sort": 39
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_signed_distance_constraint[sphere_med-ordito-cpu-none]": {
+  "counts": {
+   "launch": 1368,
+   "alloc": 46,
+   "h2h": 2,
+   "readback": 26,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_signed_distance_constraint[sphere_med-ordito-cpu-zero_set]": {
+  "counts": {
+   "launch": 1761,
+   "alloc": 53,
+   "h2h": 2,
+   "readback": 31,
+   "scan": 4,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_heat.py::test_log_map[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 1609,
+   "alloc": 66,
+   "h2h": 6,
+   "readback": 30,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_heat.py::test_log_map[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 1685,
+   "alloc": 320,
+   "h2h": 8,
+   "readback": 36,
+   "scan": 43,
+   "sort": 39
+  }
+ },
+ "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle-ordito-cpu-amortized]": {
+  "counts": {
+   "launch": 72,
+   "alloc": 5,
+   "h2h": 3,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle-ordito-cpu-full]": {
+  "counts": {
+   "launch": 983,
+   "alloc": 61,
+   "h2h": 5,
+   "readback": 25,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle_graded-ordito-cpu-amortized]": {
+  "counts": {
+   "launch": 72,
+   "alloc": 5,
+   "h2h": 3,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle_graded-ordito-cpu-full]": {
+  "counts": {
+   "launch": 1840,
+   "alloc": 183,
+   "h2h": 5,
+   "readback": 33,
+   "scan": 24,
+   "sort": 22
+  }
+ },
+ "benchmarks/test_heat.py::test_transport_tangent_vectors_scale[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 1533,
+   "alloc": 61,
+   "h2h": 5,
+   "readback": 36,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_heat.py::test_transport_tangent_vectors_scale[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 833,
+   "alloc": 61,
+   "h2h": 5,
+   "readback": 22,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_heat.py::test_transport_tangent_vectors_scale[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 237,
+   "alloc": 61,
+   "h2h": 5,
+   "readback": 11,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_cone[holes_many-ordito-cpu]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 16,
+   "h2h": 5,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_cone[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 16,
+   "h2h": 5,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_cone[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 7,
+   "h2h": 2,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_fan[holes_many-ordito-cpu]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 14,
+   "h2h": 3,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_fan[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 14,
+   "h2h": 3,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_fan[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 6,
+   "h2h": 1,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_min_weight[holes_many-ordito-cpu]": {
+  "counts": {
+   "launch": 19,
+   "alloc": 31,
+   "h2h": 3,
+   "readback": 6,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_min_weight[rim_short-ordito-cpu]": {
+  "counts": {
+   "launch": 528,
+   "alloc": 31,
+   "h2h": 3,
+   "readback": 6,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_min_weight_chords[holes_many-ordito-cpu-chords]": {
+  "counts": {
+   "launch": 19,
+   "alloc": 31,
+   "h2h": 3,
+   "readback": 6,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_min_weight_chords[holes_many-ordito-cpu-plain]": {
+  "counts": {
+   "launch": 17,
+   "alloc": 30,
+   "h2h": 3,
+   "readback": 6,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_min_weight_chords[rim_short-ordito-cpu-chords]": {
+  "counts": {
+   "launch": 528,
+   "alloc": 31,
+   "h2h": 3,
+   "readback": 6,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_min_weight_chords[rim_short-ordito-cpu-plain]": {
+  "counts": {
+   "launch": 526,
+   "alloc": 30,
+   "h2h": 3,
+   "readback": 6,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_smooth[holes_many-ordito-cpu-dp_only]": {
+  "counts": {
+   "launch": 19,
+   "alloc": 33,
+   "h2h": 4,
+   "readback": 6,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_smooth[holes_many-ordito-cpu-refined]": {
+  "counts": {
+   "launch": 63,
+   "alloc": 104,
+   "h2h": 4,
+   "readback": 20,
+   "scan": 14,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_smooth[rim_short-ordito-cpu-dp_only]": {
+  "counts": {
+   "launch": 528,
+   "alloc": 33,
+   "h2h": 4,
+   "readback": 6,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_smooth[rim_short-ordito-cpu-refined]": {
+  "counts": {
+   "launch": 813,
+   "alloc": 115,
+   "h2h": 4,
+   "readback": 78,
+   "scan": 19,
+   "sort": 10
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_dense-ordito-cpu-derived]": {
+  "counts": {
+   "launch": 70,
+   "alloc": 112,
+   "h2h": 4,
+   "readback": 22,
+   "scan": 16,
+   "sort": 6
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_dense-ordito-cpu-explicit]": {
+  "counts": {
+   "launch": 69,
+   "alloc": 111,
+   "h2h": 4,
+   "readback": 21,
+   "scan": 16,
+   "sort": 6
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_many-ordito-cpu-derived]": {
+  "counts": {
+   "launch": 63,
+   "alloc": 104,
+   "h2h": 4,
+   "readback": 20,
+   "scan": 14,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_many-ordito-cpu-explicit]": {
+  "counts": {
+   "launch": 62,
+   "alloc": 103,
+   "h2h": 4,
+   "readback": 19,
+   "scan": 14,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_holes.py::test_join_closest_components[open_parts_16-ordito-cpu]": {
+  "counts": {
+   "launch": 45,
+   "alloc": 19,
+   "h2h": 19,
+   "readback": 18,
+   "scan": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_join_closest_components[open_parts_4-ordito-cpu]": {
+  "counts": {
+   "launch": 21,
+   "alloc": 19,
+   "h2h": 7,
+   "readback": 6,
+   "scan": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_join_closest_components[open_parts_64-ordito-cpu]": {
+  "counts": {
+   "launch": 141,
+   "alloc": 19,
+   "h2h": 67,
+   "readback": 66,
+   "scan": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_stitch[rim_short-ordito-cpu]": {
+  "counts": {
+   "launch": 22,
+   "alloc": 30,
+   "h2h": 4,
+   "readback": 7,
+   "scan": 4,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_holes.py::test_stitch_min_weight[rim_short-ordito-cpu]": {
+  "counts": {
+   "launch": 63,
+   "alloc": 49,
+   "h2h": 7,
+   "readback": 12,
+   "scan": 4,
+   "sort": 4
+  }
+ },
+ "benchmarks/test_homology.py::test_homology_generators[handles_1-ordito-cpu]": {
+  "counts": {
+   "launch": 273,
+   "alloc": 22,
+   "h2h": 2,
+   "readback": 4,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_homology.py::test_homology_generators[handles_64-ordito-cpu]": {
+  "counts": {
+   "launch": 325,
+   "alloc": 22,
+   "h2h": 2,
+   "readback": 4,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_homology.py::test_homology_generators[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 408,
+   "alloc": 21,
+   "h2h": 2,
+   "readback": 3,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_homology.py::test_homology_generators_with_offsets[handles_1-ordito-cpu]": {
+  "counts": {
+   "launch": 273,
+   "alloc": 22,
+   "h2h": 2,
+   "readback": 3,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_homology.py::test_homology_generators_with_offsets[handles_64-ordito-cpu]": {
+  "counts": {
+   "launch": 325,
+   "alloc": 22,
+   "h2h": 2,
+   "readback": 3,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_homology.py::test_homology_generators_with_offsets[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 408,
+   "alloc": 21,
+   "h2h": 2,
+   "readback": 3,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_average_from_edges_onto_vertices[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_interpolation.py::test_average_from_edges_onto_vertices[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_interpolation.py::test_average_onto_faces[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_average_onto_faces[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_interpolation.py::test_average_onto_vertices[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_interpolation.py::test_average_onto_vertices[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_intersection.py::test_marching_triangles[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_marching_triangles[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_marching_triangles[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_marching_triangles_curves[sphere_med-ordito-cpu-plane]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_marching_triangles_curves[sphere_med-ordito-cpu-wave12]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_marching_triangles_curves[sphere_med-ordito-cpu-wave40]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_marching_triangles_with_offsets[sphere_med-ordito-cpu-plane]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_marching_triangles_with_offsets[sphere_med-ordito-cpu-wave12]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_marching_triangles_with_offsets[sphere_med-ordito-cpu-wave40]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_laplacian.py::test_connection_laplacian[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 13,
+   "alloc": 19,
+   "readback": 1,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_laplacian.py::test_connection_laplacian[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 13,
+   "alloc": 19,
+   "readback": 1,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_laplacian.py::test_connection_laplacian[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 13,
+   "alloc": 19,
+   "readback": 1,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_laplacian.py::test_mass_matrix[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_laplacian.py::test_mass_matrix[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_laplacian.py::test_mass_matrix_entries[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_laplacian.py::test_mass_matrix_entries[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_levelset.py::test_marching_cubes[ordito-cpu-128]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_levelset.py::test_marching_cubes[ordito-cpu-64]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_levelset.py::test_thicken_mesh[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_levelset.py::test_thicken_mesh[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_levelset.py::test_thicken_mesh[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_linalg.py::test_min_quad_with_fixed[saddle-ordito-cpu-pin1pct]": {
+  "counts": {
+   "launch": 584,
+   "alloc": 26,
+   "h2h": 3,
+   "readback": 21,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_linalg.py::test_min_quad_with_fixed[saddle-ordito-cpu-pin50pct]": {
+  "counts": {
+   "launch": 88,
+   "alloc": 15,
+   "h2h": 2,
+   "readback": 7,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_linalg.py::test_min_quad_with_fixed[saddle_graded-ordito-cpu-pin1pct]": {
+  "counts": {
+   "launch": 3001,
+   "alloc": 164,
+   "h2h": 6,
+   "readback": 46,
+   "scan": 22,
+   "sort": 18
+  }
+ },
+ "benchmarks/test_linalg.py::test_min_quad_with_fixed[saddle_graded-ordito-cpu-pin50pct]": {
+  "counts": {
+   "launch": 208,
+   "alloc": 15,
+   "h2h": 2,
+   "readback": 13,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_linalg.py::test_multigrid_preconditioner[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 94,
+   "alloc": 103,
+   "h2h": 8,
+   "readback": 28,
+   "scan": 14,
+   "sort": 8
+  }
+ },
+ "benchmarks/test_linalg.py::test_multigrid_preconditioner[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 138,
+   "alloc": 149,
+   "h2h": 11,
+   "readback": 39,
+   "scan": 21,
+   "sort": 12
+  }
+ },
+ "benchmarks/test_linalg.py::test_solve_spd_columns[saddle-ordito-cpu-every]": {
+  "counts": {
+   "launch": 1140,
+   "h2h": 1,
+   "readback": 569
+  }
+ },
+ "benchmarks/test_linalg.py::test_solve_spd_columns[saddle-ordito-cpu-ondevice]": {
+  "counts": {
+   "launch": 1142,
+   "h2h": 1,
+   "readback": 57
+  }
+ },
+ "benchmarks/test_linalg.py::test_solve_spd_columns[saddle_graded-ordito-cpu-every]": {
+  "counts": {
+   "launch": 6033,
+   "h2h": 1,
+   "readback": 3015
+  }
+ },
+ "benchmarks/test_linalg.py::test_solve_spd_columns[saddle_graded-ordito-cpu-ondevice]": {
+  "counts": {
+   "launch": 6043,
+   "h2h": 1,
+   "readback": 302
+  }
+ },
+ "benchmarks/test_linalg.py::test_spd_column_solver_amortized[saddle-ordito-cpu-once]": {
+  "counts": {
+   "launch": 340,
+   "alloc": 138,
+   "h2h": 3,
+   "readback": 9,
+   "scan": 20,
+   "sort": 18
+  }
+ },
+ "benchmarks/test_linalg.py::test_spd_column_solver_amortized[saddle-ordito-cpu-x50]": {
+  "counts": {
+   "launch": 352,
+   "h2h": 150
+  }
+ },
+ "benchmarks/test_linalg.py::test_spd_column_solver_amortized[saddle_graded-ordito-cpu-once]": {
+  "counts": {
+   "launch": 340,
+   "alloc": 138,
+   "h2h": 3,
+   "readback": 9,
+   "scan": 20,
+   "sort": 18
+  }
+ },
+ "benchmarks/test_linalg.py::test_spd_column_solver_amortized[saddle_graded-ordito-cpu-x50]": {
+  "counts": {
+   "launch": 404,
+   "h2h": 150
+  }
+ },
+ "benchmarks/test_mesh.py::test_boundary_loops[holes_many-ordito-cpu-cold]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 11,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_mesh.py::test_boundary_loops[holes_many-ordito-cpu-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_boundary_loops[rim_long-ordito-cpu-cold]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 11,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_mesh.py::test_boundary_loops[rim_long-ordito-cpu-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_boundary_loops[sphere_med-ordito-cpu-cold]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_mesh.py::test_boundary_loops[sphere_med-ordito-cpu-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_large-ordito-cpu-cold]": {
+  "counts": {
+   "launch": 23,
+   "alloc": 36,
+   "readback": 3,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_large-ordito-cpu-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_med-ordito-cpu-cold]": {
+  "counts": {
+   "launch": 23,
+   "alloc": 36,
+   "readback": 3,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_med-ordito-cpu-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_small-ordito-cpu-cold]": {
+  "counts": {
+   "launch": 23,
+   "alloc": 36,
+   "readback": 3,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_small-ordito-cpu-warm]": {
+  "counts": {}
+ },
+ "benchmarks/test_neighbors.py::test_closest_pair[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 3
+  }
+ },
+ "benchmarks/test_neighbors.py::test_closest_pair[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 3
+  }
+ },
+ "benchmarks/test_neighbors.py::test_closest_pair[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 4,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_neighbors.py::test_nearest_neighbor_distance[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_neighbors.py::test_nearest_neighbor_distance[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 5,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_neighbors.py::test_nearest_neighbor_distance[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_arap[hemisphere-ordito-cpu-10]": {
+  "counts": {
+   "launch": 1602,
+   "alloc": 31,
+   "readback": 13,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_arap[hemisphere-ordito-cpu-3]": {
+  "counts": {
+   "launch": 580,
+   "alloc": 31,
+   "readback": 6,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_arap[saddle-ordito-cpu-10]": {
+  "counts": {
+   "launch": 2512,
+   "alloc": 31,
+   "readback": 20,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_arap[saddle-ordito-cpu-3]": {
+  "counts": {
+   "launch": 970,
+   "alloc": 31,
+   "readback": 9,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_arap[saddle_small-ordito-cpu-10]": {
+  "counts": {
+   "launch": 1862,
+   "alloc": 31,
+   "readback": 15,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_arap[saddle_small-ordito-cpu-3]": {
+  "counts": {
+   "launch": 840,
+   "alloc": 31,
+   "readback": 8,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cpu-1]": {
+  "counts": {
+   "launch": 549,
+   "alloc": 38,
+   "h2h": 7,
+   "readback": 7,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cpu-2]": {
+  "counts": {
+   "launch": 449,
+   "alloc": 166,
+   "h2h": 4,
+   "readback": 8,
+   "scan": 25,
+   "sort": 20
+  }
+ },
+ "benchmarks/test_parametrization.py::test_harmonic[saddle-ordito-cpu-1]": {
+  "counts": {
+   "launch": 549,
+   "alloc": 38,
+   "h2h": 7,
+   "readback": 7,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_harmonic[saddle-ordito-cpu-2]": {
+  "counts": {
+   "launch": 443,
+   "alloc": 166,
+   "h2h": 4,
+   "readback": 8,
+   "scan": 25,
+   "sort": 20
+  }
+ },
+ "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cpu-1]": {
+  "counts": {
+   "launch": 289,
+   "alloc": 38,
+   "h2h": 7,
+   "readback": 5,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cpu-2]": {
+  "counts": {
+   "launch": 316,
+   "alloc": 166,
+   "h2h": 4,
+   "readback": 8,
+   "scan": 23,
+   "sort": 18
+  }
+ },
+ "benchmarks/test_parametrization.py::test_harmonic_conditioning[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 550,
+   "alloc": 25,
+   "h2h": 4,
+   "readback": 7,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_harmonic_conditioning[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 2890,
+   "alloc": 25,
+   "h2h": 4,
+   "readback": 25,
+   "scan": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_lscm[hemisphere-ordito-cpu]": {
+  "counts": {
+   "launch": 472,
+   "alloc": 171,
+   "h2h": 4,
+   "readback": 8,
+   "scan": 26,
+   "sort": 22
+  }
+ },
+ "benchmarks/test_parametrization.py::test_lscm[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 466,
+   "alloc": 171,
+   "h2h": 4,
+   "readback": 8,
+   "scan": 26,
+   "sort": 22
+  }
+ },
+ "benchmarks/test_parametrization.py::test_lscm[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 344,
+   "alloc": 171,
+   "h2h": 4,
+   "readback": 8,
+   "scan": 24,
+   "sort": 20
+  }
+ },
+ "benchmarks/test_parametrization.py::test_map_vertices_to_circle[hemisphere-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_map_vertices_to_circle[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_parametrization.py::test_map_vertices_to_circle[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_points.py::test_estimate_normals[sphere_large-ordito-cpu-64]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_estimate_normals[sphere_large-ordito-cpu-8]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_estimate_normals[sphere_med-ordito-cpu-64]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_estimate_normals[sphere_med-ordito-cpu-8]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_estimate_normals[sphere_small-ordito-cpu-64]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_estimate_normals[sphere_small-ordito-cpu-8]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_estimate_normals_knn[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_points.py::test_estimate_normals_knn[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_points.py::test_farthest_point_sample[sphere_med-ordito-cpu-1024]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_farthest_point_sample[sphere_med-ordito-cpu-64]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_farthest_point_sample[sphere_small-ordito-cpu-1024]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_farthest_point_sample[sphere_small-ordito-cpu-64]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_points.py::test_outlier_probability[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_points.py::test_outlier_probability[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 7,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_points.py::test_point_duplicate_mask[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_points.py::test_point_duplicate_mask[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_points.py::test_point_duplicate_mask[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_points.py::test_radius_outlier_mask[sphere_med-ordito-cpu-2.0]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_points.py::test_radius_outlier_mask[sphere_med-ordito-cpu-4.0]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_points.py::test_radius_outlier_mask[sphere_small-ordito-cpu-2.0]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_points.py::test_radius_outlier_mask[sphere_small-ordito-cpu-4.0]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_points.py::test_statistical_outlier_mask[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 9,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_points.py::test_statistical_outlier_mask[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_cumulative_arc_length[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_cumulative_arc_length[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_cumulative_arc_length[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_distance_to_closed_polyline[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_distance_to_closed_polyline[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_distance_to_closed_polyline[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_distance_to_polyline[rim_long-ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_distance_to_polyline[rim_long-ordito-cpu-65536]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_distance_to_polyline[saddle-ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_distance_to_polyline[saddle-ordito-cpu-65536]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_distance_to_polyline[saddle_small-ordito-cpu-4096]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_distance_to_polyline[saddle_small-ordito-cpu-65536]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_downsample_closed_polyline[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_downsample_closed_polyline[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_downsample_closed_polyline[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_downsample_polyline[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_downsample_polyline[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_downsample_polyline[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_angles[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_angles[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_angles[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_length[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_length[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_length[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_normal[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_normal[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_normal[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_radius[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_radius[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_radius[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_triangulate_from_offsets[ordito-cpu-4096]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_polyline_triangulate_from_offsets[ordito-cpu-64]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_resample_closed_polyline[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_resample_closed_polyline[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_resample_closed_polyline[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_simplify_polyline[rim_long-ordito-cpu-0.001]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_simplify_polyline[rim_long-ordito-cpu-0.1]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_simplify_polyline[saddle-ordito-cpu-0.001]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_simplify_polyline[saddle-ordito-cpu-0.1]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_simplify_polyline[saddle_small-ordito-cpu-0.001]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_simplify_polyline[saddle_small-ordito-cpu-0.1]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygon[ordito-cpu-1024]": {
+  "counts": {
+   "launch": 123,
+   "alloc": 11,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polygon[ordito-cpu-64]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polyline[sphere_small-ordito-cpu-1024]": {
+  "counts": {
+   "launch": 125,
+   "alloc": 12,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_triangulate_polyline[sphere_small-ordito-cpu-64]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_polyline.py::test_upsample_closed_polyline[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_upsample_closed_polyline[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_upsample_closed_polyline[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_upsample_polyline[rim_long-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_upsample_polyline[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_polyline.py::test_upsample_polyline[saddle_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_proximity.py::test_containing_faces_2d[ordito-cpu-lattice240]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_proximity.py::test_containing_faces_2d[ordito-cpu-lattice26]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_proximity.py::test_containing_faces_2d[ordito-cpu-lattice80]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_ray.py::test_intersects_any[shells_8-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_ray.py::test_intersects_any[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_ray.py::test_intersects_first[shells_8-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_ray.py::test_intersects_first[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_ray.py::test_intersects_location[shells_8-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 4,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_ray.py::test_intersects_location[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 4,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_reconstruction.py::test_delaunay_triangulation[ordito-cpu-20000]": {
+  "counts": {
+   "launch": 156,
+   "alloc": 22,
+   "h2h": 1,
+   "readback": 39,
+   "scan": 4,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_reconstruction.py::test_delaunay_triangulation[ordito-cpu-2000]": {
+  "counts": {
+   "launch": 98,
+   "alloc": 22,
+   "h2h": 1,
+   "readback": 26,
+   "scan": 2,
+   "sort": 3
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_convergence[sphere_large-ordito-cpu-far45deg]": {
+  "counts": {
+   "launch": 34,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_convergence[sphere_large-ordito-cpu-near5deg]": {
+  "counts": {
+   "launch": 34,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_convergence[sphere_med-ordito-cpu-far45deg]": {
+  "counts": {
+   "launch": 34,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_convergence[sphere_med-ordito-cpu-near5deg]": {
+  "counts": {
+   "launch": 34,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_convergence[sphere_small-ordito-cpu-far45deg]": {
+  "counts": {
+   "launch": 34,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_convergence[sphere_small-ordito-cpu-near5deg]": {
+  "counts": {
+   "launch": 30,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_mesh[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 41,
+   "alloc": 6,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_mesh[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 41,
+   "alloc": 6,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_mesh[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 41,
+   "alloc": 6,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_cloud[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 42,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_cloud[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 42,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_cloud[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 42,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_cloud[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 33,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_cloud[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 33,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_cloud[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 33,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 37,
+   "alloc": 13,
+   "h2h": 1,
+   "readback": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 37,
+   "alloc": 13,
+   "h2h": 1,
+   "readback": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_mesh[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 37,
+   "alloc": 13,
+   "h2h": 1,
+   "readback": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 33,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 33,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 33,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_flip_by_objective[saddle-ordito-cpu-curvature]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 18,
+   "h2h": 1,
+   "readback": 4,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_flip_by_objective[saddle-ordito-cpu-planarity]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 18,
+   "h2h": 1,
+   "readback": 4,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_flip_by_objective[saddle_graded-ordito-cpu-curvature]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 18,
+   "h2h": 1,
+   "readback": 4,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_flip_by_objective[saddle_graded-ordito-cpu-planarity]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 18,
+   "h2h": 1,
+   "readback": 4,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_flip_to_delaunay[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 19,
+   "h2h": 2,
+   "readback": 4,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_flip_to_delaunay[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 19,
+   "h2h": 2,
+   "readback": 4,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_intrinsic_delaunay[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 17,
+   "h2h": 1,
+   "readback": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_remesh.py::test_intrinsic_delaunay[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 17,
+   "h2h": 1,
+   "readback": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_remesh.py::test_intrinsic_delaunay[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 17,
+   "h2h": 1,
+   "readback": 3,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_remesh.py::test_isotropic_remesh[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 356,
+   "alloc": 547,
+   "h2h": 3,
+   "readback": 62,
+   "scan": 87,
+   "sort": 30
+  }
+ },
+ "benchmarks/test_remesh.py::test_isotropic_remesh[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 394,
+   "alloc": 557,
+   "h2h": 4,
+   "readback": 73,
+   "scan": 90,
+   "sort": 31
+  }
+ },
+ "benchmarks/test_remesh.py::test_quadric_decimate[saddle-ordito-cpu-0.1]": {
+  "counts": {
+   "launch": 724,
+   "alloc": 409,
+   "h2h": 5,
+   "readback": 17,
+   "sort": 32
+  }
+ },
+ "benchmarks/test_remesh.py::test_quadric_decimate[saddle-ordito-cpu-0.5]": {
+  "counts": {
+   "launch": 218,
+   "alloc": 145,
+   "h2h": 5,
+   "readback": 6,
+   "sort": 10
+  }
+ },
+ "benchmarks/test_remesh.py::test_quadric_decimate[saddle_graded-ordito-cpu-0.1]": {
+  "counts": {
+   "launch": 1064,
+   "alloc": 433,
+   "h2h": 5,
+   "readback": 18,
+   "sort": 34
+  }
+ },
+ "benchmarks/test_remesh.py::test_quadric_decimate[saddle_graded-ordito-cpu-0.5]": {
+  "counts": {
+   "launch": 440,
+   "alloc": 217,
+   "h2h": 5,
+   "readback": 9,
+   "sort": 16
+  }
+ },
+ "benchmarks/test_remesh.py::test_refine_region_to_density[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 7,
+   "h2h": 3,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_remesh.py::test_refine_region_to_density[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 7,
+   "h2h": 3,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_remesh.py::test_split_edges[sphere_large-ordito-cpu-all]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_split_edges[sphere_large-ordito-cpu-quarter]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_split_edges[sphere_med-ordito-cpu-all]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_split_edges[sphere_med-ordito-cpu-quarter]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_split_edges[sphere_small-ordito-cpu-all]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_split_edges[sphere_small-ordito-cpu-quarter]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_loop[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_loop[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_loop[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_large-ordito-cpu-0.25]": {
+  "counts": {
+   "launch": 37,
+   "alloc": 42,
+   "h2h": 1,
+   "readback": 12,
+   "scan": 9,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_large-ordito-cpu-None]": {
+  "counts": {
+   "launch": 31,
+   "alloc": 53,
+   "h2h": 2,
+   "readback": 13,
+   "scan": 10,
+   "sort": 3
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_med-ordito-cpu-0.25]": {
+  "counts": {
+   "launch": 37,
+   "alloc": 42,
+   "h2h": 1,
+   "readback": 12,
+   "scan": 9,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_med-ordito-cpu-None]": {
+  "counts": {
+   "launch": 31,
+   "alloc": 53,
+   "h2h": 2,
+   "readback": 13,
+   "scan": 10,
+   "sort": 3
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_small-ordito-cpu-0.25]": {
+  "counts": {
+   "launch": 37,
+   "alloc": 42,
+   "h2h": 1,
+   "readback": 12,
+   "scan": 9,
+   "sort": 5
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_small-ordito-cpu-None]": {
+  "counts": {
+   "launch": 31,
+   "alloc": 53,
+   "h2h": 2,
+   "readback": 13,
+   "scan": 10,
+   "sort": 3
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_large-ordito-cpu-0.35]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 26,
+   "h2h": 2,
+   "readback": 8,
+   "scan": 8,
+   "sort": 3
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_large-ordito-cpu-0.7]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 16,
+   "h2h": 1,
+   "readback": 5,
+   "scan": 5,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_med-ordito-cpu-0.35]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 26,
+   "h2h": 2,
+   "readback": 8,
+   "scan": 8,
+   "sort": 3
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_med-ordito-cpu-0.7]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 16,
+   "h2h": 1,
+   "readback": 5,
+   "scan": 5,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_small-ordito-cpu-0.35]": {
+  "counts": {
+   "launch": 16,
+   "alloc": 26,
+   "h2h": 2,
+   "readback": 8,
+   "scan": 8,
+   "sort": 3
+  }
+ },
+ "benchmarks/test_remesh.py::test_subdivide_to_size[sphere_small-ordito-cpu-0.7]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 16,
+   "h2h": 1,
+   "readback": 5,
+   "scan": 5,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_repair.py::test_collapse_small_triangles[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 2
+  }
+ },
+ "benchmarks/test_repair.py::test_collapse_small_triangles[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 12,
+   "readback": 4,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_fix_self_intersections[tangle_torus-ordito-cpu-local]": {
+  "counts": {
+   "launch": 577,
+   "alloc": 139,
+   "h2h": 5,
+   "readback": 68,
+   "scan": 18,
+   "sort": 9
+  }
+ },
+ "benchmarks/test_repair.py::test_fix_self_intersections[tangle_torus-ordito-cpu-voxel]": {
+  "counts": {
+   "launch": 17,
+   "alloc": 22,
+   "readback": 6,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_fix_self_intersections[tangle_torus_small-ordito-cpu-local]": {
+  "counts": {
+   "launch": 223,
+   "alloc": 164,
+   "h2h": 6,
+   "readback": 45,
+   "scan": 23,
+   "sort": 12
+  }
+ },
+ "benchmarks/test_repair.py::test_fix_self_intersections[tangle_torus_small-ordito-cpu-voxel]": {
+  "counts": {
+   "launch": 17,
+   "alloc": 22,
+   "readback": 6,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_make_solid[bunny-ordito-cpu]": {
+  "counts": {
+   "launch": 190,
+   "alloc": 155,
+   "h2h": 9,
+   "readback": 25,
+   "scan": 13,
+   "sort": 9
+  }
+ },
+ "benchmarks/test_repair.py::test_make_solid[bunny_decimated-ordito-cpu]": {
+  "counts": {
+   "launch": 209,
+   "alloc": 182,
+   "h2h": 11,
+   "readback": 30,
+   "scan": 14,
+   "sort": 10
+  }
+ },
+ "benchmarks/test_repair.py::test_make_winding_consistent[ribbon_long-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 6,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_make_winding_consistent[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 6,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_degenerate_faces[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_degenerate_faces[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_duplicated_vertices[sphere_med-ordito-cpu-eps1e-6]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 9,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_duplicated_vertices[sphere_med-ordito-cpu-exact]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_folded_faces[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_folded_faces[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_non_manifold_faces[sphere_med-ordito-cpu-clean]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 7,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_non_manifold_faces[sphere_med-ordito-cpu-nm1024]": {
+  "counts": {
+   "launch": 14,
+   "alloc": 18,
+   "h2h": 1,
+   "readback": 4,
+   "scan": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_small_components[parts_1024-ordito-cpu]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 12,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_small_components[parts_64-ordito-cpu]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 12,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_small_components[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 12,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_t_vertices[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 15,
+   "h2h": 1,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_t_vertices[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 12,
+   "alloc": 18,
+   "h2h": 1,
+   "readback": 3,
+   "scan": 2,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_tunnels[handles_1-ordito-cpu]": {
+  "counts": {
+   "launch": 588,
+   "alloc": 94,
+   "h2h": 10,
+   "readback": 25,
+   "scan": 24,
+   "sort": 7
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_tunnels[handles_64-ordito-cpu]": {
+  "counts": {
+   "launch": 481,
+   "alloc": 94,
+   "h2h": 10,
+   "readback": 27,
+   "scan": 28,
+   "sort": 7
+  }
+ },
+ "benchmarks/test_repair.py::test_resolve_duplicated_faces[sphere_med-ordito-cpu-clean]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_resolve_duplicated_faces[sphere_med-ordito-cpu-dup10pct]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 9,
+   "h2h": 1,
+   "readback": 3,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_split_nonmanifold[sphere_med-ordito-cpu-clean]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_split_nonmanifold[sphere_med-ordito-cpu-nm1024]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_volume[sphere_large-ordito-cpu-n100k]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_volume[sphere_large-ordito-cpu-n10k]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_volume[sphere_med-ordito-cpu-n100k]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_volume[sphere_med-ordito-cpu-n10k]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_volume[sphere_small-ordito-cpu-n100k]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_sample.py::test_sample_volume[sphere_small-ordito-cpu-n10k]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 2,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_seams.py::test_cut_along_edges[sphere_large-ordito-cpu-0.25]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 2,
+   "scan": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_seams.py::test_cut_along_edges[sphere_large-ordito-cpu-1.0]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 2,
+   "scan": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_seams.py::test_cut_along_edges[sphere_med-ordito-cpu-0.25]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 2,
+   "scan": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_seams.py::test_cut_along_edges[sphere_med-ordito-cpu-1.0]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 2,
+   "scan": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_seams.py::test_cut_along_edges[sphere_small-ordito-cpu-0.25]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 2,
+   "scan": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_seams.py::test_cut_along_edges[sphere_small-ordito-cpu-1.0]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 11,
+   "readback": 2,
+   "scan": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_seams.py::test_uv_seam_edges[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 7,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_seams.py::test_uv_seam_edges[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 7,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_seams.py::test_uv_seam_edges[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 7,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_selection.py::test_delete_region_keep_boundary[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 13,
+   "alloc": 19,
+   "readback": 4,
+   "scan": 3,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_selection.py::test_delete_region_keep_boundary_with_offsets[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 14,
+   "alloc": 21,
+   "readback": 4,
+   "scan": 4,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_selection.py::test_exclude_fully_selected_components[parts_1024-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 4
+  }
+ },
+ "benchmarks/test_selection.py::test_exclude_fully_selected_components[parts_64-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 4
+  }
+ },
+ "benchmarks/test_selection.py::test_exclude_fully_selected_components[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 4
+  }
+ },
+ "benchmarks/test_selection.py::test_expand_vertex_mask[sphere_med-ordito-cpu-1]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_selection.py::test_expand_vertex_mask[sphere_med-ordito-cpu-8]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_selection.py::test_faces_left_of_contour[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 11,
+   "readback": 1,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_selection.py::test_region_boundary_edges[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 6,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_selection.py::test_shrink_vertex_mask[sphere_med-ordito-cpu-1]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_selection.py::test_shrink_vertex_mask[sphere_med-ordito-cpu-8]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_selection.py::test_submesh_from_face_indices[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_implicit_fairing[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 3780,
+   "alloc": 126,
+   "h2h": 10,
+   "readback": 38,
+   "scan": 12,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_implicit_fairing[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 4991,
+   "alloc": 255,
+   "h2h": 39,
+   "readback": 44,
+   "scan": 32,
+   "sort": 20
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_laplacian_integration[saddle-ordito-cpu-explicit]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_laplacian_integration[saddle-ordito-cpu-implicit]": {
+  "counts": {
+   "launch": 223,
+   "alloc": 5,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_laplacian_integration[saddle_graded-ordito-cpu-explicit]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_laplacian_integration[saddle_graded-ordito-cpu-implicit]": {
+  "counts": {
+   "launch": 223,
+   "alloc": 5,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_normals[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 45,
+   "alloc": 6,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_normals[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 45,
+   "alloc": 6,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_two_step[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 250,
+   "alloc": 15,
+   "h2h": 1,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_two_step[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 250,
+   "alloc": 15,
+   "h2h": 1,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_face_tangent_frames[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_face_tangent_frames[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_face_tangent_frames[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_halfedge_tangent_angles[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_halfedge_tangent_angles[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 11,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_halfedge_transport_angles[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_halfedge_transport_angles[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_halfedge_transport_angles[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_vertex_tangent_frames[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 13,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_vertex_tangent_frames[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 13,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_tangent_space.py::test_vertex_tangent_frames[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 13,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_triangles.py::test_face_quality[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_triangles.py::test_face_quality[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_face_defective_mask[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_face_defective_mask[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_face_orientation_bits[ribbon_long-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_face_orientation_bits[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_face_self_intersecting_mask[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6
+  }
+ },
+ "benchmarks/test_validation.py::test_face_self_intersecting_mask[tangle_2-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 6
+  }
+ },
+ "benchmarks/test_validation.py::test_is_edge_manifold[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_is_edge_manifold[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_is_vertex_manifold[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 8,
+   "h2h": 1,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_is_vertex_manifold[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 8,
+   "h2h": 1,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_is_volume[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_is_volume[tangle_2-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_is_watertight[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 13,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_validation.py::test_is_watertight[tangle_2-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 13,
+   "readback": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_defects[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_defects[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals_precomputed[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals_precomputed[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_visibility.py::test_thickness_interior[shells_8-ordito-cpu-max_sphere]": {
+  "counts": {
+   "launch": 17,
+   "alloc": 12,
+   "readback": 15,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_visibility.py::test_thickness_interior[shells_8-ordito-cpu-ray]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_visibility.py::test_thickness_interior[sphere_med-ordito-cpu-max_sphere]": {
+  "counts": {
+   "launch": 17,
+   "alloc": 12,
+   "readback": 15,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_visibility.py::test_thickness_interior[sphere_med-ordito-cpu-ray]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 3
+  }
+ },
+ "benchmarks/test_voxels.py::test_grid_points[ordito-cpu-256]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_voxels.py::test_grid_points[ordito-cpu-64]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_voxels.py::test_sample_grid_trilinear[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_voxels.py::test_sample_grid_trilinear[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_voxels.py::test_sample_grid_trilinear[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
+ "benchmarks/test_voxels.py::test_splat_onto_grid[sphere_large-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_voxels.py::test_splat_onto_grid[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_voxels.py::test_splat_onto_grid[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ }
+}

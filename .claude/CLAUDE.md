@@ -723,6 +723,12 @@ is in `reference/component-status.md`.
 - A decline is a result: write it at the site with the number, and resolve every site the finding
   named.
 - Count the launches a numerical-method change adds per iteration (§14).
+- Host traffic is gated: `-p benchmarks.census` counts every ordito row's launches, allocations,
+  memsets, copies, readbacks, scans and sorts, and CI fails when a CPU count rises above
+  `benchmarks/census_budget_cpu.json`. A change that moves them re-records both budgets
+  (`--census-update`; `benchmarks/README.md`) in the same commit. On a shared GPU, decide a
+  candidate on these counts first and on a quiet-box A/B second; `--census-report` dumps each
+  row's launch sequence for finding fusion candidates.
 
 ## 10. Warp API reference mirrors
 
@@ -768,8 +774,8 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 
 - Probe a lane-constructed tile (`wp.tile(x)` from per-lane values), not `tile_load`, or you will delete a correctness branch.
 - Stride by `wp.block_dim()`. Partitioned kernels keep a lane-free `_sliced` sibling behind `_device.prefers_tiled_reduction` (§2.2).
-- Warp has no grid-wide barrier, no per-cell `HashGrid` entry point and no node-by-node BVH traversal.
-- `wp.tile_bvh_query_aabb` returns out-of-range indices when a round overruns its result buffer (unchanged on 1.18). Bound-check every candidate (`0 <= c < n`); dropped primitives are lost, so each caller needs a second sound bound.
+- Warp has no grid-wide barrier, no per-cell `HashGrid` entry point and no builtin node-by-node BVH traversal; node reads take `wp.func_native` over `wp::BVH` (`kernels/proximity.py`, re-probe the layout at each upgrade).
+- `wp.tile_bvh_query_aabb` overruns its `5 * block_dim` shared result buffer exactly when a round meets leaves holding more than 4 primitives, and every Warp BVH builder makes a node at depth 32 a leaf whatever its size (lucy's mesh BVH: 0.9 M such leaves, up to 28 faces; the bunnies none). The overrun drops primitives and reads past the buffer *inside* the builtin, which faults (CUDA error 700) once it is large, so no bound check on the returned index can catch it. Walk with it only a query that meets no such leaf; `kernels/proximity.flag_overfull_leaf` flags those leaves in a node bitset, and the rest take a walk that cannot drop (`mesh_to_mesh_distance`: its own `wp.tile_stack` walk; `ball_pivoting`: per-lane slabs of the box through the serial `wp.bvh_query_aabb`). Point clouds hit it too (dragon, happy_buddha, lucy). Still bound-check every candidate (`0 <= c < n`). The node helpers' count is the *capacity*: a CUDA LBVH builds all `2n - 1` nodes, a CPU SAH tree only a prefix (657 of 1999 measured), so a node-bitset pass runs on CUDA only, where the tile walk exists.
 - A multi-launch `capture_while` body replays differently on CPU, and Python-level ping-pong cannot help a captured loop.
 
 ### 12.3 Numerics, casts and `wp.ref`
@@ -881,7 +887,7 @@ The full per-component detail is in `reference/component-status.md`; read the co
 ### Open defects and traps
 
 - **Not reproducible on CUDA (gate any A/B on the CPU device):** `ball_pivoting` face buffer on large meshes and with the default auto radius; `fill_min_weight` on a degenerate rim (float atomics in the rim normal); `face_flip_mask` on a non-orientable mesh; `fix_self_intersections`; `isotropic_remesh`; `sample_surface_blue_noise` on large meshes; heat solves on `saddle_graded`; `log_map` at the cut locus. A CUDA difference on these is not a regression.
-- **`mesh_to_mesh_distance` faults on CUDA (error 700) for lucy against a copy shifted by 1.01 of its x extent** (reproduced on 1d1a98a0 and after the 2026-10-17 sweep). compute-sanitizer puts it at an out-of-bounds `__shared__` read in `face_to_mesh_distance_tiled`: the §12.2 `tile_bvh_query_aabb` overrun, which the candidate range guard does not catch there. The benchmark offsets do not reach it. Open.
+- **`ball_pivoting` on an unjittered regular grid raises on CPU** (`resolve_duplicated_faces: non-orientable duplicate face group`; a 40 x 40 grid at radius 0.05, at 1d1a98a0 and after): co-circular pivots tie and two waves emit a face with both windings. Open.
 - **A settled CG iterate is not a solved one.** On ill-conditioned systems (graded meshes) the settle rule stops on round-off. `solve_spd_settled` verifies the componentwise backward error and falls back to a Cholesky factorization held on a caller-owned object. Never trust a residual or a settle test alone for the heat family.
 - **A CG that hits its cap or stalls does not warn when `check_every=0`.** `min_quad_with_fixed` therefore runs the verified path (iterate, check backward error, factor from zero on failure). `harmonic` at `k >= 3` uses the direct solver.
 - **Never size anything off `matrix.nnz` or a Warp `*_count`**; both are capacities (§3.7). `fem.integrate` / `bsr_axpy` on stale `nnz` once exhausted memory and surfaced as CUDA error 700.

@@ -309,3 +309,16 @@ jobs:
 
       - name: Enforce the coverage floor
         run: uv run coverage report --fail-under=90
+
+      # The host-traffic gate (`benchmarks/census.py`): every ordito-cpu benchmark row at the
+      # smallest size is called once more under a counter of launches, allocations, memsets,
+      # copies, readbacks, scans and sorts, and the counts are compared with the committed
+      # `benchmarks/census_budget_cpu.json`. Counts on the CPU device do not vary between runs, so
+      # a rise is a change that added host work -- an extra readback, a re-validation, a copy --
+      # and fails here; a fall is printed so the budget is tightened in the same change. Last in
+      # the job for the coverage floor's reason. The CUDA budget is refreshed on the maintainer's
+      # GPU box (`benchmarks/README.md`).
+      - name: Host-traffic census (CPU budget)
+        run: >
+          uv run python -m pytest benchmarks -p benchmarks.census
+          --device=cpu --size small -k ordito-cpu -q -p no:warnings --census-strict
