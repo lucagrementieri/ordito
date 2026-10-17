@@ -675,9 +675,10 @@ def _descend(
     no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
     no_points = _launch.empty(0, dtype=wp.vec3, device=device)
     counts = _launch.empty(n_paths, dtype=wp.int32, device=device)
-    # One flag per path that stopped short, their number, and how many the completion finished.
+    # One flag per path that stopped short, their number, how many the completion finished, and
+    # the counts' total.
     short_paths = (
-        _launch.zeros(n_paths + 2, dtype=wp.int32, device=device)
+        _launch.zeros(n_paths + 3, dtype=wp.int32, device=device)
         if complete_to is not None
         else _launch.empty(0, dtype=wp.int32, device=device)
     )
@@ -690,10 +691,16 @@ def _descend(
     )
     graph = no_graph
     n_completed = 0
-    if complete_to is not None:
-        # Host readback: whether any path needs the edge-graph completion decides whether its
-        # shortest-path relaxation runs at all.
-        if int(read_scalar(short_paths, index=n_paths)) > 0:
+    if complete_to is None:
+        # Host readback: only the device knows the walk's total length, and it sizes the point
+        # buffer.
+        offsets, total = od.array.counts_to_offsets(counts)
+    else:
+        # Host readback, one copy: whether any path needs the edge-graph completion decides
+        # whether its shortest-path relaxation runs at all, and the counts' total sizes the point
+        # buffer.
+        n_short, _, total = (int(v) for v in read_values(short_paths, n_paths, 3))
+        if n_short > 0:
             graph = _edge_graph_distance(*complete_to)
             _launch.launch(
                 kernel,
@@ -702,11 +709,12 @@ def _descend(
                 outputs=[counts, no_points],
                 device=device,
             )
-            # Host readback: the warning's count of paths the completion actually finished.
-            n_completed = int(read_scalar(short_paths, index=n_paths + 1))
-
-    # Host readback: only the device knows the walk's total length, and it sizes the point buffer.
-    offsets, total = od.array.counts_to_offsets(counts)
+            # Host readback, one copy: the warning's count of paths the completion actually
+            # finished, and the total it changed.
+            n_completed, total = (int(v) for v in read_values(short_paths, n_paths + 1, 2))
+        # The total is known, so the offsets are the counts' scan behind a leading zero alone.
+        offsets = _launch.zeros(n_paths + 1, dtype=wp.int32, device=device)
+        _launch.array_scan(counts, out_array=odt.as_dense(offsets[1:]), inclusive=True)
     points = _launch.empty(total, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel,

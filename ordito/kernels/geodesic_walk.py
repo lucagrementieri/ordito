@@ -950,11 +950,13 @@ def descent_paths(
     # One path per thread, in three passes sharing ``descent_walk`` -- the convention
     # ``trace_from_faces`` uses, plus one. ``offsets`` is empty on the counting passes.
     #
-    # * Counting, ``graph_distance`` empty: a non-empty ``short_paths`` (``n_paths + 2`` zeros)
-    #   records which paths stopped short and, in slot ``n_paths``, how many.
+    # * Counting, ``graph_distance`` empty: a non-empty ``short_paths`` (``n_paths + 3`` zeros)
+    #   records which paths stopped short and, in slot ``n_paths``, how many; slot
+    #   ``n_paths + 2`` totals the counts, so the host reads the two side by side.
     # * Counting again with ``graph_distance`` (the completion): only the flagged paths walk, as
     #   only their lengths change; the rest keep their counts. Slot ``n_paths + 1`` counts the
-    #   paths the completion finished (those a source reaches).
+    #   paths the completion finished (those a source reaches), and the total takes each walked
+    #   path's change.
     # * Writing, ``offsets`` given: every path walks and writes its points.
     r = wp.int32(wp.tid())
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
@@ -984,13 +986,16 @@ def descent_paths(
         write_begin,
         out_points,
     )
-    out_counts[r] = count
     if offsets.shape[0] == 0 and graph_distance.shape[0] == 0 and short_paths.shape[0] > 0:
+        wp.atomic_add(short_paths, n_paths + 2, count)
         if stopped_short != wp.int32(0):
             short_paths[r] = wp.int32(1)
             wp.atomic_add(short_paths, n_paths, wp.int32(1))
-    if completing and stopped_short == wp.int32(2):
-        wp.atomic_add(short_paths, n_paths + 1, wp.int32(1))
+    if completing:
+        wp.atomic_add(short_paths, n_paths + 2, count - out_counts[r])
+        if stopped_short == wp.int32(2):
+            wp.atomic_add(short_paths, n_paths + 1, wp.int32(1))
+    out_counts[r] = count
 
 
 @wp.func
