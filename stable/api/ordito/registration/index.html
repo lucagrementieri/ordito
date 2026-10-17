@@ -4554,6 +4554,7 @@ so its <code>R</code> is this matrix's linear block divided by the scale and <em
     <span class="n">reflection</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">translation</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">scale</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">target_mesh</span><span class="p">:</span> <span class="n">Mesh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="nb">float</span><span class="p">]</span>
 </code></pre></div>
 
@@ -4762,6 +4763,27 @@ similarity transform.</p>
                   <code>False</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>target_mesh</code>
+            </td>
+            <td>
+                  <code><span title="warp.Mesh">Mesh</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>wp.Mesh</code> the correspondence search queries, already built, to spare the build each
+call otherwise pays (worth it when one target is registered against repeatedly): over
+<code>target_vertices</code> and <code>target_faces</code> for a mesh target
+(<a class="autorefs autorefs-internal" title="warp_mesh" href="../mesh/#ordito.mesh.Trimesh.warp_mesh"><code>Trimesh.warp_mesh</code></a> is the cached one), or
+<a class="autorefs autorefs-internal" title="mesh_from_points" href="../neighbors/#ordito.neighbors.mesh_from_points"><code>mesh_from_points</code></a> of <code>target_vertices</code> for a
+point-cloud target. Not checked against them: the search answers for the geometry it holds.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -4824,7 +4846,8 @@ similarity transform.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>a</code>, <code>target_vertices</code>, <code>target_faces</code> and <code>initial</code> are not all on one device.</p>
+                <p>If <code>a</code>, <code>target_vertices</code>, <code>target_faces</code>, <code>initial</code> and <code>target_mesh</code> are not
+all on one device.</p>
               </div>
             </td>
           </tr>
@@ -5093,7 +5116,22 @@ correspondences are given:</p>
 <span class="normal">502</span>
 <span class="normal">503</span>
 <span class="normal">504</span>
-<span class="normal">505</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
+<span class="normal">505</span>
+<span class="normal">506</span>
+<span class="normal">507</span>
+<span class="normal">508</span>
+<span class="normal">509</span>
+<span class="normal">510</span>
+<span class="normal">511</span>
+<span class="normal">512</span>
+<span class="normal">513</span>
+<span class="normal">514</span>
+<span class="normal">515</span>
+<span class="normal">516</span>
+<span class="normal">517</span>
+<span class="normal">518</span>
+<span class="normal">519</span>
+<span class="normal">520</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -5105,6 +5143,7 @@ correspondences are given:</p>
     <span class="n">reflection</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">translation</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">scale</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">target_mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Point-to-point iterative closest point registration.</span>
@@ -5155,6 +5194,13 @@ correspondences are given:</p>
 <span class="sd">        Forwarded to [`procrustes`][ordito.registration.procrustes]. Defaults are</span>
 <span class="sd">        rigid (`reflection=False, scale=False`); set ``scale=True`` for a</span>
 <span class="sd">        similarity transform.</span>
+<span class="sd">    target_mesh</span>
+<span class="sd">        The ``wp.Mesh`` the correspondence search queries, already built, to spare the build each</span>
+<span class="sd">        call otherwise pays (worth it when one target is registered against repeatedly): over</span>
+<span class="sd">        ``target_vertices`` and ``target_faces`` for a mesh target</span>
+<span class="sd">        ([`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one), or</span>
+<span class="sd">        [`mesh_from_points`][ordito.neighbors.mesh_from_points] of ``target_vertices`` for a</span>
+<span class="sd">        point-cloud target. Not checked against them: the search answers for the geometry it holds.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -5168,7 +5214,8 @@ correspondences are given:</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``a``, ``target_vertices``, ``target_faces`` and ``initial`` are not all on one device.</span>
+<span class="sd">        If ``a``, ``target_vertices``, ``target_faces``, ``initial`` and ``target_mesh`` are not</span>
+<span class="sd">        all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -5199,7 +5246,11 @@ correspondences are given:</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span>
-        <span class="n">a</span><span class="o">=</span><span class="n">a</span><span class="p">,</span> <span class="n">target_vertices</span><span class="o">=</span><span class="n">target_vertices</span><span class="p">,</span> <span class="n">target_faces</span><span class="o">=</span><span class="n">target_faces</span><span class="p">,</span> <span class="n">initial</span><span class="o">=</span><span class="n">initial</span>
+        <span class="n">a</span><span class="o">=</span><span class="n">a</span><span class="p">,</span>
+        <span class="n">target_vertices</span><span class="o">=</span><span class="n">target_vertices</span><span class="p">,</span>
+        <span class="n">target_faces</span><span class="o">=</span><span class="n">target_faces</span><span class="p">,</span>
+        <span class="n">initial</span><span class="o">=</span><span class="n">initial</span><span class="p">,</span>
+        <span class="n">target_mesh</span><span class="o">=</span><span class="n">target_mesh</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">a</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n</span> <span class="o">=</span> <span class="n">a</span><span class="o">.</span><span class="n">size</span>
@@ -5217,7 +5268,9 @@ correspondences are given:</p>
     <span class="k">if</span> <span class="n">max_iterations</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">_apply_transform</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">total</span><span class="p">,</span> <span class="n">transformed</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">total</span><span class="p">,</span> <span class="n">transformed</span><span class="p">,</span> <span class="n">math</span><span class="o">.</span><span class="n">inf</span>
-    <span class="n">mesh</span><span class="p">,</span> <span class="n">query_max</span><span class="p">,</span> <span class="n">target_index</span> <span class="o">=</span> <span class="n">_resolve_icp_target</span><span class="p">(</span><span class="n">target_vertices</span><span class="p">,</span> <span class="n">target_faces</span><span class="p">,</span> <span class="s2">"icp"</span><span class="p">)</span>
+    <span class="n">mesh</span><span class="p">,</span> <span class="n">query_max</span><span class="p">,</span> <span class="n">target_index</span> <span class="o">=</span> <span class="n">_resolve_icp_target</span><span class="p">(</span>
+        <span class="n">target_vertices</span><span class="p">,</span> <span class="n">target_faces</span><span class="p">,</span> <span class="s2">"icp"</span><span class="p">,</span> <span class="n">target_mesh</span>
+    <span class="p">)</span>
     <span class="n">search_mesh</span> <span class="o">=</span> <span class="n">mesh</span> <span class="k">if</span> <span class="n">mesh</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">target_index</span>
     <span class="k">assert</span> <span class="n">search_mesh</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
 
@@ -5344,6 +5397,7 @@ correspondences are given:</p>
     <span class="p">]</span> <span class="o">=</span> <span class="s2">"none"</span><span class="p">,</span>
     <span class="n">robust_scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">damping</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-06</span><span class="p">,</span>
+    <span class="n">target_mesh</span><span class="p">:</span> <span class="n">Mesh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="nb">float</span><span class="p">]</span>
 </code></pre></div>
 
@@ -5562,6 +5616,27 @@ by its mean magnitude) for conditioning on planar/degenerate targets.</p>
                   <code>1e-06</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>target_mesh</code>
+            </td>
+            <td>
+                  <code><span title="warp.Mesh">Mesh</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>wp.Mesh</code> the correspondence search queries, already built, to spare the build each
+call otherwise pays (worth it when one target is registered against repeatedly): over
+<code>target_vertices</code> and <code>target_faces</code> for a mesh target
+(<a class="autorefs autorefs-internal" title="warp_mesh" href="../mesh/#ordito.mesh.Trimesh.warp_mesh"><code>Trimesh.warp_mesh</code></a> is the cached one), or
+<a class="autorefs autorefs-internal" title="mesh_from_points" href="../neighbors/#ordito.neighbors.mesh_from_points"><code>mesh_from_points</code></a> of <code>target_vertices</code> for a
+point-cloud target. Not checked against them: the search answers for the geometry it holds.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -5644,8 +5719,8 @@ same length as <code>target_vertices</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>a</code>, <code>target_vertices</code>, <code>target_faces</code>, <code>target_normals</code> and <code>initial</code> are not
-all on one device.</p>
+                <p>If <code>a</code>, <code>target_vertices</code>, <code>target_faces</code>, <code>target_normals</code>, <code>initial</code> and
+<code>target_mesh</code> are not all on one device.</p>
               </div>
             </td>
           </tr>
@@ -5690,22 +5765,7 @@ all on one device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">527</span>
-<span class="normal">528</span>
-<span class="normal">529</span>
-<span class="normal">530</span>
-<span class="normal">531</span>
-<span class="normal">532</span>
-<span class="normal">533</span>
-<span class="normal">534</span>
-<span class="normal">535</span>
-<span class="normal">536</span>
-<span class="normal">537</span>
-<span class="normal">538</span>
-<span class="normal">539</span>
-<span class="normal">540</span>
-<span class="normal">541</span>
-<span class="normal">542</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">542</span>
 <span class="normal">543</span>
 <span class="normal">544</span>
 <span class="normal">545</span>
@@ -6003,7 +6063,31 @@ all on one device.</p>
 <span class="normal">837</span>
 <span class="normal">838</span>
 <span class="normal">839</span>
-<span class="normal">840</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
+<span class="normal">840</span>
+<span class="normal">841</span>
+<span class="normal">842</span>
+<span class="normal">843</span>
+<span class="normal">844</span>
+<span class="normal">845</span>
+<span class="normal">846</span>
+<span class="normal">847</span>
+<span class="normal">848</span>
+<span class="normal">849</span>
+<span class="normal">850</span>
+<span class="normal">851</span>
+<span class="normal">852</span>
+<span class="normal">853</span>
+<span class="normal">854</span>
+<span class="normal">855</span>
+<span class="normal">856</span>
+<span class="normal">857</span>
+<span class="normal">858</span>
+<span class="normal">859</span>
+<span class="normal">860</span>
+<span class="normal">861</span>
+<span class="normal">862</span>
+<span class="normal">863</span>
+<span class="normal">864</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -6016,6 +6100,7 @@ all on one device.</p>
     <span class="n">robust_kernel</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"none"</span><span class="p">,</span> <span class="s2">"huber"</span><span class="p">,</span> <span class="s2">"tukey"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"none"</span><span class="p">,</span>
     <span class="n">robust_scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">damping</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-6</span><span class="p">,</span>
+    <span class="n">target_mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Point-to-plane iterative closest point registration with optional robust loss.</span>
@@ -6069,6 +6154,13 @@ all on one device.</p>
 <span class="sd">    damping</span>
 <span class="sd">        Relative Levenberg damping added to the normal-equations diagonal (scaled</span>
 <span class="sd">        by its mean magnitude) for conditioning on planar/degenerate targets.</span>
+<span class="sd">    target_mesh</span>
+<span class="sd">        The ``wp.Mesh`` the correspondence search queries, already built, to spare the build each</span>
+<span class="sd">        call otherwise pays (worth it when one target is registered against repeatedly): over</span>
+<span class="sd">        ``target_vertices`` and ``target_faces`` for a mesh target</span>
+<span class="sd">        ([`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one), or</span>
+<span class="sd">        [`mesh_from_points`][ordito.neighbors.mesh_from_points] of ``target_vertices`` for a</span>
+<span class="sd">        point-cloud target. Not checked against them: the search answers for the geometry it holds.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -6094,8 +6186,8 @@ all on one device.</p>
 <span class="sd">        (``target_faces is None``) and ``target_normals`` is not provided, or does not have the</span>
 <span class="sd">        same length as ``target_vertices``.</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``a``, ``target_vertices``, ``target_faces``, ``target_normals`` and ``initial`` are not</span>
-<span class="sd">        all on one device.</span>
+<span class="sd">        If ``a``, ``target_vertices``, ``target_faces``, ``target_normals``, ``initial`` and</span>
+<span class="sd">        ``target_mesh`` are not all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -6128,6 +6220,7 @@ all on one device.</p>
         <span class="n">target_faces</span><span class="o">=</span><span class="n">target_faces</span><span class="p">,</span>
         <span class="n">target_normals</span><span class="o">=</span><span class="n">target_normals</span><span class="p">,</span>
         <span class="n">initial</span><span class="o">=</span><span class="n">initial</span><span class="p">,</span>
+        <span class="n">target_mesh</span><span class="o">=</span><span class="n">target_mesh</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">a</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n</span> <span class="o">=</span> <span class="n">a</span><span class="o">.</span><span class="n">size</span>
@@ -6160,7 +6253,7 @@ all on one device.</p>
     <span class="n">current</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
 
     <span class="n">mesh</span><span class="p">,</span> <span class="n">query_max</span><span class="p">,</span> <span class="n">target_index</span> <span class="o">=</span> <span class="n">_resolve_icp_target</span><span class="p">(</span>
-        <span class="n">target_vertices</span><span class="p">,</span> <span class="n">target_faces</span><span class="p">,</span> <span class="s2">"icp_point_to_plane"</span>
+        <span class="n">target_vertices</span><span class="p">,</span> <span class="n">target_faces</span><span class="p">,</span> <span class="s2">"icp_point_to_plane"</span><span class="p">,</span> <span class="n">target_mesh</span>
     <span class="p">)</span>
     <span class="n">face_normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">is_mesh</span><span class="p">:</span>

@@ -7569,7 +7569,11 @@ follow <a class="autorefs autorefs-internal" title="edges_unique" href="../edges
 
 </h2>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">lscm_hessian</span><span class="p">(</span>
-    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">cot_entries</span><span class="p">:</span> <span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">pattern</span><span class="p">:</span> <span class="n">MeshOperatorPattern</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 </code></pre></div>
 
@@ -7626,6 +7630,58 @@ solve directly. Matches the <code>Q</code> returned by <code>igl.lscm</code> exa
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>cot_entries</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Array2dFloat
+
+
+  
+      module-attribute
+   (ordito.typing.Array2dFloat)" href="../typing/#ordito.typing.Array2dFloat">Array2dFloat</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Forwarded to <a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> for <code>L</code>: precomputed
+half-cotangent weights and sparsity, to spare their build when the Hessian is assembled
+repeatedly over one mesh.
+<a class="autorefs autorefs-internal" title="cotmatrix_entries" href="../mesh/#ordito.mesh.Trimesh.cotmatrix_entries"><code>Trimesh.cotmatrix_entries</code></a> and
+<a class="autorefs autorefs-internal" title="mesh_operator_pattern" href="../mesh/#ordito.mesh.Trimesh.mesh_operator_pattern"><code>Trimesh.mesh_operator_pattern</code></a> are the cached
+ones to pass.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>pattern</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Array2dFloat
+
+
+  
+      module-attribute
+   (ordito.typing.Array2dFloat)" href="../typing/#ordito.typing.Array2dFloat">Array2dFloat</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Forwarded to <a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> for <code>L</code>: precomputed
+half-cotangent weights and sparsity, to spare their build when the Hessian is assembled
+repeatedly over one mesh.
+<a class="autorefs autorefs-internal" title="cotmatrix_entries" href="../mesh/#ordito.mesh.Trimesh.cotmatrix_entries"><code>Trimesh.cotmatrix_entries</code></a> and
+<a class="autorefs autorefs-internal" title="mesh_operator_pattern" href="../mesh/#ordito.mesh.Trimesh.mesh_operator_pattern"><code>Trimesh.mesh_operator_pattern</code></a> are the cached
+ones to pass.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -7802,8 +7858,23 @@ solve directly. Matches the <code>Q</code> returned by <code>igl.lscm</code> exa
 <span class="normal">1117</span>
 <span class="normal">1118</span>
 <span class="normal">1119</span>
-<span class="normal">1120</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
-    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
+<span class="normal">1120</span>
+<span class="normal">1121</span>
+<span class="normal">1122</span>
+<span class="normal">1123</span>
+<span class="normal">1124</span>
+<span class="normal">1125</span>
+<span class="normal">1126</span>
+<span class="normal">1127</span>
+<span class="normal">1128</span>
+<span class="normal">1129</span>
+<span class="normal">1130</span>
+<span class="normal">1131</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">cot_entries</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">pattern</span><span class="p">:</span> <span class="n">MeshOperatorPattern</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    LSCM Hessian ``Q = -repdiag(L, 2) - 2 A``.</span>
@@ -7822,6 +7893,13 @@ solve directly. Matches the <code>Q</code> returned by <code>igl.lscm</code> exa
 <span class="sd">        ``(n_vertices,)`` mesh vertex positions.</span>
 <span class="sd">    faces</span>
 <span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
+<span class="sd">    cot_entries, pattern</span>
+<span class="sd">        Forwarded to [`cotmatrix`][ordito.laplacian.cotmatrix] for ``L``: precomputed</span>
+<span class="sd">        half-cotangent weights and sparsity, to spare their build when the Hessian is assembled</span>
+<span class="sd">        repeatedly over one mesh.</span>
+<span class="sd">        [`Trimesh.cotmatrix_entries`][ordito.mesh.Trimesh.cotmatrix_entries] and</span>
+<span class="sd">        [`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern] are the cached</span>
+<span class="sd">        ones to pass.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -7866,7 +7944,7 @@ solve directly. Matches the <code>Q</code> returned by <code>igl.lscm</code> exa
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="k">if</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">empty_square_bsr</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-    <span class="n">laplacian</span> <span class="o">=</span> <span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+    <span class="n">laplacian</span> <span class="o">=</span> <span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cot_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">pattern</span><span class="o">=</span><span class="n">pattern</span><span class="p">)</span>
     <span class="n">area</span> <span class="o">=</span> <span class="n">_vector_area_csr</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="o">-</span><span class="mf">2.0</span><span class="p">)</span>
     <span class="c1"># Capacities, not counts: both buffers may be longer than their stored entries, and the true</span>
     <span class="c1"># count is formed on the device, so nothing is read back.</span>
@@ -8053,18 +8131,7 @@ no boundary and an empty matrix:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1123</span>
-<span class="normal">1124</span>
-<span class="normal">1125</span>
-<span class="normal">1126</span>
-<span class="normal">1127</span>
-<span class="normal">1128</span>
-<span class="normal">1129</span>
-<span class="normal">1130</span>
-<span class="normal">1131</span>
-<span class="normal">1132</span>
-<span class="normal">1133</span>
-<span class="normal">1134</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1134</span>
 <span class="normal">1135</span>
 <span class="normal">1136</span>
 <span class="normal">1137</span>
@@ -8115,7 +8182,18 @@ no boundary and an empty matrix:</p>
 <span class="normal">1182</span>
 <span class="normal">1183</span>
 <span class="normal">1184</span>
-<span class="normal">1185</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
+<span class="normal">1185</span>
+<span class="normal">1186</span>
+<span class="normal">1187</span>
+<span class="normal">1188</span>
+<span class="normal">1189</span>
+<span class="normal">1190</span>
+<span class="normal">1191</span>
+<span class="normal">1192</span>
+<span class="normal">1193</span>
+<span class="normal">1194</span>
+<span class="normal">1195</span>
+<span class="normal">1196</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
