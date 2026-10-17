@@ -3254,6 +3254,31 @@ def test_subdivide_loop_leaves_a_nonmanifold_edge_at_its_midpoint(device: str) -
     assert faces_new_wp.size // 3 == 12
 
 
+def test_subdivide_loop_is_reproducible_when_deterministic(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a parity assert: under the deterministic setting repeated passes agree bit for bit.
+
+    Each vertex's ring is summed in ascending edge order; the off mode's arrival-order atomics
+    agree to ``float32`` round-off. Without the fixed order every CUDA pass over this fixture's
+    degree 3-12 rings gave different positions.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    vertices_np, faces_np = (
+        array_wp.numpy() for array_wp in od.remesh.subdivide_loop(mesh_wp.points, mesh_wp.indices)
+    )
+    for _ in range(4):
+        again_vertices_wp, again_faces_wp = od.remesh.subdivide_loop(
+            mesh_wp.points, mesh_wp.indices
+        )
+        assert np.array_equal(again_vertices_wp.numpy(), vertices_np)
+        assert np.array_equal(again_faces_wp.numpy(), faces_np)
+    with od.config.deterministic(False):
+        arrival_vertices_wp, _ = od.remesh.subdivide_loop(mesh_wp.points, mesh_wp.indices)
+    assert np.allclose(arrival_vertices_wp.numpy(), vertices_np, rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_subdivide_loop_operator_reproduces_its_own_positions(
     mesh_name: str, request: pytest.FixtureRequest

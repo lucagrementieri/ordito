@@ -3216,7 +3216,10 @@ def subdivide_loop(
     Neither stencil needs an ordered 1-ring: the valence and the ring sum come from an atomic pass
     over the *unique* edges, which is the deduplicated neighbour count ``igl::loop`` reads off a
     sorted adjacency list, and the two boundary neighbours are found as the ones joined by boundary
-    edges rather than as the ends of that list.
+    edges rather than as the ends of that list. Under
+    [`is_deterministic`][ordito.config.is_deterministic] each vertex's ring is summed in one fixed
+    order instead, for a sort of the edge endpoints and one more pass, so the positions repeat bit
+    for bit on CUDA.
 
     For several passes, call this repeatedly -- that is what ``igl.loop``'s ``number_of_subdivs``
     does internally, and each pass multiplies the face count by four.
@@ -3282,13 +3285,36 @@ def subdivide_loop(
     # assumes and the one ``igl.loop`` returns. The edge vertices are written by the ring pass,
     # which has their endpoints in hand.
     new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
+    # Under the deterministic setting the ring pass stores each edge's two ring terms instead of
+    # adding them in arrival order, and each vertex's are added over one stable sort of the edge
+    # endpoints, in ascending edge order.
+    ring_terms = odt.empty_2d((n_unique, 2), wp.vec3, device=device) if is_deterministic() else None
     _launch.launch(
         kernel_remesh.loop_vertex_rings,
         dim=n_unique,
         inputs=[vertices, unique_edges, edge_face_count, edge_opposite_sum],
-        outputs=[valence, ring_sum, boundary_count, boundary_sum, new_vertices[n_vertices:]],
+        outputs=[
+            valence,
+            ring_sum,
+            boundary_count,
+            boundary_sum,
+            new_vertices[n_vertices:],
+            ring_terms,
+        ],
         device=device,
     )
+    if ring_terms is not None:
+        sorted_endpoints, endpoint_order = od.array.sort_and_argsort(
+            unique_edges.flatten(), end_bit=max(1, (n_vertices - 1).bit_length())
+        )
+        empty = _launch.empty(0, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_scatter.SUM_SORTED_CORNER_VALUES[wp.vec3],
+            dim=n_vertices,
+            inputs=[sorted_endpoints, endpoint_order, ring_terms],
+            outputs=[ring_sum, empty, empty],
+            device=device,
+        )
     # The operator's triplets, when asked for: the even self-weights are written by the even
     # position pass below, the rest by ``_loop_operator``.
     operator_triplets = (

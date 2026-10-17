@@ -205,11 +205,21 @@ def loop_vertex_rings(
     out_boundary_count: wp.array[wp.int32],
     out_boundary_sum: wp.array[wp.vec3],
     out_odd_positions: wp.array[wp.vec3],
+    out_ring_terms: wp.array2d[wp.vec3],
 ) -> None:
     # Per vertex: its valence and 1-ring position sum, plus the same two restricted to boundary
     # edges. Driven by the *unique* edge list rather than by the faces, so the valence is the number
     # of distinct neighbours on any input -- the count a per-face pass would have to deduplicate
     # (each neighbour appears twice around an interior vertex but once at a boundary).
+    #
+    # The ring sum is the one float sum here whose atomic commit order reaches the result: the
+    # integer counts are exact, and every other sum that is read has exactly two terms (an interior
+    # edge's two opposite vertices, a boundary vertex's two boundary neighbours), which add the same
+    # either way round. Under the deterministic setting ``out_ring_terms`` is a non-empty
+    # ``(n_unique, 2)`` table and each endpoint's term is stored in it instead, row ``e`` and column
+    # ``0`` (``v0``'s) or ``1``, the slot of the endpoint in ``unique_edges``' flat buffer, for
+    # ``scatter.sum_sorted_corner_values`` to add in ascending edge order (the branch is
+    # warp-uniform).
     #
     # The edge's own odd (Loop) vertex rides the same thread, from the endpoints it has just loaded:
     # 3/8 on each endpoint and 1/8 on each of the two opposite vertices (``loop_odd_weights``).
@@ -222,8 +232,12 @@ def loop_vertex_rings(
     out_odd_positions[e] = endpoint_weight * (p0 + p1) + opposite_weight * edge_opposite_sum[e]
     wp.atomic_add(out_valence, v0, 1)
     wp.atomic_add(out_valence, v1, 1)
-    wp.atomic_add(out_ring_sum, v0, p1)
-    wp.atomic_add(out_ring_sum, v1, p0)
+    if out_ring_terms.shape[0] > 0:
+        out_ring_terms[e, 0] = p1
+        out_ring_terms[e, 1] = p0
+    else:
+        wp.atomic_add(out_ring_sum, v0, p1)
+        wp.atomic_add(out_ring_sum, v1, p0)
     if edge_face_count[e] == 1:
         wp.atomic_add(out_boundary_count, v0, 1)
         wp.atomic_add(out_boundary_count, v1, 1)

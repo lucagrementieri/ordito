@@ -237,12 +237,17 @@ def sum_sorted_corner_values(
     # scatter for ``float64`` values, which have no exact atomic sum, and for vectors, whose
     # components no exact sum covers either (``SUM_SORTED_CORNER_VALUES``' dtypes).
     #
+    # A "corner" is a slot of the flat buffer ``sorted_vertices`` was sorted from, and
+    # ``corner_values`` has one row per row of that buffer: three slots a face here, two an edge
+    # for ``remesh.subdivide_loop``'s ring sums, which sorts its unique edges' endpoints.
+    #
     # The runs are also the vertex-face incidence CSR ``adjacency.vertex_face_adjacency`` returns
     # in deterministic mode, each row in ascending face order, so a caller that wants those rows
     # passes non-empty ``out_offsets`` (``(n_vertices + 1,)``) and ``out_vertex_faces``
     # (``(3 * n_faces,)``) and gets them from the same walk instead of a second sort.
     v = wp.int32(wp.tid())
     n = sorted_vertices.shape[0]
+    columns = corner_values.shape[1]
     rows = out_offsets.shape[0] > 0
     i = binary_search_index_left(sorted_vertices, v)
     if rows:
@@ -254,9 +259,9 @@ def sum_sorted_corner_values(
         if sorted_vertices[i] != v:
             break
         corner = corner_order[i]
-        total += corner_values[corner // 3, corner % 3]
+        total += corner_values[corner // columns, corner % columns]
         if rows:
-            out_vertex_faces[i] = corner // 3
+            out_vertex_faces[i] = corner // columns
         i += 1
     out_sums[v] = total
 
@@ -695,7 +700,7 @@ def _register_overloads() -> None:
     )
 
     # ``float64`` sums (the energies' angle sums and mass, the heat method's divergence) and the
-    # ``wp.vec3`` one of the log map's radial direction.
+    # ``wp.vec3`` ones of the log map's radial direction and Loop subdivision's ring sums.
     SUM_SORTED_CORNER_VALUES = OverloadTable(
         sum_sorted_corner_values,
         {
