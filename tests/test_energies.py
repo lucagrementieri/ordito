@@ -391,10 +391,7 @@ def test_crouzeix_raviart_shared_edge_numbering(saddle_graded: tuple[tm.Trimesh,
             mesh_wp.points, mesh_wp.indices, unique_edges=unique_edges, edge_map=edge_map
         )
     ).toarray()
-    # The curved energy's float64 assembly sums in arrival order on CUDA, so two calls agree
-    # to round-off rather than bit for bit, with or without the supplied numbering.
-    scale = np.abs(curved_derived).max()
-    assert np.allclose(curved_supplied, curved_derived, rtol=1e-9, atol=1e-9 * scale)
+    assert np.array_equal(curved_derived, curved_supplied)
 
     with pytest.raises(ValueError, match="together"):
         od.energies.crouzeix_raviart_massmatrix(
@@ -521,3 +518,26 @@ def test_loss_arrival_order_agrees_with_the_default(
         arrival = loss(mesh_wp.points, mesh_wp.indices)
     assert fixed > 0.0
     assert np.isclose(fixed, arrival, rtol=1e-5, atol=0.0)
+
+
+@pytest.mark.parametrize("energy", ["hessian_energy", "curved_hessian_energy"])
+def test_hessian_energies_are_reproducible_when_deterministic(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], energy: str
+) -> None:
+    """
+    Not a parity assert: under ``ordito.config``'s deterministic mode two calls agree bit for bit.
+
+    Both energies sum ``float64`` per-vertex quantities (the Voronoi mass, the angle sums) that an
+    atomic scatter commits in arrival order on CUDA, and ``hessian_energy`` also emits its triplets
+    in the vertex-face rows' order; the deterministic path sums both in a fixed order. The off
+    mode is checked against the on mode to round-off, not to the bit.
+    """
+    _, mesh_wp = sphere_irregular
+    energy_od = getattr(od.energies, energy)
+    with od.config.deterministic(True):
+        first = bsr_to_csr(energy_od(mesh_wp.points, mesh_wp.indices)).toarray()
+        second = bsr_to_csr(energy_od(mesh_wp.points, mesh_wp.indices)).toarray()
+    assert np.array_equal(first, second)
+    with od.config.deterministic(False):
+        arrival = bsr_to_csr(energy_od(mesh_wp.points, mesh_wp.indices)).toarray()
+    assert np.allclose(arrival, first, rtol=1e-9, atol=1e-9 * np.abs(first).max())

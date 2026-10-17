@@ -51,10 +51,12 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
+from ordito.config import is_deterministic
 from ordito.edges import edges_unique, edges_unique_length
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import energies as kernel_energies
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import scatter as kernel_scatter
 from ordito.laplacian import MeshOperatorPattern, cotmatrix, cotmatrix_entries, mass_matrix_entries
 
 
@@ -589,21 +591,35 @@ def hessian_energy(
 
     gradients = _launch.empty(3 * n_faces, dtype=wp.vec3d, device=device)
     areas = _launch.empty(n_faces, dtype=wp.float64, device=device)
-    mass = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    # The triplets below are emitted in the vertex-face rows' order and summed in that order, so
+    # a reproducible result needs ordered rows as well as an ordered mass sum: under
+    # ``ordito.config``'s deterministic mode the kernel writes each corner's share and one sort of
+    # the corners gives both; otherwise it adds the shares atomically.
+    deterministic = is_deterministic()
+    mass = _launch.zeros(0 if deterministic else n_vertices, dtype=wp.float64, device=device)
+    corner_mass = _launch.empty(
+        (n_faces if deterministic else 0, 3), dtype=wp.float64, device=device
+    )
     _launch.launch(
         kernel_energies.hessian_face_terms,
         dim=n_faces,
-        inputs=[vertices, faces, gradients, areas, mass],
+        inputs=[vertices, faces, gradients, areas, mass, corner_mass],
         device=device,
     )
+    sorted_rows = None
+    if deterministic:
+        mass, sorted_rows = _sorted_vertex_corner_sums(
+            faces, corner_mass, n_vertices, with_rows=vertex_faces is None
+        )
     # The mass diagonal is defined only at interior vertices; the count kernel below inverts it.
     _zero_at_boundary(vertices, faces, mass)
 
-    vf_indices, vf_offsets = (
-        vertex_faces
-        if vertex_faces is not None
-        else od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    )
+    if vertex_faces is not None:
+        vf_indices, vf_offsets = vertex_faces
+    elif sorted_rows is not None:
+        vf_indices, vf_offsets = sorted_rows
+    else:
+        vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     inverse_mass = _launch.empty(n_vertices, dtype=wp.float64, device=device)
     counts = _launch.empty(n_vertices, dtype=wp.int32, device=device)
     _launch.launch(
@@ -730,7 +746,10 @@ def curved_hessian_energy(
     n_edges = int(unique_edges.shape[0])
 
     angles = _launch.empty((n_faces, 3), dtype=wp.float64, device=device)
-    angle_sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    # Summed atomically by the angle pass, or afterwards in a fixed order (see
+    # ``_sorted_vertex_corner_sums``) under ``ordito.config``'s deterministic mode.
+    deterministic = is_deterministic()
+    angle_sums = _launch.zeros(0 if deterministic else n_vertices, dtype=wp.float64, device=device)
     # Each unique edge's two halfedges are recorded by the same face pass.
     edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
     cursor = _launch.zeros(n_edges, dtype=wp.int32, device=device)
@@ -741,6 +760,8 @@ def curved_hessian_energy(
         outputs=[angles, angle_sums, edge_halfedges],
         device=device,
     )
+    if deterministic:
+        angle_sums, _ = _sorted_vertex_corner_sums(faces, angles, n_vertices)
     # ``cursor`` now counts each unique edge's halfedges, which settles the topology the rest
     # needs: an edge on three or more faces fails the edge-manifold precondition (flagged by the
     # launch below), and an edge on one is a boundary edge.
@@ -1245,6 +1266,39 @@ def _edge_numbering(
     if unique_edges is None or edge_map is None:
         unique_edges, edge_map = edges_unique(faces, n_vertices=vertices.size, validate=False)
     return unique_edges, edge_map
+
+
+def _sorted_vertex_corner_sums(
+    faces: wp.array[wp.int32],
+    corner_values: odt.Array2dFloat64,
+    n_vertices: int,
+    *,
+    with_rows: bool = False,
+) -> tuple[wp.array[wp.float64], tuple[wp.array[wp.int32], wp.array[wp.int32]] | None]:
+    """
+    Each vertex's sum of its corners' ``(n_faces, 3)`` values, in ascending corner order.
+
+    The reproducible form of an atomic per-vertex scatter, which ``float64`` values have no exact
+    form of, for one sort of the face buffer. With ``with_rows`` the same walk also returns the
+    vertex-face incidence ``(vertex_faces, offsets)`` of
+    [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency], every row in ascending face
+    order.
+    """
+    device = faces.device
+    sorted_vertices, corner_order = od.array.sort_and_argsort(
+        faces, end_bit=max(1, (n_vertices - 1).bit_length())
+    )
+    sums = _launch.empty(n_vertices, dtype=wp.float64, device=device)
+    offsets = _launch.empty(n_vertices + 1 if with_rows else 0, dtype=wp.int32, device=device)
+    vertex_faces = _launch.empty(faces.size if with_rows else 0, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_scatter.sum_sorted_corner_values,
+        dim=n_vertices,
+        inputs=[sorted_vertices, corner_order, corner_values],
+        outputs=[sums, offsets, vertex_faces],
+        device=device,
+    )
+    return sums, ((vertex_faces, offsets) if with_rows else None)
 
 
 def _zero_at_boundary(

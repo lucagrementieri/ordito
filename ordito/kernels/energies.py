@@ -230,6 +230,7 @@ def hessian_face_terms(
     out_gradients: wp.array[wp.vec3d],
     out_areas: wp.array[wp.float64],
     out_mass: wp.array[wp.float64],
+    out_corner_mass: wp.array2d[wp.float64],
 ) -> None:
     # ``hessian_energy``'s two per-face passes in one launch. The corner gradients and the Voronoi
     # mass lumping are independent quantities over the same faces -- neither reads the other -- so
@@ -263,7 +264,14 @@ def hessian_face_terms(
     # ``dbl_area`` above is ``wp.length(wp.cross(v1 - v0, v2 - v0))``, which is exactly what
     # ``triangle_double_area`` computes, so the mass half reuses it rather than re-deriving the
     # face's geometry -- that shared preamble is the second thing the fusion removes, after the
-    # launch.
+    # launch. The corner shares go to exactly one of two outputs, whichever the caller sized: added
+    # atomically into ``out_mass``, or written per corner into ``out_corner_mass`` for the caller
+    # to sum in a fixed order when ``ordito.config`` asks for reproducible results.
+    corners = out_corner_mass.shape[0] > 0
+    if corners:
+        out_corner_mass[f, 0] = zero
+        out_corner_mass[f, 1] = zero
+        out_corner_mass[f, 2] = zero
     if dbl_area <= zero:
         return
     l2_0, l2_1, l2_2 = squared_edge_lengths(v0, v1, v2)
@@ -292,7 +300,12 @@ def hessian_face_terms(
         quad0 = wp.float64(0.125) * dbl_area
         quad1 = wp.float64(0.125) * dbl_area
         quad2 = wp.float64(0.25) * dbl_area
-    add_corner_triple(out_mass, faces, f, quad0, quad1, quad2)
+    if corners:
+        out_corner_mass[f, 0] = quad0
+        out_corner_mass[f, 1] = quad1
+        out_corner_mass[f, 2] = quad2
+    else:
+        add_corner_triple(out_mass, faces, f, quad0, quad1, quad2)
 
 
 @wp.kernel
@@ -380,9 +393,9 @@ def zero_at_boundary_edges(
     out_nonmanifold: wp.array[wp.int32],
 ) -> None:
     # Zero ``out_values`` at both endpoints of every unique edge with one halfedge -- every
-    # boundary vertex, read off the halfedge counts ``internal_angles_and_sums`` leaves rather than
-    # a second pass over the halfedge mates (``energies._zero_at_boundary``'s route). An edge with
-    # three or more halfedges sets ``out_nonmanifold[0]``, the edge-manifold validation
+    # boundary vertex, read off the halfedge counts ``internal_angles_and_sums`` leaves rather
+    # than a second pass over the halfedge mates (``energies._zero_at_boundary``'s route). An edge
+    # with three or more halfedges sets ``out_nonmanifold[0]``, the edge-manifold validation
     # ``curved_hessian_energy`` raises on, read off the same counts in the same pass.
     #
     # Riding this on ``cr_gradient_rows``' grid (same ``dim``, independent; a boundary edge is one
@@ -407,9 +420,11 @@ def internal_angles_and_sums(
     out_angle_sums: wp.array[wp.float64],
     out_edge_halfedges: wp.array2d[wp.int32],
 ) -> None:
-    # Interior angle at each corner (law of cosines, float64) plus the per-vertex angle sum the
-    # curvature correction normalizes by. ``wp.acos`` clamps its argument, so a sliver face yields
-    # 0 / pi rather than NaN.
+    # Interior angle at each corner (law of cosines, float64), plus the per-vertex angle sum the
+    # curvature correction normalizes by, added atomically into ``out_angle_sums`` when the caller
+    # sized it; an empty one leaves the sum to the caller, which forms it from ``out_angles`` in a
+    # fixed order when ``ordito.config`` asks for reproducible results. ``wp.acos`` clamps its
+    # argument, so a sliver face yields 0 / pi rather than NaN.
     #
     # ``triangles.angles`` is the same quantity in float32 from normalized edge vectors, and stays a
     # separate kernel: it emits no angle sums, takes its third angle as ``PI - a0 - a1``, and zeroes
@@ -430,11 +445,11 @@ def internal_angles_and_sums(
     if dbl_area <= zero:
         # A coincident-vertex edge (not merely a thin sliver) drives ``corner_cosines_from_l2``'s
         # law-of-cosines division to a genuine 0/0 for the two corners touching it -- ``wp.acos``'s
-        # clamp rescues a finite-but-out-of-[-1,1] cosine, not a NaN, and ``add_corner_triple``
-        # would then atomically accumulate that NaN into ``out_angle_sums`` for both of the
-        # degenerate edge's vertices, poisoning the Gaussian-curvature correction at every *other*,
-        # perfectly valid face sharing one of them. A degenerate face contributes nothing instead,
-        # the same convention ``hessian_face_terms`` already uses.
+        # clamp rescues a finite-but-out-of-[-1,1] cosine, not a NaN, and the per-vertex angle sum
+        # would then accumulate that NaN for both of the degenerate edge's vertices, poisoning the
+        # Gaussian-curvature correction at every *other*, perfectly valid face sharing one of them.
+        # A degenerate face contributes nothing instead, the same convention
+        # ``hessian_face_terms`` already uses.
         out_angles[f, 0] = zero
         out_angles[f, 1] = zero
         out_angles[f, 2] = zero
@@ -446,7 +461,8 @@ def internal_angles_and_sums(
     out_angles[f, 0] = theta0
     out_angles[f, 1] = theta1
     out_angles[f, 2] = theta2
-    add_corner_triple(out_angle_sums, faces, f, theta0, theta1, theta2)
+    if out_angle_sums.shape[0] > 0:
+        add_corner_triple(out_angle_sums, faces, f, theta0, theta1, theta2)
 
 
 @wp.kernel

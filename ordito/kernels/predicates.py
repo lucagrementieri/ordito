@@ -635,6 +635,12 @@ def angle_defect(angle_sum: wp.Float) -> wp.Float:
 
 
 @wp.func
+def angle_defect_rounded(angle_sum: wp.float64) -> wp.float32:
+    """``angle_defect`` of a ``float64`` angle sum, formed in ``float64`` and rounded once."""
+    return wp.float32(angle_defect(angle_sum))
+
+
+@wp.func
 def barycentric_gram(a: Any, b: Any, c: Any, p: Any) -> tuple[wp.Float, wp.Float, wp.Float]:
     """
     Cramer's rule on the Gram system of triangle ABC's two edge vectors, undivided.
@@ -979,7 +985,12 @@ def _declare_map_kernels() -> None:
     here (the shared builtins are declared there).
     """
     dense = map_probe
-    declare_map_signatures([(angle_defect, (dense(wp.float32),), wp.float32)])
+    declare_map_signatures(
+        [
+            (angle_defect, (dense(wp.float32),), wp.float32),
+            (angle_defect_rounded, (dense(wp.float64),), wp.float32),
+        ]
+    )
 
 
 _declare_map_kernels()

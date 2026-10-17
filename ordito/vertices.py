@@ -31,6 +31,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
+from ordito.config import is_deterministic
 from ordito.kernels import array as kernel_array
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import scatter as kernel_scatter
@@ -427,7 +428,10 @@ def vertex_defects(
     Discrete angle defect per vertex: ``2π`` minus the sum of incident corner angles.
 
     For each vertex, interior angles from every triangle corner that references that vertex
-    are accumulated in ``float32`` on ``faces.device``, then subtracted from a full turn.
+    are accumulated on ``faces.device``, then subtracted from a full turn. Under
+    [`is_deterministic`][ordito.config.is_deterministic] the sum is formed exactly in ``float64``
+    and rounded once, so it is the same on every run; otherwise it is accumulated in ``float32`` in
+    the atomics' arrival order.
     This is the standard piecewise-linear angle defect (related to discrete Gaussian
     curvature via the Gauss—Bonnet viewpoint on triangle meshes).
 
@@ -482,18 +486,30 @@ def vertex_defects(
     require_same_device(faces=faces, face_angles=face_angles)
     n_faces = faces.size // 3
     _require_face_rows(n_faces, face_angles=face_angles)
-    angle_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=faces.device)
-    faces2d = faces.reshape((-1, 3))
+    if not is_deterministic():
+        angle_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=faces.device)
+        _launch.launch(
+            kernel_scatter.SCATTER_SUM_SCALAR[face_angles.dtype],
+            dim=n_faces,
+            inputs=[face_angles, faces.reshape((-1, 3)), angle_sum],
+            device=faces.device,
+        )
+        # In place over the accumulator: ``angle_sum`` is scratch, and the operator spelling
+        # ``TWO_PI - angle_sum`` would run the same wp.map into a second allocation.
+        _launch.map(kernel_predicates.angle_defect, angle_sum, out=angle_sum)
+        return angle_sum
+    # A ``float32`` angle is exact in ``float64``, and so is the sum, so the atomics' commit order
+    # changes no bit: reproducible for the price of the ``float32`` output's own allocation.
+    exact_sum = _launch.zeros(n_vertices, dtype=wp.float64, device=faces.device)
     _launch.launch(
-        kernel_scatter.SCATTER_SUM_SCALAR[face_angles.dtype],
+        kernel_scatter.scatter_sum_exact,
         dim=n_faces,
-        inputs=[face_angles, faces2d, angle_sum],
+        inputs=[face_angles, faces.reshape((-1, 3)), exact_sum],
         device=faces.device,
     )
-    # In place over the accumulator: ``angle_sum`` is scratch, and the operator spelling
-    # ``TWO_PI - angle_sum`` would run the same wp.map into a second allocation.
-    _launch.map(kernel_predicates.angle_defect, angle_sum, out=angle_sum)
-    return angle_sum
+    defects = _launch.empty(n_vertices, dtype=wp.float32, device=faces.device)
+    _launch.map(kernel_predicates.angle_defect_rounded, exact_sum, out=defects)
+    return defects
 
 
 def _require_face_rows(n_faces: int, **named: odt.ArrayNd) -> None:

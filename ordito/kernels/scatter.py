@@ -5,6 +5,7 @@ import warp as wp
 from ordito.kernels.array import (
     OverloadTable,
     atomic_min_packed_box,
+    binary_search_index_left,
     mark_at,
     scanned_count,
     trilinear_cell,
@@ -182,6 +183,59 @@ def scale_face_sums(
     # the requested precision; ``out_mass`` may be ``sums`` itself.
     i = wp.int32(wp.tid())
     out_mass[i] = type(out_mass[i])(sums[i] / count)
+
+
+@wp.kernel
+def scatter_sum_exact(
+    values: wp.array2d[wp.float32], indices: wp.array2d[wp.int32], out_sum: wp.array[wp.float64]
+) -> None:
+    # ``scatter_sum_scalar`` for ``float32`` values summed in ``float64``: a ``float32`` value is
+    # exact in ``float64`` and so is a sum of them while one target's values span less than
+    # ``2^(29 - log2(values at it))``, so the atomic commit order changes no bit, as in
+    # ``scatter_face_areas_exact``.
+    tid = wp.int32(wp.tid())
+    index = indices[tid]
+    for j in range(indices.shape[1]):
+        wp.atomic_add(out_sum, index[j], wp.float64(values[tid, j]))
+
+
+@wp.kernel
+def sum_sorted_corner_values(
+    sorted_vertices: wp.array[wp.int32],
+    corner_order: wp.array[wp.int32],
+    corner_values: wp.array2d[wp.float64],
+    out_sums: wp.array[wp.float64],
+    out_offsets: wp.array[wp.int32],
+    out_vertex_faces: wp.array[wp.int32],
+) -> None:
+    # Each vertex's sum of its corners' ``corner_values``, accumulated in ascending corner order:
+    # ``sorted_vertices`` / ``corner_order`` are the face buffer's stable sort and its permutation,
+    # so a vertex's run lists its corners in ascending order. The same bits on every run, where
+    # ``add_corner_triple``'s atomics commit in arrival order -- the deterministic form of that
+    # scatter for ``float64`` values, which have no exact atomic sum.
+    #
+    # The runs are also the vertex-face incidence CSR of ``adjacency.vertex_face_adjacency``, with
+    # each row in ascending face order rather than arbitrary order, so a caller that wants those
+    # rows passes non-empty ``out_offsets`` (``(n_vertices + 1,)``) and ``out_vertex_faces``
+    # (``(3 * n_faces,)``) and gets them from the same walk.
+    v = wp.int32(wp.tid())
+    n = sorted_vertices.shape[0]
+    rows = out_offsets.shape[0] > 0
+    i = binary_search_index_left(sorted_vertices, v)
+    if rows:
+        out_offsets[v] = i
+        if v == out_sums.shape[0] - 1:
+            out_offsets[v + 1] = n
+    total = wp.float64(0.0)
+    while i < n:
+        if sorted_vertices[i] != v:
+            break
+        corner = corner_order[i]
+        total += corner_values[corner // 3, corner % 3]
+        if rows:
+            out_vertex_faces[i] = corner // 3
+        i += 1
+    out_sums[v] = total
 
 
 @wp.func

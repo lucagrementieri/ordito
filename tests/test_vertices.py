@@ -474,6 +474,27 @@ def test_vertex_defects_satisfy_gauss_bonnet(
     assert np.isclose(defects_wp.numpy().sum(), 2.0 * np.pi * chi, rtol=1e-4, atol=1e-3)
 
 
+def test_vertex_defects_are_reproducible_when_deterministic(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a parity assert: under ``ordito.config``'s deterministic mode two calls agree bit for bit.
+
+    The angle sums are formed exactly in ``float64``, so the atomics' commit order changes no bit;
+    the off mode's ``float32`` arrival-order sums agree with them to ``float32`` round-off.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    face_angles_wp = _face_angles_wp(mesh_tm, mesh_wp.device)
+    n_vertices = mesh_tm.vertices.shape[0]
+    with od.config.deterministic(True):
+        first_np = od.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp).numpy()
+        second_np = od.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp).numpy()
+    assert np.array_equal(first_np, second_np)
+    with od.config.deterministic(False):
+        arrival_np = od.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp).numpy()
+    assert np.allclose(arrival_np, first_np, rtol=1e-5, atol=1e-5)
+
+
 def test_scatter_wrappers_match_trimesh_on_their_inputs_device(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
