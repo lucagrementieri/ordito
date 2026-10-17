@@ -1399,9 +1399,11 @@ def query_nearest(
     # cloud smaller than ``_KNN_DEFER_MIN_POINTS`` and the global-row kernel past the largest
     # register bucket never defer above ``k == 1``.
     defer = k == 1 or (k <= kernel_neighbors.KNN_ROW_BUCKETS[-1] and n >= _KNN_DEFER_MIN_POINTS)
-    # The deferral counters (rows with a nearest distance, rows without) exist only when rows may
-    # be deferred; otherwise the kernel never touches them and takes a null descriptor.
-    deferred = _launch.zeros(2, dtype=wp.int32, device=device) if defer else None
+    # The deferral counters exist only when rows may be deferred; otherwise the kernel never
+    # touches them and takes a null descriptor. Slot 0 counts ``DEFERRED_FAR_ROW`` rows, the only
+    # kind at ``k == 1``, slot 1 ``DEFERRED_ROW`` rows.
+    counters = 1 if k == 1 else 2
+    deferred = _launch.zeros(counters, dtype=wp.int32, device=device) if defer else None
     _launch.launch(
         kernel_neighbors.hashgrid_nearest_kernel(k),
         dim=m,
@@ -1449,15 +1451,18 @@ def _finish_deferred_nearest(
     """
     Answer the rows the grid deferred, by a tree over the cloud.
 
-    One eight-byte readback of the two counters decides which trees to build, since each is a
-    build over the whole cloud: a query set the grid certified in full pays only that read. A row
+    One readback of the counters decides which trees to build, since each is a build over the
+    whole cloud: a query set the grid certified in full pays only that read. A row
     whose walk held a point goes to the BVH's ball search seeded from the walk; a row with no point
     inside the walk goes through a ``wp.Mesh`` whose triangles each collapse onto one point, whose
     closest-face query is a nearest-point query with the mesh BVH's pruned descent -- the whole
     answer at ``k = 1``, the ball's seed above it, walked over the mesh's own BVH.
     """
     # The one sync deferral adds, and it decides whether a whole-cloud build is needed.
-    seeded, far = (int(count) for count in read_values(deferred, 0, 2))
+    if k == 1:
+        far, seeded = int(read_scalar(deferred, 0)), 0
+    else:
+        far, seeded = (int(count) for count in read_values(deferred, 0, 2))
     if seeded == 0 and far == 0:
         return
     device = points.device

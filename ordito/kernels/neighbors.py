@@ -910,13 +910,15 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
                 # Past ``widest`` a cell walk costs more than touching every point (and a NaN
                 # query lands here too, which is what bounds this loop). Finish exactly instead.
                 break
-            if (
-                defer != 0
-                and k > 1
-                and attempt >= FAR_AFTER_EMPTY_WALKS
-                and nearest == FLOAT32_INF_CONSTANT
-            ):
-                break  # far from the cloud: hand it over before the widest walks
+            # Above ``k = 1`` only (see ``FAR_AFTER_EMPTY_WALKS``); the ``k = 1`` bucket compiles
+            # without it, and without the ``DEFERRED_ROW`` branch below that only ``k > 1`` takes.
+            if wp.static(row_size > 1):
+                if (
+                    defer != 0
+                    and attempt >= FAR_AFTER_EMPTY_WALKS
+                    and nearest == FLOAT32_INF_CONSTANT
+                ):
+                    break  # far from the cloud: hand it over before the widest walks
             row_reset(row_distances, row_indices)
             walked = r
             query = wp.hash_grid_query(grid_id, q, r)
@@ -950,18 +952,21 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
             # only the trees it needs. A walk of radius ``walked`` sees every point within it.
             row_reset(row_distances, row_indices)
             row_write(row_distances, row_indices, tid, k, out_indices, out_distances)
-            if nearest <= walked:
-                out_indices[tid, 0] = DEFERRED_ROW
-                out_distances[tid, 0] = walked
-                out_distances[tid, 1] = wp.where(
-                    walk_worst < FLOAT32_INF_CONSTANT,
-                    walk_worst,
-                    walked + SEED_MARGIN * initial_radius,
-                )
-                wp.atomic_add(out_deferred, 0, 1)
-            else:
+            far = wp.int32(1)
+            if wp.static(row_size > 1):
+                if nearest <= walked:
+                    far = 0
+                    out_indices[tid, 0] = DEFERRED_ROW
+                    out_distances[tid, 0] = walked
+                    out_distances[tid, 1] = wp.where(
+                        walk_worst < FLOAT32_INF_CONSTANT,
+                        walk_worst,
+                        walked + SEED_MARGIN * initial_radius,
+                    )
+                    wp.atomic_add(out_deferred, 1, 1)
+            if far == 1:
                 out_indices[tid, 0] = DEFERRED_FAR_ROW
-                wp.atomic_add(out_deferred, 1, 1)
+                wp.atomic_add(out_deferred, 0, 1)
             return
         if certified == 0:
             # Exact fallback once the radius outgrows the cell width or the attempt budget runs
