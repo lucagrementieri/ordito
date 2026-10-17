@@ -20,7 +20,7 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D
 from ordito.kernels.array import atomic_min_packed_box
-from ordito.kernels.reduce import block_sum, tile_chunk
+from ordito.kernels.reduce import block_chunk_1d, block_max, block_sum, tile_chunk
 from ordito.kernels.triangles import face_vertices
 
 # Relative coplanarity tolerance for the triangle-interior test, matching
@@ -305,3 +305,36 @@ def chamfer_surface_term_sliced(
                 point_triangle_sq_dist(points[idx], a, b, c), squared
             )
     wp.atomic_add(out_loss, 0, total)
+
+
+@wp.func
+def block_max_of_chunk(values: wp.array[wp.float32], chunk: wp.int32, lane: wp.int32) -> wp.float32:
+    # The largest of block ``chunk``'s ``ITEMS_PER_BLOCK_1D`` chunk of ``values``, on every lane;
+    # ``-inf`` for an empty chunk. Lanes stride the chunk by ``wp.block_dim()``, so the CPU
+    # device's single lane covers it. Block-collective.
+    offset, count = block_chunk_1d(values.shape[0], chunk)
+    best = wp.float32(-FLOAT32_INF_CONSTANT)
+    for k in range(lane, count, wp.block_dim()):
+        best = wp.max(best, values[offset + k])
+    return block_max(best)
+
+
+@wp.kernel(enable_backward=False)
+def max_of_pair(
+    first: wp.array[wp.float32],
+    second: wp.array[wp.float32],
+    first_blocks: wp.int32,
+    out_max: wp.array[wp.float32],
+) -> None:
+    # The largest element of two arrays into ``out_max[0]``, seeded ``-inf``: one launch
+    # ``blocks_1d(n_first) + blocks_1d(n_second)`` blocks wide, the leading ``first_blocks`` folding
+    # ``first`` and the rest ``second``, one ``atomic_max`` per block. A maximum is exact in any
+    # order, so this is the float two ``reduce.max`` calls would return, at one launch.
+    chunk, lane = wp.tid()
+    best = wp.float32(0.0)
+    if chunk < first_blocks:
+        best = block_max_of_chunk(first, chunk, lane)
+    else:
+        best = block_max_of_chunk(second, chunk - first_blocks, lane)
+    if lane == 0:
+        wp.atomic_max(out_max, 0, best)
