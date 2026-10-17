@@ -1391,16 +1391,17 @@ def collapse_small_triangles(
     current_vertices = vertices
     current_faces = faces
     max_iterations = faces.size  # bounded: each collapsing pass drops at least one face
-    # One small-face counter for the whole loop, zeroed per pass: the kernel that finds the small
-    # faces counts them, so the stopping test is one 4-byte read rather than a per-face flag buffer
-    # reduced on the device first.
+    # One small-face counter for the whole loop, never reset: the kernel that finds the small faces
+    # counts them, so the stopping test is one 4-byte read rather than a per-face flag buffer
+    # reduced on the device first, and a pass found none exactly when the running total did not
+    # move.
     n_small = _launch.zeros(1, dtype=wp.int32, device=device)
+    small_so_far = 0
     for _ in range(max_iterations):
         n_current = current_faces.size // 3
         if n_current == 0:
             break
 
-        _launch.zero_(n_small)
         pairs = odt.empty_2d((n_current, 2), wp.int32, device=device)
         _launch.launch(
             kernel_repair.small_triangle_collapse_edges,
@@ -1409,8 +1410,10 @@ def collapse_small_triangles(
             device=device,
         )
 
-        if int(read_scalar(n_small, 0)) == 0:
+        small_total = int(read_scalar(n_small, 0))
+        if small_total == small_so_far:
             break
+        small_so_far = small_total
 
         # Non-flagged faces emit a self-pair (i0, i0); these are self-loops that leave the
         # connected-components closure unchanged, so all rows can be passed without filtering.
@@ -2667,25 +2670,26 @@ def fix_self_intersections(
     current_vertices, current_faces = vertices, faces
     # Two decision words per pass, each raised on the device by the launch that produced its mask
     # (``kernel_repair.flag_any_selected``, the dilation's last lookup): a four-byte read each
-    # rather than a copy of the whole face mask.
+    # rather than a copy of the whole face mask. A word is raised to the pass's stamp, so neither
+    # is reset between passes.
     state = _launch.zeros(2, dtype=wp.int32, device=vertices.device)
-    for _ in range(max_iter):
+    for pass_index in range(max_iter):
+        stamp = pass_index + 1
         bad_mask = od.validation.face_self_intersecting_mask(current_vertices, current_faces)
         n_faces = current_faces.size // 3
         _launch.launch(
             kernel_repair.flag_any_selected,
             dim=n_faces,
-            inputs=[bad_mask, state],
+            inputs=[bad_mask, stamp, state],
             device=state.device,
         )
-        if int(read_scalar(state, 0)) == 0:
+        if int(read_scalar(state, 0)) != stamp:
             break
         region = _dilate_face_mask(
-            current_faces, bad_mask, max_expand, current_vertices.size, state
+            current_faces, bad_mask, max_expand, current_vertices.size, state, stamp
         )
-        if int(read_scalar(state, 1)) == 0:
+        if int(read_scalar(state, 1)) != stamp:
             break  # the region swallowed the mesh: refilling it would delete everything
-        _launch.zero_(state)
         current_vertices, current_faces = od.holes.refill_region(
             current_vertices, current_faces, region
         )
@@ -2702,6 +2706,7 @@ def _dilate_face_mask(
     hops: int,
     n_vertices: int,
     state: wp.array[wp.int32] | None = None,
+    stamp: int = 1,
 ) -> wp.array[wp.bool]:
     """
     Grow a face selection by ``hops`` rings, through the vertices it touches.
@@ -2728,8 +2733,10 @@ def _dilate_face_mask(
         once per pass, to recover a number the caller is already holding -- which is what
         ``face_adjacency(n_vertices=...)`` exists to avoid.
     state
-        ``(2,)`` decision words; slot 1 is raised when some face stays outside the grown selection.
-        ``None`` raises nothing.
+        ``(2,)`` decision words; slot 1 is raised to ``stamp`` when some face stays outside the
+        grown selection. ``None`` raises nothing.
+    stamp
+        Value slot 1 of ``state`` is raised to.
 
     Returns
     -------
@@ -2776,7 +2783,7 @@ def _dilate_face_mask(
         _launch.launch(
             kernel_repair.face_mask_from_vertex_mask_flag_unselected,
             dim=n_faces,
-            inputs=[faces, vertex_mask, grown, state],
+            inputs=[faces, vertex_mask, stamp, grown, state],
             device=device,
         )
     return grown
