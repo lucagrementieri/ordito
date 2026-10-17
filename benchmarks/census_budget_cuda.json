@@ -224,9 +224,9 @@
  },
  "benchmarks/test_cholesky.py::test_sparse_cholesky[saddle-ordito-cuda]": {
   "counts": {
-   "launch": 254,
-   "alloc": 120,
-   "memset": 34,
+   "launch": 268,
+   "alloc": 123,
+   "memset": 37,
    "d2h": 4,
    "scan": 20,
    "sort": 18
@@ -234,9 +234,9 @@
  },
  "benchmarks/test_cholesky.py::test_sparse_cholesky[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 272,
-   "alloc": 120,
-   "memset": 34,
+   "launch": 287,
+   "alloc": 123,
+   "memset": 37,
    "d2h": 4,
    "scan": 20,
    "sort": 18
@@ -244,9 +244,9 @@
  },
  "benchmarks/test_cholesky.py::test_sparse_cholesky[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 329,
-   "alloc": 120,
-   "memset": 34,
+   "launch": 344,
+   "alloc": 123,
+   "memset": 37,
    "d2h": 4,
    "scan": 21,
    "sort": 19
@@ -254,9 +254,9 @@
  },
  "benchmarks/test_cholesky.py::test_sparse_cholesky[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 204,
-   "alloc": 120,
-   "memset": 34,
+   "launch": 215,
+   "alloc": 123,
+   "memset": 37,
    "d2h": 4,
    "scan": 17,
    "sort": 15
@@ -1466,9 +1466,9 @@
  },
  "benchmarks/test_heat.py::test_extend_scalar[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 339,
-   "alloc": 153,
-   "memset": 51,
+   "launch": 354,
+   "alloc": 156,
+   "memset": 54,
    "d2d": 4,
    "d2h": 10,
    "sync": 2,
@@ -1549,9 +1549,9 @@
  },
  "benchmarks/test_heat.py::test_heat_geodesic_conditioning[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 567,
-   "alloc": 175,
-   "memset": 69,
+   "launch": 583,
+   "alloc": 178,
+   "memset": 72,
    "d2d": 7,
    "d2h": 13,
    "sync": 4,
@@ -1594,9 +1594,9 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_conditioning[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 808,
-   "alloc": 319,
-   "memset": 101,
+   "launch": 837,
+   "alloc": 325,
+   "memset": 107,
    "d2d": 7,
    "d2h": 19,
    "sync": 4,
@@ -1640,13 +1640,13 @@
  },
  "benchmarks/test_heat.py::test_log_map[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 905,
-   "alloc": 317,
-   "memset": 100,
-   "d2d": 7,
+   "launch": 1068,
+   "alloc": 345,
+   "memset": 122,
+   "d2d": 10,
    "h2d": 1,
-   "d2h": 16,
-   "sync": 4,
+   "d2h": 20,
+   "sync": 6,
    "scan": 44,
    "sort": 38
   }
@@ -1656,7 +1656,7 @@
    "launch": 2,
    "alloc": 5,
    "memset": 3,
-   "d2d": 3,
+   "d2d": 6,
    "d2h": 1
   }
  },
@@ -1677,21 +1677,21 @@
    "launch": 2,
    "alloc": 5,
    "memset": 3,
-   "d2d": 3,
+   "d2d": 6,
    "d2h": 1
   }
  },
  "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle_graded-ordito-cuda-full]": {
   "counts": {
-   "launch": 725,
-   "alloc": 179,
-   "memset": 56,
-   "d2d": 4,
+   "launch": 837,
+   "alloc": 321,
+   "memset": 103,
+   "d2d": 7,
    "h2d": 1,
-   "d2h": 11,
-   "sync": 2,
-   "scan": 25,
-   "sort": 21
+   "d2h": 18,
+   "sync": 4,
+   "scan": 44,
+   "sort": 38
   }
  },
  "benchmarks/test_heat.py::test_transport_tangent_vectors_scale[sphere_large-ordito-cuda]": {
@@ -2347,9 +2347,9 @@
  },
  "benchmarks/test_linalg.py::test_min_quad_with_fixed[saddle_graded-ordito-cuda-pin1pct]": {
   "counts": {
-   "launch": 392,
-   "alloc": 172,
-   "memset": 63,
+   "launch": 406,
+   "alloc": 175,
+   "memset": 66,
    "d2d": 6,
    "d2h": 11,
    "sync": 2,
@@ -2646,9 +2646,9 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cuda-2]": {
   "counts": {
-   "launch": 434,
-   "alloc": 169,
-   "memset": 50,
+   "launch": 448,
+   "alloc": 172,
+   "memset": 53,
    "d2d": 4,
    "d2h": 10,
    "sync": 2,
@@ -2669,9 +2669,9 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle-ordito-cuda-2]": {
   "counts": {
-   "launch": 428,
-   "alloc": 169,
-   "memset": 50,
+   "launch": 442,
+   "alloc": 172,
+   "memset": 53,
    "d2d": 4,
    "d2h": 10,
    "sync": 2,
@@ -2692,9 +2692,9 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cuda-2]": {
   "counts": {
-   "launch": 303,
-   "alloc": 169,
-   "memset": 50,
+   "launch": 315,
+   "alloc": 172,
+   "memset": 53,
    "d2d": 4,
    "d2h": 10,
    "sync": 2,
@@ -2726,9 +2726,9 @@
  },
  "benchmarks/test_parametrization.py::test_lscm[hemisphere-ordito-cuda]": {
   "counts": {
-   "launch": 455,
-   "alloc": 171,
-   "memset": 48,
+   "launch": 470,
+   "alloc": 174,
+   "memset": 51,
    "d2d": 4,
    "d2h": 10,
    "sync": 2,
@@ -2738,9 +2738,9 @@
  },
  "benchmarks/test_parametrization.py::test_lscm[saddle-ordito-cuda]": {
   "counts": {
-   "launch": 458,
-   "alloc": 171,
-   "memset": 48,
+   "launch": 473,
+   "alloc": 174,
+   "memset": 51,
    "d2d": 4,
    "d2h": 10,
    "sync": 2,
@@ -2750,9 +2750,9 @@
  },
  "benchmarks/test_parametrization.py::test_lscm[saddle_small-ordito-cuda]": {
   "counts": {
-   "launch": 329,
-   "alloc": 171,
-   "memset": 48,
+   "launch": 342,
+   "alloc": 174,
+   "memset": 51,
    "d2d": 4,
    "d2h": 10,
    "sync": 2,
@@ -4551,9 +4551,9 @@
  },
  "benchmarks/test_smoothing.py::test_filter_implicit_fairing[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 613,
-   "alloc": 209,
-   "memset": 61,
+   "launch": 627,
+   "alloc": 212,
+   "memset": 64,
    "d2d": 39,
    "d2h": 18,
    "sync": 2,

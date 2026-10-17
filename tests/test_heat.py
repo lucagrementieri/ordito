@@ -36,7 +36,7 @@ import functools
 import logging
 import warnings
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import igl
 import numpy as np
@@ -1922,6 +1922,93 @@ def _count_factorizations(monkeypatch: pytest.MonkeyPatch) -> list[int]:
 
     monkeypatch.setattr(od.cholesky.SparseCholesky, "__init__", counted)
     return built
+
+
+def test_diffuse_stacked_factors_its_two_distinct_blocks(
+    icosphere5: Icosphere5, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: a factored stacked diffusion is its blocks' factored solves.
+
+    ``HeatSolver.diffuse_stacked`` (the stack under ``log_map``: the vector system and two heat
+    systems) factors on its second solve, as two factorizations of its distinct blocks -- the
+    vector system (``2 n_vertices`` rows) and the heat system (``n_vertices``) -- instead of one
+    of the whole ``4 n_vertices``-row stack, and they are the solver's own: ``diffuse_tangent`` and
+    ``diffuse`` then build nothing, and agree with the stacked solve to round-off. ``nbytes``
+    counts each factorization once. The stacked answers' oracle is the separate entry points'
+    tests; the first, iterated solve agrees to the settle's tolerance.
+    """
+    _, vertices_wp, faces_wp = icosphere5
+    n = vertices_wp.size
+    device = vertices_wp.device
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    solver = mesh.heat_solver()
+    rhs_np = np.random.default_rng(37).random(4 * n)
+    rhs_wp = wp.array(rhs_np, dtype=wp.float64, device=device)
+    built = _count_factorizations(monkeypatch)
+    stacked_np = []
+    for _ in range(3):
+        solution_wp = wp.zeros(4 * n, dtype=wp.float64, device=device)
+        solver.diffuse_stacked(rhs_wp, solution_wp, 2)
+        stacked_np.append(solution_wp.numpy())
+    assert sorted(built) == [n, 2 * n]
+
+    tangent_wp = wp.zeros(n, dtype=wp.vec2d, device=device)
+    solver.diffuse_tangent(
+        wp.array(rhs_np[: 2 * n].reshape(n, 2), dtype=wp.vec2d, device=device), tangent_wp
+    )
+    scalars_wp = wp.zeros((2, n), dtype=wp.float64, device=device)
+    solver.diffuse(
+        wp.array(rhs_np[2 * n :].reshape(2, n), dtype=wp.float64, device=device), scalars_wp
+    )
+    assert sorted(built) == [n, 2 * n]
+    separate_np = np.concatenate([tangent_wp.numpy().ravel(), scalars_wp.numpy().ravel()])
+    scale = np.abs(separate_np).max()
+    assert np.allclose(stacked_np[1], separate_np, rtol=1e-9, atol=1e-12 * scale)
+    assert np.array_equal(stacked_np[2], stacked_np[1])
+    assert np.allclose(stacked_np[0], separate_np, rtol=1e-5, atol=1e-6 * scale)
+
+    systems = solver._systems  # pyright: ignore[reportPrivateUsage]
+    held = [systems[role].factorization.factorization for role in ("vector", "heat")]
+    assert all(factorization is not None for factorization in held)
+    assert solver.nbytes == od.cholesky.held_nbytes(cast("list[od.cholesky.SparseCholesky]", held))
+    mesh.release_factorizations()
+    assert solver.nbytes == 0
+
+
+@pytest.mark.parametrize("heat_factored", [False, True], ids=["nothing_held", "heat_held"])
+def test_diffuse_stacked_factors_a_small_stack_whole(
+    device: str, monkeypatch: pytest.MonkeyPatch, heat_factored: bool
+) -> None:
+    """
+    Ordito against ordito: under ``_STACK_BLOCKS_FROM`` rows the stack is factored as one.
+
+    On a small mesh one analysis of the whole stack costs less than two of its blocks, so a
+    2 562-vertex stack of the vector and two heat systems is factored whole (``4 n_vertices``
+    rows) -- unless the heat system is already factored, when the blocks reuse it and only the
+    vector system (``2 n_vertices``) is built. Both answers agree with the iterated first solve to
+    the settle's tolerance; ``test_diffuse_stacked_factors_its_two_distinct_blocks`` pins the
+    blocks' answer against the separate entry points.
+    """
+    mesh_tm = tm.creation.icosphere(4)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.ravel(), device)
+    n = vertices_wp.size
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    solver = mesh.heat_solver()
+    if heat_factored:
+        assert solver.factor()
+    rhs_wp = wp.array(np.random.default_rng(41).random(4 * n), dtype=wp.float64, device=device)
+    built = _count_factorizations(monkeypatch)
+    stacked_np = []
+    for _ in range(2):
+        solution_wp = wp.zeros(4 * n, dtype=wp.float64, device=device)
+        solver.diffuse_stacked(rhs_wp, solution_wp, 2)
+        stacked_np.append(solution_wp.numpy())
+    assert built == ([2 * n] if heat_factored else [4 * n])
+    scale = np.abs(stacked_np[0]).max()
+    assert np.allclose(stacked_np[1], stacked_np[0], rtol=1e-5, atol=1e-6 * scale)
+    mesh.release_factorizations()
+    assert solver.nbytes == 0
 
 
 def test_heat_solver_factor_prepares_both_systems(

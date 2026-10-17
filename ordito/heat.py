@@ -58,7 +58,7 @@ import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
-from ordito.cholesky import held_nbytes
+from ordito.cholesky import SparseCholesky, held_nbytes
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.halfedge import vertex_one_rings
@@ -2306,11 +2306,13 @@ class HeatSolver:
     @property
     def nbytes(self) -> int:
         """Device memory this solver's kept factorizations hold, in bytes (shared analyses once)."""
-        return held_nbytes(
-            kept.factorization.factorization
-            for kept in self._systems.values()
-            if kept.factorization.factorization is not None
-        )
+        # A stacked system's blocks are the vector and heat systems' own factorizations: each
+        # distinct one is counted once.
+        held: dict[int, SparseCholesky] = {}
+        for kept in self._systems.values():
+            for factorization in _held_factorizations(kept.factorization):
+                held[id(factorization)] = factorization
+        return held_nbytes(held.values())
 
     def release(self) -> None:
         """
@@ -2432,10 +2434,20 @@ class HeatSolver:
         role = f"stack{n_scalars}"
         kept = self._systems.get(role)
         if kept is None:
+            # Iterated as one system; factored, when the settle fails or on the second solve, as
+            # its distinct blocks -- the vector and heat systems' own factorization slots, so a
+            # factorization either already holds is reused and one built here serves their solves.
             vector_system, scalar, _, _ = self.vector_operators
             stack = twl.block_diag((vector_system, *(scalar[0],) * n_scalars))
-            positions = _stacked_positions(self._bound_mesh().vertices, n_scalars)
-            kept = self._systems[role] = _KeptSystem(twl.OperatorFactorization(stack, positions))
+            kept = self._systems[role] = _KeptSystem(
+                _StackedFactorization(
+                    stack,
+                    _stacked_positions(self._bound_mesh().vertices, n_scalars),
+                    self._slot("vector", vector_system).factorization,
+                    self._slot("heat", scalar[0]).factorization,
+                    n_scalars,
+                )
+            )
         self._settle(role, kept.factorization.matrix, rhs, solution)
 
     def solve_poisson(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]) -> None:
@@ -2508,11 +2520,7 @@ class HeatSolver:
 
     def _kept(self, role: str, matrix: odt.SparseMatrix) -> _KeptSystem:
         """Count a solve of ``role``'s system, factoring it on its second (rent or buy)."""
-        kept = self._systems.get(role)
-        if kept is None:
-            kept = self._systems[role] = _KeptSystem(
-                twl.OperatorFactorization(matrix, self._bound_mesh().vertices)
-            )
+        kept = self._slot(role, matrix)
         kept.solves += 1
         if (
             kept.solves >= 2
@@ -2520,6 +2528,15 @@ class HeatSolver:
             and kept.factorization.factor(self._sharing(role))
         ):
             _LOGGER.debug("HeatSolver: factored the %s system on its second solve", role)
+        return kept
+
+    def _slot(self, role: str, matrix: odt.SparseMatrix) -> _KeptSystem:
+        """Return ``role``'s kept system, made (unfactored, unsolved) for ``matrix`` if new."""
+        kept = self._systems.get(role)
+        if kept is None:
+            kept = self._systems[role] = _KeptSystem(
+                twl.OperatorFactorization(matrix, self._bound_mesh().vertices)
+            )
         return kept
 
     def _sharing(self, role: str) -> twl.OperatorFactorization | None:
@@ -2561,12 +2578,129 @@ class _KeptSystem:
     solves: int = 0
 
 
+class _StackedFactorization(twl.OperatorFactorization):
+    """
+    The factorization of ``block_diag((vector system, heat system x n_scalars))``, by blocks.
+
+    ``HeatSolver.diffuse_stacked`` iterates the stack as one system. Factored as one operator, the
+    stack holds the heat system once per scalar field and shares nothing with the solver's own
+    factorizations of the two systems; on ``bunny`` the vector and two heat systems' stack
+    factored in 81 ms, its two distinct blocks in 14 + 5.5 ms. So from ``_STACK_BLOCKS_FROM``
+    stack rows, or whenever a block is already factored, this factors the blocks -- the solver's
+    slots for the vector and heat systems, so either may already hold its factorization and later
+    solves of either reuse it -- and solves the stack as the vector field's solve and one solve
+    of the scalar fields as columns. Below that the stack is factored whole, as one operator:
+    there one analysis costs less than two (a 4 624-vertex stack of the vector and two heat
+    systems 6.1 ms whole, 7.5 ms by blocks).
+    """
+
+    def __init__(
+        self,
+        stack: odt.SparseMatrix,
+        positions: wp.array[wp.vec3],
+        vector: twl.OperatorFactorization,
+        heat: twl.OperatorFactorization,
+        n_scalars: int,
+    ) -> None:
+        """Hold ``stack`` (rows at ``positions``) and its two distinct blocks' slots."""
+        super().__init__(stack, positions)
+        self._vector = vector
+        self._heat = heat
+        self._n_scalars = n_scalars
+
+    @property
+    def blocks(self) -> tuple[twl.OperatorFactorization, twl.OperatorFactorization]:
+        """The vector and heat systems' factorization slots."""
+        return self._vector, self._heat
+
+    @property
+    def whole(self) -> SparseCholesky | None:
+        """The stack's own factorization, when it was factored whole."""
+        return super().factorization
+
+    @property
+    def factorization(self) -> SparseCholesky | None:
+        """A held factorization: the whole stack's, or the vector block's once both blocks are."""
+        whole = self.whole
+        if whole is not None:
+            return whole
+        vector, heat = self._vector.factorization, self._heat.factorization
+        return vector if vector is not None and heat is not None else None
+
+    @property
+    def nbytes(self) -> int:
+        """Device memory the factorizations held for the stack hold, in bytes."""
+        return held_nbytes(_held_factorizations(self))
+
+    def factor(self, sharing: twl.OperatorFactorization | None = None) -> bool:
+        """Factor the stack, whole or by blocks; ``sharing`` is not read."""
+        del sharing
+        if self.factorization is not None:
+            return True
+        blocks = (
+            self.matrix.nrow * self.matrix.block_shape[0] >= _STACK_BLOCKS_FROM
+            or self._vector.factorization is not None
+            or self._heat.factorization is not None
+        )
+        if not blocks:
+            return super().factor()
+        vector = self._vector.factor()
+        heat = self._heat.factor()
+        return vector and heat
+
+    def solve(
+        self, rhs: odt.ArrayNd, solution: odt.ArrayNd, *, tol: float, componentwise: bool = False
+    ) -> None:
+        """Solve by the whole stack's factorization, or as its blocks."""
+        if self.whole is not None:
+            super().solve(rhs, solution, tol=tol, componentwise=componentwise)
+            return
+        if self.factorization is None:
+            raise ValueError("_StackedFactorization.solve: nothing is factored; call factor()")
+        n_vertices = rhs.size // (2 + self._n_scalars)
+        split = 2 * n_vertices
+        shape = (self._n_scalars, n_vertices)
+        self._vector.solve(
+            odt.as_dense(rhs[:split]),
+            odt.as_dense(solution[:split]),
+            tol=tol,
+            componentwise=componentwise,
+        )
+        scalar_rhs = odt.as_dense(rhs[split:])
+        scalar_solution = odt.as_dense(solution[split:])
+        if self._n_scalars > 1:
+            scalar_rhs, scalar_solution = scalar_rhs.reshape(shape), scalar_solution.reshape(shape)
+        self._heat.solve(scalar_rhs, scalar_solution, tol=tol, componentwise=componentwise)
+
+    def release(self) -> None:
+        """Drop the stack's factorization and both blocks'."""
+        super().release()
+        self._vector.release()
+        self._heat.release()
+
+
+# Stack rows from which ``_StackedFactorization`` factors by blocks rather than whole: the vector
+# and two heat systems from 8 192 vertices, the vector and one from 10 923. Measured (factor time,
+# whole vs blocks): two heat systems 6.1 vs 7.5 ms at 4 624 vertices, 12.8 vs 9.1 at 10 242, 81 vs
+# 20 at 35 947; one 7.8 vs 9.0 at 10 242. End to end on the 17 689-vertex graded saddle, where the
+# settle fails and the stack is factored on the first call: ``log_map`` 1.12x, transport 1.45x.
+_STACK_BLOCKS_FROM = 1 << 15
+
+
+def _held_factorizations(holder: twl.OperatorFactorization) -> list[SparseCholesky]:
+    """Return the sparse factorizations ``holder`` holds: a stacked system's own and its blocks'."""
+    if not isinstance(holder, _StackedFactorization):
+        return [] if holder.factorization is None else [holder.factorization]
+    held = [] if holder.whole is None else [holder.whole]
+    return held + [h.factorization for h in holder.blocks if h.factorization is not None]
+
+
 def _stacked_positions(vertices: wp.array[wp.vec3], n_scalars: int) -> wp.array[wp.vec3]:
     """
     Return the vertex of every row of ``_stacked_fields``' stack.
 
-    A vector system's two rows, then each scalar system's one: the ordering of the factorization a
-    failed settle falls back to.
+    A vector system's two rows, then each scalar system's one: the ordering of the stack's
+    factorization when it is factored whole.
     """
     n_vertices = vertices.size
     positions = _launch.empty((2 + n_scalars) * n_vertices, dtype=wp.vec3, device=vertices.device)
