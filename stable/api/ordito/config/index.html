@@ -3862,11 +3862,18 @@ deterministic either way):</p>
 <li>floating-point block reductions (sums, means, moments, fits, the reductions inside the energies,
   metrics, measures, registration and solver loops) and <code>float32</code> scans (the CDF behind every
   sampler, arc lengths, resampling);</li>
+<li>the lumped masses of <a class="autorefs autorefs-internal" title="mass_matrix_entries" href="../laplacian/#ordito.laplacian.mass_matrix_entries"><code>mass_matrix_entries</code></a> and
+  <a class="autorefs autorefs-internal" title="mass_matrix" href="../laplacian/#ordito.laplacian.mass_matrix"><code>mass_matrix</code></a> given <code>float64</code> face areas (summed in ascending
+  face order when on; <code>float32</code> or computed areas sum exactly and repeat either way);</li>
 <li>the per-vertex sums of <a class="autorefs autorefs-internal" title="hessian_energy" href="../energies/#ordito.energies.hessian_energy"><code>hessian_energy</code></a>,
   <a class="autorefs autorefs-internal" title="curved_hessian_energy" href="../energies/#ordito.energies.curved_hessian_energy"><code>curved_hessian_energy</code></a> and
   <a class="autorefs autorefs-internal" title="vertex_defects" href="../vertices/#ordito.vertices.vertex_defects"><code>vertex_defects</code></a>;</li>
 <li>the order within each row of
   <a class="autorefs autorefs-internal" title="vertex_face_adjacency" href="../adjacency/#ordito.adjacency.vertex_face_adjacency"><code>vertex_face_adjacency</code></a> (ascending when on);</li>
+<li>the row order of the ear-clipped faces of
+  <a class="autorefs autorefs-internal" title="polyline_triangulate" href="../polyline/#ordito.polyline.polyline_triangulate"><code>polyline_triangulate</code></a>,
+  <a class="autorefs autorefs-internal" title="polyline_triangulate_from_offsets" href="../polyline/#ordito.polyline.polyline_triangulate_from_offsets"><code>polyline_triangulate_from_offsets</code></a> and
+  <a class="autorefs autorefs-internal" title="triangulate_polygon" href="../polyline/#ordito.polyline.triangulate_polygon"><code>triangulate_polygon</code></a> (by ascending middle index when on);</li>
 <li>the per-loop sums of <a class="autorefs autorefs-internal" title="loop_perimeters" href="../boundary/#ordito.boundary.loop_perimeters"><code>loop_perimeters</code></a>,
   <a class="autorefs autorefs-internal" title="loop_directed_areas" href="../boundary/#ordito.boundary.loop_directed_areas"><code>loop_directed_areas</code></a> and their packed forms, and the
   hole planes of <a class="autorefs autorefs-internal" title="fill_min_weight" href="../holes/#ordito.holes.fill_min_weight"><code>fill_min_weight</code></a> and the fills built on it;</li>
@@ -3901,9 +3908,9 @@ override wins over the default for as long as it is active, even if the default 
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 4 places</summary>
+      <summary>Referenced by 5 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.deterministic">deterministic</a></span> · <span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.is_deterministic">is_deterministic</a></span> · <span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.set_deterministic">set_deterministic</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.deterministic">deterministic</a></span> · <span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.is_deterministic">is_deterministic</a></span> · <span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.set_deterministic">set_deterministic</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.mass_matrix_entries">mass_matrix_entries</a></span></p>
     </details>
 
 
@@ -4042,14 +4049,7 @@ is_deterministic : Read the setting in force.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 77</span>
-<span class="normal"> 78</span>
-<span class="normal"> 79</span>
-<span class="normal"> 80</span>
-<span class="normal"> 81</span>
-<span class="normal"> 82</span>
-<span class="normal"> 83</span>
-<span class="normal"> 84</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 84</span>
 <span class="normal"> 85</span>
 <span class="normal"> 86</span>
 <span class="normal"> 87</span>
@@ -4074,7 +4074,14 @@ is_deterministic : Read the setting in force.</p>
 <span class="normal">106</span>
 <span class="normal">107</span>
 <span class="normal">108</span>
-<span class="normal">109</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">109</span>
+<span class="normal">110</span>
+<span class="normal">111</span>
+<span class="normal">112</span>
+<span class="normal">113</span>
+<span class="normal">114</span>
+<span class="normal">115</span>
+<span class="normal">116</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Set the process-wide default for reproducible results (see [`ordito.config`][ordito.config]).</span>
 
@@ -4163,22 +4170,15 @@ thread or task, or the process-wide default set by
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 10 places</summary>
+      <summary>Referenced by 12 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.sum_of_terms">sum_of_terms</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.stitch_smooth">stitch_smooth</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_winding_consistent">make_winding_consistent</a></span> · <span class="ordito-backlink"><a href="../adjacency/#ordito.adjacency">adjacency</a> › <a href="../adjacency/#ordito.adjacency.vertex_face_adjacency">vertex_face_adjacency</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.loop_perimeters">loop_perimeters</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.edge_length_sum">edge_length_sum</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_orientation_bits">face_orientation_bits</a></span> · <span class="ordito-backlink"><a href="../vertices/#ordito.vertices">vertices</a> › <a href="../vertices/#ordito.vertices.vertex_defects">vertex_defects</a></span></p>
+<span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.sum_of_terms">sum_of_terms</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.polyline_triangulate">polyline_triangulate</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.triangulate_polygon">triangulate_polygon</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.stitch_smooth">stitch_smooth</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_winding_consistent">make_winding_consistent</a></span> · <span class="ordito-backlink"><a href="../adjacency/#ordito.adjacency">adjacency</a> › <a href="../adjacency/#ordito.adjacency.vertex_face_adjacency">vertex_face_adjacency</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.loop_perimeters">loop_perimeters</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.edge_length_sum">edge_length_sum</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_orientation_bits">face_orientation_bits</a></span> · <span class="ordito-backlink"><a href="../vertices/#ordito.vertices">vertices</a> › <a href="../vertices/#ordito.vertices.vertex_defects">vertex_defects</a></span></p>
     </details>
 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">112</span>
-<span class="normal">113</span>
-<span class="normal">114</span>
-<span class="normal">115</span>
-<span class="normal">116</span>
-<span class="normal">117</span>
-<span class="normal">118</span>
-<span class="normal">119</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">119</span>
 <span class="normal">120</span>
 <span class="normal">121</span>
 <span class="normal">122</span>
@@ -4192,7 +4192,14 @@ thread or task, or the process-wide default set by
 <span class="normal">130</span>
 <span class="normal">131</span>
 <span class="normal">132</span>
-<span class="normal">133</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_deterministic</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">133</span>
+<span class="normal">134</span>
+<span class="normal">135</span>
+<span class="normal">136</span>
+<span class="normal">137</span>
+<span class="normal">138</span>
+<span class="normal">139</span>
+<span class="normal">140</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_deterministic</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether results are reproducible in the current context (see [`ordito.config`][ordito.config]).</span>
 
@@ -4322,14 +4329,7 @@ block inherit it), nests, and restores the previous value on exit, also when the
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">136</span>
-<span class="normal">137</span>
-<span class="normal">138</span>
-<span class="normal">139</span>
-<span class="normal">140</span>
-<span class="normal">141</span>
-<span class="normal">142</span>
-<span class="normal">143</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">143</span>
 <span class="normal">144</span>
 <span class="normal">145</span>
 <span class="normal">146</span>
@@ -4363,7 +4363,14 @@ block inherit it), nests, and restores the previous value on exit, also when the
 <span class="normal">174</span>
 <span class="normal">175</span>
 <span class="normal">176</span>
-<span class="normal">177</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
+<span class="normal">177</span>
+<span class="normal">178</span>
+<span class="normal">179</span>
+<span class="normal">180</span>
+<span class="normal">181</span>
+<span class="normal">182</span>
+<span class="normal">183</span>
+<span class="normal">184</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Generator</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Override the determinism setting within a ``with`` block.</span>

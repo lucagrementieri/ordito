@@ -10231,12 +10231,7 @@ across the bus.</p>
 <span class="normal">2056</span>
 <span class="normal">2057</span>
 <span class="normal">2058</span>
-<span class="normal">2059</span>
-<span class="normal">2060</span>
-<span class="normal">2061</span>
-<span class="normal">2062</span>
-<span class="normal">2063</span>
-<span class="normal">2064</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_pair</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="normal">2059</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_pair</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Find the two closest points of a cloud, and the distance between them.</span>
 
@@ -10301,23 +10296,18 @@ across the bus.</p>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">device</span>
     <span class="n">indices</span><span class="p">,</span> <span class="n">distances</span> <span class="o">=</span> <span class="n">query_nearest</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
-    <span class="c1"># Column 1 of the table, as strided views -- column 0 is each point itself. The two kernels only</span>
-    <span class="c1"># index them, so neither needs a dense copy.</span>
-    <span class="n">result</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">INT64_MAX</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># Column 1 of the table, as strided views -- column 0 is each point itself. The kernel only</span>
+    <span class="c1"># indexes them, so neither needs a dense copy.</span>
+    <span class="n">n_blocks</span> <span class="o">=</span> <span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="n">n</span><span class="p">)</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">INT64_MAX</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
-        <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">nearest_key_argmin</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="n">n</span><span class="p">),</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">distances</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">],</span> <span class="n">result</span><span class="p">],</span>
+        <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">nearest_key_pair</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n_blocks</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">distances</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">],</span> <span class="n">indices</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">],</span> <span class="n">n_blocks</span><span class="p">,</span> <span class="n">result</span><span class="p">],</span>
         <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">nearest_key_partner</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">result</span><span class="p">,</span> <span class="n">indices</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">],</span> <span class="n">result</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="n">key</span><span class="p">,</span> <span class="n">index_b</span> <span class="o">=</span> <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">value</span><span class="p">)</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">result</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+    <span class="n">key</span><span class="p">,</span> <span class="n">index_b</span><span class="p">,</span> <span class="n">_ticket</span> <span class="o">=</span> <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">value</span><span class="p">)</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">result</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
     <span class="c1"># The key's high half is the distance's own float32 bits, so it decodes on the host for free.</span>
     <span class="n">distance</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">key</span> <span class="o">&gt;&gt;</span> <span class="mi">32</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">uint32</span><span class="p">)</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)[</span><span class="mi">0</span><span class="p">])</span>
     <span class="k">return</span> <span class="n">key</span> <span class="o">&amp;</span> <span class="mh">0xFFFFFFFF</span><span class="p">,</span> <span class="n">index_b</span><span class="p">,</span> <span class="n">distance</span>
@@ -10533,7 +10523,12 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2067</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2062</span>
+<span class="normal">2063</span>
+<span class="normal">2064</span>
+<span class="normal">2065</span>
+<span class="normal">2066</span>
+<span class="normal">2067</span>
 <span class="normal">2068</span>
 <span class="normal">2069</span>
 <span class="normal">2070</span>
@@ -10738,12 +10733,7 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 <span class="normal">2269</span>
 <span class="normal">2270</span>
 <span class="normal">2271</span>
-<span class="normal">2272</span>
-<span class="normal">2273</span>
-<span class="normal">2274</span>
-<span class="normal">2275</span>
-<span class="normal">2276</span>
-<span class="normal">2277</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
+<span class="normal">2272</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">min_count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>

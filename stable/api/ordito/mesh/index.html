@@ -9622,8 +9622,8 @@ by-product.</p>
 <a class="autorefs autorefs-internal" title="connected_component_labels_from_edges" href="../graph/#ordito.graph.connected_component_labels_from_edges"><code>connected_component_labels_from_edges</code></a>
 on it; otherwise
 <a class="autorefs autorefs-internal" title="face_connected_component_labels" href="../adjacency/#ordito.adjacency.face_connected_component_labels"><code>face_connected_component_labels</code></a>,
-which labels straight off the sorted edge keys and builds no adjacency table. Same
-labelling engine, same answer.</p>
+which labels straight off the halfedge mates (the cached <code>halfedge_mates</code> when there are
+some) and builds no adjacency table. Same labelling engine, same answer.</p>
 </details>
 
 <details class="see-also" open>
@@ -9671,7 +9671,9 @@ labelling engine, same answer.</p>
 <span class="normal">1225</span>
 <span class="normal">1226</span>
 <span class="normal">1227</span>
-<span class="normal">1228</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1228</span>
+<span class="normal">1229</span>
+<span class="normal">1230</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">face_connected_component_labels</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(n_faces,)`` connected-component label per face (face-adjacency graph).</span>
@@ -9682,8 +9684,8 @@ labelling engine, same answer.</p>
 <span class="sd">    [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]</span>
 <span class="sd">    on it; otherwise</span>
 <span class="sd">    [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels],</span>
-<span class="sd">    which labels straight off the sorted edge keys and builds no adjacency table. Same</span>
-<span class="sd">    labelling engine, same answer.</span>
+<span class="sd">    which labels straight off the halfedge mates (the cached `halfedge_mates` when there are</span>
+<span class="sd">    some) and builds no adjacency table. Same labelling engine, same answer.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -9692,7 +9694,9 @@ labelling engine, same answer.</p>
     <span class="n">adjacency</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"face_adjacency"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">adjacency</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">face_connected_component_labels</span><span class="p">(</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">n_vertices</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span>
+            <span class="n">n_vertices</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">n_vertices</span><span class="p">,</span>
+            <span class="n">mates</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.int32] | None"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"halfedge_mates"</span><span class="p">)),</span>
         <span class="p">)</span>
     <span class="c1"># ``validate=False``: the rows are face ids ``face_adjacency`` derived as ``e // 3``,</span>
     <span class="c1"># so they are below ``n_faces`` by construction and the check would only add a sync.</span>
@@ -9755,9 +9759,7 @@ labelling engine, same answer.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1230</span>
-<span class="normal">1231</span>
-<span class="normal">1232</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1232</span>
 <span class="normal">1233</span>
 <span class="normal">1234</span>
 <span class="normal">1235</span>
@@ -9795,7 +9797,9 @@ labelling engine, same answer.</p>
 <span class="normal">1267</span>
 <span class="normal">1268</span>
 <span class="normal">1269</span>
-<span class="normal">1270</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1270</span>
+<span class="normal">1271</span>
+<span class="normal">1272</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">body_count</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Component count of the face-adjacency graph (``0`` for an empty mesh).</span>
@@ -9877,9 +9881,7 @@ is what matters, at the price of needing an edge-manifold mesh.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1272</span>
-<span class="normal">1273</span>
-<span class="normal">1274</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1274</span>
 <span class="normal">1275</span>
 <span class="normal">1276</span>
 <span class="normal">1277</span>
@@ -9890,7 +9892,9 @@ is what matters, at the price of needing an edge-manifold mesh.</p>
 <span class="normal">1282</span>
 <span class="normal">1283</span>
 <span class="normal">1284</span>
-<span class="normal">1285</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_RowOrderedCachedProperty</span>
+<span class="normal">1285</span>
+<span class="normal">1286</span>
+<span class="normal">1287</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_RowOrderedCachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">vertex_face_adjacency</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Incidence CSR of the faces touching each vertex, as ``(vertex_faces, offsets)``.</span>
@@ -9973,9 +9977,7 @@ edge carries three or more halfedges, i.e. the mesh is not edge-manifold.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1287</span>
-<span class="normal">1288</span>
-<span class="normal">1289</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1289</span>
 <span class="normal">1290</span>
 <span class="normal">1291</span>
 <span class="normal">1292</span>
@@ -9997,7 +9999,9 @@ edge carries three or more halfedges, i.e. the mesh is not edge-manifold.</p>
 <span class="normal">1308</span>
 <span class="normal">1309</span>
 <span class="normal">1310</span>
-<span class="normal">1311</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1311</span>
+<span class="normal">1312</span>
+<span class="normal">1313</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">halfedge_twins</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(3 * n_faces,)`` opposite halfedge of every halfedge, or ``-1`` on a boundary.</span>
@@ -10054,17 +10058,15 @@ table instead of pairing the halfedges again. Pass it as <code>mates=</code> to 
 </details>
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 17 places</summary>
+      <summary>Referenced by 18 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_edges">boundary_edges</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_loops">boundary_loops</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_loops_with_offsets">boundary_loops_with_offsets</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_vertex_indices">boundary_vertex_indices</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_vertices">boundary_vertices</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.ears">ears</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.longest_boundary_loop">longest_boundary_loop</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.oriented_boundary_edges">oriented_boundary_edges</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.edge_manifold_mask">edge_manifold_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_defective_mask">face_defective_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_orientable">is_orientable</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_vertex_manifold">is_vertex_manifold</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_volume">is_volume</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_watertight">is_watertight</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_winding_consistent">is_winding_consistent</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.vertex_manifold_mask">vertex_manifold_mask</a></span></p>
+<span class="ordito-backlink"><a href="../adjacency/#ordito.adjacency">adjacency</a> › <a href="../adjacency/#ordito.adjacency.face_connected_component_labels">face_connected_component_labels</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_edges">boundary_edges</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_loops">boundary_loops</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_loops_with_offsets">boundary_loops_with_offsets</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_vertex_indices">boundary_vertex_indices</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_vertices">boundary_vertices</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.ears">ears</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.longest_boundary_loop">longest_boundary_loop</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.oriented_boundary_edges">oriented_boundary_edges</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.edge_manifold_mask">edge_manifold_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_defective_mask">face_defective_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_orientable">is_orientable</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_vertex_manifold">is_vertex_manifold</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_volume">is_volume</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_watertight">is_watertight</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.is_winding_consistent">is_winding_consistent</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.vertex_manifold_mask">vertex_manifold_mask</a></span></p>
     </details>
 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1313</span>
-<span class="normal">1314</span>
-<span class="normal">1315</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1315</span>
 <span class="normal">1316</span>
 <span class="normal">1317</span>
 <span class="normal">1318</span>
@@ -10076,7 +10078,9 @@ table instead of pairing the halfedges again. Pass it as <code>mates=</code> to 
 <span class="normal">1324</span>
 <span class="normal">1325</span>
 <span class="normal">1326</span>
-<span class="normal">1327</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1327</span>
+<span class="normal">1328</span>
+<span class="normal">1329</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">halfedge_mates</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(3 * n_faces,)`` partner of every halfedge on its undirected edge, with no validation.</span>
@@ -10115,7 +10119,8 @@ table instead of pairing the halfedges again. Pass it as <code>mates=</code> to 
     <div class="doc doc-contents ">
 
         <p>Counter-clockwise outgoing halfedges per vertex: <code>(ring_halfedges, offsets, is_boundary)</code>.</p>
-<p>Built from the cached <code>halfedge_twins</code>, so accessing either first pays for that array once.</p>
+<p>Built from the cached <code>halfedge_twins</code>, or together with it (and caching it) when it is not
+cached yet, so accessing either first pays for that array once.</p>
 
 
 <p><span class="doc-section-title">Raises:</span></p>
@@ -10164,9 +10169,7 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1329</span>
-<span class="normal">1330</span>
-<span class="normal">1331</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1331</span>
 <span class="normal">1332</span>
 <span class="normal">1333</span>
 <span class="normal">1334</span>
@@ -10190,12 +10193,25 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 <span class="normal">1352</span>
 <span class="normal">1353</span>
 <span class="normal">1354</span>
-<span class="normal">1355</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1355</span>
+<span class="normal">1356</span>
+<span class="normal">1357</span>
+<span class="normal">1358</span>
+<span class="normal">1359</span>
+<span class="normal">1360</span>
+<span class="normal">1361</span>
+<span class="normal">1362</span>
+<span class="normal">1363</span>
+<span class="normal">1364</span>
+<span class="normal">1365</span>
+<span class="normal">1366</span>
+<span class="normal">1367</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">vertex_one_rings</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Counter-clockwise outgoing halfedges per vertex: ``(ring_halfedges, offsets, is_boundary)``.</span>
 
-<span class="sd">    Built from the cached `halfedge_twins`, so accessing either first pays for that array once.</span>
+<span class="sd">    Built from the cached `halfedge_twins`, or together with it (and caching it) when it is not</span>
+<span class="sd">    cached yet, so accessing either first pays for that array once.</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
@@ -10214,9 +10230,18 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 <span class="sd">    [`halfedge_twins`][ordito.mesh.Trimesh.halfedge_twins]</span>
 <span class="sd">    [`vertex_face_adjacency`][ordito.mesh.Trimesh.vertex_face_adjacency]</span>
 <span class="sd">    """</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">halfedge</span><span class="o">.</span><span class="n">vertex_one_rings</span><span class="p">(</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span> <span class="n">twins</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">halfedge_twins</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">n_vertices</span>
+    <span class="n">twins</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.int32] | None"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"halfedge_twins"</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">twins</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">halfedge</span><span class="o">.</span><span class="n">vertex_one_rings</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span> <span class="n">twins</span><span class="o">=</span><span class="n">twins</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">n_vertices</span>
+        <span class="p">)</span>
+    <span class="c1"># Built here, the twin table comes back with the rings for one synchronization, rather than</span>
+    <span class="c1"># one for its own check and another for the check of passing it back in.</span>
+    <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">,</span> <span class="n">twins</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">halfedge</span><span class="o">.</span><span class="n">vertex_one_rings</span><span class="p">(</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">return_twins</span><span class="o">=</span><span class="kc">True</span>
     <span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">"halfedge_twins"</span><span class="p">,</span> <span class="n">twins</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">is_boundary</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -10253,16 +10278,16 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1357</span>
-<span class="normal">1358</span>
-<span class="normal">1359</span>
-<span class="normal">1360</span>
-<span class="normal">1361</span>
-<span class="normal">1362</span>
-<span class="normal">1363</span>
-<span class="normal">1364</span>
-<span class="normal">1365</span>
-<span class="normal">1366</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1369</span>
+<span class="normal">1370</span>
+<span class="normal">1371</span>
+<span class="normal">1372</span>
+<span class="normal">1373</span>
+<span class="normal">1374</span>
+<span class="normal">1375</span>
+<span class="normal">1376</span>
+<span class="normal">1377</span>
+<span class="normal">1378</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">boundary_edges</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(n_boundary, 2)`` undirected boundary edges (each row sorted, min-first).</span>
@@ -10302,18 +10327,18 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1368</span>
-<span class="normal">1369</span>
-<span class="normal">1370</span>
-<span class="normal">1371</span>
-<span class="normal">1372</span>
-<span class="normal">1373</span>
-<span class="normal">1374</span>
-<span class="normal">1375</span>
-<span class="normal">1376</span>
-<span class="normal">1377</span>
-<span class="normal">1378</span>
-<span class="normal">1379</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1380</span>
+<span class="normal">1381</span>
+<span class="normal">1382</span>
+<span class="normal">1383</span>
+<span class="normal">1384</span>
+<span class="normal">1385</span>
+<span class="normal">1386</span>
+<span class="normal">1387</span>
+<span class="normal">1388</span>
+<span class="normal">1389</span>
+<span class="normal">1390</span>
+<span class="normal">1391</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">oriented_boundary_edges</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(n_boundary, 2)`` directed boundary edges, preserving face winding.</span>
@@ -10368,19 +10393,7 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1381</span>
-<span class="normal">1382</span>
-<span class="normal">1383</span>
-<span class="normal">1384</span>
-<span class="normal">1385</span>
-<span class="normal">1386</span>
-<span class="normal">1387</span>
-<span class="normal">1388</span>
-<span class="normal">1389</span>
-<span class="normal">1390</span>
-<span class="normal">1391</span>
-<span class="normal">1392</span>
-<span class="normal">1393</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1393</span>
 <span class="normal">1394</span>
 <span class="normal">1395</span>
 <span class="normal">1396</span>
@@ -10392,7 +10405,19 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 <span class="normal">1402</span>
 <span class="normal">1403</span>
 <span class="normal">1404</span>
-<span class="normal">1405</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1405</span>
+<span class="normal">1406</span>
+<span class="normal">1407</span>
+<span class="normal">1408</span>
+<span class="normal">1409</span>
+<span class="normal">1410</span>
+<span class="normal">1411</span>
+<span class="normal">1412</span>
+<span class="normal">1413</span>
+<span class="normal">1414</span>
+<span class="normal">1415</span>
+<span class="normal">1416</span>
+<span class="normal">1417</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">boundary_loops</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    One ordered vertex-index array per boundary loop (empty list if the mesh is closed).</span>
@@ -10447,18 +10472,18 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1407</span>
-<span class="normal">1408</span>
-<span class="normal">1409</span>
-<span class="normal">1410</span>
-<span class="normal">1411</span>
-<span class="normal">1412</span>
-<span class="normal">1413</span>
-<span class="normal">1414</span>
-<span class="normal">1415</span>
-<span class="normal">1416</span>
-<span class="normal">1417</span>
-<span class="normal">1418</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1419</span>
+<span class="normal">1420</span>
+<span class="normal">1421</span>
+<span class="normal">1422</span>
+<span class="normal">1423</span>
+<span class="normal">1424</span>
+<span class="normal">1425</span>
+<span class="normal">1426</span>
+<span class="normal">1427</span>
+<span class="normal">1428</span>
+<span class="normal">1429</span>
+<span class="normal">1430</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">boundary_vertex_indices</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(n_boundary_vertices,)`` sorted unique vertex indices lying on the mesh boundary.</span>
@@ -10508,19 +10533,7 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1420</span>
-<span class="normal">1421</span>
-<span class="normal">1422</span>
-<span class="normal">1423</span>
-<span class="normal">1424</span>
-<span class="normal">1425</span>
-<span class="normal">1426</span>
-<span class="normal">1427</span>
-<span class="normal">1428</span>
-<span class="normal">1429</span>
-<span class="normal">1430</span>
-<span class="normal">1431</span>
-<span class="normal">1432</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1432</span>
 <span class="normal">1433</span>
 <span class="normal">1434</span>
 <span class="normal">1435</span>
@@ -10532,7 +10545,19 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 <span class="normal">1441</span>
 <span class="normal">1442</span>
 <span class="normal">1443</span>
-<span class="normal">1444</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1444</span>
+<span class="normal">1445</span>
+<span class="normal">1446</span>
+<span class="normal">1447</span>
+<span class="normal">1448</span>
+<span class="normal">1449</span>
+<span class="normal">1450</span>
+<span class="normal">1451</span>
+<span class="normal">1452</span>
+<span class="normal">1453</span>
+<span class="normal">1454</span>
+<span class="normal">1455</span>
+<span class="normal">1456</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">euler_characteristic</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Euler characteristic ``V - E + F`` (``0`` for an empty mesh).</span>
@@ -10592,20 +10617,20 @@ vertex), or from <code>halfedge_twins</code> on an edge-non-manifold mesh.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1446</span>
-<span class="normal">1447</span>
-<span class="normal">1448</span>
-<span class="normal">1449</span>
-<span class="normal">1450</span>
-<span class="normal">1451</span>
-<span class="normal">1452</span>
-<span class="normal">1453</span>
-<span class="normal">1454</span>
-<span class="normal">1455</span>
-<span class="normal">1456</span>
-<span class="normal">1457</span>
-<span class="normal">1458</span>
-<span class="normal">1459</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1458</span>
+<span class="normal">1459</span>
+<span class="normal">1460</span>
+<span class="normal">1461</span>
+<span class="normal">1462</span>
+<span class="normal">1463</span>
+<span class="normal">1464</span>
+<span class="normal">1465</span>
+<span class="normal">1466</span>
+<span class="normal">1467</span>
+<span class="normal">1468</span>
+<span class="normal">1469</span>
+<span class="normal">1470</span>
+<span class="normal">1471</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">is_edge_manifold</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether every undirected edge is shared by one or two faces.</span>
@@ -10656,19 +10681,7 @@ keys, which is cheaper than building the adjacency table for it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1461</span>
-<span class="normal">1462</span>
-<span class="normal">1463</span>
-<span class="normal">1464</span>
-<span class="normal">1465</span>
-<span class="normal">1466</span>
-<span class="normal">1467</span>
-<span class="normal">1468</span>
-<span class="normal">1469</span>
-<span class="normal">1470</span>
-<span class="normal">1471</span>
-<span class="normal">1472</span>
-<span class="normal">1473</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1473</span>
 <span class="normal">1474</span>
 <span class="normal">1475</span>
 <span class="normal">1476</span>
@@ -10680,7 +10693,19 @@ keys, which is cheaper than building the adjacency table for it.</p>
 <span class="normal">1482</span>
 <span class="normal">1483</span>
 <span class="normal">1484</span>
-<span class="normal">1485</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1485</span>
+<span class="normal">1486</span>
+<span class="normal">1487</span>
+<span class="normal">1488</span>
+<span class="normal">1489</span>
+<span class="normal">1490</span>
+<span class="normal">1491</span>
+<span class="normal">1492</span>
+<span class="normal">1493</span>
+<span class="normal">1494</span>
+<span class="normal">1495</span>
+<span class="normal">1496</span>
+<span class="normal">1497</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">is_vertex_manifold</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether every referenced vertex has a single edge-connected fan of faces.</span>
@@ -10741,23 +10766,23 @@ keys, which is cheaper than building the adjacency table for it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1487</span>
-<span class="normal">1488</span>
-<span class="normal">1489</span>
-<span class="normal">1490</span>
-<span class="normal">1491</span>
-<span class="normal">1492</span>
-<span class="normal">1493</span>
-<span class="normal">1494</span>
-<span class="normal">1495</span>
-<span class="normal">1496</span>
-<span class="normal">1497</span>
-<span class="normal">1498</span>
-<span class="normal">1499</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1499</span>
 <span class="normal">1500</span>
 <span class="normal">1501</span>
 <span class="normal">1502</span>
-<span class="normal">1503</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1503</span>
+<span class="normal">1504</span>
+<span class="normal">1505</span>
+<span class="normal">1506</span>
+<span class="normal">1507</span>
+<span class="normal">1508</span>
+<span class="normal">1509</span>
+<span class="normal">1510</span>
+<span class="normal">1511</span>
+<span class="normal">1512</span>
+<span class="normal">1513</span>
+<span class="normal">1514</span>
+<span class="normal">1515</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">is_winding_consistent</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether every shared edge is traversed in opposite directions by its two faces.</span>
@@ -10812,25 +10837,25 @@ precomputed adjacency.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1505</span>
-<span class="normal">1506</span>
-<span class="normal">1507</span>
-<span class="normal">1508</span>
-<span class="normal">1509</span>
-<span class="normal">1510</span>
-<span class="normal">1511</span>
-<span class="normal">1512</span>
-<span class="normal">1513</span>
-<span class="normal">1514</span>
-<span class="normal">1515</span>
-<span class="normal">1516</span>
-<span class="normal">1517</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1517</span>
 <span class="normal">1518</span>
 <span class="normal">1519</span>
 <span class="normal">1520</span>
 <span class="normal">1521</span>
 <span class="normal">1522</span>
-<span class="normal">1523</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1523</span>
+<span class="normal">1524</span>
+<span class="normal">1525</span>
+<span class="normal">1526</span>
+<span class="normal">1527</span>
+<span class="normal">1528</span>
+<span class="normal">1529</span>
+<span class="normal">1530</span>
+<span class="normal">1531</span>
+<span class="normal">1532</span>
+<span class="normal">1533</span>
+<span class="normal">1534</span>
+<span class="normal">1535</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">is_orientable</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether the faces admit a consistent orientation (allowing per-face flips).</span>
@@ -10898,19 +10923,7 @@ taking a <code>wp.Mesh</code> directly.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1525</span>
-<span class="normal">1526</span>
-<span class="normal">1527</span>
-<span class="normal">1528</span>
-<span class="normal">1529</span>
-<span class="normal">1530</span>
-<span class="normal">1531</span>
-<span class="normal">1532</span>
-<span class="normal">1533</span>
-<span class="normal">1534</span>
-<span class="normal">1535</span>
-<span class="normal">1536</span>
-<span class="normal">1537</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1537</span>
 <span class="normal">1538</span>
 <span class="normal">1539</span>
 <span class="normal">1540</span>
@@ -10930,7 +10943,19 @@ taking a <code>wp.Mesh</code> directly.</p>
 <span class="normal">1554</span>
 <span class="normal">1555</span>
 <span class="normal">1556</span>
-<span class="normal">1557</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1557</span>
+<span class="normal">1558</span>
+<span class="normal">1559</span>
+<span class="normal">1560</span>
+<span class="normal">1561</span>
+<span class="normal">1562</span>
+<span class="normal">1563</span>
+<span class="normal">1564</span>
+<span class="normal">1565</span>
+<span class="normal">1566</span>
+<span class="normal">1567</span>
+<span class="normal">1568</span>
+<span class="normal">1569</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">is_watertight</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether the mesh bounds a closed volume with no self-intersections.</span>
@@ -11028,26 +11053,26 @@ taking a <code>wp.Mesh</code> directly.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1559</span>
-<span class="normal">1560</span>
-<span class="normal">1561</span>
-<span class="normal">1562</span>
-<span class="normal">1563</span>
-<span class="normal">1564</span>
-<span class="normal">1565</span>
-<span class="normal">1566</span>
-<span class="normal">1567</span>
-<span class="normal">1568</span>
-<span class="normal">1569</span>
-<span class="normal">1570</span>
-<span class="normal">1571</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1571</span>
 <span class="normal">1572</span>
 <span class="normal">1573</span>
 <span class="normal">1574</span>
 <span class="normal">1575</span>
 <span class="normal">1576</span>
 <span class="normal">1577</span>
-<span class="normal">1578</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1578</span>
+<span class="normal">1579</span>
+<span class="normal">1580</span>
+<span class="normal">1581</span>
+<span class="normal">1582</span>
+<span class="normal">1583</span>
+<span class="normal">1584</span>
+<span class="normal">1585</span>
+<span class="normal">1586</span>
+<span class="normal">1587</span>
+<span class="normal">1588</span>
+<span class="normal">1589</span>
+<span class="normal">1590</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">is_self_intersecting</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether any two non-adjacent triangles of the mesh intersect.</span>
@@ -11113,24 +11138,24 @@ winding-consistent, and enclosing a positive signed volume.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1580</span>
-<span class="normal">1581</span>
-<span class="normal">1582</span>
-<span class="normal">1583</span>
-<span class="normal">1584</span>
-<span class="normal">1585</span>
-<span class="normal">1586</span>
-<span class="normal">1587</span>
-<span class="normal">1588</span>
-<span class="normal">1589</span>
-<span class="normal">1590</span>
-<span class="normal">1591</span>
-<span class="normal">1592</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1592</span>
 <span class="normal">1593</span>
 <span class="normal">1594</span>
 <span class="normal">1595</span>
 <span class="normal">1596</span>
-<span class="normal">1597</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1597</span>
+<span class="normal">1598</span>
+<span class="normal">1599</span>
+<span class="normal">1600</span>
+<span class="normal">1601</span>
+<span class="normal">1602</span>
+<span class="normal">1603</span>
+<span class="normal">1604</span>
+<span class="normal">1605</span>
+<span class="normal">1606</span>
+<span class="normal">1607</span>
+<span class="normal">1608</span>
+<span class="normal">1609</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">is_volume</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether the mesh is a valid closed volume with outward-facing normals.</span>
@@ -11195,19 +11220,7 @@ precision -- which is what this class's own <code>float32</code> <code>cotmatrix
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1604</span>
-<span class="normal">1605</span>
-<span class="normal">1606</span>
-<span class="normal">1607</span>
-<span class="normal">1608</span>
-<span class="normal">1609</span>
-<span class="normal">1610</span>
-<span class="normal">1611</span>
-<span class="normal">1612</span>
-<span class="normal">1613</span>
-<span class="normal">1614</span>
-<span class="normal">1615</span>
-<span class="normal">1616</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1616</span>
 <span class="normal">1617</span>
 <span class="normal">1618</span>
 <span class="normal">1619</span>
@@ -11216,7 +11229,19 @@ precision -- which is what this class's own <code>float32</code> <code>cotmatrix
 <span class="normal">1622</span>
 <span class="normal">1623</span>
 <span class="normal">1624</span>
-<span class="normal">1625</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1625</span>
+<span class="normal">1626</span>
+<span class="normal">1627</span>
+<span class="normal">1628</span>
+<span class="normal">1629</span>
+<span class="normal">1630</span>
+<span class="normal">1631</span>
+<span class="normal">1632</span>
+<span class="normal">1633</span>
+<span class="normal">1634</span>
+<span class="normal">1635</span>
+<span class="normal">1636</span>
+<span class="normal">1637</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">cotmatrix_entries</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(n_faces, 3)`` per-triangle half-cotangent weights, in igl's edge order.</span>
@@ -11301,19 +11326,7 @@ when building one of them for this mesh at another dtype or diffusion time.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1627</span>
-<span class="normal">1628</span>
-<span class="normal">1629</span>
-<span class="normal">1630</span>
-<span class="normal">1631</span>
-<span class="normal">1632</span>
-<span class="normal">1633</span>
-<span class="normal">1634</span>
-<span class="normal">1635</span>
-<span class="normal">1636</span>
-<span class="normal">1637</span>
-<span class="normal">1638</span>
-<span class="normal">1639</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1639</span>
 <span class="normal">1640</span>
 <span class="normal">1641</span>
 <span class="normal">1642</span>
@@ -11339,7 +11352,19 @@ when building one of them for this mesh at another dtype or diffusion time.</p>
 <span class="normal">1662</span>
 <span class="normal">1663</span>
 <span class="normal">1664</span>
-<span class="normal">1665</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1665</span>
+<span class="normal">1666</span>
+<span class="normal">1667</span>
+<span class="normal">1668</span>
+<span class="normal">1669</span>
+<span class="normal">1670</span>
+<span class="normal">1671</span>
+<span class="normal">1672</span>
+<span class="normal">1673</span>
+<span class="normal">1674</span>
+<span class="normal">1675</span>
+<span class="normal">1676</span>
+<span class="normal">1677</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">mesh_operator_pattern</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">MeshOperatorPattern</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Sparsity of the cotangent Laplacian on these faces, with each entry's contributing corners.</span>
@@ -11445,19 +11470,7 @@ operators, and <code>heat_operators</code> caches the one they share.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1667</span>
-<span class="normal">1668</span>
-<span class="normal">1669</span>
-<span class="normal">1670</span>
-<span class="normal">1671</span>
-<span class="normal">1672</span>
-<span class="normal">1673</span>
-<span class="normal">1674</span>
-<span class="normal">1675</span>
-<span class="normal">1676</span>
-<span class="normal">1677</span>
-<span class="normal">1678</span>
-<span class="normal">1679</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1679</span>
 <span class="normal">1680</span>
 <span class="normal">1681</span>
 <span class="normal">1682</span>
@@ -11490,7 +11503,19 @@ operators, and <code>heat_operators</code> caches the one they share.</p>
 <span class="normal">1709</span>
 <span class="normal">1710</span>
 <span class="normal">1711</span>
-<span class="normal">1712</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1712</span>
+<span class="normal">1713</span>
+<span class="normal">1714</span>
+<span class="normal">1715</span>
+<span class="normal">1716</span>
+<span class="normal">1717</span>
+<span class="normal">1718</span>
+<span class="normal">1719</span>
+<span class="normal">1720</span>
+<span class="normal">1721</span>
+<span class="normal">1722</span>
+<span class="normal">1723</span>
+<span class="normal">1724</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">cotmatrix</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(n_vertices, n_vertices)`` cotangent stiffness (discrete Laplace-Beltrami) matrix.</span>
@@ -11593,19 +11618,7 @@ array widened.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1714</span>
-<span class="normal">1715</span>
-<span class="normal">1716</span>
-<span class="normal">1717</span>
-<span class="normal">1718</span>
-<span class="normal">1719</span>
-<span class="normal">1720</span>
-<span class="normal">1721</span>
-<span class="normal">1722</span>
-<span class="normal">1723</span>
-<span class="normal">1724</span>
-<span class="normal">1725</span>
-<span class="normal">1726</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1726</span>
 <span class="normal">1727</span>
 <span class="normal">1728</span>
 <span class="normal">1729</span>
@@ -11625,7 +11638,19 @@ array widened.</p>
 <span class="normal">1743</span>
 <span class="normal">1744</span>
 <span class="normal">1745</span>
-<span class="normal">1746</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1746</span>
+<span class="normal">1747</span>
+<span class="normal">1748</span>
+<span class="normal">1749</span>
+<span class="normal">1750</span>
+<span class="normal">1751</span>
+<span class="normal">1752</span>
+<span class="normal">1753</span>
+<span class="normal">1754</span>
+<span class="normal">1755</span>
+<span class="normal">1756</span>
+<span class="normal">1757</span>
+<span class="normal">1758</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix_entries</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(n_vertices,)`` barycentric lumped mass: a third of each incident triangle's area.</span>
@@ -11708,19 +11733,7 @@ this one; the two differ only on a mesh with an open boundary.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1748</span>
-<span class="normal">1749</span>
-<span class="normal">1750</span>
-<span class="normal">1751</span>
-<span class="normal">1752</span>
-<span class="normal">1753</span>
-<span class="normal">1754</span>
-<span class="normal">1755</span>
-<span class="normal">1756</span>
-<span class="normal">1757</span>
-<span class="normal">1758</span>
-<span class="normal">1759</span>
-<span class="normal">1760</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1760</span>
 <span class="normal">1761</span>
 <span class="normal">1762</span>
 <span class="normal">1763</span>
@@ -11731,7 +11744,19 @@ this one; the two differ only on a mesh with an open boundary.</p>
 <span class="normal">1768</span>
 <span class="normal">1769</span>
 <span class="normal">1770</span>
-<span class="normal">1771</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1771</span>
+<span class="normal">1772</span>
+<span class="normal">1773</span>
+<span class="normal">1774</span>
+<span class="normal">1775</span>
+<span class="normal">1776</span>
+<span class="normal">1777</span>
+<span class="normal">1778</span>
+<span class="normal">1779</span>
+<span class="normal">1780</span>
+<span class="normal">1781</span>
+<span class="normal">1782</span>
+<span class="normal">1783</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">laplacian_operator</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(n_vertices, n_vertices)`` row-normalized 1-ring averaging (uniform / umbrella) Laplacian.</span>
@@ -11799,19 +11824,7 @@ from it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1773</span>
-<span class="normal">1774</span>
-<span class="normal">1775</span>
-<span class="normal">1776</span>
-<span class="normal">1777</span>
-<span class="normal">1778</span>
-<span class="normal">1779</span>
-<span class="normal">1780</span>
-<span class="normal">1781</span>
-<span class="normal">1782</span>
-<span class="normal">1783</span>
-<span class="normal">1784</span>
-<span class="normal">1785</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1785</span>
 <span class="normal">1786</span>
 <span class="normal">1787</span>
 <span class="normal">1788</span>
@@ -11831,7 +11844,37 @@ from it.</p>
 <span class="normal">1802</span>
 <span class="normal">1803</span>
 <span class="normal">1804</span>
-<span class="normal">1805</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1805</span>
+<span class="normal">1806</span>
+<span class="normal">1807</span>
+<span class="normal">1808</span>
+<span class="normal">1809</span>
+<span class="normal">1810</span>
+<span class="normal">1811</span>
+<span class="normal">1812</span>
+<span class="normal">1813</span>
+<span class="normal">1814</span>
+<span class="normal">1815</span>
+<span class="normal">1816</span>
+<span class="normal">1817</span>
+<span class="normal">1818</span>
+<span class="normal">1819</span>
+<span class="normal">1820</span>
+<span class="normal">1821</span>
+<span class="normal">1822</span>
+<span class="normal">1823</span>
+<span class="normal">1824</span>
+<span class="normal">1825</span>
+<span class="normal">1826</span>
+<span class="normal">1827</span>
+<span class="normal">1828</span>
+<span class="normal">1829</span>
+<span class="normal">1830</span>
+<span class="normal">1831</span>
+<span class="normal">1832</span>
+<span class="normal">1833</span>
+<span class="normal">1834</span>
+<span class="normal">1835</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    ``(3 * n_faces,)`` rotation carrying a tangent vector across each halfedge, in (-pi, pi].</span>
@@ -11856,14 +11899,32 @@ from it.</p>
 <span class="sd">    print(mesh.halfedge_transport_angles.shape)  # (240,)</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
+    <span class="c1"># Imported here so that importing this module does not load the kernel module.</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">ordito.kernels</span><span class="w"> </span><span class="kn">import</span> <span class="n">tangent_space</span> <span class="k">as</span> <span class="n">kernel_tangent_space</span>
+
+    <span class="n">device</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="o">.</span><span class="n">device</span>
     <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The cached corner angles when `vertex_normals` already formed them; otherwise the ring</span>
+    <span class="c1"># walk forms them itself, which costs less than building the table.</span>
     <span class="n">tangent_angles</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">tangent_space</span><span class="o">.</span><span class="n">halfedge_tangent_angles</span><span class="p">(</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_vertices</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span> <span class="n">rings</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">vertex_one_rings</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_vertices</span><span class="p">,</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span>
+        <span class="n">face_angles</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="s2">"odt.Array2dFloat32 | None"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"face_angles"</span><span class="p">)),</span>
+        <span class="n">rings</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">vertex_one_rings</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">tangent_space</span><span class="o">.</span><span class="n">halfedge_transport_angles</span><span class="p">(</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_vertices</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span> <span class="n">twins</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">halfedge_twins</span><span class="p">,</span> <span class="n">tangent_angles</span><span class="o">=</span><span class="n">tangent_angles</span>
+    <span class="c1"># The transport kernel itself, since `halfedge_transport_angles` verifies a supplied twin</span>
+    <span class="c1"># table with a launch and a readback: these are this mesh's own `halfedge_twins`, which the</span>
+    <span class="c1"># `vertex_one_rings` build above already verified.</span>
+    <span class="n">twins</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">halfedge_twins</span>
+    <span class="n">rho</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">twins</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">halfedge_transport_angles</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">twins</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">twins</span><span class="p">,</span> <span class="n">tangent_angles</span><span class="p">,</span> <span class="n">rho</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="k">return</span> <span class="n">rho</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -11930,29 +11991,29 @@ from it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1807</span>
-<span class="normal">1808</span>
-<span class="normal">1809</span>
-<span class="normal">1810</span>
-<span class="normal">1811</span>
-<span class="normal">1812</span>
-<span class="normal">1813</span>
-<span class="normal">1814</span>
-<span class="normal">1815</span>
-<span class="normal">1816</span>
-<span class="normal">1817</span>
-<span class="normal">1818</span>
-<span class="normal">1819</span>
-<span class="normal">1820</span>
-<span class="normal">1821</span>
-<span class="normal">1822</span>
-<span class="normal">1823</span>
-<span class="normal">1824</span>
-<span class="normal">1825</span>
-<span class="normal">1826</span>
-<span class="normal">1827</span>
-<span class="normal">1828</span>
-<span class="normal">1829</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1837</span>
+<span class="normal">1838</span>
+<span class="normal">1839</span>
+<span class="normal">1840</span>
+<span class="normal">1841</span>
+<span class="normal">1842</span>
+<span class="normal">1843</span>
+<span class="normal">1844</span>
+<span class="normal">1845</span>
+<span class="normal">1846</span>
+<span class="normal">1847</span>
+<span class="normal">1848</span>
+<span class="normal">1849</span>
+<span class="normal">1850</span>
+<span class="normal">1851</span>
+<span class="normal">1852</span>
+<span class="normal">1853</span>
+<span class="normal">1854</span>
+<span class="normal">1855</span>
+<span class="normal">1856</span>
+<span class="normal">1857</span>
+<span class="normal">1858</span>
+<span class="normal">1859</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">vertex_tangent_frames</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]]:</span>
@@ -12025,33 +12086,38 @@ bundle is assembled over the cached <code>mesh_operator_pattern</code>, which th
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1831</span>
-<span class="normal">1832</span>
-<span class="normal">1833</span>
-<span class="normal">1834</span>
-<span class="normal">1835</span>
-<span class="normal">1836</span>
-<span class="normal">1837</span>
-<span class="normal">1838</span>
-<span class="normal">1839</span>
-<span class="normal">1840</span>
-<span class="normal">1841</span>
-<span class="normal">1842</span>
-<span class="normal">1843</span>
-<span class="normal">1844</span>
-<span class="normal">1845</span>
-<span class="normal">1846</span>
-<span class="normal">1847</span>
-<span class="normal">1848</span>
-<span class="normal">1849</span>
-<span class="normal">1850</span>
-<span class="normal">1851</span>
-<span class="normal">1852</span>
-<span class="normal">1853</span>
-<span class="normal">1854</span>
-<span class="normal">1855</span>
-<span class="normal">1856</span>
-<span class="normal">1857</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1861</span>
+<span class="normal">1862</span>
+<span class="normal">1863</span>
+<span class="normal">1864</span>
+<span class="normal">1865</span>
+<span class="normal">1866</span>
+<span class="normal">1867</span>
+<span class="normal">1868</span>
+<span class="normal">1869</span>
+<span class="normal">1870</span>
+<span class="normal">1871</span>
+<span class="normal">1872</span>
+<span class="normal">1873</span>
+<span class="normal">1874</span>
+<span class="normal">1875</span>
+<span class="normal">1876</span>
+<span class="normal">1877</span>
+<span class="normal">1878</span>
+<span class="normal">1879</span>
+<span class="normal">1880</span>
+<span class="normal">1881</span>
+<span class="normal">1882</span>
+<span class="normal">1883</span>
+<span class="normal">1884</span>
+<span class="normal">1885</span>
+<span class="normal">1886</span>
+<span class="normal">1887</span>
+<span class="normal">1888</span>
+<span class="normal">1889</span>
+<span class="normal">1890</span>
+<span class="normal">1891</span>
+<span class="normal">1892</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">heat_operators</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">HeatOperators</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Source-independent operator bundle for the heat method, at the default diffusion time.</span>
@@ -12072,12 +12138,17 @@ bundle is assembled over the cached <code>mesh_operator_pattern</code>, which th
 <span class="sd">    [`ordito.heat.heat_operators`][]</span>
 <span class="sd">    [`vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators]</span>
 <span class="sd">    """</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">heat_operators</span><span class="p">(</span>
+    <span class="c1"># The cached half-cotangents when there are any; otherwise the assembly forms them in its</span>
+    <span class="c1"># own pass over the faces (``cotmatrix_entries``' table, bit for bit), and</span>
+    <span class="c1"># `cotmatrix_entries` then serves those.</span>
+    <span class="n">operators</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">heat_operators</span><span class="p">(</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_vertices</span><span class="p">,</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span>
-        <span class="n">cot_entries</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cotmatrix_entries</span><span class="p">,</span>
+        <span class="n">cot_entries</span><span class="o">=</span><span class="n">cast</span><span class="p">(</span><span class="s2">"odt.Array2dFloat32 | None"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"cotmatrix_entries"</span><span class="p">)),</span>
         <span class="n">pattern</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">mesh_operator_pattern</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">"cotmatrix_entries"</span><span class="p">,</span> <span class="n">operators</span><span class="p">[</span><span class="mi">5</span><span class="p">])</span>
+    <span class="k">return</span> <span class="n">operators</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -12137,42 +12208,7 @@ share a diffusion time.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1859</span>
-<span class="normal">1860</span>
-<span class="normal">1861</span>
-<span class="normal">1862</span>
-<span class="normal">1863</span>
-<span class="normal">1864</span>
-<span class="normal">1865</span>
-<span class="normal">1866</span>
-<span class="normal">1867</span>
-<span class="normal">1868</span>
-<span class="normal">1869</span>
-<span class="normal">1870</span>
-<span class="normal">1871</span>
-<span class="normal">1872</span>
-<span class="normal">1873</span>
-<span class="normal">1874</span>
-<span class="normal">1875</span>
-<span class="normal">1876</span>
-<span class="normal">1877</span>
-<span class="normal">1878</span>
-<span class="normal">1879</span>
-<span class="normal">1880</span>
-<span class="normal">1881</span>
-<span class="normal">1882</span>
-<span class="normal">1883</span>
-<span class="normal">1884</span>
-<span class="normal">1885</span>
-<span class="normal">1886</span>
-<span class="normal">1887</span>
-<span class="normal">1888</span>
-<span class="normal">1889</span>
-<span class="normal">1890</span>
-<span class="normal">1891</span>
-<span class="normal">1892</span>
-<span class="normal">1893</span>
-<span class="normal">1894</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1894</span>
 <span class="normal">1895</span>
 <span class="normal">1896</span>
 <span class="normal">1897</span>
@@ -12181,7 +12217,43 @@ share a diffusion time.</p>
 <span class="normal">1900</span>
 <span class="normal">1901</span>
 <span class="normal">1902</span>
-<span class="normal">1903</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
+<span class="normal">1903</span>
+<span class="normal">1904</span>
+<span class="normal">1905</span>
+<span class="normal">1906</span>
+<span class="normal">1907</span>
+<span class="normal">1908</span>
+<span class="normal">1909</span>
+<span class="normal">1910</span>
+<span class="normal">1911</span>
+<span class="normal">1912</span>
+<span class="normal">1913</span>
+<span class="normal">1914</span>
+<span class="normal">1915</span>
+<span class="normal">1916</span>
+<span class="normal">1917</span>
+<span class="normal">1918</span>
+<span class="normal">1919</span>
+<span class="normal">1920</span>
+<span class="normal">1921</span>
+<span class="normal">1922</span>
+<span class="normal">1923</span>
+<span class="normal">1924</span>
+<span class="normal">1925</span>
+<span class="normal">1926</span>
+<span class="normal">1927</span>
+<span class="normal">1928</span>
+<span class="normal">1929</span>
+<span class="normal">1930</span>
+<span class="normal">1931</span>
+<span class="normal">1932</span>
+<span class="normal">1933</span>
+<span class="normal">1934</span>
+<span class="normal">1935</span>
+<span class="normal">1936</span>
+<span class="normal">1937</span>
+<span class="normal">1938</span>
+<span class="normal">1939</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@_CachedProperty</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">vector_heat_operators</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">VectorHeatOperators</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Operator bundle for the vector heat method, at the default diffusion time.</span>
@@ -12223,8 +12295,9 @@ share a diffusion time.</p>
         <span class="n">transport_angles</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">halfedge_transport_angles</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="c1"># The scalar bundle the vector assembly built alongside (one sparsity pattern for both)</span>
-    <span class="c1"># is this class's own `heat_operators`.</span>
+    <span class="c1"># is this class's own `heat_operators`, and its half-cotangents are `cotmatrix_entries`.</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">"heat_operators"</span><span class="p">,</span> <span class="n">bundle</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="s2">"cotmatrix_entries"</span><span class="p">,</span> <span class="n">bundle</span><span class="p">[</span><span class="mi">1</span><span class="p">][</span><span class="mi">5</span><span class="p">])</span>
     <span class="k">return</span> <span class="n">bundle</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -12366,43 +12439,7 @@ dropping the mesh. They are not carried into the meshes <code>transform</code>, 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1905</span>
-<span class="normal">1906</span>
-<span class="normal">1907</span>
-<span class="normal">1908</span>
-<span class="normal">1909</span>
-<span class="normal">1910</span>
-<span class="normal">1911</span>
-<span class="normal">1912</span>
-<span class="normal">1913</span>
-<span class="normal">1914</span>
-<span class="normal">1915</span>
-<span class="normal">1916</span>
-<span class="normal">1917</span>
-<span class="normal">1918</span>
-<span class="normal">1919</span>
-<span class="normal">1920</span>
-<span class="normal">1921</span>
-<span class="normal">1922</span>
-<span class="normal">1923</span>
-<span class="normal">1924</span>
-<span class="normal">1925</span>
-<span class="normal">1926</span>
-<span class="normal">1927</span>
-<span class="normal">1928</span>
-<span class="normal">1929</span>
-<span class="normal">1930</span>
-<span class="normal">1931</span>
-<span class="normal">1932</span>
-<span class="normal">1933</span>
-<span class="normal">1934</span>
-<span class="normal">1935</span>
-<span class="normal">1936</span>
-<span class="normal">1937</span>
-<span class="normal">1938</span>
-<span class="normal">1939</span>
-<span class="normal">1940</span>
-<span class="normal">1941</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1941</span>
 <span class="normal">1942</span>
 <span class="normal">1943</span>
 <span class="normal">1944</span>
@@ -12426,7 +12463,43 @@ dropping the mesh. They are not carried into the meshes <code>transform</code>, 
 <span class="normal">1962</span>
 <span class="normal">1963</span>
 <span class="normal">1964</span>
-<span class="normal">1965</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_solver</span><span class="p">(</span>
+<span class="normal">1965</span>
+<span class="normal">1966</span>
+<span class="normal">1967</span>
+<span class="normal">1968</span>
+<span class="normal">1969</span>
+<span class="normal">1970</span>
+<span class="normal">1971</span>
+<span class="normal">1972</span>
+<span class="normal">1973</span>
+<span class="normal">1974</span>
+<span class="normal">1975</span>
+<span class="normal">1976</span>
+<span class="normal">1977</span>
+<span class="normal">1978</span>
+<span class="normal">1979</span>
+<span class="normal">1980</span>
+<span class="normal">1981</span>
+<span class="normal">1982</span>
+<span class="normal">1983</span>
+<span class="normal">1984</span>
+<span class="normal">1985</span>
+<span class="normal">1986</span>
+<span class="normal">1987</span>
+<span class="normal">1988</span>
+<span class="normal">1989</span>
+<span class="normal">1990</span>
+<span class="normal">1991</span>
+<span class="normal">1992</span>
+<span class="normal">1993</span>
+<span class="normal">1994</span>
+<span class="normal">1995</span>
+<span class="normal">1996</span>
+<span class="normal">1997</span>
+<span class="normal">1998</span>
+<span class="normal">1999</span>
+<span class="normal">2000</span>
+<span class="normal">2001</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_solver</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">HeatSolver</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -12577,43 +12650,7 @@ dropping the mesh. They are not carried into the meshes <code>transform</code>, 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1967</span>
-<span class="normal">1968</span>
-<span class="normal">1969</span>
-<span class="normal">1970</span>
-<span class="normal">1971</span>
-<span class="normal">1972</span>
-<span class="normal">1973</span>
-<span class="normal">1974</span>
-<span class="normal">1975</span>
-<span class="normal">1976</span>
-<span class="normal">1977</span>
-<span class="normal">1978</span>
-<span class="normal">1979</span>
-<span class="normal">1980</span>
-<span class="normal">1981</span>
-<span class="normal">1982</span>
-<span class="normal">1983</span>
-<span class="normal">1984</span>
-<span class="normal">1985</span>
-<span class="normal">1986</span>
-<span class="normal">1987</span>
-<span class="normal">1988</span>
-<span class="normal">1989</span>
-<span class="normal">1990</span>
-<span class="normal">1991</span>
-<span class="normal">1992</span>
-<span class="normal">1993</span>
-<span class="normal">1994</span>
-<span class="normal">1995</span>
-<span class="normal">1996</span>
-<span class="normal">1997</span>
-<span class="normal">1998</span>
-<span class="normal">1999</span>
-<span class="normal">2000</span>
-<span class="normal">2001</span>
-<span class="normal">2002</span>
-<span class="normal">2003</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2003</span>
 <span class="normal">2004</span>
 <span class="normal">2005</span>
 <span class="normal">2006</span>
@@ -12626,7 +12663,43 @@ dropping the mesh. They are not carried into the meshes <code>transform</code>, 
 <span class="normal">2013</span>
 <span class="normal">2014</span>
 <span class="normal">2015</span>
-<span class="normal">2016</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fixed_vertex_solver</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">od</span><span class="o">.</span><span class="n">parametrization</span><span class="o">.</span><span class="n">FixedVertexSolver</span><span class="p">:</span>
+<span class="normal">2016</span>
+<span class="normal">2017</span>
+<span class="normal">2018</span>
+<span class="normal">2019</span>
+<span class="normal">2020</span>
+<span class="normal">2021</span>
+<span class="normal">2022</span>
+<span class="normal">2023</span>
+<span class="normal">2024</span>
+<span class="normal">2025</span>
+<span class="normal">2026</span>
+<span class="normal">2027</span>
+<span class="normal">2028</span>
+<span class="normal">2029</span>
+<span class="normal">2030</span>
+<span class="normal">2031</span>
+<span class="normal">2032</span>
+<span class="normal">2033</span>
+<span class="normal">2034</span>
+<span class="normal">2035</span>
+<span class="normal">2036</span>
+<span class="normal">2037</span>
+<span class="normal">2038</span>
+<span class="normal">2039</span>
+<span class="normal">2040</span>
+<span class="normal">2041</span>
+<span class="normal">2042</span>
+<span class="normal">2043</span>
+<span class="normal">2044</span>
+<span class="normal">2045</span>
+<span class="normal">2046</span>
+<span class="normal">2047</span>
+<span class="normal">2048</span>
+<span class="normal">2049</span>
+<span class="normal">2050</span>
+<span class="normal">2051</span>
+<span class="normal">2052</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fixed_vertex_solver</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">od</span><span class="o">.</span><span class="n">parametrization</span><span class="o">.</span><span class="n">FixedVertexSolver</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return this mesh's [`FixedVertexSolver`][ordito.parametrization.FixedVertexSolver].</span>
 
@@ -12811,43 +12884,7 @@ this instead of the free function.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2018</span>
-<span class="normal">2019</span>
-<span class="normal">2020</span>
-<span class="normal">2021</span>
-<span class="normal">2022</span>
-<span class="normal">2023</span>
-<span class="normal">2024</span>
-<span class="normal">2025</span>
-<span class="normal">2026</span>
-<span class="normal">2027</span>
-<span class="normal">2028</span>
-<span class="normal">2029</span>
-<span class="normal">2030</span>
-<span class="normal">2031</span>
-<span class="normal">2032</span>
-<span class="normal">2033</span>
-<span class="normal">2034</span>
-<span class="normal">2035</span>
-<span class="normal">2036</span>
-<span class="normal">2037</span>
-<span class="normal">2038</span>
-<span class="normal">2039</span>
-<span class="normal">2040</span>
-<span class="normal">2041</span>
-<span class="normal">2042</span>
-<span class="normal">2043</span>
-<span class="normal">2044</span>
-<span class="normal">2045</span>
-<span class="normal">2046</span>
-<span class="normal">2047</span>
-<span class="normal">2048</span>
-<span class="normal">2049</span>
-<span class="normal">2050</span>
-<span class="normal">2051</span>
-<span class="normal">2052</span>
-<span class="normal">2053</span>
-<span class="normal">2054</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2054</span>
 <span class="normal">2055</span>
 <span class="normal">2056</span>
 <span class="normal">2057</span>
@@ -12856,7 +12893,43 @@ this instead of the free function.</p>
 <span class="normal">2060</span>
 <span class="normal">2061</span>
 <span class="normal">2062</span>
-<span class="normal">2063</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">contains</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
+<span class="normal">2063</span>
+<span class="normal">2064</span>
+<span class="normal">2065</span>
+<span class="normal">2066</span>
+<span class="normal">2067</span>
+<span class="normal">2068</span>
+<span class="normal">2069</span>
+<span class="normal">2070</span>
+<span class="normal">2071</span>
+<span class="normal">2072</span>
+<span class="normal">2073</span>
+<span class="normal">2074</span>
+<span class="normal">2075</span>
+<span class="normal">2076</span>
+<span class="normal">2077</span>
+<span class="normal">2078</span>
+<span class="normal">2079</span>
+<span class="normal">2080</span>
+<span class="normal">2081</span>
+<span class="normal">2082</span>
+<span class="normal">2083</span>
+<span class="normal">2084</span>
+<span class="normal">2085</span>
+<span class="normal">2086</span>
+<span class="normal">2087</span>
+<span class="normal">2088</span>
+<span class="normal">2089</span>
+<span class="normal">2090</span>
+<span class="normal">2091</span>
+<span class="normal">2092</span>
+<span class="normal">2093</span>
+<span class="normal">2094</span>
+<span class="normal">2095</span>
+<span class="normal">2096</span>
+<span class="normal">2097</span>
+<span class="normal">2098</span>
+<span class="normal">2099</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">contains</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Test which query points lie inside the mesh, by ray parity against the cached BVH.</span>
 
@@ -13040,43 +13113,7 @@ the points, where <code>trimesh.Trimesh.sample</code> returns them only on reque
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2065</span>
-<span class="normal">2066</span>
-<span class="normal">2067</span>
-<span class="normal">2068</span>
-<span class="normal">2069</span>
-<span class="normal">2070</span>
-<span class="normal">2071</span>
-<span class="normal">2072</span>
-<span class="normal">2073</span>
-<span class="normal">2074</span>
-<span class="normal">2075</span>
-<span class="normal">2076</span>
-<span class="normal">2077</span>
-<span class="normal">2078</span>
-<span class="normal">2079</span>
-<span class="normal">2080</span>
-<span class="normal">2081</span>
-<span class="normal">2082</span>
-<span class="normal">2083</span>
-<span class="normal">2084</span>
-<span class="normal">2085</span>
-<span class="normal">2086</span>
-<span class="normal">2087</span>
-<span class="normal">2088</span>
-<span class="normal">2089</span>
-<span class="normal">2090</span>
-<span class="normal">2091</span>
-<span class="normal">2092</span>
-<span class="normal">2093</span>
-<span class="normal">2094</span>
-<span class="normal">2095</span>
-<span class="normal">2096</span>
-<span class="normal">2097</span>
-<span class="normal">2098</span>
-<span class="normal">2099</span>
-<span class="normal">2100</span>
-<span class="normal">2101</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2101</span>
 <span class="normal">2102</span>
 <span class="normal">2103</span>
 <span class="normal">2104</span>
@@ -13086,7 +13123,43 @@ the points, where <code>trimesh.Trimesh.sample</code> returns them only on reque
 <span class="normal">2108</span>
 <span class="normal">2109</span>
 <span class="normal">2110</span>
-<span class="normal">2111</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample</span><span class="p">(</span>
+<span class="normal">2111</span>
+<span class="normal">2112</span>
+<span class="normal">2113</span>
+<span class="normal">2114</span>
+<span class="normal">2115</span>
+<span class="normal">2116</span>
+<span class="normal">2117</span>
+<span class="normal">2118</span>
+<span class="normal">2119</span>
+<span class="normal">2120</span>
+<span class="normal">2121</span>
+<span class="normal">2122</span>
+<span class="normal">2123</span>
+<span class="normal">2124</span>
+<span class="normal">2125</span>
+<span class="normal">2126</span>
+<span class="normal">2127</span>
+<span class="normal">2128</span>
+<span class="normal">2129</span>
+<span class="normal">2130</span>
+<span class="normal">2131</span>
+<span class="normal">2132</span>
+<span class="normal">2133</span>
+<span class="normal">2134</span>
+<span class="normal">2135</span>
+<span class="normal">2136</span>
+<span class="normal">2137</span>
+<span class="normal">2138</span>
+<span class="normal">2139</span>
+<span class="normal">2140</span>
+<span class="normal">2141</span>
+<span class="normal">2142</span>
+<span class="normal">2143</span>
+<span class="normal">2144</span>
+<span class="normal">2145</span>
+<span class="normal">2146</span>
+<span class="normal">2147</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sample</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -13348,43 +13421,7 @@ raw buffers.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2113</span>
-<span class="normal">2114</span>
-<span class="normal">2115</span>
-<span class="normal">2116</span>
-<span class="normal">2117</span>
-<span class="normal">2118</span>
-<span class="normal">2119</span>
-<span class="normal">2120</span>
-<span class="normal">2121</span>
-<span class="normal">2122</span>
-<span class="normal">2123</span>
-<span class="normal">2124</span>
-<span class="normal">2125</span>
-<span class="normal">2126</span>
-<span class="normal">2127</span>
-<span class="normal">2128</span>
-<span class="normal">2129</span>
-<span class="normal">2130</span>
-<span class="normal">2131</span>
-<span class="normal">2132</span>
-<span class="normal">2133</span>
-<span class="normal">2134</span>
-<span class="normal">2135</span>
-<span class="normal">2136</span>
-<span class="normal">2137</span>
-<span class="normal">2138</span>
-<span class="normal">2139</span>
-<span class="normal">2140</span>
-<span class="normal">2141</span>
-<span class="normal">2142</span>
-<span class="normal">2143</span>
-<span class="normal">2144</span>
-<span class="normal">2145</span>
-<span class="normal">2146</span>
-<span class="normal">2147</span>
-<span class="normal">2148</span>
-<span class="normal">2149</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2149</span>
 <span class="normal">2150</span>
 <span class="normal">2151</span>
 <span class="normal">2152</span>
@@ -13470,7 +13507,43 @@ raw buffers.</p>
 <span class="normal">2232</span>
 <span class="normal">2233</span>
 <span class="normal">2234</span>
-<span class="normal">2235</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transform</span><span class="p">(</span>
+<span class="normal">2235</span>
+<span class="normal">2236</span>
+<span class="normal">2237</span>
+<span class="normal">2238</span>
+<span class="normal">2239</span>
+<span class="normal">2240</span>
+<span class="normal">2241</span>
+<span class="normal">2242</span>
+<span class="normal">2243</span>
+<span class="normal">2244</span>
+<span class="normal">2245</span>
+<span class="normal">2246</span>
+<span class="normal">2247</span>
+<span class="normal">2248</span>
+<span class="normal">2249</span>
+<span class="normal">2250</span>
+<span class="normal">2251</span>
+<span class="normal">2252</span>
+<span class="normal">2253</span>
+<span class="normal">2254</span>
+<span class="normal">2255</span>
+<span class="normal">2256</span>
+<span class="normal">2257</span>
+<span class="normal">2258</span>
+<span class="normal">2259</span>
+<span class="normal">2260</span>
+<span class="normal">2261</span>
+<span class="normal">2262</span>
+<span class="normal">2263</span>
+<span class="normal">2264</span>
+<span class="normal">2265</span>
+<span class="normal">2266</span>
+<span class="normal">2267</span>
+<span class="normal">2268</span>
+<span class="normal">2269</span>
+<span class="normal">2270</span>
+<span class="normal">2271</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transform</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">matrix</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat44</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">assume</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -13695,43 +13768,7 @@ unconditionally, so it turns a solid inside out.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2344</span>
-<span class="normal">2345</span>
-<span class="normal">2346</span>
-<span class="normal">2347</span>
-<span class="normal">2348</span>
-<span class="normal">2349</span>
-<span class="normal">2350</span>
-<span class="normal">2351</span>
-<span class="normal">2352</span>
-<span class="normal">2353</span>
-<span class="normal">2354</span>
-<span class="normal">2355</span>
-<span class="normal">2356</span>
-<span class="normal">2357</span>
-<span class="normal">2358</span>
-<span class="normal">2359</span>
-<span class="normal">2360</span>
-<span class="normal">2361</span>
-<span class="normal">2362</span>
-<span class="normal">2363</span>
-<span class="normal">2364</span>
-<span class="normal">2365</span>
-<span class="normal">2366</span>
-<span class="normal">2367</span>
-<span class="normal">2368</span>
-<span class="normal">2369</span>
-<span class="normal">2370</span>
-<span class="normal">2371</span>
-<span class="normal">2372</span>
-<span class="normal">2373</span>
-<span class="normal">2374</span>
-<span class="normal">2375</span>
-<span class="normal">2376</span>
-<span class="normal">2377</span>
-<span class="normal">2378</span>
-<span class="normal">2379</span>
-<span class="normal">2380</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2380</span>
 <span class="normal">2381</span>
 <span class="normal">2382</span>
 <span class="normal">2383</span>
@@ -13778,7 +13815,43 @@ unconditionally, so it turns a solid inside out.</p>
 <span class="normal">2424</span>
 <span class="normal">2425</span>
 <span class="normal">2426</span>
-<span class="normal">2427</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">invert</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
+<span class="normal">2427</span>
+<span class="normal">2428</span>
+<span class="normal">2429</span>
+<span class="normal">2430</span>
+<span class="normal">2431</span>
+<span class="normal">2432</span>
+<span class="normal">2433</span>
+<span class="normal">2434</span>
+<span class="normal">2435</span>
+<span class="normal">2436</span>
+<span class="normal">2437</span>
+<span class="normal">2438</span>
+<span class="normal">2439</span>
+<span class="normal">2440</span>
+<span class="normal">2441</span>
+<span class="normal">2442</span>
+<span class="normal">2443</span>
+<span class="normal">2444</span>
+<span class="normal">2445</span>
+<span class="normal">2446</span>
+<span class="normal">2447</span>
+<span class="normal">2448</span>
+<span class="normal">2449</span>
+<span class="normal">2450</span>
+<span class="normal">2451</span>
+<span class="normal">2452</span>
+<span class="normal">2453</span>
+<span class="normal">2454</span>
+<span class="normal">2455</span>
+<span class="normal">2456</span>
+<span class="normal">2457</span>
+<span class="normal">2458</span>
+<span class="normal">2459</span>
+<span class="normal">2460</span>
+<span class="normal">2461</span>
+<span class="normal">2462</span>
+<span class="normal">2463</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">invert</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return a new `Trimesh` with every face's winding reversed, flipping the surface's outside.</span>
 
@@ -13990,43 +14063,7 @@ current <code>vertices</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2429</span>
-<span class="normal">2430</span>
-<span class="normal">2431</span>
-<span class="normal">2432</span>
-<span class="normal">2433</span>
-<span class="normal">2434</span>
-<span class="normal">2435</span>
-<span class="normal">2436</span>
-<span class="normal">2437</span>
-<span class="normal">2438</span>
-<span class="normal">2439</span>
-<span class="normal">2440</span>
-<span class="normal">2441</span>
-<span class="normal">2442</span>
-<span class="normal">2443</span>
-<span class="normal">2444</span>
-<span class="normal">2445</span>
-<span class="normal">2446</span>
-<span class="normal">2447</span>
-<span class="normal">2448</span>
-<span class="normal">2449</span>
-<span class="normal">2450</span>
-<span class="normal">2451</span>
-<span class="normal">2452</span>
-<span class="normal">2453</span>
-<span class="normal">2454</span>
-<span class="normal">2455</span>
-<span class="normal">2456</span>
-<span class="normal">2457</span>
-<span class="normal">2458</span>
-<span class="normal">2459</span>
-<span class="normal">2460</span>
-<span class="normal">2461</span>
-<span class="normal">2462</span>
-<span class="normal">2463</span>
-<span class="normal">2464</span>
-<span class="normal">2465</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2465</span>
 <span class="normal">2466</span>
 <span class="normal">2467</span>
 <span class="normal">2468</span>
@@ -14036,7 +14073,43 @@ current <code>vertices</code>.</p>
 <span class="normal">2472</span>
 <span class="normal">2473</span>
 <span class="normal">2474</span>
-<span class="normal">2475</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">with_vertices</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
+<span class="normal">2475</span>
+<span class="normal">2476</span>
+<span class="normal">2477</span>
+<span class="normal">2478</span>
+<span class="normal">2479</span>
+<span class="normal">2480</span>
+<span class="normal">2481</span>
+<span class="normal">2482</span>
+<span class="normal">2483</span>
+<span class="normal">2484</span>
+<span class="normal">2485</span>
+<span class="normal">2486</span>
+<span class="normal">2487</span>
+<span class="normal">2488</span>
+<span class="normal">2489</span>
+<span class="normal">2490</span>
+<span class="normal">2491</span>
+<span class="normal">2492</span>
+<span class="normal">2493</span>
+<span class="normal">2494</span>
+<span class="normal">2495</span>
+<span class="normal">2496</span>
+<span class="normal">2497</span>
+<span class="normal">2498</span>
+<span class="normal">2499</span>
+<span class="normal">2500</span>
+<span class="normal">2501</span>
+<span class="normal">2502</span>
+<span class="normal">2503</span>
+<span class="normal">2504</span>
+<span class="normal">2505</span>
+<span class="normal">2506</span>
+<span class="normal">2507</span>
+<span class="normal">2508</span>
+<span class="normal">2509</span>
+<span class="normal">2510</span>
+<span class="normal">2511</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">with_vertices</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return a new `Trimesh` with different vertex positions but the same topology.</span>
 
@@ -14180,33 +14253,33 @@ current <code>vertices</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2477</span>
-<span class="normal">2478</span>
-<span class="normal">2479</span>
-<span class="normal">2480</span>
-<span class="normal">2481</span>
-<span class="normal">2482</span>
-<span class="normal">2483</span>
-<span class="normal">2484</span>
-<span class="normal">2485</span>
-<span class="normal">2486</span>
-<span class="normal">2487</span>
-<span class="normal">2488</span>
-<span class="normal">2489</span>
-<span class="normal">2490</span>
-<span class="normal">2491</span>
-<span class="normal">2492</span>
-<span class="normal">2493</span>
-<span class="normal">2494</span>
-<span class="normal">2495</span>
-<span class="normal">2496</span>
-<span class="normal">2497</span>
-<span class="normal">2498</span>
-<span class="normal">2499</span>
-<span class="normal">2500</span>
-<span class="normal">2501</span>
-<span class="normal">2502</span>
-<span class="normal">2503</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">with_faces</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2513</span>
+<span class="normal">2514</span>
+<span class="normal">2515</span>
+<span class="normal">2516</span>
+<span class="normal">2517</span>
+<span class="normal">2518</span>
+<span class="normal">2519</span>
+<span class="normal">2520</span>
+<span class="normal">2521</span>
+<span class="normal">2522</span>
+<span class="normal">2523</span>
+<span class="normal">2524</span>
+<span class="normal">2525</span>
+<span class="normal">2526</span>
+<span class="normal">2527</span>
+<span class="normal">2528</span>
+<span class="normal">2529</span>
+<span class="normal">2530</span>
+<span class="normal">2531</span>
+<span class="normal">2532</span>
+<span class="normal">2533</span>
+<span class="normal">2534</span>
+<span class="normal">2535</span>
+<span class="normal">2536</span>
+<span class="normal">2537</span>
+<span class="normal">2538</span>
+<span class="normal">2539</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">with_faces</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return a new `Trimesh` with different faces; no cached quantities are carried forward.</span>
 
@@ -14363,43 +14436,7 @@ changes, so every index-valued quantity on this mesh names different vertices th
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2505</span>
-<span class="normal">2506</span>
-<span class="normal">2507</span>
-<span class="normal">2508</span>
-<span class="normal">2509</span>
-<span class="normal">2510</span>
-<span class="normal">2511</span>
-<span class="normal">2512</span>
-<span class="normal">2513</span>
-<span class="normal">2514</span>
-<span class="normal">2515</span>
-<span class="normal">2516</span>
-<span class="normal">2517</span>
-<span class="normal">2518</span>
-<span class="normal">2519</span>
-<span class="normal">2520</span>
-<span class="normal">2521</span>
-<span class="normal">2522</span>
-<span class="normal">2523</span>
-<span class="normal">2524</span>
-<span class="normal">2525</span>
-<span class="normal">2526</span>
-<span class="normal">2527</span>
-<span class="normal">2528</span>
-<span class="normal">2529</span>
-<span class="normal">2530</span>
-<span class="normal">2531</span>
-<span class="normal">2532</span>
-<span class="normal">2533</span>
-<span class="normal">2534</span>
-<span class="normal">2535</span>
-<span class="normal">2536</span>
-<span class="normal">2537</span>
-<span class="normal">2538</span>
-<span class="normal">2539</span>
-<span class="normal">2540</span>
-<span class="normal">2541</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2541</span>
 <span class="normal">2542</span>
 <span class="normal">2543</span>
 <span class="normal">2544</span>
@@ -14415,7 +14452,43 @@ changes, so every index-valued quantity on this mesh names different vertices th
 <span class="normal">2554</span>
 <span class="normal">2555</span>
 <span class="normal">2556</span>
-<span class="normal">2557</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">submesh</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
+<span class="normal">2557</span>
+<span class="normal">2558</span>
+<span class="normal">2559</span>
+<span class="normal">2560</span>
+<span class="normal">2561</span>
+<span class="normal">2562</span>
+<span class="normal">2563</span>
+<span class="normal">2564</span>
+<span class="normal">2565</span>
+<span class="normal">2566</span>
+<span class="normal">2567</span>
+<span class="normal">2568</span>
+<span class="normal">2569</span>
+<span class="normal">2570</span>
+<span class="normal">2571</span>
+<span class="normal">2572</span>
+<span class="normal">2573</span>
+<span class="normal">2574</span>
+<span class="normal">2575</span>
+<span class="normal">2576</span>
+<span class="normal">2577</span>
+<span class="normal">2578</span>
+<span class="normal">2579</span>
+<span class="normal">2580</span>
+<span class="normal">2581</span>
+<span class="normal">2582</span>
+<span class="normal">2583</span>
+<span class="normal">2584</span>
+<span class="normal">2585</span>
+<span class="normal">2586</span>
+<span class="normal">2587</span>
+<span class="normal">2588</span>
+<span class="normal">2589</span>
+<span class="normal">2590</span>
+<span class="normal">2591</span>
+<span class="normal">2592</span>
+<span class="normal">2593</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">submesh</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Extract the selected faces as a new `Trimesh` with vertices reindexed from zero.</span>
 
@@ -14576,45 +14649,45 @@ count is <a class="autorefs autorefs-internal" title="body_count" href="./#ordit
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2559</span>
-<span class="normal">2560</span>
-<span class="normal">2561</span>
-<span class="normal">2562</span>
-<span class="normal">2563</span>
-<span class="normal">2564</span>
-<span class="normal">2565</span>
-<span class="normal">2566</span>
-<span class="normal">2567</span>
-<span class="normal">2568</span>
-<span class="normal">2569</span>
-<span class="normal">2570</span>
-<span class="normal">2571</span>
-<span class="normal">2572</span>
-<span class="normal">2573</span>
-<span class="normal">2574</span>
-<span class="normal">2575</span>
-<span class="normal">2576</span>
-<span class="normal">2577</span>
-<span class="normal">2578</span>
-<span class="normal">2579</span>
-<span class="normal">2580</span>
-<span class="normal">2581</span>
-<span class="normal">2582</span>
-<span class="normal">2583</span>
-<span class="normal">2584</span>
-<span class="normal">2585</span>
-<span class="normal">2586</span>
-<span class="normal">2587</span>
-<span class="normal">2588</span>
-<span class="normal">2589</span>
-<span class="normal">2590</span>
-<span class="normal">2591</span>
-<span class="normal">2592</span>
-<span class="normal">2593</span>
-<span class="normal">2594</span>
-<span class="normal">2595</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2595</span>
 <span class="normal">2596</span>
-<span class="normal">2597</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">copy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Trimesh</span><span class="p">]:</span>
+<span class="normal">2597</span>
+<span class="normal">2598</span>
+<span class="normal">2599</span>
+<span class="normal">2600</span>
+<span class="normal">2601</span>
+<span class="normal">2602</span>
+<span class="normal">2603</span>
+<span class="normal">2604</span>
+<span class="normal">2605</span>
+<span class="normal">2606</span>
+<span class="normal">2607</span>
+<span class="normal">2608</span>
+<span class="normal">2609</span>
+<span class="normal">2610</span>
+<span class="normal">2611</span>
+<span class="normal">2612</span>
+<span class="normal">2613</span>
+<span class="normal">2614</span>
+<span class="normal">2615</span>
+<span class="normal">2616</span>
+<span class="normal">2617</span>
+<span class="normal">2618</span>
+<span class="normal">2619</span>
+<span class="normal">2620</span>
+<span class="normal">2621</span>
+<span class="normal">2622</span>
+<span class="normal">2623</span>
+<span class="normal">2624</span>
+<span class="normal">2625</span>
+<span class="normal">2626</span>
+<span class="normal">2627</span>
+<span class="normal">2628</span>
+<span class="normal">2629</span>
+<span class="normal">2630</span>
+<span class="normal">2631</span>
+<span class="normal">2632</span>
+<span class="normal">2633</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">copy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">Trimesh</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Split into connected components by face adjacency, as one `Trimesh` per body.</span>
 
@@ -14731,39 +14804,39 @@ class mutates.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2599</span>
-<span class="normal">2600</span>
-<span class="normal">2601</span>
-<span class="normal">2602</span>
-<span class="normal">2603</span>
-<span class="normal">2604</span>
-<span class="normal">2605</span>
-<span class="normal">2606</span>
-<span class="normal">2607</span>
-<span class="normal">2608</span>
-<span class="normal">2609</span>
-<span class="normal">2610</span>
-<span class="normal">2611</span>
-<span class="normal">2612</span>
-<span class="normal">2613</span>
-<span class="normal">2614</span>
-<span class="normal">2615</span>
-<span class="normal">2616</span>
-<span class="normal">2617</span>
-<span class="normal">2618</span>
-<span class="normal">2619</span>
-<span class="normal">2620</span>
-<span class="normal">2621</span>
-<span class="normal">2622</span>
-<span class="normal">2623</span>
-<span class="normal">2624</span>
-<span class="normal">2625</span>
-<span class="normal">2626</span>
-<span class="normal">2627</span>
-<span class="normal">2628</span>
-<span class="normal">2629</span>
-<span class="normal">2630</span>
-<span class="normal">2631</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">copy</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2635</span>
+<span class="normal">2636</span>
+<span class="normal">2637</span>
+<span class="normal">2638</span>
+<span class="normal">2639</span>
+<span class="normal">2640</span>
+<span class="normal">2641</span>
+<span class="normal">2642</span>
+<span class="normal">2643</span>
+<span class="normal">2644</span>
+<span class="normal">2645</span>
+<span class="normal">2646</span>
+<span class="normal">2647</span>
+<span class="normal">2648</span>
+<span class="normal">2649</span>
+<span class="normal">2650</span>
+<span class="normal">2651</span>
+<span class="normal">2652</span>
+<span class="normal">2653</span>
+<span class="normal">2654</span>
+<span class="normal">2655</span>
+<span class="normal">2656</span>
+<span class="normal">2657</span>
+<span class="normal">2658</span>
+<span class="normal">2659</span>
+<span class="normal">2660</span>
+<span class="normal">2661</span>
+<span class="normal">2662</span>
+<span class="normal">2663</span>
+<span class="normal">2664</span>
+<span class="normal">2665</span>
+<span class="normal">2666</span>
+<span class="normal">2667</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">copy</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return a `Trimesh` on independent copies of `vertices` and `faces`, with an empty cache.</span>
 
@@ -14894,42 +14967,42 @@ weld.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2633</span>
-<span class="normal">2634</span>
-<span class="normal">2635</span>
-<span class="normal">2636</span>
-<span class="normal">2637</span>
-<span class="normal">2638</span>
-<span class="normal">2639</span>
-<span class="normal">2640</span>
-<span class="normal">2641</span>
-<span class="normal">2642</span>
-<span class="normal">2643</span>
-<span class="normal">2644</span>
-<span class="normal">2645</span>
-<span class="normal">2646</span>
-<span class="normal">2647</span>
-<span class="normal">2648</span>
-<span class="normal">2649</span>
-<span class="normal">2650</span>
-<span class="normal">2651</span>
-<span class="normal">2652</span>
-<span class="normal">2653</span>
-<span class="normal">2654</span>
-<span class="normal">2655</span>
-<span class="normal">2656</span>
-<span class="normal">2657</span>
-<span class="normal">2658</span>
-<span class="normal">2659</span>
-<span class="normal">2660</span>
-<span class="normal">2661</span>
-<span class="normal">2662</span>
-<span class="normal">2663</span>
-<span class="normal">2664</span>
-<span class="normal">2665</span>
-<span class="normal">2666</span>
-<span class="normal">2667</span>
-<span class="normal">2668</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__add__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2669</span>
+<span class="normal">2670</span>
+<span class="normal">2671</span>
+<span class="normal">2672</span>
+<span class="normal">2673</span>
+<span class="normal">2674</span>
+<span class="normal">2675</span>
+<span class="normal">2676</span>
+<span class="normal">2677</span>
+<span class="normal">2678</span>
+<span class="normal">2679</span>
+<span class="normal">2680</span>
+<span class="normal">2681</span>
+<span class="normal">2682</span>
+<span class="normal">2683</span>
+<span class="normal">2684</span>
+<span class="normal">2685</span>
+<span class="normal">2686</span>
+<span class="normal">2687</span>
+<span class="normal">2688</span>
+<span class="normal">2689</span>
+<span class="normal">2690</span>
+<span class="normal">2691</span>
+<span class="normal">2692</span>
+<span class="normal">2693</span>
+<span class="normal">2694</span>
+<span class="normal">2695</span>
+<span class="normal">2696</span>
+<span class="normal">2697</span>
+<span class="normal">2698</span>
+<span class="normal">2699</span>
+<span class="normal">2700</span>
+<span class="normal">2701</span>
+<span class="normal">2702</span>
+<span class="normal">2703</span>
+<span class="normal">2704</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__add__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Trimesh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Concatenate two meshes into one, offsetting the second's face indices.</span>
 
@@ -15021,44 +15094,44 @@ when that pays.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2670</span>
-<span class="normal">2671</span>
-<span class="normal">2672</span>
-<span class="normal">2673</span>
-<span class="normal">2674</span>
-<span class="normal">2675</span>
-<span class="normal">2676</span>
-<span class="normal">2677</span>
-<span class="normal">2678</span>
-<span class="normal">2679</span>
-<span class="normal">2680</span>
-<span class="normal">2681</span>
-<span class="normal">2682</span>
-<span class="normal">2683</span>
-<span class="normal">2684</span>
-<span class="normal">2685</span>
-<span class="normal">2686</span>
-<span class="normal">2687</span>
-<span class="normal">2688</span>
-<span class="normal">2689</span>
-<span class="normal">2690</span>
-<span class="normal">2691</span>
-<span class="normal">2692</span>
-<span class="normal">2693</span>
-<span class="normal">2694</span>
-<span class="normal">2695</span>
-<span class="normal">2696</span>
-<span class="normal">2697</span>
-<span class="normal">2698</span>
-<span class="normal">2699</span>
-<span class="normal">2700</span>
-<span class="normal">2701</span>
-<span class="normal">2702</span>
-<span class="normal">2703</span>
-<span class="normal">2704</span>
-<span class="normal">2705</span>
-<span class="normal">2706</span>
-<span class="normal">2707</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release_factorizations</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2706</span>
+<span class="normal">2707</span>
+<span class="normal">2708</span>
+<span class="normal">2709</span>
+<span class="normal">2710</span>
+<span class="normal">2711</span>
+<span class="normal">2712</span>
+<span class="normal">2713</span>
+<span class="normal">2714</span>
+<span class="normal">2715</span>
+<span class="normal">2716</span>
+<span class="normal">2717</span>
+<span class="normal">2718</span>
+<span class="normal">2719</span>
+<span class="normal">2720</span>
+<span class="normal">2721</span>
+<span class="normal">2722</span>
+<span class="normal">2723</span>
+<span class="normal">2724</span>
+<span class="normal">2725</span>
+<span class="normal">2726</span>
+<span class="normal">2727</span>
+<span class="normal">2728</span>
+<span class="normal">2729</span>
+<span class="normal">2730</span>
+<span class="normal">2731</span>
+<span class="normal">2732</span>
+<span class="normal">2733</span>
+<span class="normal">2734</span>
+<span class="normal">2735</span>
+<span class="normal">2736</span>
+<span class="normal">2737</span>
+<span class="normal">2738</span>
+<span class="normal">2739</span>
+<span class="normal">2740</span>
+<span class="normal">2741</span>
+<span class="normal">2742</span>
+<span class="normal">2743</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release_factorizations</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Drop every factorization the solvers keep on this mesh, keeping the mesh's cache.</span>
 
@@ -15145,30 +15218,30 @@ go stale.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2709</span>
-<span class="normal">2710</span>
-<span class="normal">2711</span>
-<span class="normal">2712</span>
-<span class="normal">2713</span>
-<span class="normal">2714</span>
-<span class="normal">2715</span>
-<span class="normal">2716</span>
-<span class="normal">2717</span>
-<span class="normal">2718</span>
-<span class="normal">2719</span>
-<span class="normal">2720</span>
-<span class="normal">2721</span>
-<span class="normal">2722</span>
-<span class="normal">2723</span>
-<span class="normal">2724</span>
-<span class="normal">2725</span>
-<span class="normal">2726</span>
-<span class="normal">2727</span>
-<span class="normal">2728</span>
-<span class="normal">2729</span>
-<span class="normal">2730</span>
-<span class="normal">2731</span>
-<span class="normal">2732</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">invalidate</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2745</span>
+<span class="normal">2746</span>
+<span class="normal">2747</span>
+<span class="normal">2748</span>
+<span class="normal">2749</span>
+<span class="normal">2750</span>
+<span class="normal">2751</span>
+<span class="normal">2752</span>
+<span class="normal">2753</span>
+<span class="normal">2754</span>
+<span class="normal">2755</span>
+<span class="normal">2756</span>
+<span class="normal">2757</span>
+<span class="normal">2758</span>
+<span class="normal">2759</span>
+<span class="normal">2760</span>
+<span class="normal">2761</span>
+<span class="normal">2762</span>
+<span class="normal">2763</span>
+<span class="normal">2764</span>
+<span class="normal">2765</span>
+<span class="normal">2766</span>
+<span class="normal">2767</span>
+<span class="normal">2768</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">invalidate</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Clear every cached value, including the `warp_mesh` BVH.</span>
 
@@ -15433,43 +15506,7 @@ position.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/mesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2735</span>
-<span class="normal">2736</span>
-<span class="normal">2737</span>
-<span class="normal">2738</span>
-<span class="normal">2739</span>
-<span class="normal">2740</span>
-<span class="normal">2741</span>
-<span class="normal">2742</span>
-<span class="normal">2743</span>
-<span class="normal">2744</span>
-<span class="normal">2745</span>
-<span class="normal">2746</span>
-<span class="normal">2747</span>
-<span class="normal">2748</span>
-<span class="normal">2749</span>
-<span class="normal">2750</span>
-<span class="normal">2751</span>
-<span class="normal">2752</span>
-<span class="normal">2753</span>
-<span class="normal">2754</span>
-<span class="normal">2755</span>
-<span class="normal">2756</span>
-<span class="normal">2757</span>
-<span class="normal">2758</span>
-<span class="normal">2759</span>
-<span class="normal">2760</span>
-<span class="normal">2761</span>
-<span class="normal">2762</span>
-<span class="normal">2763</span>
-<span class="normal">2764</span>
-<span class="normal">2765</span>
-<span class="normal">2766</span>
-<span class="normal">2767</span>
-<span class="normal">2768</span>
-<span class="normal">2769</span>
-<span class="normal">2770</span>
-<span class="normal">2771</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2771</span>
 <span class="normal">2772</span>
 <span class="normal">2773</span>
 <span class="normal">2774</span>
@@ -15529,7 +15566,43 @@ position.</p>
 <span class="normal">2828</span>
 <span class="normal">2829</span>
 <span class="normal">2830</span>
-<span class="normal">2831</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_arguments</span><span class="p">(</span>
+<span class="normal">2831</span>
+<span class="normal">2832</span>
+<span class="normal">2833</span>
+<span class="normal">2834</span>
+<span class="normal">2835</span>
+<span class="normal">2836</span>
+<span class="normal">2837</span>
+<span class="normal">2838</span>
+<span class="normal">2839</span>
+<span class="normal">2840</span>
+<span class="normal">2841</span>
+<span class="normal">2842</span>
+<span class="normal">2843</span>
+<span class="normal">2844</span>
+<span class="normal">2845</span>
+<span class="normal">2846</span>
+<span class="normal">2847</span>
+<span class="normal">2848</span>
+<span class="normal">2849</span>
+<span class="normal">2850</span>
+<span class="normal">2851</span>
+<span class="normal">2852</span>
+<span class="normal">2853</span>
+<span class="normal">2854</span>
+<span class="normal">2855</span>
+<span class="normal">2856</span>
+<span class="normal">2857</span>
+<span class="normal">2858</span>
+<span class="normal">2859</span>
+<span class="normal">2860</span>
+<span class="normal">2861</span>
+<span class="normal">2862</span>
+<span class="normal">2863</span>
+<span class="normal">2864</span>
+<span class="normal">2865</span>
+<span class="normal">2866</span>
+<span class="normal">2867</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_arguments</span><span class="p">(</span>
     <span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="nb">object</span><span class="p">,</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="nb">object</span><span class="p">,</span>

@@ -7058,10 +7058,7 @@ the mean in as a scalar. A shared edge counts once per face, as in the mean. Sum
 <span class="normal">889</span>
 <span class="normal">890</span>
 <span class="normal">891</span>
-<span class="normal">892</span>
-<span class="normal">893</span>
-<span class="normal">894</span>
-<span class="normal">895</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_length_sum</span><span class="p">(</span><span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+<span class="normal">892</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_length_sum</span><span class="p">(</span><span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Total length of the ``3 * n_faces`` per-face edges, left on the device.</span>
 
@@ -7108,17 +7105,14 @@ the mean in as a scalar. A shared edge counts once per face, as in the mean. Sum
     <span class="n">n_halfedges</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
     <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="c1"># Each block's length sum is stored, not committed, and the partials are folded as</span>
-    <span class="c1"># ``reduce.sum`` folds its own: no ``(3 * n_faces,)`` length buffer.</span>
-    <span class="n">partials</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
-        <span class="n">kernel_edges</span><span class="o">.</span><span class="n">halfedge_length_partials</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="n">partials</span><span class="o">.</span><span class="n">size</span><span class="p">],</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">n_halfedges</span><span class="p">,</span> <span class="n">partials</span><span class="p">],</span>
-        <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="c1"># The lengths are formed inside the sum's own blocks: no ``(3 * n_faces,)`` length buffer.</span>
+    <span class="n">terms</span> <span class="o">=</span> <span class="n">kernel_edges</span><span class="o">.</span><span class="n">HalfedgeLengthTerms</span><span class="p">()</span>
+    <span class="n">terms</span><span class="o">.</span><span class="n">n</span> <span class="o">=</span> <span class="n">n_halfedges</span>
+    <span class="n">terms</span><span class="o">.</span><span class="n">vertices</span> <span class="o">=</span> <span class="n">vertices</span>
+    <span class="n">terms</span><span class="o">.</span><span class="n">faces</span> <span class="o">=</span> <span class="n">faces</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">sum_of_terms</span><span class="p">(</span>
+        <span class="n">kernel_edges</span><span class="o">.</span><span class="n">HALFEDGE_LENGTH_SUM</span><span class="p">,</span> <span class="p">[</span><span class="n">terms</span><span class="p">],</span> <span class="n">n_halfedges</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">sum_of_terms</span><span class="p">(</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">ARRAY_SUM</span><span class="p">,</span> <span class="p">[</span><span class="n">partials</span><span class="p">],</span> <span class="n">partials</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7299,7 +7293,10 @@ face indices' range is structurally guaranteed; it removes a host readback.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/edges.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">898</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">895</span>
+<span class="normal">896</span>
+<span class="normal">897</span>
+<span class="normal">898</span>
 <span class="normal">899</span>
 <span class="normal">900</span>
 <span class="normal">901</span>
@@ -7372,10 +7369,7 @@ face indices' range is structurally guaranteed; it removes a host readback.</p>
 <span class="normal">968</span>
 <span class="normal">969</span>
 <span class="normal">970</span>
-<span class="normal">971</span>
-<span class="normal">972</span>
-<span class="normal">973</span>
-<span class="normal">974</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mean_unique_edge_length</span><span class="p">(</span>
+<span class="normal">971</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mean_unique_edge_length</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>

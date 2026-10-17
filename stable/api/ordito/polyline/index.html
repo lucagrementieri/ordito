@@ -4499,8 +4499,7 @@ equal within the default <code>allclose</code> tolerance; <code>False</code> oth
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 74</span>
-<span class="normal"> 75</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 75</span>
 <span class="normal"> 76</span>
 <span class="normal"> 77</span>
 <span class="normal"> 78</span>
@@ -4542,7 +4541,8 @@ equal within the default <code>allclose</code> tolerance; <code>False</code> oth
 <span class="normal">114</span>
 <span class="normal">115</span>
 <span class="normal">116</span>
-<span class="normal">117</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_closed</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">117</span>
+<span class="normal">118</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_closed</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether a polyline is closed (its first and last points coincide).</span>
 
@@ -4690,8 +4690,7 @@ is already open; otherwise a view without the duplicated closing point.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">141</span>
-<span class="normal">142</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">142</span>
 <span class="normal">143</span>
 <span class="normal">144</span>
 <span class="normal">145</span>
@@ -4726,7 +4725,8 @@ is already open; otherwise a view without the duplicated closing point.</p>
 <span class="normal">174</span>
 <span class="normal">175</span>
 <span class="normal">176</span>
-<span class="normal">177</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_open</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">177</span>
+<span class="normal">178</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_open</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Open a polyline by dropping the last point when it duplicates the first.</span>
 
@@ -4868,8 +4868,7 @@ is already closed; otherwise an array with the first point appended.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">180</span>
-<span class="normal">181</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">181</span>
 <span class="normal">182</span>
 <span class="normal">183</span>
 <span class="normal">184</span>
@@ -4905,7 +4904,8 @@ is already closed; otherwise an array with the first point appended.</p>
 <span class="normal">214</span>
 <span class="normal">215</span>
 <span class="normal">216</span>
-<span class="normal">217</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_close</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">217</span>
+<span class="normal">218</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_close</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Close a polyline by appending the first point when it is not already the last.</span>
 
@@ -5068,8 +5068,7 @@ edge counts toward the total.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">234</span>
-<span class="normal">235</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">235</span>
 <span class="normal">236</span>
 <span class="normal">237</span>
 <span class="normal">238</span>
@@ -5128,7 +5127,8 @@ edge counts toward the total.</p>
 <span class="normal">291</span>
 <span class="normal">292</span>
 <span class="normal">293</span>
-<span class="normal">294</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_length</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="normal">294</span>
+<span class="normal">295</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_length</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Total arc length of a polyline (sum of segment lengths).</span>
 
@@ -5338,8 +5338,7 @@ segment contributes its midpoint and length like any other.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">297</span>
-<span class="normal">298</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">298</span>
 <span class="normal">299</span>
 <span class="normal">300</span>
 <span class="normal">301</span>
@@ -5395,7 +5394,8 @@ segment contributes its midpoint and length like any other.</p>
 <span class="normal">351</span>
 <span class="normal">352</span>
 <span class="normal">353</span>
-<span class="normal">354</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_centroid</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
+<span class="normal">354</span>
+<span class="normal">355</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_centroid</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Segment-length-weighted centroid of a polyline.</span>
 
@@ -5579,8 +5579,7 @@ variant (omitting the closing edge) is origin-dependent and not computed.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">357</span>
-<span class="normal">358</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">358</span>
 <span class="normal">359</span>
 <span class="normal">360</span>
 <span class="normal">361</span>
@@ -5639,7 +5638,8 @@ variant (omitting the closing edge) is origin-dependent and not computed.</p>
 <span class="normal">414</span>
 <span class="normal">415</span>
 <span class="normal">416</span>
-<span class="normal">417</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_normal</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
+<span class="normal">417</span>
+<span class="normal">418</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_normal</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Average unit normal of a 3D polyline via Newell's method.</span>
 
@@ -5864,8 +5864,7 @@ edge is a candidate segment like any other.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">420</span>
-<span class="normal">421</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">421</span>
 <span class="normal">422</span>
 <span class="normal">423</span>
 <span class="normal">424</span>
@@ -5955,7 +5954,8 @@ edge is a candidate segment like any other.</p>
 <span class="normal">508</span>
 <span class="normal">509</span>
 <span class="normal">510</span>
-<span class="normal">511</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_point_distance</span><span class="p">(</span>
+<span class="normal">511</span>
+<span class="normal">512</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_point_distance</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6197,8 +6197,7 @@ two points.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">514</span>
-<span class="normal">515</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">515</span>
 <span class="normal">516</span>
 <span class="normal">517</span>
 <span class="normal">518</span>
@@ -6247,7 +6246,8 @@ two points.</p>
 <span class="normal">561</span>
 <span class="normal">562</span>
 <span class="normal">563</span>
-<span class="normal">564</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_upsample</span><span class="p">(</span>
+<span class="normal">564</span>
+<span class="normal">565</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_upsample</span><span class="p">(</span>
     <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">step_size</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6457,8 +6457,7 @@ for fewer than two points.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">567</span>
-<span class="normal">568</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">568</span>
 <span class="normal">569</span>
 <span class="normal">570</span>
 <span class="normal">571</span>
@@ -6520,7 +6519,8 @@ for fewer than two points.</p>
 <span class="normal">627</span>
 <span class="normal">628</span>
 <span class="normal">629</span>
-<span class="normal">630</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_smooth_upsample</span><span class="p">(</span>
+<span class="normal">630</span>
+<span class="normal">631</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_smooth_upsample</span><span class="p">(</span>
     <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">step_size</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6695,8 +6695,7 @@ is the summed length of segments <code>0..i-1</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">675</span>
-<span class="normal">676</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">676</span>
 <span class="normal">677</span>
 <span class="normal">678</span>
 <span class="normal">679</span>
@@ -6738,7 +6737,8 @@ is the summed length of segments <code>0..i-1</code>.</p>
 <span class="normal">715</span>
 <span class="normal">716</span>
 <span class="normal">717</span>
-<span class="normal">718</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cumulative_arc_length</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+<span class="normal">718</span>
+<span class="normal">719</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cumulative_arc_length</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Cumulative arc length from the first vertex to each vertex of an open polyline.</span>
 
@@ -6928,8 +6928,7 @@ than two points.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">721</span>
-<span class="normal">722</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">722</span>
 <span class="normal">723</span>
 <span class="normal">724</span>
 <span class="normal">725</span>
@@ -6993,7 +6992,8 @@ than two points.</p>
 <span class="normal">783</span>
 <span class="normal">784</span>
 <span class="normal">785</span>
-<span class="normal">786</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_downsample</span><span class="p">(</span>
+<span class="normal">786</span>
+<span class="normal">787</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_downsample</span><span class="p">(</span>
     <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">step_size</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7236,8 +7236,7 @@ sawtooth are all shallower than a boundary loop.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">832</span>
-<span class="normal">833</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">833</span>
 <span class="normal">834</span>
 <span class="normal">835</span>
 <span class="normal">836</span>
@@ -7392,7 +7391,8 @@ sawtooth are all shallower than a boundary loop.</p>
 <span class="normal">985</span>
 <span class="normal">986</span>
 <span class="normal">987</span>
-<span class="normal">988</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_simplify</span><span class="p">(</span>
+<span class="normal">988</span>
+<span class="normal">989</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_simplify</span><span class="p">(</span>
     <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">tol</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7699,8 +7699,7 @@ point is repeated <code>num_points</code> times.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1016</span>
-<span class="normal">1017</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1017</span>
 <span class="normal">1018</span>
 <span class="normal">1019</span>
 <span class="normal">1020</span>
@@ -7777,7 +7776,8 @@ point is repeated <code>num_points</code> times.</p>
 <span class="normal">1091</span>
 <span class="normal">1092</span>
 <span class="normal">1093</span>
-<span class="normal">1094</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_resample</span><span class="p">(</span>
+<span class="normal">1094</span>
+<span class="normal">1095</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_resample</span><span class="p">(</span>
     <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">num_points</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8075,8 +8075,7 @@ radius reaches the long sides and the largest the short ones:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1123</span>
-<span class="normal">1124</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1124</span>
 <span class="normal">1125</span>
 <span class="normal">1126</span>
 <span class="normal">1127</span>
@@ -8228,7 +8227,8 @@ radius reaches the long sides and the largest the short ones:</p>
 <span class="normal">1273</span>
 <span class="normal">1274</span>
 <span class="normal">1275</span>
-<span class="normal">1276</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_radius</span><span class="p">(</span>
+<span class="normal">1276</span>
+<span class="normal">1277</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_radius</span><span class="p">(</span>
     <span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">reduction</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"min"</span><span class="p">,</span> <span class="s2">"max"</span><span class="p">,</span> <span class="s2">"mean"</span><span class="p">,</span> <span class="s2">"median"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"min"</span><span class="p">,</span>
     <span class="n">center</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8510,8 +8510,7 @@ still has one angle per <em>original</em> point, and the turning angles wrap aro
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1314</span>
-<span class="normal">1315</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1315</span>
 <span class="normal">1316</span>
 <span class="normal">1317</span>
 <span class="normal">1318</span>
@@ -8570,7 +8569,8 @@ still has one angle per <em>original</em> point, and the turning angles wrap aro
 <span class="normal">1371</span>
 <span class="normal">1372</span>
 <span class="normal">1373</span>
-<span class="normal">1374</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_angles</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+<span class="normal">1374</span>
+<span class="normal">1375</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_angles</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">closed</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Angles between consecutive segments at each vertex of a polyline.</span>
 
@@ -8750,8 +8750,10 @@ repeats the first), the loop's orientation, its reflex count and its bounding bo
 together decide every launch dimension, the grid and the convex fan fast path; and the face
 count, which sizes the returned slice. The plane frame is accumulated and consumed on
 the device and never crosses to the host.</p>
-<p>Every path produces the same triangulation up to row order, and that row order is not stable on
-CUDA -- faces are appended through an atomic counter.</p>
+<p>Every path produces the same triangulation up to row order. Faces are appended through an atomic
+counter, so on CUDA their row order changes from call to call, unless
+<a class="autorefs autorefs-internal" title="is_deterministic" href="../config/#ordito.config.is_deterministic"><code>is_deterministic</code></a>: then the rows are listed by ascending
+middle index (the tip of the ear each one clipped).</p>
 </details>
 
 <details class="see-also" open>
@@ -8775,9 +8777,9 @@ CUDA -- faces are appended through an atomic counter.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 4 places</summary>
+      <summary>Referenced by 5 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.polyline">polyline</a> › <a href="./#ordito.polyline.polyline_simplify">polyline_simplify</a></span> · <span class="ordito-backlink"><a href="./#ordito.polyline">polyline</a> › <a href="./#ordito.polyline.polyline_triangulate_from_offsets">polyline_triangulate_from_offsets</a></span> · <span class="ordito-backlink"><a href="./#ordito.polyline">polyline</a> › <a href="./#ordito.polyline.triangulate_polygon">triangulate_polygon</a></span></p>
+<span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="./#ordito.polyline">polyline</a> › <a href="./#ordito.polyline.polyline_simplify">polyline_simplify</a></span> · <span class="ordito-backlink"><a href="./#ordito.polyline">polyline</a> › <a href="./#ordito.polyline.polyline_triangulate_from_offsets">polyline_triangulate_from_offsets</a></span> · <span class="ordito-backlink"><a href="./#ordito.polyline">polyline</a> › <a href="./#ordito.polyline.triangulate_polygon">triangulate_polygon</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/creation/#creating-meshes">Creating meshes</a> › <a href="../../../examples/creation/#c4">Polygon triangulation</a></span></p>
     </details>
@@ -8785,8 +8787,7 @@ CUDA -- faces are appended through an atomic counter.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1377</span>
-<span class="normal">1378</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1378</span>
 <span class="normal">1379</span>
 <span class="normal">1380</span>
 <span class="normal">1381</span>
@@ -8888,7 +8889,12 @@ CUDA -- faces are appended through an atomic counter.</p>
 <span class="normal">1477</span>
 <span class="normal">1478</span>
 <span class="normal">1479</span>
-<span class="normal">1480</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
+<span class="normal">1480</span>
+<span class="normal">1481</span>
+<span class="normal">1482</span>
+<span class="normal">1483</span>
+<span class="normal">1484</span>
+<span class="normal">1485</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate</span><span class="p">(</span><span class="n">polyline</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Triangulate the simple planar polygon bounded by a closed 3D polyline (ear clipping).</span>
 
@@ -8943,8 +8949,10 @@ CUDA -- faces are appended through an atomic counter.</p>
 <span class="sd">    count, which sizes the returned slice. The plane frame is accumulated and consumed on</span>
 <span class="sd">    the device and never crosses to the host.</span>
 
-<span class="sd">    Every path produces the same triangulation up to row order, and that row order is not stable on</span>
-<span class="sd">    CUDA -- faces are appended through an atomic counter.</span>
+<span class="sd">    Every path produces the same triangulation up to row order. Faces are appended through an atomic</span>
+<span class="sd">    counter, so on CUDA their row order changes from call to call, unless</span>
+<span class="sd">    [`is_deterministic`][ordito.config.is_deterministic]: then the rows are listed by ascending</span>
+<span class="sd">    middle index (the tip of the ear each one clipped).</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -8973,8 +8981,8 @@ CUDA -- faces are appended through an atomic counter.</p>
         <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
 
     <span class="c1"># The plane frame is built and consumed entirely on device: one single-block accumulation, which</span>
-    <span class="c1"># also decides whether the last point repeats the first, then a projection whose threads each</span>
-    <span class="c1"># read the frame it stored.</span>
+    <span class="c1"># also decides whether the last point repeats the first, then the turning pass, which projects</span>
+    <span class="c1"># every point into the frame it stored as it reads it.</span>
     <span class="n">sums</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">kernel_polyline</span><span class="o">.</span><span class="n">RING_SUMS_SIZE</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
         <span class="n">kernel_polyline</span><span class="o">.</span><span class="n">accumulate_loop_frame</span><span class="p">,</span>
@@ -8984,13 +8992,15 @@ CUDA -- faces are appended through an atomic counter.</p>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">points2d</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_polyline</span><span class="o">.</span><span class="n">project_polyline_to_plane</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
+        <span class="n">kernel_polyline</span><span class="o">.</span><span class="n">project_turning_angle</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="n">n</span><span class="p">),</span>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">polyline</span><span class="p">,</span> <span class="n">sums</span><span class="p">,</span> <span class="n">points2d</span><span class="p">],</span>
+        <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">_</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">_triangulate_ring</span><span class="p">(</span><span class="n">points2d</span><span class="p">,</span> <span class="n">sums</span><span class="p">,</span> <span class="n">detect_closing</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="n">_</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_triangulate_ring</span><span class="p">(</span><span class="n">points2d</span><span class="p">,</span> <span class="n">sums</span><span class="p">,</span> <span class="n">write_fan</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="n">faces</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
     <span class="k">return</span> <span class="n">faces</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -9089,7 +9099,8 @@ rather than one call after another.</p>
               <div class="doc-md-description">
                 <p><code>(m, 3)</code> triangle vertex indices into <code>polylines</code> (not into each loop), loop after
 loop. A simple <code>k</code>-point loop contributes <code>k - 2</code>; a degenerate or self-intersecting
-one may contribute fewer, and a loop of fewer than three points none.</p>
+one may contribute fewer, and a loop of fewer than three points none. Each loop's rows are
+in the order <a class="autorefs autorefs-internal" title="polyline_triangulate" href="./#ordito.polyline.polyline_triangulate"><code>polyline_triangulate</code></a> describes.</p>
               </div>
             </td>
           </tr>
@@ -9159,15 +9170,16 @@ are then assembled on the host and uploaded once.</p>
 </code></pre></div>
 
           
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 1 place</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span></p>
+    </details>
+
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1483</span>
-<span class="normal">1484</span>
-<span class="normal">1485</span>
-<span class="normal">1486</span>
-<span class="normal">1487</span>
-<span class="normal">1488</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1488</span>
 <span class="normal">1489</span>
 <span class="normal">1490</span>
 <span class="normal">1491</span>
@@ -9269,7 +9281,11 @@ are then assembled on the host and uploaded once.</p>
 <span class="normal">1587</span>
 <span class="normal">1588</span>
 <span class="normal">1589</span>
-<span class="normal">1590</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate_from_offsets</span><span class="p">(</span>
+<span class="normal">1590</span>
+<span class="normal">1591</span>
+<span class="normal">1592</span>
+<span class="normal">1593</span>
+<span class="normal">1594</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate_from_offsets</span><span class="p">(</span>
     <span class="n">polylines</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">offsets</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9292,7 +9308,8 @@ are then assembled on the host and uploaded once.</p>
 <span class="sd">    faces : odt.Array2dInt32</span>
 <span class="sd">        ``(m, 3)`` triangle vertex indices into ``polylines`` (not into each loop), loop after</span>
 <span class="sd">        loop. A simple ``k``-point loop contributes ``k - 2``; a degenerate or self-intersecting</span>
-<span class="sd">        one may contribute fewer, and a loop of fewer than three points none.</span>
+<span class="sd">        one may contribute fewer, and a loop of fewer than three points none. Each loop's rows are</span>
+<span class="sd">        in the order [`polyline_triangulate`][ordito.polyline.polyline_triangulate] describes.</span>
 <span class="sd">    face_offsets : wp.array[wp.int32]</span>
 <span class="sd">        ``(n_loops + 1,)`` offsets of each loop's rows in ``faces``, total-terminated.</span>
 
@@ -9358,13 +9375,7 @@ are then assembled on the host and uploaded once.</p>
     <span class="n">face_offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_loops</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_reserved</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">face_offsets</span>
-    <span class="n">faces</span><span class="p">,</span> <span class="n">ends</span> <span class="o">=</span> <span class="n">_triangulate_short_rings</span><span class="p">(</span><span class="n">polylines</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">n_reserved</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_polyline</span><span class="o">.</span><span class="n">ring_face_counts</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_loops</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">bases</span><span class="p">,</span> <span class="n">ends</span><span class="p">,</span> <span class="n">face_offsets</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
+    <span class="n">faces</span><span class="p">,</span> <span class="n">ends</span> <span class="o">=</span> <span class="n">_triangulate_short_rings</span><span class="p">(</span><span class="n">polylines</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">n_reserved</span><span class="p">,</span> <span class="n">face_offsets</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">face_offsets</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">face_offsets</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="c1"># Sizes the output: the faces the loops actually wrote.</span>
     <span class="n">n_rows</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">face_offsets</span><span class="p">))</span>
@@ -9376,6 +9387,10 @@ are then assembled on the host and uploaded once.</p>
             <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">bases_scan</span><span class="p">,</span> <span class="n">ends</span><span class="p">,</span> <span class="n">face_offsets</span><span class="p">,</span> <span class="n">out_faces</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
+        <span class="k">if</span> <span class="n">is_deterministic</span><span class="p">()</span> <span class="ow">and</span> <span class="n">n_rows</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="c1"># Each loop's tips lie in its own range of ``polylines``, so one sort of every row by</span>
+            <span class="c1"># tip keeps the loops in order and lists each loop's rows by ascending tip.</span>
+            <span class="k">return</span> <span class="n">_faces_in_tip_order</span><span class="p">(</span><span class="n">out_faces</span><span class="p">,</span> <span class="n">polylines</span><span class="o">.</span><span class="n">size</span><span class="p">),</span> <span class="n">face_offsets</span>
     <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">out_faces</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">),</span> <span class="n">face_offsets</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -9480,7 +9495,9 @@ ordito's own GPU ear clipper, <a class="autorefs autorefs-internal" title="polyl
   face layout used throughout ordito.</li>
 </ul>
 <p>The ring must be a simple (non self-intersecting) polygon. A degenerate ring yields a partial
-triangulation with fewer than <code>n - 2</code> triangles rather than raising.</p>
+triangulation with fewer than <code>n - 2</code> triangles rather than raising. The faces come in the
+order <a class="autorefs autorefs-internal" title="polyline_triangulate" href="./#ordito.polyline.polyline_triangulate"><code>polyline_triangulate</code></a> describes: on CUDA it
+repeats from call to call only with <a class="autorefs autorefs-internal" title="is_deterministic" href="../config/#ordito.config.is_deterministic"><code>is_deterministic</code></a>.</p>
 </details>
 
 <details class="see-also" open>
@@ -9503,9 +9520,9 @@ triangulation with fewer than <code>n - 2</code> triangles rather than raising.<
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 4 places</summary>
+      <summary>Referenced by 5 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.polyline">polyline</a></span> · <span class="ordito-backlink"><a href="../creation/#ordito.creation">creation</a> › <a href="../creation/#ordito.creation.extrude_polygon">extrude_polygon</a></span> · <span class="ordito-backlink"><a href="../creation/#ordito.creation">creation</a> › <a href="../creation/#ordito.creation.revolve">revolve</a></span></p>
+<span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="./#ordito.polyline">polyline</a></span> · <span class="ordito-backlink"><a href="../creation/#ordito.creation">creation</a> › <a href="../creation/#ordito.creation.extrude_polygon">extrude_polygon</a></span> · <span class="ordito-backlink"><a href="../creation/#ordito.creation">creation</a> › <a href="../creation/#ordito.creation.revolve">revolve</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/creation/#creating-meshes">Creating meshes</a> › <a href="../../../examples/creation/#c4">Polygon triangulation</a></span></p>
     </details>
@@ -9513,17 +9530,7 @@ triangulation with fewer than <code>n - 2</code> triangles rather than raising.<
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1685</span>
-<span class="normal">1686</span>
-<span class="normal">1687</span>
-<span class="normal">1688</span>
-<span class="normal">1689</span>
-<span class="normal">1690</span>
-<span class="normal">1691</span>
-<span class="normal">1692</span>
-<span class="normal">1693</span>
-<span class="normal">1694</span>
-<span class="normal">1695</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1695</span>
 <span class="normal">1696</span>
 <span class="normal">1697</span>
 <span class="normal">1698</span>
@@ -9575,7 +9582,13 @@ triangulation with fewer than <code>n - 2</code> triangles rather than raising.<
 <span class="normal">1744</span>
 <span class="normal">1745</span>
 <span class="normal">1746</span>
-<span class="normal">1747</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_polygon</span><span class="p">(</span><span class="n">polygon</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
+<span class="normal">1747</span>
+<span class="normal">1748</span>
+<span class="normal">1749</span>
+<span class="normal">1750</span>
+<span class="normal">1751</span>
+<span class="normal">1752</span>
+<span class="normal">1753</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_polygon</span><span class="p">(</span><span class="n">polygon</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Triangulate a simple 2D polygon by ear clipping, adding no new vertices.</span>
 
@@ -9606,7 +9619,9 @@ triangulation with fewer than <code>n - 2</code> triangles rather than raising.<
 <span class="sd">      face layout used throughout ordito.</span>
 
 <span class="sd">    The ring must be a simple (non self-intersecting) polygon. A degenerate ring yields a partial</span>
-<span class="sd">    triangulation with fewer than ``n - 2`` triangles rather than raising.</span>
+<span class="sd">    triangulation with fewer than ``n - 2`` triangles rather than raising. The faces come in the</span>
+<span class="sd">    order [`polyline_triangulate`][ordito.polyline.polyline_triangulate] describes: on CUDA it</span>
+<span class="sd">    repeats from call to call only with [`is_deterministic`][ordito.config.is_deterministic].</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -9629,15 +9644,9 @@ triangulation with fewer than <code>n - 2</code> triangles rather than raising.<
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">odt</span><span class="o">.</span><span class="n">ensure_ndim</span><span class="p">(</span><span class="n">polygon</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">)</span>
-    <span class="n">device</span> <span class="o">=</span> <span class="n">polygon</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">n</span> <span class="o">=</span> <span class="n">polygon</span><span class="o">.</span><span class="n">size</span>
-    <span class="k">if</span> <span class="n">n</span> <span class="o">&lt;</span> <span class="mi">3</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">polygon</span><span class="p">,</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-
-    <span class="n">sums</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">kernel_polyline</span><span class="o">.</span><span class="n">RING_SUMS_SIZE</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">n_ring</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">_triangulate_ring</span><span class="p">(</span><span class="n">polygon</span><span class="p">,</span> <span class="n">sums</span><span class="p">,</span> <span class="n">detect_closing</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-    <span class="c1"># The ring is the input minus any repeated closing point, i.e. a prefix of it.</span>
-    <span class="k">return</span> <span class="n">polygon</span><span class="p">[:</span><span class="n">n_ring</span><span class="p">]</span><span class="o">.</span><span class="n">contiguous</span><span class="p">(),</span> <span class="n">faces</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="o">-</span><span class="mi">1</span><span class="p">,))</span>
+    <span class="n">ring</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_triangulate_polygon</span><span class="p">(</span><span class="n">polygon</span><span class="p">,</span> <span class="n">write_fan</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">assert</span> <span class="n">faces</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+    <span class="k">return</span> <span class="n">ring</span><span class="p">,</span> <span class="n">faces</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

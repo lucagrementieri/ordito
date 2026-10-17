@@ -5869,7 +5869,20 @@ by the narrow side, while the ray along the normal crosses the full height:</p>
 <span class="normal">599</span>
 <span class="normal">600</span>
 <span class="normal">601</span>
-<span class="normal">602</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thickness</span><span class="p">(</span>
+<span class="normal">602</span>
+<span class="normal">603</span>
+<span class="normal">604</span>
+<span class="normal">605</span>
+<span class="normal">606</span>
+<span class="normal">607</span>
+<span class="normal">608</span>
+<span class="normal">609</span>
+<span class="normal">610</span>
+<span class="normal">611</span>
+<span class="normal">612</span>
+<span class="normal">613</span>
+<span class="normal">614</span>
+<span class="normal">615</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thickness</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -5954,13 +5967,26 @@ by the narrow side, while the ray along the normal crosses the full height:</p>
         <span class="k">return</span> <span class="n">radii</span>
 
     <span class="c1"># No ray length: an unbounded ``longest_ray`` finds the same first hit as one bounded by the</span>
-    <span class="c1"># box enclosing the mesh and the points, and a miss is ``inf`` either way.</span>
+    <span class="c1"># box enclosing the mesh and the points, and a miss is ``inf`` either way. The sign flip is</span>
+    <span class="c1"># folded into the ray kernel.</span>
     <span class="n">normals</span> <span class="o">=</span> <span class="n">_resolve_normals</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">normals</span><span class="p">,</span> <span class="s2">"thickness"</span><span class="p">)</span>
-    <span class="n">ray_dirs</span> <span class="o">=</span> <span class="n">normals</span>
-    <span class="k">if</span> <span class="ow">not</span> <span class="n">exterior</span><span class="p">:</span>
-        <span class="n">ray_dirs</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">points</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">points</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">neg</span><span class="p">,</span> <span class="n">normals</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">ray_dirs</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">ray</span><span class="o">.</span><span class="n">longest_ray</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">ray_dirs</span><span class="p">)</span>
+    <span class="n">out_thickness</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">points</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">points</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">points</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_visibility</span><span class="o">.</span><span class="n">longest_ray_along_normals</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">points</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">id</span><span class="p">),</span>
+                <span class="n">points</span><span class="p">,</span>
+                <span class="n">normals</span><span class="p">,</span>
+                <span class="ow">not</span> <span class="n">exterior</span><span class="p">,</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">inf</span><span class="p">),</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">TOLERANCE_PLANAR</span><span class="p">),</span>
+                <span class="n">out_thickness</span><span class="p">,</span>
+            <span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">points</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="n">out_thickness</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -6205,20 +6231,7 @@ its radius; outwards nothing stops it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/visibility.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">605</span>
-<span class="normal">606</span>
-<span class="normal">607</span>
-<span class="normal">608</span>
-<span class="normal">609</span>
-<span class="normal">610</span>
-<span class="normal">611</span>
-<span class="normal">612</span>
-<span class="normal">613</span>
-<span class="normal">614</span>
-<span class="normal">615</span>
-<span class="normal">616</span>
-<span class="normal">617</span>
-<span class="normal">618</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">618</span>
 <span class="normal">619</span>
 <span class="normal">620</span>
 <span class="normal">621</span>
@@ -6432,7 +6445,30 @@ its radius; outwards nothing stops it:</p>
 <span class="normal">829</span>
 <span class="normal">830</span>
 <span class="normal">831</span>
-<span class="normal">832</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">max_tangent_sphere</span><span class="p">(</span>
+<span class="normal">832</span>
+<span class="normal">833</span>
+<span class="normal">834</span>
+<span class="normal">835</span>
+<span class="normal">836</span>
+<span class="normal">837</span>
+<span class="normal">838</span>
+<span class="normal">839</span>
+<span class="normal">840</span>
+<span class="normal">841</span>
+<span class="normal">842</span>
+<span class="normal">843</span>
+<span class="normal">844</span>
+<span class="normal">845</span>
+<span class="normal">846</span>
+<span class="normal">847</span>
+<span class="normal">848</span>
+<span class="normal">849</span>
+<span class="normal">850</span>
+<span class="normal">851</span>
+<span class="normal">852</span>
+<span class="normal">853</span>
+<span class="normal">854</span>
+<span class="normal">855</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">max_tangent_sphere</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6553,13 +6589,15 @@ its radius; outwards nothing stops it:</p>
     <span class="c1"># Slot ``r`` of ``n_not_converged`` is the not-converged count after round ``r - 1``,</span>
     <span class="c1"># accumulated by the step kernel itself, so each round's test is one 4-byte read with no</span>
     <span class="c1"># reduction launch in front of it. Slot 0 is the seed's count, accumulated by the two seed</span>
-    <span class="c1"># kernels.</span>
-    <span class="n">n_not_converged</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">max_iter</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># kernels. ``n_not_converged`` is a view one slot into ``counts``, whose slot 0 counts the</span>
+    <span class="c1"># deferred queries the seed lists in ``support_indices``, so one read carries both.</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">max_iter</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">n_not_converged</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">counts</span><span class="p">[</span><span class="mi">1</span><span class="p">:])</span>
     <span class="n">n_verts</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">size</span>
     <span class="n">ray_dirs</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">radii</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">not_converged</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">needs_support</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">support_indices</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">centers</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_visibility</span><span class="o">.</span><span class="n">init_tangent_spheres</span><span class="p">,</span>
@@ -6574,19 +6612,22 @@ its radius; outwards nothing stops it:</p>
             <span class="n">ray_dirs</span><span class="p">,</span>
             <span class="n">radii</span><span class="p">,</span>
             <span class="n">not_converged</span><span class="p">,</span>
-            <span class="n">needs_support</span><span class="p">,</span>
             <span class="n">centers</span><span class="p">,</span>
             <span class="n">n_not_converged</span><span class="p">,</span>
+            <span class="n">support_indices</span><span class="p">,</span>
+            <span class="n">counts</span><span class="p">,</span>
         <span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="c1"># Escaped rays (typically exterior/reach queries) need the support point of the vertex</span>
-    <span class="c1"># cloud in the ray direction. Compact them first — interior queries usually leave the</span>
-    <span class="c1"># subset empty — then run one grid-stride packed-argmax pass over the vertices for just</span>
+    <span class="c1"># cloud in the ray direction. The seed lists them -- interior queries usually leave the</span>
+    <span class="c1"># subset empty -- then one grid-stride packed-argmax pass runs over the vertices for just</span>
     <span class="c1"># that subset instead of a serial all-vertices loop per query thread.</span>
-    <span class="n">support_indices</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">flatnonzero</span><span class="p">(</span><span class="n">needs_support</span><span class="p">)</span>
-    <span class="n">k</span> <span class="o">=</span> <span class="n">support_indices</span><span class="o">.</span><span class="n">size</span>
+    <span class="c1"># Host readback: the deferred count sizes the support passes, and when it is zero the seed's</span>
+    <span class="c1"># not-converged count beside it is already the first round's test.</span>
+    <span class="n">k</span><span class="p">,</span> <span class="n">n_seeded</span> <span class="o">=</span> <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">value</span><span class="p">)</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">read_values</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
     <span class="k">if</span> <span class="n">k</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">support_indices</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">support_indices</span><span class="p">[:</span><span class="n">k</span><span class="p">])</span>
         <span class="n">n_vert_slices</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">(</span><span class="n">n_verts</span> <span class="o">+</span> <span class="n">ITEMS_PER_QUERY_SLICE</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">//</span> <span class="n">ITEMS_PER_QUERY_SLICE</span><span class="p">)</span>
         <span class="n">packed_support</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">kernel</span><span class="p">,</span> <span class="n">dim</span> <span class="o">=</span> <span class="n">kernel_visibility</span><span class="o">.</span><span class="n">SUPPORT_ARGMAX_SLICED</span><span class="o">.</span><span class="n">launch_shape</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">n_vert_slices</span><span class="p">)</span>
@@ -6632,7 +6673,12 @@ its radius; outwards nothing stops it:</p>
 
     <span class="k">for</span> <span class="n">round_index</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">max_iter</span><span class="p">):</span>
         <span class="c1"># Host readback: whether any sphere is still shrinking decides whether to launch a round.</span>
-        <span class="k">if</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">n_not_converged</span><span class="p">,</span> <span class="n">round_index</span><span class="p">))</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="c1"># The first round's count is already on the host unless the support pass added to it.</span>
+        <span class="k">if</span> <span class="n">round_index</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">k</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">still_shrinking</span> <span class="o">=</span> <span class="n">n_seeded</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">still_shrinking</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">n_not_converged</span><span class="p">,</span> <span class="n">round_index</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">still_shrinking</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
             <span class="k">break</span>
 
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>

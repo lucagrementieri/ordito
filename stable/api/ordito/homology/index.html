@@ -4164,11 +4164,7 @@ none:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/homology.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 37</span>
-<span class="normal"> 38</span>
-<span class="normal"> 39</span>
-<span class="normal"> 40</span>
-<span class="normal"> 41</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 41</span>
 <span class="normal"> 42</span>
 <span class="normal"> 43</span>
 <span class="normal"> 44</span>
@@ -4260,7 +4256,11 @@ none:</p>
 <span class="normal">130</span>
 <span class="normal">131</span>
 <span class="normal">132</span>
-<span class="normal">133</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators</span><span class="p">(</span>
+<span class="normal">133</span>
+<span class="normal">134</span>
+<span class="normal">135</span>
+<span class="normal">136</span>
+<span class="normal">137</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -4600,11 +4600,7 @@ component, <code>root</code> is not a referenced vertex, or only one of <code>un
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/homology.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">136</span>
-<span class="normal">137</span>
-<span class="normal">138</span>
-<span class="normal">139</span>
-<span class="normal">140</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">140</span>
 <span class="normal">141</span>
 <span class="normal">142</span>
 <span class="normal">143</span>
@@ -4755,7 +4751,30 @@ component, <code>root</code> is not a referenced vertex, or only one of <code>un
 <span class="normal">288</span>
 <span class="normal">289</span>
 <span class="normal">290</span>
-<span class="normal">291</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators_with_offsets</span><span class="p">(</span>
+<span class="normal">291</span>
+<span class="normal">292</span>
+<span class="normal">293</span>
+<span class="normal">294</span>
+<span class="normal">295</span>
+<span class="normal">296</span>
+<span class="normal">297</span>
+<span class="normal">298</span>
+<span class="normal">299</span>
+<span class="normal">300</span>
+<span class="normal">301</span>
+<span class="normal">302</span>
+<span class="normal">303</span>
+<span class="normal">304</span>
+<span class="normal">305</span>
+<span class="normal">306</span>
+<span class="normal">307</span>
+<span class="normal">308</span>
+<span class="normal">309</span>
+<span class="normal">310</span>
+<span class="normal">311</span>
+<span class="normal">312</span>
+<span class="normal">313</span>
+<span class="normal">314</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators_with_offsets</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -4860,14 +4879,31 @@ component, <code>root</code> is not a referenced vertex, or only one of <code>un
     <span class="c1"># The vertex graph the primal tree spans. Unsorted rows, which the level loop cannot see: it</span>
     <span class="c1"># resolves competing claims by lowest vertex index, not by column position.</span>
     <span class="n">neighbors</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">edges_to_neighbor_lists</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-    <span class="n">parents</span><span class="p">,</span> <span class="n">distances</span> <span class="o">=</span> <span class="n">_primal_spanning_tree</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="n">neighbors</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">root</span><span class="p">)</span>
+    <span class="c1"># Every small ``int32`` buffer the decomposition needs, uploaded at once holding its initial</span>
+    <span class="c1"># values: the primal level loop's state, the dual forest's, the count slots below and a caller's</span>
+    <span class="c1"># root. Each loop's condition starts true because ``wp.capture_while`` reads it before the first</span>
+    <span class="c1"># round; the primal loop claims level 1 first, nothing is claimed yet and nothing counted.</span>
+    <span class="n">small</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">(</span>
+        <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="o">*</span><span class="p">([</span><span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="n">kernel_homology</span><span class="o">.</span><span class="n">COUNT_SIZE</span><span class="p">),</span> <span class="mi">0</span> <span class="k">if</span> <span class="n">root</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">root</span><span class="p">],</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">count_end</span> <span class="o">=</span> <span class="n">_FOREST_STATE</span><span class="o">.</span><span class="n">stop</span> <span class="o">+</span> <span class="n">kernel_homology</span><span class="o">.</span><span class="n">COUNT_SIZE</span>
+    <span class="n">labels</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">parents</span><span class="p">,</span> <span class="n">distances</span> <span class="o">=</span> <span class="n">_primal_spanning_tree</span><span class="p">(</span>
+        <span class="n">offsets</span><span class="p">,</span>
+        <span class="n">neighbors</span><span class="p">,</span>
+        <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">unique_edges</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">if</span> <span class="n">root</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">small</span><span class="p">[</span><span class="n">count_end</span><span class="p">:]),</span>
+        <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">small</span><span class="p">[</span><span class="n">_PRIMAL_STATE</span><span class="p">]),</span>
+        <span class="n">labels</span><span class="p">,</span>
+    <span class="p">)</span>
 
     <span class="c1"># Both preconditions are counting questions, and both are answered on the device into one</span>
     <span class="c1"># three-slot buffer that is read back once: a guard that raises does not need to raise early,</span>
     <span class="c1"># and a separate readback apiece would serialise the pipeline twice more. The interior-edge</span>
     <span class="c1"># count rides in the candidate mask below, which already tests ``edge_face_count == 2``, so</span>
     <span class="c1"># neither guard costs a pass of its own.</span>
-    <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">kernel_homology</span><span class="o">.</span><span class="n">COUNT_SIZE</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">small</span><span class="p">[</span><span class="n">_FOREST_STATE</span><span class="o">.</span><span class="n">stop</span> <span class="p">:</span> <span class="n">count_end</span><span class="p">])</span>
 
     <span class="c1"># A generator is an edge in neither tree. ``candidate`` starts as the edges the cotree is</span>
     <span class="c1"># allowed to cross -- interior, and not already claimed by the primal tree -- and the forest</span>
@@ -4909,7 +4945,9 @@ component, <code>root</code> is not a referenced vertex, or only one of <code>un
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">n_reached</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="n">n_referenced</span><span class="si">}</span><span class="s2"> referenced vertices."</span>
         <span class="p">)</span>
 
-    <span class="n">_remove_dual_spanning_forest</span><span class="p">(</span><span class="n">candidate</span><span class="p">,</span> <span class="n">edge_faces</span><span class="p">,</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">distances</span><span class="p">)</span>
+    <span class="n">_remove_dual_spanning_forest</span><span class="p">(</span>
+        <span class="n">candidate</span><span class="p">,</span> <span class="n">edge_faces</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">distances</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">small</span><span class="p">[</span><span class="n">_FOREST_STATE</span><span class="p">])</span>
+    <span class="p">)</span>
     <span class="k">return</span> <span class="n">_trace_generator_loops</span><span class="p">(</span><span class="n">candidate</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">parents</span><span class="p">,</span> <span class="n">distances</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>

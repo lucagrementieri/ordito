@@ -4925,14 +4925,14 @@ into another batched kernel.</p>
     <span class="p">)</span>
 
     <span class="c1"># Segment boundaries of the label-sorted array: position 0, every label change, and the end.</span>
-    <span class="n">is_start</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_faces</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">is_start</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_faces</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_combine</span><span class="o">.</span><span class="n">label_run_starts</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">sorted_labels</span><span class="p">,</span> <span class="n">is_start</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">face_offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">flatnonzero</span><span class="p">(</span><span class="n">is_start</span><span class="p">)</span>
+    <span class="n">face_offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">flatnonzero_in_place</span><span class="p">(</span><span class="n">is_start</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">face_offsets</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span>
         <span class="n">component_vertices</span><span class="p">,</span> <span class="n">component_faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">selection</span><span class="o">.</span><span class="n">submesh_from_face_indices</span><span class="p">(</span>
