@@ -5,9 +5,9 @@ from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels.array import (
     RegisterBlockedTable,
     atomic_min_packed_box,
+    hilbert_code_30,
     lattice_position,
     lift_vec2,
-    morton_code_30,
     morton_frame,
     to_vec3,
     to_vec3d,
@@ -1352,8 +1352,14 @@ WINDING_NUMBER_TILED = RegisterBlockedTable(
 #   ``atan2`` was 0.81x.
 # - **The 14-DOP test is 1.24-1.25x over the box alone**; leaf size is flat from 4 to 32 faces (32
 #   stores the fewest cap edges); a 128-lane block is 1.23x over 32 lanes; Morton-sorting the
-#   queries is 1.04-1.08x and not done. A Hilbert face order measured 1.08-1.23x on the query and is
-#   left open.
+#   queries is 1.04-1.08x and not done. **The faces are in Hilbert order** (``winding_face_keys``):
+#   against Morton, build and walk, 1.14 / 1.24x on ``bunny`` (10 k / 100 k queries), 1.19 / 1.35x
+#   on ``dragon``, 1.21 / 1.44x on ``happy_buddha``, and the worst error against a float64 sum fell
+#   from 3.9e-5 to 6.9e-6 (shorter patch boundaries, fewer caps a query). Taking
+#   ``signed_distance_on_mesh(sign_mode="winding")``'s sign from this hierarchy instead of Warp's
+#   order-2 walk is declined: a bare closest-point query plus this walk, before any wrapper, is
+#   1.03-1.22x on ``bunny`` but 0.78x on ``dragon`` at 100 k queries, and Warp's sign agreed with
+#   the exact one at all of 99 k ``offset_mesh`` lattice nodes on ``dragon``.
 # - **A Barnes-Hut far field on top of the caps buys nothing** (Barill et al. 2018, order 1 and 2,
 #   beta 2-8): the siblings a query is outside of touch its own node, so they are never well
 #   separated, and forcing more expansions makes a block walk thousands of nodes serially (3-30x
@@ -1415,15 +1421,16 @@ def winding_face_keys(
     out_keys: wp.array[wp.int32],
     out_order: wp.array[wp.int32],
 ) -> None:
-    # dim == n_faces: the Morton code of each face centroid over the vertices' box, and the face's
-    # own index, into the radix sort's double-width buffers. ``corners`` is
+    # dim == n_faces: the Hilbert code of each face centroid over the vertices' box, and the
+    # face's own index, into the radix sort's double-width buffers. ``corners`` is
     # ``kernel_reduce.minmax_vec3_chunked``'s ``[lower, -upper]``, read here so no readback sits
-    # between the reduction and the sort; ``visibility.morton_point_order`` keys points the same
-    # way and differs only in keying a point rather than a face centroid.
+    # between the reduction and the sort; ``visibility.morton_point_order`` keys points on the same
+    # lattice in Z-order. A Hilbert run is a more compact patch than a Morton one, so the tree's
+    # nodes have shorter boundaries (fewer cap edges per query; see the measurements above).
     f = wp.int32(wp.tid())
     lower, inv_extent = morton_frame(corners)
     a, b, c = kernel_triangles.face_vertices(vertices, faces, f)
-    out_keys[f] = morton_code_30((a + b + c) / 3.0, lower, inv_extent)
+    out_keys[f] = hilbert_code_30((a + b + c) / 3.0, lower, inv_extent)
     out_order[f] = f
 
 

@@ -1203,6 +1203,46 @@ def morton_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.in
 
 
 @wp.func
+def hilbert_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.int32:
+    # ``morton_code_30``'s lattice ordered along a Hilbert curve instead: consecutive codes are
+    # face-adjacent cells, where Z-order jumps at every power-of-two boundary, so a run of codes is
+    # a more compact region. Skilling's transform (2004, "Programming the Hilbert curve") of the
+    # three 10-bit coordinates into the curve's transposed index, then its bits interleaved from
+    # the top, ``x`` highest.
+    q = wp.cw_mul(point - lower, inv_extent)
+    x = wp.vec3i(
+        wp.int32(wp.clamp(q[0], 0.0, 1023.0)),
+        wp.int32(wp.clamp(q[1], 0.0, 1023.0)),
+        wp.int32(wp.clamp(q[2], 0.0, 1023.0)),
+    )
+    # Undo excess work: from the top bit's mask down to the second lowest.
+    for level in range(9):
+        mask = 512 >> level
+        low = mask - 1
+        for axis in range(3):
+            if (x[axis] & mask) != 0:
+                x[0] = x[0] ^ low
+            else:
+                swap = (x[0] ^ x[axis]) & low
+                x[0] = x[0] ^ swap
+                x[axis] = x[axis] ^ swap
+    # Gray encode.
+    x[1] = x[1] ^ x[0]
+    x[2] = x[2] ^ x[1]
+    flip = wp.int32(0)
+    for level in range(9):
+        mask = 512 >> level
+        if (x[2] & mask) != 0:
+            flip = flip ^ (mask - 1)
+    code = wp.int32(0)
+    for level in range(10):
+        bit = 9 - level
+        for axis in range(3):
+            code = (code << 1) | (((x[axis] ^ flip) >> bit) & 1)
+    return code
+
+
+@wp.func
 def morton_frame(corners: wp.array[wp.float32]) -> tuple[wp.vec3, wp.vec3]:
     # ``morton_code_30``'s ``(lower, inv_extent)`` from a packed box left on the device by
     # ``kernels/reduce.minmax_vec3_chunked`` (``[lower, -upper]``), so no readback sits between the
