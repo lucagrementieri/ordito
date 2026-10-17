@@ -88,7 +88,7 @@ plugins:
           backlinks: false
   - mkdocstrings:
       # `backlinks.html.jinja` here replaces the stock breadcrumb tree with one collapsed line.
-      custom_templates: overrides/mkdocstrings
+      custom_templates: docs/.overrides/mkdocstrings
       handlers:
         python:
           inventories:

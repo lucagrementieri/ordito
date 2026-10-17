@@ -439,7 +439,7 @@ uv run zensical serve                   # preview; restart to see docstring chan
 ```
 
 - API pages come from `api-autonav`, one per public module. The nav is `docs/SUMMARY.md`; a new module needs a line there and in the API overview `docs/reference.md` (module table, and the task index when it answers a common task) (check 28). Never use `gen-files`: Zensical ignores unsupported plugins silently.
-- mkdocstrings templates are overridden in `overrides/mkdocstrings/` (backlinks render as one collapsed line); layout CSS is `docs/stylesheets/extra.css`. Check rendering changes in the built HTML, not only the build's exit status.
+- mkdocstrings templates are overridden in `docs/.overrides/mkdocstrings/` (backlinks render as one collapsed line); layout CSS is `docs/stylesheets/extra.css`. Check rendering changes in the built HTML, not only the build's exit status.
 - A build finishing in about 0.1 s with an empty `site/` is inotify exhaustion (exits 0); raise `fs.inotify.max_user_watches`.
 
 ### Docstring content
