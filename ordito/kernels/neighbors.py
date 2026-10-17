@@ -84,6 +84,114 @@ SEED_GROWTH = wp.float32(1.41421356)
 # complete attempt.
 SEED_ATTEMPTS = wp.int32(2 * int(MAX_SEARCH_ATTEMPTS))
 
+# The radius a grid k-NN walk starts at, measured on the query set rather than modelled. The
+# caller's estimate (``neighbors.knn_initial_radius``) inverts a uniform *volume* density, which is
+# right for a solid cloud and too wide for a surface sample: on a 1 M-point ``lucy`` subset it is
+# about 31 point spacings at ``k = 64``, seven times the answer's radius, and every point in that
+# ball is inserted into the row (an unrolled ``K``-slot shift each), so the grid lost to the BVH
+# (123 vs 73 ms). The cell width is not the lever: narrowing the cell alone bought 1.14x, and a cell
+# at the ``extent / grid_bins`` floor is a cliff (a 1 M uniform cube at ``k = 7`` took 3 s instead
+# of 3 ms), so the cell stays the estimate's and only the start radius moves.
+#
+# ``knn_start_sample`` walks ``START_SAMPLE_ROWS`` strided query rows once each, at the largest of
+# ``start_fraction``'s fractions of the initial radius, counting the points within each, and adds
+# one to the histogram slot of the smallest fraction holding ``k`` of them (slot ``START_BEYOND``
+# when none does), with integer atomics, so the histogram is exact in any order. The main launch
+# (``START_SCALED``) then starts every row at ``START_MARGIN`` times the fraction at the
+# ``START_QUANTILE_TENTHS`` quantile, clamped to at most one initial radius. No readback: each
+# thread reads the six slots. On a solid cloud, or queries off the cloud, the quantile is
+# ``START_BEYOND`` and the walk starts where it did.
+#
+# Measured, not modelled. Over bunny to 2 M-point ``lucy`` and uniform cubes, self queries and 1 %
+# of the diagonal, 8 spacings and 10 % of the diagonal off, ``k = 7`` and 64, a start of 1.25 times
+# the 0.9 quantile of the exact ``k``-th distances (oracle-chosen per case) lost nowhere (>= 0.99x)
+# and won up to 3.2x on surface clouds; 0.5 / 0.75 quantiles or a 1.5 margin each lost somewhere.
+# The sample counts rather than runs the k-NN walk: a first version that ran the row kernel over
+# the sample, starting small and deepening, cost a row's whole serial walk ahead of the main launch
+# (0.22x on ``bunny_decimated``, 0.9x on queries 1 % of the diagonal off ``lucy``, where the scale
+# stays 1). One walk at half the initial radius with no row to insert into is short.
+START_OFF = wp.constant(wp.int32(0))
+START_SCALED = wp.constant(wp.int32(1))
+START_SAMPLE_ROWS = 1024
+# The sample's fractions of the initial radius, ``start_fraction(slot)`` for ``slot`` below
+# ``START_BEYOND``: 0.5, 0.35, 0.25, 0.18 and 0.125.
+START_BEYOND = 5
+START_QUANTILE_TENTHS = wp.int32(9)
+START_MARGIN = wp.float32(1.25)
+
+
+@wp.func
+def start_fraction(slot: wp.int32) -> wp.float32:
+    # The sample's fraction ``slot`` of the initial radius, or ``1.0`` for ``START_BEYOND``: each is
+    # half the one two slots before it, from one half down.
+    return wp.where(
+        slot >= START_BEYOND,
+        wp.float32(1.0),
+        wp.float32(0.5) * wp.pow(wp.float32(0.70710678), wp.float32(slot)),
+    )
+
+
+@wp.kernel
+def knn_start_sample(
+    points: wp.array[wp.vec3],
+    queries: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    k: wp.int32,
+    initial_radius: wp.float32,
+    row_stride: wp.int32,
+    out_start_histogram: wp.array[wp.int32],
+) -> None:
+    # One sampled row (see ``START_SCALED``): thread ``t`` reads query ``t * row_stride``.
+    q = queries[wp.int32(wp.tid()) * row_stride]
+    reach0 = start_fraction(0) * initial_radius
+    reach1 = start_fraction(1) * initial_radius
+    reach2 = start_fraction(2) * initial_radius
+    reach3 = start_fraction(3) * initial_radius
+    reach4 = start_fraction(4) * initial_radius
+    within0 = wp.int32(0)
+    within1 = wp.int32(0)
+    within2 = wp.int32(0)
+    within3 = wp.int32(0)
+    within4 = wp.int32(0)
+    query = wp.hash_grid_query(grid_id, q, reach0)
+    point_index = wp.int32(-1)
+    while wp.hash_grid_query_next(query, point_index):
+        d = wp.length(points[point_index] - q)
+        within0 += wp.where(d <= reach0, 1, 0)
+        within1 += wp.where(d <= reach1, 1, 0)
+        within2 += wp.where(d <= reach2, 1, 0)
+        within3 += wp.where(d <= reach3, 1, 0)
+        within4 += wp.where(d <= reach4, 1, 0)
+    held = (
+        wp.where(within0 >= k, 1, 0)
+        + wp.where(within1 >= k, 1, 0)
+        + wp.where(within2 >= k, 1, 0)
+        + wp.where(within3 >= k, 1, 0)
+        + wp.where(within4 >= k, 1, 0)
+    )
+    wp.atomic_add(out_start_histogram, wp.where(held == 0, START_BEYOND, held - 1), 1)
+
+
+@wp.func
+def sampled_start_scale(start_histogram: wp.array[wp.int32]) -> wp.float32:
+    # The start radius over the initial radius that ``START_SCALED`` reads off the sample's
+    # histogram: ``START_MARGIN`` times the fraction at its ``START_QUANTILE_TENTHS`` quantile,
+    # at most one. Slots run from the largest fraction down, so the walk is from the last slot of a
+    # fraction to the first, then ``START_BEYOND``.
+    total = wp.int32(0)
+    for slot in range(START_BEYOND + 1):
+        total += start_histogram[slot]
+    target = (total * START_QUANTILE_TENTHS + 9) // 10
+    cumulative = wp.int32(0)
+    chosen = wp.int32(START_BEYOND)
+    for step in range(START_BEYOND):
+        slot = START_BEYOND - 1 - step
+        cumulative += start_histogram[slot]
+        if total > 0 and cumulative >= target and chosen == START_BEYOND:
+            chosen = slot
+    return wp.min(START_MARGIN * start_fraction(chosen), wp.float32(1.0))
+
+
 # Candidate-row sizes the register-resident k-NN kernels are generated for. The row is held in a
 # ``wp.types.vector(length=K)`` value type, i.e. in registers, so ``K`` must be a compile-time
 # constant and one kernel exists per bucket. A query takes the smallest bucket that fits its ``k``,
@@ -849,13 +957,15 @@ def query_hashgrid_nearest_neighbors(
     min_bound: wp.vec3,
     max_bound: wp.vec3,
     defer: wp.int32,
+    start_mode: wp.int32,
+    start_histogram: wp.array[wp.int32],
     out_deferred: wp.array[wp.int32],
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
-    # ``defer`` is the register-row twin's switch (see there); this global-row form serves only
-    # ``k`` above the largest bucket, where no caller defers, so it takes the arguments and ignores
-    # them.
+    # ``defer`` and ``start_mode`` are the register-row twin's switches (see there); this
+    # global-row form serves only ``k`` above the largest bucket, where no caller defers or samples
+    # a start radius, so it takes the arguments and ignores them.
     tid = wp.int32(wp.tid())
     q = queries[tid]
     out_indices_row = out_indices[tid]
@@ -891,6 +1001,8 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
         min_bound: wp.vec3,
         max_bound: wp.vec3,
         defer: wp.int32,
+        start_mode: wp.int32,
+        start_histogram: wp.array[wp.int32],
         out_deferred: wp.array[wp.int32],
         out_indices: wp.array2d[wp.int32],
         out_distances: wp.array2d[wp.float32],
@@ -900,7 +1012,14 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
         row_indices = vec_indices()
         row_distances = vec_distances()
 
-        r_hard, r = search_radius_bounds(q, min_bound, max_bound, max_radius, initial_radius)
+        # The walk starts at the initial radius (``START_OFF``) or at the fraction of it
+        # ``knn_start_sample`` measured (``START_SCALED``); the ``k = 1`` bucket compiles
+        # without it.
+        start = initial_radius
+        if wp.static(row_size > 1):
+            if start_mode == START_SCALED:
+                start = sampled_start_scale(start_histogram) * initial_radius
+        r_hard, r = search_radius_bounds(q, min_bound, max_bound, max_radius, start)
         certified = wp.int32(0)
         nearest = FLOAT32_INF_CONSTANT  # the last cell walk's nearest distance
         walked = wp.float32(0.0)  # the last cell walk's radius

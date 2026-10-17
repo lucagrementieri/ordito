@@ -69,6 +69,16 @@ _CELL_PROBE_POINTS = 600
 # size-gated leaf on ``lucy`` vertex subsets (self queries): deferring is 0.82-0.87x at ``k = 7``
 # up to 8 k points and 4.1-13.6x from 16 k; at ``k = 64`` 0.77x at 2 k, 1.13-1.81x at 4-16 k.
 _KNN_DEFER_MIN_POINTS = 8192
+# Fewest queries whose grid k-NN start radius is measured on a sample of them
+# (``kernel_neighbors.knn_start_sample``) rather than taken from the estimate. The sample is one
+# launch of ``START_SAMPLE_ROWS`` threads, each a serial cell walk, so it costs a row's latency
+# (0.1-0.3 ms on bunny and dragon) whatever the query count, and only a long main launch hides it.
+# Interleaved A/B, min of two rounds: from 1 M queries (``lucy`` subsets, a uniform cube) it is
+# 1.26-3.0x where it moves the start (self queries, 8 spacings off at ``k >= 16``) and at least
+# 0.96x where it does not (the cube, queries 1-10 % of the diagonal off); at 437-543 k
+# (``dragon``, ``happy_buddha``) 1.04-1.27x on self queries but 0.81-0.93x off the cloud, and at
+# 5-100 k 0.74-0.95x.
+_KNN_START_SAMPLE_MIN_QUERIES = 1_000_000
 
 # Default hash-grid resolution: ``wp.HashGrid`` folds cell coordinates modulo its bins, so a cloud
 # occupying more cells than the table has bins aliases unrelated cells onto one bucket and every
@@ -1244,7 +1254,10 @@ def query_nearest(
         First search radius. Defaults to
         [`knn_initial_radius`][ordito.neighbors.knn_initial_radius], which estimates it from the
         *cloud's* density -- so pass it explicitly when the queries are at a different scale, since
-        under ``"hashgrid"`` this also sets the cell width.
+        under ``"hashgrid"`` this also sets the cell width. With the default, ``"hashgrid"`` and
+        a million queries or more, the first walk starts instead at the fraction of the estimate
+        that a sample of the queries needs, which is smaller on a surface sample; the cell width
+        stays the estimate's. Either way the value affects speed only.
     bounds
         ``(min_bound, max_bound)`` of ``points``, to skip
         [`ordito.bounds.aabb`][ordito.bounds.aabb] and its readback. **Trusted, not validated, and
@@ -1359,6 +1372,7 @@ def query_nearest(
     if bounds is None:
         bounds = od.bounds.aabb(points)
     min_bound, max_bound = bounds
+    estimated = initial_radius is None
     if initial_radius is None:
         initial_radius = knn_initial_radius(points, k, bounds=bounds)
     search = [points, queries]
@@ -1402,8 +1416,43 @@ def query_nearest(
     # The deferral counters exist only when rows may be deferred; otherwise the kernel never
     # touches them and takes a null descriptor. Slot 0 counts ``DEFERRED_FAR_ROW`` rows, the only
     # kind at ``k == 1``, slot 1 ``DEFERRED_ROW`` rows.
-    counters = 1 if k == 1 else 2
-    deferred = _launch.zeros(counters, dtype=wp.int32, device=device) if defer else None
+    counters = (1 if k == 1 else 2) if defer else 0
+    # The estimated initial radius models a solid cloud; a surface sample's neighbours sit several
+    # times closer. So when the radius is the estimate, the walk's start is measured instead: one
+    # short launch counts the neighbours of a strided sample of the rows, and the main launch
+    # starts each row from a quantile of their histogram, read on the device
+    # (``kernel_neighbors.knn_start_sample``). The cell width stays the estimate's. The histogram
+    # takes the deferral counters' zeroed buffer, after them.
+    sample = (
+        estimated
+        and 1 < k <= kernel_neighbors.KNN_ROW_BUCKETS[-1]
+        and m >= _KNN_START_SAMPLE_MIN_QUERIES
+    )
+    deferred = None
+    start_histogram = None
+    if sample:
+        scratch = _launch.zeros(
+            counters + kernel_neighbors.START_BEYOND + 1, dtype=wp.int32, device=device
+        )
+        deferred = odt.as_dense(scratch[:counters]) if defer else None
+        start_histogram = odt.as_dense(scratch[counters:])
+        sample_rows = kernel_neighbors.START_SAMPLE_ROWS
+        _launch.launch(
+            kernel_neighbors.knn_start_sample,
+            dim=sample_rows,
+            inputs=[
+                points,
+                queries,
+                grid.id,
+                wp.int32(k),
+                wp.float32(initial_radius),
+                wp.int32(m // sample_rows),
+                start_histogram,
+            ],
+            device=device,
+        )
+    elif defer:
+        deferred = _launch.zeros(counters, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_neighbors.hashgrid_nearest_kernel(k),
         dim=m,
@@ -1415,6 +1464,10 @@ def query_nearest(
             min_bound,
             max_bound,
             wp.int32(1 if defer else 0),
+            kernel_neighbors.START_OFF
+            if start_histogram is None
+            else kernel_neighbors.START_SCALED,
+            start_histogram,
             deferred,
             *outputs,
         ],

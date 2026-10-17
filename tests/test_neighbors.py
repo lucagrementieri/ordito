@@ -26,6 +26,7 @@ from scipy.spatial import KDTree
 
 import ordito as od
 import ordito.typing as odt
+from ordito import _launch
 from ordito.kernels import neighbors as kernel_neighbors
 from tests.conversions import (
     meshlib_indices_to_numpy,
@@ -1017,6 +1018,8 @@ def test_knn_sorted_insert_rejects_nan_instead_of_writing_past_its_row(device: s
             wp.vec3(0.0, 0.0, 0.0),
             wp.vec3(0.1, 0.1, 0.1),
             wp.int32(0),  # no deferral: this global-row kernel serves k above every bucket
+            kernel_neighbors.START_OFF,
+            None,
             wp.zeros(1, dtype=wp.int32, device=device),
             indices_wp,
             distances_wp,
@@ -1283,6 +1286,70 @@ def test_query_nearest_defers_unfinished_rows_to_a_tree(
         assert np.allclose(distances_wp.numpy()[in_range], distances_np[in_range], rtol=1e-5)
         assert (indices_wp.numpy()[~in_range] == -1).all()
         assert np.isinf(distances_wp.numpy()[~in_range]).all()
+
+
+def test_query_nearest_samples_its_start_radius(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``backend="bvh"``: a grid search started from a sampled radius is exact.
+
+    From ``_KNN_START_SAMPLE_MIN_QUERIES`` queries the grid walk starts at a quantile of a sample's
+    neighbour counts rather than at the volume estimate (``kernel_neighbors.knn_start_sample``);
+    the gate is lowered here to reach it on small clouds. The sample's histogram is read back to
+    keep each case non-vacuous: on a 100 k-point sphere's surface sample, where the estimate is two
+    to three times the answer's radius (the ratio grows with the point count), it moves the start
+    (fewer than a tenth of the rows land past the fractions, so the 0.9 quantile is one of them),
+    and on a solid cube and on queries far off the sphere it leaves it (more than a tenth do). The
+    comparison is bitwise: the BVH and the grid form the same float32 distances.
+    """
+    rng = np.random.default_rng(29)
+    n = 100_000
+    sphere_np = rng.normal(size=(n, 3)).astype(np.float32)
+    sphere_np /= np.linalg.norm(sphere_np, axis=1, keepdims=True)
+    far_np = np.ascontiguousarray(sphere_np[: n // 5] * 1.5, dtype=np.float32)
+    cube_np = rng.random((n, 3), dtype=np.float32)
+    histograms: list[wp.array[wp.int32]] = []
+
+    def capturing(real_launch: Callable[..., object]):
+        def capturing_launch(*args: object, **kwargs: object):
+            if kwargs.get("kernel", args[0] if args else None) is kernel_neighbors.knn_start_sample:
+                histograms.append(cast("list[wp.array[wp.int32]]", kwargs["inputs"])[-1])
+            return real_launch(*args, **kwargs)
+
+        return capturing_launch
+
+    monkeypatch.setattr(od.neighbors, "_KNN_START_SAMPLE_MIN_QUERIES", 1)
+    monkeypatch.setattr(_launch, "launch", capturing(_launch.launch))
+    monkeypatch.setattr(wp, "launch", capturing(wp.launch))
+    beyond = kernel_neighbors.START_BEYOND
+    for points_np, queries_np, moves in (
+        (sphere_np, sphere_np[: n // 5], True),
+        (cube_np, cube_np[: n // 5], False),
+        (sphere_np, far_np, False),
+    ):
+        points_wp, queries_wp = (
+            points_to_warp(points_np, device),
+            points_to_warp(queries_np, device),
+        )
+        for k in (4, 16, 32):
+            histograms.clear()
+            indices_wp, distances_wp = od.neighbors.query_nearest(
+                points_wp, queries_wp, k=k, backend="hashgrid"
+            )
+            # ``_launch.launch`` may forward to the patched ``wp.launch``: one launch, two records.
+            assert len({id(histogram) for histogram in histograms}) == 1
+            histogram_np = histograms[0].numpy()
+            assert histogram_np.sum() == kernel_neighbors.START_SAMPLE_ROWS
+            assert bool(histogram_np[beyond] < 0.1 * histogram_np.sum()) is moves
+            bvh_indices_wp, bvh_distances_wp = od.neighbors.query_nearest(
+                points_wp, queries_wp, k=k, backend="bvh"
+            )
+            assert np.array_equal(distances_wp.numpy(), bvh_distances_wp.numpy())
+            # Indices through the distance they name: a tie may list two neighbours either way.
+            named = np.linalg.norm(points_np[indices_wp.numpy()] - queries_np[:, None], axis=2)
+            assert np.allclose(named, bvh_distances_wp.numpy(), rtol=1e-6, atol=1e-7)
+            assert bvh_indices_wp.shape == indices_wp.shape
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
