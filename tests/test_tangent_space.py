@@ -93,6 +93,28 @@ def test_vertex_tangent_frames_isolated_vertex(device: str) -> None:
     assert np.allclose(np.linalg.norm(basis_y_wp.numpy(), axis=1), 1.0, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_vertex_tangent_frames_derived_normals_match_supplied(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: the frame with no normals equals the frame built on ``vertex_normals``.
+
+    With no ``normals`` the frame kernel normalizes the angle-weighted accumulator itself; the
+    normals it returns must be ``vertex_normals(weighting="angle")`` bit for bit, and the frame
+    the one built on them. The potpourri3d comparison above pins the frame itself.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    derived = od.tangent_space.vertex_tangent_frames(vertices, faces)
+    normals = od.vertices.vertex_normals(vertices, faces, weighting="angle")
+    supplied = od.tangent_space.vertex_tangent_frames(vertices, faces, normals=normals)
+
+    assert np.array_equal(derived[2].numpy(), normals.numpy())
+    assert np.array_equal(derived[0].numpy(), supplied[0].numpy())
+    assert np.array_equal(derived[1].numpy(), supplied[1].numpy())
+
+
 # ---------------------------------------------------------------------------
 # halfedge_tangent_angles
 # ---------------------------------------------------------------------------
@@ -129,6 +151,28 @@ def test_halfedge_tangent_angles_span_the_rescaled_disk(
         # The last corner closes the disk exactly: a half-turn at a boundary vertex, a full turn in
         # the interior, whatever the vertex's angle defect was.
         assert np.isclose(ring_angles[-1] + scale * corners[-1], full_turn, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_halfedge_tangent_angles_derived_corner_angles_match_supplied(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: the angles with no ``face_angles`` equal those from the table.
+
+    With no table the ring walk forms each corner angle itself; it must reproduce
+    ``triangles.face_angles``' entries bit for bit, so both entry points return the same array.
+    The disk test above pins the angles themselves.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    derived = od.tangent_space.halfedge_tangent_angles(vertices, faces).numpy()
+    supplied = od.tangent_space.halfedge_tangent_angles(
+        vertices, faces, face_angles=od.triangles.face_angles(vertices, faces)
+    ).numpy()
+
+    assert np.ptp(derived) > 1.0
+    assert np.array_equal(derived, supplied)
 
 
 # ---------------------------------------------------------------------------
