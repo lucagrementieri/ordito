@@ -311,7 +311,9 @@ def reference_free_rounds(
 # exist at k = 1**, so it must not be read onto the ``*_k1`` rows, and it is **hash-grid specific**
 # -- the ``bvh`` backend is monotonic over the identical sweep. Mechanism: the grid's cell width
 # *is* ``initial_radius``, and a row whose true k-th distance runs past
-# ``_knn_widest_grid_radius(cell, n)`` abandons the walk for an exact linear scan of the cloud.
+# ``_knn_widest_grid_radius(cell, n)`` abandons the walk. Below ``_KNN_DEFER_MIN_POINTS`` and past
+# ``k = 64`` it takes an exact linear scan of the cloud; otherwise it is handed to a tree
+# (``kernels.neighbors.DEFERRED_ROW``), which removed the scan's serial tail but not the walk.
 #
 # **There is deliberately no ``pytorch3d-cpu`` row.** pytorch3d is registered for its CUDA kernels,
 # and its host path is a reference implementation rather than a tuned one, so a ``-cpu`` row

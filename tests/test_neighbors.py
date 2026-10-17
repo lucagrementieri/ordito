@@ -1195,18 +1195,28 @@ def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> 
     assert np.isinf(distances_wp.numpy()[~in_range]).all()
 
 
-def test_query_nearest_defers_sparse_self_rows_to_the_bvh(
+def test_query_nearest_defers_unfinished_rows_to_a_tree(
     device: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Class A, against ``scipy.spatial.KDTree``: a ``k > 1`` row the grid defers is still exact.
 
-    A self-query on a cloud whose density falls by two decades along one axis: the grid's cell is
-    sized for the mean spacing, so rows in the sparse end outgrow its widest walk and go to the
-    BVH's radius search rather than scanning the whole cloud. Counting BVH builds keeps it
-    non-vacuous -- the graded self-query must reach the second pass, while a query set displaced
-    off the cloud must not (it keeps the scan). A skipped second pass would leave its rows marked
-    ``DEFERRED_ROW`` and fail the comparison. ``max_radius`` is honoured on the deferred rows too.
+    The hash grid hands every row its widest walk cannot certify to a tree, by what the walk saw:
+    a row with a point inside the walk goes to the BVH's ball search seeded with its nearest
+    distance (``DEFERRED_ROW``), a row whose walks came back empty to a closest-point query over the
+    collapsed-point mesh that seeds the ball instead (``DEFERRED_FAR_ROW``). Counting the two
+    builds is what keeps each case non-vacuous, since a skipped pass would leave its rows marked
+    and fail the comparison:
+
+    * a self-query on a cloud whose density falls by two decades along one axis: the sparse end
+      outgrows the walk with its nearest point at distance zero -- the BVH only;
+    * the same cloud queried a little off itself: the sparse-end rows still find their nearest
+      point, at a positive distance, which is the seed -- the BVH only;
+    * a uniform cloud queried from a box beside it: every walk is empty -- the mesh only;
+    * the same far queries on a cloud under ``_KNN_DEFER_MIN_POINTS``: nothing deferred, the rows
+      take the linear scan.
+
+    ``max_radius`` is honoured on both finishes, including rows with no point in range at all.
     """
     rng = np.random.default_rng(23)
     n = 20_000
@@ -1215,19 +1225,29 @@ def test_query_nearest_defers_sparse_self_rows_to_the_bvh(
     graded_np = np.ascontiguousarray(
         np.stack([x, 0.2 * rng.random(n), 0.2 * rng.random(n)], axis=1), dtype=np.float32
     )
+    lifted_np = np.ascontiguousarray(graded_np + np.array([0.0, 0.0, 0.01]), dtype=np.float32)
     uniform_np = rng.random((n, 3), dtype=np.float32)
     far_np = np.ascontiguousarray(uniform_np[:500] * 1.5 + 2.0, dtype=np.float32)
-    builds = []
-    original = od.neighbors.bvh_from_points
+    small_np = np.ascontiguousarray(uniform_np[:4000], dtype=np.float32)
+    builds: list[str] = []
+    bvh_from_points = od.neighbors.bvh_from_points
+    mesh_from_points = od.neighbors.mesh_from_points
 
-    def counting_build(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
-        builds.append(1)
-        return original(points, leaf_size)
+    def counting_bvh(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
+        builds.append("bvh")
+        return bvh_from_points(points, leaf_size)
 
-    monkeypatch.setattr(od.neighbors, "bvh_from_points", counting_build)
-    for points_np, queries_np, expect_deferral in (
-        (graded_np, graded_np, True),
-        (uniform_np, far_np, False),
+    def counting_mesh(points: wp.array[wp.vec3]) -> wp.Mesh:
+        builds.append("mesh")
+        return mesh_from_points(points)
+
+    monkeypatch.setattr(od.neighbors, "bvh_from_points", counting_bvh)
+    monkeypatch.setattr(od.neighbors, "mesh_from_points", counting_mesh)
+    for points_np, queries_np, expected in (
+        (graded_np, graded_np, {"bvh"}),
+        (graded_np, lifted_np, {"bvh"}),
+        (uniform_np, far_np, {"mesh"}),
+        (small_np, far_np, set()),
     ):
         points_wp = points_to_warp(points_np, device)
         for k in (8, 30):
@@ -1235,7 +1255,7 @@ def test_query_nearest_defers_sparse_self_rows_to_the_bvh(
             indices_wp, distances_wp = od.neighbors.query_nearest(
                 points_wp, points_to_warp(queries_np, device), k=k, backend="hashgrid"
             )
-            assert bool(builds) == expect_deferral
+            assert set(builds) == expected
             distances_np = KDTree(points_np).query(queries_np, k=k)[0]
             assert np.allclose(distances_wp.numpy(), distances_np, rtol=1e-5, atol=1e-6)
             # Indices through the distance they name: a float32 near-tie may order two
@@ -1243,18 +1263,26 @@ def test_query_nearest_defers_sparse_self_rows_to_the_bvh(
             named = np.linalg.norm(points_np[indices_wp.numpy()] - queries_np[:, None], axis=2)
             assert np.allclose(named, distances_np, rtol=1e-5, atol=1e-6)
 
-    points_wp = points_to_warp(graded_np, device)
-    distances_np = np.asarray(KDTree(graded_np).query(graded_np, k=8)[0])
-    cap = float(np.quantile(distances_np[:, -1], 0.99))
-    builds.clear()
-    indices_wp, distances_wp = od.neighbors.query_nearest(
-        points_wp, points_wp, k=8, backend="hashgrid", max_radius=cap
-    )
-    assert builds
-    in_range = distances_np <= cap
-    assert 0 < (~in_range).sum()  # non-vacuity: some slots are out of range
-    assert np.allclose(distances_wp.numpy()[in_range], distances_np[in_range], rtol=1e-5)
-    assert (indices_wp.numpy()[~in_range] == -1).all()
+    for points_np, queries_np, expected, quantile in (
+        (graded_np, graded_np, {"bvh"}, 0.99),
+        (uniform_np, far_np, {"mesh"}, 0.5),
+    ):
+        distances_np = np.asarray(KDTree(points_np).query(queries_np, k=8)[0])
+        cap = float(np.quantile(distances_np[:, -1 if quantile > 0.9 else 0], quantile))
+        builds.clear()
+        indices_wp, distances_wp = od.neighbors.query_nearest(
+            points_to_warp(points_np, device),
+            points_to_warp(queries_np, device),
+            k=8,
+            backend="hashgrid",
+            max_radius=cap,
+        )
+        assert set(builds) == expected
+        in_range = distances_np <= cap
+        assert 0 < (~in_range).sum() < in_range.size  # non-vacuity: both kinds of slot occur
+        assert np.allclose(distances_wp.numpy()[in_range], distances_np[in_range], rtol=1e-5)
+        assert (indices_wp.numpy()[~in_range] == -1).all()
+        assert np.isinf(distances_wp.numpy()[~in_range]).all()
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])

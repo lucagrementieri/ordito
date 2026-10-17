@@ -27,19 +27,62 @@ wp.set_module_options({"enable_backward": False})
 MAX_SEARCH_ATTEMPTS = wp.constant(wp.int32(16))
 RADIUS_GROWTH = wp.constant(wp.float32(2.0))
 
-# Index a grid k-NN row carries when its search was handed to a tree -- ``nearest_point_via_mesh``
-# at ``k = 1``, the BVH row kernel's ``only_deferred`` pass above it -- rather than finished by a
-# linear scan. Distinct from ``-1``, which is an answer: no point in range.
+# Indices a grid k-NN row carries when its search was handed to a tree rather than finished by a
+# linear scan; both are distinct from ``-1``, which is an answer (no point in range). The grid
+# hands over every row its widest cell walk cannot certify, sorted by what the walk learned, and
+# the tree's ball search starts from that rather than from ``initial_radius``:
+#
+# * ``DEFERRED_ROW``: the walk, of radius ``walked``, held a point. Fewer than ``k`` points lie
+#   within ``walked``, so the ball starts there: at the walk's ``k``-th distance when the walk
+#   filled the row (one ball then certifies it), else ``SEED_MARGIN`` initial radii past
+#   ``walked``, the margin growing by ``SEED_GROWTH``. The grid leaves ``walked`` and the start in
+#   the row's first two distance slots. Only above ``k = 1``, where a point inside the walk
+#   certifies the row.
+# * ``DEFERRED_FAR_ROW``: no point within the walk. ``nearest_point_via_mesh`` answers it at
+#   ``k = 1``; above it the ball starts ``SEED_MARGIN`` initial radii past the nearest distance,
+#   read off a closest-point query over the collapsed-point mesh (``mesh_nearest_point``), whose
+#   cost does not grow with the distance.
+#
+# Why every row and not only those on the cloud: an uncertified row's other finish is a serial scan
+# of every point by one thread, so a single such row holds the whole launch for ``n`` point tests.
+# It is a tail, not throughput, and the few rows beside a sparse patch of a scanned cloud are
+# enough: three such rows in 20 000 queries eight spacings off a 100 k-point ``lucy`` subset made
+# the call 10.8x slower than handing them over, and the ratio grows with ``n``. The earlier rule
+# deferred only rows on the cloud, having measured the BVH's radius search lose to the scan off
+# it; that search grew its ball from the query by doubling, which overshoots a distant surface and
+# encloses a cap of it several times the answer's. The seeds remove that.
 DEFERRED_ROW = wp.constant(wp.int32(-2))
+DEFERRED_FAR_ROW = wp.constant(wp.int32(-3))
 
-# Above ``k = 1`` a grid k-NN row is deferred to the BVH only when its nearest point lies within
-# this fraction of the initial radius, i.e. when the query is (essentially) a point of the cloud.
-# Measured on a 1.5x-scaled, jittered bunny as the query set: the rows the grid gives up on there
-# answer within ~2 initial radii yet cost the BVH's radius search more than a scan of the whole
-# cloud, because a small ball in the empty space a surface cloud encloses still overlaps many of
-# the tree's large interior nodes. A self-query in the sparse part of a density-graded cloud is the
-# opposite case, and the one the deferral exists for.
-DEFER_NEAR = wp.constant(wp.float32(0.5))
+# A deferring grid search hands a row over as ``DEFERRED_FAR_ROW`` as soon as this many cell walks
+# have all come back empty, rather than widening on to ``widest``: no point lies within twice the
+# initial radius, and the walks still to come are the costly ones (cubic in the radius) that only
+# the mesh's closest-point query answers cheaply. After one empty walk is too early: a row one to
+# two initial radii off still finishes in the grid in a walk or two, and handing it over cost a
+# 0.6x at ``k = 7`` on a 1 M-point ``lucy`` subset queried 1 % of its diagonal off. After two it is
+# neutral there and 1.3-2.1x on queries 10 % of the diagonal off. Above ``k = 1`` only: a ``k = 1``
+# initial radius is several times smaller, so two empty walks come at a third of the distance, and
+# the hand-off (whose mesh build is the cost) lost 0.57-0.71x on 1-2 M-point ``lucy`` subsets
+# queried 1 % of the diagonal off.
+FAR_AFTER_EMPTY_WALKS = wp.int32(2)
+
+# The seeded finish of a deferred row (see ``DEFERRED_ROW``): an unfilled ball grows its margin
+# past the seed by ``SEED_GROWTH`` rather than doubling its radius. The margin matters far off the
+# cloud, where the ball's cap of the surface grows with it, and a margin too small costs only a
+# few small balls: swept 1 / 0.5 / 0.25 / 0.125 / 0.0625 on ``lucy`` subsets, 0.125 was 1.6x faster
+# than 1 on queries 10 % of the diagonal off and within 1.05x of the best in every cell. The growth
+# is gentler than the plain search's because a deferred row is one thread's tail, priced by its
+# last ball alone: doubling can land that ball anywhere up to twice the answer's radius. Simulated
+# over the deferred rows of ``lucy`` subsets queried 8 spacings, 1 % and 10 % of the diagonal off
+# (seeded at the nearest distance), ``sqrt(2)`` cut the worst row's candidates up to 6.5x against
+# doubling, at a sum within 1.1x everywhere. Seeding a row the walk touched at the walk radius
+# rather than at its nearest distance took the one deferred row of 20 000 queries eight spacings off
+# a 2 M-point subset at ``k = 64`` from 0.77x to parity with the old rule.
+SEED_MARGIN = wp.float32(0.125)
+SEED_GROWTH = wp.float32(1.41421356)
+# Twice the plain search's attempts, so the gentler growth reaches as far before the forced
+# complete attempt.
+SEED_ATTEMPTS = wp.int32(2 * int(MAX_SEARCH_ATTEMPTS))
 
 # Candidate-row sizes the register-resident k-NN kernels are generated for. The row is held in a
 # ``wp.types.vector(length=K)`` value type, i.e. in registers, so ``K`` must be a compile-time
@@ -406,7 +449,9 @@ def knn_bvh_scan(
 
 
 @wp.func
-def next_search_radius(worst: wp.float32, r: wp.float32, r_hard: wp.float32) -> wp.float32:
+def next_search_radius_from(
+    worst: wp.float32, r: wp.float32, r_hard: wp.float32, base: wp.float32, growth: wp.float32
+) -> wp.float32:
     # The iterative-deepening decision every exact search in this package makes after a scan at
     # radius ``r``, one definition because it is a *rule*, not arithmetic: the row is final when
     # everything outside the ball is farther than ``worst`` (certified) or when ``r`` already
@@ -417,10 +462,19 @@ def next_search_radius(worst: wp.float32, r: wp.float32, r_hard: wp.float32) -> 
     if r >= r_hard:
         return wp.float32(-1.0)
     # Deepen. A full row (finite ``worst``) reaching past the ball certifies at exactly ``worst``,
-    # so jump there; an unfilled row has no bound to jump to and grows geometrically instead.
+    # so jump there; an unfilled row has no bound to jump to and grows geometrically instead --
+    # its margin past ``base``, a distance no point is closer than (the nearest point's, for a
+    # seeded search; ``0`` otherwise, where the margin is the radius itself), by ``growth``.
     if worst < FLOAT32_INF_CONSTANT:
         return wp.min(worst, r_hard)
-    return wp.min(r * RADIUS_GROWTH, r_hard)
+    return wp.min(base + (r - base) * growth, r_hard)
+
+
+@wp.func
+def next_search_radius(worst: wp.float32, r: wp.float32, r_hard: wp.float32) -> wp.float32:
+    # ``next_search_radius_from`` for a search grown from the query itself. ``0 + (r - 0) * 2`` is
+    # ``r * 2`` to the bit, fused or not, so the unseeded searches deepen exactly as before.
+    return next_search_radius_from(worst, r, r_hard, wp.float32(0.0), RADIUS_GROWTH)
 
 
 @wp.func
@@ -457,13 +511,13 @@ def query_bvh_nearest_neighbors(
     initial_radius: wp.float32,
     min_bound: wp.vec3,
     max_bound: wp.vec3,
-    only_deferred: wp.int32,
+    finish: wp.int32,
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
-    # ``only_deferred`` is the register-row twins' switch for finishing the rows a grid search
-    # deferred; this global-row form serves only ``k`` above the largest bucket, where the grid
-    # never defers, so it takes the argument and ignores it.
+    # ``finish`` is the register-row twins' switch for finishing the rows a grid search deferred;
+    # this global-row form serves only ``k`` above the largest bucket, where the grid never
+    # defers, so it takes the argument and ignores it.
     tid = wp.int32(wp.tid())
     q = queries[tid]
     out_indices_row = out_indices[tid]
@@ -484,6 +538,34 @@ def query_bvh_nearest_neighbors(
         r = next_search_radius(worst, r, r_hard)
         if r < 0.0:
             break  # certified exact, or the scan was already complete
+
+
+@wp.func
+def mesh_nearest_point(
+    mesh_id: wp.uint64, points: wp.array[wp.vec3], q: wp.vec3, max_radius: wp.float32
+) -> tuple[wp.int32, wp.float32]:
+    # The nearest point to ``q`` within ``max_radius``, by the mesh BVH's best-first closest-point
+    # descent over the collapsed triangles ``point_triangle_indices`` builds: ``(-1, inf)`` when
+    # none is in range. Its cost follows the tree's depth rather than the distance to the answer,
+    # which is what neither the grid's cell walk nor the BVH's radius deepening does. The closest
+    # point of a triangle whose three corners coincide is that corner, exactly, and the distance is
+    # recomputed with the ball searches' own ``wp.length`` so a row answers the same whichever
+    # search decided it.
+    #
+    # **This rests on a Warp implementation detail, read from ``native/mesh.h`` (Warp 1.18)**: the
+    # leaf test skips a sliver when ``|n| / sum(|e|^2) < 1e-6``, which for a collapsed triangle is
+    # ``0 / 0`` -- NaN, which compares false, so the triangle is *tested* rather than culled.
+    # ``tests/test_neighbors.py::test_mesh_from_points_answers_the_nearest_point`` fails if a
+    # release ever culls it.
+    index = wp.int32(-1)
+    distance = wp.float32(FLOAT32_INF_CONSTANT)
+    hit = wp.mesh_query_point_no_sign(mesh_id, q, max_radius)
+    if hit.result:
+        d = wp.length(points[hit.face] - q)
+        if d <= max_radius:
+            index = hit.face
+            distance = d
+    return index, distance
 
 
 # ---------------------------------------------------------------------------------------------
@@ -574,31 +656,57 @@ def _row_helpers(row_size: int) -> _RowHelpers:
 _ROW_HELPERS = {row_size: _row_helpers(row_size) for row_size in KNN_ROW_BUCKETS}
 
 
-def _bvh_nearest_row_kernel(row_size: int, name: str):
-    """``K = row_size`` register-row variant of ``query_bvh_nearest_neighbors``."""
+def _bvh_nearest_row_kernel(row_size: int, name: str, deferred: bool):
+    """
+    ``K = row_size`` register-row variant of ``query_bvh_nearest_neighbors``.
+
+    ``deferred`` builds the variant that finishes a grid search's deferred rows (see ``finish``
+    below). It is a separate kernel rather than a runtime branch because the closest-point query it
+    carries spills the plain search: as one kernel, the ``K = 8`` bucket went from 56 registers and
+    no local memory to 64 and 128 bytes (``wp.get_cuda_kernel_properties``).
+    """
     vec_distances, vec_indices, row_reset, row_kth, row_write = _ROW_HELPERS[row_size]
+    attempts = int(SEED_ATTEMPTS if deferred else MAX_SEARCH_ATTEMPTS)
 
     def _kernel(
         points: wp.array[wp.vec3],
         queries: wp.array[wp.vec3],
-        bvh_id: wp.uint64,
+        tree_id: wp.uint64,
         k: wp.int32,
         max_radius: wp.float32,
         initial_radius: wp.float32,
         min_bound: wp.vec3,
         max_bound: wp.vec3,
-        only_deferred: wp.int32,
+        finish: wp.int32,
         out_indices: wp.array2d[wp.int32],
         out_distances: wp.array2d[wp.float32],
     ) -> None:
+        # The plain kernel answers every row from scratch over the BVH ``tree_id`` and ignores
+        # ``finish``. The ``deferred`` one answers only the grid's rows carrying the marker
+        # ``finish``, seeded as ``DEFERRED_ROW`` describes. For ``DEFERRED_FAR_ROW`` rows
+        # ``tree_id`` is the collapsed-point mesh, whose own BVH holds point ``i`` as primitive
+        # ``i``.
         tid = wp.int32(wp.tid())
-        if only_deferred != 0 and out_indices[tid, 0] != DEFERRED_ROW:
-            return  # the grid already certified this row
+        if wp.static(deferred):
+            if out_indices[tid, 0] != finish:
+                return  # the grid already certified this row
         q = queries[tid]
         row_indices = vec_indices()
         row_distances = vec_distances()
 
         r_hard, r = search_radius_bounds(q, min_bound, max_bound, max_radius, initial_radius)
+        bvh_id = tree_id
+        base = wp.float32(0.0)  # no point is closer than this; the ball grows its margin past it
+        if wp.static(deferred):
+            if finish == DEFERRED_ROW:
+                base = out_distances[tid, 0]  # the walk radius
+                r = wp.min(out_distances[tid, 1], r_hard)  # and the start the grid chose
+            else:
+                bvh_id = wp.mesh_get_bvh(tree_id)
+                _nearest_index, base = mesh_nearest_point(tree_id, points, q, r_hard)
+                # An empty ``max_radius`` ball leaves ``base`` at ``inf``: one complete attempt at
+                # ``r_hard`` then fills nothing and the row stays unfilled, which is its answer.
+                r = wp.min(base + SEED_MARGIN * initial_radius, r_hard)
         # The ball enumeration and its certificate are ``knn_bvh_scan``'s, which this factory
         # cannot call because the row lives in registers rather than in the output arrays; the
         # traversal is the only part duplicated, and the reason it is duplicated is the row type.
@@ -612,8 +720,11 @@ def _bvh_nearest_row_kernel(row_size: int, name: str):
         # at five of six). What is left is the per-node arithmetic: the exact sphere-AABB test costs
         # more per node than a slab test, and at the bucket where row-insertion traffic and
         # traversal cost balance, the ~1.91x candidate saving stops covering it.
-        for attempt in range(MAX_SEARCH_ATTEMPTS):
-            r = attempt_radius(attempt, r, r_hard)
+        for attempt in range(wp.static(attempts)):
+            if wp.static(deferred):
+                r = wp.where(attempt == SEED_ATTEMPTS - 1, r_hard, r)
+            else:
+                r = attempt_radius(attempt, r, r_hard)
             row_reset(row_distances, row_indices)
             query = wp.bvh_query_sphere(bvh_id, q, r)
             point_index = wp.int32(0)
@@ -633,7 +744,10 @@ def _bvh_nearest_row_kernel(row_size: int, name: str):
                             carry_distance = held_distance
                             carry_index = held_index
             worst = row_kth(row_distances, k)
-            r = next_search_radius(worst, r, r_hard)
+            if wp.static(deferred):
+                r = next_search_radius_from(worst, r, r_hard, base, SEED_GROWTH)
+            else:
+                r = next_search_radius(worst, r, r_hard)
             if r < 0.0:
                 break  # certified exact, or the scan was already complete
 
@@ -645,7 +759,15 @@ def _bvh_nearest_row_kernel(row_size: int, name: str):
 
 
 _BVH_NEAREST_ROW_KERNELS = {
-    row_size: _bvh_nearest_row_kernel(row_size, f"query_bvh_nearest_neighbors_row{row_size}")
+    row_size: _bvh_nearest_row_kernel(
+        row_size, f"query_bvh_nearest_neighbors_row{row_size}", deferred=False
+    )
+    for row_size in KNN_ROW_BUCKETS
+}
+_BVH_DEFERRED_ROW_KERNELS = {
+    row_size: _bvh_nearest_row_kernel(
+        row_size, f"finish_deferred_nearest_neighbors_row{row_size}", deferred=True
+    )
     for row_size in KNN_ROW_BUCKETS
 }
 
@@ -656,6 +778,11 @@ def bvh_nearest_kernel(k: int) -> wp.Kernel:
         if k <= row_size:
             return _BVH_NEAREST_ROW_KERNELS[row_size]
     return query_bvh_nearest_neighbors
+
+
+def bvh_deferred_kernel(k: int) -> wp.Kernel:
+    """Register-row kernel finishing a grid search's deferred rows; ``k`` within the buckets."""
+    return next(_BVH_DEFERRED_ROW_KERNELS[size] for size in KNN_ROW_BUCKETS if k <= size)
 
 
 @wp.func
@@ -776,12 +903,22 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
         r_hard, r = search_radius_bounds(q, min_bound, max_bound, max_radius, initial_radius)
         certified = wp.int32(0)
         nearest = FLOAT32_INF_CONSTANT  # the last cell walk's nearest distance
-        for _attempt in range(MAX_SEARCH_ATTEMPTS):
+        walked = wp.float32(0.0)  # the last cell walk's radius
+        walk_worst = FLOAT32_INF_CONSTANT  # and its k-th distance
+        for attempt in range(MAX_SEARCH_ATTEMPTS):
             if not r <= widest:
                 # Past ``widest`` a cell walk costs more than touching every point (and a NaN
                 # query lands here too, which is what bounds this loop). Finish exactly instead.
                 break
+            if (
+                defer != 0
+                and k > 1
+                and attempt >= FAR_AFTER_EMPTY_WALKS
+                and nearest == FLOAT32_INF_CONSTANT
+            ):
+                break  # far from the cloud: hand it over before the widest walks
             row_reset(row_distances, row_indices)
+            walked = r
             query = wp.hash_grid_query(grid_id, q, r)
             point_index = wp.int32(-1)
             while wp.hash_grid_query_next(query, point_index):
@@ -801,25 +938,30 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
                             carry_index = held_index
             nearest = row_distances[0]
             worst = row_kth(row_distances, k)
+            walk_worst = worst
             r = next_search_radius(worst, r, r_hard)
             if r < 0.0:
                 certified = 1  # certified exact, or the scan was already complete
                 break
 
-        if certified == 0 and defer != 0 and (k == 1 or nearest <= DEFER_NEAR * initial_radius):
-            # Hand the row to a tree instead of scanning. At ``k = 1`` that is
-            # ``nearest_point_via_mesh``, whose descent costs the same however far the query is
-            # from the cloud. Above it, the BVH row kernel's ``only_deferred`` pass, and only for a
-            # query sitting *on* a point of the cloud (``DEFER_NEAR``): that is a self-query in a
-            # part of the cloud sparser than the cell width was sized for, where the ball search
-            # stays small and a scan would touch every point. A query off the cloud keeps the scan,
-            # because there the tree is the slower finish (see ``DEFER_NEAR``).
-            # Marked ``DEFERRED_ROW`` rather than ``-1``, which already means "nothing within
-            # ``max_radius``", and counted so the caller can skip the second pass when none was.
+        if certified == 0 and defer != 0:
+            # Hand the row to a tree instead of scanning, marked by what the walk learned and
+            # seeded with it (see ``DEFERRED_ROW``), and counted per marker so the caller builds
+            # only the trees it needs. A walk of radius ``walked`` sees every point within it.
             row_reset(row_distances, row_indices)
             row_write(row_distances, row_indices, tid, k, out_indices, out_distances)
-            out_indices[tid, 0] = DEFERRED_ROW
-            wp.atomic_add(out_deferred, 0, 1)
+            if nearest <= walked:
+                out_indices[tid, 0] = DEFERRED_ROW
+                out_distances[tid, 0] = walked
+                out_distances[tid, 1] = wp.where(
+                    walk_worst < FLOAT32_INF_CONSTANT,
+                    walk_worst,
+                    walked + SEED_MARGIN * initial_radius,
+                )
+                wp.atomic_add(out_deferred, 0, 1)
+            else:
+                out_indices[tid, 0] = DEFERRED_FAR_ROW
+                wp.atomic_add(out_deferred, 1, 1)
             return
         if certified == 0:
             # Exact fallback once the radius outgrows the cell width or the attempt budget runs
@@ -871,34 +1013,6 @@ def point_triangle_indices(out_indices: wp.array[wp.int32]) -> None:
     out_indices[c] = c // 3
 
 
-@wp.func
-def mesh_nearest_point(
-    mesh_id: wp.uint64, points: wp.array[wp.vec3], q: wp.vec3, max_radius: wp.float32
-) -> tuple[wp.int32, wp.float32]:
-    # The nearest point to ``q`` within ``max_radius``, by the mesh BVH's best-first closest-point
-    # descent over the collapsed triangles ``point_triangle_indices`` builds: ``(-1, inf)`` when
-    # none is in range. Its cost follows the tree's depth rather than the distance to the answer,
-    # which is what neither the grid's cell walk nor the BVH's radius deepening does. The closest
-    # point of a triangle whose three corners coincide is that corner, exactly, and the distance is
-    # recomputed with the ball searches' own ``wp.length`` so a row answers the same whichever
-    # search decided it.
-    #
-    # **This rests on a Warp implementation detail, read from ``native/mesh.h`` (Warp 1.18)**: the
-    # leaf test skips a sliver when ``|n| / sum(|e|^2) < 1e-6``, which for a collapsed triangle is
-    # ``0 / 0`` -- NaN, which compares false, so the triangle is *tested* rather than culled.
-    # ``tests/test_neighbors.py::test_mesh_from_points_answers_the_nearest_point`` fails if a
-    # release ever culls it.
-    index = wp.int32(-1)
-    distance = wp.float32(FLOAT32_INF_CONSTANT)
-    hit = wp.mesh_query_point_no_sign(mesh_id, q, max_radius)
-    if hit.result:
-        d = wp.length(points[hit.face] - q)
-        if d <= max_radius:
-            index = hit.face
-            distance = d
-    return index, distance
-
-
 @wp.kernel
 def nearest_point_via_mesh(
     mesh_id: wp.uint64,
@@ -908,9 +1022,10 @@ def nearest_point_via_mesh(
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
-    # The ``k = 1`` rows the grid deferred; ``query_nearest_via_mesh`` answers every row instead.
+    # The ``k = 1`` rows the grid deferred, all ``DEFERRED_FAR_ROW`` (a nearest point inside the
+    # walk certifies a ``k = 1`` row); ``query_nearest_via_mesh`` answers every row instead.
     tid = wp.int32(wp.tid())
-    if out_indices[tid, 0] != DEFERRED_ROW:
+    if out_indices[tid, 0] != DEFERRED_FAR_ROW:
         return
     index, distance = mesh_nearest_point(mesh_id, points, queries[tid], max_radius)
     out_indices[tid, 0] = index
@@ -928,7 +1043,7 @@ def query_nearest_via_mesh(
 ) -> None:
     # ``query_nearest``'s ``k = 1`` BVH-backend search, every row through the collapsed-triangle
     # mesh. Differs from ``nearest_point_via_mesh`` only in answering every row rather than the
-    # grid's deferred ones, which saves a ``DEFERRED_ROW`` pre-fill of the output.
+    # grid's deferred ones, which saves a ``DEFERRED_FAR_ROW`` pre-fill of the output.
     tid = wp.int32(wp.tid())
     index, distance = mesh_nearest_point(mesh_id, points, queries[tid], max_radius)
     out_indices[tid, 0] = index

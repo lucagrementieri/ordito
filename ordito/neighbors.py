@@ -1192,23 +1192,21 @@ def query_nearest(
         ``"hashgrid"`` (the default) is the faster broad phase when the query scale matches the
         cloud's density, because ``initial_radius`` sets the cell width: the walk visits
         ``(2 ceil(r / cell) + 1) ** 3`` cells, so a radius **f** times too large costs ``f ** 3``.
-        A row the walk cannot certify within a few cells is finished another way. At ``k == 1``
-        that is a closest-point query over a tree of the cloud, whose cost does not grow with how
-        far the query is from it. Above it, a query that sits on a point of the cloud -- a
-        self-query, in a part of the cloud sparser than the cell was sized for -- goes to the
-        BVH's radius search, so a cloud whose density is not uniform costs its sparse rows a tree
-        search rather than a scan; any other row falls back to an exact linear scan of the cloud.
+        A row the walk cannot certify within a few cells is finished by a tree over the cloud
+        rather than by a scan of every point. A row whose walk found points goes to the BVH's
+        radius search, started where the walk stopped; a row whose first walks found nothing goes
+        to a closest-point query over [`mesh_from_points`][ordito.neighbors.mesh_from_points],
+        whose cost does not grow with how far the query is from the cloud -- the answer itself at
+        ``k == 1``, and the radius search's starting distance above it. So a query beside a sparse
+        patch of the cloud, or far from it, costs a tree search. Clouds under 8192 points, and
+        ``k`` above 64, finish such rows with an exact linear scan of the cloud instead.
 
         ``"bvh"`` has no cell width to get wrong, so it is the one to reach for when the query scale
-        is unknown and the queries do not sit on the cloud. Its own cost grows with ``k`` faster
-        than the grid's. At ``k == 1`` with no ``accelerator`` it is not a radius search at all but
-        a closest-point query over [`mesh_from_points`][ordito.neighbors.mesh_from_points], whose
-        cost does not grow with the queries' distance from the cloud.
-
-        **For queries off the cloud at moderate ``k``, the grid's cost is non-monotonic in cloud
-        size**: a row whose true ``k``-th distance runs past the widest walk takes the linear scan,
-        and how much of the query set falls in that tail moves with ``n``. The tree's cost stays
-        monotonic over the same range.
+        is far from the cloud's own density and no ``initial_radius`` can say it. Its own cost
+        grows with ``k`` faster than the grid's. At ``k == 1`` with no ``accelerator`` it is not a
+        radius search at all but a closest-point query over
+        [`mesh_from_points`][ordito.neighbors.mesh_from_points], whose cost does not grow with the
+        queries' distance from the cloud.
 
         Both are exact; this is a cost choice only. Reuse the structure across calls by passing it
         as ``accelerator`` when several queries share one cloud.
@@ -1241,7 +1239,7 @@ def query_nearest(
         (larger leaves for larger clouds, where the walk is faster with them). Ignored whenever
         ``accelerator`` is given and at ``k == 1`` under ``backend="bvh"``, where the tree is a
         [`mesh_from_points`][ordito.neighbors.mesh_from_points]. The default ``"hashgrid"``
-        backend builds a BVH only to finish the queries that land on the cloud.
+        backend builds a BVH only to finish the rows its cell walk cannot certify.
     initial_radius
         First search radius. Defaults to
         [`knn_initial_radius`][ordito.neighbors.knn_initial_radius], which estimates it from the
@@ -1384,25 +1382,26 @@ def query_nearest(
     else:
         grid = resolved
         cell_size = float(getattr(grid, "cell_width", initial_radius))
-    # At ``k == 1`` a row the cell walk cannot certify is *deferred* rather than finished by a
-    # linear scan over the whole cloud: that scan is what a query far from the cloud costs the
-    # grid, and a closest-point descent answers the same row in time that does not grow with the
-    # distance. So the walk stays the fast path for queries on or near the cloud, and only the rows
-    # it gives up on pay for the tree. The walk gives up at the same radius it hands over to the
-    # scan at: bringing that in shortens a displaced row's walk, but it also defers the odd outlier
-    # of an on-surface query set, and one deferred row pays for the whole tree.
+    # A row the cell walk cannot certify is *deferred* to a tree rather than finished by a linear
+    # scan over the whole cloud. That scan runs on the row's one thread, so even a single such row
+    # -- a query beside a sparse patch of a scanned cloud -- holds the launch for ``n`` point
+    # tests, while a tree answers it in time that grows with the size of its answer's ball. So the
+    # walk stays the fast path for queries on or near the cloud, and only the rows it gives up on
+    # pay for a tree. The walk gives up at the same radius it hands over to the scan at: bringing
+    # that in shortens a displaced row's walk, but it also defers the odd outlier of an on-surface
+    # query set, and one deferred row pays for the whole tree. Above ``k == 1`` a row whose first
+    # walks all came back empty is handed over before the costly widest ones
+    # (``kernel_neighbors.FAR_AFTER_EMPTY_WALKS``).
     #
-    # Above ``k == 1`` a row is deferred only when the query sits on a point of the cloud -- a
-    # self-query -- in a part sparser than the cell width was sized for: the sparse end of a cloud
-    # whose density is not uniform. Those rows go to the BVH's radius search, which stays small
-    # there; without it each one would scan every point. A query off the cloud keeps the scan,
-    # which is the cheaper finish for it (``kernel_neighbors.DEFER_NEAR``). A cloud smaller than
-    # ``_KNN_DEFER_MIN_POINTS`` and the global-row kernel past the largest register bucket never
-    # defer above ``k == 1``.
+    # The tree's ball starts from what the walk learned, or from the nearest distance when it
+    # learned nothing (``kernel_neighbors.DEFERRED_ROW``): grown from the query instead, a row off
+    # the cloud doubles past the surface and encloses a cap of it several times the answer's. A
+    # cloud smaller than ``_KNN_DEFER_MIN_POINTS`` and the global-row kernel past the largest
+    # register bucket never defer above ``k == 1``.
     defer = k == 1 or (k <= kernel_neighbors.KNN_ROW_BUCKETS[-1] and n >= _KNN_DEFER_MIN_POINTS)
-    # The deferral counter exists only when rows may be deferred; otherwise the kernel never
-    # touches it and takes a null descriptor.
-    deferred = _launch.zeros(1, dtype=wp.int32, device=device) if defer else None
+    # The deferral counters (rows with a nearest distance, rows without) exist only when rows may
+    # be deferred; otherwise the kernel never touches them and takes a null descriptor.
+    deferred = _launch.zeros(2, dtype=wp.int32, device=device) if defer else None
     _launch.launch(
         kernel_neighbors.hashgrid_nearest_kernel(k),
         dim=m,
@@ -1450,18 +1449,21 @@ def _finish_deferred_nearest(
     """
     Answer the rows the grid deferred, by a tree over the cloud.
 
-    One four-byte readback decides whether there are any, since the tree is a build over the whole
-    cloud: a query set the grid certified in full pays only that read. At ``k = 1`` the tree is a
-    ``wp.Mesh`` whose triangles each collapse onto one point, so its closest-face query is a
-    nearest-point query with the mesh BVH's pruned descent; above it, the BVH's radius search
-    finishes each deferred row and returns at once on the others.
+    One eight-byte readback of the two counters decides which trees to build, since each is a
+    build over the whole cloud: a query set the grid certified in full pays only that read. A row
+    whose walk held a point goes to the BVH's ball search seeded from the walk; a row with no point
+    inside the walk goes through a ``wp.Mesh`` whose triangles each collapse onto one point, whose
+    closest-face query is a nearest-point query with the mesh BVH's pruned descent -- the whole
+    answer at ``k = 1``, the ball's seed above it, walked over the mesh's own BVH.
     """
     # The one sync deferral adds, and it decides whether a whole-cloud build is needed.
-    if int(read_scalar(deferred, 0)) == 0:
+    seeded, far = (int(count) for count in read_values(deferred, 0, 2))
+    if seeded == 0 and far == 0:
         return
     device = points.device
     m = queries.size
     if k == 1:
+        # Every ``k = 1`` deferral is far: a nearest point inside the walk certifies the row.
         mesh = mesh_from_points(points)
         _launch.launch(
             kernel_neighbors.nearest_point_via_mesh,
@@ -1471,25 +1473,33 @@ def _finish_deferred_nearest(
             device=device,
         )
         return
-    bvh = _nearest_bvh(points, leaf_size)
-    _launch.launch(
-        kernel_neighbors.bvh_nearest_kernel(k),
-        dim=m,
-        inputs=[
-            points,
-            queries,
-            bvh.id,
-            wp.int32(k),
-            wp.float32(max_radius),
-            wp.float32(initial_radius),
-            bounds[0],
-            bounds[1],
-            wp.int32(1),
-            neighbor_indices,
-            neighbor_distances,
-        ],
-        device=device,
-    )
+    kernel = kernel_neighbors.bvh_deferred_kernel(k)
+    # The tree objects, not their ids: a ``wp.Bvh`` / ``wp.Mesh`` frees its device tree when it is
+    # collected, which would be before the launch that reads it.
+    finishes: list[tuple[wp.Bvh | wp.Mesh, object]] = []
+    if seeded:
+        finishes.append((_nearest_bvh(points, leaf_size), kernel_neighbors.DEFERRED_ROW))
+    if far:
+        finishes.append((mesh_from_points(points), kernel_neighbors.DEFERRED_FAR_ROW))
+    for tree, finish in finishes:
+        _launch.launch(
+            kernel,
+            dim=m,
+            inputs=[
+                points,
+                queries,
+                tree.id,
+                wp.int32(k),
+                wp.float32(max_radius),
+                wp.float32(initial_radius),
+                bounds[0],
+                bounds[1],
+                finish,
+                neighbor_indices,
+                neighbor_distances,
+            ],
+            device=device,
+        )
 
 
 def _resolve_grid_bins(grid_bins: int | None, n: int) -> int:

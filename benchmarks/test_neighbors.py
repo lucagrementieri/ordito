@@ -133,7 +133,12 @@ _WEIGHT_SPREADS = [0.5, 4.0]
 # keeps the reference inside a second while still being a realistic "many query regions" shape.
 _N_BOXES = 256
 
+# Offsets, in mean edges, of the off-cloud k-NN groups' whole-cloud query sets: two mean edges sits
+# inside the grid's first walk almost everywhere, eight is past it beside a sparse patch.
+_OFF_CLOUD_EDGES = [2.0, 8.0]
+
 _queries_np_cache: dict[str, np.ndarray] = {}
+_off_cloud_cache: dict[tuple[str, str, float], wp.array[wp.vec3]] = {}
 _queries_wp_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
 _bvh_cache: dict[tuple[str, str, int], wp.Bvh] = {}
 _kdtree_cache: dict[str, KDTree] = {}
@@ -515,6 +520,51 @@ def test_query_nearest_hashgrid_k7(bench_case: BenchCase) -> None:
         _run_o3d_nns_knn(bench_case, 7)
     else:
         _run_scipy(bench_case, 7)
+
+
+def _off_cloud_queries(bench_case: BenchCase, offset_edges: float) -> wp.array[wp.vec3]:
+    """Every point of the cloud, displaced ``offset_edges`` mean edges along the fixed direction."""
+    key = (bench_case.mesh_name, str(bench_case.device), offset_edges)
+    if key not in _off_cloud_cache:
+        direction = np.array([1.0, -1.0, 0.5]) / np.sqrt(2.25)
+        shifted = bench_case.vertices_np + offset_edges * bench_case.mean_edge * direction
+        _off_cloud_cache[key] = wp.array(
+            np.ascontiguousarray(shifted, dtype=np.float32), dtype=wp.vec3, device=bench_case.device
+        )
+    return _off_cloud_cache[key]
+
+
+@pytest.mark.benchmark(group="query_nearest_hashgrid_k7_off_cloud")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("offset_edges", _OFF_CLOUD_EDGES)
+def test_query_nearest_hashgrid_k7_off_cloud(bench_case: BenchCase, offset_edges: float) -> None:
+    """
+    ``k=7`` hash-grid k-NN of the whole cloud displaced off itself: the grid's off-cloud tail.
+
+    Every point is a query, so the set holds the few that sit beside a sparse patch of the cloud.
+    Such a row cannot certify inside the grid's widest walk, and each one costs its finish alone:
+    a serial scan of every point is a tail as long as the cloud, which is why this group times
+    the whole cloud rather than the 20 000-point subsample. ``query_nearest_bvh_k7_off_cloud`` is
+    the same call through the tree. No reference: the k-NN groups above carry them, and these
+    rows exist to price one path of ordito against another.
+    """
+    skip_larger_than(bench_case, "happy_buddha", "lucy's 14 M queries make a round take seconds")
+    points, queries = bench_case.vertices_wp, _off_cloud_queries(bench_case, offset_edges)
+    indices, _distances = bench_case.run(lambda: od.neighbors.query_nearest(points, queries, k=7))
+    assert indices.shape == (queries.size, 7)
+
+
+@pytest.mark.benchmark(group="query_nearest_bvh_k7_off_cloud")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("offset_edges", _OFF_CLOUD_EDGES)
+def test_query_nearest_bvh_k7_off_cloud(bench_case: BenchCase, offset_edges: float) -> None:
+    """``k=7`` BVH k-NN of the displaced cloud: the tree side of the off-cloud pair."""
+    skip_larger_than(bench_case, "happy_buddha", "lucy's 14 M queries make a round take seconds")
+    points, queries = bench_case.vertices_wp, _off_cloud_queries(bench_case, offset_edges)
+    indices, _distances = bench_case.run(
+        lambda: od.neighbors.query_nearest(points, queries, k=7, backend="bvh")
+    )
+    assert indices.shape == (queries.size, 7)
 
 
 @pytest.mark.benchmark(group="query_weighted_nearest")
