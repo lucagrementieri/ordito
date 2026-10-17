@@ -327,9 +327,10 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
 
 `-p benchmarks.census` turns the suite into a count of what each ordito row costs on the host
 besides its kernels: launches, allocations, memsets, copies by direction, readbacks,
-synchronizations, CUB scans and radix sorts. Each row is called once to compile and once under the
-counters; pytest-benchmark is bypassed and nothing is timed. For a fixed input and code path the
-counts never vary, so they are a gate where a timing cannot be: CI compares the CPU rows with
+synchronizations, CUB scans and radix sorts. Each row is called twice to warm up (compile, and reach
+the steady state of per-shape solver pools) and once under the counters, with the cyclic garbage
+collector run before and held off during the counted call; pytest-benchmark is bypassed and nothing
+is timed. For a fixed input and code path the counts then never vary, whatever ran before the row, so they are a gate where a timing cannot be: CI compares the CPU rows with
 `census_budget_cpu.json` and fails on any count that rose.
 
 ```bash

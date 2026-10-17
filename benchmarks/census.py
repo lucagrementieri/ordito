@@ -1,8 +1,8 @@
 """
 Host-traffic census of the ordito benchmark rows, and the count-budget gate built on it.
 
-Load with ``-p benchmarks.census``. Every ordito row's ``BenchLibrary.run`` is replaced by one warm
-call (which compiles) and one counted call, and pytest-benchmark is bypassed. What is counted is
+Load with ``-p benchmarks.census``. Every ordito row's ``BenchLibrary.run`` is replaced by two warm
+calls (the first compiles) and one counted call, and pytest-benchmark is bypassed. What is counted is
 what a call costs on the host besides its kernels' device time: launches, allocations, memsets,
 copies by direction, readbacks, synchronizations, CUB scans and radix sorts. For a fixed input and
 code path these numbers are the same on every run, unlike a timing, which is what makes them a gate.
@@ -212,7 +212,13 @@ def _install(conftest: Any) -> None:
         def call() -> Any:
             return fn(setup()) if setup is not None else fn()
 
-        result = call()
+        # Two warm calls, not one: the first compiles, and some state only reaches its steady form
+        # on a later call (``linalg._cached_solver`` gives the first operator of a shape its own
+        # state and pools from the second, which records; the third replays). With one warm call
+        # the counted call recorded or replayed depending on whether an earlier row had already
+        # seen the shape, so the count followed the session's test order.
+        for _ in range(2):
+            result = call()
         wp.synchronize_device(device)
         arguments = (setup(),) if setup is not None else ()
         wp.synchronize_device(device)
