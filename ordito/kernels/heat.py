@@ -551,9 +551,14 @@ def seed_transport_sources(
 
 @wp.kernel
 def seed_log_map_source(
-    source: wp.int32, out_field: wp.array[wp.vec2d], out_indicator: wp.array[wp.float64]
+    source: wp.int32,
+    out_sources: wp.array[wp.int32],
+    out_field: wp.array[wp.vec2d],
+    out_indicator: wp.array[wp.float64],
 ) -> None:
-    # ``log_map``'s two right-hand sides: the source's reference direction and its heat indicator.
+    # ``log_map``'s two right-hand sides, the source's reference direction and its heat indicator,
+    # and the one-entry source list the distance's shift reads.
+    out_sources[0] = source
     out_field[source] = wp.vec2d(wp.float64(1.0), wp.float64(0.0))
     out_indicator[source] = wp.float64(1.0)
 
@@ -711,7 +716,8 @@ def log_map_from_angles(
 # The concrete handles of the two generic row kernels, keyed by the half-cotangent table's dtype
 # -- see [`OverloadTable`][ordito.kernels.array.OverloadTable]. The scalar system reads the
 # ``float32`` table ``heat_face_terms`` writes or a caller's own in either precision; the vector
-# system reads ``laplacian.cotmatrix_entries``' ``float64`` table.
+# system reads that same ``float32`` table, or ``laplacian.cotmatrix_entries``' ``float64`` one
+# beside a bundle that holds another.
 HEAT_SYSTEM_ROWS: OverloadTable
 VECTOR_HEAT_SYSTEM_ROWS: OverloadTable
 
@@ -732,10 +738,10 @@ def _register_overloads() -> None:
     VECTOR_HEAT_SYSTEM_ROWS = OverloadTable(
         vector_heat_system_rows,
         {
-            wp.float64: [
+            d: [
                 *pattern,
                 i32,
-                wp.array2d[wp.float64],
+                wp.array2d[d],
                 wp.array[wp.float32],
                 f64,
                 wp.float64,
@@ -743,6 +749,7 @@ def _register_overloads() -> None:
                 wp.int32,
                 wp.array[wp.mat22d],
             ]
+            for d in (wp.float32, wp.float64)
         },
     )
 

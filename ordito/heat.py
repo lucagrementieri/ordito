@@ -61,10 +61,12 @@ from ordito._device import read_scalar, read_values, require_same_device
 from ordito.cholesky import held_nbytes
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
+from ordito.halfedge import vertex_one_rings
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
+from ordito.kernels import tangent_space as kernel_tangent_space
 from ordito.laplacian import (
     MeshOperatorPattern,
     cotmatrix_entries,
@@ -74,7 +76,7 @@ from ordito.laplacian import (
     mollify_intrinsic,
 )
 from ordito.mesh import Trimesh, mesh_arguments
-from ordito.tangent_space import halfedge_transport_angles, vertex_tangent_frames
+from ordito.tangent_space import halfedge_tangent_angles, vertex_tangent_frames
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -948,6 +950,8 @@ def vector_heat_operators(
     n_faces = faces.size // 3
     _require_cotmatrix_pattern(pattern, n_vertices)
     # One sparsity for both operators: the connection Laplacian's is the cotangent Laplacian's.
+    # The one-rings the connection is formed over, kept for the frames when it is formed here.
+    rings = None
     if n_faces == 0:
         pattern = None
     elif pattern is None:
@@ -972,6 +976,7 @@ def vector_heat_operators(
         scalar_operators, mass = _heat_operators(
             vertices, faces, t, edge_sums=edge_sums, pattern=pattern
         )
+        built = _SCALAR_BUILDS[scalar_operators[0]]
     elif built is not None:
         mass = built.mass
     else:
@@ -984,14 +989,21 @@ def vector_heat_operators(
     else:
         # ``M + t L_connection`` over the cotangent Laplacian's pattern, as the scalar system is
         # built over it (``heat_operators``): ``connection_laplacian``'s entries, shifted in the
-        # thread that forms them, so the connection Laplacian itself is never stored.
-        cot_entries = cotmatrix_entries(vertices, faces, dtype=wp.float64)
+        # thread that forms them, so the connection Laplacian itself is never stored. Its weights
+        # are ``cotmatrix_entries``': the ``float32`` table a bundle assembled from positions
+        # already holds (the ``float64`` one is that table widened on write, and the row kernel
+        # widens on read), formed here for any other bundle.
+        cot_entries = (
+            scalar_operators[5]
+            if built is not None and built.extrinsic_cot
+            else cotmatrix_entries(vertices, faces, dtype=wp.float64)
+        )
         if transport_angles is None:
-            transport_angles = halfedge_transport_angles(vertices, faces)
+            transport_angles, rings = _transport_angles_and_rings(vertices, faces)
         _, _, offsets, columns, run_start, keys, count, order = pattern
         vector_values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
         _launch.launch(
-            kernel_heat.VECTOR_HEAT_SYSTEM_ROWS[wp.float64],
+            kernel_heat.VECTOR_HEAT_SYSTEM_ROWS[cot_entries.dtype],
             dim=n_vertices,
             inputs=[
                 offsets,
@@ -1015,9 +1027,35 @@ def vector_heat_operators(
             n_vertices, n_vertices, offsets, columns, vector_values
         )
     if frames is None:
-        frames = vertex_tangent_frames(vertices, faces)
+        frames = vertex_tangent_frames(vertices, faces, rings=rings)
     preconditioner = twl.jacobi_preconditioner(vector_system)
     return vector_system, scalar_operators, frames, preconditioner
+
+
+def _transport_angles_and_rings(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> tuple[wp.array[wp.float32], tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]]:
+    """
+    ``halfedge_transport_angles(vertices, faces)``, and the one-rings it walked for the frames.
+
+    The rings and the twins come from one ``vertex_one_rings`` build, which is the table
+    ``halfedge_transport_angles`` would form itself; the transport kernel is launched here because
+    the public function, handed those twins back, verifies them with a launch and a readback that a
+    table this build produced cannot fail.
+    """
+    ring_halfedges, ring_offsets, is_boundary, twins = vertex_one_rings(
+        faces, n_vertices=vertices.size, return_twins=True
+    )
+    rings = (ring_halfedges, ring_offsets, is_boundary)
+    tangent_angles = halfedge_tangent_angles(vertices, faces, rings=rings)
+    transport_angles = _launch.empty(twins.size, dtype=wp.float32, device=vertices.device)
+    _launch.launch(
+        kernel_tangent_space.halfedge_transport_angles,
+        dim=twins.size,
+        inputs=[twins, tangent_angles, transport_angles],
+        device=vertices.device,
+    )
+    return transport_angles, rings
 
 
 def _require_cotmatrix_pattern(pattern: MeshOperatorPattern | None, n_vertices: int) -> None:
@@ -1155,7 +1193,7 @@ def _heat_operators(
         normals,
         areas,
     )
-    _SCALAR_BUILDS[heat_system] = _ScalarBuild(mass, edge_sums)
+    _SCALAR_BUILDS[heat_system] = _ScalarBuild(mass, edge_sums, write_cot and not use_robust)
     return operators, mass
 
 
@@ -1165,6 +1203,9 @@ class _ScalarBuild:
 
     mass: wp.array[wp.float64]
     edge_sums: wp.array[wp.float64] | None
+    # Whether the bundle's half-cotangent table is ``cotmatrix_entries``' of the positions (formed
+    # by ``heat_face_terms``), not a caller's or a mollified one.
+    extrinsic_cot: bool
 
 
 # The face buffer's stable sort ``(sorted_vertices, corner_order)``, or ``None`` for the per-face
@@ -1736,13 +1777,13 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
     # the angle is measured against, raw (unnormalized) like ``transport_tangent_vectors``' own
     # ``direction`` -- and ``heat_geodesic``'s heat, diffused together as one solve over
     # ``[vector system; heat system]`` for the reason ``transport_tangent_vectors`` gives.
-    sources = _launch.full(1, source, dtype=wp.int32, device=device)
+    sources = _launch.empty(1, dtype=wp.int32, device=device)
     rhs_field, rhs = _stacked_fields(n_vertices, 1, device)
     _launch.launch(
         kernel_heat.seed_log_map_source,
         dim=1,
         inputs=[source],
-        outputs=[rhs_field, rhs[2 * n_vertices :]],
+        outputs=[sources, rhs_field, rhs[2 * n_vertices :]],
         device=device,
     )
     transported_raw, diffused = _stacked_fields(n_vertices, 1, device)

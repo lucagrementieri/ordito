@@ -1492,6 +1492,27 @@ def _fixed_vertex_system(
             vertices, faces, cot_entries=mesh.cotmatrix_entries, pattern=mesh.mesh_operator_pattern
         )
         return _checked_system(q, fixed_mask, vertices, n_fixed, method, factor), "chebyshev"
+    if method == "harmonic" and k == 1 and faces.size > 0:
+        # ``-L`` written by one row kernel over the mesh's pattern, so ``L`` is never formed.
+        _, _, offsets, columns, run_start, keys, count, order = mesh.mesh_operator_pattern
+        negated_values = _launch.empty(columns.size, dtype=wp.float64, device=vertices.device)
+        _launch.launch(
+            kernel_parametrization.negated_cotmatrix_rows,
+            dim=vertices.size,
+            inputs=[
+                offsets,
+                columns,
+                run_start,
+                keys,
+                wp.int32(count),
+                order,
+                mesh.cotmatrix_entries,
+            ],
+            outputs=[negated_values],
+            device=vertices.device,
+        )
+        q = od.array.bsr_from_csr(vertices.size, vertices.size, offsets, columns, negated_values)
+        return _checked_system(q, fixed_mask, vertices, n_fixed, method, factor), "chebyshev"
     if method == "harmonic":
         laplacian = cotmatrix(
             vertices,
@@ -1508,7 +1529,21 @@ def _fixed_vertex_system(
     else:
         laplacian = graph_laplacian(vertices, faces, dtype=wp.float64)
         mass_diag = None
-    q = od.energies.k_harmonic(laplacian, mass_diag, k=k)
+    if k == 1:
+        # ``k_harmonic``'s ``-L`` (``tutte``'s, or a mesh with no faces), one negating map, over
+        # ``L``'s own offsets and columns: ``L`` is built for this system alone, so they are shared
+        # rather than copied.
+        negated_values = _launch.empty_like(laplacian.values)
+        _launch.map(wp.neg, laplacian.values, out=negated_values)
+        q = od.array.bsr_from_csr(
+            int(laplacian.nrow),
+            int(laplacian.ncol),
+            laplacian.offsets,
+            laplacian.columns,
+            negated_values,
+        )
+    else:
+        q = od.energies.k_harmonic(laplacian, mass_diag, k=k)
     system = _checked_system(q, fixed_mask, vertices, n_fixed, method, factor)
     if k == 1:
         return system, "chebyshev"
