@@ -3919,18 +3919,18 @@ much of it is <em>verified</em>, not how much of it is meant to work.</p>
 <td>Fully supported and correctness-tested on every change, via Warp's CPU backend. Not performance-tuned: the CPU backend runs a launch grid far less parallel than a GPU does, and tuning decisions in ordito are made on the CUDA measurement.</td>
 </tr>
 <tr>
-<td><strong>macOS</strong></td>
-<td>Untested. <code>warp-lang</code> supports macOS on the CPU backend (there is no CUDA, and Metal is not a Warp backend), so ordito is expected to work, but nothing verifies it.</td>
+<td><strong>macOS (Apple Silicon)</strong></td>
+<td>Tested by hand on macOS 26 (arm64), CPU backend only: there is no CUDA, and Metal is not a Warp backend. The full development environment installs, the type and lint gates pass, and the test suite passes except for a handful of comparison tests that crash inside pymeshlab's macOS build. Not part of CI and not performance-tuned.</td>
 </tr>
 <tr>
 <td><strong>Windows</strong></td>
-<td>Untested. Same position as macOS: <code>warp-lang</code> supports it, ordito is not checked against it.</td>
+<td>Untested. <code>warp-lang</code> supports it, ordito is not checked against it.</td>
 </tr>
 </tbody>
 </table>
-<p>The untested rows are a statement about coverage, not a warning — if ordito works or fails for
-you on either, a short <a href="https://github.com/lucagrementieri/ordito/issues">issue</a> saying so is
-what would move them up the table.</p>
+<p>The untested row is a statement about coverage, not a warning — if ordito works or fails for
+you on Windows, a short <a href="https://github.com/lucagrementieri/ordito/issues">issue</a> saying so is
+what would move it up the table.</p>
 <h2 id="the-five-minute-mental-model">The five-minute mental model</h2>
 <p>ordito has no scene graph, no viewer, and no mandatory mesh object. A mesh is two
 <a href="https://nvidia.github.io/warp/modules/runtime.html#arrays"><code>warp.array</code></a> buffers — vertex
