@@ -370,6 +370,42 @@ def test_edges_unique_radix_is_invariant_to_an_oversized_base(
         assert np.array_equal(inverse_wp.numpy(), inverse_tight_wp.numpy())
 
 
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_edges_unique_from_precomputed_sorted_edges(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: the ``edges_sorted`` path returns the face path's table and inverse.
+
+    The face path carries the library comparisons above; this pins the precomputed-rows entry
+    point, which packs its own keys and unpacks each unique row from its key, at every radix it
+    can pack against -- inferred (validated), supplied (validated and not), and the unbounded pair
+    radix -- and its range check.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    faces = mesh_wp.indices
+    edges_sorted_wp = od.edges.faces_to_edges(faces, sorted=True)
+    n_vertices = mesh_wp.points.shape[0]
+    edges_ref_wp, inverse_ref_wp = od.edges.edges_unique(faces, n_vertices=n_vertices)
+    for n_vertices_arg, validate in (
+        (None, True),
+        (n_vertices, True),
+        (n_vertices, False),
+        (None, False),
+    ):
+        edges_wp, inverse_wp = od.edges.edges_unique(
+            faces, edges_sorted=edges_sorted_wp, n_vertices=n_vertices_arg, validate=validate
+        )
+        assert np.array_equal(edges_wp.numpy(), edges_ref_wp.numpy())
+        assert np.array_equal(inverse_wp.numpy(), inverse_ref_wp.numpy())
+
+    tight = od.array.index_bound(faces)
+    with pytest.raises(ValueError, match="must be less than n_vertices"):
+        od.edges.edges_unique(faces, edges_sorted=edges_sorted_wp, n_vertices=tight - 1)
+    with pytest.raises(ValueError, match="must be positive"):
+        od.edges.edges_unique(faces, edges_sorted=edges_sorted_wp, n_vertices=0)
+
+
 # ---------------------------------------------------------------------------
 # edges_unique_length
 # ---------------------------------------------------------------------------

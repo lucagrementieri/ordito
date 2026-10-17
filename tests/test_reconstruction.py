@@ -27,6 +27,7 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import ordito as od
+from ordito import _launch
 from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from tests.comparisons import (
@@ -1699,6 +1700,76 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     assert waves_run == max_waves
     assert len(live) == waves_run + resyncs
     assert id(state.front_in) == live[-1], "front_in is not the buffer the last wave that ran wrote"
+
+
+def test_ball_pivoting_on_a_bvh_leaf_past_the_tile_walk_buffer(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: an overfull point-BVH leaf leaves the reconstruction unchanged.
+
+    The patch is a jittered 24 x 24 grid of spacing 0.005 inside one Morton cell, followed by 31
+    far points that pin the Morton normalisation and form a 30-step chain -- one point in each cell
+    whose index has a single bit set, plus the far corner -- so on CUDA the LBVH builder stops at
+    depth 32 with the whole patch (575 points) in one leaf. At radius 0.02 every pivot search box
+    meets about 270 of them, past the 160-entry shared buffer of ``wp.tile_bvh_query_aabb``
+    (``kernels.proximity.TILE_WALK_LEAF_MAX``): before the slab walk in ``pivot_front_edges`` this
+    faulted with CUDA error 700. The far points sit after the patch and are never triangulated, so
+    the patch alone -- whose tree has no such leaf and takes the cooperative walk -- is the oracle,
+    on the vertices and on the wound triangles. The jitter breaks the regular grid's co-circular
+    quadruples, whose tie-broken reconstruction is not what this test is about.
+
+    On CUDA the overfull bitset is asserted non-empty for the chained cloud and empty for the patch,
+    so the test cannot pass by both runs taking the builtin's walk. The cpu device builds a
+    different tree (no overfull leaf here), walks serially and marks nothing, so there it only pins
+    agreement.
+    """
+    side, spacing = 24, 0.005
+    positions = 0.4 + spacing * np.arange(side)
+    grid_x, grid_y = np.meshgrid(positions, positions, indexing="ij")
+    patch_np = np.stack([grid_x.ravel(), grid_y.ravel(), np.full(grid_x.size, 0.25)], axis=1)
+    patch_np[:, :2] += np.random.default_rng(0).uniform(-0.2, 0.2, (grid_x.size, 2)) * spacing
+    chain_np = np.array(
+        [np.eye(3)[axis] * 2**bit + 0.5 for bit in range(10) for axis in range(3)]
+        + [np.full(3, 1023.5)]
+    )
+
+    flags: list[wp.array[wp.int32]] = []
+
+    def capturing(real_launch: Callable[..., object]):
+        def capturing_launch(*args: object, **kwargs: object):
+            if kwargs.get("kernel", args[0] if args else None) is (
+                kernel_bpa.mark_overfull_point_leaves
+            ):
+                flags.append(cast("list[wp.array[wp.int32]]", kwargs["inputs"])[1])
+            return real_launch(*args, **kwargs)
+
+        return capturing_launch
+
+    monkeypatch.setattr(_launch, "launch", capturing(_launch.launch))
+    monkeypatch.setattr(wp, "launch", capturing(wp.launch))
+
+    results = []
+    for points_np in (np.concatenate([patch_np, chain_np]), patch_np):
+        normals_np = np.tile([0.0, 0.0, 1.0], (points_np.shape[0], 1))
+        points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+        vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=0.02)
+        results.append((vertices_wp.numpy(), faces_wp.numpy()))
+
+    if wp.get_device(device).is_cuda:
+        # ``_launch.launch`` may forward to the patched ``wp.launch``: one launch can record twice.
+        flags = list({id(bitset): bitset for bitset in flags}.values())
+        assert len(flags) == 2
+        assert flags[0].numpy().any(), "the chained cloud's tree must hold an overfull leaf"
+        assert not flags[1].numpy().any()
+    else:
+        assert not flags
+    (chained_vertices_np, chained_faces_np), (patch_vertices_np, patch_faces_np) = results
+    assert patch_faces_np.shape[0] > 3 * patch_np.shape[0]
+    assert np.array_equal(chained_vertices_np, patch_vertices_np)
+    assert_unordered_rows_equal(
+        canonical_winding(chained_faces_np), canonical_winding(patch_faces_np)
+    )
 
 
 @pytest.mark.parity("ball_pivoting", "pymeshlab", "open3d")

@@ -12,6 +12,8 @@ import warp as wp
 
 import ordito.reduce as od_reduce
 import ordito.typing as odt
+from ordito.kernels import energies as kernel_energies
+from ordito.kernels import reduce as kernel_reduce
 from tests.conversions import points_to_torch, points_to_warp, trimesh_to_pyvista, warp_empty
 
 # Bound once as untyped callables: the tests below pass ``axis`` as a ``Literal[0, 1] | None``
@@ -476,6 +478,67 @@ def test_weighted_sum_matches_pytorch3d(device: str) -> None:
         rtol=1e-5,
         atol=1e-7,
     )
+
+
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize("n", [1, 100, 1_024, 5_000, 1_100_000])
+def test_sum_of_terms_is_the_sum(device: str, n: int, deterministic: bool) -> None:
+    """
+    Ordito against ordito: ``sum_of_terms`` totals are ``sum`` and ``weighted_sum``, bit for bit.
+
+    ``sum`` has the NumPy oracle (``test_float_sums_are_bit_identical_across_calls``); this pins
+    the device-side entry to it, for ``sum``'s own kernels, the weighted ones and a fused term
+    (``edge_length_loss``'s ``(x - 0)^2``, against ``sum`` of the materialized squares), each
+    written into one slot of a shared buffer whose other slot it must not touch. The sizes span
+    one block, one fold stage and two. The atomic form (determinism off) adds blocks in arrival
+    order on CUDA, so there the totals agree to rounding instead.
+    """
+    rng = np.random.default_rng(11)
+    values_np = rng.random(n, dtype=np.float32)
+    weights_np = rng.random(n, dtype=np.float32)
+    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
+    weights_wp = wp.array(weights_np, dtype=wp.float32, device=device)
+    terms = kernel_energies.EdgeDeviationTerms()
+    terms.n = n
+    terms.lengths = values_wp
+    terms.target = 0.0
+    squares_wp = wp.array(values_np * values_np, dtype=wp.float32, device=device)
+
+    # The atomic form adds into its slot, so that buffer starts at zero; the fourth slot is never
+    # written and keeps its initial value.
+    initial = -1.0 if deterministic else 0.0
+    totals_wp = wp.full(4, initial, dtype=wp.float32, device=device)
+    od_reduce.sum_of_terms(
+        kernel_reduce.ARRAY_SUM, [values_wp], n, out=odt.as_dense(totals_wp[0:1])
+    )
+    od_reduce.sum_of_terms(
+        kernel_reduce.WEIGHTED_SUM, [values_wp, weights_wp], n, out=odt.as_dense(totals_wp[1:2])
+    )
+    od_reduce.sum_of_terms(
+        kernel_energies.EDGE_DEVIATION_SUM,
+        [terms],
+        n,
+        out=odt.as_dense(totals_wp[2:3]),
+        device=device,
+    )
+    alone_wp = od_reduce.sum_of_terms(kernel_reduce.ARRAY_SUM, [values_wp], n)
+
+    expected_np = np.array(
+        [
+            od_reduce.sum(values_wp),
+            od_reduce.weighted_sum(values_wp, weights_wp),
+            od_reduce.sum(squares_wp),
+            initial,
+        ],
+        dtype=np.float32,
+    )
+    assert expected_np[0] > 0.0
+    assert alone_wp.shape == (1,)
+    if deterministic or not wp.get_device(device).is_cuda:
+        assert np.array_equal(totals_wp.numpy(), expected_np)
+        assert np.array_equal(alone_wp.numpy(), expected_np[:1])
+    else:
+        assert np.allclose(totals_wp.numpy(), expected_np, rtol=1e-5, atol=0.0)
 
 
 @pytest.mark.parametrize("n", [7, 8])

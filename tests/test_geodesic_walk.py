@@ -24,6 +24,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
+from ordito.kernels import geodesic_walk as kernel_geodesic_walk
 from tests.conftest import MESHES
 from tests.conversions import numpy_to_warp, points_to_warp, trimesh_to_meshlib, warp_empty
 
@@ -1332,3 +1333,43 @@ def test_walk_arrival_order_agrees_with_the_default(
     assert fixed_offsets[-1] > fixed_offsets.size
     assert np.array_equal(fixed_offsets, arrival_offsets)
     assert np.allclose(fixed_points, arrival_points, rtol=1e-4, atol=1e-5)
+
+
+# A kernel only to read the walk kernels' floor back; kernel scope is untyped to basedpyright.
+@wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]
+def _length_epsilon_probe(
+    edge_length_total: wp.array[wp.float32], n_halfedges: wp.int32, out: wp.array[wp.float32]
+) -> None:
+    out[0] = kernel_geodesic_walk.mean_length_epsilon(edge_length_total, n_halfedges)  # pyright: ignore[reportIndexIssue]
+
+
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_walk_length_epsilon_is_the_host_floor(
+    request: pytest.FixtureRequest, mesh_name: str, deterministic: bool
+) -> None:
+    """
+    Ordito against ordito: the device-formed walk floor is ``1e-6 * mean_edge_length``, bit for bit.
+
+    The walk kernels form their crossing-distance floor from the edge length total left on the
+    device, in place of a host ``float32`` read back from ``edges.mean_edge_length`` (which has the
+    libigl oracle in ``tests/test_edges.py``); a last-bit difference would move crossings. The
+    atomic total (determinism off) adds blocks in arrival order on CUDA, where the floors then
+    agree to rounding instead.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.device
+    epsilon_wp = warp_empty(1, wp.float32, device)
+    wp.launch(
+        _length_epsilon_probe,
+        dim=1,
+        inputs=[*od.geodesic_walk._length_epsilon(mesh_wp.points, mesh_wp.indices)],  # pyright: ignore[reportPrivateUsage]
+        outputs=[epsilon_wp],
+        device=device,
+    )
+    host_np = np.float32(1e-6 * od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices))
+    assert host_np > 0.0
+    if deterministic or not device.is_cuda:
+        assert epsilon_wp.numpy()[0].tobytes() == host_np.tobytes()
+    else:
+        assert np.isclose(epsilon_wp.numpy()[0], host_np, rtol=1e-6, atol=0.0)

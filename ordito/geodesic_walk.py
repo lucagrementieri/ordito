@@ -40,8 +40,11 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
+from ordito.constants import TILE_1D
 from ordito.halfedge import halfedge_twins, vertex_one_rings
+from ordito.kernels import edges as kernel_edges
 from ordito.kernels import geodesic_walk as kernel_geodesic_walk
+from ordito.kernels import reduce as kernel_reduce
 from ordito.mesh import Trimesh, mesh_arguments
 
 _DEFAULT_MAX_STEPS = 4096
@@ -193,7 +196,7 @@ def trace_from_vertex(
         start_vertices,
         directions,
         wp.int32(max_steps),
-        wp.float32(_length_epsilon(vertices, faces)),
+        *_length_epsilon(vertices, faces),
     ]
     return _trace(kernel_geodesic_walk.trace_from_vertices, inputs, n_rays, device)
 
@@ -296,7 +299,7 @@ def trace_from_face(
         start_barycentric,
         directions,
         wp.int32(max_steps),
-        wp.float32(_length_epsilon(vertices, faces)),
+        *_length_epsilon(vertices, faces),
     ]
     return _trace(kernel_geodesic_walk.trace_from_faces, inputs, n_rays, device)
 
@@ -668,7 +671,7 @@ def _descend(
         wp.float64(stop_value),
         stop_mask,
         wp.int32(max_steps),
-        wp.float32(_length_epsilon(vertices, faces)),
+        *_length_epsilon(vertices, faces),
     ]
     kernel = kernel_geodesic_walk.descent_paths
     no_graph = _launch.empty(0, dtype=wp.float32, device=device)
@@ -1183,16 +1186,34 @@ class _LoopSweep:
         )
 
 
-def _length_epsilon(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:
+def _length_epsilon(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> list[object]:
     """
-    Smallest crossing distance the walk will accept, as a fraction of the mean edge length.
+    Return the two arguments the walk kernels form their crossing-distance floor from.
 
     The walk needs *some* scale-aware floor: a ray starting at a vertex stands on two of its face's
     edges, and one starting on an edge stands on that edge, so a crossing at distance ~0 has to be
-    rejected or the walk rotates on the spot. Tying it to the mean edge length keeps the behaviour
-    invariant under a global rescale of the mesh.
+    rejected or the walk rotates on the spot. It is ``1e-6`` of
+    [`mean_edge_length`][ordito.edges.mean_edge_length], which keeps the behaviour invariant under
+    a global rescale of the mesh. The per-face edge length total stays on the device and each
+    kernel divides it itself (``kernels/geodesic_walk.mean_length_epsilon``), so the floor costs no
+    readback: the total is ``mean_edge_length``'s -- its per-block partials, summed by
+    [`sum_of_terms`][ordito.reduce.sum_of_terms] over ``reduce.sum``'s kernels -- and the floor is
+    the same ``float32`` the host expression ``1e-6 * mean_edge_length(...)`` rounds to.
     """
-    return 1e-6 * od.edges.mean_edge_length(vertices, faces)
+    device = vertices.device
+    n_halfedges = faces.size // 3 * 3
+    if n_halfedges == 0:
+        return [_launch.empty(0, dtype=wp.float32, device=device), 0]
+    partials = _launch.empty(kernel_reduce.blocks_1d(n_halfedges), dtype=wp.float32, device=device)
+    _launch.launch_tiled(
+        kernel_edges.halfedge_length_partials,
+        dim=[partials.size],
+        inputs=[vertices, faces, n_halfedges, partials],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    total = od.reduce.sum_of_terms(kernel_reduce.ARRAY_SUM, [partials], partials.size)
+    return [total, n_halfedges]
 
 
 def _trace(

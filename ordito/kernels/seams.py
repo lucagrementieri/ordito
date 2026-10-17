@@ -3,7 +3,11 @@ from typing import Any
 import warp as wp
 
 from ordito.kernels.adjacency import write_edge_row
-from ordito.kernels.algorithms.connected_components import ecl_hook_pair, ecl_prehook_pair
+from ordito.kernels.algorithms.connected_components import (
+    ecl_hook_pair,
+    ecl_prehook_pair,
+    write_corner_component_rank,
+)
 from ordito.kernels.array import (
     OverloadTable,
     binary_search_sorted_contains,
@@ -157,13 +161,10 @@ def scatter_corner_values(
     out_values: wp.array[Any],
 ) -> None:
     # Rank each corner's component and gather its position (or any per-vertex attribute) into it.
-    # ``root_ranks`` is ``connected_components.ecl_flatten_root_flags``' flags scanned in place, so
-    # a root's entry less one is its component's rank among the roots, in ascending root order.
     # Every corner in a component writes the *same* value, so the race on ``out_values`` is benign
     # by construction and needs no atomics.
     h = wp.int32(wp.tid())
-    rank = root_ranks[roots[h]] - 1
-    out_corner_index[h] = rank
+    _root, rank = write_corner_component_rank(roots, root_ranks, h, out_corner_index)
     out_values[rank] = values[faces[h]]
 
 

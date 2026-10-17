@@ -13,7 +13,6 @@ from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.halfedge import halfedge_twins, require_matching_twins
 from ordito.kernels import grouping as kernel_grouping
-from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import selection as kernel_selection
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -1602,15 +1601,5 @@ def face_indices_from_vertex_indices(
         inputs=[faces, vertex_mask, wp.bool(face_mode == "all"), inclusive],
         device=device,
     )
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # Sizes the output: the one host readback when ``n_vertices`` is supplied.
-    n_selected = int(read_scalar(inclusive))
-    selected = _launch.empty(n_selected, dtype=wp.int32, device=device)
-    if n_selected > 0:
-        _launch.launch(
-            kernel_scatter.scatter_index_where_scanned,
-            dim=n_faces,
-            inputs=[inclusive, selected],
-            device=device,
-        )
-    return selected
+    return od.array.flatnonzero_in_place(inclusive)

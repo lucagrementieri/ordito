@@ -1175,46 +1175,27 @@ def _totals_of_both(
     Totals of two non-empty distance arrays (of their squares under ``squared``) in one readback.
 
     The symmetric ``"sum"`` / ``"mean"`` counterpart of
-    [`_max_of_both`][ordito.metrics._max_of_both]: each total is formed exactly as
-    [`reduce.sum`][ordito.reduce.sum] (``reduce.weighted_sum`` of the distances by themselves
-    under ``squared``) forms it -- the same kernels and fold tree, or the same atomic commit when
-    ``ordito.config`` turns determinism off -- but the last stage of each writes its own slot of
-    one two-slot buffer, so both come back in one copy.
+    [`_max_of_both`][ordito.metrics._max_of_both]: each total is
+    [`sum_of_terms`][ordito.reduce.sum_of_terms] over ``reduce.sum``'s own kernels (the weighted
+    sum's, of the distances by themselves, under ``squared``), so it is formed exactly as
+    [`reduce.sum`][ordito.reduce.sum] (respectively ``reduce.weighted_sum``) forms it, in either
+    determinism setting. Each writes its own slot of one two-slot buffer, so both come back in one
+    copy.
     """
     device = forward.device
-    atomic = not squared and not is_deterministic()
+    kernels = kernel_reduce.WEIGHTED_SUM if squared else kernel_reduce.ARRAY_SUM
+    # The atomic form adds into its slot, so the buffer starts at zero exactly when it runs.
+    atomic = kernels.atomic is not None and not is_deterministic()
     totals = (_launch.zeros if atomic else _launch.empty)(2, dtype=wp.float32, device=device)
     for slot, distances in enumerate((forward, backward)):
-        total = totals[slot : slot + 1]
-        if atomic:
-            _launch.launch_tiled(
-                kernel_reduce.SUM1D_TILED[wp.float32],
-                dim=[kernel_reduce.blocks_1d(distances.size)],
-                inputs=[distances, total],
-                block_dim=TILE_1D,
-                device=device,
-            )
-            continue
-        # The fixed-order tree: each stage stores a block's sum in its own slot, folded a block
-        # at a time until one remains, which lands in ``total``.
-        kernel = (
-            kernel_reduce.weighted_sum1d_partials
-            if squared
-            else kernel_reduce.SUM1D_PARTIALS[wp.float32]
-        )
         inputs = [distances, distances] if squared else [distances]
-        blocks = kernel_reduce.blocks_1d(distances.size)
-        while True:
-            partials = (
-                total if blocks == 1 else _launch.empty(blocks, dtype=wp.float32, device=device)
-            )
-            _launch.launch_tiled(
-                kernel, dim=[blocks], inputs=[*inputs, partials], block_dim=TILE_1D, device=device
-            )
-            if blocks == 1:
-                break
-            kernel, inputs = kernel_reduce.SUM1D_PARTIALS[wp.float32], [partials]
-            blocks = kernel_reduce.blocks_1d(blocks)
+        od.reduce.sum_of_terms(
+            kernels,
+            inputs,
+            distances.size,
+            out=odt.as_dense(totals[slot : slot + 1]),
+            device=device,
+        )
     # The two totals are the function's answer.
     total_forward, total_backward = read_values(totals, 0, 2)
     return float(total_forward), float(total_backward)

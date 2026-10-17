@@ -137,11 +137,16 @@ def emit_boundary_chain(
 
 @wp.kernel
 def cone_component_keys(
-    chain: wp.array2d[wp.int32], labels: wp.array[wp.int32], out_keys: wp.array[wp.int32]
+    chain: wp.array2d[wp.int32],
+    labels: wp.array[wp.int32],
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
 ) -> None:
-    # A chain edge's boundary component, named by its smallest vertex: the cone's apex.
+    # A chain edge's boundary component, named by its smallest vertex: the cone's apex. Written
+    # with the identity payload into the leading halves of the radix sort's double-width buffers.
     e = wp.int32(wp.tid())
     out_keys[e] = labels[chain[e, 0]]
+    out_order[e] = e
 
 
 @wp.kernel

@@ -224,12 +224,22 @@ def edges_unique(
         else:
             # Nothing is being checked, so the only thing the count would be used for is the
             # radix -- and the pair radix bounds every ``int32`` without reducing the rows to find
-            # out. Row order is unchanged; ``edges_from_keys`` below unpacks against whichever
+            # out. Row order is unchanged; the emit below unpacks against whichever
             # radix packed them.
             n_vertices = INDEX_RADIX_PAIR
-
-    keys = od.grouping.hash_indices_rows(edges_sorted, max_index=n_vertices, validate=validate)
-    return _unique_edges_from_keys(keys, n_vertices, device)
+    elif n_vertices <= 0:
+        raise ValueError(f"n_vertices must be positive, got {n_vertices}")
+    elif validate:
+        # The packing's range check: the reduction's readback, then the same two raises as the
+        # face path's key-pass check.
+        low, high = od.reduce.minmax(edges_sorted)
+        if low < 0:
+            raise ValueError(f"edge indices must be non-negative, got a minimum of {low}")
+        if high >= n_vertices:
+            raise ValueError(
+                f"edge indices must be less than n_vertices {n_vertices}, got a maximum of {high}"
+            )
+    return _unique_edges_from_sorted_rows(edges_sorted, n_vertices)
 
 
 def unique_edge_count(
@@ -351,24 +361,10 @@ def _sorted_edge_run_ranks(
     key pass range-checks every index against ``radix`` and its flag sits in the slot after the
     scan, so the count and the validation come back in one read, raising before any emit.
     """
-    device = faces.device
     n = 3 * n_faces
     keys, order = _sorted_face_edge_keys(faces, n_faces, radix, radix if check else None)
-    ranks = odt.as_dense(order[n : 2 * n])
-    _launch.launch(
-        kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
-        dim=n,
-        inputs=[keys, ranks],
-        device=device,
-    )
-    _launch.array_scan(ranks, ranks, inclusive=True)
-    # The edge count sizes the caller's table; the range flag (when checked) rides in the same copy.
-    if check:
-        n_edges, code = read_values(order, 2 * n - 1, 2)
-        _raise_on_range_code(int(code), radix)
-    else:
-        n_edges = read_scalar(ranks, n - 1)
-    return keys, order, ranks, int(n_edges)
+    ranks, n_edges = _sorted_run_ranks(keys, order, n, radix if check else None)
+    return keys, order, ranks, n_edges
 
 
 def _sorted_face_edge_keys(
@@ -407,6 +403,76 @@ def _sorted_face_edge_keys(
     return keys, order
 
 
+def _unique_edges_from_sorted_rows(
+    edges_sorted: odt.Array2dInt32, n_vertices: int
+) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
+    """
+    ``(unique_edges, inverse)`` of precomputed min-first rows, packed by ``n_vertices``.
+
+    The rows are packed as ``grouping.hash_indices_rows`` packs them, straight into the radix
+    sort's double-width buffers with the identity payload, and sorted over only the bits a key
+    below ``n_vertices ** 2`` can set; the runs are then emitted as
+    [`_unique_edges_from_faces`][ordito.edges._unique_edges_from_faces] emits them, each unique row
+    unpacked from its key.
+    """
+    device = edges_sorted.device
+    n = int(edges_sorted.shape[0])
+    if n == 0:
+        return odt.empty_2d((0, 2), wp.int32, device=device), _launch.empty(
+            0, dtype=wp.int32, device=device
+        )
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_grouping.pack_indices_and_order,
+        dim=n,
+        inputs=[edges_sorted, wp.uint64(n_vertices)],
+        outputs=[keys, order],
+        device=device,
+    )
+    _launch.radix_sort_pairs(
+        keys, order, count=n, end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length()))
+    )
+    ranks, n_edges = _sorted_run_ranks(keys, order, n, None)
+    unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
+    inverse = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_edges.emit_sorted_unique_edges_from_keys,
+        dim=n,
+        inputs=[keys, order, ranks, wp.uint64(n_vertices)],
+        outputs=[unique_edges, inverse],
+        device=device,
+    )
+    return odt.as_array2d(unique_edges, wp.int32), inverse
+
+
+def _sorted_run_ranks(
+    keys: wp.array[wp.uint64], order: wp.array[wp.int32], n: int, bound: int | None
+) -> tuple[wp.array[wp.int32], int]:
+    """
+    ``(ranks, n_edges)`` of sorted double-width edge-key buffers: 1-based run ranks, the run count.
+
+    The run marks and their inclusive scan live in the payload's upper half, which is free scratch
+    once the sort has run. With a ``bound`` the key pass left its range code in the slot after the
+    payload, read in the same copy as the count and raised on before any emit.
+    """
+    ranks = odt.as_dense(order[n : 2 * n])
+    _launch.launch(
+        kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
+        dim=n,
+        inputs=[keys, ranks],
+        device=keys.device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # The edge count sizes the caller's table; the range flag (when checked) rides in the same copy.
+    if bound is not None:
+        n_edges, code = read_values(order, 2 * n - 1, 2)
+        _raise_on_range_code(int(code), bound)
+    else:
+        n_edges = read_scalar(ranks, n - 1)
+    return ranks, int(n_edges)
+
+
 def _raise_on_range_code(code: int, n_vertices: int) -> None:
     """Raise the ``ValueError`` a ``face_edge_keys_checked`` range code stands for, if any."""
     if code == int(kernel_edges.INDEX_NEGATIVE):
@@ -415,29 +481,6 @@ def _raise_on_range_code(code: int, n_vertices: int) -> None:
         raise ValueError(
             f"edge indices must be less than n_vertices {n_vertices}, got one at or above it"
         )
-
-
-def _unique_edges_from_keys(
-    keys: wp.array[wp.uint64], n_vertices: int, device: wp.DeviceLike
-) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
-    """Deduplicate packed edge keys into ``(unique_edges, inverse)``, unpacked by ``n_vertices``."""
-    # A key is ``min + max * n_vertices``, below ``n_vertices ** 2``, which bounds the sort's bits.
-    unique_keys, inverse = od.grouping.unique_1d(
-        keys, return_inverse=True, max_value=n_vertices * n_vertices - 1
-    )
-
-    # The deduplicated rows are recovered from the keys, not by gathering the corner that first
-    # produced each one: the packing is exactly invertible for two columns, so a
-    # ``first_occurrence_indices`` scatter, an ``array.gather`` and the first-occurrence buffer
-    # between them all disappear. Row order is unchanged -- both forms index by the same unique id.
-    unique_edges_out = odt.empty_2d((unique_keys.size, 2), wp.int32, device=device)
-    _launch.launch(
-        kernel_edges.edges_from_keys,
-        dim=unique_edges_out.shape[0],
-        inputs=[unique_keys, wp.uint64(n_vertices), unique_edges_out],
-        device=device,
-    )
-    return odt.as_array2d(unique_edges_out, wp.int32), inverse
 
 
 def edges_unique_inverse(

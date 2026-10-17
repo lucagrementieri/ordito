@@ -67,6 +67,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import INT32_MAX
+from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import interpolation as kernel_interpolation
 from ordito.kernels import reduce as kernel_reduce
@@ -916,6 +917,7 @@ def resolve_voxel_grid(
     voxel_size: float | None = None,
     origin: wp.vec3 | None = None,
     *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
     caller: str = "resolve_voxel_grid",
     return_cell_bound: Literal[False] = False,
 ) -> tuple[float, wp.vec3]: ...
@@ -925,6 +927,7 @@ def resolve_voxel_grid(
     voxel_size: float | None = None,
     origin: wp.vec3 | None = None,
     *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
     caller: str = "resolve_voxel_grid",
     return_cell_bound: Literal[True],
 ) -> tuple[float, wp.vec3, int]: ...
@@ -933,6 +936,7 @@ def resolve_voxel_grid(
     voxel_size: float | None = None,
     origin: wp.vec3 | None = None,
     *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
     caller: str = "resolve_voxel_grid",
     return_cell_bound: bool = False,
 ) -> tuple[float, wp.vec3] | tuple[float, wp.vec3, int]:
@@ -945,9 +949,9 @@ def resolve_voxel_grid(
     [`voxel_down_sample`][ordito.voxels.voxel_down_sample] and
     [`cluster_decimate`][ordito.remesh.cluster_decimate] agree cell for cell.
 
-    Public because [`cluster_decimate`][ordito.remesh.cluster_decimate] lives in another module and
-    needs the same convention; it is pure host arithmetic over one
-    [`aabb`][ordito.bounds.aabb].
+    Public because [`cluster_decimate`][ordito.remesh.cluster_decimate] and
+    [`signed_distance_lattice`][ordito.proximity.signed_distance_lattice] live in other modules and
+    need the same convention; it is pure host arithmetic over one [`aabb`][ordito.bounds.aabb].
 
     Parameters
     ----------
@@ -959,6 +963,10 @@ def resolve_voxel_grid(
         Edge length of a cell. ``None`` takes ``1 %`` of the bounding-box diagonal.
     origin
         Lower corner of cell ``(0, 0, 0)``. ``None`` places it half a cell below the box.
+    bounds
+        The ``(lower, upper)`` corners of ``points``' bounding box, for a caller that already holds
+        it ([`aabb`][ordito.bounds.aabb]'s answer); ``None`` takes it here. Ignored for an empty
+        ``points``.
     caller
         Name used in the error message, so a caller's own name appears rather than this one.
     return_cell_bound
@@ -1025,7 +1033,7 @@ def resolve_voxel_grid(
             lower = wp.vec3(0.0, 0.0, 0.0)
             diagonal = 1.0
         else:
-            lower, upper = od.bounds.aabb(points)
+            lower, upper = od.bounds.aabb(points) if bounds is None else bounds
             # ``math.dist`` rather than ``float(wp.length(upper - lower))``: a Warp operator and a
             # Warp builtin at Python scope each route through builtin dispatch, several times
             # dearer. It computes in float64 where ``wp.length`` is float32, i.e. the
@@ -1631,7 +1639,7 @@ def grid_points(
     if len(shape) != 3 or min(int(n) for n in shape) < 1:
         raise ValueError(f"shape must be three positive integers, got {shape!r}")
     dims = (int(shape[0]), int(shape[1]), int(shape[2]))
-    lower, step = _lattice_step(dims, bounds)
+    lower, step = kernel_array.lattice_lower_and_step(dims, bounds)
     lattice = _launch.empty(dims, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_voxels.lattice_points, dim=dims, inputs=[lower, step, lattice], device=device
@@ -1941,7 +1949,7 @@ def revoxelize(
     # neither the centre lattice nor its occupancy is stored.
     half = 0.5 * voxel_size
     dims = (int(shape[0]), int(shape[1]), int(shape[2]))
-    lower, step = _lattice_step(
+    lower, step = kernel_array.lattice_lower_and_step(
         dims,
         (
             wp.vec3(
@@ -3019,30 +3027,6 @@ def _translation(origin: wp.vec3, voxel_size: float) -> tuple[float, float, floa
     """NanoVDB centres voxels on integers, so the volume's translation is half a cell above."""
     half = 0.5 * voxel_size
     return (float(origin[0]) + half, float(origin[1]) + half, float(origin[2]) + half)
-
-
-def _lattice_step(
-    dims: tuple[int, int, int], bounds: tuple[wp.vec3, wp.vec3] | None
-) -> tuple[wp.vec3, wp.vec3]:
-    """
-    Node 0 and the node spacing of a ``dims`` lattice spanning ``bounds`` inclusively.
-
-    The ``(lower, step)`` pair ``kernels/array.lattice_position`` takes; shared by
-    [`grid_points`][ordito.voxels.grid_points] and [`revoxelize`][ordito.voxels.revoxelize],
-    whose resampling lattice is the same construction without the stored positions. A single-sample
-    axis has no spacing and steps by 0. ``bounds=None`` is index space.
-    """
-    if bounds is None:
-        return wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0)
-    lower, upper = bounds
-    lower_f, upper_f = odt.vec3_floats(lower), odt.vec3_floats(upper)
-    step = wp.vec3(
-        *(
-            (upper_f[axis] - lower_f[axis]) / float(dims[axis] - 1) if dims[axis] > 1 else 0.0
-            for axis in range(3)
-        )
-    )
-    return lower, step
 
 
 def _allocate_masked(

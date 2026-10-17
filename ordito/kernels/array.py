@@ -443,6 +443,21 @@ def keys_and_identity(
 
 
 @wp.kernel
+def negated_gather_keys_and_identity(
+    values: wp.array[wp.float32],
+    indices: wp.array[wp.int32],
+    out_keys: wp.array[wp.float32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``keys_and_identity`` of ``-values[indices]``: ascending on the negated value is descending
+    # on the value, so a stable radix sort of these keys ranks the gathered entries largest first
+    # (``remesh._keep_longest_edges``, ``sample._top_maxima_by_weight``).
+    i = wp.int32(wp.tid())
+    out_keys[i] = -values[indices[i]]
+    out_order[i] = i
+
+
+@wp.kernel
 def arange_repeat(repeats: wp.Int, out_indices: wp.array[wp.Int]) -> None:
     i = wp.int32(wp.tid())
     out_indices[i] = i // repeats
@@ -665,24 +680,8 @@ def isin_lookup_sorted(
 
 
 @wp.func
-def mask_not(a: wp.bool) -> wp.bool:
-    # Mask complement -- for a caller holding the region to *delete* and needing the one to keep,
-    # among others. Warp exposes no ``logical_not`` builtin (``wp.invert`` is the bitwise
-    # complement, which is wrong for a ``wp.bool``), so this one-liner is what ``wp.map`` needs, and
-    # it is the tree's only spelling of it.
-    return not a
-
-
-@wp.func
 def mask_and_not(a: wp.bool, b: wp.bool) -> wp.bool:
     return a and not b
-
-
-@wp.func
-def complement_flag(a: wp.bool) -> wp.int32:
-    # ``1`` where the mask is False, ``0`` where it is True: the scan input for an inverted
-    # ``mask_to_compact_ranks`` (free/interior DOFs of a fixed-vertex mask, for instance).
-    return wp.where(a, wp.int32(0), wp.int32(1))
 
 
 @wp.kernel
@@ -1528,9 +1527,6 @@ def _declare_map_kernels() -> None:
             # --- This module's own mapped ``@wp.func``s. Every scalar argument is spelled
             # with an explicit constructor because a bare Python int at a ``wp.map`` scalar
             # infers ``wp.int32`` whatever the mapped function's own dtype is.
-            (greater, (dense(wp.float32), wp.float32(1)), wp.bool),
-            (greater, (dense(wp.float64), wp.float64(1)), wp.bool),
-            (greater, (dense(wp.int32), wp.int32(1)), wp.bool),
             (greater_equal, (dense(wp.float32), wp.float32(1)), wp.bool),
             (greater_equal, (dense(wp.int32), wp.int32(1)), wp.bool),
             (greater_equal, (single(wp.int32), wp.int32(1)), wp.bool),
@@ -1732,6 +1728,32 @@ def lattice_position(
     # row-major buffer against a ``wp.array3d`` -- so each keeps its own indexing and shares the
     # arithmetic.
     return lower + wp.cw_mul(step, wp.vec3(wp.float32(i), wp.float32(j), wp.float32(k)))
+
+
+def lattice_lower_and_step(
+    dims: tuple[int, int, int], bounds: tuple[wp.vec3, wp.vec3] | None
+) -> tuple[wp.vec3, wp.vec3]:
+    """
+    Node 0 and the node spacing of a ``dims`` lattice spanning ``bounds`` inclusively.
+
+    The ``(lower, step)`` pair ``lattice_position`` takes, formed on the host: shared by
+    ``voxels.grid_points``, ``voxels.revoxelize`` and ``proximity.signed_distance_grid``, so the
+    three lattices cannot drift apart. A single-sample axis has no spacing and steps by 0.
+    ``bounds=None`` is index space.
+    """
+    if bounds is None:
+        return wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0)
+    lower, upper = bounds
+    # Indexing a Python-scope ``wp.vec3`` returns a native ``float``.
+    step = wp.vec3(
+        *(
+            (float(upper[axis]) - float(lower[axis])) / float(dims[axis] - 1)
+            if dims[axis] > 1
+            else 0.0
+            for axis in range(3)
+        )
+    )
+    return lower, step
 
 
 @wp.func

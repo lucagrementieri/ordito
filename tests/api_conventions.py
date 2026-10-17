@@ -200,8 +200,9 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "names cannot drift from triangles.face_quality's"
     ),
     ("repair", "selection._compact_marked_submesh"): (
-        "remove_small_components decides each face's fate in the submesh extraction's own marking "
-        "pass; submesh_from_face_mask would need the keep mask built by a pass of its own first"
+        "remove_small_components, collapse_small_triangles and remove_folded_faces decide each "
+        "face's fate in the submesh extraction's own marking pass; submesh_from_face_mask would "
+        "need the keep mask built by a pass of its own first"
     ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "

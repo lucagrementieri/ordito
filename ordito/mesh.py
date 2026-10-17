@@ -71,6 +71,14 @@ _TOPOLOGY_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# What `with_vertices` carries: the topology, plus the operators' sparsity. The pattern reads
+# `faces` alone but stays out of `_TOPOLOGY_KEYS`, and so out of every transform stratum: those
+# are gated by an elementwise comparison against recomputation, and the pattern's sort buffers
+# hold scratch upper halves (and its `columns` an unwritten tail) that differ between two builds.
+# Its corner slots `3f + e` also name corners of this very face buffer, so a winding flip would
+# need it dropped anyway.
+_WITH_VERTICES_CARRY: frozenset[str] = _TOPOLOGY_KEYS | frozenset({"mesh_operator_pattern"})
+
 # --- Transform cache strata -------------------------------------------------
 #
 # How much of the cache survives depends on what the transform preserves.
@@ -1546,6 +1554,46 @@ class Trimesh:
         return od.laplacian.cotmatrix_entries(self._vertices, self._faces)
 
     @_CachedProperty
+    def mesh_operator_pattern(self) -> od.laplacian.MeshOperatorPattern:
+        """
+        Sparsity of the cotangent Laplacian on these faces, with each entry's contributing corners.
+
+        Depends on the faces alone, so every operator over it -- `cotmatrix`, `heat_operators` and
+        `vector_heat_operators`, and a [`HeatSolver`][ordito.heat.HeatSolver] at any diffusion
+        time -- is assembled from this one pattern and pays only for its values, and the matrices
+        share its ``offsets`` and ``columns``.
+
+        Notes
+        -----
+        Kept for the mesh's lifetime like every cached property: the sorted entry keys and their
+        corner slots, arrays proportional to the face count that a one-shot assembly would free.
+        It survives [`with_vertices`][ordito.mesh.Trimesh.with_vertices]; the meshes
+        [`transform`][ordito.mesh.Trimesh.transform], [`invert`][ordito.mesh.Trimesh.invert] and
+        [`with_faces`][ordito.mesh.Trimesh.with_faces] return build their own. Pass it as
+        ``pattern=`` to [`cotmatrix`][ordito.laplacian.cotmatrix],
+        [`connection_laplacian`][ordito.laplacian.connection_laplacian] or the heat assemblies
+        when building one of them for this mesh at another dtype or diffusion time.
+
+        See Also
+        --------
+        [`ordito.laplacian.mesh_operator_pattern`][]
+        [`cotmatrix`][ordito.mesh.Trimesh.cotmatrix]
+
+        Examples
+        --------
+        The cached operators share the pattern's row offsets:
+
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=1))
+        pattern = mesh.mesh_operator_pattern
+        print(pattern.n_vertices, mesh.cotmatrix.offsets is pattern.offsets)  # 42 True
+        ```
+        """
+        return od.laplacian.mesh_operator_pattern(self._faces, self.n_vertices)
+
+    @_CachedProperty
     def cotmatrix(self) -> odt.BsrMatrix[wp.float32]:
         """
         ``(n_vertices, n_vertices)`` cotangent stiffness (discrete Laplace-Beltrami) matrix.
@@ -1586,7 +1634,10 @@ class Trimesh:
         ```
         """
         return od.laplacian.cotmatrix(
-            self._vertices, self._faces, cot_entries=self.cotmatrix_entries
+            self._vertices,
+            self._faces,
+            cot_entries=self.cotmatrix_entries,
+            pattern=self.mesh_operator_pattern,
         )
 
     @_CachedProperty
@@ -1649,6 +1700,40 @@ class Trimesh:
         return od.laplacian.laplacian(self._vertices, self._faces)
 
     @_CachedProperty
+    def halfedge_transport_angles(self) -> wp.array[wp.float32]:
+        """
+        ``(3 * n_faces,)`` rotation carrying a tangent vector across each halfedge, in (-pi, pi].
+
+        [`halfedge_transport_angles`][ordito.tangent_space.halfedge_transport_angles] formed over
+        this mesh's cached `halfedge_twins` and `vertex_one_rings`, so the rings are walked once for
+        the tangent frames and the connection alike. `vector_heat_operators` and a
+        [`HeatSolver`][ordito.heat.HeatSolver] at any diffusion time assemble their connection
+        from it.
+
+        See Also
+        --------
+        [`ordito.tangent_space.halfedge_transport_angles`][]
+        [`vertex_tangent_frames`][ordito.mesh.Trimesh.vertex_tangent_frames]
+
+        Examples
+        --------
+        ```python
+        import ordito as od
+
+        mesh = od.Trimesh(*od.creation.icosphere(subdivisions=1))
+        print(mesh.halfedge_transport_angles.shape)  # (240,)
+        ```
+        """
+        if self._faces.size == 0:
+            return _launch.empty(0, dtype=wp.float32, device=self._faces.device)
+        tangent_angles = od.tangent_space.halfedge_tangent_angles(
+            self._vertices, self._faces, rings=self.vertex_one_rings
+        )
+        return od.tangent_space.halfedge_transport_angles(
+            self._vertices, self._faces, twins=self.halfedge_twins, tangent_angles=tangent_angles
+        )
+
+    @_CachedProperty
     def vertex_tangent_frames(
         self,
     ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]:
@@ -1685,7 +1770,8 @@ class Trimesh:
         -----
         At ``t = None`` (the squared mean unique-edge length, ``igl::heat_geodesics``' default) and
         ``use_robust=False``. Another ``t`` or ``use_robust`` is
-        [`heat_solver`][ordito.mesh.Trimesh.heat_solver]'s, which keeps its own bundle.
+        [`heat_solver`][ordito.mesh.Trimesh.heat_solver]'s, which keeps its own bundle. Every
+        bundle is assembled over the cached `mesh_operator_pattern`, which this mesh keeps.
 
         See Also
         --------
@@ -1693,7 +1779,10 @@ class Trimesh:
         [`vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators]
         """
         return od.heat.heat_operators(
-            self._vertices, self._faces, cot_entries=self.cotmatrix_entries
+            self._vertices,
+            self._faces,
+            cot_entries=self.cotmatrix_entries,
+            pattern=self.mesh_operator_pattern,
         )
 
     @_CachedProperty
@@ -1711,7 +1800,8 @@ class Trimesh:
         Its second and third fields are this class's own `heat_operators` and
         `vertex_tangent_frames`, so the three properties share one assembly however they are
         reached: built first, this assembles the scalar bundle itself and caches it as
-        `heat_operators`.
+        `heat_operators`. Both systems are assembled over the cached `mesh_operator_pattern`, and
+        the connection is formed over the cached `halfedge_twins` and `vertex_one_rings`.
 
         Notes
         -----
@@ -1733,6 +1823,8 @@ class Trimesh:
                 "od.heat.HeatOperators | None", self._cache.get("heat_operators")
             ),
             frames=self.vertex_tangent_frames,
+            pattern=self.mesh_operator_pattern,
+            transport_angles=self.halfedge_transport_angles,
         )
         # The scalar bundle the vector assembly built alongside (one sparsity pattern for both)
         # is this class's own `heat_operators`.
@@ -2308,7 +2400,7 @@ class Trimesh:
                 f"with_vertices requires the same vertex count ({self.n_vertices}), "
                 f"got {new_vertices.size}"
             )
-        survived = {key: value for key, value in self._cache.items() if key in _TOPOLOGY_KEYS}
+        survived = {key: value for key, value in self._cache.items() if key in _WITH_VERTICES_CARRY}
         return Trimesh(new_vertices, self._faces, initial_cache=survived)
 
     def with_faces(self, new_faces: wp.array[wp.int32]) -> Trimesh:

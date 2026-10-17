@@ -112,9 +112,9 @@ _BOUND_SAMPLE_MAX_STRIDE = 128
 # percent of the answer.
 _SEED_SAMPLE_TARGET = 1024
 
-# Block width for that second pass: one warp per straggler face. Wider blocks did not help, and a
-# warp is what [`ball_pivoting`][ordito.reconstruction.ball_pivoting]'s pivot search settled on for
-# the same ``wp.tile_bvh_query_aabb`` walk.
+# Block width for that second pass: one warp per straggler face. Wider blocks did not help, and the
+# second pass's node stacks (its own, ``kernels.proximity.BLOCK_WALK_STACK``, and
+# ``wp.tile_bvh_query_aabb``'s) are sized for it.
 _QUERY_TILE_WIDTH = 32
 
 # Persistent blocks per multiprocessor for that second pass, which claims stragglers from a device
@@ -605,9 +605,26 @@ def mesh_to_mesh_distance(
     tiled = prefers_tiled_reduction(device)
     candidate_cap = _QUERY_CANDIDATE_CAP if tiled else INT32_MAX
     overflow = _launch.empty(n_faces_a if tiled else 1, dtype=wp.int32, device=device)
-    # ``counter[0]`` counts the faces the thread pass appends to ``overflow``; ``counter[1]`` is the
-    # tiled pass's work claim.
-    counter = _launch.zeros(2, dtype=wp.int32, device=device)
+    # ``counter[0]`` and ``counter[2]`` count the faces the thread pass appends to the two ends of
+    # ``overflow``; ``counter[1]`` and ``counter[3]`` are the two tiled passes' work claims.
+    #
+    # On CUDA the same zeroed allocation also holds, after those four, B's BVH leaves
+    # ``wp.tile_bvh_query_aabb`` must not be walked into (``kernels.proximity.TILE_WALK_LEAF_MAX``)
+    # as a node bitset: the thread pass sends a straggler whose box may meet one to the second tiled
+    # pass. A binary tree over ``n_faces_b`` leaves has fewer than ``2 * n_faces_b`` nodes. The
+    # bitset is never read on the cpu device, where no face overflows, so ``counter`` stands in.
+    n_nodes = 2 * n_faces_b if tiled else 0
+    counter = _launch.zeros(4 + (n_nodes + 31) // 32, dtype=wp.int32, device=device)
+    overfull = counter
+    if tiled:
+        overfull = counter[4:]
+        counter = counter[:4]
+        _launch.launch(
+            kernel_proximity.mark_overfull_leaves,
+            dim=n_nodes,
+            inputs=[mesh_b.id, overfull],
+            device=device,
+        )
     _launch.launch(
         kernel_proximity.face_to_mesh_distance,
         dim=n_faces_a,
@@ -619,6 +636,7 @@ def mesh_to_mesh_distance(
             lower,
             upper,
             mesh_b.id,
+            overfull,
             wp.int32(candidate_cap),
             bounds,
             distance_sq,
@@ -629,29 +647,34 @@ def mesh_to_mesh_distance(
         device=device,
     )
     if tiled:
-        # Persistent blocks that claim stragglers until the count the thread pass left on the
-        # device runs out, so that count is never read back to size the launch.
-        _launch.launch_tiled(
+        # Persistent blocks that claim stragglers until the counts the thread pass left on the
+        # device run out, so no count is read back to size a launch.
+        straggler_blocks = min(n_faces_a, _STRAGGLER_BLOCKS_PER_SM * wp.get_device(device).sm_count)
+        for kernel in (
             kernel_proximity.face_to_mesh_distance_tiled,
-            dim=min(n_faces_a, _STRAGGLER_BLOCKS_PER_SM * wp.get_device(device).sm_count),
-            inputs=[
-                vertices_a,
-                faces_a,
-                vertices_b,
-                faces_b,
-                lower,
-                upper,
-                mesh_b.id,
-                counter,
-                overflow,
-                bounds,
-                distance_sq,
-                witness,
-                counter,
-            ],
-            device=device,
-            block_dim=_QUERY_TILE_WIDTH,
-        )
+            kernel_proximity.face_to_mesh_distance_tiled_overfull,
+        ):
+            _launch.launch_tiled(
+                kernel,
+                dim=straggler_blocks,
+                inputs=[
+                    vertices_a,
+                    faces_a,
+                    vertices_b,
+                    faces_b,
+                    lower,
+                    upper,
+                    mesh_b.id,
+                    counter,
+                    overflow,
+                    bounds,
+                    distance_sq,
+                    witness,
+                    counter,
+                ],
+                device=device,
+                block_dim=_QUERY_TILE_WIDTH,
+            )
     # One launch reduces the packed ``(distance_sq, face_a)`` key -- low half the winning face, high
     # half its squared distance's own float32 bits -- and writes that face's witness beside it, so
     # all three answers come back in one readback.
@@ -1083,11 +1106,8 @@ def signed_distance_grid(
         raise ValueError(f"sign_mode must be 'parity' or 'winding', got {sign_mode!r}")
     mesh = _signed_distance_mesh(vertices, faces, sign_mode, mesh)
     device = vertices.device
-    # Node 0 and the node spacing of the lattice, as ``voxels.grid_points`` derives them: every
-    # axis has at least two nodes, so the spacing is the box over ``n - 1``.
-    lower, upper = box
-    lower_f, upper_f = odt.vec3_floats(lower), odt.vec3_floats(upper)
-    step = wp.vec3(*((upper_f[axis] - lower_f[axis]) / float(shape[axis] - 1) for axis in range(3)))
+    # Node 0 and the node spacing of the lattice, as ``voxels.grid_points`` derives them.
+    lower, step = kernel_array.lattice_lower_and_step(shape, box)
     field = odt.empty_3d(shape, wp.float32, device=device)
     # ``signed_distance_on_mesh``'s defaults: no cutoff, and its sampling parameters.
     if sign_mode == "winding":
@@ -1160,10 +1180,11 @@ def signed_distance_lattice(
         raise ValueError("pad must be non-negative")
     spacing = voxel_size
     if bounds is None or voxel_size is None:
-        # One box serves both the default spacing and the default bounds.
+        # One box serves both the default spacing -- ``voxels.resolve_voxel_grid``'s default cell
+        # -- and the default bounds.
         box = od.bounds.aabb(vertices)
         if spacing is None:
-            spacing = _default_lattice_spacing(vertices, box)
+            spacing, _origin = od.voxels.resolve_voxel_grid(vertices, bounds=box)
         if bounds is None:
             bounds = box
     assert spacing is not None
@@ -1183,17 +1204,6 @@ def signed_distance_lattice(
         *(float(lower[axis]) + (shape[axis] - 1) * spacing for axis in range(3))
     )
     return shape, (lower, snapped_upper)
-
-
-def _default_lattice_spacing(vertices: wp.array[wp.vec3], box: tuple[wp.vec3, wp.vec3]) -> float:
-    """
-    ``1 %`` of the diagonal of ``box``, the ``aabb`` of ``vertices``.
-
-    [`ordito.voxels.resolve_voxel_grid`][ordito.voxels.resolve_voxel_grid]'s default cell, over a
-    box the caller already holds, including its unit diagonal for a vertex set with no extent.
-    """
-    diagonal = math.dist(*box) if vertices.size > 0 else 1.0
-    return 0.01 * (diagonal if diagonal != 0.0 else 1.0)
 
 
 def winding_number(

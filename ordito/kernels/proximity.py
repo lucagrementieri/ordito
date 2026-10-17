@@ -1,6 +1,6 @@
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, INT64_MAX, TOLERANCE_MERGE_CONSTANT, TWO_PI
+from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE_CONSTANT, TWO_PI
 from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels.array import (
     RegisterBlockedTable,
@@ -8,17 +8,19 @@ from ordito.kernels.array import (
     lift_vec2,
     morton_code_30,
     morton_frame,
-    pack_nearest_key,
     to_vec3,
     to_vec3d,
 )
 from ordito.kernels.neighbors import (
     MAX_SEARCH_ATTEMPTS,
+    NO_NEAREST_KEY,
     attempt_radius,
+    block_nearest_key,
     next_search_radius,
     search_radius_bounds,
 )
 from ordito.kernels.predicates import (
+    aabbs_meet,
     barycentric_2d,
     closest_point_on_segment,
     is_in_aabb,
@@ -26,20 +28,9 @@ from ordito.kernels.predicates import (
     triangle_aabb,
     triangle_triangle_distance_sq,
 )
-from ordito.kernels.reduce import (
-    block_argmin,
-    block_barrier,
-    block_chunk_1d,
-    block_max,
-    block_min,
-    block_sum,
-    thread_fence,
-)
+from ordito.kernels.reduce import block_argmin, block_barrier, block_max, block_sum, thread_fence
 
 wp.set_module_options({"enable_backward": False})
-
-# The empty ``pack_nearest_key`` (no element yet), and the seed of every ``nearest_face_pair`` slot.
-NO_NEAREST_KEY = wp.int64(INT64_MAX)
 
 # ``face_to_mesh_distance`` / ``_tiled`` publish each thread's own best distance into
 # ``global_best_sq`` so other threads can prune against it (see the wrapper's seeding comment for
@@ -389,6 +380,187 @@ def sampled_corner_distance_min(
         publish_best_sq(out_bounds, distance * distance)
 
 
+# Why the straggler walk below is not ``wp.tile_bvh_query_aabb`` (Warp 1.18,
+# ``warp/native/tile_bvh.h``), which it used to be: that builtin can drop primitives and read past
+# its own shared memory. A traversal round hands each of the ``block_dim`` lanes at most one node
+# and appends every primitive of each leaf it meets to a shared buffer of ``5 * block_dim`` entries,
+# starting with fewer than ``block_dim`` left over. The count is an unconditional ``atomicAdd``,
+# only the *write* is guarded, and the round ends with each lane reading
+# ``buffer[count - block_dim + lane]``. That stays inside the buffer only while every leaf holds at
+# most four primitives -- the default leaf size, but not a bound: every Warp BVH builder turns a
+# node at depth ``BVH_QUERY_STACK_SIZE`` (32) into a leaf whatever its size
+# (``bvh.cu::mark_packed_leaf_nodes``, ``bvh.cpp``, ``bvh_cubql.cu``). The bunnies have no such
+# leaf, ``dragon`` and ``happy_buddha`` a few dozen, and ``lucy`` 0.9 M, holding up to 28 faces
+# each and a quarter of its faces; a round meeting enough of them overran the buffer, the
+# primitives the guarded write skipped were lost, and the read past the buffer faulted (CUDA error
+# 700, an out-of-bounds ``__shared__`` read *inside* the builtin, where no check on the index it
+# returns can reach). A lucy pair 1.01 extents apart hit it.
+#
+# So the builtin walks only a query that meets no leaf of more than ``TILE_WALK_LEAF_MAX``
+# primitives (``meets_overfull_leaf``, over the node bitset ``mark_overfull_leaves`` builds once per
+# call) -- every query on a BVH without such leaves -- in ``face_to_mesh_distance_tiled``. Any other
+# query goes to ``face_to_mesh_distance_tiled_overfull``, whose ``block_walk_nearest_face_pair``
+# walks the tree itself with Warp's cooperative ``wp.tile_stack`` for the node stack -- whose push
+# reports a dropped value instead of losing it -- and lets each lane enumerate the primitives of the
+# leaf it holds on its own, so there is no result buffer to overrun at any leaf size. It is the
+# slower of the two where both are safe (each round pays the stack's barriers, and a lane's leaf
+# tests are not spread over the block), and as fast on ``lucy``, whose stragglers it takes. Two
+# kernels rather than one with both walks, because the builtin's kernel ran measurably slower with
+# the other walk compiled into it, even untaken.
+
+# The most primitives a leaf may hold for ``wp.tile_bvh_query_aabb`` to walk a query meeting it: a
+# round then ends with at most ``block_dim - 1 + 4 * block_dim`` results, inside its buffer.
+TILE_WALK_LEAF_MAX = 4
+
+# The walk's node stack, in entries for the whole block. A round pops at most one node per lane and
+# pushes at most two, and no internal node sits below depth 31, so at the 32-lane block
+# ``proximity._QUERY_TILE_WIDTH`` sets the stack holds about ``32 * 33`` entries at most; a push
+# past the capacity anyway sends the query to the serial walk rather than losing a subtree.
+BLOCK_WALK_STACK = 2048
+
+# Reads of a ``wp.Bvh``'s nodes, which no Warp builtin exposes (``warp/native/bvh.h``): a node's box
+# corner (``side`` 0 lower, 1 upper), its two packed indices (a leaf's range ``[first, second)`` in
+# ``primitive_indices``, an internal node's two children), its leaf bit, the primitive at a
+# position of ``primitive_indices``, the root node, a node's parent (-1 at the root) and the node
+# count. The layout is Warp's: re-probe these at every
+# Warp upgrade (§12.7).
+_BVH_NODE_BOUND = """
+const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
+const wp::BVHPackedNodeHalf* half = side == 0 ? bvh.node_lowers : bvh.node_uppers;
+const wp::BVHPackedNodeHalf n = wp::bvh_load_node(half, node);
+return wp::vec3(n.x, n.y, n.z);
+"""
+_BVH_NODE_INDEX = """
+const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
+const wp::BVHPackedNodeHalf* half = side == 0 ? bvh.node_lowers : bvh.node_uppers;
+const wp::BVHPackedNodeHalf n = wp::bvh_load_node(half, node);
+return (int)n.i;
+"""
+_BVH_NODE_IS_LEAF = "return (int)wp::bvh_load_node(((wp::BVH*)bvh_id)->node_lowers, node).b;"
+_BVH_PRIMITIVE = "return ((wp::BVH*)bvh_id)->primitive_indices[position];"
+_BVH_ROOT = "return *((wp::BVH*)bvh_id)->root;"
+_BVH_NODE_PARENT = "return ((wp::BVH*)bvh_id)->node_parents[node];"
+_BVH_NODE_COUNT = "return ((wp::BVH*)bvh_id)->max_nodes;"
+
+
+@wp.func_native(_BVH_NODE_BOUND)
+def bvh_node_bound(bvh_id: wp.uint64, node: wp.int32, side: wp.int32) -> wp.vec3: ...
+
+
+@wp.func_native(_BVH_NODE_INDEX)
+def bvh_node_index(bvh_id: wp.uint64, node: wp.int32, side: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_BVH_NODE_IS_LEAF)
+def bvh_node_is_leaf(bvh_id: wp.uint64, node: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_BVH_PRIMITIVE)
+def bvh_primitive(bvh_id: wp.uint64, position: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_BVH_ROOT)
+def bvh_root(bvh_id: wp.uint64) -> wp.int32: ...
+
+
+@wp.func_native(_BVH_NODE_PARENT)
+def bvh_node_parent(bvh_id: wp.uint64, node: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_BVH_NODE_COUNT)
+def bvh_node_count(bvh_id: wp.uint64) -> wp.int32: ...
+
+
+@wp.func
+def node_flagged(flags: wp.array[wp.int32], node: wp.int32) -> wp.bool:
+    # Bit ``node`` of a node bitset, 32 nodes to an ``int32`` word.
+    return (flags[node >> 5] & (wp.int32(1) << (node & 31))) != 0
+
+
+@wp.func
+def flag_overfull_leaf(bvh: wp.uint64, node: wp.int32, out_flags: wp.array[wp.int32]) -> None:
+    # Set ``node`` and each of its ancestors in the node bitset ``out_flags`` when ``node`` is a
+    # reachable leaf holding more than ``TILE_WALK_LEAF_MAX`` primitives, the leaves
+    # ``wp.tile_bvh_query_aabb`` overruns its result buffer on. A leaf whose parent is a leaf is one
+    # the LBVH builder muted below a packed leaf, which no walk reaches. The climb stops at the
+    # first node another thread has already flagged, so each ancestor is set about once. Shared by
+    # ``mark_overfull_leaves`` (a mesh's BVH) and ``ball_pivoting.mark_overfull_point_leaves`` (a
+    # point BVH).
+    #
+    # ``bvh_node_count`` is the node *capacity*: valid on a CUDA LBVH, whose ``2n - 1`` nodes are
+    # all built, but a CPU SAH tree initialises only a prefix of them, so both callers launch on
+    # CUDA only -- where the tile walk this guards exists at all.
+    if node >= bvh_node_count(bvh) or bvh_node_is_leaf(bvh, node) == 0:
+        return
+    if bvh_node_index(bvh, node, 1) - bvh_node_index(bvh, node, 0) <= TILE_WALK_LEAF_MAX:
+        return
+    parent = bvh_node_parent(bvh, node)
+    if parent >= 0 and bvh_node_is_leaf(bvh, parent) != 0:
+        return
+    while node >= 0:
+        bit = wp.int32(1) << (node & 31)
+        if (wp.atomic_or(out_flags, node >> 5, bit) & bit) != 0:
+            return
+        node = bvh_node_parent(bvh, node)
+
+
+@wp.kernel
+def mark_overfull_leaves(target_mesh: wp.uint64, out_flags: wp.array[wp.int32]) -> None:
+    # ``flag_overfull_leaf`` over the mesh's BVH into the zeroed node bitset ``out_flags``, so
+    # ``meets_overfull_leaf`` walks only toward such leaves. ``dim`` is at least the node count;
+    # nodes past it return.
+    flag_overfull_leaf(wp.mesh_get_bvh(target_mesh), wp.int32(wp.tid()), out_flags)
+
+
+# Entries in ``meets_overfull_leaf``'s depth-first stack: a pop pushes two children, so it holds at
+# most one entry per level plus one, and no internal node sits below depth 31.
+_OVERFULL_STACK = 64
+_OverfullStack = wp.types.vector(length=_OVERFULL_STACK, dtype=wp.int32)
+
+# Flagged nodes ``meets_overfull_leaf`` visits before it gives up and answers "meets". Where
+# overfull leaves are few the walk toward them is short; where they are dense (``lucy``) a query
+# that meets none can still visit many, and the cooperative walk it is then sent to costs there
+# about what the builtin does.
+_OVERFULL_VISITS = 64
+
+
+@wp.func
+def meets_overfull_leaf(
+    bvh: wp.uint64, flags: wp.array[wp.int32], lower: wp.vec3, upper: wp.vec3
+) -> wp.bool:
+    # Whether the box ``[lower, upper]`` may meet a leaf ``mark_overfull_leaves`` flagged, the
+    # condition under which ``wp.tile_bvh_query_aabb`` on that box can overrun. A depth-first walk
+    # of the flagged nodes only, testing boxes as the builtin does (``aabbs_meet``). Every way it
+    # can be wrong is toward "meets", which only sends a safe query to the cooperative walk: a leaf
+    # whose box the query meets though none of its primitives' boxes do, the visit budget
+    # (``_OVERFULL_VISITS``) and a full stack, which the tree's depth rules out.
+    root = bvh_root(bvh)
+    if not node_flagged(flags, root):
+        return False
+    stack = _OverfullStack()
+    stack[0] = root
+    top = wp.int32(1)
+    visits = wp.int32(0)
+    while top > 0:
+        visits += 1
+        if visits > _OVERFULL_VISITS:
+            return True
+        top -= 1
+        node = stack[top]
+        if not node_flagged(flags, node):
+            continue
+        if not aabbs_meet(bvh_node_bound(bvh, node, 0), bvh_node_bound(bvh, node, 1), lower, upper):
+            continue
+        if bvh_node_is_leaf(bvh, node) != 0:
+            return True
+        if top + 2 > _OVERFULL_STACK:
+            return True
+        stack[top] = bvh_node_index(bvh, node, 0)
+        stack[top + 1] = bvh_node_index(bvh, node, 1)
+        top += 2
+    return False
+
+
 @wp.kernel
 def face_to_mesh_distance(
     query_vertices: wp.array[wp.vec3],
@@ -398,6 +570,7 @@ def face_to_mesh_distance(
     target_lower: wp.array[wp.vec3],
     target_upper: wp.array[wp.vec3],
     target_mesh: wp.uint64,
+    overfull: wp.array[wp.int32],
     candidate_cap: wp.int32,
     global_best_sq: wp.array[wp.float32],
     out_distance_sq: wp.array[wp.float32],
@@ -422,9 +595,10 @@ def face_to_mesh_distance(
     # unbalanced: the overwhelming majority of query faces have no candidate at all, and a fraction
     # of a percent carry half of the candidate tests. So a thread that is still going after
     # ``candidate_cap`` candidates stops, appends its face to ``overflow``, and lets
-    # ``face_to_mesh_distance_tiled`` re-walk it with a whole block. Pass a cap of ``INT32_MAX`` to
-    # disable the split and settle every face here, which is what the CPU device does --
-    # ``wp.launch_tiled`` runs one lane per block there. ``wp.mesh_get_bvh`` (Warp 1.17) hands back
+    # ``face_to_mesh_distance_tiled`` or ``face_to_mesh_distance_tiled_overfull`` re-walk it with a
+    # whole block. Pass a cap of ``INT32_MAX`` to disable the split and settle every face here,
+    # which is what the CPU device does -- ``wp.launch_tiled`` runs one lane per block there -- and
+    # then ``overfull`` is never read. ``wp.mesh_get_bvh`` (Warp 1.17) hands back
     # the ``wp.Mesh``'s *own* BVH over its faces, so the caller builds no second structure.
     target_bvh = wp.mesh_get_bvh(target_mesh)
     f = wp.int32(wp.tid())
@@ -464,63 +638,138 @@ def face_to_mesh_distance(
         # The face is *not* settled: whatever it wrote above is a partial answer over the first
         # ``candidate_cap`` candidates, and the tiled pass overwrites both entries. Publishing it
         # anyway is what keeps the global minimum tight while that pass runs.
-        overflow[wp.atomic_add(counter, 0, 1)] = f
+        #
+        # Which tiled pass re-walks it is decided here, by whether its box may meet a leaf
+        # ``wp.tile_bvh_query_aabb`` could overrun on: ``overflow`` holds the builtin's list from
+        # its front (``counter[0]`` long) and the cooperative walk's from its back (``counter[2]``
+        # long), which together never outgrow it.
+        if meets_overfull_leaf(target_bvh, overfull, grown_lower, grown_upper):
+            overflow[query_faces.shape[0] // 3 - 1 - wp.atomic_add(counter, 2, 1)] = f
+        else:
+            overflow[wp.atomic_add(counter, 0, 1)] = f
 
 
 @wp.func
-def settle_straggler_face(
-    query_vertices: wp.array[wp.vec3],
-    query_faces: wp.array[wp.int32],
+def block_walk_nearest_face_pair(
+    a0: wp.vec3,
+    a1: wp.vec3,
+    a2: wp.vec3,
+    lower: wp.vec3,
+    upper: wp.vec3,
+    grown_lower: wp.vec3,
+    grown_upper: wp.vec3,
     target_vertices: wp.array[wp.vec3],
     target_faces: wp.array[wp.int32],
     target_lower: wp.array[wp.vec3],
     target_upper: wp.array[wp.vec3],
     target_bvh: wp.uint64,
     n_target_faces: wp.int32,
-    f: wp.int32,
+    stack: wp.tile_stack(capacity=BLOCK_WALK_STACK, dtype=wp.int32),
+    lane: wp.int32,
     global_best_sq: wp.array[wp.float32],
+) -> tuple[wp.float32, wp.int32, wp.int32]:
+    # The block's cooperative walk of every target face whose box meets ``[grown_lower,
+    # grown_upper]``, folded into each lane's ``(best, witness)``; block-collective. Each round pops
+    # up to one node per lane; a lane holding an internal node the box meets pushes its two
+    # children, and a lane holding a leaf tests its primitives itself -- each against its own box
+    # when the leaf holds several, as Warp's walks do, since a one-face leaf's box is the face's.
+    # The third value is nonzero on a lane whose push the full stack dropped, in which case the
+    # candidate set is incomplete and the caller re-walks the box. ``stack`` arrives empty and is
+    # left empty, so one stack serves every straggler a block claims.
+    wp.tile_stack_push(stack, bvh_root(target_bvh), lane == 0)
+    best = FLOAT32_INF_CONSTANT
+    witness = wp.int32(-1)
+    dropped = wp.int32(0)
+    while wp.tile_stack_count(stack) > 0:
+        node, slot = wp.tile_stack_pop(stack)
+        branch = wp.bool(False)
+        first = wp.int32(-1)
+        second = wp.int32(-1)
+        if slot >= 0:
+            if aabbs_meet(
+                bvh_node_bound(target_bvh, node, 0),
+                bvh_node_bound(target_bvh, node, 1),
+                grown_lower,
+                grown_upper,
+            ):
+                first = bvh_node_index(target_bvh, node, 0)
+                second = bvh_node_index(target_bvh, node, 1)
+                if bvh_node_is_leaf(target_bvh, node) == 0:
+                    branch = wp.bool(True)
+                else:
+                    single = second - first == 1
+                    for position in range(first, second):
+                        candidate = bvh_primitive(target_bvh, position)
+                        # Range-checked before anything indexed by it is read.
+                        if candidate >= 0 and candidate < n_target_faces:
+                            if single or aabbs_meet(
+                                target_lower[candidate],
+                                target_upper[candidate],
+                                grown_lower,
+                                grown_upper,
+                            ):
+                                best, witness = update_nearest_face_pair(
+                                    a0,
+                                    a1,
+                                    a2,
+                                    lower,
+                                    upper,
+                                    target_vertices,
+                                    target_faces,
+                                    target_lower,
+                                    target_upper,
+                                    candidate,
+                                    best,
+                                    witness,
+                                    global_best_sq,
+                                )
+        if wp.tile_stack_push(stack, first, branch) < 0 and branch:
+            dropped = wp.int32(1)
+        if wp.tile_stack_push(stack, second, branch) < 0 and branch:
+            dropped = wp.int32(1)
+    return best, witness, dropped
+
+
+@wp.func
+def straggler_slab(
+    grown_lower: wp.vec3, grown_upper: wp.vec3, lane: wp.int32, lanes: wp.int32
+) -> tuple[wp.vec3, wp.vec3]:
+    # Lane ``lane``'s share of a straggler's query box: the box cut into ``lanes`` equal slabs
+    # across its longest axis. The slabs cover the box, so a target face whose AABB meets the box
+    # meets at least one slab, and the union of the lanes' serial walks is the box's own candidate
+    # set; a face straddling a cut is tested by both lanes, which only repeats a test. Each cut is
+    # padded outward by a relative ``1e-5`` of the axis extent so that adjacent slabs overlap
+    # whatever rounding the two inlined copies of a cut get. The outer faces are the box's own.
+    extent = grown_upper - grown_lower
+    axis = wp.int32(0)
+    if extent[1] > extent[axis]:
+        axis = wp.int32(1)
+    if extent[2] > extent[axis]:
+        axis = wp.int32(2)
+    span = extent[axis]
+    pad = span * wp.float32(1e-5)
+    slab_lower = grown_lower
+    slab_upper = grown_upper
+    if lane > 0:
+        slab_lower[axis] = grown_lower[axis] + span * (wp.float32(lane) / wp.float32(lanes)) - pad
+    if lane + 1 < lanes:
+        slab_upper[axis] = (
+            grown_lower[axis] + span * (wp.float32(lane + 1) / wp.float32(lanes)) + pad
+        )
+    return slab_lower, slab_upper
+
+
+@wp.func
+def publish_straggler(
+    best: wp.float32,
+    witness: wp.int32,
+    f: wp.int32,
     out_distance_sq: wp.array[wp.float32],
     out_witness: wp.array[wp.int32],
 ):
-    # One straggler face ``f`` re-walked by the whole block; block-collective, so every lane of
-    # the block must call it with the same ``f``. ``face_to_mesh_distance_tiled`` explains the walk.
-    a0, a1, a2, lower, upper, grown_lower, grown_upper = query_face_broad_phase(
-        query_vertices, query_faces, f, global_best_sq[UPPER_BOUND_SLOT]
-    )
-
-    best = FLOAT32_INF_CONSTANT
-    witness = wp.int32(-1)
-    query = wp.tile_bvh_query_aabb(target_bvh, grown_lower, grown_upper)
-    while wp.tile_query_valid(query):
-        candidate = wp.untile(wp.tile_bvh_query_next(query))
-        # A lane with no candidate this step gets -1; the tile is block-wide, so it cannot simply
-        # leave the loop.
-        #
-        # The **upper** half of that test is not defensive: ``wp.tile_bvh_query_aabb`` hands back
-        # out-of-range indices on a query whose traversal round finds more primitives than its
-        # internal buffer holds, and without this line they are dereferenced. See
-        # ``kernels/algorithms/ball_pivoting.py::pivot_front_edges`` for the diagnosis
-        # and the read of Warp's own source; the short version is that
-        # ``tile_bvh.h`` counts results with an unconditional ``atomicAdd`` and guards only the
-        # *write* against a ``block_dim * 5`` capacity, so once a round overruns it the consumer
-        # reads uninitialised shared memory as a primitive index. ``compute-sanitizer`` names this
-        # kernel and this load, reading wildly out of range, on a large straggler set.
-        if candidate >= 0 and candidate < n_target_faces:
-            best, witness = update_nearest_face_pair(
-                a0,
-                a1,
-                a2,
-                lower,
-                upper,
-                target_vertices,
-                target_faces,
-                target_lower,
-                target_upper,
-                candidate,
-                best,
-                witness,
-                global_best_sq,
-            )
+    # Straggler ``f``'s answer over the block's per-lane ``(best, witness)``, kept only where it
+    # beats the thread pass's; block-collective. Shared by both tiled passes.
+    #
     # The witness must not depend on which lane happened to see it, which is what
     # ``block_argmin``'s second stage is for. When no lane found a candidate every lane still holds
     # ``(inf, -1)``, so it returns -1 and no fixup is needed here.
@@ -540,14 +789,138 @@ def settle_straggler_face(
     # right distance. This is the identical bound-is-the-answer trap the ``global_best_sq`` seeding
     # in the wrapper documents, one level down: there the fix is a relative bump on the seed, here
     # it is keeping what the first pass already found.
-    #
-    # It is also what makes this pass **safe against the ``wp.tile_bvh_query_aabb`` result-buffer
-    # overrun** the guard above can only half-fix: a round that silently
-    # dropped primitives now leaves the grid pass's answer standing instead of replacing it with a
-    # worse one, so an overrun can cost accuracy but can no longer cost correctness outright.
     if block_best < out_distance_sq[f]:
         out_distance_sq[f] = block_best
         out_witness[f] = block_witness
+
+
+@wp.func
+def settle_straggler_face(
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
+    target_lower: wp.array[wp.vec3],
+    target_upper: wp.array[wp.vec3],
+    target_bvh: wp.uint64,
+    n_target_faces: wp.int32,
+    f: wp.int32,
+    global_best_sq: wp.array[wp.float32],
+    out_distance_sq: wp.array[wp.float32],
+    out_witness: wp.array[wp.int32],
+):
+    # One straggler face ``f`` re-walked by the whole block with ``wp.tile_bvh_query_aabb``, one
+    # candidate per lane per step; block-collective, so every lane must call it with the same
+    # ``f``. Only for a box ``meets_overfull_leaf`` cleared, where the builtin cannot overrun.
+    a0, a1, a2, lower, upper, grown_lower, grown_upper = query_face_broad_phase(
+        query_vertices, query_faces, f, global_best_sq[UPPER_BOUND_SLOT]
+    )
+    best = FLOAT32_INF_CONSTANT
+    witness = wp.int32(-1)
+    query = wp.tile_bvh_query_aabb(target_bvh, grown_lower, grown_upper)
+    while wp.tile_query_valid(query):
+        # A lane with no candidate this step gets -1; the tile is block-wide, so it cannot simply
+        # leave the loop. Range-checked before anything indexed by it is read.
+        candidate = wp.untile(wp.tile_bvh_query_next(query))
+        if candidate >= 0 and candidate < n_target_faces:
+            best, witness = update_nearest_face_pair(
+                a0,
+                a1,
+                a2,
+                lower,
+                upper,
+                target_vertices,
+                target_faces,
+                target_lower,
+                target_upper,
+                candidate,
+                best,
+                witness,
+                global_best_sq,
+            )
+    publish_straggler(best, witness, f, out_distance_sq, out_witness)
+
+
+@wp.func
+def settle_straggler_face_overfull(
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
+    target_lower: wp.array[wp.vec3],
+    target_upper: wp.array[wp.vec3],
+    target_bvh: wp.uint64,
+    n_target_faces: wp.int32,
+    stack: wp.tile_stack(capacity=BLOCK_WALK_STACK, dtype=wp.int32),
+    f: wp.int32,
+    lane: wp.int32,
+    global_best_sq: wp.array[wp.float32],
+    out_distance_sq: wp.array[wp.float32],
+    out_witness: wp.array[wp.int32],
+):
+    # ``settle_straggler_face`` for a box that may meet an overfull leaf: the cooperative walk
+    # (``block_walk_nearest_face_pair``), and should its stack drop a node, which the block learns
+    # together (``block_max``), each lane also walks its own slab of the box (``straggler_slab``)
+    # with the serial ``wp.bvh_query_aabb``, which drops nothing -- the minimum over both walks is
+    # then the minimum over the box.
+    a0, a1, a2, lower, upper, grown_lower, grown_upper = query_face_broad_phase(
+        query_vertices, query_faces, f, global_best_sq[UPPER_BOUND_SLOT]
+    )
+    best, witness, dropped = block_walk_nearest_face_pair(
+        a0,
+        a1,
+        a2,
+        lower,
+        upper,
+        grown_lower,
+        grown_upper,
+        target_vertices,
+        target_faces,
+        target_lower,
+        target_upper,
+        target_bvh,
+        n_target_faces,
+        stack,
+        lane,
+        global_best_sq,
+    )
+    if block_max(dropped) > 0:
+        slab_lower, slab_upper = straggler_slab(grown_lower, grown_upper, lane, wp.block_dim())
+        query = wp.bvh_query_aabb(target_bvh, slab_lower, slab_upper)
+        candidate = wp.int32(0)
+        while wp.bvh_query_next(query, candidate):
+            if candidate >= 0 and candidate < n_target_faces:
+                best, witness = update_nearest_face_pair(
+                    a0,
+                    a1,
+                    a2,
+                    lower,
+                    upper,
+                    target_vertices,
+                    target_faces,
+                    target_lower,
+                    target_upper,
+                    candidate,
+                    best,
+                    witness,
+                    global_best_sq,
+                )
+    publish_straggler(best, witness, f, out_distance_sq, out_witness)
+
+
+@wp.func
+def claim_straggler(
+    counter: wp.array[wp.int32], out_claim: wp.array[wp.int32], list_slot: wp.int32, lane: wp.int32
+) -> wp.int32:
+    # The next unclaimed position of a straggler list, on every lane, or -1 once none is left:
+    # ``counter[list_slot]`` is the list's length, ``out_claim[list_slot + 1]`` (zeroed) its next
+    # unclaimed position. Lane 0 claims and ``block_max`` hands the claim to every lane, so it is
+    # block-uniform and the walk that follows stays collective.
+    claimed = wp.int32(-1)
+    if lane == 0:
+        claimed = wp.atomic_add(out_claim, list_slot + 1, 1)
+    slot = block_max(claimed)
+    return wp.where(slot < counter[list_slot], slot, wp.int32(-1))
 
 
 @wp.kernel(enable_backward=False)
@@ -569,9 +942,9 @@ def face_to_mesh_distance_tiled(
     # **One block per straggler face**, re-walking the query the thread pass gave up on with
     # ``wp.tile_bvh_query_aabb``, which hands one candidate per lane per step. Same candidate set,
     # same ``face_pair_distance_sq`` test; only the walk's *depth* changes, from one thread's
-    # thousands of sequential steps to that over the block width. This is the identical trick
-    # ``kernels/algorithms/ball_pivoting.py`` uses on its pivot search, and for the identical
-    # reason -- see its comment for why a *serial* BVH walk is not the win.
+    # thousands of sequential steps to that over the block width. This kernel takes the front list
+    # of ``overflow`` (``counter[0]`` long), the stragglers whose box meets no overfull leaf;
+    # ``face_to_mesh_distance_tiled_overfull`` takes the rest and differs only in the walk.
     #
     # Each lane keeps its own running best, so a lane cannot prune against its siblings' minima and
     # slightly more candidates reach the leaf test. The answer is unchanged: the minimum over the
@@ -579,23 +952,17 @@ def face_to_mesh_distance_tiled(
     # ``wp.mesh_get_bvh`` (Warp 1.17) hands back the ``wp.Mesh``'s *own* BVH over its faces, so the
     # caller builds no second structure -- see the wrapper for the measured share.
     #
-    # **Persistent blocks fetching work**, so the straggler count is never read back to size the
-    # launch: ``counter[0]`` is the count the thread pass appended, ``out_claim[1]`` (zeroed) the
-    # next unclaimed straggler -- the same two-slot buffer passed twice, read in slot 0 and claimed
-    # in slot 1. Lane 0 of a block claims one, ``block_max`` hands it to every lane, and
-    # the block walks it and claims again until none is left; a dynamic claim keeps the load
-    # balance a block per straggler had, where a fixed stride would not (straggler costs vary by
-    # orders of magnitude). The claim is block-uniform, so the tile walk inside stays collective.
+    # **Persistent blocks fetching work** (``claim_straggler``), so the straggler count is never
+    # read back to size the launch -- ``counter`` and ``out_claim`` are the same buffer passed
+    # twice, read in slot 0 and claimed in slot 1. A dynamic claim keeps the load balance a block
+    # per straggler had, where a fixed stride would not (straggler costs vary by orders of
+    # magnitude).
     target_bvh = wp.mesh_get_bvh(target_mesh)
     _block, lane = wp.tid()
     n_target_faces = target_faces.shape[0] // 3
-    n_overflow = counter[0]
     while True:
-        claimed = wp.int32(-1)
-        if lane == 0:
-            claimed = wp.atomic_add(out_claim, 1, 1)
-        slot = block_max(claimed)
-        if slot >= n_overflow:
+        slot = claim_straggler(counter, out_claim, 0, lane)
+        if slot < 0:
             break
         settle_straggler_face(
             query_vertices,
@@ -613,18 +980,51 @@ def face_to_mesh_distance_tiled(
         )
 
 
-@wp.func
-def block_nearest_key(distances: wp.array[wp.float32], chunk: wp.int32, lane: wp.int32) -> wp.int64:
-    # The smallest ``pack_nearest_key(distances[i], i)`` over block ``chunk``'s
-    # ``ITEMS_PER_BLOCK_1D`` chunk, on every lane; ``NO_NEAREST_KEY`` for an empty chunk. Lanes
-    # stride the chunk by ``wp.block_dim()``, so the CPU device's single lane covers it. The same
-    # statement run as ``neighbors.nearest_key_argmin``'s.
-    offset, count = block_chunk_1d(distances.shape[0], chunk)
-    best = NO_NEAREST_KEY
-    for k in range(lane, count, wp.block_dim()):
-        i = offset + k
-        best = wp.min(best, pack_nearest_key(distances[i], i))
-    return block_min(best)
+@wp.kernel(enable_backward=False)
+def face_to_mesh_distance_tiled_overfull(
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
+    target_lower: wp.array[wp.vec3],
+    target_upper: wp.array[wp.vec3],
+    target_mesh: wp.uint64,
+    counter: wp.array[wp.int32],
+    overflow: wp.array[wp.int32],
+    global_best_sq: wp.array[wp.float32],
+    out_distance_sq: wp.array[wp.float32],
+    out_witness: wp.array[wp.int32],
+    out_claim: wp.array[wp.int32],
+) -> None:
+    # ``face_to_mesh_distance_tiled`` for the back list of ``overflow`` (``counter[2]`` long,
+    # claimed in slot 3), the stragglers whose box may meet a leaf the builtin could overrun on,
+    # walked by ``settle_straggler_face_overfull``. One node stack serves every straggler a block
+    # claims.
+    target_bvh = wp.mesh_get_bvh(target_mesh)
+    _block, lane = wp.tid()
+    n_target_faces = target_faces.shape[0] // 3
+    n_query_faces = query_faces.shape[0] // 3
+    stack = wp.tile_stack(capacity=BLOCK_WALK_STACK, dtype=wp.int32)
+    while True:
+        slot = claim_straggler(counter, out_claim, 2, lane)
+        if slot < 0:
+            break
+        settle_straggler_face_overfull(
+            query_vertices,
+            query_faces,
+            target_vertices,
+            target_faces,
+            target_lower,
+            target_upper,
+            target_bvh,
+            n_target_faces,
+            stack,
+            overflow[n_query_faces - 1 - slot],
+            lane,
+            global_best_sq,
+            out_distance_sq,
+            out_witness,
+        )
 
 
 @wp.kernel

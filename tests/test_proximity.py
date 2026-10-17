@@ -704,11 +704,10 @@ def test_mesh_to_mesh_distance_when_every_face_overflows_the_cap(device: str, si
     stop testing anything.
 
     It does **not** cover the other defect this pair of sheets was found alongside --
-    ``wp.tile_bvh_query_aabb`` returning out-of-range primitive indices once a traversal round
-    overruns its shared result buffer. Checked rather than assumed:
-    ``compute-sanitizer`` reports **0 errors** on this fixture with the kernel's index guard removed
-    as well as with it, at every ``side`` here, so the overrun is not reachable at this size. That
-    defect's evidence is a benchmark-scale mesh and it has no test.
+    ``wp.tile_bvh_query_aabb`` overrunning its shared result buffer -- since a regular grid's BVH
+    has no leaf of more than four faces;
+    [`test_mesh_to_mesh_distance_on_a_bvh_leaf_past_the_tile_walk_buffer`][tests.test_proximity.test_mesh_to_mesh_distance_on_a_bvh_leaf_past_the_tile_walk_buffer]
+    does.
     """
     positions = np.linspace(0.0, 1.0, side + 1)
     grid_x, grid_y = np.meshgrid(positions, positions, indexing="ij")
@@ -738,6 +737,75 @@ def test_mesh_to_mesh_distance_when_every_face_overflows_the_cap(device: str, si
     assert np.isclose(distance, gap, rtol=1e-6, atol=1e-7)
     assert face_a >= 0
     assert face_b >= 0
+
+
+def test_mesh_to_mesh_distance_on_a_bvh_leaf_past_the_tile_walk_buffer(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the answer is a point-to-plane distance, exact by construction.
+
+    Mesh B is built so that its BVH holds one leaf of 511 faces, which ``wp.tile_bvh_query_aabb``
+    cannot walk (``kernels.proximity.TILE_WALK_LEAF_MAX``): every Warp BVH builder makes a node at
+    depth 32 a leaf whatever its size, and these faces' centres put a row of 512 tiny triangles
+    in one Morton cell (one key) at the end of a 30-step chain -- one triangle in each cell whose
+    index has a single bit set, plus one in the far corner cell to fix the normalisation -- so the
+    row's node sits at that depth. Mesh A is one large triangle tilted over the row, so its query
+    box meets all 512 (it overflows the thread pass's cap) and the closest pair is unique: the
+    row's last triangle, which is last in the leaf too.
+
+    Before the fix this faulted with CUDA error 700 (the builtin's round appended 511 indices to a
+    160-entry shared buffer and read past it), and a smaller overrun would have dropped the faces
+    past the buffer -- the winner among them. The cpu device runs no tiled pass, so it pins the
+    value on its own; on CUDA the routing to the cooperative walk is asserted as well, so the test
+    cannot pass by the straggler going elsewhere.
+    """
+    chain = [(np.eye(3)[axis] * 2**bit + 0.5) for bit in range(10) for axis in range(3)] + [
+        np.full(3, 1023.5)
+    ]
+    row = [np.array([0.2 + k * 1e-3, 0.5, 0.25]) for k in range(512)]
+    corner = np.array([[-1e-4, -1e-4, 0.0], [1e-4, -1e-4, 0.0], [0.0, 1e-4, 0.0]])
+    vertices_np = np.concatenate([centre + corner for centre in chain + row]).astype(np.float32)
+    faces_np = np.arange(vertices_np.shape[0], dtype=np.int32)
+    tilted_np = np.array([[0.1, 0.4, 0.0], [0.9, 0.4, 0.0], [0.5, 0.7, 0.0]])
+    tilted_np[:, 2] = 0.36 - 0.1 * tilted_np[:, 0]
+    tilted_np = tilted_np.astype(np.float32)
+    normal_np = np.cross(tilted_np[1] - tilted_np[0], tilted_np[2] - tilted_np[0]).astype(
+        np.float64
+    )
+    normal_np /= np.linalg.norm(normal_np)
+    gaps_np = np.abs((vertices_np[3 * len(chain) :].astype(np.float64) - tilted_np[0]) @ normal_np)
+    winner = len(chain) + int(np.argmin(gaps_np)) // 3
+    assert winner == len(chain) + len(row) - 1
+
+    overfull_counters: list[wp.array[wp.int32]] = []
+    overfull_kernel = kernel_proximity.face_to_mesh_distance_tiled_overfull
+
+    def capturing(real_launch_tiled: Callable[..., object]):
+        def capturing_launch_tiled(*args: object, **kwargs: object):
+            if kwargs.get("kernel", args[0] if args else None) is overfull_kernel:
+                inputs = cast("list[object]", kwargs["inputs"])
+                overfull_counters.append(cast("wp.array[wp.int32]", inputs[7]))
+            return real_launch_tiled(*args, **kwargs)
+
+        return capturing_launch_tiled
+
+    monkeypatch.setattr(_launch, "launch_tiled", capturing(_launch.launch_tiled))
+    monkeypatch.setattr(wp, "launch_tiled", capturing(wp.launch_tiled))
+    tilted_vertices_wp, tilted_faces_wp = numpy_to_warp(
+        tilted_np, np.arange(3, dtype=np.int32), device
+    )
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    distance, face_a, face_b = od.proximity.mesh_to_mesh_distance(
+        tilted_vertices_wp, tilted_faces_wp, vertices_wp, faces_wp
+    )
+    if wp.get_device(device).is_cuda:
+        # The single query face went to the cooperative walk's list (``counter[2]``).
+        assert overfull_counters, "the overfull pass must launch on CUDA"
+        assert overfull_counters[0].numpy()[2] == 1
+    assert np.isclose(distance, gaps_np.min(), rtol=1e-5, atol=0.0)
+    assert face_a == 0
+    assert face_b == winner
 
 
 def test_mesh_to_mesh_distance_upper_bound_and_edge_cases(device: str) -> None:

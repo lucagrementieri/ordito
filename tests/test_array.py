@@ -1102,6 +1102,23 @@ def test_flatnonzero_indices_to_mask_round_trip(device: str, n: int) -> None:
     )
 
 
+@pytest.mark.parametrize("density", [0.0, 0.4, 1.0], ids=["none", "some", "all"])
+def test_flatnonzero_in_place(device: str, density: float) -> None:
+    """
+    Class A: ``flatnonzero_in_place`` equals ``numpy.flatnonzero`` and leaves the inclusive scan.
+
+    The buffer form behind ``parametrization.face_flipped_indices`` and
+    ``selection.face_indices_from_vertex_indices``; the densities reach the empty result, the
+    general case and a full one, and the length crosses several CUDA scan tiles.
+    """
+    rng = np.random.default_rng(31)
+    flags_np = (rng.random(100_003) < density).astype(np.int32)
+    flags_wp = wp.array(flags_np, dtype=wp.int32, device=device)
+    assert np.array_equal(od.array.flatnonzero_in_place(flags_wp).numpy(), np.flatnonzero(flags_np))
+    assert np.array_equal(flags_wp.numpy(), np.cumsum(flags_np))
+    assert od.array.flatnonzero_in_place(warp_empty(0, wp.int32, device)).size == 0
+
+
 @pytest.mark.parametrize("invert", [False, True])
 def test_mask_to_compact_ranks_is_the_exclusive_scan_of_the_mask(device: str, invert: bool) -> None:
     """

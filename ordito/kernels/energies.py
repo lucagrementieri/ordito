@@ -1,8 +1,5 @@
-from typing import Any
-
 import warp as wp
 
-from ordito.constants import TILE_1D, TILES_PER_BLOCK_1D
 from ordito.kernels.array import OverloadTable, to_vec3d
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import (
@@ -11,7 +8,7 @@ from ordito.kernels.predicates import (
     squared_edge_lengths,
     triangle_double_area,
 )
-from ordito.kernels.reduce import tile_chunk
+from ordito.kernels.reduce import term_sum_1d
 from ordito.kernels.scatter import add_corner_triple, append_to_pair
 from ordito.kernels.triangles import face_vertices_vec3d
 
@@ -55,8 +52,9 @@ SMOOTHING_COTCURV = wp.constant(2)
 
 @wp.struct
 class EdgeDeviationTerms:
-    """``edge_length_loss``'s edge lengths and resting length ``L0``."""
+    """``edge_length_loss``'s edge count, edge lengths and resting length ``L0``."""
 
+    n: wp.int32
     lengths: wp.array[wp.float32]
     target: wp.float32
 
@@ -70,8 +68,9 @@ def edge_deviation_term(local: wp.int32, offset: wp.int32, terms: EdgeDeviationT
 
 @wp.struct
 class DihedralTerms:
-    """``normal_consistency_loss``'s dihedral angles, one per adjacent face pair."""
+    """``normal_consistency_loss``'s pair count and dihedral angles, one per adjacent face pair."""
 
+    n: wp.int32
     angles: wp.array[wp.float32]
 
 
@@ -139,62 +138,10 @@ def laplacian_smoothing_norms(
     out_norms[i] = wp.length(row_scale * accumulator + self_scale * vertices[i])
 
 
-def _term_sum(term, terms_type, name, partials):
-    """
-    Build a ``float32`` sum of ``term(local, offset, terms)`` over items, in ``reduce.sum``'s shape.
-
-    The two scalar regularizers' fused map and reduction. With ``partials`` each block stores the
-    sum of its ``ITEMS_PER_BLOCK_1D`` terms at ``out_sums[block]`` and ``reduce.SUM1D_PARTIALS``
-    folds the partials as ``reduce.sum`` folds its own (the fixed-order sum); without, each block
-    adds its sum into ``out_sums[0]`` (``reduce.sum``'s atomic one, when determinism is off). The
-    block shape is ``reduce._reduce_1d_tiled``'s -- a register tile of ``TILE_1D`` terms per step,
-    the ragged tail folded one term at a time, the accumulator seeded from the first chunk -- with
-    the tile formed by ``wp.tile_map`` over the item indices instead of loaded from a buffer of
-    terms, so the sum is bit for bit the one ``reduce.mean`` takes over the materialized terms, and
-    the terms are never stored. A term is item ``offset + local``: ``wp.tile_arange``'s bounds must
-    be constants, so the tile holds ``local`` and each step's ``offset`` is passed beside it. The
-    term reads the arrays it needs from ``terms``, a ``@wp.struct``, which ``wp.tile_map`` passes
-    through where it does not pass an array.
-    """
-
-    def _k(n: wp.int32, terms: Any, out_sums: wp.array[wp.float32]) -> None:
-        i, t = wp.tid()
-        base, remaining = tile_chunk(n, i, TILES_PER_BLOCK_1D * TILE_1D)
-        if remaining <= 0:
-            return
-        local = wp.tile_arange(TILE_1D, dtype=wp.int32, storage="register")
-        if remaining >= TILE_1D:
-            result = wp.tile_sum(wp.tile_map(term, local, base, terms))[0]
-        else:
-            result = term(0, base, terms)
-            for k in range(1, remaining):
-                result = result + term(k, base, terms)
-        for s in range(1, TILES_PER_BLOCK_1D):
-            offset = base + s * TILE_1D
-            rest = n - offset
-            if rest >= TILE_1D:
-                result = result + wp.tile_sum(wp.tile_map(term, local, offset, terms))[0]
-            elif rest > 0:
-                for k in range(rest):
-                    result = result + term(k, offset, terms)
-        if t == 0:
-            if wp.static(partials):
-                out_sums[i] = result
-            else:
-                wp.atomic_add(out_sums, 0, result)
-
-    _k.__annotations__["terms"] = terms_type
-    return wp.kernel(_k, name=name)
-
-
-# One atomic and one fixed-order (``*_PARTIALS``) kernel per regularizer, which
-# ``energies._mean_of_terms`` launches.
-EDGE_DEVIATION_SUM = _term_sum(edge_deviation_term, EdgeDeviationTerms, "edge_deviation_sum", False)
-EDGE_DEVIATION_SUM_PARTIALS = _term_sum(
-    edge_deviation_term, EdgeDeviationTerms, "edge_deviation_sum_partials", True
-)
-DIHEDRAL_SUM = _term_sum(dihedral_term, DihedralTerms, "dihedral_sum", False)
-DIHEDRAL_SUM_PARTIALS = _term_sum(dihedral_term, DihedralTerms, "dihedral_sum_partials", True)
+# One ``kernels/reduce.TermSum`` per regularizer: the fused map and fixed-order (or atomic) block
+# sum that ``energies._mean_of_terms`` hands to ``reduce.sum_of_terms``.
+EDGE_DEVIATION_SUM = term_sum_1d(edge_deviation_term, EdgeDeviationTerms, "edge_deviation_sum")
+DIHEDRAL_SUM = term_sum_1d(dihedral_term, DihedralTerms, "dihedral_sum")
 
 
 @wp.kernel

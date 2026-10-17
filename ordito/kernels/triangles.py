@@ -434,23 +434,39 @@ def face_quality(
     out_quality[f] = triangle_quality(v0, v1, v2, metric)
 
 
-@wp.kernel
-def face_nondegenerate_mask(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_nondegenerate: wp.array[wp.bool]
-) -> None:
-    f = wp.int32(wp.tid())
-    e0, e1, _ = triangle_edges(vertices, faces, f)
-    _, area = face_normals_and_area(vertices, faces, f)
+@wp.func
+def triangle_nondegenerate(v0: wp.vec3, v1: wp.vec3, v2: wp.vec3) -> wp.bool:
+    """
+    Whether triangle ``(v0, v1, v2)`` is not degenerate, trimesh's ``nondegenerate`` test.
+
+    The two edges leaving ``v0`` and the heights over them must all exceed
+    ``TOLERANCE_MERGE_CONSTANT``. The area is ``face_normals_and_area``'s: half the length of the
+    area vector [`triangle_area_vector`][ordito.kernels.predicates.triangle_area_vector] forms at
+    the largest angle. Shared by ``face_nondegenerate_mask`` and ``repair``'s collapse pass, which
+    tests corners it has just remapped.
+    """
+    e0 = v1 - v0
+    e1 = v2 - v0
+    area = 0.5 * wp.length(triangle_area_vector(v0, v1, v2))
     length_e0 = wp.length(e0)
     length_e1 = wp.length(e1)
     height_e0 = 2.0 * area / length_e0
     height_e1 = 2.0 * area / length_e1
-    out_nondegenerate[f] = (
+    return (
         (height_e0 > TOLERANCE_MERGE_CONSTANT)
         and (height_e1 > TOLERANCE_MERGE_CONSTANT)
         and (length_e0 > TOLERANCE_MERGE_CONSTANT)
         and (length_e1 > TOLERANCE_MERGE_CONSTANT)
     )
+
+
+@wp.kernel
+def face_nondegenerate_mask(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_nondegenerate: wp.array[wp.bool]
+) -> None:
+    f = wp.int32(wp.tid())
+    v0, v1, v2 = face_vertices(vertices, faces, f)
+    out_nondegenerate[f] = triangle_nondegenerate(v0, v1, v2)
 
 
 @wp.kernel

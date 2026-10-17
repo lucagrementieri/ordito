@@ -37,19 +37,26 @@ def faces_to_edges(
 
 
 @wp.kernel
-def edges_from_keys(
-    keys: wp.array[wp.uint64], base: wp.uint64, out_edges: wp.array2d[wp.int32]
+def emit_sorted_unique_edges_from_keys(
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    base: wp.uint64,
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
 ) -> None:
-    # ``grouping.hash_indices_rows`` packs a sorted ``(lo, hi)`` row as ``lo + hi * base``, which
-    # ``array.unpack_edge_key`` inverts exactly -- the docstring there names this packing as the
-    # shared convention. So the deduplicated *rows* need not be recovered by gathering the first
-    # corner that produced each key: they are already in the key. That replaces a
-    # ``first_occurrence_indices`` scatter plus an ``array.gather`` with one launch, and drops the
-    # first-occurrence buffer with them.
+    # ``emit_sorted_unique_edges`` for ``edges.edges_unique(edges_sorted=)``, whose rows were
+    # packed by ``grouping.pack_indices_and_order`` and so have no face buffer to read a row from:
+    # a run's first position writes its row by unpacking its key instead. ``pack_indices`` packs a
+    # sorted ``(lo, hi)`` row as ``lo + hi * base``, which ``array.unpack_edge_key`` inverts
+    # exactly, so the unique rows equal those a gather of each run's first row would give.
     i = wp.int32(wp.tid())
-    lo, hi = unpack_edge_key(keys[i], base)
-    out_edges[i, 0] = lo
-    out_edges[i, 1] = hi
+    e = ranks[i] - 1
+    out_inverse[order[i]] = e
+    if sorted_run_start(sorted_keys, i):
+        lo, hi = unpack_edge_key(sorted_keys[i], base)
+        out_unique_edges[e, 0] = lo
+        out_unique_edges[e, 1] = hi
 
 
 # Codes ``face_edge_keys_checked`` raises its range flag to; the larger wins, so a negative index is

@@ -193,6 +193,45 @@ def test_heat_operators_reject_cot_entries_with_use_robust(
         od.heat.heat_operators(vertices_wp, faces_wp, cot_entries=cot_entries_wp, use_robust=True)
 
 
+def test_heat_operators_reuse_a_prebuilt_pattern(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: a prebuilt ``pattern`` gives both heat bundles bit for bit.
+
+    Not a parity assert: ``test_heat_geodesic_matches_igl`` and
+    ``test_transport_tangent_vectors_matches_potpourri3d`` carry the oracles. A `Trimesh` hands its
+    cached pattern to both assemblies, so each must equal the build that sorts its own; a pattern
+    for another operator or vertex count is refused rather than read as garbage.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    n_vertices = vertices.shape[0]
+    pattern = od.laplacian.mesh_operator_pattern(faces, n_vertices)
+
+    scalar_alone = od.heat.heat_operators(vertices, faces)
+    scalar_reused = od.heat.heat_operators(vertices, faces, pattern=pattern)
+    vector_alone = od.heat.vector_heat_operators(vertices, faces)[0]
+    vector_reused = od.heat.vector_heat_operators(vertices, faces, pattern=pattern)[0]
+    assert scalar_reused[0].offsets is pattern.offsets
+    assert vector_reused.offsets is pattern.offsets
+    for alone, reused in ((scalar_alone[0], scalar_reused[0]), (vector_alone, vector_reused)):
+        n_entries = int(alone.offsets.numpy()[-1])
+        values = alone.values.numpy()[:n_entries]
+        assert np.abs(values).max() > 0.0
+        assert np.array_equal(reused.offsets.numpy(), alone.offsets.numpy())
+        assert np.array_equal(reused.columns.numpy()[:n_entries], alone.columns.numpy()[:n_entries])
+        assert np.array_equal(reused.values.numpy()[:n_entries], values)
+
+    directed = od.laplacian.mesh_operator_pattern(faces, n_vertices, operator="laplacian_directed")
+    larger = od.laplacian.mesh_operator_pattern(faces, n_vertices + 1)
+    for wrong in (directed, larger):
+        with pytest.raises(ValueError, match="operator='cotmatrix'"):
+            od.heat.heat_operators(vertices, faces, pattern=wrong)
+        with pytest.raises(ValueError, match="operator='cotmatrix'"):
+            od.heat.vector_heat_operators(vertices, faces, pattern=wrong)
+
+
 def test_heat_operators_honour_an_explicit_diffusion_time(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:

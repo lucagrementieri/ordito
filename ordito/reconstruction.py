@@ -2073,7 +2073,28 @@ class _BpaState:
         self.n = points.size
         self.key_base = wp.uint64(self.n)
 
-        self.counters = _launch.zeros(kernel_bpa.BPA_COUNTERS, dtype=wp.int32, device=self.device)
+        # One zeroed allocation holds the counters and, after them, the node bitset of the point
+        # BVH's leaves too large for ``pivot_front_edges``' cooperative walk
+        # (``kernel_bpa.mark_overfull_point_leaves``); a binary tree over ``n`` points has fewer
+        # than ``2 * n`` nodes. ``counters`` is a prefix view, so its readbacks stay small.
+        #
+        # The bitset is filled on CUDA only. On the cpu device the cooperative walk is a serial
+        # query with no result buffer to overrun, and the CPU-built tree leaves the nodes past its
+        # used count uninitialised, which the marking kernel cannot tell apart; the bitset stays
+        # zero there, so every pivot search takes the builtin.
+        n_nodes = 2 * self.n
+        state_words = _launch.zeros(
+            kernel_bpa.BPA_COUNTERS + (n_nodes + 31) // 32, dtype=wp.int32, device=self.device
+        )
+        self.counters = odt.as_dense(state_words[: kernel_bpa.BPA_COUNTERS])
+        self.overfull = odt.as_dense(state_words[kernel_bpa.BPA_COUNTERS :])
+        if wp.get_device(self.device).is_cuda:
+            _launch.launch(
+                kernel_bpa.mark_overfull_point_leaves,
+                dim=n_nodes,
+                inputs=[bvh.id, self.overfull],
+                device=self.device,
+            )
         _launch.fill_(self.counters[kernel_bpa.CNT_SEEDING : kernel_bpa.CNT_SEEDING + 1], 1)
         self.point_used = _launch.zeros(self.n, dtype=wp.bool, device=self.device)
         # Persists across every seeding wave for the run's whole lifetime -- see
@@ -2354,6 +2375,7 @@ def _bpa_wave(state: _BpaState, max_waves: int, *, begin: bool) -> None:
             state.normals,
             state.grid.id,
             state.bvh.id,
+            state.overfull,
             state.radius,
             state.clustering,
             state.crease_cos,

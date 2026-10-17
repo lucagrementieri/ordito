@@ -227,6 +227,21 @@ def segment_aabb(a: Any, b: Any) -> tuple[Any, Any]:
 
 
 @wp.func
+def aabbs_meet(a_lower: wp.vec3, a_upper: wp.vec3, b_lower: wp.vec3, b_upper: wp.vec3) -> wp.bool:
+    # Whether two closed boxes share a point, spelt as Warp's own ``intersect_aabb_aabb`` (which its
+    # BVH walks apply to every node) so a NaN corner answers "meet" here exactly as it does there.
+    separated = (
+        a_lower[0] > b_upper[0]
+        or a_lower[1] > b_upper[1]
+        or a_lower[2] > b_upper[2]
+        or a_upper[0] < b_lower[0]
+        or a_upper[1] < b_lower[1]
+        or a_upper[2] < b_lower[2]
+    )
+    return not separated
+
+
+@wp.func
 def is_in_aabb(point: Any, min_bound: Any, max_bound: Any) -> wp.bool:
     # Is the point inside an axis-aligned box, boundary included? The containment counterpart of
     # ``triangle_aabb`` above: that one builds a box, this one tests against it.

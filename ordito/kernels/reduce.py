@@ -1,6 +1,6 @@
 """Global reductions: tiled ``wp.tile_load`` reductions generated from a shared template."""
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import warp as wp
 
@@ -495,7 +495,14 @@ def chunks_1d(n: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype, partials=False):
+@wp.func
+def array_term(local: wp.int32, offset: wp.int32, values: Any):
+    # Element ``offset + local`` of ``values``: the loaded ``_reduce_1d_tiled`` form's term, so
+    # the ragged-tail fold reads the same way in both forms.
+    return values[offset + local]
+
+
+def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype, partials=False, term=None):
     """
     axis=None on a 1-D array: ``TILES_PER_BLOCK_1D`` tiles per block, one atomic per block.
 
@@ -514,34 +521,59 @@ def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype, partials=False):
     parameter, so each instantiation is a concrete kernel: annotating ``wp.array[Any]`` and letting
     one kernel serve both dtypes also works and is declined, because a generic kernel pays Warp's
     host-side overload resolution on every launch.
-    """
 
-    def _k(values: wp.array[wp.Scalar], out_result: wp.array[wp.Scalar]) -> None:
+    **The mapped form** (``term`` given; built by
+    [`term_sum_1d`][ordito.kernels.reduce.term_sum_1d]). The elements are formed on the fly
+    instead of loaded: ``source`` is a ``@wp.struct`` of type ``dtype`` carrying an
+    ``n: wp.int32`` item count and the arrays ``term`` reads, element ``offset + local`` is
+    ``term(local, offset, source)``, and a full chunk is ``wp.tile_map(term, local, offset,
+    source)`` over the lane indices ``local``. A struct, because ``wp.tile_map`` passes one through
+    where it does not pass an array; ``local`` beside ``offset``, because ``wp.tile_arange``'s
+    bounds must be constants. Only the element count and the chunk's tile differ between the forms
+    (the ``wp.static`` branches below); the chunk walk, the seed, the fold order and the commit are
+    one body, so a mapped sum is bit for bit the loaded sum over the materialized terms, and the
+    terms are never stored. A mapped kernel is a ``float32`` reduction and goes into ``term``'s own
+    module, so a caller's term family never changes this module's hash.
+    """
+    element = array_term if term is None else term
+
+    def _k(source: Any, out_result: Any) -> None:
         i, t = wp.tid()
-        n = values.shape[0]
+        if wp.static(term is None):
+            n = source.shape[0]
+        else:
+            n = source.n
         base, remaining = tile_chunk(n, i, TILES_PER_BLOCK_1D * TILE_1D)
         if remaining <= 0:
             return
+        if wp.static(term is not None):
+            local = wp.tile_arange(TILE_1D, dtype=wp.int32, storage="register")
 
         # First chunk seeds the accumulator (both branches assign it -- Warp's conditional
         # scoping).
         if remaining >= TILE_1D:
-            tile = wp.tile_load(values, shape=TILE_1D, offset=base, storage="register")
+            if wp.static(term is None):
+                tile = wp.tile_load(source, shape=TILE_1D, offset=base, storage="register")
+            else:
+                tile = wp.tile_map(term, local, base, source)
             result = tile_reduce(tile)[0]
         else:
-            result = values[base]
+            result = element(0, base, source)
             for k in range(1, remaining):
-                result = scalar(result, values[base + k])
+                result = scalar(result, element(k, base, source))
 
         for s in range(1, TILES_PER_BLOCK_1D):
             offset = base + s * TILE_1D
             rest = n - offset
             if rest >= TILE_1D:
-                chunk = wp.tile_load(values, shape=TILE_1D, offset=offset, storage="register")
+                if wp.static(term is None):
+                    chunk = wp.tile_load(source, shape=TILE_1D, offset=offset, storage="register")
+                else:
+                    chunk = wp.tile_map(term, local, offset, source)
                 result = scalar(result, tile_reduce(chunk)[0])
             elif rest > 0:
                 for k in range(rest):
-                    result = scalar(result, values[offset + k])
+                    result = scalar(result, element(k, offset, source))
 
         if t == 0:
             if wp.static(partials):
@@ -549,9 +581,13 @@ def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype, partials=False):
             else:
                 atomic(out_result, 0, result)
 
-    _k.__annotations__["values"] = wp.array[dtype]
-    _k.__annotations__["out_result"] = wp.array[dtype]
-    return wp.kernel(_k, name=name)
+    if term is None:
+        _k.__annotations__["source"] = wp.array[dtype]
+        _k.__annotations__["out_result"] = wp.array[dtype]
+        return wp.kernel(_k, name=name)
+    _k.__annotations__["source"] = dtype
+    _k.__annotations__["out_result"] = wp.array[wp.float32]
+    return wp.kernel(_k, name=name, module=term.module)
 
 
 def _weighted_sum_1d_tiled(name, dtype, partials=False):
@@ -930,6 +966,42 @@ SUM1D_PARTIALS = KernelTable(
         for d in (wp.float32, wp.float64)
     },
 )
+
+
+class TermSum(NamedTuple):
+    """
+    The two first stages of a ``float32`` block sum, the pair ``reduce.sum_of_terms`` launches.
+
+    ``partials`` stores one sum per block, folded after by ``SUM1D_PARTIALS`` (the fixed-order
+    tree); ``atomic`` adds each block's sum into slot 0, the form taken when ``ordito.config``
+    turns determinism off, or ``None`` where the sum takes the fixed order either way (the
+    weighted sum, as ``reduce.weighted_sum`` does). Each kernel takes its inputs followed by its
+    output.
+    """
+
+    partials: wp.Kernel
+    atomic: wp.Kernel | None
+
+
+def term_sum_1d(term: wp.Function, terms_type: type, name: str) -> TermSum:
+    """
+    Build the [`TermSum`][ordito.kernels.reduce.TermSum] of ``term(local, offset, terms)``.
+
+    The fused map and reduction: ``reduce.sum``'s two ``float32`` kernels in their mapped form (see
+    [`_reduce_1d_tiled`][ordito.kernels.reduce._reduce_1d_tiled]), so the total is bit for bit
+    ``reduce.sum`` of the materialized terms in either determinism setting, with no term buffer.
+    ``terms_type`` is the ``@wp.struct`` the kernels take, holding the item count ``n`` and the
+    arrays ``term`` reads; ``name`` must be unique, and the two kernels are named ``name`` and
+    ``name + "_partials"``.
+    """
+    return TermSum(
+        partials=_reduce_1d_tiled(
+            _tile_sum, None, wp.add, f"{name}_partials", terms_type, True, term=term
+        ),
+        atomic=_reduce_1d_tiled(_tile_sum, wp.atomic_add, wp.add, name, terms_type, term=term),
+    )
+
+
 SUM2D_TILED = KernelTable(
     "sum2d_tiled",
     {
@@ -1319,6 +1391,12 @@ weighted_sum1d_partials = _weighted_sum_1d_tiled("weighted_sum1d_partials", wp.f
 weighted_sum_vec3_1d_partials = _weighted_sum_1d_tiled(
     "weighted_sum_vec3_1d_partials", wp.vec3, True
 )
+
+
+# ``reduce.sum``'s own ``float32`` pair, and ``reduce.weighted_sum``'s fixed-order stage, as
+# ``reduce.sum_of_terms`` takes them: the input is the array (twice for the weighted sum).
+ARRAY_SUM = TermSum(partials=SUM1D_PARTIALS[wp.float32], atomic=SUM1D_TILED[wp.float32])
+WEIGHTED_SUM = TermSum(partials=weighted_sum1d_partials, atomic=None)
 
 
 @wp.func

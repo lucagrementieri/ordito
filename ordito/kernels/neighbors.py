@@ -990,16 +990,31 @@ def query_weighted_nearest_neighbors(
     out_distances[tid] = best
 
 
-# The seed a block's running minimum starts from in ``nearest_key_argmin``: above every real key,
-# since ``pack_nearest_key`` is non-negative for any non-negative distance.
-_NO_KEY = wp.constant(wp.int64(INT64_MAX))
+# The empty ``pack_nearest_key`` (no element yet): above every real key, since ``pack_nearest_key``
+# is non-negative for any non-negative distance. The seed of ``nearest_key_argmin``'s result and of
+# ``proximity.nearest_face_pair``'s slots.
+NO_NEAREST_KEY = wp.int64(INT64_MAX)
+
+
+@wp.func
+def block_nearest_key(distances: wp.array[wp.float32], chunk: wp.int32, lane: wp.int32) -> wp.int64:
+    # The smallest ``pack_nearest_key(distances[i], i)`` over block ``chunk``'s
+    # ``ITEMS_PER_BLOCK_1D`` chunk, on every lane; ``NO_NEAREST_KEY`` for an empty chunk. Lanes
+    # stride the chunk by ``wp.block_dim()``, so the CPU device's single lane covers it.
+    # Block-collective. Shared by ``nearest_key_argmin`` and ``proximity.nearest_face_pair``.
+    offset, count = block_chunk_1d(distances.shape[0], chunk)
+    best = NO_NEAREST_KEY
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        best = wp.min(best, kernel_array.pack_nearest_key(distances[i], i))
+    return block_min(best)
 
 
 @wp.kernel
 def nearest_key_argmin(distances: wp.array[wp.float32], out_result: wp.array[wp.int64]) -> None:
     # The smallest ``pack_nearest_key(distances[i], i)`` over ``i``: which element carries the
     # smallest distance, lowest index on a tie, with that distance's own float32 bits in the high
-    # half. ``out_result[0]`` must arrive seeded at ``_NO_KEY``; slot 1 belongs to
+    # half. ``out_result[0]`` must arrive seeded at ``NO_NEAREST_KEY``; slot 1 belongs to
     # ``nearest_key_partner``.
     #
     # The one kernel two "global argmin plus its partner" answers reduce through --
@@ -1010,18 +1025,10 @@ def nearest_key_argmin(distances: wp.array[wp.float32], out_result: wp.array[wp.
     # the pair costs one readback between them rather than two or three.
     #
     # ``distances`` may be a strided column view; it is only ever indexed. Launched
-    # ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)``: lanes stride the block's own
-    # ``ITEMS_PER_BLOCK_1D`` chunk by ``wp.block_dim()``, so on the CPU device, where that reads 1,
-    # the single lane covers the chunk and the one-element tile holds its true minimum.
+    # ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)`` (``block_nearest_key``). An empty
+    # chunk's block commits ``NO_NEAREST_KEY``, which changes nothing.
     chunk, lane = wp.tid()
-    offset, count = block_chunk_1d(distances.shape[0], chunk)
-    if count <= 0:
-        return
-    best = _NO_KEY
-    for k in range(lane, count, wp.block_dim()):
-        i = offset + k
-        best = wp.min(best, kernel_array.pack_nearest_key(distances[i], i))
-    block_best = block_min(best)
+    block_best = block_nearest_key(distances, chunk, lane)
     if lane == 0:
         wp.atomic_min(out_result, 0, block_best)
 

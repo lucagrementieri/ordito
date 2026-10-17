@@ -143,6 +143,7 @@ def heat_operators(
     *,
     use_robust: bool = False,
     cot_entries: odt.Array2dFloat | None = None,
+    pattern: MeshOperatorPattern | None = None,
 ) -> HeatOperators:
     """
     Assemble the source-independent operators the heat method solves against.
@@ -184,6 +185,12 @@ def heat_operators(
         caller assembling these operators at several diffusion times reuses one table -- and
         [`Trimesh.cotmatrix_entries`][ordito.mesh.Trimesh.cotmatrix_entries] has it cached. Both
         precisions are accepted: the assembly casts to the matrix dtype in a single build.
+    pattern
+        Optional sparsity from [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern]
+        (the default ``"cotmatrix"`` operator) on these ``faces``. Depends on the faces alone, so a
+        caller assembling these operators again reuses it --
+        [`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern] has it cached.
+        The returned matrices share its ``offsets`` and ``columns``.
 
     Returns
     -------
@@ -236,9 +243,10 @@ def heat_operators(
     ------
     ValueError
         If both ``cot_entries`` and ``use_robust`` are given: ``use_robust`` exists to build that
-        very table from mollified edge lengths, so the two ask for different weights.
+        very table from mollified edge lengths, so the two ask for different weights. Or if
+        ``pattern`` was built for another operator or vertex count.
     RuntimeError
-        If ``vertices``, ``faces`` and ``cot_entries`` are not all on one device.
+        If ``vertices``, ``faces``, ``cot_entries`` and ``pattern`` are not all on one device.
 
     See Also
     --------
@@ -259,13 +267,21 @@ def heat_operators(
     print(heat_system.nrow == vertices.shape[0])  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, cot_entries=cot_entries)
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        cot_entries=cot_entries,
+        pattern=None if pattern is None else pattern.offsets,
+    )
     if cot_entries is not None and use_robust:
         raise ValueError(
             "cot_entries and use_robust are mutually exclusive: use_robust rebuilds the "
             "half-cotangent table from mollified edge lengths."
         )
-    return _heat_operators(vertices, faces, t, use_robust=use_robust, cot_entries=cot_entries)[0]
+    _require_cotmatrix_pattern(pattern, vertices.size)
+    return _heat_operators(
+        vertices, faces, t, use_robust=use_robust, cot_entries=cot_entries, pattern=pattern
+    )[0]
 
 
 @overload
@@ -814,6 +830,8 @@ def vector_heat_operators(
     *,
     scalar_operators: HeatOperators | None = None,
     frames: tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]] | None = None,
+    pattern: MeshOperatorPattern | None = None,
+    transport_angles: wp.array[wp.float32] | None = None,
 ) -> VectorHeatOperators:
     """
     Assemble everything the vector-valued solvers need before their solves.
@@ -855,6 +873,17 @@ def vector_heat_operators(
         ``(basis_x, basis_y, normal)`` -- the gauge, which depends on the mesh alone and not on
         ``t``. [`Trimesh.vertex_tangent_frames`][ordito.mesh.Trimesh.vertex_tangent_frames] caches
         it.
+    pattern
+        Optional sparsity from [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern]
+        (the default ``"cotmatrix"`` operator) on these ``faces``, shared by the vector and scalar
+        systems. [`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern]
+        caches it.
+    transport_angles
+        ``(3 * n_faces,)`` optional prebuilt
+        [`halfedge_transport_angles`][ordito.tangent_space.halfedge_transport_angles] on these
+        ``faces``, the connection the vector system is assembled from. A caller holding the mesh's
+        twins and one-rings already builds it without walking the rings again;
+        [`Trimesh.vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators] does.
 
     Returns
     -------
@@ -870,8 +899,11 @@ def vector_heat_operators(
 
     Raises
     ------
+    ValueError
+        If ``pattern`` was built for another operator or vertex count.
     RuntimeError
-        If ``vertices``, ``faces`` and ``frames`` are not all on one device.
+        If ``vertices``, ``faces``, ``frames``, ``pattern`` and ``transport_angles`` are not all on
+        one device.
 
     Notes
     -----
@@ -898,12 +930,22 @@ def vector_heat_operators(
     print(len(scalar), len(frames))  # 8 3
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, frames=frames)
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        frames=frames,
+        pattern=None if pattern is None else pattern.offsets,
+        transport_angles=transport_angles,
+    )
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
+    _require_cotmatrix_pattern(pattern, n_vertices)
     # One sparsity for both operators: the connection Laplacian's is the cotangent Laplacian's.
-    pattern = mesh_operator_pattern(faces, n_vertices) if n_faces > 0 else None
+    if n_faces == 0:
+        pattern = None
+    elif pattern is None:
+        pattern = mesh_operator_pattern(faces, n_vertices)
     # A bundle ``_heat_operators`` built carries the mass and timestep sums it assembled from.
     built = None if scalar_operators is None else _SCALAR_BUILDS.get(scalar_operators[0])
     edge_sums = None
@@ -938,7 +980,8 @@ def vector_heat_operators(
         # built over it (``heat_operators``): ``connection_laplacian``'s entries, shifted in the
         # thread that forms them, so the connection Laplacian itself is never stored.
         cot_entries = cotmatrix_entries(vertices, faces, dtype=wp.float64)
-        transport_angles = halfedge_transport_angles(vertices, faces)
+        if transport_angles is None:
+            transport_angles = halfedge_transport_angles(vertices, faces)
         _, _, offsets, columns, run_start, keys, count, order = pattern
         vector_values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
         _launch.launch(
@@ -969,6 +1012,17 @@ def vector_heat_operators(
         frames = vertex_tangent_frames(vertices, faces)
     preconditioner = twl.jacobi_preconditioner(vector_system)
     return vector_system, scalar_operators, frames, preconditioner
+
+
+def _require_cotmatrix_pattern(pattern: MeshOperatorPattern | None, n_vertices: int) -> None:
+    """Raise unless a caller's ``pattern`` serves the cotangent Laplacian over ``n_vertices``."""
+    if pattern is not None and (
+        pattern.operator != "cotmatrix" or pattern.n_vertices != n_vertices
+    ):
+        raise ValueError(
+            f"pattern was built for operator={pattern.operator!r} over {pattern.n_vertices} "
+            f"vertices; the heat operators need operator='cotmatrix' over {n_vertices}"
+        )
 
 
 def _heat_operators(
@@ -2082,6 +2136,7 @@ class HeatSolver:
                     self.t,
                     use_robust=self.use_robust,
                     cot_entries=None if self.use_robust else mesh.cotmatrix_entries,
+                    pattern=mesh.mesh_operator_pattern,
                 )
         return self._operators
 
@@ -2111,6 +2166,8 @@ class HeatSolver:
                     self.t,
                     scalar_operators=self._operators,
                     frames=mesh.vertex_tangent_frames,
+                    pattern=mesh.mesh_operator_pattern,
+                    transport_angles=mesh.halfedge_transport_angles,
                 )
             self._operators = self._vector_operators[1]
         return self._vector_operators

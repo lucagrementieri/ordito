@@ -167,6 +167,20 @@ def alive_negated_weight(weight: wp.float32, alive: wp.int32) -> wp.float32:
 
 
 @wp.kernel
+def alive_negated_weight_keys(
+    weights: wp.array[wp.float32],
+    alive: wp.array[wp.int32],
+    out_keys: wp.array[wp.float32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The round's sort keys and the identity payload, written straight into the leading halves of
+    # the radix sort's double-width buffers (the upper halves are its scratch).
+    i = wp.int32(wp.tid())
+    out_keys[i] = alive_negated_weight(weights[i], alive[i])
+    out_order[i] = i
+
+
+@wp.kernel
 def find_local_maxima(
     weights: wp.array[wp.float32],
     alive: wp.array[wp.int32],

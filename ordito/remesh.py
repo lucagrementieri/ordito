@@ -3878,14 +3878,22 @@ def _keep_longest_edges(
     "the longest eligible edges", which every tie-break satisfies equally.
     """
     eligible = od.array.flatnonzero(long_mask)
-    # Ascending on the negated length is descending on the length, and ``sort_and_argsort`` is the
-    # package's one radix-sort spelling. ``order[:remaining]`` is a contiguous *prefix* slice, which
-    # is the case a gather may index through directly -- it is a column
-    # (``arr[:, k]``) or a step slice whose stride Warp ignores. Cloning it dense first is a
-    # measurable loss on the gather for byte-identical output.
-    descending = _launch.empty(eligible.size, dtype=wp.float32, device=device)
-    _launch.map(wp.neg, od.array.gather(lengths, eligible), out=descending)
-    _sorted, order = od.array.sort_and_argsort(descending)
+    n_eligible = eligible.size
+    # Ascending on the negated length is descending on the length; one launch writes those keys and
+    # the identity payload straight into the radix sort's double-width buffers.
+    # ``order[:remaining]`` is a contiguous *prefix* slice, which is the case a gather may index
+    # through directly -- it is a column (``arr[:, k]``) or a step slice whose stride Warp ignores.
+    # Cloning it dense first is a measurable loss on the gather for byte-identical output.
+    keys_buffer = _launch.empty(2 * n_eligible, dtype=wp.float32, device=device)
+    order_buffer = _launch.empty(2 * n_eligible, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_array.negated_gather_keys_and_identity,
+        dim=n_eligible,
+        inputs=[lengths, eligible],
+        outputs=[keys_buffer, order_buffer],
+        device=device,
+    )
+    _sorted, order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
     keep = od.array.gather(eligible, odt.as_dense(order[:remaining]))
     return od.array.indices_to_mask(keep, m, device=device)
 
@@ -4341,9 +4349,17 @@ def split_edges(
             f"split_mask must have one entry per unique edge ({n_edges}), got {split_mask.size}."
         )
 
-    carried = index if index is not None else od.array.arange(n_faces, device=device)
-    if carried.size != n_faces:
-        raise ValueError(f"index must have one entry per face ({n_faces}), got {carried.size}.")
+    if index is not None and index.size != n_faces:
+        raise ValueError(f"index must have one entry per face ({n_faces}), got {index.size}.")
+    # Provenance is threaded only when it is returned: without ``return_index`` nothing reads it, so
+    # no identity is built and the emission writes none.
+    carried = (
+        None
+        if not return_index
+        else index
+        if index is not None
+        else od.array.arange(n_faces, device=device)
+    )
 
     # The exclusive scan both counts the split edges and assigns each one its new vertex slot, which
     # is the indexing ``split_positions`` is documented against.
@@ -4362,6 +4378,7 @@ def split_edges(
         return_index,
     )
     if return_index:
+        assert new_index is not None  # ``carried`` is an array whenever ``return_index`` is set
         return new_vertices, new_faces, new_index
     return new_vertices, new_faces
 

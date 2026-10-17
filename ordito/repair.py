@@ -1413,13 +1413,22 @@ def collapse_small_triangles(
         )
 
         # Each label is its class's smallest vertex, so remapping every corner to its label points
-        # it at the representative's own position, with no dense class numbering built first. The
-        # submesh extraction then keeps exactly the vertices the surviving faces name -- only
-        # representatives -- in ascending index order, which is ascending label order.
-        remapped_faces = od.array.remap_indices(current_faces, labels)
-        keep_mask = od.triangles.face_nondegenerate_mask(current_vertices, remapped_faces)
-        current_vertices, current_faces = od.selection.submesh_from_face_mask(
-            current_vertices, remapped_faces, keep_mask
+        # it at the representative's own position, with no dense class numbering built first. One
+        # pass remaps the corners, keeps the faces ``triangles.face_nondegenerate_mask`` would
+        # keep, and marks them for the submesh extraction, which then keeps exactly the vertices the
+        # surviving faces name -- only representatives -- in ascending index order, which is
+        # ascending label order. ``wp.empty``: the pass writes every corner and every mask entry.
+        remapped_faces = _launch.empty(current_faces.size, dtype=wp.int32, device=device)
+        keep_mask = _launch.empty(n_current, dtype=wp.bool, device=device)
+        ranks = _launch.zeros(n_current + n_vertices, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_repair.remap_mark_nondegenerate_faces,
+            dim=n_current,
+            inputs=[current_vertices, current_faces, labels, remapped_faces, keep_mask, ranks],
+            device=device,
+        )
+        current_vertices, current_faces, _vertex_index, _ranks = _compact_marked_submesh(
+            current_vertices, remapped_faces, keep_mask, ranks, keep_masked=True, with_index=False
         )
 
     return current_vertices, current_faces

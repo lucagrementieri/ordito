@@ -1416,6 +1416,36 @@ def test_resolve_voxel_grid_defaults_are_one_percent_and_a_half_cell_below(devic
     assert np.allclose(list(origin_only), -0.125, rtol=0, atol=1e-7)
 
 
+def test_resolve_voxel_grid_with_the_callers_bounds(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: ``bounds=`` is the box the function would take, so it skips that read.
+
+    Pins [`resolve_voxel_grid`][ordito.voxels.resolve_voxel_grid]'s keyword against its own
+    default path, bit for bit, cell bound included; the oracle for the default path itself is
+    [`test_resolve_voxel_grid_defaults_are_one_percent_and_a_half_cell_below`][tests.test_voxels.test_resolve_voxel_grid_defaults_are_one_percent_and_a_half_cell_below].
+    ``aabb`` is patched to raise during the second call, so the keyword cannot pass by reading
+    the box anyway.
+    """
+    points_wp = points_to_warp(
+        np.array([[0.0, -1.0, 0.5], [1.0, 2.0, 3.0], [0.25, 0.0, -2.0]], dtype=np.float32), device
+    )
+    box = od.bounds.aabb(points_wp)
+    size, origin, bound = od.voxels.resolve_voxel_grid(points_wp, return_cell_bound=True)
+
+    def no_aabb(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("resolve_voxel_grid read the box it was handed")
+
+    monkeypatch.setattr(od.bounds, "aabb", no_aabb)
+    size_box, origin_box, bound_box = od.voxels.resolve_voxel_grid(
+        points_wp, bounds=box, return_cell_bound=True
+    )
+    assert size_box == size
+    assert list(origin_box) == list(origin)
+    assert bound_box == bound
+
+
 def test_resolve_voxel_grid_passes_both_arguments_through(device: str) -> None:
     """With both supplied it reads no bounds at all, so it must return them unchanged."""
     points_wp = wp.array(

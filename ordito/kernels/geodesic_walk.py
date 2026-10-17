@@ -409,6 +409,22 @@ def start_direction_at_vertex(
     return leave_through_wedge(vertices, faces, vertex, chosen, offset_in_wedge)
 
 
+@wp.func
+def mean_length_epsilon(
+    edge_length_total: wp.array[wp.float32], n_halfedges: wp.int32
+) -> wp.float32:
+    # The walk's crossing-distance floor, ``1e-6`` of ``edges.mean_edge_length``: the per-face edge
+    # length total (``edge_length_total[0]``, left on the device by ``reduce.sum_of_terms``) over
+    # the ``n_halfedges`` per-face edges, formed in ``float64`` and rounded once to ``float32``, the
+    # exact steps of the host expression ``wp.float32(1e-6 * (total / n_halfedges))``. Zero for a
+    # mesh with no faces, whose (empty) total is then not read.
+    epsilon = wp.float32(0.0)
+    if n_halfedges > 0:
+        mean = wp.float64(edge_length_total[0]) / wp.float64(n_halfedges)
+        epsilon = wp.float32(wp.float64(1e-6) * mean)
+    return epsilon
+
+
 @wp.kernel
 def trace_from_vertices(
     vertices: wp.array[wp.vec3],
@@ -423,12 +439,14 @@ def trace_from_vertices(
     start_vertices: wp.array[wp.int32],
     directions: wp.array[wp.vec3],
     max_steps: wp.int32,
-    length_epsilon: wp.float32,
+    edge_length_total: wp.array[wp.float32],
+    n_halfedges: wp.int32,
     offsets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
 ) -> None:
     r = wp.int32(wp.tid())
+    length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     v = start_vertices[r]
     direction = directions[r]
     f, in_face = start_direction_at_vertex(
@@ -472,7 +490,8 @@ def trace_from_faces(
     start_bary: wp.array[wp.vec3],
     directions: wp.array[wp.vec3],
     max_steps: wp.int32,
-    length_epsilon: wp.float32,
+    edge_length_total: wp.array[wp.float32],
+    n_halfedges: wp.int32,
     offsets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
@@ -480,6 +499,7 @@ def trace_from_faces(
     # One ray per thread. ``offsets`` is empty on the counting pass, which is how the two passes
     # share ``trace_walk``.
     r = wp.int32(wp.tid())
+    length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     f = start_faces[r]
     bary = start_bary[r]
     point = (
@@ -919,7 +939,8 @@ def descent_paths(
     stop_value: wp.float64,
     stop_mask: wp.array[wp.bool],
     max_steps: wp.int32,
-    length_epsilon: wp.float32,
+    edge_length_total: wp.array[wp.float32],
+    n_halfedges: wp.int32,
     graph_distance: wp.array[wp.float32],
     short_paths: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
@@ -936,6 +957,7 @@ def descent_paths(
     #   paths the completion finished (those a source reaches).
     # * Writing, ``offsets`` given: every path walks and writes its points.
     r = wp.int32(wp.tid())
+    length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     n_paths = starts.shape[0]
     write_begin = wp.int32(-1)
     completing = wp.bool(False)

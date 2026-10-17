@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, NamedTuple, cast, overload
 
 import numpy as np
@@ -360,7 +360,7 @@ def sum(
         if n == 0:
             raise ValueError("sum requires a non-empty array.")
         dtype = array.dtype
-        total = _sum_in_fixed_order(_VECTOR_SUM_PARTIALS[dtype], [array], n, dtype)
+        total = _sum_in_fixed_order(_VECTOR_SUM_PARTIALS[dtype], [array], n, dtype, array.device)
         return cast(wp.vec3 | wp.vec4, total.list()[0])
     if array.dtype == wp.bool:
         mask = cast(wp.array[wp.bool], array)
@@ -528,13 +528,93 @@ def weighted_sum(
 
     if values.dtype == wp.vec3:
         total = _sum_in_fixed_order(
-            kernel_reduce.weighted_sum_vec3_1d_partials, [values, weights], n_values, wp.vec3
+            kernel_reduce.weighted_sum_vec3_1d_partials,
+            [values, weights],
+            n_values,
+            wp.vec3,
+            values.device,
         )
         return cast(wp.vec3, total.list()[0])
-    total = _sum_in_fixed_order(
-        kernel_reduce.weighted_sum1d_partials, [values, weights], n_values, wp.float32
-    )
+    total = sum_of_terms(kernel_reduce.WEIGHTED_SUM, [values, weights], n_values)
     return float(read_scalar(total, 0))
+
+
+def sum_of_terms(
+    kernels: kernel_reduce.TermSum,
+    inputs: Sequence[object],
+    n: int,
+    *,
+    out: wp.array[wp.float32] | None = None,
+    device: wp.DeviceLike = None,
+) -> wp.array[wp.float32]:
+    """
+    Total of ``n`` ``float32`` terms a block-sum kernel pair forms, left on the device.
+
+    The device-side form of [`sum`][ordito.reduce.sum]: the same blocks, fold tree and determinism
+    rule, but the first stage is any ``ordito.kernels.reduce.TermSum`` -- ``sum``'s own
+    kernels over an array (``kernel_reduce.ARRAY_SUM``), the weighted sum's
+    (``kernel_reduce.WEIGHTED_SUM``), or a fused term built by
+    ``ordito.kernels.reduce.term_sum_1d`` that never stores its terms -- and the total
+    stays in a one-slot device array instead of being read back. Under
+    [`is_deterministic`][ordito.config.is_deterministic] (or when ``kernels.atomic`` is ``None``)
+    every block stores its sum and the partials fold in a fixed tree; otherwise every block adds
+    its sum into the total.
+
+    Parameters
+    ----------
+    kernels
+        The first-stage kernel pair.
+    inputs
+        What the kernels take before their output, in order.
+    n
+        Number of terms; sets the block count. Must be positive.
+    out
+        ``(1,)`` buffer to receive the total, such as one slot of a larger buffer that is read
+        back once. When the atomic form runs it adds into ``out``, which must then hold zero.
+        ``None`` allocates one.
+    device
+        Device to launch on. ``None`` takes ``out``'s, else that of ``inputs[0]``, which must then
+        be an array (a ``@wp.struct`` input carries no device).
+
+    Returns
+    -------
+    wp.array
+        ``(1,)`` the total: ``out`` when given.
+
+    See Also
+    --------
+    [`sum`][ordito.reduce.sum]
+        The same total of an array, read back to the host.
+
+    Examples
+    --------
+    The weighted sum, kept on the device:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+    from ordito.kernels import reduce as kernel_reduce
+
+    values = wp.array([1.0, 2.0, 3.0], dtype=wp.float32)
+    total = od.reduce.sum_of_terms(kernel_reduce.WEIGHTED_SUM, [values, values], values.size)
+    print(total.numpy().tolist())  # [14.0]
+    ```
+    """
+    if device is None:
+        device = out.device if out is not None else cast(wp.array[Any], inputs[0]).device
+    if kernels.atomic is None or is_deterministic():
+        return _sum_in_fixed_order(kernels.partials, inputs, n, wp.float32, device, out=out)
+    if out is None:
+        out = _launch.zeros(1, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
+        kernels.atomic,
+        dim=[kernel_reduce.blocks_1d(n)],
+        inputs=[*inputs, out],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    return out
 
 
 @overload
@@ -758,7 +838,13 @@ _BOOL_REDUCE: dict[str, _BoolReduceSpec] = {
 
 
 def _sum_in_fixed_order(
-    first: odt.Kernel, inputs: list[odt.ArrayNd], n: int, dtype: type
+    first: odt.Kernel,
+    inputs: Sequence[object],
+    n: int,
+    dtype: type,
+    device: wp.DeviceLike,
+    *,
+    out: wp.array[Any] | None = None,
 ) -> wp.array[Any]:
     """
     Sum a float reduction in a fixed order, into a ``(1,)`` device array holding the total.
@@ -768,14 +854,17 @@ def _sum_in_fixed_order(
     a time. Every stage is a fixed tree, where one ``atomic_add`` per block would add the blocks in
     arrival order and move the total's last bits between runs on CUDA. One launch up to
     ``ITEMS_PER_BLOCK_1D`` elements, one more per factor of it after; integer sums keep the atomic.
-    ``inputs`` holds the arrays ``first`` takes before its output.
+    ``inputs`` holds what ``first`` takes before its output. The last stage writes ``out`` when it
+    is given.
     """
-    device = inputs[0].device
     fold = _VECTOR_SUM_PARTIALS.get(dtype) or kernel_reduce.SUM1D_PARTIALS[dtype]
     kernel = first
     blocks = kernel_reduce.blocks_1d(n)
     while True:
-        partials = _launch.empty(blocks, dtype=dtype, device=device)
+        if blocks == 1 and out is not None:
+            partials = out
+        else:
+            partials = _launch.empty(blocks, dtype=dtype, device=device)
         _launch.launch_tiled(
             kernel, dim=[blocks], inputs=[*inputs, partials], block_dim=TILE_1D, device=device
         )
@@ -833,7 +922,7 @@ def _launch_global_scalar_tiled(
         and is_deterministic()
     ):
         total = _sum_in_fixed_order(
-            kernel_reduce.SUM1D_PARTIALS[array.dtype], [flat], flat.size, array.dtype
+            kernel_reduce.SUM1D_PARTIALS[array.dtype], [flat], flat.size, array.dtype, flat.device
         )
         return float(read_scalar(total, 0))
     if spec.global_output_slots == 2:

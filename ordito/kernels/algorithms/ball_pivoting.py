@@ -83,6 +83,7 @@ from ordito.constants import TWO_PI, UINT64_MAX_CONSTANT
 from ordito.kernels.array import pack_edge_key
 from ordito.kernels.grouping import hash_find, hash_find_or_insert
 from ordito.kernels.predicates import dihedral_angle, triangle_normal
+from ordito.kernels.proximity import flag_overfull_leaf, meets_overfull_leaf, straggler_slab
 from ordito.kernels.reduce import block_argmin
 
 wp.set_module_options({"enable_backward": False})
@@ -539,11 +540,87 @@ def candidate_accepted(
 
 
 @wp.kernel(enable_backward=False)
+def mark_overfull_point_leaves(bvh: wp.uint64, out_flags: wp.array[wp.int32]) -> None:
+    # ``kernels.proximity.flag_overfull_leaf`` over the point BVH into the zeroed node bitset
+    # ``out_flags``, so ``meets_overfull_leaf`` routes a pivot search away from
+    # ``wp.tile_bvh_query_aabb`` only when it may meet such a leaf. Warp's BVH builders make a node
+    # at depth 32 a leaf whatever its size, which a cluster of points sharing one Morton key
+    # reaches. ``dim`` is at least the node count; nodes past it return.
+    flag_overfull_leaf(bvh, wp.int32(wp.tid()), out_flags)
+
+
+@wp.func
+def pivot_candidate(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    p_src: wp.vec3,
+    p_tgt: wp.vec3,
+    tri_norm: wp.vec3,
+    src: wp.int32,
+    tgt: wp.int32,
+    opp: wp.int32,
+    c: wp.int32,
+    mp: wp.vec3,
+    axis: wp.vec3,
+    a_dir: wp.vec3,
+    min_cluster_sq: wp.float32,
+    point_used: wp.array[wp.bool],
+    boundary_degree: wp.array[wp.int32],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    crease_cos: wp.float32,
+    edges: BpaEdgeTable,
+    best_angle: wp.float32,
+    best: wp.int32,
+) -> tuple[wp.float32, wp.int32]:
+    # One candidate ``c`` of a lane's pivot search folded into its running ``(best_angle, best)``.
+    # Shared by ``pivot_front_edges``' two walks, which differ only in how they enumerate the box.
+    #
+    # ``0 <= c < n_points`` is load-bearing, not defensive: a lane with no candidate in a step of
+    # the cooperative walk gets -1, and Warp's BVH walks are bound-checked wherever they are used
+    # (``.claude/CLAUDE.md`` on ``wp.tile_bvh_query_aabb``). An index outside the range is never a
+    # primitive of this BVH, so the test rejects nothing the walk was entitled to return.
+    if c < 0 or c >= points.shape[0]:
+        return best_angle, best
+    if not candidate_prefilter(
+        points, p_src, p_tgt, src, tgt, opp, c, min_cluster_sq, point_used, boundary_degree
+    ):
+        return best_angle, best
+    new_center = compute_ball_center(
+        p_src, p_tgt, points[c], normals[src] + normals[tgt] + normals[c], radius
+    )
+    if new_center[0] == wp.inf:
+        return best_angle, best
+    b_dir = wp.normalize(new_center - mp)
+    # Rotation about the edge from the current ball centre to this candidate's, signed by ``axis``
+    # and folded into [0, 2pi).
+    #
+    # ``dihedral_angle`` is atan2(|a x b| along the axis, a . b), not ``acos(a . b)``, and here that
+    # is a correctness matter rather than a tidy-up: the candidate that *wins* is the one nearest
+    # coplanar with the current triangle, which is exactly where acos has an infinite derivative.
+    # Measured against a float64 reference on float32 directions, acos's absolute error *equals*
+    # the angle below ~1e-5 rad -- it returns zero, so every candidate closer than that ranked
+    # identically and the winner fell out of float32 rounding, where atan2 stays accurate to many
+    # more digits. The two forms agree elsewhere, and this one is also cheaper: the cross product is
+    # the same one the sign test needed.
+    angle = dihedral_angle(a_dir, b_dir, axis)
+    if angle < 0.0:
+        angle += TWO_PI
+    if angle < best_angle and candidate_accepted(
+        points, normals, p_src, p_tgt, tri_norm, src, tgt, c, new_center,
+        grid_id, radius, crease_cos, edges,
+    ):  # fmt: skip
+        return angle, c
+    return best_angle, best
+
+
+@wp.kernel(enable_backward=False)
 def pivot_front_edges(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     grid_id: wp.uint64,
     bvh_id: wp.uint64,
+    overfull: wp.array[wp.int32],
     radius: wp.float32,
     clustering: wp.float32,
     crease_cos: wp.float32,
@@ -649,76 +726,40 @@ def pivot_front_edges(
         # minima, and the extra acceptance tests are paid for by their own 32-way concurrency.
         best_angle = TWO_PI
         best = wp.int32(-1)
-        reach = 2.0 * radius
-        # ``c < n_points`` is load-bearing, not defensive. ``wp.tile_bvh_query_aabb`` returns
-        # **out-of-range** primitive indices whenever one traversal round finds more primitives
-        # than its shared result buffer holds: ``warp/native/tile_bvh.h`` counts them with an
-        # unconditional ``atomicAdd`` and guards only the *write* against
-        # ``result_buffer_capacity = WP_TILE_BLOCK_DIM * 5``, then reads
-        # ``buffer[counter - block_size + lane]`` -- past the written region once the counter has
-        # overrun it, so a lane gets uninitialised shared memory as an index. A garbage index is
-        # positive far more often than not, so the ``>= 0`` test alone lets it through to
-        # ``points[c]``; ``compute-sanitizer`` names it as a wildly out-of-range read on the tree's
-        # other consumer of this builtin.
-        #
-        # **It is not the long-open intermittent ``CUDA error 700`` recorded against this function**
-        # (open for this function), which was the obvious guess and was tested rather than assumed:
-        # that section's own repro faults with the guard in place exactly as often as without. So
-        # the guard rules the tile-BVH garbage-index path *out* as that defect's cause.
-        #
-        # Guarding is still right here, and cheap: the overflow is a property of the builtin and the
-        # query, not of the caller. What it cannot do is recover the primitives the overflow
-        # *dropped* -- that half is upstream's -- so a guarded round can still return a slightly
-        # incomplete candidate set. It is output-neutral **by construction**, which is the only
-        # argument available: an index ``>= n_points`` is never a primitive of this BVH, so the test
-        # can reject nothing the walk was entitled to return.
-        n_points = points.shape[0]
-        query = wp.tile_bvh_query_aabb(bvh_id, mp - wp.vec3(reach), mp + wp.vec3(reach))
-        while wp.tile_query_valid(query):
-            c = wp.untile(wp.tile_bvh_query_next(query))
-            if (
-                c >= 0
-                and c < n_points
-                and candidate_prefilter(
-                    points,
-                    p_src,
-                    p_tgt,
-                    src,
-                    tgt,
-                    opp,
-                    c,
-                    min_cluster_sq,
-                    point_used,
-                    boundary_degree,
-                )
-            ):
-                new_center = compute_ball_center(
-                    p_src, p_tgt, points[c], normals[src] + normals[tgt] + normals[c], radius
-                )
-                if new_center[0] != wp.inf:
-                    b_dir = wp.normalize(new_center - mp)
-                    # Rotation about the edge from the current ball centre to this candidate's,
-                    # signed by ``axis`` and folded into [0, 2pi).
-                    #
-                    # ``dihedral_angle`` is atan2(|a x b| along the axis, a . b), not
-                    # ``acos(a . b)``, and here that is a correctness matter rather than a tidy-up:
-                    # the candidate that *wins* is the one nearest coplanar with the current
-                    # triangle, which is exactly where acos has an infinite derivative. Measured
-                    # against a float64 reference on float32 directions, acos's absolute error
-                    # *equals* the angle below ~1e-5 rad -- it returns zero, so every candidate
-                    # closer than that ranked identically and the winner fell out of float32
-                    # rounding, where atan2 stays accurate to many more digits. The two forms agree
-                    # elsewhere, and this one is also cheaper: the cross product is the same one the
-                    # sign test needed.
-                    angle = dihedral_angle(a_dir, b_dir, axis)
-                    if angle < 0.0:
-                        angle += TWO_PI
-                    if angle < best_angle and candidate_accepted(
-                        points, normals, p_src, p_tgt, tri_norm, src, tgt, c, new_center,
-                        grid_id, radius, crease_cos, edges,
-                    ):  # fmt: skip
-                        best_angle = angle
-                        best = c
+        reach = wp.vec3(2.0 * radius)
+        # **The box is walked by ``wp.tile_bvh_query_aabb`` only when it meets no overfull leaf**
+        # (``mark_overfull_point_leaves``): that builtin overruns its shared result buffer on a
+        # round meeting a leaf of more than ``TILE_WALK_LEAF_MAX`` points, dropping candidates and
+        # reading past the buffer inside the builtin, where no check on the index it returns can
+        # reach (``kernels.proximity``, above ``TILE_WALK_LEAF_MAX``). Every lane computes the same
+        # answer from the same box, so the branch is block-uniform and the builtin's collective
+        # walk is reached by every lane or by none. Any other box is cut into one slab per lane
+        # (``straggler_slab``), each walked by the serial ``wp.bvh_query_aabb``, which drops
+        # nothing; a point on a cut is tested twice, which only repeats a test. On the cpu device
+        # (one lane a block) both walks are the same serial query over the whole box.
+        lower = mp - reach
+        upper = mp + reach
+        if meets_overfull_leaf(bvh_id, overfull, lower, upper):
+            slab_lower, slab_upper = straggler_slab(lower, upper, lane, wp.block_dim())
+            serial = wp.bvh_query_aabb(bvh_id, slab_lower, slab_upper)
+            c = wp.int32(0)
+            while wp.bvh_query_next(serial, c):
+                best_angle, best = pivot_candidate(
+                    points, normals, p_src, p_tgt, tri_norm, src, tgt, opp, c, mp, axis, a_dir,
+                    min_cluster_sq, point_used, boundary_degree, grid_id, radius, crease_cos,
+                    edges, best_angle, best,
+                )  # fmt: skip
+        else:
+            query = wp.tile_bvh_query_aabb(bvh_id, lower, upper)
+            while wp.tile_query_valid(query):
+                # A lane with no candidate this step gets -1; the tile is block-wide, so it cannot
+                # simply leave the loop.
+                c = wp.untile(wp.tile_bvh_query_next(query))
+                best_angle, best = pivot_candidate(
+                    points, normals, p_src, p_tgt, tri_norm, src, tgt, opp, c, mp, axis, a_dir,
+                    min_cluster_sq, point_used, boundary_degree, grid_id, radius, crease_cos,
+                    edges, best_angle, best,
+                )  # fmt: skip
 
         # The winner must not depend on which lane happened to see it, which is what
         # ``block_argmin``'s second stage is for. When no lane found anything every lane still holds

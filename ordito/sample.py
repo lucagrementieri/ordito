@@ -42,6 +42,7 @@ from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.array import flatnonzero, gather
 from ordito.constants import TILE_1D
+from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
@@ -438,14 +439,23 @@ def sample_surface_poisson_disk(
     is_max = _launch.zeros(init_count, dtype=wp.int32, device=device)
     # The round's maxima count, accumulated by the flagging pass itself and re-zeroed once read.
     max_count = _launch.zeros(1, dtype=wp.int32, device=device)
-    negated = _launch.empty(init_count, dtype=wp.float32, device=device)
+    # The radix sort's double-width buffers, reused every round: each round rewrites the keys and
+    # the identity payload in their leading halves, and the upper halves are sort scratch.
+    keys_buffer = _launch.empty(2 * init_count, dtype=wp.float32, device=device)
+    order_buffer = _launch.empty(2 * init_count, dtype=wp.int32, device=device)
 
     while alive_count > count:
         # Only a point at least as heavy as the ``excess``-th heaviest alive one may go this round,
         # so the deletions follow the global weight order the elimination is defined by; the
         # floor stays on the device as a one-element view of the sorted keys.
-        _launch.map(kernel_sample.alive_negated_weight, weights, alive, out=negated)
-        sorted_negated, _order = od.array.sort_and_argsort(negated)
+        _launch.launch(
+            kernel_sample.alive_negated_weight_keys,
+            dim=init_count,
+            inputs=[weights, alive],
+            outputs=[keys_buffer, order_buffer],
+            device=device,
+        )
+        sorted_negated, _order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
         excess = alive_count - count
         weight_floor = sorted_negated[excess - 1 : excess]
         _launch.launch(
@@ -523,12 +533,21 @@ def _top_maxima_by_weight(
         ``(init_count,)`` ``0``/``1`` deletion flags with exactly ``excess`` ones.
     """
     n_pool = candidates.size
+    device = candidates.device
     flagged = flatnonzero(candidates)
-    # Ascending on the negated weight is descending on the weight, and ``sort_and_argsort`` is the
-    # package's one radix-sort spelling.
-    descending = _launch.empty(flagged.size, dtype=wp.float32, device=candidates.device)
-    _launch.map(wp.neg, gather(weights, flagged), out=descending)
-    _sorted, order = od.array.sort_and_argsort(descending)
+    n_flagged = flagged.size
+    # Ascending on the negated weight is descending on the weight; one launch writes those keys and
+    # the identity payload straight into the radix sort's double-width buffers.
+    keys_buffer = _launch.empty(2 * n_flagged, dtype=wp.float32, device=device)
+    order_buffer = _launch.empty(2 * n_flagged, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_array.negated_gather_keys_and_identity,
+        dim=n_flagged,
+        inputs=[weights, flagged],
+        outputs=[keys_buffer, order_buffer],
+        device=device,
+    )
+    _sorted, order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
     # No clone: ``order`` need not outlive this frame (no further sort call reuses its scratch),
     # and ``gather`` only requires a contiguous index array, which a prefix slice already is.
     chosen = gather(flagged, odt.as_dense(order[:excess]))

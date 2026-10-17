@@ -51,8 +51,6 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
-from ordito.config import is_deterministic
-from ordito.constants import TILE_1D
 from ordito.edges import edges_unique, edges_unique_length
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import energies as kernel_energies
@@ -125,14 +123,10 @@ def edge_length_loss(
     if lengths.size == 0:
         return 0.0
     terms = kernel_energies.EdgeDeviationTerms()
+    terms.n = lengths.size
     terms.lengths = lengths
     terms.target = float(target_length)
-    return _mean_of_terms(
-        (kernel_energies.EDGE_DEVIATION_SUM, kernel_energies.EDGE_DEVIATION_SUM_PARTIALS),
-        terms,
-        lengths.size,
-        lengths.device,
-    )
+    return _mean_of_terms(kernel_energies.EDGE_DEVIATION_SUM, terms, lengths.size, lengths.device)
 
 
 def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:
@@ -195,13 +189,9 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
     if angles.size == 0:
         return 0.0
     terms = kernel_energies.DihedralTerms()
+    terms.n = angles.size
     terms.angles = angles
-    return _mean_of_terms(
-        (kernel_energies.DIHEDRAL_SUM, kernel_energies.DIHEDRAL_SUM_PARTIALS),
-        terms,
-        angles.size,
-        angles.device,
-    )
+    return _mean_of_terms(kernel_energies.DIHEDRAL_SUM, terms, angles.size, angles.device)
 
 
 def laplacian_smoothing_loss(
@@ -319,49 +309,17 @@ def laplacian_smoothing_loss(
 
 
 def _mean_of_terms(
-    kernels: tuple[odt.Kernel, odt.Kernel], terms: object, n: int, device: wp.DeviceLike
+    kernels: kernel_reduce.TermSum, terms: object, n: int, device: wp.DeviceLike
 ) -> float:
     """
-    Mean of the ``n`` per-item terms a ``kernels/energies._term_sum`` pair forms.
+    Mean of the ``n`` per-item terms a ``kernels/reduce.term_sum_1d`` pair forms over ``terms``.
 
-    ``kernels`` is the pair's atomic and fixed-order kernels. The terms are summed as
-    ``reduce.mean`` sums an array of them: in its fixed order under ``is_deterministic`` -- one
-    partial per block, folded by ``reduce.SUM1D_PARTIALS`` while more than one remains -- and
-    otherwise by one atomic addition per block, so the mean is the one the regularizers would get
-    from materializing their terms and reducing them, with no term buffer.
+    [`sum_of_terms`][ordito.reduce.sum_of_terms] sums them as [`reduce.mean`][ordito.reduce.mean]
+    sums an array of them, in either determinism setting, so the mean is the one the regularizers
+    would get from materializing their terms and reducing them, with no term buffer.
     """
-    atomic, partial = kernels
-    blocks = kernel_reduce.blocks_1d(n)
-    if not is_deterministic():
-        total = _launch.zeros(1, dtype=wp.float32, device=device)
-        _launch.launch_tiled(
-            atomic,
-            dim=[blocks],
-            inputs=[wp.int32(n), terms, total],
-            block_dim=TILE_1D,
-            device=device,
-        )
-        return float(read_scalar(total, 0)) / n
-    partials = _launch.empty(blocks, dtype=wp.float32, device=device)
-    _launch.launch_tiled(
-        partial,
-        dim=[blocks],
-        inputs=[wp.int32(n), terms, partials],
-        block_dim=TILE_1D,
-        device=device,
-    )
-    while blocks > 1:
-        folded = kernel_reduce.blocks_1d(blocks)
-        sums = _launch.empty(folded, dtype=wp.float32, device=device)
-        _launch.launch_tiled(
-            kernel_reduce.SUM1D_PARTIALS[wp.float32],
-            dim=[folded],
-            inputs=[partials, sums],
-            block_dim=TILE_1D,
-            device=device,
-        )
-        partials, blocks = sums, folded
-    return float(read_scalar(partials, 0)) / n
+    total = od.reduce.sum_of_terms(kernels, [terms], n, device=device)
+    return float(read_scalar(total, 0)) / n
 
 
 def k_harmonic(

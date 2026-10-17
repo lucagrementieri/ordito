@@ -902,7 +902,7 @@ def allclose(
 
 
 def sort_and_argsort(
-    keys: _SortableArrayT, *, fill_value: int = -1, end_bit: int | None = None
+    keys: _SortableArrayT, *, end_bit: int | None = None
 ) -> tuple[_SortableArrayT, wp.array[wp.int32]]:
     """
     Ascending sort of ``keys`` together with the permutation that produced it.
@@ -920,9 +920,6 @@ def sort_and_argsort(
     keys
         ``(n,)`` sort keys (any radix-sortable scalar dtype; see
         [`sortable_dtype`][ordito.typing.sortable_dtype] for which those are).
-    fill_value
-        Has no effect: the upper half of the payload buffer is the sort's scratch, which the sort
-        overwrites, and the returned views end at ``n``.
     end_bit
         Exclusive upper bound on the key bits the radix sort orders, for integer keys known to be
         non-negative and below ``2**end_bit`` (a face id below ``n_faces`` needs
@@ -970,7 +967,6 @@ def sort_and_argsort(
     print(order.numpy().tolist())  # [1, 3, 2, 0]
     ```
     """
-    del fill_value  # the payload's upper half is sort scratch: nothing reads a padding there
     device = keys.device
     n = keys.size
     if n == 0:
@@ -2187,10 +2183,7 @@ def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.
     if n == 0:
         return _launch.empty(0, dtype=wp.int32, device=device)
 
-    # One buffer for the flags and their scan: the flags are written into it and scanned in place,
-    # which ``wp.utils.array_scan`` supports on both devices -- the host scan is a sequential loop
-    # that reads each element before overwriting it, and CUB's device scan accepts aliased input
-    # and output. The scatter then recovers each flag as the step between neighbouring scan values.
+    # One buffer for the flags and their scan: the flags are written into it and scanned in place.
     inclusive = _launch.empty(n, dtype=wp.int32, device=device)
     if values.dtype == wp.bool:
         # A mask needs its own kernel: ``wp.Scalar`` does not instantiate for ``wp.bool``, so
@@ -2201,21 +2194,64 @@ def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.
     else:
         _launch.map(kernel_array.nonzero_flag, values, out=inclusive)
 
-    # Inclusive scan: the total is its last element, so one 4-byte tail read sizes the output
-    # (the scatter kernel derives each exclusive position as inclusive[i] - 1).
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
-    n_out = int(read_scalar(inclusive))
+    return flatnonzero_in_place(inclusive)
 
-    if n_out == 0:
+
+def flatnonzero_in_place(flags: wp.array[wp.int32]) -> wp.array[wp.int32]:
+    """
+    Return the indices of the ones in a ``0`` / ``1`` flag buffer, scanning it in place.
+
+    [`flatnonzero`][ordito.array.flatnonzero] for a caller whose own kernel writes the flags: the
+    flags go straight into the buffer the scan runs in, so no mask sits between the kernel and the
+    scan. The buffer is consumed -- it holds the flags' inclusive scan on return.
+
+    Parameters
+    ----------
+    flags
+        ``(n,)`` ``int32`` buffer of ``0`` / ``1`` flags. Overwritten with its inclusive scan.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(n_selected,)`` ascending indices of the ``1`` entries on ``flags.device``,
+        ``n_selected`` their count. Empty when none is set.
+
+    See Also
+    --------
+    [`flatnonzero`][ordito.array.flatnonzero]
+        The same indices of an existing mask or scalar array.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    flags = wp.array([0, 1, 1, 0, 1], dtype=wp.int32)
+    print(od.array.flatnonzero_in_place(flags).numpy().tolist())  # [1, 2, 4]
+    print(flags.numpy().tolist())  # [0, 1, 2, 2, 3]
+    ```
+    """
+    device = flags.device
+    n = flags.size
+    if n == 0:
         return _launch.empty(0, dtype=wp.int32, device=device)
-
+    # Scanned in place, which ``wp.utils.array_scan`` supports on both devices -- the host scan is
+    # a sequential loop that reads each element before overwriting it, and CUB's device scan
+    # accepts aliased input and output. The total is the scan's last element, so one 4-byte tail
+    # read sizes the output, and the scatter recovers each flag as the step between neighbouring
+    # scan values.
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
+    n_out = int(read_scalar(flags))
     out_indices = _launch.empty(n_out, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_scatter.scatter_index_where_scanned,
-        dim=n,
-        inputs=[inclusive, out_indices],
-        device=device,
-    )
+    if n_out > 0:
+        _launch.launch(
+            kernel_scatter.scatter_index_where_scanned,
+            dim=n,
+            inputs=[flags, out_indices],
+            device=device,
+        )
     return out_indices
 
 

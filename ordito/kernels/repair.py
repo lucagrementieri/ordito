@@ -1,7 +1,11 @@
 import warp as wp
 
 from ordito.constants import INDEX_RADIX_PAIR
-from ordito.kernels.algorithms.connected_components import ecl_hook_pair, ecl_prehook_pair
+from ordito.kernels.algorithms.connected_components import (
+    ecl_hook_pair,
+    ecl_prehook_pair,
+    write_corner_component_rank,
+)
 from ordito.kernels.array import (
     binary_search_sorted_contains,
     declare_map_signatures,
@@ -29,6 +33,7 @@ from ordito.kernels.triangles import (
     face_signed_volume,
     face_vertices,
     triangle_cross,
+    triangle_nondegenerate,
     triangle_quality,
     write_corner_triple,
 )
@@ -239,6 +244,46 @@ def small_triangle_collapse_edges(
         out_pairs[f, 1] = i0
 
 
+@wp.func
+def mark_face_fate(
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    keep: wp.bool,
+    out_keep: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # Record a face's keep decision for the submesh compaction: the mask entry it reads, and, when
+    # kept, the face and its three vertices flagged in the zeroed ``(n_faces + n_vertices,)`` rank
+    # buffer, as ``selection.mark_submesh_faces_and_vertices`` does from a mask. Shared by the
+    # kernels that decide each face's fate inline (``remap_mark_nondegenerate_faces``,
+    # ``mark_kept_components``); they differ only in the decision.
+    out_keep[f] = keep
+    if keep:
+        mark_submesh_face(faces, out_keep.shape[0], f, out_flags)
+
+
+@wp.kernel
+def remap_mark_nondegenerate_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_keep: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # One collapse pass after the merge closure: remap each corner to its class label, test the
+    # remapped triangle with ``face_nondegenerate_mask``'s predicate, and mark the survivors for the
+    # submesh compaction, which reads ``out_faces`` as its face buffer.
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    a = labels[i0]
+    b = labels[i1]
+    c = labels[i2]
+    write_corner_triple(out_faces, f, a, b, c)
+    keep = triangle_nondegenerate(vertices[a], vertices[b], vertices[c])
+    mark_face_fate(out_faces, f, keep, out_keep, out_flags)
+
+
 @wp.kernel
 def reverse_face_winding(faces: wp.array[wp.int32], out_faces: wp.array[wp.int32]) -> None:
     # np.fliplr on an (n, 3) face block. All three indices are read before any is written, so
@@ -371,9 +416,7 @@ def mark_kept_components(
     keep = component_kept(
         criterion, groups[f], counts, statistic, corners, best, min_count, min_value
     )
-    out_keep[f] = keep
-    if keep:
-        mark_submesh_face(faces, groups.shape[0], f, out_flags)
+    mark_face_fate(faces, f, keep, out_keep, out_flags)
 
 
 @wp.kernel
@@ -493,15 +536,10 @@ def scatter_split_corners(
     out_new_vertices: wp.array[wp.vec3],
 ) -> None:
     # Number each corner's component and, from its root corner alone, write the component's source
-    # vertex and position. ``root_ranks`` is ``connected_components.ecl_flatten_root_flags``' root
-    # flags scanned in place (inclusive), so a root's entry less one is its rank among the roots in
-    # ascending order: the new vertex numbering, smallest root corner first.
-    # ``seams.scatter_corner_values`` is the same ranking for a value the corners share, with no
-    # source map and no root test.
+    # vertex and position. ``seams.scatter_corner_values`` is the same ranking for a value the
+    # corners share, with no source map and no root test.
     h = wp.int32(wp.tid())
-    root = roots[h]
-    rank = root_ranks[root] - 1
-    out_new_faces[h] = rank
+    root, rank = write_corner_component_rank(roots, root_ranks, h, out_new_faces)
     if root == h:
         v = faces[h]
         out_source[rank] = v

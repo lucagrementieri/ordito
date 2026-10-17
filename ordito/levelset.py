@@ -801,12 +801,22 @@ def _cone_components(
     labels = od.graph.connected_component_labels_from_edges(
         chain, node_count=vertices.size, validate=False
     )
-    keys = _launch.empty(m, dtype=wp.int32, device=device)
+    # The keys and the identity payload go straight into the sort's double-width buffers, and the
+    # sort orders only the bits a vertex index can set. The run-start flags then reuse the payload's
+    # upper half, which is sort scratch and free once the sort has run.
+    keys_buffer = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    order_buffer = _launch.empty(2 * m, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_levelset.cone_component_keys, dim=m, inputs=[chain, labels, keys], device=device
+        kernel_levelset.cone_component_keys,
+        dim=m,
+        inputs=[chain, labels],
+        outputs=[keys_buffer, order_buffer],
+        device=device,
     )
-    sorted_keys, order = od.array.sort_and_argsort(keys)
-    flags = _launch.empty(m, dtype=wp.int32, device=device)
+    sorted_keys, order = od.array.sort_and_argsort_in_place(
+        keys_buffer, order_buffer, end_bit=max(1, (vertices.size - 1).bit_length())
+    )
+    flags = odt.as_dense(order_buffer[m:])
     _launch.launch(
         kernel_levelset.mark_run_starts, dim=m, inputs=[sorted_keys, flags], device=device
     )
