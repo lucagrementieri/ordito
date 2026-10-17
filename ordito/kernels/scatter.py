@@ -140,6 +140,28 @@ def add_corner_triple(
     wp.atomic_add(out_sum, indices[row * 3 + 2], c)
 
 
+@wp.func
+def add_or_store_corner_triple(
+    out_sum: wp.array[Any],
+    out_corners: wp.array2d[Any],
+    indices: wp.array[wp.int32],
+    row: wp.int32,
+    a: Any,
+    b: Any,
+    c: Any,
+) -> None:
+    # A face's three corner values, to whichever output the caller sized: stored per corner into
+    # a non-empty ``out_corners`` (``(n_faces, 3)``), for ``sum_sorted_corner_values`` to add in
+    # ascending corner order under ``ordito.config``'s deterministic mode, or added atomically
+    # into ``out_sum`` (``add_corner_triple``) in arrival order otherwise.
+    if out_corners.shape[0] > 0:
+        out_corners[row, 0] = a
+        out_corners[row, 1] = b
+        out_corners[row, 2] = c
+    else:
+        add_corner_triple(out_sum, indices, row, a, b, c)
+
+
 @wp.kernel
 def scatter_face_thirds(
     faces: wp.array[wp.int32], areas: wp.array[Any], count: wp.Float, out_mass: wp.array[wp.Float]
@@ -203,8 +225,8 @@ def scatter_sum_exact(
 def sum_sorted_corner_values(
     sorted_vertices: wp.array[wp.int32],
     corner_order: wp.array[wp.int32],
-    corner_values: wp.array2d[wp.float64],
-    out_sums: wp.array[wp.float64],
+    corner_values: wp.array2d[Any],
+    out_sums: wp.array[Any],
     out_offsets: wp.array[wp.int32],
     out_vertex_faces: wp.array[wp.int32],
 ) -> None:
@@ -212,7 +234,8 @@ def sum_sorted_corner_values(
     # ``sorted_vertices`` / ``corner_order`` are the face buffer's stable sort and its permutation,
     # so a vertex's run lists its corners in ascending order. The same bits on every run, where
     # ``add_corner_triple``'s atomics commit in arrival order -- the deterministic form of that
-    # scatter for ``float64`` values, which have no exact atomic sum.
+    # scatter for ``float64`` values, which have no exact atomic sum, and for vectors, whose
+    # components no exact sum covers either (``SUM_SORTED_CORNER_VALUES``' dtypes).
     #
     # The runs are also the vertex-face incidence CSR ``adjacency.vertex_face_adjacency`` returns
     # in deterministic mode, each row in ascending face order, so a caller that wants those rows
@@ -226,7 +249,7 @@ def sum_sorted_corner_values(
         out_offsets[v] = i
         if v == out_sums.shape[0] - 1:
             out_offsets[v + 1] = n
-    total = wp.float64(0.0)
+    total = type(out_sums[v])(0.0)
     while i < n:
         if sorted_vertices[i] != v:
             break
@@ -617,7 +640,7 @@ def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global DIVIDE_BY_DENSITY, SPLAT_GRID_TRILINEAR, SCATTER_ADD
     global SCALE_FACE_SUMS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR
-    global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC
+    global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC, SUM_SORTED_CORNER_VALUES
     DIVIDE_BY_DENSITY = OverloadTable(
         divide_by_density,
         {d: [wp.array3d[wp.float32], wp.float32, wp.array3d[d]] for d in _GRID_DTYPES},
@@ -668,6 +691,23 @@ def _register_overloads() -> None:
         {
             d: [wp.array[wp.vec3], wp.array2d[wp.int32], wp.array2d[wp.float32], wp.array2d[d]]
             for d in _VECTOR_ACCUMULATOR_DTYPES
+        },
+    )
+
+    # ``float64`` sums (the energies' angle sums and mass, the heat method's divergence) and the
+    # ``wp.vec3`` one of the log map's radial direction.
+    SUM_SORTED_CORNER_VALUES = OverloadTable(
+        sum_sorted_corner_values,
+        {
+            d: [
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array2d[d],
+                wp.array[d],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+            ]
+            for d in (wp.float64, wp.vec3)
         },
     )
 

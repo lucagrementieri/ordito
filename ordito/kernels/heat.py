@@ -38,7 +38,7 @@ from ordito.kernels.predicates import (
     world_to_tangent,
 )
 from ordito.kernels.reduce import block_chunk_1d, store_sum_and_count
-from ordito.kernels.scatter import add_corner_triple
+from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple
 from ordito.kernels.triangles import face_normals_and_area, face_unit_gradient, face_vertices_vec3d
 
 wp.set_module_options({"enable_backward": False})
@@ -263,10 +263,12 @@ def accumulate_face_divergence(
     f: wp.int32,
     x: wp.vec3d,
     out_div: wp.array[wp.float64],
+    out_corner_div: wp.array2d[wp.float64],
 ) -> None:
     # Cotangent integrated divergence of one face's vector ``x``, accumulated onto its three
-    # vertices. cot_entries[f, k] = 1/2 cot(angle at corner k); each vertex gets contributions from
-    # the two edges of the triangle incident to it, weighted by the cotangent opposite those edges.
+    # vertices (or stored per corner, ``scatter.add_or_store_corner_triple``). cot_entries[f, k] =
+    # 1/2 cot(angle at corner k); each vertex gets contributions from the two edges of the
+    # triangle incident to it, weighted by the cotangent opposite those edges.
     #
     # A ``@wp.func`` taking ``x`` as a value rather than a kernel reading it out of an array,
     # because the per-face field is always written by the immediately preceding launch and read
@@ -281,7 +283,7 @@ def accumulate_face_divergence(
     d1 = c0 * wp.dot(v2 - v1, x) + c2 * wp.dot(v0 - v1, x)
     d2 = c1 * wp.dot(v0 - v2, x) + c0 * wp.dot(v1 - v2, x)
 
-    add_corner_triple(out_div, faces, f, d0, d1, d2)
+    add_or_store_corner_triple(out_div, out_corner_div, faces, f, d0, d1, d2)
 
 
 @wp.kernel
@@ -293,6 +295,7 @@ def unit_gradient_divergence(
     values: wp.array[wp.float64],
     cot_entries: wp.array2d[wp.float32],
     out_div: wp.array[wp.float64],
+    out_corner_div: wp.array2d[wp.float64],
 ) -> None:
     # The field's unit gradient direction, integrated by the same thread that forms it. For a
     # distance field the direction is radial, *away* from the source -- the opposite of the
@@ -307,9 +310,13 @@ def unit_gradient_divergence(
     # only this module's callers would ever set (speculative generality: one caller per
     # mode). The two also return different quantities: a gradient carries the field's rate of
     # change, this carries only a direction.
+    #
+    # The terms go to ``out_div`` atomically (arrival order), or per corner into a non-empty
+    # ``out_corner_div`` for ``scatter.sum_sorted_corner_values`` to add in ascending corner order
+    # under ``ordito.config``'s deterministic mode, as in ``vertex_field_divergence``.
     f = wp.int32(wp.tid())
     x = face_unit_gradient(vertices, faces, normals, areas, values, f)
-    accumulate_face_divergence(vertices, faces, cot_entries, f, x, out_div)
+    accumulate_face_divergence(vertices, faces, cot_entries, f, x, out_div, out_corner_div)
 
 
 # --------------------------------------------------------------------------------------
@@ -447,6 +454,7 @@ def vertex_field_divergence(
     basis_y: wp.array[wp.vec3],
     cot_entries: wp.array2d[wp.float32],
     out_div: wp.array[wp.float64],
+    out_corner_div: wp.array2d[wp.float64],
 ) -> None:
     # The signed heat method's stage 3. Average the three corners' tangent vectors into one
     # per-face vector, in world space, and integrate it by the same thread so it stays in a
@@ -471,7 +479,7 @@ def vertex_field_divergence(
         total += tangent_to_world(to_vec2(stable_normalize(field[v])), basis_x[v], basis_y[v])
     tangential, _length = unit_tangent(total, normals[f], TOLERANCE_ZERO_CONSTANT)
     x = -to_vec3d(tangential)
-    accumulate_face_divergence(vertices, faces, cot_entries, f, x, out_div)
+    accumulate_face_divergence(vertices, faces, cot_entries, f, x, out_div, out_corner_div)
 
 
 @wp.kernel
@@ -639,16 +647,20 @@ def scatter_unit_gradient_to_vertices(
     areas: wp.array[wp.float32],
     values: wp.array[wp.float64],
     out_vertex_field: wp.array[wp.vec3],
+    out_corner_field: wp.array2d[wp.vec3],
 ) -> None:
     # The log map's radial direction -- the unit gradient of the distance field, pointing away from
     # the source -- formed and scattered onto vertices by the same thread. The scatter is a plain
     # area-weighted add: the weights are the same for all three corners, so no normalization is
-    # needed before projecting.
+    # needed before projecting. Added atomically, or stored per corner into a non-empty
+    # ``out_corner_field`` for ``scatter.sum_sorted_corner_values`` to add in ascending corner
+    # order under ``ordito.config``'s deterministic mode: at the cut locus the faces' directions
+    # cancel, and the atomics' arrival order then chose the angle there.
     f = wp.int32(wp.tid())
     x = face_unit_gradient(vertices, faces, normals, areas, values, f)
     area = areas[f]
     value = to_vec3(x) * area
-    add_corner_triple(out_vertex_field, faces, f, value, value, value)
+    add_or_store_corner_triple(out_vertex_field, out_corner_field, faces, f, value, value, value)
 
 
 @wp.func

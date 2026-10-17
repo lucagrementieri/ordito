@@ -268,11 +268,9 @@ def test_heat_operators_honour_an_explicit_diffusion_time(
     )
 
 
-@pytest.mark.parametrize(
-    ("mesh_name", "bit_reproducible"), [("sphere_irregular", True), ("saddle_graded", False)]
-)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
-    request: pytest.FixtureRequest, mesh_name: str, bit_reproducible: bool
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Ordito against ordito: the two forms of the call are one computation.
@@ -289,10 +287,9 @@ def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
     ``sphere_irregular`` (CPU / CUDA), 1.1e-9 / 3.4e-10 on ``saddle_graded``. The bar is 3x the
     worst, 4e-6; a factorization of the wrong system misses it by orders.
 
-    On ``saddle_graded`` the first comparison is at 1e-8 of the range instead: on CUDA the
-    ``vertices, faces`` call is not bit-reproducible there -- two identical calls differ by up to
-    6.4e-10 of the range (exactly 0 on the CPU device, 4e-16 on ``icosphere_coarse``) -- because
-    the float atomics' ordering noise is amplified by the ill-conditioned solves.
+    The first comparison holds at 1e-12 on ``saddle_graded`` as well: both calls fail the settled
+    iterate's check and solve through the factorization, which does not amplify the divergence's
+    rounding the way the iteration did (``test_heat_solvers_are_reproducible`` pins the repeat).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     sources_wp = wp.array(
@@ -307,10 +304,7 @@ def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
     second_np = od.heat.heat_geodesic(mesh, sources_wp).numpy()
 
     assert internal_np.max() > 0.0
-    if bit_reproducible:
-        assert np.allclose(first_np, internal_np, rtol=1e-12, atol=1e-12)
-    else:
-        assert np.abs(first_np - internal_np).max() < 1e-8 * np.ptp(internal_np)
+    assert np.allclose(first_np, internal_np, rtol=1e-12, atol=1e-12)
     assert mesh.heat_solver().nbytes > 0
     prefactored = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     prefactored.heat_solver().factor()
@@ -2351,3 +2345,43 @@ def test_heat_arrival_order_agrees_with_the_default(
     for fixed_np, arrival_np in zip(fixed, arrival, strict=True):
         assert np.ptp(fixed_np) > 1e-3
         assert np.allclose(fixed_np, arrival_np, rtol=1e-4, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("function", "mesh_name"),
+    [
+        ("heat_geodesic", "saddle_graded"),
+        ("heat_signed_distance", "saddle_graded"),
+        ("log_map", "saddle_graded"),
+        ("log_map", "icosphere"),
+    ],
+)
+def test_heat_solvers_are_reproducible(
+    request: pytest.FixtureRequest, function: str, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: under the deterministic mode the identical call returns identical bits.
+
+    No reference library can carry this: it is a claim about this implementation's summation
+    order. The divergence the Poisson solve integrates and the log map's radial direction were
+    float atomic scatters, so on CUDA every call differed (20 distinct fields in 20 calls of each
+    case here): by up to 3.6e-16 of the range in the distances, 1.7e-7 in the graded log map, and
+    7.7e-2 at the antipode of the log map's source on the sphere -- the cut locus, where the faces'
+    directions cancel and the scatter's arrival order chose the angle. Each is now stored per
+    corner and summed per vertex in ascending corner order
+    (``kernels/scatter.sum_sorted_corner_values``). The CPU device was exact before and returns
+    the same bits as before.
+
+    Asserted as exact equality: a tolerance would admit exactly the noise this pins. The
+    icosphere case checks that the antipode is in the field (a non-zero radius near pi).
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    runs = [_heat_call(mesh_wp, function) for _ in range(5)]
+    if mesh_name == "icosphere":
+        antipode = int(np.argmin(mesh_wp.points.numpy() @ mesh_wp.points.numpy()[0]))
+        assert np.linalg.norm(runs[0][0][antipode]) > 3.0
+    for first_np in runs[0]:
+        assert np.ptp(first_np) > 1e-3
+    for other in runs[1:]:
+        for first_np, other_np in zip(runs[0], other, strict=True):
+            assert np.array_equal(first_np, other_np)

@@ -1292,7 +1292,7 @@ def _sorted_vertex_corner_sums(
     offsets = _launch.empty(n_vertices + 1 if with_rows else 0, dtype=wp.int32, device=device)
     vertex_faces = _launch.empty(faces.size if with_rows else 0, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_scatter.sum_sorted_corner_values,
+        kernel_scatter.SUM_SORTED_CORNER_VALUES[wp.float64],
         dim=n_vertices,
         inputs=[sorted_vertices, corner_order, corner_values],
         outputs=[sums, offsets, vertex_faces],

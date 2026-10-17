@@ -9,7 +9,7 @@ from ordito.kernels.predicates import (
     triangle_double_area,
 )
 from ordito.kernels.reduce import term_sum_1d
-from ordito.kernels.scatter import add_corner_triple, append_to_pair
+from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple, append_to_pair
 from ordito.kernels.triangles import face_vertices_vec3d
 
 wp.set_module_options({"enable_backward": False})
@@ -300,12 +300,7 @@ def hessian_face_terms(
         quad0 = wp.float64(0.125) * dbl_area
         quad1 = wp.float64(0.125) * dbl_area
         quad2 = wp.float64(0.25) * dbl_area
-    if corners:
-        out_corner_mass[f, 0] = quad0
-        out_corner_mass[f, 1] = quad1
-        out_corner_mass[f, 2] = quad2
-    else:
-        add_corner_triple(out_mass, faces, f, quad0, quad1, quad2)
+    add_or_store_corner_triple(out_mass, out_corner_mass, faces, f, quad0, quad1, quad2)
 
 
 @wp.kernel

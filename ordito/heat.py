@@ -48,7 +48,7 @@ import math
 import warnings
 import weakref
 from dataclasses import dataclass
-from typing import Any, cast, overload
+from typing import Any, TypeVar, cast, overload
 
 import warp as wp
 import warp.optim.linear as wpl
@@ -59,10 +59,12 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.cholesky import held_nbytes
+from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import scatter as kernel_scatter
 from ordito.laplacian import (
     MeshOperatorPattern,
     cotmatrix_entries,
@@ -451,7 +453,7 @@ def _heat_geodesic(
 
     heat = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     solver.diffuse(u0, heat)
-    distance = _distance_from_heat(mesh, solver, sources, heat)
+    distance = _distance_from_heat(mesh, solver, sources, heat, _corner_order(mesh, solver))
     _log_discarded("heat_geodesic", owned, solver)
     return distance
 
@@ -673,13 +675,16 @@ def _heat_signed_distance(
     # Stage 3: integrate the unit field back into a scalar with a Poisson solve. The cotangent
     # weights and face normals come from the same bundle, so the Poisson stage and the diffusion
     # cannot drift apart.
-    divergence = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    order = _corner_order(mesh, solver)
+    divergence, corner_divergence = _corner_outputs(order, n_vertices, n_faces, wp.float64, device)
     _launch.launch(
         kernel_heat.vertex_field_divergence,
         dim=n_faces,
-        inputs=[vertices, faces, face_normals, diffused, basis_x, basis_y, cot_entries, divergence],
+        inputs=[vertices, faces, face_normals, diffused, basis_x, basis_y, cot_entries],
+        outputs=[divergence, corner_divergence],
         device=device,
     )
+    _sum_corner_outputs(order, corner_divergence, divergence)
 
     if level_set_constraint == "zero_set":
         field = _solve_poisson_zero_set(
@@ -1161,6 +1166,16 @@ class _ScalarBuild:
     mass: wp.array[wp.float64]
     edge_sums: wp.array[wp.float64] | None
 
+
+# The face buffer's stable sort ``(sorted_vertices, corner_order)``, or ``None`` for the per-face
+# scatter (``_corner_order``).
+_CornerOrder = tuple[wp.array[wp.int32], wp.array[wp.int32]] | None
+# Each solver's face sort, keyed weakly so it lives exactly as long as the solver -- the mesh's
+# lifetime -- as its operators do.
+_CORNER_ORDERS: weakref.WeakKeyDictionary[
+    HeatSolver, tuple[wp.array[wp.int32], wp.array[wp.int32]]
+] = weakref.WeakKeyDictionary()
+_T = TypeVar("_T")
 
 # Each bundle's ``_ScalarBuild``, keyed weakly by its heat system, so it lives exactly as long as
 # the bundle does: a prebuilt bundle handed to ``vector_heat_operators`` (a `Trimesh`'s cached
@@ -1735,16 +1750,21 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
 
     # Radial direction: the unit gradient of the distance field, averaged onto vertices and
     # expressed in each vertex's frame.
-    distance = _distance_from_heat(mesh, solver, sources, odt.as_dense(diffused[2 * n_vertices :]))
+    order = _corner_order(mesh, solver)
+    distance = _distance_from_heat(
+        mesh, solver, sources, odt.as_dense(diffused[2 * n_vertices :]), order
+    )
     normals, areas = scalar[6], scalar[7]
     n_faces = faces.size // 3
-    vertex_gradient = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+    vertex_gradient, corner_gradient = _corner_outputs(order, n_vertices, n_faces, wp.vec3, device)
     _launch.launch(
         kernel_heat.scatter_unit_gradient_to_vertices,
         dim=n_faces,
-        inputs=[vertices, faces, normals, areas, distance, vertex_gradient],
+        inputs=[vertices, faces, normals, areas, distance],
+        outputs=[vertex_gradient, corner_gradient],
         device=device,
     )
+    _sum_corner_outputs(order, corner_gradient, vertex_gradient)
     # The kernel expresses the gradient in each vertex's frame and normalizes the transported
     # reference in ``float64`` before narrowing it, which the far field needs to survive.
     logarithm = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
@@ -1759,12 +1779,17 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
 
 
 def _distance_from_heat(
-    mesh: Trimesh, solver: HeatSolver, sources: wp.array[wp.int32], heat: wp.array[wp.float64]
+    mesh: Trimesh,
+    solver: HeatSolver,
+    sources: wp.array[wp.int32],
+    heat: wp.array[wp.float64],
+    order: _CornerOrder,
 ) -> wp.array[wp.float64]:
     """
     ``heat_geodesic`` from the diffused heat on: the divergence, the Poisson solve and the shift.
 
-    Split out so ``log_map`` can diffuse the heat inside a stacked solve of its own.
+    Split out so ``log_map`` can diffuse the heat inside a stacked solve of its own. ``order`` is
+    `_corner_order`'s choice of how per-face terms reach the vertices.
     """
     vertices, faces = mesh.vertices, mesh.faces
     device = vertices.device
@@ -1773,17 +1798,22 @@ def _distance_from_heat(
     _, _, _, _, _, cot_entries, normals, areas = solver.operators
 
     # Integrated divergence b = div(X) of the unit field X = -grad(u)/|grad(u)|, then a Poisson
-    # solve L phi = b, i.e. (-L) phi = -b with the positive semi-definite operator. One launch: the
-    # field is formed and integrated per face, so it never occupies an (n_faces,) buffer. The kernel
-    # integrates ``-X`` and so accumulates ``-b`` directly: the divergence is linear in the field
-    # and negation is exact, so this is the negated sum without a pass to negate it.
-    neg_divergence = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    # solve L phi = b, i.e. (-L) phi = -b with the positive semi-definite operator. The field is
+    # formed and integrated per face, so it never occupies an (n_faces,) buffer; the terms are
+    # added atomically, or (deterministic mode) stored per corner and summed in a second launch.
+    # The kernel integrates ``-X`` and so accumulates ``-b`` directly: the divergence is linear in
+    # the field and negation is exact, so this is the negated sum without a pass to negate it.
+    neg_divergence, corner_divergence = _corner_outputs(
+        order, n_vertices, n_faces, wp.float64, device
+    )
     _launch.launch(
         kernel_heat.unit_gradient_divergence,
         dim=n_faces,
-        inputs=[vertices, faces, normals, areas, heat, cot_entries, neg_divergence],
+        inputs=[vertices, faces, normals, areas, heat, cot_entries],
+        outputs=[neg_divergence, corner_divergence],
         device=device,
     )
+    _sum_corner_outputs(order, corner_divergence, neg_divergence)
 
     phi = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     solver.solve_poisson(neg_divergence, phi)
@@ -1810,6 +1840,60 @@ def _distance_from_heat(
         device=device,
     )
     return phi
+
+
+def _corner_order(mesh: Trimesh, solver: HeatSolver) -> _CornerOrder:
+    """
+    How the heat solvers' per-face terms reach the vertices: the face buffer's stable sort.
+
+    Under ``ordito.config``'s deterministic mode ``(sorted_vertices, corner_order)``, the sort
+    ``kernels/scatter.sum_sorted_corner_values`` adds each vertex's corner terms over in ascending
+    corner order, so a call returns the same bits on every run; otherwise ``None``, which selects
+    the kernels' atomic per-face scatter. Kept for ``solver``'s lifetime once built, like its
+    operators: it depends on the faces alone.
+    """
+    if not is_deterministic():
+        return None
+    order = _CORNER_ORDERS.get(solver)
+    if order is None:
+        faces = mesh.faces
+        order = _CORNER_ORDERS[solver] = od.array.sort_and_argsort(
+            faces, end_bit=max(1, (mesh.vertices.size - 1).bit_length())
+        )
+    return order
+
+
+def _corner_outputs(
+    order: _CornerOrder, n_vertices: int, n_faces: int, dtype: type[_T], device: wp.DeviceLike
+) -> tuple[wp.array[_T], odt.ArrayNd | None]:
+    """
+    Allocate the per-vertex sums a face kernel fills and its corner table, as `_corner_order` chose.
+
+    Atomic: a zeroed ``(n_vertices,)`` sum and no table (``None`` launches as an empty array).
+    Ordered: an ``(n_faces, 3)`` table for the face kernel to store into and the sum for
+    `_sum_corner_outputs` to write.
+    """
+    if order is None:
+        return _launch.zeros(n_vertices, dtype=dtype, device=device), None
+    sums = _launch.empty(n_vertices, dtype=dtype, device=device)
+    return sums, odt.empty_2d((n_faces, 3), dtype, device=device)
+
+
+def _sum_corner_outputs(
+    order: _CornerOrder, corners: odt.ArrayNd | None, out_sums: wp.array[Any]
+) -> None:
+    """Add each vertex's corner values in ascending corner order, when `_corner_order` chose to."""
+    if order is None or corners is None:
+        return
+    sorted_vertices, corner_order = order
+    empty = _launch.empty(0, dtype=wp.int32, device=out_sums.device)
+    _launch.launch(
+        kernel_scatter.SUM_SORTED_CORNER_VALUES[out_sums.dtype],
+        dim=out_sums.size,
+        inputs=[sorted_vertices, corner_order, corners],
+        outputs=[out_sums, empty, empty],
+        device=out_sums.device,
+    )
 
 
 def _stacked_fields(
