@@ -185,6 +185,7 @@ def compact_submesh(
     # Both halves of the extraction in one launch over ``max(n_faces, n_vertices)`` threads: thread
     # ``t`` compacts face ``t`` and vertex ``t`` where each exists. The two halves read the same
     # finished scan and write disjoint outputs, so nothing orders them.
+    # ``out_vertex_index`` is optional (``None``), as in ``compact_indexed_submesh``.
     t = wp.int32(wp.tid())
     n_faces = face_mask.shape[0]
     offset = ranks[n_faces - 1] + 1
@@ -202,7 +203,8 @@ def compact_submesh(
         if rank != ranks[n_faces + t - 1]:
             slot = rank - offset
             out_vertices[slot] = vertices[t]
-            out_vertex_index[slot] = t
+            if out_vertex_index.shape[0] > 0:
+                out_vertex_index[slot] = t
 
 
 @wp.func
@@ -226,6 +228,24 @@ def face_selected_by_vertices(
     if require_all:
         return hit_a and hit_b and hit_c
     return hit_a or hit_b or hit_c
+
+
+@wp.kernel
+def mark_submesh_by_vertex_mask(
+    faces: wp.array[wp.int32],
+    vertex_mask: wp.array[wp.bool],
+    require_all: wp.bool,
+    out_face_mask: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``face_mask_from_vertex_mask`` and ``mark_submesh_faces_and_vertices`` (``keep_masked``
+    # true) in one pass: the face's selection is decided from its corners, stored for the
+    # compaction, and a selected face is flagged with its vertices in the zeroed rank buffer.
+    f = wp.int32(wp.tid())
+    selected = face_selected_by_vertices(faces, vertex_mask, require_all, f)
+    out_face_mask[f] = selected
+    if selected:
+        mark_submesh_face(faces, out_face_mask.shape[0], f, out_flags)
 
 
 @wp.kernel

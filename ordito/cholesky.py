@@ -701,14 +701,7 @@ class _Plan:
         _launch.launch(
             kernel_cholesky.schedule_work,
             dim=n_sn,
-            inputs=[level_nodes, s.ncol, self.front_size, s.height, wp.int32(n_levels)],
-            outputs=[schedule],
-            device=device,
-        )
-        _launch.launch(
-            kernel_cholesky.schedule_groups,
-            dim=n_sn,
-            inputs=[groups, wp.int32(n_levels)],
+            inputs=[level_nodes, s.ncol, self.front_size, s.height, groups, wp.int32(n_levels)],
             outputs=[schedule],
             device=device,
         )
@@ -1225,18 +1218,21 @@ class _Solve:
         self.key = (n_columns, tol, componentwise)
         self.plan, self.numeric, self.matrix, self.n_columns = plan, numeric, matrix, n_columns
         self.tol, self.componentwise = tol, componentwise
-        self.rhs = _launch.zeros(total, dtype=wp.float64, device=device)
-        self.solution = _launch.zeros(total, dtype=wp.float64, device=device)
-        self.initial = _launch.zeros(total, dtype=wp.float64, device=device)
-        self.residual = _launch.zeros(total, dtype=wp.float64, device=device)
-        self.rhs_scale = _launch.zeros(n_columns, dtype=wp.float64, device=device)
+        # Written before any read: ``run`` copies in ``rhs`` and ``initial``, ``_body`` zeroes
+        # ``rhs_scale``, ``refine_start`` writes all of ``solution`` and the state, and every
+        # ``residual_test`` all of ``residual``.
+        self.rhs = _launch.empty(total, dtype=wp.float64, device=device)
+        self.solution = _launch.empty(total, dtype=wp.float64, device=device)
+        self.initial = _launch.empty(total, dtype=wp.float64, device=device)
+        self.residual = _launch.empty(total, dtype=wp.float64, device=device)
+        self.rhs_scale = _launch.empty(n_columns, dtype=wp.float64, device=device)
         self.null_space_partials = _launch.empty(
             max(plan.chunk_bound * n_columns, 1), dtype=wp.float64, device=device
         )
         self.null_space_means = _launch.empty(
             max(plan.n_components * n_columns, 1), dtype=wp.float64, device=device
         )
-        self.state = _launch.zeros(3, dtype=wp.int32, device=device)
+        self.state = _launch.empty(3, dtype=wp.int32, device=device)
         # ``wp.capture_while`` reads the condition slot, the state's first.
         self.condition = cast("wp.array[int]", self.state[0:1])
         self.work = _Work(
@@ -1811,6 +1807,8 @@ def _landmark_coordinates(
     search = record_device_loop(device, odt.as_dense(state[0:1]), level_round)
     # The first search, from each component's lowest row, finds the first landmark; each later
     # one is the row farthest from the landmarks so far (by the nearer of the last two).
+    # Each search's distances become a coordinate in the launch that reads them for the next
+    # seed (``farthest_rows``), and the last search's in one of their own after the loop.
     for axis, (a, b) in enumerate(((None, None), (0, 0), (0, 0), (0, 1))):
         if a is None or b is None:
             seed_inputs = [key, size, first, wp.int32(CHOLESKY_LEAF_ROWS), wp.int32(1)]
@@ -1819,8 +1817,8 @@ def _landmark_coordinates(
             _launch.launch(
                 kernel_cholesky.farthest_rows,
                 dim=n,
-                inputs=[labels, axes[:, a], axes[:, b]],
-                outputs=[key],
+                inputs=[labels, distance, axes[:, a], axes[:, b], wp.int32(1), wp.int32(1)],
+                outputs=[axes[:, max(axis - 2, 0)], key],
                 device=device,
             )
             seed_inputs = [key, size, first, wp.int32(CHOLESKY_LEAF_ROWS), wp.int32(0)]
@@ -1839,13 +1837,13 @@ def _landmark_coordinates(
             device=device,
         )
         search()
-        _launch.launch(
-            kernel_cholesky.store_distance,
-            dim=n,
-            inputs=[distance],
-            outputs=[axes[:, max(axis - 1, 0)]],
-            device=device,
-        )
+    _launch.launch(
+        kernel_cholesky.farthest_rows,
+        dim=n,
+        inputs=[labels, distance, None, None, wp.int32(1), wp.int32(0)],
+        outputs=[axes[:, 2], None],
+        device=device,
+    )
     return coordinates
 
 

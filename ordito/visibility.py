@@ -44,6 +44,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.bounds import enclosing_diagonal
+from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import visibility as kernel_visibility
 from ordito.proximity import ITEMS_PER_QUERY_SLICE, normals_at_closest_faces
@@ -683,18 +684,6 @@ def max_tangent_sphere(
             _launch.empty(0, dtype=wp.vec3, device=device),
             _launch.empty(0, dtype=wp.float32, device=device),
         )
-    # Every ray-bundle measure in this module normalizes defensively per-thread (see
-    # `hemisphere_frame`); this path shrinks a sphere along `normals` directly with no such guard,
-    # so a caller-supplied non-unit normal silently scales `sphere_center`'s radius away from what
-    # `step_sphere_shrink`'s own convergence test expects. One `wp.map` fixes it for the whole
-    # iterative loop; `normals_at_closest_faces`'s own output is already unit, so this is a no-op
-    # there, but cheap enough not to special-case.
-    # The sign for ``inwards`` rides in the same map (``ray_direction``), which is exact.
-    ray_dirs = _launch.empty(m, dtype=wp.vec3, device=device)
-    _launch.map(
-        kernel_visibility.ray_direction, normals, wp.float32(-1.0 if inwards else 1.0), out=ray_dirs
-    )
-
     # ``max_t`` needs the box enclosing the mesh *and* the queries, while the convergence threshold
     # is a fraction of the mesh's own diagonal. Both boxes reduce into one twelve-slot corner
     # buffer (``minmax_vec3_chunked``'s packing, the mesh's first and the queries' second) in one
@@ -723,19 +712,43 @@ def max_tangent_sphere(
     max_t = math.dist(union_lower, union_upper)
     mesh_diagonal = math.dist(mesh_lower, mesh_upper)
 
-    distances = od.ray.longest_ray(mesh, points, ray_dirs, max_t=max_t)
-
+    # Every ray-bundle measure in this module normalizes defensively per-thread (see
+    # `hemisphere_frame`); this path shrinks a sphere along the ray direction directly with no such
+    # guard, so a caller-supplied non-unit normal would silently scale `sphere_center`'s radius away
+    # from what `step_sphere_shrink`'s own convergence test expects. The seed kernel normalizes it
+    # (``ray_direction``, with the sign for ``inwards``, exact), casts the longest ray along it
+    # (``ray.longest_ray``'s walk at its default ``planar_tol``) and seeds the sphere, writing the
+    # direction for the passes below.
+    #
+    # Slot ``r`` of ``n_not_converged`` is the not-converged count after round ``r - 1``,
+    # accumulated by the step kernel itself, so each round's test is one 4-byte read with no
+    # reduction launch in front of it. Slot 0 is the seed's count, accumulated by the two seed
+    # kernels.
+    n_not_converged = _launch.zeros(max_iter + 1, dtype=wp.int32, device=device)
     n_verts = mesh.points.size
+    ray_dirs = _launch.empty(m, dtype=wp.vec3, device=device)
     radii = _launch.empty(m, dtype=wp.float32, device=device)
     not_converged = _launch.empty(m, dtype=wp.bool, device=device)
     needs_support = _launch.empty(m, dtype=wp.bool, device=device)
     centers = _launch.empty(m, dtype=wp.vec3, device=device)
-    _launch.map(
-        kernel_visibility.init_sphere_radii_finite,
-        distances,
-        points,
-        ray_dirs,
-        out=[radii, not_converged, needs_support, centers],
+    _launch.launch(
+        kernel_visibility.init_tangent_spheres,
+        dim=m,
+        inputs=[
+            wp.uint64(mesh.id),
+            points,
+            normals,
+            wp.float32(-1.0 if inwards else 1.0),
+            wp.float32(max_t),
+            wp.float32(TOLERANCE_PLANAR),
+            ray_dirs,
+            radii,
+            not_converged,
+            needs_support,
+            centers,
+            n_not_converged,
+        ],
+        device=device,
     )
     # Escaped rays (typically exterior/reach queries) need the support point of the vertex
     # cloud in the ray direction. Compact them first — interior queries usually leave the
@@ -772,6 +785,7 @@ def max_tangent_sphere(
                 radii,
                 not_converged,
                 centers,
+                n_not_converged,
             ],
             device=device,
         )
@@ -785,16 +799,10 @@ def max_tangent_sphere(
     new_radii = _launch.empty(m, dtype=wp.float32, device=device)
     new_centers = _launch.empty(m, dtype=wp.vec3, device=device)
     new_nc = _launch.empty(m, dtype=wp.bool, device=device)
-    # Slot ``r`` is the not-converged count after round ``r - 1``, accumulated by the step kernel
-    # itself, so each round's test is one 4-byte read with no reduction launch in front of it.
-    # Slot 0 is the seed's count, the one reduction the loop still needs.
-    n_not_converged = _launch.zeros(max_iter + 1, dtype=wp.int32, device=device)
-    n_active = od.reduce.sum(not_converged)
 
     for round_index in range(max_iter):
-        if round_index > 0:
-            n_active = int(read_scalar(n_not_converged, round_index))
-        if n_active == 0:
+        # Host readback: whether any sphere is still shrinking decides whether to launch a round.
+        if int(read_scalar(n_not_converged, round_index)) == 0:
             break
 
         _launch.launch(

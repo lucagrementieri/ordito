@@ -204,30 +204,25 @@ def voxelize_mesh(
     if n_faces == 0:
         return _empty_grid(voxel_size, origin, device)
 
-    # The exact counts go straight into the tail of the ``n_faces + 1`` offsets buffer and are
-    # scanned in place before the budget is read, so the budget's readback drains the scan too and
-    # the total is a second read off an idle queue rather than a second pipeline drain.
-    offsets = _launch.zeros(n_faces + 1, dtype=wp.int32, device=device)
+    # The counts go straight into the tail of the ``n_faces + 1`` offsets buffer and are scanned in
+    # place, in int64: each count saturates just past the budget, so the scanned total is exact
+    # whenever it is within the budget and over it otherwise, for any ``voxel_size``.
+    offsets = _launch.zeros(n_faces + 1, dtype=wp.int64, device=device)
     counts = odt.as_dense(offsets[1:])
-    counts_f32 = _launch.empty(n_faces, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_voxels.count_triangle_candidates,
         dim=n_faces,
-        inputs=[vertices, faces, origin, wp.float32(1.0 / voxel_size), counts, counts_f32],
+        inputs=[vertices, faces, origin, wp.float32(1.0 / voxel_size), max_candidates + 1, counts],
         device=device,
     )
     _launch.array_scan(counts, counts, inclusive=True)
-    # The budget check runs on the float32 copy: the exact count can overflow ``int32`` for an
-    # absurd voxel_size, and the whole point of the guard is to catch exactly that case before the
-    # scanned total is trusted (a wrapped scan above is harmless: it is discarded with the raise).
-    approximate_total = od.reduce.sum(counts_f32)
-    if approximate_total > float(max_candidates):
+    total = int(read_scalar(offsets, index=-1))  # checks the budget and sizes the candidate launch
+    if total > max_candidates:
         raise ValueError(
-            f"voxelize_mesh would test {approximate_total:.3g} (triangle, cell) pairs, above "
-            f"max_candidates={max_candidates}: voxel_size={voxel_size:.6g} is too small for this "
-            "mesh (the count grows as its reciprocal cubed)"
+            f"voxelize_mesh would test more than max_candidates={max_candidates} (triangle, cell) "
+            f"pairs: voxel_size={voxel_size:.6g} is too small for this mesh (the count grows as "
+            "its reciprocal cubed)"
         )
-    total = int(read_scalar(offsets, index=-1))  # sizes the candidate launch
     if total == 0:
         return _empty_grid(voxel_size, origin, device)
 
@@ -789,14 +784,15 @@ def cells(grid: wp.Volume, *, order: Literal["grid", "sorted"] = "grid") -> odt.
     # The corner pair stays on the device: ``pack_cell_keys`` derives the per-axis shift and the
     # radix from these two three-element buffers itself, so this whole stage is readback-free.
     lower, upper = od.reduce.minmax(rows, axis=0)
-    keys = _launch.empty(n_voxels, dtype=wp.uint64, device=grid.device)
+    keys = _launch.empty(2 * n_voxels, dtype=wp.uint64, device=grid.device)
+    payload = _launch.empty(2 * n_voxels, dtype=wp.int32, device=grid.device)
     _launch.launch(
         kernel_voxels.pack_cell_keys,
         dim=n_voxels,
-        inputs=[rows, lower, upper, keys],
+        inputs=[rows, lower, upper, keys, payload],
         device=grid.device,
     )
-    _sorted_keys, permutation = od.array.sort_and_argsort(keys)
+    _sorted_keys, permutation = od.array.sort_and_argsort_in_place(keys, payload)
     return odt.as_array2d(od.array.gather(rows, permutation), wp.int32)
 
 
@@ -1702,16 +1698,22 @@ def union(a: wp.Volume, b: wp.Volume) -> wp.Volume:
     """
     require_same_device(a=a, b=b)
     voxel_size, origin = _require_same_lattice(a, b, caller="union")
-    rows_a = cells(a)
-    rows_b = cells(b)
-    n_a = int(rows_a.shape[0])
-    n_b = int(rows_b.shape[0])
-    both = odt.empty_2d((n_a + n_b, 3), wp.int32, device=rows_a.device)
+    n_a = _voxel_count(a)
+    n_b = _voxel_count(b)
+    if n_a + n_b == 0:
+        return _empty_grid(voxel_size, origin, a.device)
+    # Both cell lists are read straight into one buffer. ``get_voxels`` writes its grid's whole
+    # capacity, the active voxels first and padding rows after them (see ``cells``), so ``b`` is
+    # read in after ``a``'s active rows, over ``a``'s padding, and the result ends at ``b``'s last
+    # active row.
+    capacity_a = a.get_voxel_count() if n_a > 0 else 0
+    capacity_b = b.get_voxel_count() if n_b > 0 else 0
+    both = odt.empty_2d((max(capacity_a, n_a + capacity_b), 3), wp.int32, device=a.device)
     if n_a > 0:
-        _launch.copy(both[:n_a], rows_a)
+        a.get_voxels(out=cast("wp.array[wp.int32]", both))
     if n_b > 0:
-        _launch.copy(both[n_a:], rows_b)
-    return from_cells(both, voxel_size, origin)
+        b.get_voxels(out=cast("wp.array[wp.int32]", both[n_a:]))
+    return from_cells(odt.as_array2d(odt.as_dense(both[: n_a + n_b]), wp.int32), voxel_size, origin)
 
 
 def intersection(a: wp.Volume, b: wp.Volume) -> wp.Volume:
@@ -2293,10 +2295,11 @@ def erode(
     voxel_size, origin = grid_transform(grid)
     _check_iterations(connectivity, iterations)
     for _ in range(iterations):
-        interior = _interior_flags(grid, connectivity)
+        voxels = cells(grid)
+        interior = _interior_flags(grid, voxels, connectivity)
         if interior is None:
             return _empty_grid(voxel_size, origin, grid.device)
-        grid = _grid_from_flagged_cells(grid, interior)
+        grid = _allocate_masked(voxels, interior, voxel_size, origin)
     return grid
 
 
@@ -2493,10 +2496,11 @@ def surface_voxels(grid: wp.Volume, *, connectivity: Literal[6, 18, 26] = 6) -> 
     voxel_size, origin = grid_transform(grid)
     # ``interior=False`` asks the neighbourhood kernel for the complement it already computes,
     # rather than launching a second pass to negate the flags it just wrote.
-    boundary = _interior_flags(grid, connectivity, interior=False)
+    voxels = cells(grid)
+    boundary = _interior_flags(grid, voxels, connectivity, interior=False)
     if boundary is None:
         return _empty_grid(voxel_size, origin, grid.device)
-    return _grid_from_flagged_cells(grid, boundary)
+    return _allocate_masked(voxels, boundary, voxel_size, origin)
 
 
 def to_dense(
@@ -2815,13 +2819,13 @@ def to_boxes(
     """
     _require_index_grid(grid)
     device = grid.device
-    corner_cells, cell_corners = voxel_corners(grid)
+    voxels = cells(grid)
+    corner_cells, cell_corners = _voxel_corners(grid, voxels)
     n_corners = int(corner_cells.shape[0])
     n_voxels = int(cell_corners.shape[0])
     vertices = _launch.empty(n_corners, dtype=wp.vec3, device=device)
     if n_voxels == 0:
         return vertices, _launch.empty(0, dtype=wp.int32, device=device)
-    voxels = cells(grid)
     neighbors = _face_neighbors(device)
     counts = _launch.empty(n_voxels, dtype=wp.int32, device=device)
     # The corner positions ride the face-count launch.
@@ -2918,8 +2922,14 @@ def voxel_corners(grid: wp.Volume) -> tuple[odt.Array2dInt32, odt.Array2dInt32]:
     ```
     """
     _require_index_grid(grid)
+    return _voxel_corners(grid, cells(grid))
+
+
+def _voxel_corners(
+    grid: wp.Volume, voxels: odt.Array2dInt32
+) -> tuple[odt.Array2dInt32, odt.Array2dInt32]:
+    """[`voxel_corners`][ordito.voxels.voxel_corners] of ``grid``, whose cells are ``voxels``."""
     device = grid.device
-    voxels = cells(grid)
     n_voxels = int(voxels.shape[0])
     if n_voxels == 0:
         return odt.empty_2d((0, 3), wp.int32, device=device), odt.empty_2d(
@@ -3136,17 +3146,17 @@ def _check_iterations(connectivity: int, iterations: int) -> None:
 
 
 def _interior_flags(
-    grid: wp.Volume, connectivity: int, *, interior: bool = True
+    grid: wp.Volume, voxels: odt.Array2dInt32, connectivity: int, *, interior: bool = True
 ) -> wp.array[wp.int32] | None:
     """
-    Per-voxel 1 / 0 flag: is the whole neighbourhood occupied? ``None`` for an empty grid.
+    Per-voxel 1 / 0 flag over ``grid``'s cells ``voxels``: is each whole neighbourhood occupied.
 
-    ``interior=False`` returns the complement -- the surface set -- which the kernel writes
-    directly, so the two callers differ by a selector rather than by a pass.
+    ``None`` for an empty grid. ``interior=False`` returns the complement -- the surface set --
+    which the kernel writes directly, so the two callers differ by a selector rather than by a
+    pass.
     """
     if connectivity not in _CONNECTIVITY_RANK:
         raise ValueError(f"connectivity must be 6, 18 or 26, got {connectivity!r}")
-    voxels = cells(grid)
     n_voxels = int(voxels.shape[0])
     if n_voxels == 0:
         return None
@@ -3164,12 +3174,6 @@ def _interior_flags(
         device=grid.device,
     )
     return flags
-
-
-def _grid_from_flagged_cells(grid: wp.Volume, flags: wp.array[wp.int32]) -> wp.Volume:
-    """Rebuild ``grid`` keeping only the voxels whose flag is non-zero."""
-    voxel_size, origin = grid_transform(grid)
-    return _allocate_masked(cells(grid), flags, voxel_size, origin)
 
 
 def _stencil(connectivity: int, device: wp.DeviceLike, *, include_self: bool) -> odt.Array2dInt32:

@@ -36,6 +36,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
 from ordito.kernels import seams as kernel_seams
+from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
 # Whether the seam predicate compares coordinates rather than texcoord indices. A lookup rather than
 # a chain of comparisons so an unrecognised mode cannot fall into a mode -- but the *membership*
@@ -287,7 +288,7 @@ def cut_along_edges(
     roots = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     root_ranks = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_seams.corner_roots,
+        kernel_connected_components.ecl_flatten_root_flags,
         dim=n_halfedges,
         inputs=[parents, roots, root_ranks],
         device=device,

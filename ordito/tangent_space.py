@@ -377,19 +377,26 @@ def halfedge_transport_angles(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, twins=twins, tangent_angles=tangent_angles)
-    require_matching_twins(faces, twins)
     device = vertices.device
     n_halfedges = faces.size // 3 * 3
+    if tangent_angles is not None or n_halfedges == 0:
+        # Otherwise ``vertex_one_rings`` below checks a supplied table with its own readback.
+        require_matching_twins(faces, twins)
     rho = _launch.empty(n_halfedges, dtype=wp.float32, device=device)
     if n_halfedges == 0:
         return rho
 
     n = vertices.size
-    if twins is None:
-        twins = halfedge_twins(faces, n_vertices=n)
     if tangent_angles is None:
-        rings = vertex_one_rings(faces, twins=twins, n_vertices=n)
-        tangent_angles = halfedge_tangent_angles(vertices, faces, rings=rings)
+        # The rings and the twins they are walked over come back together, for one readback.
+        ring_halfedges, ring_offsets, is_boundary, twins = vertex_one_rings(
+            faces, twins=twins, n_vertices=n, return_twins=True
+        )
+        tangent_angles = halfedge_tangent_angles(
+            vertices, faces, rings=(ring_halfedges, ring_offsets, is_boundary)
+        )
+    elif twins is None:
+        twins = halfedge_twins(faces, n_vertices=n)
 
     _launch.launch(
         kernel_tangent_space.halfedge_transport_angles,

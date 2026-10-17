@@ -902,7 +902,7 @@ def allclose(
 
 
 def sort_and_argsort(
-    keys: _SortableArrayT, *, fill_value: int = -1
+    keys: _SortableArrayT, *, fill_value: int = -1, end_bit: int | None = None
 ) -> tuple[_SortableArrayT, wp.array[wp.int32]]:
     """
     Ascending sort of ``keys`` together with the permutation that produced it.
@@ -921,8 +921,12 @@ def sort_and_argsort(
         ``(n,)`` sort keys (any radix-sortable scalar dtype; see
         [`sortable_dtype`][ordito.typing.sortable_dtype] for which those are).
     fill_value
-        Padding written into the upper half of the payload buffer, where the sort's scratch lives.
-        Only matters to callers that read past ``n``.
+        Has no effect: the upper half of the payload buffer is the sort's scratch, which the sort
+        overwrites, and the returned views end at ``n``.
+    end_bit
+        Exclusive upper bound on the key bits the radix sort orders, for integer keys known to be
+        non-negative and below ``2**end_bit`` (a face id below ``n_faces`` needs
+        ``(n_faces - 1).bit_length()`` bits). ``None`` sorts the whole key width.
 
     Returns
     -------
@@ -945,8 +949,9 @@ def sort_and_argsort(
 
     See Also
     --------
+    [`sort_and_argsort_in_place`][ordito.array.sort_and_argsort_in_place]
+        The same sort over buffers a producer kernel has already written.
     [`sort_rows`][ordito.array.sort_rows]
-    [`sort_pair_indices`][ordito.array.sort_pair_indices]
     [`sortable_dtype`][ordito.typing.sortable_dtype]
 
     Examples
@@ -965,14 +970,103 @@ def sort_and_argsort(
     print(order.numpy().tolist())  # [1, 3, 2, 0]
     ```
     """
+    del fill_value  # the payload's upper half is sort scratch: nothing reads a padding there
     device = keys.device
     n = keys.size
     if n == 0:
         return keys, _launch.empty(0, dtype=wp.int32, device=device)
     keys_buffer = _launch.empty(2 * n, dtype=keys.dtype, device=device)
-    _launch.copy(keys_buffer, keys, count=n)
-    order_buffer = sort_pair_indices(n, fill_value, device)
-    _launch.radix_sort_pairs(keys_buffer, order_buffer, count=n)
+    order_buffer = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    # The keys and the identity payload into the sort's leading halves in one launch.
+    _launch.launch(
+        kernel_array.KEYS_AND_IDENTITY[keys.dtype],
+        dim=n,
+        inputs=[keys, keys_buffer, order_buffer],
+        device=device,
+    )
+    sorted_keys, order = sort_and_argsort_in_place(keys_buffer, order_buffer, end_bit=end_bit)
+    return cast(_SortableArrayT, sorted_keys), order
+
+
+def sort_and_argsort_in_place(
+    keys_buffer: _SortableArrayT, order_buffer: wp.array[wp.int32], *, end_bit: int | None = None
+) -> tuple[_SortableArrayT, wp.array[wp.int32]]:
+    """
+    Ascending sort of keys a producer wrote into a radix sort's buffers, with its permutation.
+
+    [`sort_and_argsort`][ordito.array.sort_and_argsort] for a caller whose own kernel computes the
+    keys: it writes them, and the identity permutation, straight into the leading halves of the
+    double-width buffers ``warp.utils.radix_sort_pairs`` sorts in, so the keys are never copied
+    into the sort's buffer. Allocate both buffers with ``wp.empty``-style storage: the upper halves
+    are the sort's scratch and need no initial value.
+
+    Parameters
+    ----------
+    keys_buffer
+        ``(2 * n,)`` buffer whose first ``n`` entries are the sort keys (any dtype Warp's radix
+        sort orders: ``int32``, ``uint32``, ``int64``, ``uint64``, ``float32``, ``float64``).
+        Sorted in place.
+    order_buffer
+        ``(2 * n,)`` ``int32`` buffer whose first ``n`` entries are the payload the sort carries,
+        usually ``0, 1, ..., n - 1``. Permuted in place.
+    end_bit
+        Exclusive upper bound on the key bits the radix sort orders, for integer keys known to be
+        non-negative and below ``2**end_bit``. ``None`` sorts the whole key width.
+
+    Returns
+    -------
+    sorted_keys : wp.array
+        ``(n,)`` view of the ascending keys: the leading half of ``keys_buffer``.
+    order : wp.array[wp.int32]
+        ``(n,)`` view of the payload in sorted order: the leading half of ``order_buffer``.
+
+    Raises
+    ------
+    ValueError
+        If the buffers are not both rank-1 of one even length.
+    RuntimeError
+        If ``keys_buffer`` and ``order_buffer`` are not on one device.
+
+    Notes
+    -----
+    Stable, like [`sort_and_argsort`][ordito.array.sort_and_argsort]: equal keys keep their payload
+    order.
+
+    See Also
+    --------
+    [`sort_and_argsort`][ordito.array.sort_and_argsort]
+        The same sort of an existing key array.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    keys_buffer = wp.array([3, 1, 2, 1, 0, 0, 0, 0], dtype=wp.int32)
+    order_buffer = wp.array([0, 1, 2, 3, 0, 0, 0, 0], dtype=wp.int32)
+    sorted_keys, order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
+    print(sorted_keys.numpy().tolist())  # [1, 1, 2, 3]
+    print(order.numpy().tolist())  # [1, 3, 2, 0]
+    ```
+    """
+    require_same_device(keys_buffer=keys_buffer, order_buffer=order_buffer)
+    n2 = keys_buffer.size
+    if (
+        int(keys_buffer.ndim) != 1
+        or int(order_buffer.ndim) != 1
+        or n2 % 2
+        or order_buffer.size != n2
+    ):
+        raise ValueError(
+            "sort_and_argsort_in_place requires rank-1 key and order buffers of one even length, "
+            f"got {tuple(keys_buffer.shape)} and {tuple(order_buffer.shape)}"
+        )
+    n = n2 // 2
+    if n == 0:
+        return keys_buffer, order_buffer
+    _launch.radix_sort_pairs(keys_buffer, order_buffer, count=n, end_bit=end_bit)
     return cast(_SortableArrayT, odt.as_dense(keys_buffer[:n])), odt.as_dense(order_buffer[:n])
 
 
@@ -1049,7 +1143,9 @@ def sort_rows(data: odt.Array2dInt32 | odt.Array2dFloat32) -> None:
         _launch.empty(n * 2, dtype=data.dtype, device=data.device),
     )
     _launch.copy(data_buffer, data, count=n)
-    indices_buffer = sort_pair_indices(n, -1, data.device)
+    # The payload is never read: only the keys come back. Its lower half needs no identity and its
+    # upper half is sort scratch.
+    indices_buffer = _launch.empty(2 * n, dtype=wp.int32, device=data.device)
     segment_start_indices = arange(0, (n // n_cols + 1) * n_cols, n_cols, device=data.device)
     wp.utils.segmented_sort_pairs(
         data_buffer, indices_buffer, n, segment_start_indices=segment_start_indices
@@ -2029,13 +2125,12 @@ def _sorted_copy(values: _ArrayT) -> _ArrayT:
     """
     Ascending-sorted copy of a 1D scalar array.
 
-    ``sort_and_argsort`` returns a *view* into its own scratch and this outlives the caller's
-    frame, so the keys are cloned. The order payload is discarded, which is why the padding value
-    it seeds does not matter here.
+    The copy is ``sort_and_argsort``'s view of its own key buffer, which the view keeps alive; both
+    callers read it once and drop it, so it is not cloned out of the double-width buffer.
     """
     if values.size <= 1:
         return values
-    return _launch.clone(sort_and_argsort(values)[0])
+    return sort_and_argsort(values)[0]
 
 
 def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.int32]:
@@ -2475,15 +2570,14 @@ def mask_to_compact_ranks(
     n = mask.size
     if n == 0:
         return _launch.zeros(0, dtype=wp.int32, device=device), 0
-    # The flags are written straight into the tail of the ``n + 1`` offsets buffer and scanned
-    # there in place, so the separate flag buffer ``counts_to_offsets`` would take them from is
-    # never allocated.
-    buffer = _launch.zeros(n + 1, dtype=wp.int32, device=device)
+    # The flags are written straight into the tail of the ``n + 1`` offsets buffer, with its
+    # leading zero, and scanned there in place, so the separate flag buffer ``counts_to_offsets``
+    # would take them from is never allocated.
+    buffer = _launch.empty(n + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_array.mask_rank_flags, dim=n, inputs=[mask, bool(invert), buffer], device=device
+    )
     flags = odt.as_dense(buffer[1:])
-    if invert:
-        _launch.map(kernel_array.complement_flag, mask, out=flags)
-    else:
-        _launch.launch(kernel_array.bool_flags, dim=n, inputs=[mask, flags], device=device)
     return odt.as_dense(buffer[:n]), _scan_into_tail(buffer, flags, flags)
 
 

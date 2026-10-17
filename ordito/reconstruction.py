@@ -2031,7 +2031,13 @@ def ball_pivoting(
     _bpa_run(state, max_waves if max_waves > 0 else 16 * n)
 
     count = int(read_scalar(state.counters, kernel_bpa.CNT_FACE))
-    faces = _launch.clone(odt.as_dense(state.all_faces[: count * 3]))
+    # A prefix view, not a copy: nothing writes the face buffer after the run, and the cleanup
+    # below returns faces of its own, so the view never reaches the caller.
+    faces = (
+        odt.as_dense(state.all_faces[: count * 3])
+        if count > 0
+        else _launch.empty(0, dtype=wp.int32, device=device)
+    )
     # Orientation is not re-derived (``orient=False``): every triangle is already wound from the
     # normals, and ``make_normals_outward`` would rewind an inward-normal cloud's mesh outward.
     return _clean_reconstruction(points, faces, crit_hole_length, orient=False)

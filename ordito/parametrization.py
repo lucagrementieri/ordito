@@ -37,8 +37,9 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._device import read_scalar, require_same_device
 from ordito.kernels import parametrization as kernel_parametrization
+from ordito.kernels import scatter as kernel_scatter
 from ordito.laplacian import cotmatrix, cotmatrix_entries, graph_laplacian, mass_matrix_entries
 from ordito.mesh import Trimesh, mesh_arguments
 
@@ -177,7 +178,31 @@ def face_flipped_indices(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    return od.array.flatnonzero(face_flipped_mask(vertices, faces))
+    device = vertices.device
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        return _launch.empty(0, dtype=wp.int32, device=device)
+    # ``flatnonzero`` of the mask, with the flags written straight into the buffer they are scanned
+    # in: no bool mask between them.
+    inclusive = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_parametrization.face_flipped_flags,
+        dim=n_faces,
+        inputs=[vertices, faces, inclusive],
+        device=device,
+    )
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    # Sizes the output.
+    n_flipped = int(read_scalar(inclusive))
+    out_indices = _launch.empty(n_flipped, dtype=wp.int32, device=device)
+    if n_flipped > 0:
+        _launch.launch(
+            kernel_scatter.scatter_index_where_scanned,
+            dim=n_faces,
+            inputs=[inclusive, out_indices],
+            device=device,
+        )
+    return out_indices
 
 
 def map_vertices_to_circle(
@@ -252,12 +277,12 @@ def map_vertices_to_circle(
         inputs=[boundary, vertices, segment_lengths],
         device=device,
     )
-    cumulative = _launch.empty(n_boundary, dtype=wp.float32, device=device)
-    _launch.array_scan(segment_lengths, out_array=cumulative, inclusive=True)
+    # Scanned in place: the lengths are read only through their running sum.
+    _launch.array_scan(segment_lengths, out_array=segment_lengths, inclusive=True)
     _launch.launch(
         kernel_parametrization.circle_positions,
         dim=n_boundary,
-        inputs=[boundary, vertices, cumulative, out_uv],
+        inputs=[boundary, vertices, segment_lengths, out_uv],
         device=device,
     )
     return out_uv

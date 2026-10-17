@@ -41,14 +41,12 @@ from ordito import _launch
 from ordito._device import (
     prefers_tiled_reduction,
     read_scalar,
-    read_values,
     require_nonempty_mesh,
     require_same_device,
 )
 from ordito.constants import INT32_MAX, INT64_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import edges as kernel_edges
-from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import triangles as kernel_triangles
@@ -119,6 +117,10 @@ _SEED_SAMPLE_TARGET = 1024
 # the same ``wp.tile_bvh_query_aabb`` walk.
 _QUERY_TILE_WIDTH = 32
 
+# Persistent blocks per multiprocessor for that second pass, which claims stragglers from a device
+# counter instead of launching one block per straggler sized by a readback.
+_STRAGGLER_BLOCKS_PER_SM = 16
+
 # Ray-origin offset *below* the surface along the inward normal, as a fraction of the query AABB
 # diagonal: without it the cone's own starting triangle is the nearest hit for every ray.
 _SDF_SURFACE_OFFSET = 1e-4
@@ -128,7 +130,7 @@ _SDF_SURFACE_OFFSET = 1e-4
 # containment. The radius only has to exceed the float32 rounding of a closest-point query on a flat
 # mesh, and being generous costs only BVH descent on queries that land outside; the sign test
 # classifies, so the two are not a precision trade-off.
-_CONTAINMENT_SEARCH_SCALE = 1e-3
+_CONTAINMENT_SEARCH_SCALE = wp.float32(1e-3)
 _CONTAINMENT_BARYCENTRIC_EPS = wp.float32(1e-6)
 
 
@@ -369,29 +371,20 @@ def closest_point_on_edges(
         )
         bvh = od.neighbors.bvh_from_bounds(lower, upper)
     # The scene box bounds each query's *complete* search radius, so a query outside the geometry
-    # still terminates exactly rather than growing to ``max_dist``.
-    if max_dist is None:
-        # ``enclosing_diagonal(vertices, queries)`` and the scene box in one launch and one
-        # readback: both boxes reduce into one twelve-slot corner buffer (``vertices`` first,
-        # ``queries`` second; slots 3..5 and 9..11 the negated upper corners), as
-        # ``visibility.max_tangent_sphere`` does. The union and the norm are taken in float32
-        # NumPy, exactly as ``enclosing_diagonal`` takes them, so the radius is the same float.
-        corners_wp = _launch.full(12, math.inf, dtype=wp.float32, device=device)
-        _launch.launch(
-            kernel_reduce.minmax_vec3_pair_chunked,
-            dim=kernel_reduce.chunks_1d(vertices.size) + kernel_reduce.chunks_1d(m),
-            inputs=[vertices, queries, wp.int32(1)],
-            outputs=[corners_wp],
-            device=device,
-        )
-        # Sizes the search: the scene box and the default radius are kernel arguments.
-        corners = np.array(read_values(corners_wp, 0, 12), dtype=np.float32)
-        min_bound, max_bound = wp.vec3(*corners[0:3]), wp.vec3(*(-corners[3:6]))
-        union_lower = np.minimum(corners[0:3], corners[6:9])
-        union_upper = np.maximum(-corners[3:6], -corners[9:12])
-        max_dist = float(np.linalg.norm(union_upper - union_lower))
-    else:
-        min_bound, max_bound = od.bounds.aabb(vertices)
+    # still terminates exactly rather than growing to ``max_dist``. It and, with no ``max_dist``,
+    # the default limit (the diagonal of the box enclosing ``vertices`` and ``queries``) are taken
+    # in the kernel from one twelve-slot corner buffer (``vertices`` first, ``queries`` second),
+    # so neither is read back. With a limit given, only the vertex box is reduced.
+    corners = _launch.full(12, math.inf, dtype=wp.float32, device=device)
+    n_query_chunks = kernel_reduce.chunks_1d(m) if max_dist is None else 0
+    _launch.launch(
+        kernel_reduce.minmax_vec3_pair_chunked,
+        dim=kernel_reduce.chunks_1d(vertices.size) + n_query_chunks,
+        inputs=[vertices, queries, wp.int32(1)],
+        outputs=[corners],
+        device=device,
+    )
+    caller_max_dist = 0.0 if max_dist is None else max_dist
 
     out_closest = _launch.empty(m, dtype=wp.vec3, device=device)
     out_distance = _launch.empty(m, dtype=wp.float32, device=device)
@@ -404,10 +397,11 @@ def closest_point_on_edges(
             edges,
             queries,
             bvh.id,
-            wp.float32(max_dist),
-            wp.float32(_EDGE_INITIAL_RADIUS_SCALE * max_dist),
-            min_bound,
-            max_bound,
+            corners,
+            wp.int32(max_dist is None),
+            wp.float32(caller_max_dist),
+            wp.float32(_EDGE_INITIAL_RADIUS_SCALE * caller_max_dist),
+            wp.float32(_EDGE_INITIAL_RADIUS_SCALE),
             out_closest,
             out_distance,
             out_edge,
@@ -611,7 +605,9 @@ def mesh_to_mesh_distance(
     tiled = prefers_tiled_reduction(device)
     candidate_cap = _QUERY_CANDIDATE_CAP if tiled else INT32_MAX
     overflow = _launch.empty(n_faces_a if tiled else 1, dtype=wp.int32, device=device)
-    counter = _launch.zeros(1, dtype=wp.int32, device=device)
+    # ``counter[0]`` counts the faces the thread pass appends to ``overflow``; ``counter[1]`` is the
+    # tiled pass's work claim.
+    counter = _launch.zeros(2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_proximity.face_to_mesh_distance,
         dim=n_faces_a,
@@ -633,44 +629,43 @@ def mesh_to_mesh_distance(
         device=device,
     )
     if tiled:
-        # One readback, and it is what sizes the second launch. Skipping it by launching
-        # ``n_faces_a`` blocks would put an empty block on nearly all of them.
-        n_overflow = int(read_scalar(counter, 0))
-        if n_overflow > 0:
-            _launch.launch_tiled(
-                kernel_proximity.face_to_mesh_distance_tiled,
-                dim=n_overflow,
-                inputs=[
-                    vertices_a,
-                    faces_a,
-                    vertices_b,
-                    faces_b,
-                    lower,
-                    upper,
-                    mesh_b.id,
-                    overflow,
-                    bounds,
-                    distance_sq,
-                    witness,
-                ],
-                device=device,
-                block_dim=_QUERY_TILE_WIDTH,
-            )
+        # Persistent blocks that claim stragglers until the count the thread pass left on the
+        # device runs out, so that count is never read back to size the launch.
+        _launch.launch_tiled(
+            kernel_proximity.face_to_mesh_distance_tiled,
+            dim=min(n_faces_a, _STRAGGLER_BLOCKS_PER_SM * wp.get_device(device).sm_count),
+            inputs=[
+                vertices_a,
+                faces_a,
+                vertices_b,
+                faces_b,
+                lower,
+                upper,
+                mesh_b.id,
+                counter,
+                overflow,
+                bounds,
+                distance_sq,
+                witness,
+                counter,
+            ],
+            device=device,
+            block_dim=_QUERY_TILE_WIDTH,
+        )
     # One launch reduces the packed ``(distance_sq, face_a)`` key -- low half the winning face, high
-    # half its squared distance's own float32 bits -- and a second writes that face's witness beside
-    # it, so all three answers come back in one 16-byte readback.
-    result = _launch.full(2, INT64_MAX, dtype=wp.int64, device=device)
+    # half its squared distance's own float32 bits -- and writes that face's witness beside it, so
+    # all three answers come back in one readback.
+    n_blocks = kernel_reduce.blocks_1d(n_faces_a)
+    result = _launch.full(3, INT64_MAX, dtype=wp.int64, device=device)
     _launch.launch_tiled(
-        kernel_neighbors.nearest_key_argmin,
-        dim=kernel_reduce.blocks_1d(n_faces_a),
-        inputs=[distance_sq, result],
+        kernel_proximity.nearest_face_pair,
+        dim=n_blocks,
+        inputs=[distance_sq, witness, n_blocks, result],
         block_dim=TILE_1D,
         device=device,
     )
-    _launch.launch(
-        kernel_neighbors.nearest_key_partner, dim=1, inputs=[result, witness, result], device=device
-    )
-    key, face_b = (int(value) for value in result.numpy())
+    # The answer itself: the three scalars this function returns.
+    key, face_b, _ticket = (int(value) for value in result.numpy())
     best_distance_sq = np.array([key >> 32], dtype=np.uint32).view(np.float32)[0]
     return math.sqrt(float(best_distance_sq)), key & 0xFFFFFFFF, face_b
 
@@ -909,23 +904,7 @@ def signed_distance_on_mesh(
     if n_faces == 0:
         return _launch.full(m, float("inf"), dtype=wp.float32, device=device)
 
-    if mesh is not None and sign_mode == "winding" and not mesh.support_winding_number:
-        # Without the per-node solid-angle expansion the winding builtin silently degrades to ray
-        # parity, so an unflagged mesh is refused; the parity mode accepts any mesh.
-        raise ValueError(
-            "sign_mode='winding' needs a mesh built with wp.Mesh(support_winding_number=True); "
-            "the supplied mesh was not. Rebuild it with the flag, omit mesh=, or use "
-            "sign_mode='parity'."
-        )
-    if mesh is None:
-        require_nonempty_mesh(faces, "signed_distance_on_mesh")
-        # The winding-number builtin silently degrades to ray parity unless the mesh carries the
-        # per-node solid-angle expansion, so the flag is bound to sign_mode here rather than
-        # exposed.
-        # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
-        mesh = wp.Mesh(
-            points=vertices, indices=faces, support_winding_number=sign_mode == "winding"
-        )
+    mesh = _signed_distance_mesh(vertices, faces, sign_mode, mesh)
     if max_dist is None:
         max_dist = math.inf
     out_distance = _launch.empty(m, dtype=wp.float32, device=device)
@@ -958,6 +937,33 @@ def signed_distance_on_mesh(
         device=device,
     )
     return out_distance
+
+
+def _signed_distance_mesh(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    sign_mode: Literal["parity", "winding"],
+    mesh: wp.Mesh | None,
+) -> wp.Mesh:
+    """Return the ``wp.Mesh`` a signed-distance query runs on: ``mesh`` checked, or a new one."""
+    if mesh is not None and sign_mode == "winding" and not mesh.support_winding_number:
+        # Without the per-node solid-angle expansion the winding builtin silently degrades to ray
+        # parity, so an unflagged mesh is refused; the parity mode accepts any mesh.
+        raise ValueError(
+            "sign_mode='winding' needs a mesh built with wp.Mesh(support_winding_number=True); "
+            "the supplied mesh was not. Rebuild it with the flag, omit mesh=, or use "
+            "sign_mode='parity'."
+        )
+    if mesh is None:
+        require_nonempty_mesh(faces, "signed_distance_on_mesh")
+        # The winding-number builtin silently degrades to ray parity unless the mesh carries the
+        # per-node solid-angle expansion, so the flag is bound to sign_mode here rather than
+        # exposed.
+        # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
+        mesh = wp.Mesh(
+            points=vertices, indices=faces, support_winding_number=sign_mode == "winding"
+        )
+    return mesh
 
 
 def signed_distance_grid(
@@ -1073,9 +1079,30 @@ def signed_distance_grid(
     if faces.size == 0:
         raise ValueError("signed_distance_grid needs at least one face")
     shape, box = signed_distance_lattice(vertices, voxel_size, bounds=bounds, pad=pad)
-    samples = od.voxels.grid_points(shape, bounds=box, device=vertices.device)
-    distances = signed_distance_on_mesh(vertices, faces, samples, sign_mode=sign_mode, mesh=mesh)
-    return odt.as_array3d(distances.reshape(shape), wp.float32), box
+    if sign_mode not in ("parity", "winding"):
+        raise ValueError(f"sign_mode must be 'parity' or 'winding', got {sign_mode!r}")
+    mesh = _signed_distance_mesh(vertices, faces, sign_mode, mesh)
+    device = vertices.device
+    # Node 0 and the node spacing of the lattice, as ``voxels.grid_points`` derives them: every
+    # axis has at least two nodes, so the spacing is the box over ``n - 1``.
+    lower, upper = box
+    lower_f, upper_f = odt.vec3_floats(lower), odt.vec3_floats(upper)
+    step = wp.vec3(*((upper_f[axis] - lower_f[axis]) / float(shape[axis] - 1) for axis in range(3)))
+    field = odt.empty_3d(shape, wp.float32, device=device)
+    # ``signed_distance_on_mesh``'s defaults: no cutoff, and its sampling parameters.
+    if sign_mode == "winding":
+        kernel = kernel_proximity.signed_distance_on_lattice_winding
+        parameters = [wp.float32(2.0), wp.float32(0.5)]
+    else:
+        kernel = kernel_proximity.signed_distance_on_lattice
+        parameters = [wp.int32(5), wp.float32(0.1)]
+    _launch.launch(
+        kernel,
+        dim=shape,
+        inputs=[mesh.id, lower, step, wp.float32(math.inf), *parameters, field],
+        device=device,
+    )
+    return field, box
 
 
 def signed_distance_lattice(
@@ -1131,11 +1158,19 @@ def signed_distance_lattice(
     """
     if pad < 0:
         raise ValueError("pad must be non-negative")
-    spacing, _origin = od.voxels.resolve_voxel_grid(
-        vertices, voxel_size, None, caller="signed_distance_grid"
-    )
+    spacing = voxel_size
+    if bounds is None or voxel_size is None:
+        # One box serves both the default spacing and the default bounds.
+        box = od.bounds.aabb(vertices)
+        if spacing is None:
+            spacing = _default_lattice_spacing(vertices, box)
+        if bounds is None:
+            bounds = box
+    assert spacing is not None
+    if spacing <= 0.0:
+        raise ValueError(f"signed_distance_grid requires voxel_size > 0, got {spacing}")
 
-    lower, upper = bounds if bounds is not None else od.bounds.aabb(vertices)
+    lower, upper = bounds
     margin = float(pad) * spacing
     lower = wp.vec3(*(component - margin for component in odt.vec3_floats(lower)))
     # One sample per spacing, and at least the two marching cubes needs to have a cell at all.
@@ -1148,6 +1183,17 @@ def signed_distance_lattice(
         *(float(lower[axis]) + (shape[axis] - 1) * spacing for axis in range(3))
     )
     return shape, (lower, snapped_upper)
+
+
+def _default_lattice_spacing(vertices: wp.array[wp.vec3], box: tuple[wp.vec3, wp.vec3]) -> float:
+    """
+    ``1 %`` of the diagonal of ``box``, the ``aabb`` of ``vertices``.
+
+    [`ordito.voxels.resolve_voxel_grid`][ordito.voxels.resolve_voxel_grid]'s default cell, over a
+    box the caller already holds, including its unit diagonal for a vertex set with no extent.
+    """
+    diagonal = math.dist(*box) if vertices.size > 0 else 1.0
+    return 0.01 * (diagonal if diagonal != 0.0 else 1.0)
 
 
 def winding_number(
@@ -1619,9 +1665,15 @@ def containing_faces_2d(
 
     lifted = _launch.empty(vertices.size, dtype=wp.vec3, device=device)
     _launch.map(kernel_array.lift_vec2, vertices, wp.float32(0.0), out=lifted)
-    # One readback: the search radius has to be in the triangulation's own units and nothing else
-    # knows its scale.
-    search_radius = _CONTAINMENT_SEARCH_SCALE * od.bounds.enclosing_diagonal(lifted)
+    # The search radius has to be in the triangulation's own units, so the kernel scales it off
+    # the box this reduces, on the device.
+    corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_reduce.minmax_vec3_chunked,
+        dim=kernel_reduce.chunks_1d(lifted.size),
+        inputs=[lifted, corners],
+        device=device,
+    )
     require_nonempty_mesh(faces, "containing_faces_2d")
     # Both buffers are local to this call (``lifted`` is built above), so no copy is needed.
     mesh = wp.Mesh(points=lifted, indices=faces)
@@ -1634,7 +1686,8 @@ def containing_faces_2d(
             vertices,
             faces,
             points,
-            wp.float32(search_radius),
+            corners,
+            _CONTAINMENT_SEARCH_SCALE,
             _CONTAINMENT_BARYCENTRIC_EPS,
             out_face,
         ],

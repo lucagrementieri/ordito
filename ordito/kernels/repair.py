@@ -1,6 +1,7 @@
 import warp as wp
 
 from ordito.constants import INDEX_RADIX_PAIR
+from ordito.kernels.algorithms.connected_components import ecl_hook_pair, ecl_prehook_pair
 from ordito.kernels.array import (
     binary_search_sorted_contains,
     declare_map_signatures,
@@ -24,6 +25,7 @@ from ordito.kernels.selection import face_selected_by_vertices, mark_submesh_fac
 from ordito.kernels.triangles import (
     QUALITY_AREA,
     corner_triple,
+    face_normals_and_area,
     face_signed_volume,
     face_vertices,
     triangle_cross,
@@ -103,9 +105,12 @@ def scatter_duplicate_face_stats(
     out_first_negative: wp.array[wp.int32],
 ) -> None:
     # Per input face: orientation sign against its group representative (the first-occurring
-    # face, gathered via ``inverse``) scattered into per-group stats. ``first_*`` slots hold the
-    # smallest face index of each sign class (seeded with the n_faces sentinel).
+    # face, gathered via ``inverse``) scattered into per-group stats. Every table arrives zeroed,
+    # so a ``first_*`` slot holds the smallest face index of its sign class *reflected* as
+    # ``n_faces - f`` (an ``atomic_max``), and zero means no member; ``first_member_index``
+    # reads it back.
     f = wp.int32(wp.tid())
+    reflected = faces.shape[0] // 3 - f
     ui = inverse[f]
     consistent = cyclic_match(
         faces[f * 3],
@@ -116,13 +121,19 @@ def scatter_duplicate_face_stats(
         unique_faces[ui * 3 + 2],
     )
     wp.atomic_add(out_member_count, ui, wp.int32(1))
-    wp.atomic_min(out_first_member, ui, f)
+    wp.atomic_max(out_first_member, ui, reflected)
     if consistent:
         wp.atomic_add(out_signed_count, ui, wp.int32(1))
-        wp.atomic_min(out_first_positive, ui, f)
+        wp.atomic_max(out_first_positive, ui, reflected)
     else:
         wp.atomic_add(out_signed_count, ui, wp.int32(-1))
-        wp.atomic_min(out_first_negative, ui, f)
+        wp.atomic_max(out_first_negative, ui, reflected)
+
+
+@wp.func
+def first_member_index(reflected: wp.array[wp.int32], n_faces: wp.int32, ui: wp.int32) -> wp.int32:
+    # The smallest face index ``scatter_duplicate_face_stats`` reflected into slot ``ui``.
+    return n_faces - reflected[ui]
 
 
 @wp.kernel
@@ -132,29 +143,53 @@ def resolve_duplicate_groups(
     first_member: wp.array[wp.int32],
     first_positive: wp.array[wp.int32],
     first_negative: wp.array[wp.int32],
+    n_faces: wp.int32,
     out_keep: wp.array[wp.int32],
-    out_keep_mask: wp.array[wp.bool],
+    out_keep_flags: wp.array[wp.int32],
     out_error_group: wp.array[wp.int32],
 ) -> None:
     # Keep-decision per duplicate group (igl::resolve_duplicated_faces): singletons stay; a net
     # +1/-1 orientation keeps the first member of the majority sign; a cancelling group drops;
-    # anything else is non-orientable (the smallest offending group index is reported).
+    # anything else is non-orientable. The smallest offending group index is reported reflected,
+    # as ``n_groups - ui`` into a zeroed word, so zero means none.
     #
-    # ``out_keep_mask`` is ``out_keep >= 0``, written by the thread that decided it so the caller
-    # can compact the kept groups without a second pass re-reading ``out_keep`` for the sign.
+    # ``out_keep_flags`` is ``out_keep >= 0`` as a 0/1 ``int32``, written by the thread that
+    # decided it, so the caller scans it in place to number the kept groups without a second pass
+    # re-reading ``out_keep`` for the sign.
     ui = wp.int32(wp.tid())
     count = signed_count[ui]
     keep = wp.int32(-1)
     if member_count[ui] == 1:
-        keep = first_member[ui]
+        keep = first_member_index(first_member, n_faces, ui)
     elif count == 1:
-        keep = first_positive[ui]
+        keep = first_member_index(first_positive, n_faces, ui)
     elif count == -1:
-        keep = first_negative[ui]
+        keep = first_member_index(first_negative, n_faces, ui)
     elif count != 0:
-        wp.atomic_min(out_error_group, 0, ui)
+        wp.atomic_max(out_error_group, 0, member_count.shape[0] - ui)
     out_keep[ui] = keep
-    out_keep_mask[ui] = keep >= 0
+    out_keep_flags[ui] = wp.where(keep >= 0, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def compact_kept_duplicate_faces(
+    faces: wp.array[wp.int32],
+    keep: wp.array[wp.int32],
+    keep_ranks: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_kept: wp.array[wp.int32],
+) -> None:
+    # Each kept group's face, in ascending group order: ``keep_ranks`` is
+    # ``resolve_duplicate_groups``' keep flags scanned in place (inclusive), so a kept group's entry
+    # less one is its output row.
+    ui = wp.int32(wp.tid())
+    f = keep[ui]
+    if f < 0:
+        return
+    row = keep_ranks[ui] - 1
+    out_kept[row] = f
+    for k in range(3):
+        out_faces[3 * row + k] = faces[3 * f + k]
 
 
 @wp.kernel
@@ -387,41 +422,90 @@ def halfedge_orientation_slots(
         wp.atomic_max(out_backward_corner, e, c)
 
 
-@wp.kernel
-def corner_merge_links(
+@wp.func
+def corner_merge_link(
     forward_count: wp.array[wp.int32],
     backward_count: wp.array[wp.int32],
     forward_corner: wp.array[wp.int32],
     backward_corner: wp.array[wp.int32],
-    out_links: wp.array2d[wp.int32],
-) -> None:
-    # Two corner-graph links per mergeable edge: one joining the corners at each endpoint.
+    link: wp.int32,
+) -> tuple[wp.int32, wp.int32]:
+    # One link of the corner graph: link ``2e`` joins the corners at edge ``e``'s low endpoint and
+    # link ``2e + 1`` those at its high endpoint, one corner from each of the edge's two faces.
     #
     # Nodes are ``(face, vertex slot)`` pairs under the same ``3f + k`` numbering, so node
     # ``3f + k`` *is* the corner whose vertex is ``faces[3f + k]``, and a link only ever joins two
     # copies of one original vertex. Connected components of this graph are the vertex copies.
     #
-    # A non-mergeable edge emits two self-loops on node 0 rather than nothing, which keeps the
-    # output a fixed ``(2 * n_edges, 2)`` buffer with no compaction pass; a self-loop merges
-    # nothing.
-    e = wp.int32(wp.tid())
-    out_links[e * 2 + 0, 0] = 0
-    out_links[e * 2 + 0, 1] = 0
-    out_links[e * 2 + 1, 0] = 0
-    out_links[e * 2 + 1, 1] = 0
+    # A non-mergeable edge gives the self-loop ``(0, 0)``, which unions nothing.
+    e = link // 2
     if forward_count[e] != 1 or backward_count[e] != 1:
-        return
-
+        return wp.int32(0), wp.int32(0)
     forward = forward_corner[e]
     backward = backward_corner[e]
     # The forward half-edge runs (low, high) from its own corner; the backward one runs (high, low),
     # so its *next* slot holds the low endpoint.
-    forward_next = halfedge_next(forward)
-    backward_next = halfedge_next(backward)
-    out_links[e * 2 + 0, 0] = forward  # low endpoint, forward face
-    out_links[e * 2 + 0, 1] = backward_next  # low endpoint, backward face
-    out_links[e * 2 + 1, 0] = forward_next  # high endpoint, forward face
-    out_links[e * 2 + 1, 1] = backward  # high endpoint, backward face
+    if link % 2 == 0:
+        return forward, halfedge_next(backward)  # low endpoint, both faces
+    return halfedge_next(forward), backward  # high endpoint, both faces
+
+
+@wp.kernel
+def corner_merge_prehook(
+    forward_count: wp.array[wp.int32],
+    backward_count: wp.array[wp.int32],
+    forward_corner: wp.array[wp.int32],
+    backward_corner: wp.array[wp.int32],
+    parents: wp.array[wp.int32],
+) -> None:
+    # ``connected_components.ecl_init_parent_edges`` over the corner graph, each link formed by
+    # ``corner_merge_link`` in the thread rather than read from a materialised edge list. Runs over
+    # an identity ``parents``; changes no root. ``corner_merge_hook`` hooks the same links.
+    link = wp.int32(wp.tid())
+    a, b = corner_merge_link(forward_count, backward_count, forward_corner, backward_corner, link)
+    ecl_prehook_pair(parents, a, b)
+
+
+@wp.kernel
+def corner_merge_hook(
+    forward_count: wp.array[wp.int32],
+    backward_count: wp.array[wp.int32],
+    forward_corner: wp.array[wp.int32],
+    backward_corner: wp.array[wp.int32],
+    parents: wp.array[wp.int32],
+) -> None:
+    # ``connected_components.ecl_hook_edges`` over the same links. Every union points the larger
+    # root at the smaller, so each component's root is its smallest corner whichever order the
+    # unions ran in.
+    link = wp.int32(wp.tid())
+    a, b = corner_merge_link(forward_count, backward_count, forward_corner, backward_corner, link)
+    ecl_hook_pair(parents, a, b)
+
+
+@wp.kernel
+def scatter_split_corners(
+    faces: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    roots: wp.array[wp.int32],
+    root_ranks: wp.array[wp.int32],
+    out_new_faces: wp.array[wp.int32],
+    out_source: wp.array[wp.int32],
+    out_new_vertices: wp.array[wp.vec3],
+) -> None:
+    # Number each corner's component and, from its root corner alone, write the component's source
+    # vertex and position. ``root_ranks`` is ``connected_components.ecl_flatten_root_flags``' root
+    # flags scanned in place (inclusive), so a root's entry less one is its rank among the roots in
+    # ascending order: the new vertex numbering, smallest root corner first.
+    # ``seams.scatter_corner_values`` is the same ranking for a value the corners share, with no
+    # source map and no root test.
+    h = wp.int32(wp.tid())
+    root = roots[h]
+    rank = root_ranks[root] - 1
+    out_new_faces[h] = rank
+    if root == h:
+        v = faces[h]
+        out_source[rank] = v
+        out_new_vertices[rank] = vertices[v]
 
 
 @wp.func
@@ -700,7 +784,6 @@ def collect_rim_links_and_candidates(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32],
-    face_normals: wp.array[wp.vec3],
     min_normal_dot: wp.float32,
     max_aspect_ratio: wp.float32,
     out_rim_next: wp.array[wp.int32],
@@ -756,9 +839,13 @@ def collect_rim_links_and_candidates(
     normal = triangle_normal(vertices[following], vertices[v], vertices[previous])
     if wp.length(normal) == 0.0:
         return
-    if wp.dot(normal, face_normals[h // 3]) < min_normal_dot:
+    # The two rim faces' normals are formed here, from the only faces read, rather than taken from
+    # a per-face normal buffer filled for the whole mesh.
+    entering_normal, _ = face_normals_and_area(vertices, faces, h // 3)
+    if wp.dot(normal, entering_normal) < min_normal_dot:
         return
-    if wp.dot(normal, face_normals[outgoing // 3]) < min_normal_dot:
+    outgoing_normal, _ = face_normals_and_area(vertices, faces, outgoing // 3)
+    if wp.dot(normal, outgoing_normal) < min_normal_dot:
         return
     ratio = triangle_aspect_ratio(vertices[following], vertices[v], vertices[previous])
     if ratio > max_aspect_ratio:

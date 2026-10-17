@@ -7,6 +7,7 @@ from ordito.kernels.algorithms.connected_components import (
     ecl_hook_pair_parity,
     ecl_prehook_pair,
     find_representative,
+    find_representative_parity,
 )
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
@@ -404,6 +405,17 @@ def mate_hook_parity(
     # ``connected_components.ecl_hook_parity`` over ``mate_signed_edge``'s edges.
     f0, f1, sign = mate_signed_edge(faces, mates, wp.int32(wp.tid()))
     ecl_hook_pair_parity(words, f0, f1, sign)
+
+
+@wp.kernel
+def flatten_parity_flip_mask(words: wp.array[wp.int32], out_flip: wp.array[wp.bool]) -> None:
+    # ``connected_components.ecl_flatten_parity`` with the parity written as the flip mask
+    # ``face_flip_mask`` returns -- a parity is ``0`` or ``1``, so ``parity != 0`` is
+    # ``orient > 0`` -- and no label, for the caller that wants the mask alone rather than the
+    # ``int32`` bits.
+    v = wp.int32(wp.tid())
+    _root, parity = find_representative_parity(words, v)
+    out_flip[v] = parity != 0
 
 
 @wp.kernel

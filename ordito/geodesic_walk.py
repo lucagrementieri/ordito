@@ -167,10 +167,14 @@ def trace_from_vertex(
     # A short-circuit here returned an empty polyline per ray instead, contradicting this function's
     # own "a ray always contributes at least one point" guarantee.
 
-    if twins is None:
-        twins = halfedge_twins(faces, n_vertices=n_vertices)
     if rings is None:
-        rings = vertex_one_rings(faces, twins=twins, n_vertices=n_vertices)
+        # The rings and the twins they are walked over come back together, for one readback.
+        ring_halfedges, ring_offsets, is_boundary, twins = vertex_one_rings(
+            faces, twins=twins, n_vertices=n_vertices, return_twins=True
+        )
+        rings = (ring_halfedges, ring_offsets, is_boundary)
+    elif twins is None:
+        twins = halfedge_twins(faces, n_vertices=n_vertices)
     ring_halfedges, ring_offsets, is_boundary = rings
     if frames is None:
         frames = od.tangent_space.vertex_tangent_frames(vertices, faces, rings=rings)
@@ -180,7 +184,6 @@ def trace_from_vertex(
         vertices,
         faces,
         twins,
-        od.triangles.face_angles(vertices, faces),
         ring_offsets,
         ring_halfedges,
         is_boundary,
@@ -970,11 +973,11 @@ def shorten_loop_with_offsets(
     if n_loops <= 0 or faces.size == 0 or max_iter <= 0 or loops.size == 0:
         return loops, loop_offsets, 0
 
-    n_vertices = vertices.size
-    if twins is None:
-        twins = halfedge_twins(faces, n_vertices=n_vertices)
+    # ``twins`` is read only to walk the rings, which build their own when it is ``None``.
     ring_halfedges, ring_offsets, is_boundary = (
-        rings if rings is not None else vertex_one_rings(faces, twins=twins, n_vertices=n_vertices)
+        rings
+        if rings is not None
+        else vertex_one_rings(faces, twins=twins, n_vertices=vertices.size)
     )
 
     # The loop state lives on the device (``kernels/geodesic_walk.SHORTEN_*``) and every sweep

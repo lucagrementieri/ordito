@@ -714,6 +714,21 @@ def test_resolve_duplicated_faces_small_groups(device: str, faces_list: list[lis
     assert np.array_equal(j_wp.numpy(), j_np)
 
 
+def test_resolve_duplicated_faces_raises_on_a_non_orientable_group(device: str) -> None:
+    """
+    Not a library comparison: the raise is ordito's own contract, and its message names the group.
+
+    Two copies of one face in the *same* winding have signed count ``2``, which no cancellation
+    resolves; the singles around it must not hide the error, and the message must carry the count.
+    """
+    faces_np = np.array([[3, 4, 5], [0, 1, 2], [6, 7, 8], [0, 1, 2]], dtype=np.int32)
+    with pytest.raises(ValueError, match="with count 2"):
+        _resolve_duplicated_faces_ref(faces_np)  # the reference rejects it too
+    faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="with signed count 2"):
+        od.repair.resolve_duplicated_faces(faces_wp)
+
+
 @pytest.mark.parity(
     "resolve_duplicated_faces",
     "numpy",
@@ -2005,6 +2020,14 @@ def test_split_nonmanifold_matches_igl(
     assert new_faces_np.shape == faces_np.reshape(-1, 3).shape
     assert np.allclose(new_vertices_np, vertices_np[source_np], atol=1e-6)
     assert np.array_equal(np.sort(source_igl), np.sort(source_np.astype(np.int64)))
+    # The numbering is part of the contract (igl's differs, so it is pinned here): copies ascend by
+    # the smallest corner they cover, and each is an exact copy of that corner's vertex.
+    flat_np = new_faces_np.ravel()
+    first_corner_np = np.full(expected_new, flat_np.size, dtype=np.int64)
+    np.minimum.at(first_corner_np, flat_np, np.arange(flat_np.size))
+    assert np.all(np.diff(first_corner_np) > 0)
+    assert np.array_equal(source_np, faces_np.ravel()[first_corner_np])
+    assert np.array_equal(new_vertices_np, vertices_np[source_np])
     _assert_split_is_manifold_and_final(vertices_np, faces_np, device)
 
 

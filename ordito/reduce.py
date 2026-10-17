@@ -464,7 +464,8 @@ def mean(
         total = sum(cast(odt.ArrayNdScalar, array))
         return float(total) / array.size
     sums = sum(cast(odt.Array2dScalar, array), axis=axis)
-    out = astype(sums, wp.float32)
+    # ``sum`` returns a fresh array, so a ``float32`` one is divided in place rather than copied.
+    out = sums if sums.dtype == wp.float32 else astype(sums, wp.float32)
     _launch.map(wp.div, out, wp.float32(array.shape[axis]), out=out)
     return cast(odt.Array1dFloat32, out)
 

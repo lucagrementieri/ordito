@@ -319,6 +319,23 @@ def face_adjacency_angles(
 
 
 @wp.kernel
+def face_adjacency_angles_from_positions(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_adjacency: wp.array2d[wp.int32],
+    out_angles: wp.array[wp.float32],
+) -> None:
+    # ``face_adjacency_angles`` for a caller with the pair table but no normals: each normal is
+    # ``face_normals_and_area``'s, the one ``triangles.face_normals_and_areas`` would have stored,
+    # formed here where it is read, so the angles are bit-identical and no per-face table is built.
+    # The two kernels differ only in where a normal comes from.
+    tid = wp.int32(wp.tid())
+    normal_a, _area_a = face_normals_and_area(vertices, faces, face_adjacency[tid, 0])
+    normal_b, _area_b = face_normals_and_area(vertices, faces, face_adjacency[tid, 1])
+    out_angles[tid] = vector_angle(normal_a, normal_b)
+
+
+@wp.kernel
 def scatter_vertex_faces(
     faces: wp.array[wp.int32],
     offsets: wp.array[wp.int32],

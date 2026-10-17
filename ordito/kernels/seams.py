@@ -3,11 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.kernels.adjacency import write_edge_row
-from ordito.kernels.algorithms.connected_components import (
-    ecl_hook_pair,
-    ecl_prehook_pair,
-    find_representative,
-)
+from ordito.kernels.algorithms.connected_components import ecl_hook_pair, ecl_prehook_pair
 from ordito.kernels.array import (
     OverloadTable,
     binary_search_sorted_contains,
@@ -152,18 +148,6 @@ def corner_union_hook(
 
 
 @wp.kernel
-def corner_roots(
-    parents: wp.array[wp.int32], out_roots: wp.array[wp.int32], out_is_root: wp.array[wp.int32]
-) -> None:
-    # ``connected_components.ecl_flatten`` plus a 0/1 flag on each component's root corner -- its
-    # smallest -- so an inclusive scan of the flags numbers the components in ascending root order.
-    h = wp.int32(wp.tid())
-    root = find_representative(parents, h)
-    out_roots[h] = root
-    out_is_root[h] = wp.where(root == h, wp.int32(1), wp.int32(0))
-
-
-@wp.kernel
 def scatter_corner_values(
     faces: wp.array[wp.int32],
     roots: wp.array[wp.int32],
@@ -173,10 +157,10 @@ def scatter_corner_values(
     out_values: wp.array[Any],
 ) -> None:
     # Rank each corner's component and gather its position (or any per-vertex attribute) into it.
-    # ``root_ranks`` is ``corner_roots``' flags scanned in place, so a root's entry less one is its
-    # component's rank among the roots, in ascending root order. Every corner in a component
-    # writes the *same* value, so the race on ``out_values`` is benign by construction and needs no
-    # atomics.
+    # ``root_ranks`` is ``connected_components.ecl_flatten_root_flags``' flags scanned in place, so
+    # a root's entry less one is its component's rank among the roots, in ascending root order.
+    # Every corner in a component writes the *same* value, so the race on ``out_values`` is benign
+    # by construction and needs no atomics.
     h = wp.int32(wp.tid())
     rank = root_ranks[roots[h]] - 1
     out_corner_index[h] = rank

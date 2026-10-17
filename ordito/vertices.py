@@ -34,6 +34,7 @@ from ordito._device import require_same_device
 from ordito.kernels import array as kernel_array
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import scatter as kernel_scatter
+from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels import vertices as kernel_vertices
 
 # The precision the vertex-normal accumulator runs at, and the key both of
@@ -398,12 +399,18 @@ def vertex_normals(
         return _accumulate_and_normalize(
             n_vertices, faces, kernel_vertices.SCATTER_AREA_WEIGHTED_NORMALS, [vertices, faces]
         )
-    if face_normals is None or face_weights is None:
-        computed_normals, computed_areas = od.triangles.face_normals_and_areas(vertices, faces)
-        if face_normals is None:
-            face_normals = computed_normals
-        if face_weights is None:
-            face_weights = computed_areas
+    # One of the two tables is supplied (both missing returned above); derive the other.
+    if face_weights is None:
+        # The areas alone, ``face_normals_and_areas``' bit for bit, with no normal table beside.
+        face_weights = _launch.empty(n_faces, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_triangles.face_areas,
+            dim=n_faces,
+            inputs=[vertices, faces, face_weights],
+            device=device,
+        )
+    if face_normals is None:
+        face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
     _require_face_rows(n_faces, face_normals=face_normals, face_weights=face_weights)
     return _accumulate_and_normalize(
         n_vertices,

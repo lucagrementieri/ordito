@@ -272,6 +272,16 @@ def test_vertex_normals_precomputed_face_quantities(
     assert np.allclose(
         vertex_normals_precomputed_wp.numpy(), vertex_normals_wp.numpy(), rtol=1e-5, atol=1e-5
     )
+    # Half supplied: the call derives the other table, and the result is the fully supplied one's
+    # exactly, since both scatter the same per-face values.
+    normals_only_wp = od.vertices.vertex_normals(
+        vertices_wp, mesh_wp.indices, weighting=weighting, face_normals=face_normals_wp
+    )
+    weights_only_wp = od.vertices.vertex_normals(
+        vertices_wp, mesh_wp.indices, weighting=weighting, face_weights=face_weights_wp
+    )
+    assert np.array_equal(normals_only_wp.numpy(), vertex_normals_precomputed_wp.numpy())
+    assert np.array_equal(weights_only_wp.numpy(), vertex_normals_precomputed_wp.numpy())
 
 
 def _compute_max_vertex_normals_np(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:

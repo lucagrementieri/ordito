@@ -783,6 +783,36 @@ def test_is_edge_and_vertex_manifold_closed_meshes(
     assert mesh.is_self_intersecting is False
 
 
+@pytest.mark.parametrize("unused", ["interior", "trailing"])
+@pytest.mark.parametrize("adjacency_cached", [False, True])
+def test_is_vertex_manifold_sized_by_the_vertex_buffer(
+    device: str, unused: str, adjacency_cached: bool
+) -> None:
+    """
+    Ordito against ordito: the property, sized by the vertex count, against the inferred bound.
+
+    The free function carries the oracle. The property hands it the vertex buffer's length, which
+    the contract says sizes the tables without changing the answer: an unreferenced vertex below
+    ``max(faces)`` is still non-manifold, and one past it is still not considered.
+    """
+    vertices_np, faces_np = od.creation.box(device="cpu")
+    vertices_np, faces_np = vertices_np.numpy(), faces_np.numpy()
+    extra = vertices_np.mean(axis=0, keepdims=True)
+    if unused == "interior":
+        vertices_np = np.vstack([extra, vertices_np])
+        faces_np = faces_np + 1
+    else:
+        vertices_np = np.vstack([vertices_np, extra])
+    vertices_wp = points_to_warp(vertices_np, device)
+    faces_wp = wp.array(faces_np.astype(np.int32), dtype=wp.int32, device=device)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    if adjacency_cached:
+        assert mesh.face_adjacency.shape[0] > 0
+    expected = od.validation.is_vertex_manifold(faces_wp)
+    assert expected is (unused == "trailing")
+    assert mesh.is_vertex_manifold is expected
+
+
 # ---------------------------------------------------------------------------
 # cache mechanics
 # ---------------------------------------------------------------------------

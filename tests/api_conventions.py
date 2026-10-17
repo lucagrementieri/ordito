@@ -528,8 +528,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # fresh per-call answer.
     ("smoothing", "interior_mass_rhs_and_seed"): frozenset({"rhs"}),
     ("smoothing", "mut_dif_volume_correct"): frozenset({"slope"}),
-    # ``state`` is ``smoothing._VolumeConstraint``'s device state: the anchored volume and centroid
-    # integrals it reads, then the scale and centre it writes beside them for the rescale.
+    # ``state`` is ``smoothing._VolumeConstraint``'s persistent device state: the scale and centre
+    # this kernel writes for the rescale, from totals it reads off the constraint's block partials.
     ("smoothing", "volume_rescale_parameters"): frozenset({"state"}),
     # ``angle_sums`` is ``filter_spikes``' accumulator: read for the spike test, then re-zeroed in
     # place for the next pass's scatter.

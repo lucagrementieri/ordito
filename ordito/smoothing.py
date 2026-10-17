@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from collections.abc import Callable
 from typing import Literal, NamedTuple, cast, overload
 
 import warp as wp
@@ -178,6 +179,13 @@ def filter_laplacian(
         return _launch.clone(vertices)
 
     operator = _resolved_operator(vertices, faces, laplacian_operator)
+    coeff = wp.float64(lamb)
+    if not implicit_time_integration and not volume_constraint:
+        # Explicit passes with nothing between them: the first reads the ``float32`` input and the
+        # last writes the ``float32`` answer.
+        return _vec3_passes(
+            vertices, iterations, lambda _index, src, dst: _diffuse_pass(operator, coeff, src, dst)
+        )
     positions = _as_vec3d(vertices)
     # The *initial* volume and centre of mass, captured once here rather than inside the loop --
     # see ``kernel_smoothing.volume_rescale_parameters`` for why the rescale has to stay anchored to
@@ -195,7 +203,6 @@ def filter_laplacian(
         # no convergence test, the same launch sequence every pass: issued once, then recorded and
         # replayed where the device has graphs.
         scratch = [_launch.empty(n, dtype=wp.vec3d, device=device) for _ in range(2)]
-        coeff = wp.float64(lamb)
         graph = None
         for index in range(iterations):
             if graph is not None:
@@ -244,21 +251,18 @@ def filter_laplacian(
             if constraint is not None:
                 constraint.apply(positions)
     else:
+        # Explicit passes, each rescaled to the anchored volume; the last rescale writes the
+        # ``float32`` answer.
+        assert constraint is not None
         nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
-        coeff = wp.float64(lamb)
-        for _ in range(iterations):
-            # One explicit diffusion pass: the averaging operator applied and the step taken in
-            # the same thread, so no intermediate ``L.v`` buffer is written or read back.
-            _launch.launch(
-                kernel_smoothing.diffuse_vec3_pass,
-                dim=positions.size,
-                inputs=[operator.offsets, operator.columns, operator.values, positions, coeff],
-                outputs=[nxt],
-                device=positions.device,
-            )
+        for index in range(iterations):
+            _diffuse_pass(operator, coeff, positions, nxt)
             positions, nxt = nxt, positions
-            if constraint is not None:
-                constraint.apply(positions)
+            if index == iterations - 1:
+                out = _launch.empty(n, dtype=wp.vec3, device=device)
+                constraint.apply(positions, out=out)
+                return out
+            constraint.apply(positions)
 
     return _as_vec3(positions)
 
@@ -453,23 +457,31 @@ def inflate(
     # call, and at ``equal_weight=True`` that operator is the mesh's topology, which no pass
     # changes.
     operator = laplacian.laplacian(vertices, faces)
-    # Owned by this call either way, so every pass below writes it in place.
-    positions = (
-        filter_laplacian(vertices, faces, lamb, iterations=1, laplacian_operator=operator)
-        if pre_smooth
-        else _launch.clone(vertices)
-    )
     # Each pass is the displacement and then one ``filter_laplacian`` pass with its volume
     # constraint, written out so that nothing is allocated per pass: the displacement gathers each
     # vertex's normal over the vertex-face table built once here, and every buffer and the
     # constraint's device state are reused. Same arithmetic as the composed calls, up to the
     # normal sums' order.
     vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     displaced = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     wide = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
     diffused = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
     constraint = _VolumeConstraint(faces, device)
     coeff = wp.float64(lamb)
+
+    def relax(anchor: wp.array[wp.vec3]) -> None:
+        # One ``filter_laplacian`` pass of ``wide`` (``anchor`` widened) into ``positions``: the
+        # constraint anchored to it, one diffusion pass, rescaled and narrowed as it is written.
+        constraint.anchor(wide, anchor)
+        _diffuse_pass(operator, coeff, wide, diffused)
+        constraint.apply(diffused, out=positions)
+
+    if pre_smooth:
+        od.array.copyto(wide, vertices)
+        relax(vertices)
+    else:
+        _launch.copy(positions, vertices)
     for step in range(iterations):
         amount = pressure * (step + 1) / iterations if gradual else pressure
         _launch.launch(
@@ -479,15 +491,7 @@ def inflate(
             outputs=[displaced, wide],
             device=device,
         )
-        constraint.anchor(wide, displaced)
-        _launch.launch(
-            kernel_smoothing.diffuse_vec3_pass,
-            dim=n_vertices,
-            inputs=[operator.offsets, operator.columns, operator.values, wide, coeff],
-            outputs=[diffused],
-            device=device,
-        )
-        constraint.apply(diffused, out=positions)
+        relax(displaced)
     return positions
 
 
@@ -558,37 +562,33 @@ def filter_humphrey(
         return _launch.clone(vertices)
 
     operator = _resolved_operator(vertices, faces, laplacian_operator)
-    positions = _as_vec3d(vertices)
-    original = _launch.clone(positions)
-
     lv = _launch.empty(n, dtype=wp.vec3d, device=device)
     b = _launch.empty(n, dtype=wp.vec3d, device=device)
-    nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
     alpha64 = wp.float64(alpha)
     beta64 = wp.float64(beta)
     rows = (operator.offsets, operator.columns, operator.values)
-    for _ in range(iterations):
-        # Two passes rather than four: each applies the operator in the thread that consumes its
+
+    def humphrey_pass(_index: int, src: _Positions, dst: _Positions) -> None:
+        # Two launches rather than four: each applies the operator in the thread that consumes its
         # row. ``lv`` still crosses between them -- the update needs ``L.v`` *and* ``L.b`` -- but
-        # ``L.b`` never leaves a register. ``positions`` doubles as the previous-iterate ``q`` (it
-        # is only read this pass).
+        # ``L.b`` never leaves a register. ``src`` doubles as the previous-iterate ``q`` (it is
+        # only read this pass), and the input ``vertices`` is the ``original`` every pass reads.
         _launch.launch(
-            kernel_smoothing.humphrey_residual_pass,
+            kernel_smoothing.HUMPHREY_RESIDUAL_PASS[src.dtype],
             dim=n,
-            inputs=[*rows, positions, original, alpha64],
+            inputs=[*rows, src, vertices, alpha64],
             outputs=[lv, b],
             device=device,
         )
         _launch.launch(
-            kernel_smoothing.humphrey_update_pass,
+            kernel_smoothing.HUMPHREY_UPDATE_PASS[dst.dtype],
             dim=n,
             inputs=[*rows, lv, b, beta64],
-            outputs=[nxt],
+            outputs=[dst],
             device=device,
         )
-        positions, nxt = nxt, positions
 
-    return _as_vec3(positions)
+    return _vec3_passes(vertices, iterations, humphrey_pass)
 
 
 @overload
@@ -723,35 +723,36 @@ def filter_spikes(
     # ``filter_neighborhood_average`` pass and a select, with the same arithmetic, so the same
     # answer.
     angle_sums = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
-    count = _launch.empty(1, dtype=wp.int32, device=device)
+    # Two zeroed counters per pass, so no pass clears one: the spike count and the cursor of the
+    # first neighbour-key collection ``_flatten_few_spikes`` runs.
+    counts = _launch.zeros(2 * max_iter, dtype=wp.int32, device=device)
     nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     n_faces = faces.size // 3
     # The spike test is ``angle_sum < min_angle_sum``, applied to the angle *defect*
     # ``2 * pi - angle_sum`` instead: ``defect > 2 * pi - min_angle_sum``, the quantity
     # ``vertices.vertex_defects`` returns.
     min_defect = wp.float32(2.0 * math.pi - min_angle_sum)
-    for _ in range(max_iter):
+    for index in range(max_iter):
         _launch.launch(
             kernel_vertices.scatter_corner_angles,
             dim=n_faces,
             inputs=[positions, faces, angle_sums],
             device=device,
         )
-        _launch.zero_(count)
         _launch.launch(
             kernel_smoothing.mark_spikes,
             dim=n_vertices,
-            inputs=[angle_sums, min_defect, spikes, count],
+            inputs=[angle_sums, min_defect, 2 * index, spikes, counts],
             device=device,
         )
         # One readback per pass, and it is the stopping test: whether any vertex is still a spike is
         # a device-side fact that a Python loop cannot branch on otherwise.
-        n_spikes = int(read_scalar(count))
+        n_spikes = int(read_scalar(counts, index=2 * index))
         if n_spikes == 0:
             break
         flattened += n_spikes
         if n_spikes * _FEW_SPIKES_RATIO <= n_vertices:
-            _flatten_few_spikes(positions, faces, spikes, n_spikes)
+            _flatten_few_spikes(positions, faces, spikes, n_spikes, counts, 2 * index + 1)
             continue
         if operator is None:
             operator = laplacian.laplacian(vertices, faces, symmetric=True)
@@ -778,6 +779,8 @@ def _flatten_few_spikes(
     faces: wp.array[wp.int32],
     spikes: wp.array[wp.bool],
     n_spikes: int,
+    counts: wp.array[wp.int32],
+    slot: int,
 ) -> None:
     """
     Replace each spike in ``positions`` by its closed 1-ring average, in place.
@@ -785,6 +788,7 @@ def _flatten_few_spikes(
     ``filter_spikes``' pass from the spike rows alone: the rows' neighbour keys are collected and
     sorted, every row is averaged from the old positions and then written back -- the uniform
     symmetric operator's rows and arithmetic, so the same positions as the whole-mesh operator.
+    The collection's cursor is ``counts[slot]``, which arrives zeroed.
     """
     device = positions.device
     n_vertices = positions.size
@@ -792,22 +796,22 @@ def _flatten_few_spikes(
     # A spike's row holds two keys per incident face; room for a valence of 16 on the first try,
     # and the exact count, read back, when that was short.
     capacity = 32 * n_spikes
-    count = _launch.empty(1, dtype=wp.int32, device=device)
     while True:
         keys = _launch.empty(2 * capacity, dtype=wp.uint64, device=device)
         order = _launch.empty(2 * capacity, dtype=wp.int32, device=device)
-        _launch.zero_(count)
         _launch.launch(
             kernel_smoothing.spike_neighbor_keys,
             dim=faces.size // 3,
-            inputs=[faces, spikes, base, count, keys, order],
+            inputs=[faces, spikes, base, slot, counts, keys, order],
             device=device,
         )
         # Sizes the sort, and says whether the keys fit.
-        n_keys = int(read_scalar(count))
+        n_keys = int(read_scalar(counts, index=slot))
         if n_keys <= capacity:
             break
         capacity = n_keys
+        # The retry counts afresh.
+        _launch.zero_(counts[slot : slot + 1])
     if n_keys == 0:
         # Every spike is unreferenced: an empty 1-ring leaves a vertex where it is.
         return
@@ -956,14 +960,13 @@ def equalize_triangle_areas(
         else od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     )
     region = _without_boundary_vertices(vertices, faces, region)
-    positions = _launch.clone(vertices)
-    nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    for _ in range(iterations):
+
+    def equalize_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
         _launch.launch(
             kernel_smoothing.equalize_area_step,
             dim=n_vertices,
             inputs=[
-                positions,
+                src,
                 faces,
                 offsets,
                 vf_indices,
@@ -972,12 +975,12 @@ def equalize_triangle_areas(
                 wp.float32(force),
                 no_shrinkage,
                 limit,
-                nxt,
+                dst,
             ],
             device=device,
         )
-        positions, nxt = nxt, positions
-    return positions
+
+    return _float32_passes(vertices, iterations, equalize_pass)
 
 
 def _without_boundary_vertices(
@@ -1109,24 +1112,23 @@ def relax_keep_volume(
     columns, offsets = od.graph.edges_to_neighbor_lists(
         n_vertices, unique_edges, validate=False, sort_rows=True
     )
-    positions = _launch.clone(vertices)
     push = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    for _ in range(iterations):
+
+    def relax_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
         _launch.launch(
             kernel_smoothing.ring_push_forces,
             dim=n_vertices,
-            inputs=[positions, offsets, columns, region, wp.float32(force), push],
+            inputs=[src, offsets, columns, region, wp.float32(force), push],
             device=device,
         )
         _launch.launch(
             kernel_smoothing.apply_push_keeping_volume,
             dim=n_vertices,
-            inputs=[positions, offsets, columns, region, push, vertices, limit, nxt],
+            inputs=[src, offsets, columns, region, push, vertices, limit, dst],
             device=device,
         )
-        positions, nxt = nxt, positions
-    return positions
+
+    return _float32_passes(vertices, iterations, relax_pass)
 
 
 def relax_approx(
@@ -1251,14 +1253,13 @@ def relax_approx(
     neighbor_indices, neighbor_offsets, _ = od.neighbors.geodesic_ball(
         vertices, faces, dilate_radius, min_count=1
     )
-    positions = _launch.clone(vertices)
-    nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    for _ in range(iterations):
+
+    def relax_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
         _launch.launch(
             kernel_smoothing.relax_approx_step,
             dim=n_vertices,
             inputs=[
-                positions,
+                src,
                 neighbor_indices,
                 neighbor_offsets,
                 region,
@@ -1266,12 +1267,12 @@ def relax_approx(
                 wp.float32(force),
                 fit == "quadric",
                 limit,
-                nxt,
+                dst,
             ],
             device=device,
         )
-        positions, nxt = nxt, positions
-    return positions
+
+    return _float32_passes(vertices, iterations, relax_pass)
 
 
 def _relaxation_state(
@@ -1403,7 +1404,6 @@ def filter_taubin(
     require_same_device(vertices=vertices, faces=faces)
     if recompute and laplacian_operator is not None:
         raise ValueError("recompute rebuilds the operator each pass; do not also pass one")
-    device = vertices.device
     n = vertices.size
     if n == 0 or iterations == 0:
         return _launch.clone(vertices)
@@ -1417,32 +1417,23 @@ def filter_taubin(
         if recompute and faces.size > 0
         else None
     )
-    positions = _as_vec3d(vertices)
-    nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
-    for index in range(iterations):
+
+    def taubin_pass(index: int, src: _Positions, dst: _Positions) -> None:
+        # ``filter_laplacian``'s explicit pass, with the step alternating sign.
         pass_operator = (
-            laplacian.laplacian(_as_vec3(positions), faces, equal_weight=False, pattern=pattern)
+            laplacian.laplacian(
+                vertices if index == 0 else _as_vec3(cast("wp.array[wp.vec3d]", src)),
+                faces,
+                equal_weight=False,
+                pattern=pattern,
+            )
             if operator is None
             else operator
         )
         coeff = lamb if index % 2 == 0 else -nu
-        # ``filter_laplacian``'s explicit pass, with the step alternating sign.
-        _launch.launch(
-            kernel_smoothing.diffuse_vec3_pass,
-            dim=positions.size,
-            inputs=[
-                pass_operator.offsets,
-                pass_operator.columns,
-                pass_operator.values,
-                positions,
-                wp.float64(coeff),
-            ],
-            outputs=[nxt],
-            device=positions.device,
-        )
-        positions, nxt = nxt, positions
+        _diffuse_pass(pass_operator, wp.float64(coeff), src, dst)
 
-    return _as_vec3(positions)
+    return _vec3_passes(vertices, iterations, taubin_pass)
 
 
 def filter_neighborhood_average(
@@ -1516,21 +1507,19 @@ def filter_neighborhood_average(
     # Symmetric adjacency (undirected 1-ring) so boundary vertices average over all their
     # neighbors, matching Open3D's ``adjacency_list``; the directed default is asymmetric there.
     operator = _resolved_operator(vertices, faces, laplacian_operator, symmetric=True)
-    positions = _as_vec3d(vertices)
-    nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
-    for _ in range(iterations):
+
+    def average_pass(_index: int, src: _Positions, dst: _Positions) -> None:
         # The kernel reads its own degree off the CSR row it is already walking:
         # degree(i) = offsets[i + 1] - offsets[i].
         _launch.launch(
-            kernel_smoothing.neighborhood_average_pass,
+            kernel_smoothing.NEIGHBORHOOD_AVERAGE_PASS[src.dtype, dst.dtype],
             dim=n,
-            inputs=[operator.offsets, operator.columns, operator.values, positions],
-            outputs=[nxt],
+            inputs=[operator.offsets, operator.columns, operator.values, src],
+            outputs=[dst],
             device=device,
         )
-        positions, nxt = nxt, positions
 
-    return _as_vec3(positions)
+    return _vec3_passes(vertices, iterations, average_pass)
 
 
 # ``filter_mut_dif_laplacian`` warns above this relative rounding uncertainty of its mean
@@ -1653,7 +1642,6 @@ def filter_mut_dif_laplacian(
     if face_normals is None or face_areas is None:
         face_normals, face_areas = face_normals_and_areas(vertices, faces)
     normals = mean_vertex_normals(n, faces, face_normals)
-    eps = 0.01 * float(od.reduce.max(face_areas)) ** 0.5 if volume_constraint else 0.0
 
     lv = _launch.empty(n, dtype=wp.vec3d, device=device)
     sensitivity = _launch.zeros(1, dtype=wp.float64, device=device)
@@ -1668,7 +1656,19 @@ def filter_mut_dif_laplacian(
     # of two nearly equal volumes, so mixing two summation orders would show up there magnified
     # rather than in the last bits.
     constraint = None
+    area_max = None
     if volume_constraint:
+        # The largest face area, which sets the probe step ``0.01 * sqrt(max area)`` in the two
+        # kernels that use it; areas are non-negative, so a zero seed is the maximum's identity.
+        area_max = _launch.zeros(1, dtype=wp.float32, device=device)
+        if face_areas.size > 0:
+            _launch.launch_tiled(
+                kernel_reduce.MAX1D_TILED[wp.float32],
+                dim=[kernel_reduce.blocks_1d(face_areas.size)],
+                inputs=[face_areas, area_max],
+                block_dim=TILE_1D,
+                device=device,
+            )
         probe = _launch.empty(n, dtype=wp.vec3d, device=device)
         scratch = _VolumeScratch.for_faces(faces, device)
         vol_ini, vol_probe, slope = (
@@ -1703,7 +1703,7 @@ def filter_mut_dif_laplacian(
         _launch.launch(
             kernel_smoothing.mut_dif_step_scaled,
             dim=n,
-            inputs=[positions, lv, adil_sum, inv_n, wp.float64(lamb), normals, wp.float64(eps)],
+            inputs=[positions, lv, adil_sum, inv_n, wp.float64(lamb), normals, area_max],
             outputs=[nxt, probe, sensitivity],
             device=device,
         )
@@ -1722,7 +1722,7 @@ def filter_mut_dif_laplacian(
                     vol_ini,
                     vol_cur,
                     vol_probe,
-                    wp.float64(eps),
+                    area_max,
                     wp.int32(index == 0),
                     slope,
                 ],
@@ -1798,10 +1798,15 @@ class _VolumeConstraint:
 
     ``anchor`` captures the input's signed volume (``measures.volume``'s kernel on the ``float64``
     positions) and the first four of ``measures.moments``' integrals (of the ``float32`` copy, the
-    centre's source) into one ``state`` buffer; ``apply`` sums the current volume with the
-    reduction ``_VolumeScratch`` uses, forms the scale and the fixed initial centre once
+    centre's source), each into the first slots of its own block-commit buffer, where they stay;
+    ``apply`` sums the current volume with the reduction ``_VolumeScratch`` uses, forms the scale
+    and the fixed initial centre once into ``state``
     (``kernel_smoothing.volume_rescale_parameters``) and rescales. The arithmetic is the host
     version's -- the same reductions and the same centre rounding -- so the answer is too.
+
+    Both commit buffers are allocated once and re-anchored in place: a reproducible commit
+    overwrites its result slots and resets its own ticket, and only the atomic one (determinism
+    off when the constraint was built) needs its slots cleared before the next anchor.
     """
 
     def __init__(self, faces: wp.array[wp.int32], device: wp.DeviceLike) -> None:
@@ -1809,10 +1814,18 @@ class _VolumeConstraint:
         self._device = device
         self._n_faces = faces.size // 3
         self._chunk_faces = kernel_measures.moment_chunk_faces(self._n_faces)
-        self.state = _launch.empty(9, dtype=wp.float64, device=device)
-        self._volume = odt.as_dense(self.state[:1])
-        self._moments = odt.as_dense(self.state[1:5])
+        self._volume_blocks = kernel_reduce.blocks_1d(self._n_faces)
+        self._moment_blocks = -(-self._n_faces // self._chunk_faces)
+        # Zeroed at allocation, so a constraint over no faces reads a zero anchor: no rescale.
+        self._volume, self._volume_stride = _launch.block_partials(
+            self._volume_blocks, 1, wp.float64, device
+        )
+        self._moments, self._moment_stride = _launch.block_partials(
+            self._moment_blocks, 4, wp.float64, device
+        )
+        self.state = _launch.empty(4, dtype=wp.float64, device=device)
         self._scratch = _VolumeScratch.for_faces(faces, device)
+        self._anchored = False
 
     @classmethod
     def anchored(
@@ -1825,31 +1838,30 @@ class _VolumeConstraint:
 
     def anchor(self, positions: wp.array[wp.vec3d], vertices: wp.array[wp.vec3]) -> None:
         """Capture the volume of ``positions`` and the centre of mass of ``vertices``."""
-        _launch.zero_(self.state)
         if self._n_faces == 0:
             return
-        # Both sums are fixed-order block partials, folded and copied into ``state``, so the anchor
-        # (and the rescale it sets) repeats bit for bit on CUDA while determinism is on.
-        blocks = kernel_reduce.blocks_1d(self._n_faces)
-        volume, stride = _launch.block_partials(blocks, 1, wp.float64, self._device)
+        if self._anchored and self._volume.size == self._volume_stride:
+            # The atomic commit adds into its result slots; the reproducible one overwrites them.
+            _launch.zero_(self._volume)
+        if self._anchored and self._moments.size == self._moment_stride:
+            _launch.zero_(self._moments)
+        self._anchored = True
+        # Both sums are fixed-order block partials, so the anchor (and the rescale it sets) repeats
+        # bit for bit on CUDA while determinism is on.
         _launch.launch_tiled(
             kernel_measures.MESH_SIGNED_VOLUME[wp.vec3d],
-            dim=[blocks],
-            inputs=[positions, self._faces, stride, volume],
+            dim=[self._volume_blocks],
+            inputs=[positions, self._faces, self._volume_stride, self._volume],
             block_dim=TILE_1D,
             device=self._device,
         )
-        _launch.copy(self._volume, volume, count=1)
-        blocks = -(-self._n_faces // self._chunk_faces)
-        moments, stride = _launch.block_partials(blocks, 4, wp.float64, self._device)
         _launch.launch_tiled(
             kernel_measures.centroid_integrals,
-            dim=[blocks],
-            inputs=[vertices, self._faces, self._chunk_faces, stride, moments],
+            dim=[self._moment_blocks],
+            inputs=[vertices, self._faces, self._chunk_faces, self._moment_stride, self._moments],
             block_dim=TILE_1D,
             device=self._device,
         )
-        _launch.copy(self._moments, moments, count=4)
 
     def apply(self, positions: wp.array[wp.vec3d], *, out: wp.array[wp.vec3] | None = None) -> None:
         """Rescale ``positions`` back to the anchored volume, in place or narrowed into ``out``."""
@@ -1857,7 +1869,7 @@ class _VolumeConstraint:
         _launch.launch(
             kernel_smoothing.volume_rescale_parameters,
             dim=1,
-            inputs=[self._scratch.volume, self.state],
+            inputs=[self._scratch.volume, self._volume, self._moments, self.state],
             device=self._device,
         )
         if out is None:
@@ -2236,17 +2248,13 @@ def _dirichlet_state(
     # on the boundary (a single triangle, a fan, a strip, a small hole patch) would then have the
     # unconstrained flow move every vertex the caller asked to pin. The caller reads ``n_free`` and
     # returns the input unchanged instead.
-    pinned = _launch.zeros((3, n), dtype=wp.float64, device=device)
+    # Every element of both is written before it is read: the map fills all three rows, and each
+    # pass's seed writes every free row of the solution before the solve reads it.
+    pinned = _component_columns(n, device)
     _launch.map(
         kernel_smoothing.extract_components, positions, out=[pinned[column] for column in range(3)]
     )
-    return _Dirichlet(
-        fixed_mask,
-        free_map,
-        n_free,
-        odt.as_array2d(pinned, wp.float64),
-        odt.as_array2d(_launch.zeros((3, n_free), dtype=wp.float64, device=device), wp.float64),
-    )
+    return _Dirichlet(fixed_mask, free_map, n_free, pinned, _component_columns(n_free, device))
 
 
 def _component_columns(n: int, device: wp.DeviceLike) -> odt.Array2dFloat64:
@@ -2555,17 +2563,19 @@ def refine_and_smooth_region(
         return vertices, faces, patch_face_mask
 
     n = vertices.size
-    # New (interior patch) vertices are the tail appended by subdivision, minus mesh-boundary verts.
-    new_verts = _launch.zeros(n, dtype=wp.bool, device=device)
-    # Warp rejects a zero-length slice, and subdivision may have added no vertices at all.
-    if n > n_vertices_before:
-        _launch.fill_(new_verts[n_vertices_before:], True)
     # One edge grouping serves the boundary mask and both regions' topology: the solves move
     # vertices, never connectivity.
     edges = od.edges.edges_unique(faces, n_vertices=n, validate=False)
     bd_mask = _boundary_verts_mask(n, edges, device)
+    # New (interior patch) vertices are the tail appended by subdivision, minus mesh-boundary verts.
     free = _launch.empty(n, dtype=wp.bool, device=device)
-    _launch.map(kernel_array.mask_and_not, new_verts, bd_mask, out=free)
+    _launch.launch(
+        kernel_smoothing.mark_free_new_vertices,
+        dim=n,
+        inputs=[wp.int32(n_vertices_before), bd_mask],
+        outputs=[free],
+        device=device,
+    )
 
     # Both solves run over one region of one connectivity, so it is derived once for the pair.
     region = _region_topology(vertices, faces, free, edges)
@@ -3120,10 +3130,9 @@ def smooth_region_boundary(
         if vertex_faces is not None
         else od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     )
-    positions = _launch.clone(vertices)
     free_map, n_free = twl.free_partition(fixed_mask)
     if n_free == 0:
-        return positions
+        return _launch.clone(vertices)
     field_2d = odt.as_array2d(field, wp.float64)
     # The band's Dirichlet system is built band-sized, from the vertex-face rings: its sparsity
     # once (the connectivity, and so the free set, is the same every pass), and its values and
@@ -3144,12 +3153,12 @@ def smooth_region_boundary(
     solution = odt.as_array2d(
         _launch.zeros((1, n_free), dtype=wp.float64, device=device), wp.float64
     )
-    nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    for _ in range(iterations):
+
+    def boundary_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
         _launch.launch(
             kernel_smoothing.band_dirichlet_values,
             dim=n_vertices,
-            inputs=[*ring, positions, field_2d, pattern_offsets, columns],
+            inputs=[*ring, src, field_2d, pattern_offsets, columns],
             outputs=[system.values, rhs],
             device=device,
         )
@@ -3159,7 +3168,7 @@ def smooth_region_boundary(
             kernel_smoothing.project_to_zero_isoline,
             dim=n_vertices,
             inputs=[
-                positions,
+                src,
                 faces,
                 offsets,
                 vf_indices,
@@ -3169,11 +3178,11 @@ def smooth_region_boundary(
                 solution[0],
                 _ISOLINE_DAMPING,
             ],
-            outputs=[nxt],
+            outputs=[dst],
             device=device,
         )
-        positions, nxt = nxt, positions
-    return positions
+
+    return _float32_passes(vertices, iterations, boundary_pass)
 
 
 def _band_pattern(
@@ -3468,11 +3477,13 @@ def filter_normals(
 
     device = vertices.device
     n_faces = faces.size // 3
-    if face_normals is None or face_areas is None:
-        face_normals, face_areas = face_normals_and_areas(vertices, faces)
     # Each pass rewrites the normal field in place, so a caller-supplied buffer is copied rather
-    # than clobbered -- ``Trimesh.face_normals`` is one array shared with every other reader.
-    normals, areas = _launch.clone(face_normals), face_areas
+    # than clobbered -- ``Trimesh.face_normals`` is one array shared with every other reader. One
+    # computed here is this call's own.
+    if face_normals is None or face_areas is None:
+        normals, areas = face_normals_and_areas(vertices, faces)
+    else:
+        normals, areas = _launch.clone(face_normals), face_areas
     if n_faces == 0 or iterations <= 0:
         return normals
 
@@ -3731,19 +3742,21 @@ def filter_sharpen(
     if n == 0:
         return out
     # No volume constraint on the inner smoothing: its rescaling would leak into the difference and
-    # show up as a uniform scaling of the sharpened mesh rather than as detail.
-    smoothed = filter_laplacian(
+    # show up as a uniform scaling of the sharpened mesh rather than as detail. The smoothed
+    # positions are ``filter_laplacian(lamb=1, volume_constraint=False)``'s, written into ``out``
+    # and sharpened there in place.
+    operator = _resolved_operator(vertices, faces, laplacian_operator)
+    coeff = wp.float64(1.0)
+    _vec3_passes(
         vertices,
-        faces,
-        lamb=1.0,
-        iterations=iterations,
-        volume_constraint=False,
-        laplacian_operator=laplacian_operator,
+        iterations,
+        lambda _index, src, dst: _diffuse_pass(operator, coeff, src, dst),
+        out=out,
     )
     _launch.map(
         kernel_smoothing.unsharp_step,
         vertices,
-        smoothed,
+        out,
         wp.float32(weight),
         wp.float32(weight_original),
         out=out,
@@ -3790,6 +3803,84 @@ def _resolved_operator(
     if laplacian_operator is not None:
         return laplacian_operator
     return laplacian.laplacian(vertices, faces, symmetric=symmetric)
+
+
+# A filter's positions on either side of the ``float32`` / ``float64`` seam.
+_Positions = wp.array[wp.vec3] | wp.array[wp.vec3d]
+
+
+def _vec3_passes(
+    vertices: wp.array[wp.vec3],
+    passes: int,
+    run: Callable[[int, _Positions, _Positions], None],
+    *,
+    out: wp.array[wp.vec3] | None = None,
+) -> wp.array[wp.vec3]:
+    """
+    Run ``passes`` smoothing passes from ``float32`` positions to ``float32`` positions.
+
+    ``run(index, src, dst)`` launches pass ``index`` from ``src`` into ``dst``. The first pass
+    reads ``vertices`` itself and the last writes ``out`` (allocated here when omitted); the passes
+    between ping-pong two ``float64`` buffers. A pass kernel widens a ``float32`` read and narrows a
+    ``float32`` write exactly as a converting copy would, so this is the arithmetic of widening the
+    input, running every pass in ``float64`` and narrowing the result, without either copy. Zero
+    passes copy ``vertices``.
+    """
+    device = vertices.device
+    n = vertices.size
+    if out is None:
+        out = _launch.empty(n, dtype=wp.vec3, device=device)
+    if passes == 0:
+        _launch.copy(out, vertices)
+        return out
+    scratch = [_launch.empty(n, dtype=wp.vec3d, device=device) for _ in range(min(2, passes - 1))]
+    src: _Positions = vertices
+    for index in range(passes):
+        dst: _Positions = out if index == passes - 1 else scratch[index % 2]
+        run(index, src, dst)
+        src = dst
+    return out
+
+
+def _float32_passes(
+    vertices: wp.array[wp.vec3],
+    passes: int,
+    run: Callable[[wp.array[wp.vec3], wp.array[wp.vec3]], None],
+) -> wp.array[wp.vec3]:
+    """
+    Run ``passes`` (at least one) passes of ``run(src, dst)`` from ``vertices``; return the last.
+
+    The first pass reads ``vertices`` itself, so the input is never copied: the passes ping-pong
+    two buffers allocated here, the second only when there is a second pass.
+    """
+    scratch = [
+        _launch.empty(vertices.size, dtype=wp.vec3, device=vertices.device)
+        for _ in range(min(2, passes))
+    ]
+    src = vertices
+    for index in range(passes):
+        dst = scratch[index % 2]
+        run(src, dst)
+        src = dst
+    return src
+
+
+def _diffuse_pass(
+    operator: odt.BsrMatrix[wp.float32], coeff: wp.float64, src: _Positions, dst: _Positions
+) -> None:
+    """
+    One explicit diffusion pass ``dst = src + coeff * (L src - src)`` through ``operator``.
+
+    The averaging operator is applied and the step taken in the same thread, so no intermediate
+    ``L.v`` buffer is written or read back.
+    """
+    _launch.launch(
+        kernel_smoothing.DIFFUSE_VEC3_PASS[src.dtype, dst.dtype],
+        dim=src.size,
+        inputs=[operator.offsets, operator.columns, operator.values, src, coeff],
+        outputs=[dst],
+        device=src.device,
+    )
 
 
 def _as_vec3d(vertices: wp.array[wp.vec3]) -> wp.array[wp.vec3d]:

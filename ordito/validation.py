@@ -19,7 +19,6 @@ from ordito._device import (
 )
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.kernels import adjacency as kernel_adjacency
-from ordito.kernels import array as kernel_array
 from ordito.kernels import intersection as kernel_intersections
 from ordito.kernels import validation as kernel_validation
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
@@ -1039,9 +1038,12 @@ def face_flip_mask(
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.bool, device=device)
 
-    orient, _ = _orientation_bits_from_mates(faces, n_vertices)
+    # The flip mask is the parity itself, so the flatten writes it as a ``bool`` directly.
+    words, _ = _orientation_words_from_mates(faces, n_vertices)
     mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
-    _launch.map(kernel_array.greater, orient, wp.int32(0), out=mask)
+    _launch.launch(
+        kernel_validation.flatten_parity_flip_mask, dim=n_faces, inputs=[words, mask], device=device
+    )
     return mask
 
 
@@ -1051,27 +1053,39 @@ def _orientation_bits_from_mates(
     """
     Flip bits, with the signed edges formed straight off the halfedge mates.
 
-    The bits [`face_orientation_bits`][ordito.validation.face_orientation_bits] returns.
+    The bits [`face_orientation_bits`][ordito.validation.face_orientation_bits] returns, for
+    [`is_orientable`][ordito.validation.is_orientable], which consumes the bits and not the table.
+    ``faces`` must be non-empty; ``n_vertices`` is ``halfedge_mates``' optional bound. The mates
+    are returned too, so a caller can re-form the same edges.
+    """
+    words, mates = _orientation_words_from_mates(faces, n_vertices)
+    return _flatten_orientation(words), mates
+
+
+def _orientation_words_from_mates(
+    faces: wp.array[wp.int32], n_vertices: int | None
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Build the parity union-find's hooked words over the signed edges of the halfedge mates.
 
     One signed edge per halfedge: each adjacency pair's row at its lower halfedge, a sign-``0``
     self-loop everywhere else, which the parity union-find skips and every orientation satisfies.
-    So neither the adjacency table nor the host read of its length is built. For callers that
-    consume the bits, not the table: [`is_orientable`][ordito.validation.is_orientable] and
-    [`face_flip_mask`][ordito.validation.face_flip_mask]. ``faces`` must be non-empty;
-    ``n_vertices`` is ``halfedge_mates``' optional bound, as in those two. The mates are returned
-    too, so a caller can re-form the same edges.
+    So neither the adjacency table nor the host read of its length is built. Flattened, the words
+    give [`face_orientation_bits`][ordito.validation.face_orientation_bits]' bits
+    (``_flatten_orientation``) or [`face_flip_mask`][ordito.validation.face_flip_mask]'s mask.
+    Returned with the mates.
     """
     mates = od.halfedge.halfedge_mates(faces, n_vertices)
     # Every endpoint is a face id derived in the thread from a halfedge index, bounded by
     # ``n_faces`` by construction, and every sign is ``0`` or ``1``.
-    orient = _solve_orientation(
+    words = _orientation_words(
         faces.size // 3,
         kernel_validation.mate_hook_parity,
         mates.size,
         [faces, mates],
         faces.device,
     )
-    return orient, mates
+    return words, mates
 
 
 def _solve_orientation(
@@ -1088,6 +1102,17 @@ def _solve_orientation(
     three launches with ``hook`` in place of its edge-list hook and no label table, which neither
     orientation caller reads. ``hook_inputs`` precede the packed words in ``hook``'s signature.
     """
+    return _flatten_orientation(_orientation_words(n_faces, hook, n_edges, hook_inputs, device))
+
+
+def _orientation_words(
+    n_faces: int,
+    hook: odt.Kernel,
+    n_edges: int,
+    hook_inputs: Sequence[object],
+    device: wp.DeviceLike,
+) -> wp.array[wp.int32]:
+    """Initialize the packed parity words and run ``hook`` over them, ready to flatten."""
     words = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_connected_components.ecl_init_parent_parity,
@@ -1097,12 +1122,17 @@ def _solve_orientation(
     )
     if n_edges > 0:
         _launch.launch(hook, dim=n_edges, inputs=[*hook_inputs, words], device=device)
-    orient = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    return words
+
+
+def _flatten_orientation(words: wp.array[wp.int32]) -> wp.array[wp.int32]:
+    """Each face's parity against its component root, from hooked parity words."""
+    orient = _launch.empty(words.size, dtype=wp.int32, device=words.device)
     _launch.launch(
         kernel_connected_components.ecl_flatten_parity,
-        dim=n_faces,
+        dim=words.size,
         inputs=[words, None, orient],
-        device=device,
+        device=words.device,
     )
     return orient
 

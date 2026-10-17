@@ -62,18 +62,16 @@ from ordito.constants import TILE_1D
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import reduce as kernel_reduce
-from ordito.kernels import scatter as kernel_scatter
 from ordito.laplacian import (
     MeshOperatorPattern,
-    connection_laplacian,
-    cotmatrix,
+    cotmatrix_entries,
     cotmatrix_entries_intrinsic,
     mass_matrix_entries,
     mesh_operator_pattern,
     mollify_intrinsic,
 )
 from ordito.mesh import Trimesh, mesh_arguments
-from ordito.tangent_space import vertex_tangent_frames
+from ordito.tangent_space import halfedge_transport_angles, vertex_tangent_frames
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -903,50 +901,70 @@ def vector_heat_operators(
     require_same_device(vertices=vertices, faces=faces, frames=frames)
     device = vertices.device
     n_vertices = vertices.size
+    n_faces = faces.size // 3
     # One sparsity for both operators: the connection Laplacian's is the cotangent Laplacian's.
-    pattern = mesh_operator_pattern(faces, n_vertices) if faces.size > 0 else None
-    connection = connection_laplacian(vertices, faces, pattern=pattern)
+    pattern = mesh_operator_pattern(faces, n_vertices) if n_faces > 0 else None
+    # A bundle ``_heat_operators`` built carries the mass and timestep sums it assembled from.
+    built = None if scalar_operators is None else _SCALAR_BUILDS.get(scalar_operators[0])
     edge_sums = None
     if t is None:
         # Shares the scalar solver's timestep convention -- the unique-edge mean, matching
         # ``igl::heat_geodesics``. The two solvers must agree: ``log_map``'s radius is asserted to
         # *be* the ``heat_geodesic`` distance, so giving them different diffusion times would split
         # a quantity that is supposed to be one number. They do by construction: the mean is read
-        # off the connection Laplacian's sparsity, which is the cotangent Laplacian's, twelve
-        # triplets per face and nothing pruned -- and the scalar bundle built here takes these
-        # very sums. Both systems square it on the device, so nothing is read back.
-        edge_sums = _edge_length_sums(vertices, connection)
+        # off the shared sparsity, twelve triplets per face and nothing pruned, and the scalar
+        # bundle built here takes these very sums (a prebuilt one already holds its own). Both
+        # systems square it on the device, so nothing is read back.
+        if built is not None and built.edge_sums is not None:
+            edge_sums = built.edge_sums
+        else:
+            edge_sums = _edge_length_sums(vertices, pattern)
 
     if scalar_operators is None:
         scalar_operators, mass = _heat_operators(
             vertices, faces, t, edge_sums=edge_sums, pattern=pattern
         )
+    elif built is not None:
+        mass = built.mass
     else:
         # The bundle's own face areas, which ``_heat_operators`` builds the mass from too.
         mass = mass_matrix_entries(
             vertices, faces, dtype=wp.float64, face_areas=scalar_operators[7]
         )
-    # ``M + t L_connection`` over the connection Laplacian's own pattern, as the scalar system is
-    # built over the cotangent one's (``heat_operators``); the kernel forms each vertex's mass block
-    # from the scalar mass as it reads it.
-    vector_values = _launch.empty_like(connection.values)
-    _launch.launch(
-        kernel_linalg.SHIFTED_SYSTEM_VALUES[wp.mat22d],
-        dim=int(connection.nrow),
-        inputs=[
-            connection.offsets,
-            connection.columns,
-            connection.values,
-            mass,
-            wp.float64(1.0 if t is None else t),
-            edge_sums,
-            wp.int32(1 if t is None else 0),
-            wp.int32(0),
-        ],
-        outputs=[vector_values, None],
-        device=device,
-    )
-    vector_system = twl.bsr_with_values(connection, vector_values)
+    if pattern is None:
+        vector_system = od.array.empty_square_bsr(n_vertices, wp.mat22d, device)
+    else:
+        # ``M + t L_connection`` over the cotangent Laplacian's pattern, as the scalar system is
+        # built over it (``heat_operators``): ``connection_laplacian``'s entries, shifted in the
+        # thread that forms them, so the connection Laplacian itself is never stored.
+        cot_entries = cotmatrix_entries(vertices, faces, dtype=wp.float64)
+        transport_angles = halfedge_transport_angles(vertices, faces)
+        _, _, offsets, columns, run_start, keys, count, order = pattern
+        vector_values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
+        _launch.launch(
+            kernel_heat.VECTOR_HEAT_SYSTEM_ROWS[wp.float64],
+            dim=n_vertices,
+            inputs=[
+                offsets,
+                columns,
+                run_start,
+                keys,
+                wp.int32(count),
+                order,
+                faces,
+                cot_entries,
+                transport_angles,
+                mass,
+                wp.float64(1.0 if t is None else t),
+                edge_sums,
+                wp.int32(1 if t is None else 0),
+            ],
+            outputs=[vector_values],
+            device=device,
+        )
+        vector_system = od.array.bsr_from_csr(
+            n_vertices, n_vertices, offsets, columns, vector_values
+        )
     if frames is None:
         frames = vertex_tangent_frames(vertices, faces)
     preconditioner = twl.jacobi_preconditioner(vector_system)
@@ -1003,54 +1021,67 @@ def _heat_operators(
             ],
             device=device,
         )
-        # The exact sums over three, in place: ``mass_matrix_entries``' barycentric diagonal.
+    # The cotangent Laplacian, the heat system ``M - t L`` and the Poisson operator ``-L``, all
+    # over the one pattern (which stores every referenced vertex's diagonal) and written by one row
+    # kernel (``kernels/heat.heat_system_rows``), which casts the half-cotangent weights to
+    # ``float64`` as it reads them and forms the lumped mass from the area sums in the same pass.
+    # The two preconditioners are mesh-only, so they belong here rather than in every solve. See
+    # Notes.
+    n_vertices = vertices.size
+    if n_faces == 0:
+        laplacian = od.array.empty_square_bsr(n_vertices, wp.float64, device)
+        heat_values = _launch.empty_like(laplacian.values)
+        poisson_values = _launch.empty_like(laplacian.values)
+        if t is None and edge_sums is None:
+            edge_sums = _edge_length_sums(vertices, None)
+    else:
+        if int(cot_entries.shape[0]) != n_faces:
+            raise ValueError(
+                f"cot_entries must have shape (n_faces, 3) = ({n_faces}, 3), "
+                f"got {(int(cot_entries.shape[0]), int(cot_entries.shape[1]))}"
+            )
+        if pattern is None:
+            pattern = mesh_operator_pattern(faces, n_vertices)
+        if t is None and edge_sums is None:
+            # The unique-edge average, which is what ``igl::heat_geodesics`` uses for its timestep
+            # -- read off the Laplacian's own sparsity, which already holds the unique edges, and
+            # left on the device for the system's assembly to square.
+            edge_sums = _edge_length_sums(vertices, pattern)
+        _, _, offsets, columns, run_start, keys, count, order = pattern
+        laplacian_values = _launch.empty(columns.size, dtype=wp.float64, device=device)
+        heat_values = _launch.empty(columns.size, dtype=wp.float64, device=device)
+        poisson_values = _launch.empty(columns.size, dtype=wp.float64, device=device)
         _launch.launch(
-            kernel_scatter.SCALE_FACE_SUMS[wp.float64],
-            dim=vertices.size,
-            inputs=[mass, wp.float64(3.0), mass],
+            kernel_heat.HEAT_SYSTEM_ROWS[cot_entries.dtype],
+            dim=n_vertices,
+            inputs=[
+                offsets,
+                columns,
+                run_start,
+                keys,
+                wp.int32(count),
+                order,
+                cot_entries,
+                wp.float64(-1.0 if t is None else -t),
+                edge_sums if t is None else None,
+                wp.int32(1 if t is None else 0),
+                mass,
+            ],
+            # The lumped mass over its own area sums, in place.
+            outputs=[laplacian_values, heat_values, poisson_values, mass],
             device=device,
         )
-    # ``cotmatrix`` casts the shared float32 half-cotangent weights to float64 and assembles the
-    # operator natively in a single build, avoiding a recast rebuild (see cotmatrix's kernel note).
-    laplacian = cotmatrix(
-        vertices, faces, cot_entries=cot_entries, dtype=wp.float64, pattern=pattern
-    )
-    if t is None and edge_sums is None:
-        # The unique-edge average, which is what ``igl::heat_geodesics`` uses for its timestep --
-        # read off the Laplacian's own sparsity, which already holds the unique edges, and left on
-        # the device for the system's assembly to square.
-        edge_sums = _edge_length_sums(vertices, laplacian)
+        laplacian = od.array.bsr_from_csr(
+            n_vertices, n_vertices, offsets, columns, laplacian_values
+        )
 
     # The divergence kernel this bundle feeds (``kernels/heat.py::unit_gradient_divergence``) is
-    # hardcoded ``wp.array2d[wp.float32]`` -- ``cotmatrix`` above accepts either precision because
-    # it casts internally, but this tuple's own ``cot_entries`` field is documented and used
-    # downstream as float32 only, so a caller-supplied float64 table must be narrowed before it is
-    # returned rather than passed through at whatever precision it arrived in.
+    # hardcoded ``wp.array2d[wp.float32]``, but this tuple's own ``cot_entries`` field is documented
+    # and used downstream as float32 only, so a caller-supplied float64 table must be narrowed
+    # before it is returned rather than passed through at whatever precision it arrived in.
     if cot_entries.dtype is not wp.float32:
         cot_entries = odt.as_array2d(od.array.astype(cot_entries, wp.float32), wp.float32)
 
-    # Heat system (M - t L) and Poisson operator ``-L``, both over the Laplacian's own pattern
-    # (which stores every referenced vertex's diagonal) and written in one pass
-    # (``kernels/linalg.shifted_system_values``), so all three operators share one pattern. The two
-    # preconditioners are mesh-only, so they belong here rather than in every solve. See Notes.
-    heat_values = _launch.empty_like(laplacian.values)
-    poisson_values = _launch.empty_like(laplacian.values)
-    _launch.launch(
-        kernel_linalg.SHIFTED_SYSTEM_VALUES[wp.float64],
-        dim=int(laplacian.nrow),
-        inputs=[
-            laplacian.offsets,
-            laplacian.columns,
-            laplacian.values,
-            mass,
-            wp.float64(-1.0 if t is None else -t),
-            edge_sums if t is None else None,
-            wp.int32(1 if t is None else 0),
-            wp.int32(1),
-        ],
-        outputs=[heat_values, poisson_values],
-        device=vertices.device,
-    )
     heat_system = twl.bsr_with_values(laplacian, heat_values)
     poisson_system = twl.bsr_with_values(laplacian, poisson_values)
     operators = (
@@ -1064,33 +1095,51 @@ def _heat_operators(
         normals,
         areas,
     )
+    _SCALAR_BUILDS[heat_system] = _ScalarBuild(mass, edge_sums)
     return operators, mass
 
 
+@dataclass(frozen=True)
+class _ScalarBuild:
+    """What ``_heat_operators`` assembled a bundle from that ``vector_heat_operators`` reuses."""
+
+    mass: wp.array[wp.float64]
+    edge_sums: wp.array[wp.float64] | None
+
+
+# Each bundle's ``_ScalarBuild``, keyed weakly by its heat system, so it lives exactly as long as
+# the bundle does: a prebuilt bundle handed to ``vector_heat_operators`` (a `Trimesh`'s cached
+# ``heat_operators``) gives up its ``float64`` mass and timestep sums rather than having them
+# rebuilt. ``edge_sums`` is ``None`` for a bundle built at an explicit ``t``.
+_SCALAR_BUILDS: weakref.WeakKeyDictionary[odt.SparseMatrix, _ScalarBuild] = (
+    weakref.WeakKeyDictionary()
+)
+
+
 def _edge_length_sums(
-    vertices: wp.array[wp.vec3], operator: odt.SparseMatrix
+    vertices: wp.array[wp.vec3], pattern: MeshOperatorPattern | None
 ) -> wp.array[wp.float64]:
     """
-    Sum and count of the unique-edge lengths, read off an operator with one entry per edge.
+    Sum and count of the unique-edge lengths, read off a mesh operator pattern.
 
-    The strict upper triangle of the heat method's Laplacians is the mesh's unique edge set, so the
-    default timestep costs one launch over an operator that already exists, where
+    The strict upper triangle of the heat method's operators' pattern is the mesh's unique edge
+    set, so the default timestep costs one launch over a pattern that already exists, where
     [`mean_unique_edge_length`][ordito.edges.mean_unique_edge_length] would re-sort every edge of
     the mesh to recover the same set. The two sums stay on the device, where
-    ``kernels/linalg.shifted_system_values`` squares their mean -- ``0`` for a mesh with no edges,
-    as that function returns.
+    ``kernels/linalg.shift_factor`` squares their mean -- ``0`` for a mesh with no edges (``None``
+    for the pattern of a mesh with no faces), as that function returns.
     """
     device = vertices.device
-    n_rows = int(operator.nrow)
-    if n_rows == 0:
+    if pattern is None or pattern.n_vertices == 0:
         return _launch.zeros(2, dtype=wp.float64, device=device)
+    n_rows = pattern.n_vertices
     # Block rows added in a fixed order, so the timestep repeats bit for bit on CUDA.
     blocks = kernel_reduce.blocks_1d(n_rows)
     sum_and_count, stride = _launch.block_partials(blocks, 2, wp.float64, device)
     _launch.launch_tiled(
         kernel_heat.upper_edge_length_sum_and_count,
         dim=[blocks],
-        inputs=[operator.offsets, operator.columns, vertices, stride, sum_and_count],
+        inputs=[pattern.offsets, pattern.columns, vertices, stride, sum_and_count],
         block_dim=TILE_1D,
         device=device,
     )

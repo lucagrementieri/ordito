@@ -960,6 +960,44 @@ def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     assert np.allclose(centers_scaled_wp.numpy(), centers_unit_wp.numpy(), rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("inwards", [True, False])
+def test_max_tangent_sphere_seed_is_half_the_longest_ray(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], inwards: bool
+) -> None:
+    """
+    Ordito against ordito: with no shrink round, the sphere is the seed, half the longest ray.
+
+    Not a library comparison: it pins the fused seed kernel to the two public calls it stands in
+    for -- [`longest_ray`][ordito.ray.longest_ray] along the signed, normalized normal, halved --
+    byte for byte, finite hits and escaped rays alike (an escaped ray seeds from the support point
+    instead, so only the finite ones are compared). Both directions are run so both outcomes occur.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    points_wp = mesh_wp.points
+    # Scaled off unit length on the host, so the kernel's own normalization is exercised; the
+    # reference normalizes with the same ``wp.normalize`` and applies the sign exactly.
+    normals_np = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy() * 3.0
+    unit_wp = warp_empty(points_wp.size, wp.vec3, mesh_wp.device)
+    wp.map(wp.normalize, points_to_warp(normals_np, mesh_wp.device), out=unit_wp)
+    directions_np = unit_wp.numpy() * np.float32(-1.0 if inwards else 1.0)
+    distances_np = od.ray.longest_ray(
+        mesh_wp, points_wp, points_to_warp(directions_np, mesh_wp.device)
+    ).numpy()
+    centers_wp, radii_wp = od.visibility.max_tangent_sphere(
+        mesh_wp,
+        points_wp,
+        inwards=inwards,
+        normals=points_to_warp(normals_np, mesh_wp.device),
+        max_iter=0,
+    )
+    finite = np.isfinite(distances_np)
+    # Non-vacuity: interior rays hit, and most exterior ones escape the bumpy closed solid.
+    assert finite.sum() > finite.size // 2 if inwards else (~finite).sum() > finite.size // 2
+    assert finite.any()
+    assert np.array_equal(radii_wp.numpy()[finite], distances_np[finite] * np.float32(0.5))
+    assert np.isfinite(centers_wp.numpy()[finite]).all()
+
+
 @pytest.mark.parametrize("kernel_device", ["cpu", "cuda:0"])
 def test_max_tangent_sphere_agrees_across_devices(kernel_device: str) -> None:
     """

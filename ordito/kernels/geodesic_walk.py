@@ -4,8 +4,7 @@ from ordito.constants import PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
 from ordito.kernels.array import binary_search_index, loop_point, to_vec3, wrap_index
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import project_out_normal, unit_tangent, world_to_tangent
-from ordito.kernels.tangent_space import corner_angle
-from ordito.kernels.triangles import face_normal, local_corner
+from ordito.kernels.triangles import face_normal, halfedge_corner_angle, local_corner
 
 wp.set_module_options({"enable_backward": False})
 
@@ -314,7 +313,6 @@ def trace_walk(
 def start_direction_at_vertex(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    face_angles: wp.array2d[wp.float32],
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     is_boundary: wp.array[wp.bool],
@@ -337,13 +335,16 @@ def start_direction_at_vertex(
     # walk. A direction along an edge leaves along it only where the fan is flat; placing directions
     # between the projected edges that bracket them instead gives every edge exactly, but has no
     # answer for a folded fan and depended on the frame there.
+    #
+    # The corner angles are formed where they are read (``halfedge_corner_angle``), each the entry
+    # of ``triangles.face_angles`` it stands for: a ray reads one vertex's ring, not every face.
     begin = ring_offsets[vertex]
     end = ring_offsets[vertex + 1]
     if end <= begin:
         return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
     total = wp.float32(0.0)
     for j in range(begin, end):
-        total += corner_angle(face_angles, ring_halfedges[j])
+        total += halfedge_corner_angle(vertices, faces, ring_halfedges[j])
     if total <= TOLERANCE_ZERO_CONSTANT:
         return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
     full_turn = TWO_PI
@@ -367,7 +368,7 @@ def start_direction_at_vertex(
         sin_theta = wp.sin(theta)
         anchor_x += edge[0] * cos_theta + edge[1] * sin_theta
         anchor_y += edge[1] * cos_theta - edge[0] * sin_theta
-        accumulated += corner_angle(face_angles, h)
+        accumulated += halfedge_corner_angle(vertices, faces, h)
     if is_boundary[vertex]:
         # An open fan has one edge more than wedges: the last wedge's far edge, at half a turn.
         h = ring_halfedges[end - 1]
@@ -397,7 +398,7 @@ def start_direction_at_vertex(
     offset_in_wedge = wp.float32(0.0)
     for j in range(begin, end):
         h = ring_halfedges[j]
-        wedge = scale * corner_angle(face_angles, h)
+        wedge = scale * halfedge_corner_angle(vertices, faces, h)
         if angle <= accumulated + wedge or j == end - 1:
             chosen = h
             offset_in_wedge = (angle - accumulated) / scale
@@ -413,7 +414,6 @@ def trace_from_vertices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32],
-    face_angles: wp.array2d[wp.float32],
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     is_boundary: wp.array[wp.bool],
@@ -432,16 +432,7 @@ def trace_from_vertices(
     v = start_vertices[r]
     direction = directions[r]
     f, in_face = start_direction_at_vertex(
-        vertices,
-        faces,
-        face_angles,
-        ring_offsets,
-        ring_halfedges,
-        is_boundary,
-        basis_x,
-        basis_y,
-        v,
-        direction,
+        vertices, faces, ring_offsets, ring_halfedges, is_boundary, basis_x, basis_y, v, direction
     )
     write_begin = wp.int32(-1)
     if offsets.shape[0] > 0:

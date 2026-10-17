@@ -1027,10 +1027,10 @@ def assemble_interior_system(
                 "fixed_values must have none."
             )
         n_rhs = n_load
-    # Every free row writes its own count exactly once (``free_map`` is a bijection onto
-    # ``[0, n_free)``), so there is nothing to pre-zero.
+    # Every free row writes its own count and its column of ``rhs`` exactly once (``free_map`` is a
+    # bijection onto ``[0, n_free)``), so there is nothing to pre-zero.
     counts = _launch.empty(n_free, dtype=wp.int32, device=device)
-    rhs = _launch.zeros((n_rhs, n_free), dtype=wp.float64, device=device)
+    rhs = _launch.empty((n_rhs, n_free), dtype=wp.float64, device=device)
     _launch.launch(
         kernel_linalg.interior_row_counts,
         dim=n_dofs,
@@ -2716,23 +2716,13 @@ def _offdiagonal_dominance(matrix: odt.BsrMatrix[wp.float64]) -> float:
     """
     ``max_i sum_{j != i} |A_ij| / A_ii`` over the rows of a scalar-block CSR operator.
 
-    One launch and one max-reduction, so the whole thing is cheap relative to the solve it is
-    deciding about, essentially independent of the operator's size. The only host readback is the
-    reduced scalar. The diagonal is taken in magnitude, so either sign convention reads the same,
-    and a row with a zero diagonal contributes 0 rather than an infinity -- see the kernel.
+    One launch that walks the rows and folds their maximum (``kernels/linalg``'s
+    ``jacobi_dominance_bound``), so the whole thing is cheap relative to the solve it is deciding
+    about, essentially independent of the operator's size. The only host readback is the reduced
+    scalar. The diagonal is taken in magnitude, so either sign convention reads the same, and a row
+    with a zero diagonal contributes 0 rather than an infinity -- see the kernel.
     """
-    n_rows = int(matrix.nrow)
-    device = matrix.values.device
-    ratios = odt.empty_1d(n_rows, wp.float64, device=device)
-    _launch.launch(
-        kernel_linalg.offdiagonal_dominance_rows,
-        dim=n_rows,
-        # ``nnz`` is a stale capacity, but ``offsets``/``columns``/``values`` are indexed through
-        # the row offsets here rather than sliced by it, so no count is read off the matrix.
-        inputs=[matrix.offsets, matrix.columns, matrix.values, ratios],
-        device=device,
-    )
-    return float(od.reduce.max(ratios))
+    return float(read_scalar(_dominance_bound(matrix), 0))
 
 
 def _cg_residual_and_tolerance(result: tuple[Any, ...]) -> tuple[float, float]:
@@ -3130,7 +3120,10 @@ class _BatchedCg:
         ratios = None
         if chebyshev:
             assert isinstance(self._cycle, _JacobiChebyshevApply)
-            ratios = self._cycle.owner.ratios
+            owner = self._cycle.owner
+            if owner.ratios is None:
+                owner.ratios = odt.empty_1d(self._n, wp.float64, device=self._device)
+            ratios = owner.ratios
         if self._n > 0:
             _launch.launch(
                 kernel_linalg.refresh_pooled_operator,
@@ -4403,17 +4396,19 @@ class SquaredLaplacianPreconditioner:
         """Build ``M_ff`` and its transpose from ``L`` and ``D``, and fix the interval."""
         self._n = int(laplacian.nrow)
         self._device = laplacian.values.device
-        # ``M_ff``'s values and the Gershgorin ratios below come from one walk of ``L``'s rows, and
+        # ``M_ff``'s values and the Gershgorin bound below come from one walk of ``L``'s rows, and
         # ``M_ff`` takes ``L``'s pattern rather than a copy of it.
         factor_values = _launch.empty_like(laplacian.values)
-        ratios = odt.empty_1d(self._n, wp.float64, device=self._device)
-        _launch.launch(
-            kernel_linalg.scaled_rows_and_abs_sums,
-            dim=self._n,
-            inputs=[laplacian.offsets, laplacian.values, weight_sums],
-            outputs=[factor_values, ratios],
-            device=self._device,
-        )
+        bound = _launch.full(1, -math.inf, dtype=wp.float64, device=self._device)
+        if self._n > 0:
+            _launch.launch_tiled(
+                kernel_linalg.scaled_rows_and_bound,
+                dim=[kernel_reduce.blocks_1d(self._n)],
+                inputs=[laplacian.offsets, laplacian.values, weight_sums],
+                outputs=[factor_values, bound],
+                block_dim=TILE_1D,
+                device=self._device,
+            )
         self._factor = bsr_with_values(laplacian, factor_values)
         self._factor_t = od.array.csr_transpose(self._factor)
         # The upper end is ``M_ff``'s Gershgorin bound, ``max_i sum_j |L_ij| / D_i``, never below
@@ -4429,7 +4424,7 @@ class SquaredLaplacianPreconditioner:
         # the interval is ``[min(SQUARED_LAPLACIAN_INTERVAL / n, SQUARED_LAPLACIAN_INTERVAL_CAP) *
         # upper / 2, upper]`` with ``upper = max(bound, 2)``.
         self._steps = _device_chebyshev_steps(
-            ratios, SQUARED_LAPLACIAN_INTERVAL, SQUARED_LAPLACIAN_DEGREE, squared=True
+            bound, self._n, SQUARED_LAPLACIAN_INTERVAL, SQUARED_LAPLACIAN_DEGREE, squared=True
         )
         self._narrowed: tuple[wp.array[wp.float32], wp.array[wp.float32]] | None = None
 
@@ -4456,8 +4451,8 @@ class SquaredLaplacianPreconditioner:
             ``(n, n)`` transpose of ``factor``. It may share ``factor``'s pattern, holding explicit
             zeros.
         ratios
-            ``(n,)`` ``sum_j |L_ij| / D_i``, ``0`` for an empty row: what the constructor's
-            ``scaled_rows_and_abs_sums`` writes.
+            ``(n,)`` ``sum_j |L_ij| / D_i``, ``0`` for an empty row, whose maximum the
+            constructor's ``scaled_rows_and_bound`` reduces as it scales.
         narrowed
             ``factor``'s and ``factor_t``'s values in ``float32``, when the caller wrote them
             too; otherwise ``narrowed()``
@@ -4474,7 +4469,11 @@ class SquaredLaplacianPreconditioner:
         self._factor = factor
         self._factor_t = factor_t
         self._steps = _device_chebyshev_steps(
-            ratios, SQUARED_LAPLACIAN_INTERVAL, SQUARED_LAPLACIAN_DEGREE, squared=True
+            _ratio_bound(ratios),
+            self._n,
+            SQUARED_LAPLACIAN_INTERVAL,
+            SQUARED_LAPLACIAN_DEGREE,
+            squared=True,
         )
         self._narrowed = narrowed
         return self
@@ -4647,14 +4646,10 @@ class _JacobiChebyshev:
         # otherwise cost.
         self.matrix = matrix
         self.inverse_diagonal = _launch.empty(self.n, dtype=wp.float64, device=self.device)
-        self.ratios = odt.empty_1d(self.n, wp.float64, device=self.device)
-        _launch.launch(
-            kernel_linalg.jacobi_dominance_rows,
-            dim=self.n,
-            inputs=[matrix.offsets, matrix.columns, matrix.values],
-            outputs=[self.inverse_diagonal, self.ratios],
-            device=self.device,
-        )
+        # The rows' ratios, which only a pooled state's ``refresh`` writes, for ``refit``; this
+        # setup folds their maximum in the walk that writes ``D⁻¹`` (``_dominance_bound``).
+        self.ratios: odt.Array1dFloat64 | None = None
+        bound = _dominance_bound(matrix, self.inverse_diagonal)
         # Gershgorin's discs for ``D⁻¹ A`` are centred on 1 with radius ``r_i = sum_j |A_ij| /
         # |A_ii|``, whatever the diagonal's sign. ``1 + max r`` bounds the spectrum from above, and
         # a polynomial fitted short of it changes sign past its end, as a clamped negative
@@ -4666,18 +4661,57 @@ class _JacobiChebyshev:
         # 1 - r), 1 + r]`` with ``r = max(max_i r_i, 1e-3)``, computed on the device
         # (``_device_chebyshev_steps``).
         self.steps = _device_chebyshev_steps(
-            self.ratios, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False
+            bound, self.n, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False
         )
 
     def refit(self) -> None:
         """Refit the steps, in place, to ``ratios`` as a pooled state's ``refresh`` rewrote them."""
+        assert self.ratios is not None
         _device_chebyshev_steps(
-            self.ratios, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False, out=self.steps
+            _ratio_bound(self.ratios),
+            self.n,
+            CHEBYSHEV_INTERVAL,
+            CHEBYSHEV_DEGREE,
+            squared=False,
+            out=self.steps,
         )
 
     def bind(self, n_columns: int, stride: int) -> _JacobiChebyshevApply:
         """Working vectors for ``n_columns`` blocks at column pitch ``stride``."""
         return _JacobiChebyshevApply(self, n_columns, stride)
+
+
+def _dominance_bound(
+    matrix: odt.BsrMatrix[wp.float64], inverse_diagonal: wp.array[wp.float64] | None = None
+) -> wp.array[wp.float64]:
+    """
+    Reduce the rows' largest Gershgorin ratio into a ``(1,)`` device array.
+
+    ``kernels/linalg.jacobi_dominance_bound``'s launch, shared by the multigrid gate and the
+    Jacobi-Chebyshev setup, which also takes the Jacobi scaling from the same walk into
+    ``inverse_diagonal``.
+    """
+    n_rows = int(matrix.nrow)
+    device = matrix.values.device
+    bound = _launch.full(1, -math.inf, dtype=wp.float64, device=device)
+    if n_rows > 0:
+        _launch.launch_tiled(
+            kernel_linalg.jacobi_dominance_bound,
+            dim=[kernel_reduce.blocks_1d(n_rows)],
+            # ``nnz`` is a stale capacity, but ``offsets``/``columns``/``values`` are indexed
+            # through the row offsets here rather than sliced by it, so no count is read off the
+            # matrix.
+            inputs=[
+                matrix.offsets,
+                matrix.columns,
+                matrix.values,
+                wp.int32(0 if inverse_diagonal is None else 1),
+            ],
+            outputs=[inverse_diagonal, bound],
+            block_dim=TILE_1D,
+            device=device,
+        )
+    return bound
 
 
 class _JacobiChebyshevApply(_ChebyshevApply):
@@ -4728,7 +4762,8 @@ class _JacobiChebyshevApply(_ChebyshevApply):
 
 
 def _device_chebyshev_steps(
-    ratios: wp.array[wp.float64, Any],
+    bound: wp.array[wp.float64],
+    n: int,
     interval: float,
     degree: int,
     *,
@@ -4738,23 +4773,13 @@ def _device_chebyshev_steps(
     """
     Fit a degree-``degree`` Chebyshev semi-iteration's steps on the device.
 
-    ``ratios`` holds each row's Gershgorin quantity; its maximum is reduced into a device scalar and
-    ``kernels/linalg.chebyshev_steps`` fits the interval and writes one ``(scale, previous_scale,
-    momentum, step)`` per launch of the polynomial, so building a preconditioner reads nothing
-    back. ``squared`` picks the squared-Laplacian interval over the Jacobi-Chebyshev one; see
-    that kernel for both. ``out``, when given, is written in place of a new array.
+    ``bound`` is the ``(1,)`` device maximum of the ``n`` rows' Gershgorin quantity;
+    ``kernels/linalg.chebyshev_steps`` fits the interval to it and writes one ``(scale,
+    previous_scale, momentum, step)`` per launch of the polynomial, so building a preconditioner
+    reads nothing back. ``squared`` picks the squared-Laplacian interval over the Jacobi-Chebyshev
+    one; see that kernel for both. ``out``, when given, is written in place of a new array.
     """
-    device = ratios.device
-    n = ratios.size
-    bound = _launch.full(1, -math.inf, dtype=wp.float64, device=device)
-    if n > 0:
-        _launch.launch_tiled(
-            kernel_reduce.MAX1D_TILED[wp.float64],
-            dim=[kernel_reduce.blocks_1d(n)],
-            inputs=[ratios, bound],
-            block_dim=TILE_1D,
-            device=device,
-        )
+    device = bound.device
     steps = _launch.empty(degree - 1, dtype=wp.vec4d, device=device) if out is None else out
     _launch.launch(
         kernel_linalg.chebyshev_steps,
@@ -4770,6 +4795,28 @@ def _device_chebyshev_steps(
         device=device,
     )
     return steps
+
+
+def _ratio_bound(ratios: wp.array[wp.float64, Any]) -> wp.array[wp.float64]:
+    """
+    Reduce stored per-row ratios to their maximum, a ``(1,)`` device array.
+
+    The bound ``_device_chebyshev_steps`` reads, for ratios a caller wrote itself
+    (``SquaredLaplacianPreconditioner.from_factors``, a pooled state's ``refresh``); a
+    preconditioner built here folds the maximum in the walk that forms them.
+    """
+    device = ratios.device
+    n = ratios.size
+    bound = _launch.full(1, -math.inf, dtype=wp.float64, device=device)
+    if n > 0:
+        _launch.launch_tiled(
+            kernel_reduce.MAX1D_TILED[wp.float64],
+            dim=[kernel_reduce.blocks_1d(n)],
+            inputs=[ratios, bound],
+            block_dim=TILE_1D,
+            device=device,
+        )
+    return bound
 
 
 # ---------------------------------------------------------------------------

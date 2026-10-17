@@ -640,15 +640,15 @@ def _winding_band_field(
     scale = max(abs(component) for component in (*lower_f, *upper_f))
     rounding = 64.0 * float(np.spacing(np.float32(scale)))
     cap = abs(iso) + 1.01 * diagonal + rounding
-    points = odt.as_array3d(
-        od.voxels.grid_points(shape, bounds=bounds, device=device).reshape(shape), wp.vec3
-    )
+    # The lattice is ``voxels.grid_points(shape, bounds=bounds)``'s, its node 0 and spacing passed
+    # rather than its positions: every kernel below forms a node's position in-thread.
+    step = wp.vec3(*steps)
     mesh = wp.Mesh(points=vertices, indices=faces)
     distance = odt.empty_3d(shape, wp.float32, device=device)
     _launch.launch(
         kernel_levelset.capped_distance,
         dim=shape,
-        inputs=[mesh.id, points, wp.float32(cap), distance],
+        inputs=[mesh.id, lower, step, wp.float32(cap), distance],
         device=device,
     )
 
@@ -695,7 +695,8 @@ def _winding_band_field(
         kernel_levelset.lattice_winding_numbers,
         dim=shape,
         inputs=[
-            points,
+            lower,
+            step,
             crossings[0],
             crossings[1],
             ambiguous,
@@ -721,21 +722,14 @@ def _winding_band_field(
     n_undecided = int(read_scalar(counts, 0))
     if n_undecided > 0:
         _settle_undecided_winding(
-            vertices, faces, points, undecided, n_undecided, winding, slots, counts
+            vertices, faces, (lower, step), undecided, n_undecided, winding, slots, counts
         )
 
-    values = odt.empty_3d(shape, wp.float32, device=device)
-    _launch.launch(
-        kernel_levelset.signed_band_values,
-        dim=shape,
-        inputs=[distance, winding, values],
-        device=device,
-    )
     field = odt.empty_3d(shape, wp.float32, device=device)
     _launch.launch(
         kernel_levelset.resolve_crossing_endpoints,
         dim=shape,
-        inputs=[mesh.id, points, wp.float32(cap), wp.float32(iso), winding, values, field],
+        inputs=[mesh.id, lower, step, wp.float32(cap), wp.float32(iso), distance, winding, field],
         device=device,
     )
     return field
@@ -834,7 +828,7 @@ def _cone_components(
 def _settle_undecided_winding(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    points: wp.array[wp.vec3, Literal[3]],
+    lattice: tuple[wp.vec3, wp.vec3],
     undecided: wp.array[wp.vec3],
     n_undecided: int,
     winding: odt.Array3dFloat32,
@@ -846,7 +840,8 @@ def _settle_undecided_winding(
 
     The exact winding number, summed over every face with Warp's per-triangle solid angle, settles
     a node unless it too lies within the margin of 1/2; only those, or all of them when they are
-    too many to sum, are evaluated by Warp itself, which needs its solid-angle BVH.
+    too many to sum, are evaluated by Warp itself, which needs its solid-angle BVH. ``lattice`` is
+    the ``(lower, step)`` pair the nodes' positions are formed from.
     """
     device = vertices.device
     n_faces = faces.size // 3
@@ -873,7 +868,7 @@ def _settle_undecided_winding(
         _launch.launch(
             kernel_levelset.warp_winding_sign,
             dim=tuple(int(n) for n in winding.shape),
-            inputs=[winding_mesh.id, points, slots, winding],
+            inputs=[winding_mesh.id, *lattice, slots, winding],
             device=device,
         )
 

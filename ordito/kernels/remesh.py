@@ -591,9 +591,12 @@ def emit_size_faces(
 ) -> None:
     # Re-triangulate face ``f`` by how many of its edges are split, writing its children straight
     # into rows ``face_offsets[f] ..`` of the compact output (the scanned counts of
-    # ``split_child_counts_and_midpoints``).
+    # ``split_child_counts_and_midpoints``). An empty ``index_in`` / ``out_index`` (``None`` at
+    # launch) carries no provenance.
     f = wp.int32(wp.tid())
-    src = index_in[f]
+    src = wp.int32(-1)
+    if index_in.shape[0] > 0:
+        src = index_in[f]
 
     fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
     mv = split_corner_midpoints(corner_edge, split_mask, offsets, vertex_offset, f)

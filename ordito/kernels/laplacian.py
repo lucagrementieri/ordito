@@ -485,6 +485,28 @@ def mesh_place_columns(
             out_run_start[slot] = i
 
 
+@wp.func
+def cotmatrix_offdiagonal(
+    k: wp.int32,
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: Any,
+    zero: wp.Float,
+) -> wp.Float:
+    # Off-diagonal entry ``k`` of the cotangent Laplacian over a mesh operator pattern: the sum of
+    # its contributing half-cotangents -- the corner slots ``order[p]`` over its run of equal
+    # sorted ``keys`` from ``run_start[k]``, in face order since the sort is stable -- each cast
+    # once to ``zero``'s precision, whatever the entries' own. The row walk of ``cotmatrix_rows``
+    # and of ``kernels/heat.heat_system_rows``, which forms the heat system from the same entries.
+    value = zero
+    for p in range(run_start[k], sorted_run_end(keys, run_start[k], count)):
+        q = order[p]
+        value += type(zero)(cot_entries[q // 3, q % 3])
+    return value
+
+
 @wp.kernel
 def cotmatrix_rows(
     offsets: wp.array[wp.int32],
@@ -497,13 +519,11 @@ def cotmatrix_rows(
     out_values: wp.array[wp.Float],
 ) -> None:
     # One thread per row of a mesh operator pattern (``laplacian._mesh_operator_pattern``). An
-    # off-diagonal is the sum of its contributing half-cotangents -- the corner slots ``order[p]``
-    # over its run of equal sorted ``keys`` from ``run_start[k]``, in face order since the sort is
-    # stable -- and the
-    # diagonal is minus the row's off-diagonal sum, in column order, so every row sums to zero up to
-    # that one sum's rounding. A degenerate face's self-edge never reaches a row: its four
-    # contributions ``w + w - w - w`` cancelled exactly in the 12-triplet form too. The
-    # half-cotangents may be float32 or float64 whatever the matrix precision; each is cast once.
+    # off-diagonal is ``cotmatrix_offdiagonal`` and the diagonal is minus the row's off-diagonal
+    # sum, in column order, so every row sums to zero up to that one sum's rounding. A degenerate
+    # face's self-edge never reaches a row: its four contributions ``w + w - w - w`` cancelled
+    # exactly in the 12-triplet form too. The half-cotangents may be float32 or float64 whatever
+    # the matrix precision; each is cast once.
     i = wp.int32(wp.tid())
     start = offsets[i]
     end = offsets[i + 1]
@@ -515,10 +535,9 @@ def cotmatrix_rows(
         if columns[k] == i:
             slot = k
             continue
-        value = type(out_values[k])(0.0)
-        for p in range(run_start[k], sorted_run_end(keys, run_start[k], count)):
-            q = order[p]
-            value += type(out_values[k])(cot_entries[q // 3, q % 3])
+        value = cotmatrix_offdiagonal(
+            k, run_start, keys, count, order, cot_entries, type(out_values[k])(0.0)
+        )
         out_values[k] = value
         total += value
     if slot >= 0:
@@ -598,6 +617,37 @@ def rotation22(angle: wp.float32) -> wp.mat22d:
     return wp.mat22d(c, -s, s, c)
 
 
+@wp.func
+def connection_offdiagonal(
+    i: wp.int32,
+    k: wp.int32,
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    cot_entries: Any,
+    transport_angles: wp.array[wp.float32],
+    weight: wp.float64,
+) -> tuple[wp.mat22d, wp.float64]:
+    # Off-diagonal entry ``k`` of row ``i`` of the connection Laplacian, and ``weight`` advanced by
+    # its weights -- the row's running diagonal, added one contribution at a time in the row's
+    # order. Corner ``e``'s opposite halfedge ``h`` runs ``i -> j``; it contributes
+    # ``-w R(-rho_h)`` to row ``i`` and ``-w R(rho_h)`` to row ``j``, summed over the contributing
+    # faces in face order. The row walk of ``connection_laplacian_rows`` and of
+    # ``kernels/heat.vector_heat_system_rows``, which forms the vector heat system from the same
+    # entries.
+    value = wp.mat22d()
+    for p in range(run_start[k], sorted_run_end(keys, run_start[k], count)):
+        q = order[p]
+        h = (q // 3) * 3 + (q % 3 + 1) % 3
+        w = wp.float64(cot_entries[q // 3, q % 3])
+        rho = transport_angles[h]
+        value += -w * rotation22(wp.where(faces[h] == i, -rho, rho))
+        weight += w
+    return value, weight
+
+
 @wp.kernel
 def connection_laplacian_rows(
     offsets: wp.array[wp.int32],
@@ -612,14 +662,12 @@ def connection_laplacian_rows(
     out_values: wp.array[wp.mat22d],
 ) -> None:
     # The vector Laplacian over a mesh operator pattern, one thread per row: each off-diagonal
-    # weight becomes a rotation, since the two endpoints of an edge measure tangent directions from
-    # different reference directions and a difference between them is only meaningful after
-    # transporting one into the other's frame. Corner ``e``'s opposite halfedge ``h`` runs
-    # ``i -> j``; it contributes ``-w R(-rho_h)`` to row ``i`` and ``-w R(rho_h)`` to row ``j``,
-    # summed over the contributing faces in face order. The diagonal is ``sum w * I`` over the
-    # row's entries in column order. Positive semi-definite (positive diagonal), unlike
-    # ``cotmatrix``'s igl sign convention, because every consumer here feeds it straight to a
-    # conjugate-gradient solve. A degenerate face's self-edge never reaches a row.
+    # weight becomes a rotation (``connection_offdiagonal``), since the two endpoints of an edge
+    # measure tangent directions from different reference directions and a difference between them
+    # is only meaningful after transporting one into the other's frame. The diagonal is
+    # ``sum w * I`` over the row's entries in column order. Positive semi-definite (positive
+    # diagonal), unlike ``cotmatrix``'s igl sign convention, because every consumer here feeds it
+    # straight to a conjugate-gradient solve. A degenerate face's self-edge never reaches a row.
     i = wp.int32(wp.tid())
     start = offsets[i]
     end = offsets[i + 1]
@@ -631,14 +679,9 @@ def connection_laplacian_rows(
         if columns[k] == i:
             slot = k
             continue
-        value = wp.mat22d()
-        for p in range(run_start[k], sorted_run_end(keys, run_start[k], count)):
-            q = order[p]
-            h = (q // 3) * 3 + (q % 3 + 1) % 3
-            w = wp.float64(cot_entries[q // 3, q % 3])
-            rho = transport_angles[h]
-            value += -w * rotation22(wp.where(faces[h] == i, -rho, rho))
-            weight += w
+        value, weight = connection_offdiagonal(
+            i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
+        )
         out_values[k] = value
     if slot >= 0:
         out_values[slot] = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)

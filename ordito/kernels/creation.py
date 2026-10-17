@@ -496,6 +496,66 @@ def cone_mesh(
         write_placed_triangle(out_faces, row, 1 + k, next_ring, sections + 1, transform_mode)
 
 
+@wp.func
+def cylinder_wedge(
+    radius: wp.float32,
+    half_height: wp.float32,
+    sections: wp.int32,
+    angle: wp.float32,
+    keep_caps: wp.int32,
+    keep_sides: wp.int32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
+    first_vertex: wp.int32,
+    first_row: wp.int32,
+    k: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # Wedge ``k`` of a capped cylinder whose ``2 * sections + 2`` vertices start at
+    # ``first_vertex`` and whose triangles start at row ``first_row`` of the output buffers (its
+    # face indices are offset by ``first_vertex`` too). Shared by ``cylinder_mesh`` (one cylinder)
+    # and ``axis_cylinder_meshes`` (three, one launch), which differ only in how many cylinders a
+    # launch writes and where.
+    #
+    # Vertex 0 is the bottom axis point, 1..sections the bottom ring, sections + 1..2 * sections
+    # the top ring, 2 * sections + 1 the top axis point: the profile's four points in order, each
+    # contributing a whole ring or a single shared slot.
+    out_vertices[first_vertex + 1 + k] = place_point(
+        revolution_point(radius, -half_height, k, sections, angle), matrix, transform_mode
+    )
+    out_vertices[first_vertex + 1 + sections + k] = place_point(
+        revolution_point(radius, half_height, k, sections, angle), matrix, transform_mode
+    )
+    if k == 0:
+        out_vertices[first_vertex] = place_point(
+            revolution_point(0.0, -half_height, 0, sections, angle), matrix, transform_mode
+        )
+        out_vertices[first_vertex + 2 * sections + 1] = place_point(
+            revolution_point(0.0, half_height, 0, sections, angle), matrix, transform_mode
+        )
+
+    bottom = first_vertex + 1 + k
+    bottom_next = first_vertex + 1 + (k + 1) % sections
+    top = first_vertex + 1 + sections + k
+    top_next = first_vertex + 1 + sections + (k + 1) % sections
+    # Bottom cap, the wedge's two side triangles, then the top cap -- the order ``revolve`` emits
+    # them in, which is per slice rather than per band. The two flags are its degenerate-area
+    # verdict; see ``cone_mesh``. Both caps share a radius and a step and both sides split one
+    # rectangle, so each pair stands or falls together and two flags cover the four.
+    row = first_row + (2 * keep_caps + 2 * keep_sides) * k
+    if keep_caps != 0:
+        write_placed_triangle(out_faces, row, bottom, first_vertex, bottom_next, transform_mode)
+        row = row + 1
+    if keep_sides != 0:
+        write_placed_triangle(out_faces, row, bottom, bottom_next, top, transform_mode)
+        write_placed_triangle(out_faces, row + 1, top, bottom_next, top_next, transform_mode)
+        row = row + 2
+    if keep_caps != 0:
+        top_axis = first_vertex + 2 * sections + 1
+        write_placed_triangle(out_faces, row, top, top_next, top_axis, transform_mode)
+
+
 @wp.kernel
 def cylinder_mesh(
     radius: wp.float32,
@@ -506,51 +566,73 @@ def cylinder_mesh(
     keep_sides: wp.int32,
     matrix: wp.mat44,
     transform_mode: wp.int32,
-    vertex_base: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
     # The closed-form counterpart of ``cone_mesh`` for a capped cylinder: ``2 * sections + 2``
     # vertices and ``4 * sections`` faces, one thread per wedge. Same reasoning -- see
-    # ``cone_mesh``. ``vertex_base`` is added to every face index, for a caller (``creation.axis``)
-    # that writes this cylinder into views of a larger buffer, after other parts' vertices.
+    # ``cone_mesh``.
     k = wp.int32(wp.tid())
-    # Vertex 0 is the bottom axis point, 1..sections the bottom ring, sections + 1..2 * sections
-    # the top ring, 2 * sections + 1 the top axis point: the profile's four points in order, each
-    # contributing a whole ring or a single shared slot.
-    out_vertices[1 + k] = place_point(
-        revolution_point(radius, -half_height, k, sections, angle), matrix, transform_mode
+    cylinder_wedge(
+        radius,
+        half_height,
+        sections,
+        angle,
+        keep_caps,
+        keep_sides,
+        matrix,
+        transform_mode,
+        0,
+        0,
+        k,
+        out_vertices,
+        out_faces,
     )
-    out_vertices[1 + sections + k] = place_point(
-        revolution_point(radius, half_height, k, sections, angle), matrix, transform_mode
-    )
-    if k == 0:
-        out_vertices[0] = place_point(
-            revolution_point(0.0, -half_height, 0, sections, angle), matrix, transform_mode
-        )
-        out_vertices[2 * sections + 1] = place_point(
-            revolution_point(0.0, half_height, 0, sections, angle), matrix, transform_mode
-        )
 
-    bottom = vertex_base + 1 + k
-    bottom_next = vertex_base + 1 + (k + 1) % sections
-    top = vertex_base + 1 + sections + k
-    top_next = vertex_base + 1 + sections + (k + 1) % sections
-    # Bottom cap, the wedge's two side triangles, then the top cap -- the order ``revolve`` emits
-    # them in, which is per slice rather than per band. The two flags are its degenerate-area
-    # verdict; see ``cone_mesh``. Both caps share a radius and a step and both sides split one
-    # rectangle, so each pair stands or falls together and two flags cover the four.
-    row = (2 * keep_caps + 2 * keep_sides) * k
-    if keep_caps != 0:
-        write_placed_triangle(out_faces, row, bottom, vertex_base, bottom_next, transform_mode)
-        row = row + 1
-    if keep_sides != 0:
-        write_placed_triangle(out_faces, row, bottom, bottom_next, top, transform_mode)
-        write_placed_triangle(out_faces, row + 1, top, bottom_next, top_next, transform_mode)
-        row = row + 2
-    if keep_caps != 0:
-        top_axis = vertex_base + 2 * sections + 1
-        write_placed_triangle(out_faces, row, top, top_next, top_axis, transform_mode)
+
+@wp.kernel
+def axis_cylinder_meshes(
+    radius: wp.float32,
+    half_height: wp.float32,
+    sections: wp.int32,
+    angle: wp.float32,
+    keep_caps: wp.int32,
+    keep_sides: wp.int32,
+    matrix_x: wp.mat44,
+    matrix_y: wp.mat44,
+    matrix_z: wp.mat44,
+    transform_modes: wp.vec3i,
+    first_vertex: wp.int32,
+    first_row: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # ``creation.axis``'s three cylinders in one launch, ``dim = (3, sections)``: cylinder ``c``,
+    # placed by its own matrix, follows cylinder ``c - 1`` in both buffers, from ``first_vertex``
+    # and ``first_row`` on (after the ball).
+    c, k = wp.tid()
+    matrix = matrix_x
+    if c == 1:
+        matrix = matrix_y
+    elif c == 2:
+        matrix = matrix_z
+    n_vertices = 2 * sections + 2
+    n_rows = (2 * keep_caps + 2 * keep_sides) * sections
+    cylinder_wedge(
+        radius,
+        half_height,
+        sections,
+        angle,
+        keep_caps,
+        keep_sides,
+        matrix,
+        transform_modes[c],
+        first_vertex + c * n_vertices,
+        first_row + c * n_rows,
+        k,
+        out_vertices,
+        out_faces,
+    )
 
 
 @wp.kernel

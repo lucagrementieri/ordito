@@ -449,6 +449,33 @@ def test_vertex_one_rings_are_rotationally_ordered(
         assert (twins[previous] == ring_halfedges[0]) != bool(is_boundary[vertex])
 
 
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_vertex_one_rings_return_twins_matches_the_two_calls(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: ``return_twins=True`` hands back the table ``halfedge_twins`` builds.
+
+    Not a library comparison: the claim is that the one-readback form returns exactly what the two
+    separate calls do, rings included, with no reference involved. A supplied table comes back as
+    the same array object, since nothing was built.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_vertices = len(mesh_tm.vertices)
+    twins_wp = od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=n_vertices)
+    rings_wp = od.halfedge.vertex_one_rings(mesh_wp.indices, twins=twins_wp, n_vertices=n_vertices)
+    *joint_rings_wp, joint_twins_wp = od.halfedge.vertex_one_rings(
+        mesh_wp.indices, n_vertices=n_vertices, return_twins=True
+    )
+    assert np.array_equal(joint_twins_wp.numpy(), twins_wp.numpy())
+    for joint_wp, separate_wp in zip(joint_rings_wp, rings_wp, strict=True):
+        assert np.array_equal(joint_wp.numpy(), separate_wp.numpy())
+    *_, passed_through_wp = od.halfedge.vertex_one_rings(
+        mesh_wp.indices, twins=twins_wp, n_vertices=n_vertices, return_twins=True
+    )
+    assert passed_through_wp is twins_wp
+
+
 def test_vertex_one_rings_isolated_vertex_is_empty(device: str) -> None:
     # Vertex 3 is unreferenced: it gets an empty ring rather than a bogus one.
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)

@@ -326,6 +326,17 @@ def face_corner_angles(
     return a0, a1, a2
 
 
+@wp.func
+def halfedge_corner_angle(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], h: wp.int32
+) -> wp.float32:
+    # Interior angle at the corner halfedge ``h`` leaves: entry ``(h // 3, h % 3)`` of the
+    # ``angles`` table, formed on demand by the same ``face_corner_angles`` for a kernel that reads
+    # a few rings rather than every face.
+    a0, a1, a2 = face_corner_angles(vertices, faces, h // wp.int32(3))
+    return wp.vec3(a0, a1, a2)[h % wp.int32(3)]
+
+
 @wp.kernel
 def angles(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_angles: wp.array2d[wp.float32]

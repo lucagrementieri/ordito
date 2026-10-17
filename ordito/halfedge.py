@@ -207,32 +207,36 @@ def require_matching_twins(faces: wp.array[wp.int32], twins: wp.array[wp.int32] 
     """
     if twins is None:
         return
-    n_halfedges = faces.size // 3 * 3
-    if twins.size != n_halfedges:
-        raise ValueError(
-            f"twins must have one entry per halfedge, got {twins.size} for {n_halfedges} "
-            f"halfedges ({n_halfedges // 3} faces)"
-        )
+    n_halfedges = _require_twin_length(faces, twins)
     if n_halfedges == 0:
         return
-    device = faces.device
-    mispaired = _launch.zeros(1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_halfedge.count_mispaired_twins,
-        dim=n_halfedges,
-        inputs=[faces, twins, mispaired],
-        device=device,
-    )
+    mispaired = _launch.zeros(1, dtype=wp.int32, device=faces.device)
+    _count_mispaired_twins(faces, twins, mispaired)
     # Unavoidable: the count only exists on the device, and the whole point is to raise on it
     # before a consumer walks the table.
-    n_mispaired = int(read_scalar(mispaired, 0))
-    if n_mispaired > 0:
-        raise ValueError(
-            f"twins must hold the opposite halfedge of each halfedge of faces: {n_mispaired} "
-            f"entry/entries do not. A twin must run back along the same edge (so "
-            f"twins[twins[h]] == h and the two endpoints swap), or be -1 on a boundary. Build the "
-            f"table with halfedge_twins for the same face buffer."
-        )
+    _raise_mispaired_twins(int(read_scalar(mispaired, 0)))
+
+
+@overload
+def vertex_one_rings(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32] | None = None,
+    n_vertices: int | None = None,
+    *,
+    validate: bool = True,
+    return_twins: Literal[False] = False,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]: ...
+
+
+@overload
+def vertex_one_rings(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32] | None = None,
+    n_vertices: int | None = None,
+    *,
+    validate: bool = True,
+    return_twins: Literal[True],
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool], wp.array[wp.int32]]: ...
 
 
 def vertex_one_rings(
@@ -241,7 +245,11 @@ def vertex_one_rings(
     n_vertices: int | None = None,
     *,
     validate: bool = True,
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]:
+    return_twins: bool = False,
+) -> (
+    tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool], wp.array[wp.int32]]
+):
     """
     Outgoing halfedges of every vertex in counter-clockwise order, as a CSR buffer.
 
@@ -274,7 +282,13 @@ def vertex_one_rings(
         When ``True`` (the default), reject a pinched vertex, and forward the same choice to
         [`halfedge_twins`][ordito.halfedge.halfedge_twins] when ``twins`` is computed here.
         ``False`` skips both checks and their synchronizations, for a caller that knows ``faces``
-        is manifold and consistently wound.
+        is manifold and consistently wound. A supplied ``twins`` is checked either way.
+    return_twins
+        When ``True``, also return the twin table the rings were walked over: ``twins`` itself
+        when given, else the one built here. A caller needing both arrays gets them for one
+        synchronization rather than one for
+        [`halfedge_twins`][ordito.halfedge.halfedge_twins] and another for the check of the
+        table passed back in here.
 
     Returns
     -------
@@ -284,6 +298,9 @@ def vertex_one_rings(
         ``(n_vertices + 1,)`` CSR row starts; ``offsets[-1] == 3 * n_faces``.
     is_boundary : wp.array[wp.bool]
         ``(n_vertices,)`` flags; ``True`` where the vertex is incident to a boundary edge.
+    twins : wp.array[wp.int32]
+        ``(3 * n_faces,)`` [`halfedge_twins`][ordito.halfedge.halfedge_twins] table; only when
+        ``return_twins`` is ``True``.
 
     Raises
     ------
@@ -292,8 +309,8 @@ def vertex_one_rings(
         ([`require_matching_twins`][ordito.halfedge.require_matching_twins] states what that
         means), or if a vertex's rotation closes before its whole fan is covered — a pinched,
         vertex-non-manifold vertex where two fans meet at a single index, under ``validate``.
-        Detecting the latter needs one 4-byte readback, so under ``validate`` this function
-        synchronizes once.
+        Every check reads back from one small buffer, so this function synchronizes once under
+        ``validate`` or with ``twins`` given, and not at all otherwise.
     RuntimeError
         If ``faces`` and ``twins`` are not all on one device.
 
@@ -323,26 +340,57 @@ def vertex_one_rings(
     ```
     """
     require_same_device(faces=faces, twins=twins)
-    require_matching_twins(faces, twins)
     device = faces.device
     n_halfedges = faces.size // 3 * 3
+    twins_given = twins is not None
+    if twins is not None:
+        _require_twin_length(faces, twins)
 
     if n_vertices is None:
         n_vertices = od.array.index_bound(faces)
     # Slots 0-1 are the twin table's two rejections when this call derives it, slot 2 the pinch
-    # count below: one buffer, so a validated call reads all three back once rather than once for
-    # the twins and again for the rings. The twin rejections are still raised first.
-    defect_counts = _launch.zeros(3, dtype=wp.int32, device=device)
-    check_twins = twins is None and validate
+    # count below, slot 3 the mispaired entries of a supplied table: one buffer, so every check
+    # reads back once rather than once per table and again for the rings. The rejections are
+    # raised in the order the contract lists them.
+    defect_counts = _launch.zeros(4, dtype=wp.int32, device=device)
+    check_twins = not twins_given and validate
     if twins is None:
         # The pairing writes only the first two slots, so it takes the buffer whole.
         twins = _pair_halfedges(faces, n_vertices, defect_counts)
+    elif n_halfedges > 0:
+        # ``require_matching_twins``' structural half, read back with the rings' own counts. The
+        # walk below reads a table that fails it only within bounds (``write_one_rings``), and
+        # nothing it wrote is returned before the raise.
+        _count_mispaired_twins(faces, twins, odt.as_dense(defect_counts[3:4]))
+    rings = _walk_one_rings(faces, twins, n_vertices, odt.as_dense(defect_counts[2:3]))
+    if n_halfedges > 0 and (twins_given or validate):
+        counts_np = read_values(defect_counts, 0, 4)
+        _raise_mispaired_twins(int(counts_np[3]))
+        if check_twins:
+            _raise_twin_defects(counts_np)
+        n_incomplete = int(counts_np[2])
+        if validate and n_incomplete > 0:
+            raise ValueError(
+                f"vertex_one_rings requires a vertex-manifold mesh: {n_incomplete} vertex/vertices "
+                f"have more than one fan of faces (a pinch point)."
+            )
+    if return_twins:
+        return (*rings, twins)
+    return rings
 
+
+def _walk_one_rings(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    n_vertices: int,
+    out_incomplete: wp.array[wp.int32],
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]:
+    """``vertex_one_rings``' CSR build, counting pinched vertices into ``out_incomplete[0]``."""
+    device = faces.device
+    n_halfedges = faces.size // 3 * 3
     offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
     ring_halfedges = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
     if n_halfedges == 0 or n_vertices == 0:
-        if check_twins and n_halfedges > 0:
-            _raise_twin_defects(read_values(defect_counts, 0, 2))
         return ring_halfedges, offsets, _launch.zeros(n_vertices, dtype=wp.bool, device=device)
 
     # One pass over the halfedges sizes the CSR and picks every vertex's two start candidates (row
@@ -367,24 +415,12 @@ def vertex_one_rings(
     # The walk resolves each vertex's start and boundary flag from the candidates itself, and
     # writes the flag for every vertex, so ``is_boundary`` needs no initial value.
     is_boundary = _launch.empty(n_vertices, dtype=wp.bool, device=device)
-    incomplete = defect_counts[2:3]
     _launch.launch(
         kernel_halfedge.write_one_rings,
         dim=n_vertices,
-        inputs=[candidate_starts, twins, offsets, ring_halfedges, is_boundary, incomplete],
+        inputs=[candidate_starts, twins, offsets, ring_halfedges, is_boundary, out_incomplete],
         device=device,
     )
-    if not validate:
-        return ring_halfedges, offsets, is_boundary
-    counts_np = read_values(defect_counts, 0, 3)
-    if check_twins:
-        _raise_twin_defects(counts_np)
-    n_incomplete = int(counts_np[2])
-    if n_incomplete > 0:
-        raise ValueError(
-            f"vertex_one_rings requires a vertex-manifold mesh: {n_incomplete} vertex/vertices "
-            f"have more than one fan of faces (a pinch point)."
-        )
     return ring_halfedges, offsets, is_boundary
 
 
@@ -722,4 +758,38 @@ def _raise_twin_defects(defect_counts: Sequence[int]) -> None:
             f"traversed in the same direction by both of their halfedges, so those two halfedges "
             f"are not opposites of each other. Run make_winding_consistent first; a non-orientable "
             f"surface has no consistent winding and no halfedge twin table at all."
+        )
+
+
+def _require_twin_length(faces: wp.array[wp.int32], twins: wp.array[wp.int32]) -> int:
+    """Raise unless ``twins`` has one entry per halfedge of ``faces``; return the halfedge count."""
+    n_halfedges = faces.size // 3 * 3
+    if twins.size != n_halfedges:
+        raise ValueError(
+            f"twins must have one entry per halfedge, got {twins.size} for {n_halfedges} "
+            f"halfedges ({n_halfedges // 3} faces)"
+        )
+    return n_halfedges
+
+
+def _count_mispaired_twins(
+    faces: wp.array[wp.int32], twins: wp.array[wp.int32], out_count: wp.array[wp.int32]
+) -> None:
+    """Add the number of ``twins`` entries that are not the opposite halfedge into ``out_count``."""
+    _launch.launch(
+        kernel_halfedge.count_mispaired_twins,
+        dim=faces.size // 3 * 3,
+        inputs=[faces, twins, out_count],
+        device=faces.device,
+    )
+
+
+def _raise_mispaired_twins(n_mispaired: int) -> None:
+    """Raise ``require_matching_twins``' structural rejection from its read-back count."""
+    if n_mispaired > 0:
+        raise ValueError(
+            f"twins must hold the opposite halfedge of each halfedge of faces: {n_mispaired} "
+            f"entry/entries do not. A twin must run back along the same edge (so "
+            f"twins[twins[h]] == h and the two endpoints swap), or be -1 on a boundary. Build the "
+            f"table with halfedge_twins for the same face buffer."
         )

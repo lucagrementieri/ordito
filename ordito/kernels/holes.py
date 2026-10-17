@@ -219,6 +219,22 @@ def char_area_from_max(max_edge_sq: wp.float32) -> wp.float32:
     return 1.0
 
 
+@wp.func
+def write_rim_sort_entry(
+    u: wp.int32,
+    v: wp.int32,
+    base: wp.uint64,
+    t: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_slots: wp.array[wp.int32],
+) -> None:
+    # Rim slot ``t``'s entry of the sort ``probe_rim_edges`` searches: the undirected key of its
+    # edge ``(u, v)`` and the identity payload, written straight into the radix sort's
+    # double-width buffers. The one spelling ``loop_rim_metrics`` and ``rim_edge_keys`` share.
+    out_keys[t] = kernel_array.pack_edge_key(u, v, base)
+    out_slots[t] = t
+
+
 @wp.kernel
 def loop_rim_metrics(
     flat_loops: wp.array[wp.int32],
@@ -230,6 +246,7 @@ def loop_rim_metrics(
     out_normal: wp.array[wp.vec3],
     out_loop_pos: wp.array[wp.vec3],
     out_keys: wp.array[wp.uint64],
+    out_slots: wp.array[wp.int32],
 ) -> None:
     # One thread per rim vertex of every loop at once. Each thread owns the rim edge leaving its
     # vertex and folds it into its loop's two per-loop scalars: the longest edge (segmented max,
@@ -239,14 +256,15 @@ def loop_rim_metrics(
     #
     # The same pass writes the two per-slot tables the fill reads next, since it has already
     # loaded both: the rim vertex's position (the gather ``loop_pos`` would otherwise be) and the
-    # edge's undirected key, which is ``rim_edge_keys``' output for the rim-opposite probe.
+    # edge's undirected key with its slot, which is ``rim_edge_keys``' output for the rim-opposite
+    # probe.
     t = wp.int32(wp.tid())
     ell = loop_id[t]
     u, v = loop_rim_edge_vertices(flat_loops, loop_id, loop_offsets, t)
     a = vertices[u]
     c = vertices[v]
     out_loop_pos[t] = a
-    out_keys[t] = kernel_array.pack_edge_key(u, v, base)
+    write_rim_sort_entry(u, v, base, t, out_keys, out_slots)
     wp.atomic_max(out_max_edge_sq, ell, wp.length_sq(c - a))
     wp.atomic_add(out_normal, ell, newell_term(a, c, vertices[flat_loops[loop_offsets[ell]]]))
 
@@ -903,13 +921,14 @@ def rim_edge_keys(
     loop_offsets: wp.array[wp.int32],
     base: wp.uint64,
     out_keys: wp.array[wp.uint64],
+    out_slots: wp.array[wp.int32],
 ) -> None:
     # The undirected key of rim edge ``(loop[t], loop[t + 1])`` of every loop at once, keyed on
     # slot ``t``: the table ``probe_rim_edges`` searches. The fill computes the same keys inside
     # ``loop_rim_metrics``; this is the stand-alone form for a caller with no rim metrics to take.
     t = wp.int32(wp.tid())
     u, v = loop_rim_edge_vertices(flat_loops, loop_id, loop_offsets, t)
-    out_keys[t] = kernel_array.pack_edge_key(u, v, base)
+    write_rim_sort_entry(u, v, base, t, out_keys, out_slots)
 
 
 # ``probe_rim_edges``' two non-vertex answers: a rim edge no face contains, and one several do.
@@ -1042,17 +1061,30 @@ def stitch_rim_positions(
     loop_a: wp.array[wp.int32],
     vertices_b: wp.array[wp.vec3],
     loop_b: wp.array[wp.int32],
+    shift_a: wp.int32,
+    shift_b: wp.int32,
     out_a_pos: wp.array[wp.vec3],
     out_b_pos: wp.array[wp.vec3],
+    out_loop_a: wp.array[wp.int32],
+    out_loop_b: wp.array[wp.int32],
 ) -> None:
     # Both rims' positions in one launch over ``n + m`` threads: rim A reversed, so both rims wind
-    # the same way, and rim B as given.
+    # the same way, and rim B as given, each rolled by its shift. ``out_loop_a`` / ``out_loop_b``,
+    # when not empty (``None`` at launch), also take the rolled loops' vertex ids, for a caller
+    # that needs them materialized (``stitch_loops_min_weight``'s rim-opposite lookup).
     t = wp.int32(wp.tid())
     n = loop_a.shape[0]
     if t < n:
-        out_a_pos[t] = vertices_a[rim_vertex(loop_a, n, t, 0, True)]
+        v = rim_vertex(loop_a, n, t, shift_a, True)
+        out_a_pos[t] = vertices_a[v]
+        if out_loop_a.shape[0] > 0:
+            out_loop_a[t] = v
     else:
-        out_b_pos[t - n] = vertices_b[loop_b[t - n]]
+        j = t - n
+        v = rim_vertex(loop_b, loop_b.shape[0], j, shift_b, False)
+        out_b_pos[j] = vertices_b[v]
+        if out_loop_b.shape[0] > 0:
+            out_loop_b[j] = v
 
 
 # The two costs ``row_argmin`` minimises, selected per launch (warp-uniform).
@@ -1293,9 +1325,12 @@ def stitch_prev_apex(
 
 
 @wp.kernel
-def set_dp_origin(out_dp: wp.array2d[wp.float32]) -> None:
-    # Seed the stitch grid DP: the empty band consuming 0 edges of either loop costs nothing.
-    out_dp[0, 0] = 0.0
+def seed_stitch_tables(out_dp: wp.array2d[wp.float32], out_came: wp.array2d[wp.int32]) -> None:
+    # Seed the stitch grid DP: every cell unreached (``BAD_METRIC``, no predecessor) except the
+    # empty band consuming 0 edges of either loop, which costs nothing.
+    i, j = wp.tid()
+    out_dp[i, j] = wp.where(i == 0 and j == 0, wp.float32(0.0), BAD_METRIC)
+    out_came[i, j] = -1
 
 
 @wp.struct
@@ -1765,13 +1800,17 @@ def reduce_closest_cross_label_pair(
 
 
 @wp.kernel
-def edge_tail_labels(
-    edges: wp.array2d[wp.int32], vertex_labels: wp.array[wp.int32], out_labels: wp.array[wp.int32]
+def rim_rows_and_tail_labels(
+    edges: wp.array2d[wp.int32], vertex_labels: wp.array[wp.int32], out_table: wp.array2d[wp.int32]
 ) -> None:
-    # The label of each edge's tail vertex, read through the column in place -- a Python-scope
-    # gather would need the strided column cloned dense first, since it ignores an index's stride.
+    # Each oriented rim row ``(tail, head)`` followed by its tail's label, so ``join_closest_
+    # components`` reads the rim and the only labels it ever consults (every rim vertex is some
+    # row's tail) in one copy, rather than the rows and a whole per-vertex label table.
     i = wp.int32(wp.tid())
-    out_labels[i] = vertex_labels[edges[i, 0]]
+    tail = edges[i, 0]
+    out_table[i, 0] = tail
+    out_table[i, 1] = edges[i, 1]
+    out_table[i, 2] = vertex_labels[tail]
 
 
 @wp.kernel

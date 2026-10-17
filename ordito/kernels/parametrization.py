@@ -13,16 +13,35 @@ wp.set_module_options({"enable_backward": False})
 EPSILON_ARAP_EDGE_SQ = wp.constant(wp.float64(1.0e-20))
 
 
+@wp.func
+def face_is_flipped(
+    vertices: wp.array[wp.vec2], faces: wp.array[wp.int32], fi: wp.int32
+) -> wp.bool:
+    # Whether face ``fi`` has negative signed area in the plane. Shared by the mask kernel and the
+    # flag kernel, which differ only in the dtype they store it as.
+    v0, v1, v2 = face_vertices(vertices, faces, fi)
+    e0 = v1 - v0
+    e1 = v2 - v0
+    # 2D signed area * 2 == det of libigl's homogeneous 3x3 matrix
+    return cross2(e0, e1) < 0.0
+
+
 @wp.kernel
 def face_flipped_mask(
     vertices: wp.array[wp.vec2], faces: wp.array[wp.int32], out_mask: wp.array[wp.bool]
 ) -> None:
     fi = wp.int32(wp.tid())
-    v0, v1, v2 = face_vertices(vertices, faces, fi)
-    e0 = v1 - v0
-    e1 = v2 - v0
-    # 2D signed area * 2 == det of libigl's homogeneous 3x3 matrix
-    out_mask[fi] = cross2(e0, e1) < 0.0
+    out_mask[fi] = face_is_flipped(vertices, faces, fi)
+
+
+@wp.kernel
+def face_flipped_flags(
+    vertices: wp.array[wp.vec2], faces: wp.array[wp.int32], out_flags: wp.array[wp.int32]
+) -> None:
+    # ``face_flipped_mask`` as the ``int32`` flag a caller scans in place to compact the flipped
+    # face indices, with no bool mask in between.
+    fi = wp.int32(wp.tid())
+    out_flags[fi] = wp.where(face_is_flipped(vertices, faces, fi), wp.int32(1), wp.int32(0))
 
 
 @wp.kernel

@@ -563,6 +563,84 @@ def test_sort_and_argsort_duplicate_keys(device: str) -> None:
     assert np.array_equal(keys_np[order_wp.numpy()], sorted_keys_wp.numpy())
 
 
+@pytest.mark.parametrize(
+    "dtype", [wp.int32, wp.uint32, wp.int64, wp.uint64, wp.float32, wp.float64]
+)
+def test_sort_and_argsort_every_key_dtype_is_a_stable_argsort(device: str, dtype: type) -> None:
+    """
+    Class A: every radix-sortable key dtype against ``numpy.argsort(kind="stable")``.
+
+    The keys and the identity payload are seeded in one launch per dtype, so each registered
+    overload is reached; a small key range makes ties, where only a stable sort matches.
+    """
+    rng = np.random.default_rng(33)
+    keys_np = rng.integers(0, 50, size=5000).astype(wp.dtype_to_numpy(dtype))
+    keys_wp = wp.array(keys_np, dtype=dtype, device=device)
+    sorted_keys_wp, order_wp = od.array.sort_and_argsort(keys_wp)
+    order_np = np.argsort(keys_np, kind="stable").astype(np.int32)
+    assert np.unique(keys_np).size > 1
+    assert np.array_equal(order_wp.numpy(), order_np)
+    assert np.array_equal(sorted_keys_wp.numpy(), keys_np[order_np])
+
+
+@pytest.mark.parametrize("n", [1, 2, 1000])
+def test_sort_and_argsort_end_bit(device: str, n: int) -> None:
+    """
+    Class A: a sort over only the bits a bounded key needs is still ``numpy.argsort``'s stable one.
+
+    ``end_bit`` is the bit length of the largest key, the tightest bound the contract allows; a
+    sort that stopped a bit short would misorder the keys with that top bit set.
+    """
+    rng = np.random.default_rng(34)
+    keys_np = rng.integers(0, max(n // 3, 1), size=n).astype(np.int32)
+    keys_wp = wp.array(keys_np, dtype=wp.int32, device=device)
+    end_bit = max(1, int(keys_np.max()).bit_length())
+    sorted_keys_wp, order_wp = od.array.sort_and_argsort(keys_wp, end_bit=end_bit)
+    order_np = np.argsort(keys_np, kind="stable").astype(np.int32)
+    assert np.array_equal(order_wp.numpy(), order_np)
+    assert np.array_equal(sorted_keys_wp.numpy(), keys_np[order_np])
+
+
+def test_sort_and_argsort_in_place(device: str) -> None:
+    """
+    Ordito against ordito: the buffer form returns what ``sort_and_argsort`` returns on its keys.
+
+    ``sort_and_argsort`` carries the ``numpy`` oracle above; this pins the in-place entry point a
+    producer kernel feeds, whose upper halves arrive holding garbage the sort must not read.
+    """
+    rng = np.random.default_rng(35)
+    keys_np = rng.standard_normal(4000).astype(np.float32)
+    keys_np[::7] = keys_np[1::7][: keys_np[::7].size]  # ties, so stability is visible
+    n = keys_np.size
+    garbage_np = rng.standard_normal(n).astype(np.float32)
+    keys_buffer = wp.array(np.concatenate([keys_np, garbage_np]), dtype=wp.float32, device=device)
+    order_buffer = wp.array(
+        np.concatenate([np.arange(n), rng.integers(-5, 5, n)]).astype(np.int32), device=device
+    )
+    sorted_keys_wp, order_wp = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
+    expected_keys_wp, expected_order_wp = od.array.sort_and_argsort(
+        wp.array(keys_np, dtype=wp.float32, device=device)
+    )
+    assert sorted_keys_wp.shape == (n,)
+    assert np.array_equal(order_wp.numpy(), expected_order_wp.numpy())
+    assert np.array_equal(sorted_keys_wp.numpy(), expected_keys_wp.numpy())
+    empty_keys_wp, empty_order_wp = od.array.sort_and_argsort_in_place(
+        warp_empty(0, wp.int32, device), warp_empty(0, wp.int32, device)
+    )
+    assert empty_keys_wp.shape == (0,)
+    assert empty_order_wp.shape == (0,)
+
+
+def test_sort_and_argsort_in_place_rejects_unpaired_buffers(device: str) -> None:
+    keys_wp = wp.zeros(6, dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="one even length"):
+        od.array.sort_and_argsort_in_place(keys_wp, wp.zeros(4, dtype=wp.int32, device=device))
+    with pytest.raises(ValueError, match="one even length"):
+        od.array.sort_and_argsort_in_place(
+            wp.zeros(5, dtype=wp.int32, device=device), wp.zeros(5, dtype=wp.int32, device=device)
+        )
+
+
 def test_pack_1d_wp_arrays_vec3(device: str):
     parts = [
         wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0)], dtype=wp.vec3, device=device),

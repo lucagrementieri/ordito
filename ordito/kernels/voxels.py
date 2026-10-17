@@ -23,7 +23,6 @@ way, so this is a single-source-of-truth split and not a speed one.
 
 import warp as wp
 
-from ordito.constants import INT32_MAX_CONSTANT
 from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
 from ordito.kernels.array import (
     binary_search_index,
@@ -162,29 +161,35 @@ def count_triangle_candidates(
     faces: wp.array[wp.int32],
     origin: wp.vec3,
     inverse_size: wp.float32,
-    out_counts: wp.array[wp.int32],
-    out_counts_f32: wp.array[wp.float32],
+    over_budget: wp.int64,
+    out_counts: wp.array[wp.int64],
 ) -> None:
+    # Each triangle's window size, exact up to ``over_budget`` (the caller's budget plus one) and
+    # saturated there: any saturated count already puts the scanned total over the budget, and a
+    # total of saturated counts stays far inside int64, so the budget is decided on the exact scan.
     f = wp.int32(wp.tid())
     p0, p1, p2 = triangle_lattice_vertices(vertices, faces, f, origin, inverse_size)
     lo, hi = triangle_lattice_window(p0, p1, p2)
-    # int64 so a wildly under-sized voxel does not wrap the product into a plausible small count --
-    # each axis span widens to int64 *before* the subtraction, not after, so the subtraction itself
+    # Each axis span widens to int64 *before* the subtraction, not after, so the subtraction itself
     # cannot already overflow int32 for a triangle whose window is that wide (the convention
     # ``kernels/graph.py``'s packed labels key uses: widen the operands, not their difference).
     span_x = wp.int64(hi[0]) - wp.int64(lo[0]) + wp.int64(1)
     span_y = wp.int64(hi[1]) - wp.int64(lo[1]) + wp.int64(1)
     span_z = wp.int64(hi[2]) - wp.int64(lo[2]) + wp.int64(1)
-    span = span_x * span_y * span_z
-    out_counts[f] = wp.int32(wp.min(span, wp.int64(INT32_MAX_CONSTANT)))
-    out_counts_f32[f] = wp.float32(span)
+    # The product of three int32-wide spans can overflow int64 itself, so the saturation is decided
+    # on the float64 product, which is exact far past any budget; the wrapped int64 product is
+    # then discarded.
+    approximate = wp.float64(span_x) * wp.float64(span_y) * wp.float64(span_z)
+    out_counts[f] = wp.where(
+        approximate < wp.float64(over_budget), span_x * span_y * span_z, over_budget
+    )
 
 
 @wp.kernel
 def test_triangle_candidates(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
+    offsets: wp.array[wp.int64],
     origin: wp.vec3,
     inverse_size: wp.float32,
     out_cells: wp.array2d[wp.int32],
@@ -203,13 +208,13 @@ def test_triangle_candidates(
     # widening this hot loop's arithmetic to int64 for a practically unreachable input; revisit only
     # if a caller legitimately needs a wider ``max_candidates``.
     item = wp.int32(wp.tid())
-    f = binary_search_index(offsets, item) - 1
+    f = binary_search_index(offsets, wp.int64(item)) - 1
     p0, p1, p2 = triangle_lattice_vertices(vertices, faces, f, origin, inverse_size)
     lo, hi = triangle_lattice_window(p0, p1, p2)
     span_y = hi[1] - lo[1] + 1
     span_z = hi[2] - lo[2] + 1
 
-    local = item - offsets[f]
+    local = wp.int32(wp.int64(item) - offsets[f])
     plane = span_y * span_z
     i = local // plane
     rest = local % plane
@@ -347,7 +352,11 @@ def pack_cell_keys(
     lower: wp.array[wp.int32],
     upper: wp.array[wp.int32],
     out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
 ) -> None:
+    # Each cell's key and the identity payload, into the leading halves of a radix sort's
+    # double-width buffers, so the sort reads them where they are written.
+    #
     # Column 0 is the least significant digit, matching ``kernels/grouping.pack_indices``: sorting
     # these keys reproduces ``grouping.unique_rows``'s row order exactly. The shift is
     # ``min(lower[c], 0)`` per axis -- order-preserving because it is a per-axis constant, and only
@@ -373,6 +382,7 @@ def pack_cell_keys(
         key = key + wp.uint64(wp.uint32(cells[v, c] - wp.min(lower[c], 0))) * power
         power = power * radix
     out_keys[v] = key
+    out_order[v] = v
 
 
 @wp.kernel

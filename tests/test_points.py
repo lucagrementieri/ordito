@@ -1480,17 +1480,26 @@ def test_convex_subset_recall(device: str) -> None:
     assert selected == set(hull_scipy.vertices.tolist())
 
 
-def test_convex_subset_points(device: str) -> None:
+@pytest.mark.parametrize("n_points", [300, 200_000])
+def test_convex_subset_points(device: str, n_points: int) -> None:
+    """
+    Ordito against ordito: the subset is exactly the points the mask selects, in index order.
+
+    The mask carries the qhull oracle above. The subset is compacted from its own flags rather
+    than gathered through the mask, so this pins the two routes bit for bit, on a cloud small
+    enough for one thread per point and one large enough for the sliced support sweep.
+    """
     rng = np.random.default_rng(4)
-    points_np = rng.standard_normal((300, 3)).astype(np.float64)
+    points_np = rng.standard_normal((n_points, 3)).astype(np.float32)
     points_wp = points_to_warp(points_np, device)
 
     mask_wp = od.convex_subset_mask(points_wp, n_directions=256)
     subset_wp = od.convex_subset(points_wp, n_directions=256)
 
     selected = np.flatnonzero(mask_wp.numpy())
-    expected_points = points_np[np.sort(selected)]
-    assert np.allclose(subset_wp.numpy(), expected_points, rtol=1e-5, atol=1e-5)
+    assert 4 <= selected.size < n_points
+    assert np.array_equal(subset_wp.numpy(), points_np[selected])
+    assert od.convex_subset(warp_empty(0, wp.vec3, device)).shape == (0,)
 
 
 @pytest.mark.parametrize("kind", ["gaussian", "ball", "cube"])

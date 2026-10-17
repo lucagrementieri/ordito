@@ -244,6 +244,42 @@ def sum_strided_rows(
 
 
 @wp.func
+def stage_block_total(
+    block: wp.int32,
+    lane: wp.int32,
+    folded: Any,
+    out: wp.array[Any],
+    slot: wp.int32,
+    stride: wp.int32,
+    n_blocks: wp.int32,
+    is_last: wp.Function,
+) -> wp.int32:
+    # Every block's half of a reproducible single-value commit: its fold stored in slot ``slot`` of
+    # its row and a ticket drawn. Non-zero, in every lane, for the block that drew the last ticket.
+    # Shared by ``store_block_total`` and ``store_block_total_divided``.
+    last = wp.int32(0)
+    if lane == 0:
+        out[stride + 1 + block * stride + slot] = folded
+        last = is_last(take_ticket(out, stride, folded), n_blocks)
+    return block_max(last)
+
+
+@wp.func
+def fold_block_totals(
+    lane: wp.int32,
+    out: wp.array[Any],
+    slot: wp.int32,
+    stride: wp.int32,
+    n_blocks: wp.int32,
+    zero: Any,
+):
+    # The last block's fold: every block's row of slot ``slot`` added in one fixed order, after the
+    # fence that makes the other blocks' rows visible.
+    thread_fence()
+    return block_sum(sum_strided_rows(lane, out, stride + 1 + slot, stride, n_blocks, zero))
+
+
+@wp.func
 def finish_block_total(
     lane: wp.int32,
     out: wp.array[Any],
@@ -254,8 +290,7 @@ def finish_block_total(
 ):
     # The last block's half of a reproducible commit: every block's row of slot ``slot`` added in
     # one fixed order into the result slot, and the ticket counter reset for the next launch.
-    thread_fence()
-    grand = block_sum(sum_strided_rows(lane, out, stride + 1 + slot, stride, n_blocks, zero))
+    grand = fold_block_totals(lane, out, slot, stride, n_blocks, zero)
     if lane == 0:
         out[slot] = grand
         out[stride] = zero
@@ -337,12 +372,39 @@ def store_block_total(
             wp.atomic_add(out, slot, folded)
         return
     n_blocks = (out.shape[0] - stride - 1) // stride
-    last = wp.int32(0)
-    if lane == 0:
-        out[stride + 1 + block * stride + slot] = folded
-        last = is_last(take_ticket(out, stride, folded), n_blocks)
-    if block_max(last) != 0:
+    if stage_block_total(block, lane, folded, out, slot, stride, n_blocks, is_last) != 0:
         finish_block_total(lane, out, slot, stride, n_blocks, type(folded)(wp.float32(0.0)))
+
+
+@wp.func
+def store_block_total_divided(
+    block: wp.int32,
+    lane: wp.int32,
+    local: Any,
+    out: wp.array[Any],
+    slot: wp.int32,
+    stride: wp.int32,
+    is_last: wp.Function,
+    divisor: wp.float32,
+):
+    # ``store_block_total`` whose reproducible result slot holds the total divided by ``divisor``,
+    # the division done once by the last block, so a mean needs no launch of its own. The
+    # ``atomic_add`` form has no last block: its slot holds the undivided total, and the caller
+    # divides (``ordito.config.is_deterministic``, which ``_launch.block_partials`` reads to pick
+    # the form, tells it which it got). The
+    # division is ``total / divisor`` per component, the one a ``wp.map(wp.div, ...)`` makes.
+    folded = block_sum(local)
+    if out.shape[0] == stride:
+        if lane == 0:
+            wp.atomic_add(out, slot, folded)
+        return
+    n_blocks = (out.shape[0] - stride - 1) // stride
+    if stage_block_total(block, lane, folded, out, slot, stride, n_blocks, is_last) != 0:
+        zero = type(folded)(wp.float32(0.0))
+        grand = fold_block_totals(lane, out, slot, stride, n_blocks, zero)
+        if lane == 0:
+            out[slot] = grand / divisor
+            out[stride] = zero
 
 
 @wp.func

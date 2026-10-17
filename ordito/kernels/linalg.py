@@ -35,6 +35,7 @@ from warp._src.types import array as array_type
 from warp._src.types import type_is_generic
 
 from ordito.kernels.array import OverloadTable, inverse_or_one
+from ordito.kernels.reduce import block_chunk_1d, block_max
 
 wp.set_module_options({"enable_backward": False})
 
@@ -290,7 +291,7 @@ def csr_row_diagonal(
 @wp.func
 def dominance_ratio(diagonal: wp.Float, off_sum: wp.Float) -> wp.Float:
     # A row's Gershgorin ratio ``sum_{j != i} |A_ij| / |A_ii|``, 0 for a zero diagonal -- see
-    # ``offdiagonal_dominance_rows`` for why both halves of that are load-bearing.
+    # ``jacobi_dominance_bound`` for why both halves of that are load-bearing.
     magnitude = wp.abs(diagonal)
     if magnitude == type(magnitude)(0.0):
         return type(magnitude)(0.0)
@@ -313,16 +314,26 @@ def jacobi_row(
 
 
 @wp.kernel
-def offdiagonal_dominance_rows(
+def jacobi_dominance_bound(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
-    out_ratio: wp.array[wp.float64],
+    write_inverse: wp.int32,
+    out_inverse_diagonal: wp.array[wp.float64],
+    out_bound: wp.array[wp.float64],
 ) -> None:
-    # One thread per row of a CSR operator, writing that row's Gershgorin ratio
-    # ``sum_{j != i} |A_ij| / A_ii``. The maximum over the rows is what
-    # ``linalg._offdiagonal_dominance`` reduces to, and what decides whether a system reaches a
-    # multigrid hierarchy -- see ``linalg.CG_PROBE_ITERATIONS`` for the 29 systems behind that gate.
+    # The maximum over the rows of a CSR operator of the Gershgorin ratio
+    # ``sum_{j != i} |A_ij| / A_ii``, and with ``write_inverse`` set each row's Jacobi inverse
+    # diagonal (``array.inverse_or_one``), from one walk of each row (``jacobi_row``); unset,
+    # ``out_inverse_diagonal`` is never touched and may be ``None``. The maximum is what
+    # ``linalg._offdiagonal_dominance`` reads to decide whether a system reaches a multigrid
+    # hierarchy -- see ``linalg.CG_PROBE_ITERATIONS`` for the 29 systems behind that gate -- and
+    # what the Jacobi-Chebyshev interval is fitted to, which also wants the scaling.
+    #
+    # Lanes stride the block's ``ITEMS_PER_BLOCK_1D`` rows by ``wp.block_dim()`` (right on the CPU
+    # device too, where a block is one lane), and lane 0 commits the block's maximum with one
+    # ``atomic_max`` into ``out_bound[0]``, which the caller seeds below any ratio. A maximum is
+    # exact in any order, so the bound repeats bit for bit, and no per-row ratio is stored.
     #
     # A row whose diagonal is *absent or zero* is a free vertex no face refers to: the least-squares
     # system does not constrain it, so it contributes no row to the operator's *conditioning* and
@@ -334,27 +345,20 @@ def offdiagonal_dominance_rows(
     # rejected every such row as "zero or negative" and reduced to a flat **0.000** -- a number
     # that reads like a well-conditioned operator and silently declines the gate. Caught on
     # ``min_quad_with_fixed`` driven with a raw ``cotmatrix``.
-    i = wp.int32(wp.tid())
-    _inverse, ratio = jacobi_row(offsets, columns, values, i)
-    out_ratio[i] = ratio
-
-
-@wp.kernel
-def jacobi_dominance_rows(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    out_inverse_diagonal: wp.array[wp.float64],
-    out_ratio: wp.array[wp.float64],
-) -> None:
-    # ``offdiagonal_dominance_rows`` and the Jacobi inverse diagonal (``array.inverse_or_one``) from
-    # one walk of each row: the Jacobi-Chebyshev preconditioner wants the scaling and the
-    # Gershgorin interval of one operator, which ``wps.bsr_get_diag``, a map and a second row walk
-    # otherwise took three launches and a buffer to produce.
-    i = wp.int32(wp.tid())
-    inverse, ratio = jacobi_row(offsets, columns, values, i)
-    out_inverse_diagonal[i] = inverse
-    out_ratio[i] = ratio
+    block, lane = wp.tid()
+    base, count = block_chunk_1d(offsets.shape[0] - 1, block)
+    if count <= 0:
+        return
+    local = wp.float64(-1.0e308)
+    for k in range(lane, count, wp.block_dim()):
+        i = base + k
+        inverse, ratio = jacobi_row(offsets, columns, values, i)
+        if write_inverse != 0:
+            out_inverse_diagonal[i] = inverse
+        local = wp.max(local, ratio)
+    bound = block_max(local)
+    if lane == 0:
+        wp.atomic_max(out_bound, 0, bound)
 
 
 @wp.kernel
@@ -390,9 +394,9 @@ def refresh_pooled_operator(
     # storage (``linalg._cached_solver``) and re-derive, from the same walk of the row, what the
     # state derived from its operator when it was built -- the ``float32`` copy of the values the
     # rounds read (``narrow``), the Jacobi inverse diagonal (``derive >= 1``) and the Gershgorin
-    # ratio the Jacobi-Chebyshev interval is fitted to (``derive == 2``). Each is the same
+    # ratio the Jacobi-Chebyshev interval is refitted to (``derive == 2``). Each is the same
     # arithmetic as the kernel that built it (``jacobi_inverse_diagonal`` /
-    # ``jacobi_dominance_rows``), so a refreshed state holds what a new one would. The arrays a
+    # ``jacobi_dominance_bound``), so a refreshed state holds what a new one would. The arrays a
     # flag leaves off may be ``None``. The last thread also writes the terminating offset.
     i = wp.int32(wp.tid())
     start = offsets[i]
@@ -414,30 +418,41 @@ def refresh_pooled_operator(
 
 
 @wp.kernel
-def scaled_rows_and_abs_sums(
+def scaled_rows_and_bound(
     offsets: wp.array[wp.int32],
     values: wp.array[wp.float64],
     weight_sums: wp.array[wp.float64],
     out_scaled: wp.array[wp.float64],
-    out_ratio: wp.array[wp.float64],
+    out_bound: wp.array[wp.float64],
 ) -> None:
-    # One thread per row of a CSR ``L``, in one walk of the row: the values of ``D^-1 L`` (each
-    # row scaled by ``array.inverse_or_one`` of ``D_i``, so a zero weight scales by 1) and
-    # ``sum_j |L_ij| / D_i``, the Gershgorin radius plus centre of row ``i`` of ``D^-1 L``, whose
-    # maximum bounds that operator's spectrum from above.
+    # In one walk of each row of a CSR ``L``: the values of ``D^-1 L`` (each row scaled by
+    # ``array.inverse_or_one`` of ``D_i``, so a zero weight scales by 1) and the maximum over the
+    # rows of ``sum_j |L_ij| / D_i``, the Gershgorin radius plus centre of row ``i`` of ``D^-1 L``,
+    # which bounds that operator's spectrum from above.
     # ``linalg.SquaredLaplacianPreconditioner`` fits its polynomial to that bound. With ``D`` the
-    # diagonal of ``L`` it is ``1 + offdiagonal_dominance_rows``' ratio; with any other positive
+    # diagonal of ``L`` it is ``1 +`` the ``jacobi_dominance_bound`` ratio; with any other positive
     # ``D`` -- ``sqrt(M)`` for the k = 2 harmonic operator ``L M^-1 L`` -- it is the bound that
     # ratio is not, and an interval fitted short of the spectrum amplifies what it should invert.
-    i = wp.int32(wp.tid())
-    weight = weight_sums[i]
-    scale = inverse_or_one(weight)
-    total = wp.float64(0.0)
-    for e in range(offsets[i], offsets[i + 1]):
-        value = values[e]
-        total += wp.abs(value)
-        out_scaled[e] = value * scale
-    out_ratio[i] = total / weight
+    # The block shape and the ``atomic_max`` commit into the seeded ``out_bound[0]`` are
+    # ``jacobi_dominance_bound``'s.
+    block, lane = wp.tid()
+    base, count = block_chunk_1d(offsets.shape[0] - 1, block)
+    if count <= 0:
+        return
+    local = wp.float64(-1.0e308)
+    for k in range(lane, count, wp.block_dim()):
+        i = base + k
+        weight = weight_sums[i]
+        scale = inverse_or_one(weight)
+        total = wp.float64(0.0)
+        for e in range(offsets[i], offsets[i + 1]):
+            value = values[e]
+            total += wp.abs(value)
+            out_scaled[e] = value * scale
+        local = wp.max(local, total / weight)
+    bound = block_max(local)
+    if lane == 0:
+        wp.atomic_max(out_bound, 0, bound)
 
 
 @wp.kernel
@@ -561,8 +576,52 @@ def chebyshev_steps(
         rho = rho_next
 
 
+@wp.func
+def shift_factor(
+    scale: wp.float64, edge_sum_and_count: wp.array[wp.float64], from_edges: wp.int32
+) -> wp.float64:
+    # The factor ``s`` of a shifted system ``s A + M``: ``scale`` itself, or with ``from_edges`` set
+    # ``scale`` times the default timestep ``h ** 2``, ``h`` the mean unique-edge length from
+    # ``heat.upper_edge_length_sum_and_count``'s two sums (``0`` for no edges), formed on the device
+    # so the host never waits for them; ``scale`` is then the sign. Unset, ``edge_sum_and_count``
+    # is never read and may be ``None``. Shared by ``shifted_system_values`` and the heat systems'
+    # row kernels (``kernels/heat.heat_system_rows`` / ``vector_heat_system_rows``), which form
+    # ``A``'s row in the same thread instead of reading it.
+    factor = scale
+    if from_edges != 0:
+        h = wp.float64(0.0)
+        if edge_sum_and_count[1] > wp.float64(0.0):
+            h = edge_sum_and_count[0] / edge_sum_and_count[1]
+        factor = scale * (h * h)
+    return factor
+
+
+@wp.func
+def shifted_scalar_entry(
+    value: wp.float64, factor: wp.float64, diagonal: wp.bool, mass: wp.float64
+) -> wp.float64:
+    # One entry of ``factor * A + M`` for scalar blocks: the mass joins the diagonal entry.
+    shifted = factor * value
+    if diagonal:
+        shifted = shifted + mass
+    return shifted
+
+
+@wp.func
+def shifted_block_entry(
+    value: wp.mat22d, factor: wp.float64, diagonal: wp.bool, mass: wp.float64
+) -> wp.mat22d:
+    # ``shifted_scalar_entry`` for ``wp.mat22d`` blocks: a vertex's two tangent unknowns share its
+    # area weight, so its diagonal block gains ``mass * I``, formed here as the mass is read.
+    shifted = factor * value
+    if diagonal:
+        shifted = shifted + wp.mat22d(mass, wp.float64(0.0), wp.float64(0.0), mass)
+    return shifted
+
+
 def _shifted_system_values_kernel(dtype: Any) -> Any:
     """``shifted_system_values`` for one block dtype: ``wp.float64`` or ``wp.mat22d``."""
+    entry = shifted_block_entry if dtype == wp.mat22d else shifted_scalar_entry
 
     def shifted_system_values(
         offsets: wp.array[wp.int32],
@@ -576,41 +635,23 @@ def _shifted_system_values_kernel(dtype: Any) -> Any:
         out_values: wp.array[Any],
         out_negated: wp.array[Any],
     ) -> None:
-        # One row of ``scale * A + M``, written over ``A``'s own pattern -- the heat method's
-        # ``M - t L`` and ``M + t L_connection``, implicit fairing's ``M - lamb L`` -- where
-        # ``warp.sparse.bsr_axpy`` against a ``bsr_diag`` would merge two patterns, sorting both,
-        # for a result whose pattern is ``A``'s: every vertex a face references has a diagonal
-        # entry (``cotmatrix`` and ``connection_laplacian`` keep every triplet), and one no face
-        # references has no mass.
-        # With ``negate`` set, ``-A`` rides along into ``out_negated`` in the same pass: the scalar
-        # method's Poisson operator; unset, ``out_negated`` is never touched and may be ``None``.
-        # Scalar ``float64`` or ``wp.mat22d`` blocks.
-        #
-        # ``M`` is the scalar lumped mass at either block dtype: a ``wp.mat22d`` system carries
-        # two unknowns per vertex and the same area weight applies to both, so its diagonal block
-        # is formed here, as it is read, rather than mapped into a block buffer first.
-        #
-        # With ``from_edges`` set the scale is ``scale`` times the default timestep ``h ** 2``,
-        # ``h`` the mean unique-edge length from ``upper_edge_length_sum_and_count``'s two sums
-        # (``0`` for no edges), formed on the device so the host never waits for them; ``scale``
-        # is then the sign. Unset, ``edge_sum_and_count`` is never read and may be ``None``.
+        # One row of ``scale * A + M``, written over ``A``'s own pattern -- implicit fairing's
+        # ``M - lamb L`` -- where ``warp.sparse.bsr_axpy`` against a ``bsr_diag`` would merge two
+        # patterns, sorting both, for a result whose pattern is ``A``'s: every vertex a face
+        # references has a diagonal entry (``cotmatrix`` and ``connection_laplacian`` keep every
+        # triplet), and one no face references has no mass. The heat systems ``M - t L`` and
+        # ``M + t L_connection`` take the same entries from ``kernels/heat.heat_system_rows`` and
+        # ``vector_heat_system_rows``, which form ``A``'s row in the same thread instead.
+        # With ``negate`` set, ``-A`` rides along into ``out_negated`` in the same pass;
+        # unset, ``out_negated`` is never touched and may be ``None``. Scalar ``float64`` or
+        # ``wp.mat22d`` blocks; ``M`` is the scalar lumped mass at either (``shifted_block_entry``).
+        # The factor is ``shift_factor``'s.
         row = wp.int32(wp.tid())
-        factor = scale
-        if from_edges != 0:
-            h = wp.float64(0.0)
-            if edge_sum_and_count[1] > wp.float64(0.0):
-                h = edge_sum_and_count[0] / edge_sum_and_count[1]
-            factor = scale * (h * h)
+        factor = shift_factor(scale, edge_sum_and_count, from_edges)
+        m = mass[row]
         for e in range(offsets[row], offsets[row + 1]):
             value = values[e]
-            shifted = factor * value
-            if columns[e] == row:
-                m = mass[row]
-                if wp.static(dtype == wp.mat22d):
-                    shifted = shifted + wp.mat22d(m, wp.float64(0.0), wp.float64(0.0), m)
-                else:
-                    shifted = shifted + m
-            out_values[e] = shifted
+            out_values[e] = entry(value, factor, columns[e] == row, m)
             if negate != 0:
                 out_negated[e] = -value
 

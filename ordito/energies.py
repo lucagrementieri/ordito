@@ -51,9 +51,12 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
+from ordito.config import is_deterministic
+from ordito.constants import TILE_1D
 from ordito.edges import edges_unique, edges_unique_length
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import energies as kernel_energies
+from ordito.kernels import reduce as kernel_reduce
 from ordito.laplacian import cotmatrix, cotmatrix_entries, mass_matrix_entries
 
 
@@ -121,11 +124,15 @@ def edge_length_loss(
     lengths = edges_unique_length(vertices, faces, n_vertices=vertices.size, validate=False)
     if lengths.size == 0:
         return 0.0
-    deviations = _launch.empty(lengths.size, dtype=wp.float32, device=lengths.device)
-    _launch.map(
-        kernel_energies.squared_deviation, lengths, wp.float32(target_length), out=deviations
+    terms = kernel_energies.EdgeDeviationTerms()
+    terms.lengths = lengths
+    terms.target = float(target_length)
+    return _mean_of_terms(
+        (kernel_energies.EDGE_DEVIATION_SUM, kernel_energies.EDGE_DEVIATION_SUM_PARTIALS),
+        terms,
+        lengths.size,
+        lengths.device,
     )
-    return float(od.reduce.mean(deviations))
 
 
 def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:
@@ -187,9 +194,14 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
     angles = od.adjacency.face_adjacency_angles(vertices, faces)
     if angles.size == 0:
         return 0.0
-    terms = _launch.empty(angles.size, dtype=wp.float32, device=angles.device)
-    _launch.map(kernel_energies.one_minus_cosine, angles, out=terms)
-    return float(od.reduce.mean(terms))
+    terms = kernel_energies.DihedralTerms()
+    terms.angles = angles
+    return _mean_of_terms(
+        (kernel_energies.DIHEDRAL_SUM, kernel_energies.DIHEDRAL_SUM_PARTIALS),
+        terms,
+        angles.size,
+        angles.device,
+    )
 
 
 def laplacian_smoothing_loss(
@@ -306,6 +318,52 @@ def laplacian_smoothing_loss(
     return float(od.reduce.mean(norms))
 
 
+def _mean_of_terms(
+    kernels: tuple[odt.Kernel, odt.Kernel], terms: object, n: int, device: wp.DeviceLike
+) -> float:
+    """
+    Mean of the ``n`` per-item terms a ``kernels/energies._term_sum`` pair forms.
+
+    ``kernels`` is the pair's atomic and fixed-order kernels. The terms are summed as
+    ``reduce.mean`` sums an array of them: in its fixed order under ``is_deterministic`` -- one
+    partial per block, folded by ``reduce.SUM1D_PARTIALS`` while more than one remains -- and
+    otherwise by one atomic addition per block, so the mean is the one the regularizers would get
+    from materializing their terms and reducing them, with no term buffer.
+    """
+    atomic, partial = kernels
+    blocks = kernel_reduce.blocks_1d(n)
+    if not is_deterministic():
+        total = _launch.zeros(1, dtype=wp.float32, device=device)
+        _launch.launch_tiled(
+            atomic,
+            dim=[blocks],
+            inputs=[wp.int32(n), terms, total],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        return float(read_scalar(total, 0)) / n
+    partials = _launch.empty(blocks, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
+        partial,
+        dim=[blocks],
+        inputs=[wp.int32(n), terms, partials],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    while blocks > 1:
+        folded = kernel_reduce.blocks_1d(blocks)
+        sums = _launch.empty(folded, dtype=wp.float32, device=device)
+        _launch.launch_tiled(
+            kernel_reduce.SUM1D_PARTIALS[wp.float32],
+            dim=[folded],
+            inputs=[partials, sums],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        partials, blocks = sums, folded
+    return float(read_scalar(partials, 0)) / n
+
+
 def k_harmonic(
     laplacian: odt.BsrMatrix[wp.Float], mass: odt.ArrayNdFloat | None = None, k: int = 2
 ) -> odt.BsrMatrix[wp.Float]:
@@ -390,19 +448,18 @@ def k_harmonic(
     require_same_device(laplacian=laplacian, mass=mass)
     if k < 1:
         raise ValueError(f"harmonic power k must be >= 1, got {k}.")
-    # ``-L`` on ``L``'s own topology: copied offsets and columns and one negating map over the
-    # values, rather than ``bsr_axpy``'s general sum, which also reads the stale ``nnz`` field.
-    negated_values = _launch.empty_like(laplacian.values)
-    _launch.map(wp.neg, laplacian.values, out=negated_values)
-    negated = od.array.bsr_from_csr(
-        int(laplacian.nrow),
-        int(laplacian.ncol),
-        _launch.clone(laplacian.offsets),
-        _launch.clone(laplacian.columns),
-        negated_values,
-    )
     if k == 1:
-        return negated
+        # ``-L`` on ``L``'s own topology: copied offsets and columns and one negating map over the
+        # values, rather than ``bsr_axpy``'s general sum, which also reads the stale ``nnz`` field.
+        negated_values = _launch.empty_like(laplacian.values)
+        _launch.map(wp.neg, laplacian.values, out=negated_values)
+        return od.array.bsr_from_csr(
+            int(laplacian.nrow),
+            int(laplacian.ncol),
+            _launch.clone(laplacian.offsets),
+            _launch.clone(laplacian.columns),
+            negated_values,
+        )
 
     dtype = laplacian.values.dtype
     n_rows = int(laplacian.nrow)
@@ -415,17 +472,24 @@ def k_harmonic(
         inverse_mass = _launch.empty(n_rows, dtype=dtype, device=device)
         _launch.map(kernel_energies.reciprocal_or_zero, mass, out=inverse_mass)
 
-    operator = negated
-    for _ in range(k - 1):
-        operator = _diagonal_sandwich(operator, inverse_mass, negated)
+    # Every factor of ``-L`` is read as ``L`` with its sign carried into the product: the first
+    # sandwich ``(-L) M^-1 (-L)`` is ``L M^-1 L`` (``sign = 1``), and each later one multiplies an
+    # already signed product by ``-L`` (``sign = -1``). Negation is exact, so the entries are the
+    # ones a negated copy of ``L`` would give, without that copy.
+    operator = _diagonal_sandwich(laplacian, inverse_mass, laplacian, 1.0)
+    for _ in range(k - 2):
+        operator = _diagonal_sandwich(operator, inverse_mass, laplacian, -1.0)
     return operator
 
 
 def _diagonal_sandwich(
-    a: odt.BsrMatrix[wp.Float], inverse_mass: wp.array[wp.Float], b: odt.BsrMatrix[wp.Float]
+    a: odt.BsrMatrix[wp.Float],
+    inverse_mass: wp.array[wp.Float],
+    b: odt.BsrMatrix[wp.Float],
+    sign: float,
 ) -> odt.BsrMatrix[wp.Float]:
     """
-    Assemble ``A diag(inverse_mass) B`` for symmetric ``A``, ``B`` by one triplet pass.
+    Assemble ``sign * A diag(inverse_mass) B`` for symmetric ``A``, ``B`` by one triplet pass.
 
     Row ``t`` of the product is the outer product of ``A``'s and ``B``'s rows ``t`` scaled by the
     diagonal weight, so the whole product is one count kernel, one scan, one emission kernel and a
@@ -459,6 +523,7 @@ def _diagonal_sandwich(
                 b.columns,
                 b.values,
                 inverse_mass,
+                dtype(sign),
                 segment_offsets,
                 rows,
                 cols,
@@ -704,24 +769,27 @@ def curved_hessian_energy(
         device=device,
     )
     # ``cursor`` now counts each unique edge's halfedges, which settles the topology the rest
-    # needs: an edge on three or more faces fails the edge-manifold precondition, and an edge on one
-    # is a boundary edge.
-    if int(od.reduce.max(cursor)) > 2:
+    # needs: an edge on three or more faces fails the edge-manifold precondition (flagged by the
+    # launch below), and an edge on one is a boundary edge.
+    # igl::cr_vector_curvature_correction's kappa scaling, ``angle_defect / angle_sum``, is zero
+    # on the boundary (curvature is only corrected at interior vertices) and for a non-positive
+    # angle sum: zeroing the boundary's *sums* gives that zero where the triplet kernel forms the
+    # kappa as it reads it, and it forms each edge's inverse mass likewise.
+    nonmanifold = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_energies.zero_at_boundary_edges,
+        dim=n_edges,
+        inputs=[unique_edges, cursor],
+        outputs=[angle_sums, nonmanifold],
+        device=device,
+    )
+    # The validation raises on the host, so its flag is read back.
+    if int(read_scalar(nonmanifold, 0)) != 0:
         raise ValueError(
             "mesh must be edge-manifold (every edge shared by at most two faces); the "
             "Crouzeix-Raviart discretization curved_hessian_energy is built on is undefined "
             "otherwise, like igl::curved_hessian_energy, which asserts it"
         )
-    # igl::cr_vector_curvature_correction's kappa scaling, ``angle_defect / angle_sum``, is zero
-    # on the boundary (curvature is only corrected at interior vertices) and for a non-positive
-    # angle sum: zeroing the boundary's *sums* gives that zero where the triplet kernel forms the
-    # kappa as it reads it, and it forms each edge's inverse mass likewise.
-    _launch.launch(
-        kernel_energies.zero_at_boundary_edges,
-        dim=n_edges,
-        inputs=[unique_edges, cursor, angle_sums],
-        device=device,
-    )
     mass = _cr_mass_diagonal(vertices, faces, inverse, n_edges, wp.float64)
 
     vertex_slots = _launch.full((n_edges, 4), -1, dtype=wp.int32, device=device)

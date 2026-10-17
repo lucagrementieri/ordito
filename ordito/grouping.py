@@ -694,7 +694,34 @@ def unique_rows(
             counts=empty_i32 if return_counts else None,
         )
 
-    inverse, first_idx, counts = _unique_keys_core(hash_rows(data), return_counts=return_counts)
+    # The row keys and the identity payload go into the leading halves of the sort's double-width
+    # buffers.
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    if data.dtype == wp.int32:
+        odt.ensure_ndim(data, 2)
+        rows = cast("odt.Array2dInt32", data)
+        radix = _row_radix(rows, None, True)
+        assert radix is not None  # resolved whenever ``n > 0``
+        # Packed straight into the sort's buffers -- no key array to copy in -- and sorted over only
+        # the bits ``radix ** width`` needs rather than all 64.
+        _launch.launch(
+            kernel_grouping.pack_indices_and_order,
+            dim=n,
+            inputs=[rows, wp.uint64(radix), keys, order],
+            device=device,
+        )
+        end_bit = min(64, max(1, (radix ** int(rows.shape[1]) - 1).bit_length()))
+        inverse, first_idx, counts = _unique_keys_core(keys, order, end_bit, return_counts)
+    else:
+        row_keys = hash_rows(data)
+        _launch.launch(
+            kernel_grouping.KEYS_AND_IDENTITY[wp.uint64],
+            dim=n,
+            inputs=[row_keys, keys, order],
+            device=device,
+        )
+        inverse, first_idx, counts = _unique_keys_core(keys, order, None, return_counts)
 
     if not is_vec3:
         odt.ensure_ndim(data, 2)
@@ -814,28 +841,21 @@ def unique_faces(
 
 
 def _unique_keys_core(
-    row_keys: wp.array[wp.uint64], *, return_counts: bool
+    keys: wp.array[wp.uint64], order: wp.array[wp.int32], end_bit: int | None, return_counts: bool
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     Shared core of [`unique_rows`][ordito.grouping.unique_rows]: dedup row keys, find first index.
 
-    Returns ``(inverse, first_idx, counts)``: ``unique_1d``'s sorted path, which reads each class's
-    first occurrence off its stable sort in the launch that writes the inverse -- no
-    ``first_occurrence_indices`` scatter after it -- and writes no unique key buffer, since
-    [`unique_rows`][ordito.grouping.unique_rows] gathers ``data`` itself by ``first_idx``.
-    Requires ``row_keys.shape[0] > 0``.
+    ``keys`` / ``order`` are the sort's double-width buffers, their leading halves holding the row
+    keys and the identity permutation. Returns ``(inverse, first_idx, counts)``: ``unique_1d``'s
+    sorted path, which reads each class's first occurrence off its stable sort in the launch that
+    writes the inverse -- no ``first_occurrence_indices`` scatter after it -- and writes no unique
+    key buffer, since [`unique_rows`][ordito.grouping.unique_rows] gathers ``data`` itself by
+    ``first_idx``. Requires at least one row.
     """
-    n = row_keys.size
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=row_keys.device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=row_keys.device)
-    _launch.launch(
-        kernel_grouping.KEYS_AND_IDENTITY[wp.uint64],
-        dim=n,
-        inputs=[row_keys, keys, order],
-        device=row_keys.device,
-    )
+    n = keys.size // 2
     _unique, inverse, counts, first_idx = _unique_sorted_runs(
-        keys, order, n, False, True, return_counts, True, None
+        keys, order, n, False, True, return_counts, True, end_bit
     )
     assert inverse is not None
     assert first_idx is not None
@@ -879,20 +899,21 @@ def _unique_sorted_runs(
     n_unique = int(read_scalar(order, 2 * n - 1))
     unique_values = _launch.empty(n_unique, dtype=dtype, device=device) if return_values else None
     inverse = _launch.empty(n, dtype=wp.int32, device=device) if return_inverse else None
-    starts = _launch.empty(n_unique + 1, dtype=wp.int32, device=device) if return_counts else None
     first = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_first else None
+    # The counts are summed in the emit pass itself, from each run's two ends; integer atomics, so
+    # in any order the same.
+    counts = _launch.zeros(n_unique, dtype=wp.int32, device=device) if return_counts else None
+    emit = (
+        kernel_grouping.EMIT_SORTED_UNIQUE_COUNTS[dtype]
+        if return_counts
+        else kernel_grouping.EMIT_SORTED_UNIQUE[dtype]
+    )
     _launch.launch(
-        kernel_grouping.EMIT_SORTED_UNIQUE[dtype],
+        emit,
         dim=n,
-        inputs=[keys, order, ranks, unique_values, inverse, starts, first],
+        inputs=[keys, order, ranks, unique_values, inverse, counts, first],
         device=device,
     )
-    counts = None
-    if starts is not None:
-        counts = _launch.empty(n_unique, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_grouping.run_lengths, dim=n_unique, inputs=[starts, counts], device=device
-        )
     return unique_values, inverse, counts, first
 
 

@@ -272,7 +272,7 @@ def connected_component_labels(adjacency: odt.BsrMatrix[wp.Scalar]) -> wp.array[
     -------
     wp.array[wp.int32]
         ``(adjacency.nrow,)`` component labels on ``adjacency.device``. Isolated nodes (empty rows)
-        receive distinct labels. When ``nnz == 0``, ``labels[i] == i``.
+        receive distinct labels, so a matrix with no entries gives ``labels[i] == i``.
 
     Raises
     ------
@@ -305,8 +305,8 @@ def connected_component_labels(adjacency: odt.BsrMatrix[wp.Scalar]) -> wp.array[
     device = adjacency.device
     if node_count <= 1:
         return _launch.zeros(node_count, dtype=wp.int32, device=device)
-    if adjacency.nnz == 0:
-        return arange(node_count, device=device)
+    # No short-circuit on an empty matrix: ``adjacency.nnz`` is a capacity rather than the entry
+    # count, and the general path below already labels every node of an empty row by itself.
 
     labels = _launch.empty(node_count, dtype=wp.int32, device=device)
     parents = _launch.empty(node_count, dtype=wp.int32, device=device)
@@ -564,8 +564,9 @@ def connected_component_parity_from_edges(
             raise ValueError(f"signs must be 0 or 1, got min={lowest_sign} max={highest_sign}")
 
     device = edges.device
+    # ``ecl_flatten_parity`` writes both for every node, so neither needs an initial value.
     labels = _launch.empty(node_count, dtype=wp.int32, device=device)
-    parity = _launch.zeros(node_count, dtype=wp.int32, device=device)
+    parity = _launch.empty(node_count, dtype=wp.int32, device=device)
     if node_count == 0:
         return labels, parity
 

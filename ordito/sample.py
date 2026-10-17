@@ -309,47 +309,8 @@ def sample_surface(
             _launch.empty(0, dtype=wp.vec3, device=vertices.device),
             _launch.empty(0, dtype=wp.int32, device=vertices.device),
         )
-    if n_faces == 0:
-        # Without this, an empty ``weights``/``cdf`` reaches ``read_scalar``'s tail read below and
-        # raises an unrelated ``IndexError`` (CPU) or a Warp slicing error (CUDA) instead.
-        raise ValueError("mesh has no faces; cannot sample its surface")
-
-    # ``array_scan`` is inclusive by default, so the total is the scan's last element -- a 4-byte
-    # tail read instead of a whole second reduction over the weights. Same trick as
-    # ``array.flatnonzero`` and ``array.counts_to_offsets``. Without a ``face_weight`` the areas
-    # are written straight into the CDF buffer and scanned in place: no normals, no second buffer.
-    cdf = _launch.empty(n_faces, dtype=wp.float32, device=vertices.device)
-    if face_weight is None:
-        _launch.launch(
-            kernel_triangles.face_areas,
-            dim=n_faces,
-            inputs=[vertices, faces, cdf],
-            device=vertices.device,
-        )
-        _launch.array_scan(cdf, out_array=cdf)
-    else:
-        _launch.array_scan(face_weight, out_array=cdf)
-    total = float(read_scalar(cdf))
-    if total <= 0.0:
-        raise ValueError("total face weight must be positive")
-
-    out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
-    out_face_indices = _launch.empty(count, dtype=wp.int32, device=vertices.device)
-    _launch.launch(
-        kernel_sample.sample_surface,
-        dim=count,
-        inputs=[
-            vertices,
-            faces,
-            cdf,
-            wp.float32(total),
-            resolve_seed(seed),
-            out_points,
-            out_face_indices,
-        ],
-        device=vertices.device,
-    )
-    return out_points, out_face_indices
+    cdf, total = _face_cdf(vertices, faces, face_weight)
+    return _draw_surface_samples(vertices, faces, cdf, total, count, seed)
 
 
 def sample_surface_poisson_disk(
@@ -431,14 +392,19 @@ def sample_surface_poisson_disk(
 
     init_count = max(math.ceil(init_factor * count), count)
 
-    # 1. Initial uniform surface samples
-    init_points, init_face_indices = sample_surface(
-        vertices, faces, init_count, face_weight=face_weight, seed=seed
-    )
-
-    # 2. Surface area (for radius computation)
-    _, areas = face_normals_and_areas(vertices, faces)
-    surface_area = float(cast("float", wp.utils.array_sum(areas)))
+    # 1. Initial uniform surface samples, and 2. the surface area for the radius: the total of the
+    # area CDF the pool is drawn from, unless the pool is drawn by other weights.
+    if face_weight is None:
+        cdf, surface_area = _face_cdf(vertices, faces, None)
+        init_points, init_face_indices = _draw_surface_samples(
+            vertices, faces, cdf, surface_area, init_count, seed
+        )
+    else:
+        init_points, init_face_indices = sample_surface(
+            vertices, faces, init_count, face_weight=face_weight, seed=seed
+        )
+        _, areas = face_normals_and_areas(vertices, faces)
+        surface_area = float(cast("float", wp.utils.array_sum(areas)))
 
     # 3. Poisson disk radii (Öztireli & Gross 2012 constants)
     #
@@ -649,8 +615,8 @@ def sample_surface_blue_noise(
             _launch.empty(0, dtype=wp.int32, device=device),
         )
 
-    _, areas = face_normals_and_areas(vertices, faces)
-    surface_area = float(cast("float", wp.utils.array_sum(areas)))
+    # The surface area is the total of the area CDF the pool is drawn from below.
+    cdf, surface_area = _face_cdf(vertices, faces, None)
     expected = surface_area * (math.pi * math.sqrt(3.0) / 6.0) / (math.pi * radius * radius / 4.0)
     nx = max(1, int(30.0 * expected))
 
@@ -663,7 +629,9 @@ def sample_surface_blue_noise(
     # correlation while staying a deterministic function of the caller's own seed.
     pool_seed = resolve_seed(seed)
     priority_seed = (pool_seed ^ 0x2545F491) & 0x7FFFFFFF
-    init_points, init_face_indices = sample_surface(vertices, faces, nx, seed=pool_seed)
+    init_points, init_face_indices = _draw_surface_samples(
+        vertices, faces, cdf, surface_area, nx, pool_seed
+    )
     return _dart_throw_blue_noise(init_points, init_face_indices, radius, priority_seed)
 
 
@@ -908,6 +876,70 @@ def _emit_kept_samples(
             device=device,
         )
     return kept_points, kept_faces
+
+
+def _face_cdf(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_weight: wp.array[wp.float32] | None
+) -> tuple[wp.array[wp.float32], float]:
+    """
+    Return the inclusive CDF of the face weights (the areas by default) and its total.
+
+    The total is the surface area when ``face_weight`` is ``None``, which is what lets the Poisson
+    and blue-noise samplers size their radius off the CDF their pool is drawn from.
+    """
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        # Without this, an empty ``weights``/``cdf`` reaches ``read_scalar``'s tail read below and
+        # raises an unrelated ``IndexError`` (CPU) or a Warp slicing error (CUDA) instead.
+        raise ValueError("mesh has no faces; cannot sample its surface")
+    # ``array_scan`` is inclusive by default, so the total is the scan's last element -- a 4-byte
+    # tail read instead of a whole second reduction over the weights. Same trick as
+    # ``array.flatnonzero`` and ``array.counts_to_offsets``. Without a ``face_weight`` the areas
+    # are written straight into the CDF buffer and scanned in place: no normals, no second buffer.
+    cdf = _launch.empty(n_faces, dtype=wp.float32, device=vertices.device)
+    if face_weight is None:
+        _launch.launch(
+            kernel_triangles.face_areas,
+            dim=n_faces,
+            inputs=[vertices, faces, cdf],
+            device=vertices.device,
+        )
+        _launch.array_scan(cdf, out_array=cdf)
+    else:
+        _launch.array_scan(face_weight, out_array=cdf)
+    # Host readback: the total is a launch argument of the draw and decides whether to raise.
+    total = float(read_scalar(cdf))
+    if total <= 0.0:
+        raise ValueError("total face weight must be positive")
+    return cdf, total
+
+
+def _draw_surface_samples(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    cdf: wp.array[wp.float32],
+    total: float,
+    count: int,
+    seed: int | None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """``sample_surface``'s draw: ``count`` points by inverse-transform sampling of ``cdf``."""
+    out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
+    out_face_indices = _launch.empty(count, dtype=wp.int32, device=vertices.device)
+    _launch.launch(
+        kernel_sample.sample_surface,
+        dim=count,
+        inputs=[
+            vertices,
+            faces,
+            cdf,
+            wp.float32(total),
+            resolve_seed(seed),
+            out_points,
+            out_face_indices,
+        ],
+        device=vertices.device,
+    )
+    return out_points, out_face_indices
 
 
 def sample_volume(

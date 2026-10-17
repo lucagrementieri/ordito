@@ -1933,35 +1933,30 @@ def schedule_work(
     ncol: wp.array[wp.int32],
     front_size: wp.array[wp.int32],
     height: wp.array[wp.int32],
+    groups: wp.array2d[wp.int32],
     n_levels: wp.int32,
     out_schedule: wp.array[wp.int32],
 ) -> None:
     # Every panel's update work: the largest trailing triangle and solve-block rows any front of
     # the level updates after it, a panel past a narrower front's columns counting that front's
-    # last.
+    # last. Thread ``r`` also copies extend-add group ``r`` after the panel work, four entries
+    # each: both read only the header ``schedule_levels`` wrote and write disjoint ranges, over
+    # the same supernode-count grid, so they share one launch.
     r = wp.int32(wp.tid())
+    tail = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS
+    if r < out_schedule[SCHEDULE_GROUPS]:
+        base = tail + out_schedule[SCHEDULE_PANELS] + 4 * r
+        for k in range(4):
+            out_schedule[base + k] = groups[r, k]
     sn = level_nodes[r]
     row = SCHEDULE_HEADER + height[sn] * LEVEL_FIELDS
-    work = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS + out_schedule[row + 9]
+    work = tail + out_schedule[row + 9]
     c = ncol[sn]
     size = front_size[sn]
     for p in range(out_schedule[row + 2]):
         last = wp.min((p + 1) * PANEL, c)
         span = size - last
         wp.atomic_max(out_schedule, work + p, span * span + span * last)
-
-
-@wp.kernel
-def schedule_groups(
-    groups: wp.array2d[wp.int32], n_levels: wp.int32, out_schedule: wp.array[wp.int32]
-) -> None:
-    # The extend-add groups after the panel work, four entries each.
-    g = wp.int32(wp.tid())
-    if g >= out_schedule[SCHEDULE_GROUPS]:
-        return
-    base = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS + out_schedule[SCHEDULE_PANELS] + 4 * g
-    for k in range(4):
-        out_schedule[base + k] = groups[g, k]
 
 
 @wp.kernel
@@ -2549,13 +2544,25 @@ def breadth_first_advance(state: wp.array[wp.int32]) -> None:
 @wp.kernel
 def farthest_rows(
     labels: wp.array[wp.int32],
+    distance: wp.array[wp.int32],
     first: wp.array[wp.float32],
     second: wp.array[wp.float32],
+    store: wp.int32,
+    search: wp.int32,
+    out_coordinate: wp.array[wp.float32],
     out_key: wp.array[wp.uint64],
 ) -> None:
-    # Per component, the row farthest by ``min(first, second)``, the lowest such row on a tie:
-    # the larger distance in the high word, the complemented row in the low one.
+    # With ``store`` set, the last search's ``distance`` as a landmark coordinate (zero off the
+    # searched components); with ``search`` set, per component the row farthest by
+    # ``min(first, second)``, the lowest such row on a tie: the larger distance in the high word,
+    # the complemented row in the low one. ``first`` or ``second`` may be ``out_coordinate``
+    # itself: row ``v`` reads it only at ``v``, after its own store. An array a flag leaves off may
+    # be ``None``.
     v = wp.int32(wp.tid())
+    if store != 0:
+        out_coordinate[v] = wp.float32(wp.max(distance[v], 0))
+    if search == 0:
+        return
     value = wp.min(first[v], second[v])
     if value < wp.float32(0.0):
         return
@@ -2582,10 +2589,3 @@ def farthest_seeds(
         else:
             seed = wp.int32(wp.uint32(0xFFFFFFFF) - wp.uint32(key[c] & wp.uint64(0xFFFFFFFF)))
     out_seed[c] = seed
-
-
-@wp.kernel
-def store_distance(distance: wp.array[wp.int32], out_coordinate: wp.array[wp.float32]) -> None:
-    # One landmark's distances as a coordinate (zero off the searched components).
-    v = wp.int32(wp.tid())
-    out_coordinate[v] = wp.float32(wp.max(distance[v], 0))

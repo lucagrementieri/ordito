@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import igl
 import numpy as np
@@ -1517,6 +1517,39 @@ def test_signed_distance_grid_guards_and_conventions(
     assert np.allclose(odt.vec3_floats(tight_lower), centre_np - 0.25, atol=1e-6)
     # Entirely inside the body, so every sample of that box is inside it.
     assert tight_field_wp.numpy().max() < 0.0
+
+
+@pytest.mark.parametrize("sign_mode", ["parity", "winding"])
+@pytest.mark.parametrize("voxel_size", [None, 0.1])
+def test_signed_distance_grid_equals_sampled_lattice(
+    sign_mode: Literal["parity", "winding"],
+    voxel_size: float | None,
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: the field is bit for bit the per-point query at the stored lattice.
+
+    ``signed_distance_grid`` forms each node in the query thread instead of storing the lattice,
+    and takes the vertex box once for both the default spacing and the default bounds. The
+    reference route is the stored one: ``resolve_voxel_grid``'s spacing, ``grid_points`` over the
+    returned box, and ``signed_distance_on_mesh`` at those points. Exact equality pins the node
+    arithmetic and the default parameters, with samples on both sides of the surface.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    field_wp, (lower, upper) = od.proximity.signed_distance_grid(
+        vertices_wp, faces_wp, voxel_size, sign_mode=sign_mode
+    )
+    spacing, _origin = od.voxels.resolve_voxel_grid(vertices_wp, voxel_size)
+    mesh_lower_np = np.asarray(mesh_tm.vertices).min(axis=0)
+    assert np.allclose(odt.vec3_floats(lower), mesh_lower_np - 2 * spacing, atol=1e-6)
+    samples_wp = od.voxels.grid_points(field_wp.shape, bounds=(lower, upper), device=mesh_wp.device)
+    distances_wp = od.proximity.signed_distance_on_mesh(
+        vertices_wp, faces_wp, samples_wp, sign_mode=sign_mode
+    )
+    field_np = field_wp.numpy()
+    assert np.array_equal(field_np.ravel(), distances_wp.numpy())
+    assert field_np.min() < 0.0 < field_np.max()
 
 
 def _force_winding_tree(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:

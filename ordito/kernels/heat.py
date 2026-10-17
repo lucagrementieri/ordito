@@ -16,8 +16,21 @@ transport, extension and log map. They share `face_unit_gradient`, `tangent_to_w
 import warp as wp
 
 from ordito.constants import TOLERANCE_ZERO_CONSTANT
-from ordito.kernels.array import binary_search_index, cross2, to_vec2, to_vec2d, to_vec3, to_vec3d
-from ordito.kernels.laplacian import face_half_cotangents
+from ordito.kernels.array import (
+    OverloadTable,
+    binary_search_index,
+    cross2,
+    to_vec2,
+    to_vec2d,
+    to_vec3,
+    to_vec3d,
+)
+from ordito.kernels.laplacian import (
+    connection_offdiagonal,
+    cotmatrix_offdiagonal,
+    face_half_cotangents,
+)
+from ordito.kernels.linalg import shift_factor, shifted_block_entry, shifted_scalar_entry
 from ordito.kernels.predicates import (
     stable_length,
     stable_normalize,
@@ -93,6 +106,109 @@ def upper_edge_length_sum_and_count(
                 total += wp.float64(wp.length(vertices[column] - vertices[row]))
                 count += wp.float64(1.0)
     store_sum_and_count(i, t, total, count, out_sum_and_count, stride)
+
+
+@wp.kernel
+def heat_system_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    scale: wp.float64,
+    edge_sum_and_count: wp.array[wp.float64],
+    from_edges: wp.int32,
+    area_sums: wp.array[wp.float64],
+    out_laplacian: wp.array[wp.float64],
+    out_heat: wp.array[wp.float64],
+    out_poisson: wp.array[wp.float64],
+    out_mass: wp.array[wp.float64],
+) -> None:
+    # One row of the scalar heat method's three operators over a mesh operator pattern, one thread
+    # per vertex: the ``float64`` cotangent Laplacian ``L`` (``laplacian.cotmatrix_rows``' entries,
+    # ``cotmatrix_offdiagonal``), the heat system ``M + factor L`` (``linalg.shift_factor`` and
+    # ``shifted_scalar_entry``, ``factor = -t``) and the Poisson operator ``-L``
+    # (``linalg.shifted_system_values``' with ``negate`` set). The three are formed from the one
+    # walk, so ``L`` is not read back between them. ``out_mass`` is the lumped mass,
+    # ``heat_face_terms``' exact ``area_sums`` over three (``scatter.scale_face_sums``), and may be
+    # ``area_sums`` itself: each thread reads its own vertex's sum before it writes its mass.
+    i = wp.int32(wp.tid())
+    m = area_sums[i] / wp.float64(3.0)
+    out_mass[i] = m
+    start = offsets[i]
+    end = offsets[i + 1]
+    if end == start:
+        return
+    factor = shift_factor(scale, edge_sum_and_count, from_edges)
+    total = wp.float64(0.0)
+    slot = wp.int32(-1)
+    for k in range(start, end):
+        if columns[k] == i:
+            slot = k
+            continue
+        value = cotmatrix_offdiagonal(
+            k, run_start, keys, count, order, cot_entries, wp.float64(0.0)
+        )
+        out_laplacian[k] = value
+        total += value
+        out_heat[k] = shifted_scalar_entry(value, factor, False, m)
+        out_poisson[k] = -value
+    if slot >= 0:
+        diagonal = -total
+        out_laplacian[slot] = diagonal
+        # The flag is read off the pattern rather than written as the constant it is here, so the
+        # entry is formed exactly as ``shifted_system_values`` forms it: a constant flag lets the
+        # CUDA compiler fuse the mass's addition into the product's rounding, which moves the last
+        # bit of the diagonal.
+        out_heat[slot] = shifted_scalar_entry(diagonal, factor, columns[slot] == i, m)
+        out_poisson[slot] = -diagonal
+
+
+@wp.kernel
+def vector_heat_system_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    transport_angles: wp.array[wp.float32],
+    mass: wp.array[wp.float64],
+    scale: wp.float64,
+    edge_sum_and_count: wp.array[wp.float64],
+    from_edges: wp.int32,
+    out_values: wp.array[wp.mat22d],
+) -> None:
+    # One row of the vector heat system ``M + factor L_connection`` over a mesh operator pattern:
+    # ``laplacian.connection_laplacian_rows``' entries (``connection_offdiagonal``, the diagonal
+    # ``sum w * I``) shifted as they are formed (``linalg.shift_factor`` and
+    # ``shifted_block_entry``, ``factor = t``), so the connection Laplacian itself is never stored.
+    # ``mass`` is the scalar lumped mass, which both of a vertex's tangent unknowns take.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    if end == start:
+        return
+    factor = shift_factor(scale, edge_sum_and_count, from_edges)
+    m = mass[i]
+    weight = wp.float64(0.0)
+    slot = wp.int32(-1)
+    for k in range(start, end):
+        if columns[k] == i:
+            slot = k
+            continue
+        value, weight = connection_offdiagonal(
+            i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
+        )
+        out_values[k] = shifted_block_entry(value, factor, False, m)
+    if slot >= 0:
+        # The flag read off the pattern for the reason ``heat_system_rows`` gives.
+        diagonal = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
+        out_values[slot] = shifted_block_entry(diagonal, factor, columns[slot] == i, m)
 
 
 @wp.func
@@ -578,3 +694,45 @@ def log_map_from_angles(
         return
     angle = wp.atan2(cross2(reference, outward), wp.dot(reference, outward))
     out_log[v] = wp.vec2(r * wp.cos(angle), r * wp.sin(angle))
+
+
+# The concrete handles of the two generic row kernels, keyed by the half-cotangent table's dtype
+# -- see [`OverloadTable`][ordito.kernels.array.OverloadTable]. The scalar system reads the
+# ``float32`` table ``heat_face_terms`` writes or a caller's own in either precision; the vector
+# system reads ``laplacian.cotmatrix_entries``' ``float64`` table.
+HEAT_SYSTEM_ROWS: OverloadTable
+VECTOR_HEAT_SYSTEM_ROWS: OverloadTable
+
+
+def _register_overloads() -> None:
+    """Instantiate every concrete overload of this module's generic kernels."""
+    global HEAT_SYSTEM_ROWS, VECTOR_HEAT_SYSTEM_ROWS
+    i32 = wp.array[wp.int32]
+    f64 = wp.array[wp.float64]
+    pattern = [i32, i32, i32, wp.array[wp.uint64], wp.int32, i32]
+    HEAT_SYSTEM_ROWS = OverloadTable(
+        heat_system_rows,
+        {
+            d: [*pattern, wp.array2d[d], wp.float64, f64, wp.int32, f64, f64, f64, f64, f64]
+            for d in (wp.float32, wp.float64)
+        },
+    )
+    VECTOR_HEAT_SYSTEM_ROWS = OverloadTable(
+        vector_heat_system_rows,
+        {
+            wp.float64: [
+                *pattern,
+                i32,
+                wp.array2d[wp.float64],
+                wp.array[wp.float32],
+                f64,
+                wp.float64,
+                f64,
+                wp.int32,
+                wp.array[wp.mat22d],
+            ]
+        },
+    )
+
+
+_register_overloads()

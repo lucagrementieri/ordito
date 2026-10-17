@@ -1402,11 +1402,12 @@ class Trimesh:
         [`ordito.validation.is_vertex_manifold`][]
         """
         if "face_adjacency" not in self._cache:
-            return od.validation.is_vertex_manifold(self._faces)
+            return od.validation.is_vertex_manifold(self._faces, n_vertices=self.n_vertices)
         return od.validation.is_vertex_manifold(
             self._faces,
             face_adjacency=self.face_adjacency,
             face_adjacency_edges=self.face_adjacency_edges,
+            n_vertices=self.n_vertices,
         )
 
     @_CachedProperty

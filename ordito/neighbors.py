@@ -740,8 +740,10 @@ def query_ball(
         leaf_size=leaf_size,
         return_sorted=return_sorted,
     )
-    neighbor_indices = od.array.split(neighbor_indices_flat, offsets, copy=copy)
-    neighbor_distances = od.array.split(neighbor_distances_flat, offsets, copy=copy)
+    # Readback: the per-query views need host bounds; read once and shared by both splits.
+    bounds = offsets.numpy().tolist()
+    neighbor_indices = od.array.split(neighbor_indices_flat, bounds, copy=copy)
+    neighbor_distances = od.array.split(neighbor_distances_flat, bounds, copy=copy)
 
     if single_query:
         return neighbor_indices[0], neighbor_distances[0]

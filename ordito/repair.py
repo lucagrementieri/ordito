@@ -70,12 +70,12 @@ from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, require_valid_faces
 from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.grouping import hash_vector_rows, unique_1d, unique_faces
-from ordito.kernels import array as kernel_array
 from ordito.kernels import polyline as kernel_polyline
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import repair as kernel_repair
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import selection as kernel_selection
+from ordito.kernels.algorithms import connected_components as kernel_connected_components
 from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPrivateUsage]
 
 # Lattice resolution for ``fix_self_intersections(method="voxel")``, in samples across the mesh's
@@ -241,7 +241,9 @@ def make_solid(
     if join_components:
         faces = od.holes.join_closest_components(vertices, faces)
 
-    faces = _fill_any_boundary(vertices, faces)
+    # The fill finds the rims itself and returns the faces unchanged (a copy) when there is none, so
+    # no separate boundary test runs first.
+    faces = od.holes.fill_min_weight(vertices, faces)
     for _ in range(max_iter):
         n_faces_before = faces.size
         vertices, faces = remove_degenerate_faces(vertices, faces)
@@ -260,19 +262,10 @@ def make_solid(
     # nothing geometric may run *after* it: filling a small rim produces one sliver, degeneracy
     # removal deletes that sliver and reopens the rim, and the two then trade the same faces
     # forever -- so the fill goes last.
-    faces = _fill_any_boundary(vertices, faces)
+    faces = od.holes.fill_min_weight(vertices, faces)
     if keep_largest:
         vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
     return vertices, faces
-
-
-def _fill_any_boundary(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-) -> wp.array[wp.int32]:
-    """Close every boundary loop, or hand the buffer back untouched when there is none."""
-    if int(od.boundary.boundary_edges(vertices, faces).shape[0]) == 0:
-        return faces
-    return od.holes.fill_min_weight(vertices, faces)
 
 
 @overload
@@ -592,17 +585,19 @@ def resolve_duplicated_faces(
         empty = _launch.empty(0, dtype=wp.int32, device=device)
         return empty, empty
 
-    faces2d = faces.reshape((-1, 3))
     unique_faces_wp, inverse = unique_faces(faces, return_inverse=True)
     num_unique = unique_faces_wp.size // 3
 
-    # Per-group orientation stats scattered on device: member/signed counts plus the smallest
-    # member index of each sign class (seeded with the ``n_faces`` sentinel).
-    member_count = _launch.zeros(num_unique, dtype=wp.int32, device=device)
-    signed_count = _launch.zeros(num_unique, dtype=wp.int32, device=device)
-    first_member = _launch.full(num_unique, n_faces, dtype=wp.int32, device=device)
-    first_positive = _launch.full(num_unique, n_faces, dtype=wp.int32, device=device)
-    first_negative = _launch.full(num_unique, n_faces, dtype=wp.int32, device=device)
+    # Every per-group table is one slice of a single zeroed buffer: the keep flags with the error
+    # word right behind them (so one readback takes the kept count and the error together), the
+    # member and signed counts, the smallest member of each sign class, and the decided face.
+    u = num_unique
+    tables = _launch.zeros(7 * u + 1, dtype=wp.int32, device=device)
+    keep_flags = odt.as_dense(tables[:u])
+    error_group = odt.as_dense(tables[u : u + 1])
+    member_count, signed_count, first_member, first_positive, first_negative, keep = (
+        odt.as_dense(tables[u + 1 + k * u : u + 1 + (k + 1) * u]) for k in range(6)
+    )
     _launch.launch(
         kernel_repair.scatter_duplicate_face_stats,
         dim=n_faces,
@@ -618,41 +613,44 @@ def resolve_duplicated_faces(
         ],
         device=device,
     )
-
-    keep = _launch.empty(num_unique, dtype=wp.int32, device=device)
-    keep_mask = _launch.empty(num_unique, dtype=wp.bool, device=device)
-    error_group = _launch.full(1, num_unique, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_repair.resolve_duplicate_groups,
-        dim=num_unique,
+        dim=u,
         inputs=[
             member_count,
             signed_count,
             first_member,
             first_positive,
             first_negative,
+            n_faces,
             keep,
-            keep_mask,
+            keep_flags,
             error_group,
         ],
         device=device,
     )
-    first_error = int(read_scalar(error_group, 0))
-    if first_error < num_unique:
+    # Scanned in place, a kept group's flag becomes its output row plus one, in ascending group
+    # order (the reference's emission order); the last entry is the kept total. That and the error
+    # word are read back together: the raise and the output size both need them on the host.
+    _launch.array_scan(keep_flags, out_array=keep_flags, inclusive=True)
+    n_kept, error_word = read_values(tables, u - 1, 2)
+    if error_word != 0:
+        first_error = u - error_word
         count = int(read_scalar(signed_count, first_error))
         raise ValueError(
             f"resolve_duplicated_faces: non-orientable duplicate face group {first_error} "
             f"with signed count {count}"
         )
 
-    # Compact kept decisions in ascending group order (matches the reference emission order).
-    kept_slots = od.array.flatnonzero(keep_mask)
-    if kept_slots.size == 0:
-        empty = _launch.empty(0, dtype=wp.int32, device=device)
-        return empty, empty
-
-    kept_wp = od.array.gather(keep, kept_slots)
-    resolved = od.array.gather(faces2d, kept_wp).reshape((-1,))
+    resolved = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
+    kept_wp = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    if n_kept > 0:
+        _launch.launch(
+            kernel_repair.compact_kept_duplicate_faces,
+            dim=u,
+            inputs=[faces, keep, keep_flags, resolved, kept_wp],
+            device=device,
+        )
     return resolved, kept_wp
 
 
@@ -1163,10 +1161,10 @@ def split_non_manifold_vertices(
     vertex and the face stays degenerate.
 
     The implementation is a connected-components pass over a graph of ``3 * n_faces`` corner nodes
-    rather than a per-vertex star walk: one kernel counts each edge's half-edges by direction, a
-    second emits two links per mergeable edge, and
+    rather than a per-vertex star walk: one kernel counts each edge's half-edges by direction, and
+    a union-find joins the two corner pairs of every mergeable edge, as
     [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
-    does the merging. ``igl::split_nonmanifold`` instead explodes the mesh to ``3 * n_faces``
+    does for an edge list. ``igl::split_nonmanifold`` instead explodes the mesh to ``3 * n_faces``
     singleton vertices and greedily re-merges pairs, re-testing manifoldness after each candidate --
     order-dependent and sequential by construction. The two agree exactly on a manifold mesh, a
     bowtie vertex, a consistently-wound fan of three faces on one edge, a flipped face and an open
@@ -1224,10 +1222,14 @@ def split_non_manifold_vertices(
     )
     n_unique = int(_unique_edges.shape[0])
 
-    forward_count = _launch.zeros(n_unique, dtype=wp.int32, device=device)
-    backward_count = _launch.zeros(n_unique, dtype=wp.int32, device=device)
-    forward_corner = _launch.full(n_unique, -1, dtype=wp.int32, device=device)
-    backward_corner = _launch.full(n_unique, -1, dtype=wp.int32, device=device)
+    # Each direction's count and corner slot are the two halves of one buffer, so the four tables
+    # cost two allocations and two fills.
+    counts = _launch.zeros(2 * n_unique, dtype=wp.int32, device=device)
+    corners = _launch.full(2 * n_unique, -1, dtype=wp.int32, device=device)
+    forward_count = odt.as_dense(counts[:n_unique])
+    backward_count = odt.as_dense(counts[n_unique:])
+    forward_corner = odt.as_dense(corners[:n_unique])
+    backward_corner = odt.as_dense(corners[n_unique:])
     _launch.launch(
         kernel_repair.halfedge_orientation_slots,
         dim=n_corners,
@@ -1242,26 +1244,53 @@ def split_non_manifold_vertices(
         device=device,
     )
 
-    links = odt.empty_2d((2 * n_unique, 2), wp.int32, device=device)
+    # Components over the corners, by union-find straight over the unique edges: each edge names two
+    # joins of the corner graph (self-loops where it is not mergeable), formed in the thread, so no
+    # link list is materialised. Every root is its component's smallest corner, and a corner *is* a
+    # node, so a root's vertex is the original its copy came from.
+    count_inputs = [forward_count, backward_count, forward_corner, backward_corner]
+    parents = od.array.arange(n_corners, device=device)
     _launch.launch(
-        kernel_repair.corner_merge_links,
-        dim=n_unique,
-        inputs=[forward_count, backward_count, forward_corner, backward_corner, links],
+        kernel_repair.corner_merge_prehook,
+        dim=2 * n_unique,
+        inputs=[*count_inputs, parents],
         device=device,
     )
-
-    # ``validate=False``: the links are corner ids this function just built, so the range check
-    # would buy nothing but a full readback of the link buffer.
-    labels = od.graph.connected_component_labels_from_edges(
-        links, node_count=n_corners, validate=False
+    if n_corners >= kernel_connected_components.ECL_COMPRESS_FROM:
+        _launch.launch(
+            kernel_connected_components.ecl_compress, dim=n_corners, inputs=[parents], device=device
+        )
+    _launch.launch(
+        kernel_repair.corner_merge_hook,
+        dim=2 * n_unique,
+        inputs=[*count_inputs, parents],
+        device=device,
     )
-    # ECL-CC labels each component by its smallest node id, and a node id *is* a corner, so the
-    # representative's vertex is the original this copy came from.
-    representatives, new_faces = od.grouping.unique_1d(
-        labels, return_inverse=True, max_value=n_corners - 1
+    roots = _launch.empty(n_corners, dtype=wp.int32, device=device)
+    root_ranks = _launch.empty(n_corners, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_connected_components.ecl_flatten_root_flags,
+        dim=n_corners,
+        inputs=[parents, roots, root_ranks],
+        device=device,
     )
-    source = od.array.gather(faces, representatives)
-    return od.array.gather(vertices, source), new_faces, source
+    # Scanned in place, a root's flag becomes its rank plus one among the roots in ascending order,
+    # which numbers the new vertices by their smallest corner; the total is the last entry, read
+    # back because it sizes the outputs.
+    _launch.array_scan(root_ranks, out_array=root_ranks, inclusive=True)
+    n_new = int(read_scalar(root_ranks))
+    source = _launch.empty(n_new, dtype=wp.int32, device=device)
+    new_vertices = _launch.empty(n_new, dtype=wp.vec3, device=device)
+    # The union-find is done with ``parents``, so it takes the new face buffer: corner ``h`` of the
+    # flat layout is entry ``h``.
+    new_faces = parents
+    _launch.launch(
+        kernel_repair.scatter_split_corners,
+        dim=n_corners,
+        inputs=[faces, vertices, roots, root_ranks, new_faces, source, new_vertices],
+        device=device,
+    )
+    return new_vertices, new_faces, source
 
 
 def collapse_small_triangles(
@@ -1383,15 +1412,14 @@ def collapse_small_triangles(
             pairs, node_count=n_vertices, validate=False
         )
 
-        unique_labels, inverse = unique_1d(labels, return_inverse=True, max_value=n_vertices - 1)
-        # Each label is its class's smallest vertex, so the sorted labels are already every class's
-        # first occurrence in ``inverse``: the representatives, with no scatter to find them.
-        class_vertices = od.array.gather(current_vertices, unique_labels)
-        remapped_faces = od.array.remap_indices(current_faces, inverse)
-
-        keep_mask = od.triangles.face_nondegenerate_mask(class_vertices, remapped_faces)
+        # Each label is its class's smallest vertex, so remapping every corner to its label points
+        # it at the representative's own position, with no dense class numbering built first. The
+        # submesh extraction then keeps exactly the vertices the surviving faces name -- only
+        # representatives -- in ascending index order, which is ascending label order.
+        remapped_faces = od.array.remap_indices(current_faces, labels)
+        keep_mask = od.triangles.face_nondegenerate_mask(current_vertices, remapped_faces)
         current_vertices, current_faces = od.selection.submesh_from_face_mask(
-            class_vertices, remapped_faces, keep_mask
+            current_vertices, remapped_faces, keep_mask
         )
 
     return current_vertices, current_faces
@@ -1533,8 +1561,10 @@ def straighten_boundary(
         # Keyed by halfedge, not by vertex: a bowtie rim vertex carries two rim loops and has no
         # single successor, and edge-manifoldness -- all `halfedge_twins` checks -- does not
         # exclude one. One slot per halfedge gives each loop its own links and one writer each.
-        rim_next = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
-        rim_prev = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
+        # Both link tables are halves of one buffer: one allocation and one fill.
+        rim_links = _launch.full(2 * n_halfedges, -1, dtype=wp.int32, device=device)
+        rim_next = odt.as_dense(rim_links[:n_halfedges])
+        rim_prev = odt.as_dense(rim_links[n_halfedges:])
         candidate = _launch.zeros(n_halfedges, dtype=wp.bool, device=device)
         # One launch: a halfedge's notch test needs only the successor this same thread computes,
         # so linking the rim and classifying it are one pass rather than two with the link table
@@ -1546,7 +1576,6 @@ def straighten_boundary(
                 vertices,
                 faces,
                 twins,
-                od.triangles.face_normals_and_areas(vertices, faces)[0],
                 wp.float32(min_normal_dot),
                 wp.float32(max_aspect_ratio),
                 rim_next,
@@ -2240,48 +2269,7 @@ def make_volume(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = faces.size // 3
-    device = faces.device
-    if n_faces == 0:
-        return _launch.empty(0, dtype=wp.int32, device=device)
-
-    if multibody:
-        out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-        labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
-        accum = _launch.zeros(n_faces, dtype=wp.float32, device=device)
-        _launch.launch(
-            kernel_repair.scatter_face_volume_by_group,
-            dim=n_faces,
-            inputs=[vertices, faces, labels, accum],
-            device=device,
-        )
-        # One launch: each face reads its own component's signed volume through its label, where
-        # gathering that into a per-face flag buffer first cost a map, a launch and the buffer.
-        _launch.launch(
-            kernel_repair.flip_faces_by_component_volume,
-            dim=n_faces,
-            inputs=[faces, labels, accum, out_faces],
-            device=device,
-        )
-        return out_faces
-
-    # The predicate, not ``all(face_watertight_mask(faces))``: the mask additionally builds
-    # ``unique_1d``'s inverse and runs a per-face gather pass, only to be reduced to one bool.
-    # Both answer "is every undirected edge shared by exactly two faces", because every unique edge
-    # in the table comes from a face.
-    if not od.validation.is_edge_manifold(
-        faces, allow_boundary_edges=False, n_vertices=vertices.size
-    ):
-        return _launch.clone(faces)
-
-    if od.measures.volume(vertices, faces) >= 0.0:
-        return _launch.clone(faces)
-
-    out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_repair.flip_all_faces, dim=n_faces, inputs=[faces, out_faces], device=device
-    )
-    return out_faces
+    return _outward_faces(vertices, faces, multibody=multibody, owned=False)
 
 
 def make_normals_outward(
@@ -2344,7 +2332,61 @@ def make_normals_outward(
     """
     require_same_device(vertices=vertices, faces=faces)
     wound = make_winding_consistent(faces, n_vertices=vertices.size)
-    return make_volume(vertices, wound, multibody=multibody)
+    # ``wound`` is this call's own buffer, so a mesh already facing outward returns it as it is.
+    return _outward_faces(vertices, wound, multibody=multibody, owned=True)
+
+
+def _outward_faces(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, multibody: bool, owned: bool
+) -> wp.array[wp.int32]:
+    """
+    [`make_volume`][ordito.repair.make_volume]'s answer, without its device check.
+
+    ``owned`` says ``faces`` is a buffer the caller allocated and hands over: where the faces need
+    no flip it is returned itself rather than cloned.
+    """
+    n_faces = faces.size // 3
+    device = faces.device
+    if n_faces == 0:
+        return _launch.empty(0, dtype=wp.int32, device=device)
+
+    if multibody:
+        out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+        labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+        accum = _launch.zeros(n_faces, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_repair.scatter_face_volume_by_group,
+            dim=n_faces,
+            inputs=[vertices, faces, labels, accum],
+            device=device,
+        )
+        # One launch: each face reads its own component's signed volume through its label, where
+        # gathering that into a per-face flag buffer first cost a map, a launch and the buffer.
+        _launch.launch(
+            kernel_repair.flip_faces_by_component_volume,
+            dim=n_faces,
+            inputs=[faces, labels, accum, out_faces],
+            device=device,
+        )
+        return out_faces
+
+    # The predicate, not ``all(face_watertight_mask(faces))``: the mask additionally builds
+    # ``unique_1d``'s inverse and runs a per-face gather pass, only to be reduced to one bool.
+    # Both answer "is every undirected edge shared by exactly two faces", because every unique edge
+    # in the table comes from a face.
+    if not od.validation.is_edge_manifold(
+        faces, allow_boundary_edges=False, n_vertices=vertices.size
+    ):
+        return faces if owned else _launch.clone(faces)
+
+    if od.measures.volume(vertices, faces) >= 0.0:
+        return faces if owned else _launch.clone(faces)
+
+    out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.flip_all_faces, dim=n_faces, inputs=[faces, out_faces], device=device
+    )
+    return out_faces
 
 
 def remove_folded_faces(
@@ -2426,9 +2468,19 @@ def remove_folded_faces(
     folded = od.validation.face_defective_mask(
         vertices, faces, min_quality=None, max_fold_angle=angle
     )
-    keep = _launch.empty(n_faces, dtype=wp.bool, device=faces.device)
-    _launch.map(kernel_array.mask_not, folded, out=keep)
-    return od.selection.submesh_from_face_mask(vertices, faces, keep)
+    # The submesh extraction keeps the faces whose mask entry is ``False``, so the folded mask is
+    # its input as it stands, with no negated copy.
+    ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=faces.device)
+    _launch.launch(
+        kernel_selection.mark_submesh_faces_and_vertices,
+        dim=n_faces,
+        inputs=[faces, folded, False, ranks],
+        device=faces.device,
+    )
+    new_vertices, new_faces, _vertex_index, _ranks = _compact_marked_submesh(
+        vertices, faces, folded, ranks, keep_masked=False
+    )
+    return new_vertices, new_faces
 
 
 def fix_self_intersections(

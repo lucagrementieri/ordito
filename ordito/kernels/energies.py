@@ -1,5 +1,8 @@
+from typing import Any
+
 import warp as wp
 
+from ordito.constants import TILE_1D, TILES_PER_BLOCK_1D
 from ordito.kernels.array import OverloadTable, to_vec3d
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import (
@@ -8,6 +11,7 @@ from ordito.kernels.predicates import (
     squared_edge_lengths,
     triangle_double_area,
 )
+from ordito.kernels.reduce import tile_chunk
 from ordito.kernels.scatter import add_corner_triple, append_to_pair
 from ordito.kernels.triangles import face_vertices_vec3d
 
@@ -21,14 +25,6 @@ def reciprocal_or_zero(value: wp.Float) -> wp.Float:
     if value > type(value)(0.0):
         return type(value)(1.0) / value
     return type(value)(0.0)
-
-
-@wp.func
-def squared_deviation(value: wp.Float, target: wp.Float) -> wp.Float:
-    # ``(x - L0)^2``, the per-edge term of the edge-length regularizer. A ``@wp.func`` rather than
-    # an inline kernel body so ``energies.edge_length_loss`` can reach it through ``wp.map``.
-    difference = value - target
-    return difference * difference
 
 
 @wp.func
@@ -50,18 +46,40 @@ def scaled_angle_defect(angle_sum: wp.float64) -> wp.float64:
     return reciprocal_scaled_or_zero(angle_sum, angle_defect(angle_sum))
 
 
-@wp.func
-def one_minus_cosine(angle: wp.Float) -> wp.Float:
-    # ``1 - cos(theta)``, the per-pair term of the normal-consistency regularizer: 0 for a flat
-    # pair, 1 at a right angle, 2 for a fold back on itself.
-    return type(angle)(1.0) - wp.cos(angle)
-
-
 # ``laplacian_smoothing_norms``' warp-uniform method selector, one per
 # ``energies.laplacian_smoothing_loss`` method.
 SMOOTHING_UNIFORM = wp.constant(0)
 SMOOTHING_COT = wp.constant(1)
 SMOOTHING_COTCURV = wp.constant(2)
+
+
+@wp.struct
+class EdgeDeviationTerms:
+    """``edge_length_loss``'s edge lengths and resting length ``L0``."""
+
+    lengths: wp.array[wp.float32]
+    target: wp.float32
+
+
+@wp.func
+def edge_deviation_term(local: wp.int32, offset: wp.int32, terms: EdgeDeviationTerms) -> wp.float32:
+    # ``(x - L0)^2`` for edge ``offset + local``, the per-edge term of the edge-length regularizer.
+    difference = terms.lengths[offset + local] - terms.target
+    return difference * difference
+
+
+@wp.struct
+class DihedralTerms:
+    """``normal_consistency_loss``'s dihedral angles, one per adjacent face pair."""
+
+    angles: wp.array[wp.float32]
+
+
+@wp.func
+def dihedral_term(local: wp.int32, offset: wp.int32, terms: DihedralTerms) -> wp.float32:
+    # ``1 - cos(theta)`` for pair ``offset + local``, the per-pair term of the normal-consistency
+    # regularizer: 0 for a flat pair, 1 at a right angle, 2 for a fold back on itself.
+    return wp.float32(1.0) - wp.cos(terms.angles[offset + local])
 
 
 @wp.kernel(enable_backward=False)
@@ -121,6 +139,64 @@ def laplacian_smoothing_norms(
     out_norms[i] = wp.length(row_scale * accumulator + self_scale * vertices[i])
 
 
+def _term_sum(term, terms_type, name, partials):
+    """
+    Build a ``float32`` sum of ``term(local, offset, terms)`` over items, in ``reduce.sum``'s shape.
+
+    The two scalar regularizers' fused map and reduction. With ``partials`` each block stores the
+    sum of its ``ITEMS_PER_BLOCK_1D`` terms at ``out_sums[block]`` and ``reduce.SUM1D_PARTIALS``
+    folds the partials as ``reduce.sum`` folds its own (the fixed-order sum); without, each block
+    adds its sum into ``out_sums[0]`` (``reduce.sum``'s atomic one, when determinism is off). The
+    block shape is ``reduce._reduce_1d_tiled``'s -- a register tile of ``TILE_1D`` terms per step,
+    the ragged tail folded one term at a time, the accumulator seeded from the first chunk -- with
+    the tile formed by ``wp.tile_map`` over the item indices instead of loaded from a buffer of
+    terms, so the sum is bit for bit the one ``reduce.mean`` takes over the materialized terms, and
+    the terms are never stored. A term is item ``offset + local``: ``wp.tile_arange``'s bounds must
+    be constants, so the tile holds ``local`` and each step's ``offset`` is passed beside it. The
+    term reads the arrays it needs from ``terms``, a ``@wp.struct``, which ``wp.tile_map`` passes
+    through where it does not pass an array.
+    """
+
+    def _k(n: wp.int32, terms: Any, out_sums: wp.array[wp.float32]) -> None:
+        i, t = wp.tid()
+        base, remaining = tile_chunk(n, i, TILES_PER_BLOCK_1D * TILE_1D)
+        if remaining <= 0:
+            return
+        local = wp.tile_arange(TILE_1D, dtype=wp.int32, storage="register")
+        if remaining >= TILE_1D:
+            result = wp.tile_sum(wp.tile_map(term, local, base, terms))[0]
+        else:
+            result = term(0, base, terms)
+            for k in range(1, remaining):
+                result = result + term(k, base, terms)
+        for s in range(1, TILES_PER_BLOCK_1D):
+            offset = base + s * TILE_1D
+            rest = n - offset
+            if rest >= TILE_1D:
+                result = result + wp.tile_sum(wp.tile_map(term, local, offset, terms))[0]
+            elif rest > 0:
+                for k in range(rest):
+                    result = result + term(k, offset, terms)
+        if t == 0:
+            if wp.static(partials):
+                out_sums[i] = result
+            else:
+                wp.atomic_add(out_sums, 0, result)
+
+    _k.__annotations__["terms"] = terms_type
+    return wp.kernel(_k, name=name)
+
+
+# One atomic and one fixed-order (``*_PARTIALS``) kernel per regularizer, which
+# ``energies._mean_of_terms`` launches.
+EDGE_DEVIATION_SUM = _term_sum(edge_deviation_term, EdgeDeviationTerms, "edge_deviation_sum", False)
+EDGE_DEVIATION_SUM_PARTIALS = _term_sum(
+    edge_deviation_term, EdgeDeviationTerms, "edge_deviation_sum_partials", True
+)
+DIHEDRAL_SUM = _term_sum(dihedral_term, DihedralTerms, "dihedral_sum", False)
+DIHEDRAL_SUM_PARTIALS = _term_sum(dihedral_term, DihedralTerms, "dihedral_sum_partials", True)
+
+
 @wp.kernel
 def sandwich_row_counts(
     a_offsets: wp.array[wp.int32],
@@ -146,6 +222,7 @@ def sandwich_row_triplets(
     b_columns: wp.array[wp.int32],
     b_values: wp.array[wp.Float],
     inv_mass: wp.array[wp.Float],
+    sign: wp.Float,
     segment_offsets: wp.array[wp.int32],
     out_rows: wp.array[wp.int32],
     out_cols: wp.array[wp.int32],
@@ -155,7 +232,9 @@ def sandwich_row_triplets(
     # ``t``'s entry at column ``i``, so each row of the diagonal sandwich is the scaled outer
     # product of the two matching CSR rows, assembling the product without ``bsr_mm``. (The
     # ``bsr_mm`` nondeterminism this originally avoided was a triplet-capacity defect of this
-    # package, not a Warp bug — see ``k_harmonic`` in ``ordito/energies.py``.)
+    # package, not a Warp bug — see ``k_harmonic`` in ``ordito/energies.py``.) ``sign`` (``1`` or
+    # ``-1``) multiplies each ``B`` entry exactly, so ``k_harmonic`` passes ``L`` where its product
+    # wants ``-L`` and keeps no negated copy.
     t = wp.int32(wp.tid())
     weight = inv_mass[t]
     # The negation of ``sandwich_row_counts``'s own gate, not an independent ``<=`` -- a NaN
@@ -171,7 +250,7 @@ def sandwich_row_triplets(
         for b in range(b_offsets[t], b_offsets[t + 1]):
             out_rows[cursor] = row
             out_cols[cursor] = b_columns[b]
-            out_vals[cursor] = left * b_values[b]
+            out_vals[cursor] = left * (sign * b_values[b])
             cursor += 1
 
 
@@ -351,18 +430,24 @@ def zero_at_boundary_edges(
     unique_edges: wp.array2d[wp.int32],
     halfedge_counts: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
+    out_nonmanifold: wp.array[wp.int32],
 ) -> None:
     # Zero ``out_values`` at both endpoints of every unique edge with one halfedge -- every
     # boundary vertex, read off the halfedge counts ``internal_angles_and_sums`` leaves rather than
-    # a second pass over the halfedge mates (``energies._zero_at_boundary``'s route).
+    # a second pass over the halfedge mates (``energies._zero_at_boundary``'s route). An edge with
+    # three or more halfedges sets ``out_nonmanifold[0]``, the edge-manifold validation
+    # ``curved_hessian_energy`` raises on, read off the same counts in the same pass.
     #
     # Riding this on ``cr_gradient_rows``' grid (same ``dim``, independent; a boundary edge is one
     # whose second halfedge slot is ``-1``) was measured and declined: ``curved_hessian_energy``
     # 1.00-1.01x on ``sphere_small`` / ``saddle`` / ``hemisphere`` / ``sphere_med``.
     e = wp.int32(wp.tid())
-    if halfedge_counts[e] == 1:
+    count = halfedge_counts[e]
+    if count == 1:
         out_values[unique_edges[e, 0]] = wp.float64(0.0)
         out_values[unique_edges[e, 1]] = wp.float64(0.0)
+    elif count > 2:
+        out_nonmanifold[0] = 1
 
 
 @wp.kernel
@@ -936,6 +1021,7 @@ def _register_overloads() -> None:
                 i32,
                 wp.array[d],
                 wp.array[d],
+                d,
                 i32,
                 i32,
                 i32,

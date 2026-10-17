@@ -169,6 +169,19 @@ def ecl_flatten(parents: wp.array[wp.int32], out_labels: wp.array[wp.int32]) -> 
 
 
 @wp.kernel
+def ecl_flatten_root_flags(
+    parents: wp.array[wp.int32], out_roots: wp.array[wp.int32], out_is_root: wp.array[wp.int32]
+) -> None:
+    # ``ecl_flatten`` plus a 0/1 flag on each component's root -- its smallest node, since every
+    # union points the larger root at the smaller -- so an inclusive scan of the flags numbers the
+    # components in ascending root order.
+    h = wp.int32(wp.tid())
+    root = find_representative(parents, h)
+    out_roots[h] = root
+    out_is_root[h] = wp.where(root == h, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
 def count_component_roots(labels: wp.array[wp.int32], out_count: wp.array[wp.int32]) -> None:
     # The component count of an ``ecl_flatten`` labelling: every label is its component's smallest
     # node id, so a component is counted exactly once, at the node that names it. One conditional

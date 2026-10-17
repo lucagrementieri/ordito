@@ -41,7 +41,8 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import prefers_tiled_reduction, require_same_device, slice_count
+from ordito._device import prefers_tiled_reduction, read_values, require_same_device, slice_count
+from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import metrics as kernel_metrics
@@ -1072,6 +1073,11 @@ def _chamfer(
     if point_reduction == "max" and not single_directional and distances.forward_max is None:
         largest = _max_of_both(distances.forward, backward)
         return float(np.float32(largest) * np.float32(largest)) if squared else largest
+    if point_reduction != "max" and not single_directional:
+        total_forward, total_backward = _totals_of_both(distances.forward, backward, squared)
+        if point_reduction == "mean":
+            return total_forward / distances.forward.size + total_backward / backward.size
+        return total_forward + total_backward
     reduced_forward = reduce(distances.forward, point_reduction, distances.forward_max)
     if single_directional:
         return reduced_forward
@@ -1160,6 +1166,58 @@ def _max_of_both(forward: wp.array[wp.float32], backward: wp.array[wp.float32]) 
             device=device,
         )
     return float(out.numpy()[0])  # the reduced value is the function's answer
+
+
+def _totals_of_both(
+    forward: wp.array[wp.float32], backward: wp.array[wp.float32], squared: bool
+) -> tuple[float, float]:
+    """
+    Totals of two non-empty distance arrays (of their squares under ``squared``) in one readback.
+
+    The symmetric ``"sum"`` / ``"mean"`` counterpart of
+    [`_max_of_both`][ordito.metrics._max_of_both]: each total is formed exactly as
+    [`reduce.sum`][ordito.reduce.sum] (``reduce.weighted_sum`` of the distances by themselves
+    under ``squared``) forms it -- the same kernels and fold tree, or the same atomic commit when
+    ``ordito.config`` turns determinism off -- but the last stage of each writes its own slot of
+    one two-slot buffer, so both come back in one copy.
+    """
+    device = forward.device
+    atomic = not squared and not is_deterministic()
+    totals = (_launch.zeros if atomic else _launch.empty)(2, dtype=wp.float32, device=device)
+    for slot, distances in enumerate((forward, backward)):
+        total = totals[slot : slot + 1]
+        if atomic:
+            _launch.launch_tiled(
+                kernel_reduce.SUM1D_TILED[wp.float32],
+                dim=[kernel_reduce.blocks_1d(distances.size)],
+                inputs=[distances, total],
+                block_dim=TILE_1D,
+                device=device,
+            )
+            continue
+        # The fixed-order tree: each stage stores a block's sum in its own slot, folded a block
+        # at a time until one remains, which lands in ``total``.
+        kernel = (
+            kernel_reduce.weighted_sum1d_partials
+            if squared
+            else kernel_reduce.SUM1D_PARTIALS[wp.float32]
+        )
+        inputs = [distances, distances] if squared else [distances]
+        blocks = kernel_reduce.blocks_1d(distances.size)
+        while True:
+            partials = (
+                total if blocks == 1 else _launch.empty(blocks, dtype=wp.float32, device=device)
+            )
+            _launch.launch_tiled(
+                kernel, dim=[blocks], inputs=[*inputs, partials], block_dim=TILE_1D, device=device
+            )
+            if blocks == 1:
+                break
+            kernel, inputs = kernel_reduce.SUM1D_PARTIALS[wp.float32], [partials]
+            blocks = kernel_reduce.blocks_1d(blocks)
+    # The two totals are the function's answer.
+    total_forward, total_backward = read_values(totals, 0, 2)
+    return float(total_forward), float(total_backward)
 
 
 def _empty_chamfer(

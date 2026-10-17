@@ -1121,7 +1121,7 @@ def cylinder(
     template = _cylinder_template(float(radius), half, n_sections)
     vertices = _launch.empty(2 * n_sections + 2, dtype=wp.vec3, device=device)
     faces = _launch.empty(3 * _cylinder_face_count(template), dtype=wp.int32, device=device)
-    _cylinder_into(template, transform, 0, vertices, faces)
+    _cylinder_into(template, transform, vertices, faces)
     return vertices, faces
 
 
@@ -1145,11 +1145,10 @@ def _cylinder_face_count(template: tuple[float, float, int, int, int]) -> int:
 def _cylinder_into(
     template: tuple[float, float, int, int, int],
     transform: wp.mat44 | None,
-    vertex_base: int,
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
 ) -> None:
-    """Write a cylinder into ``vertices`` and ``faces``, face indices offset by ``vertex_base``."""
+    """Write the cylinder ``template`` describes into ``vertices`` and ``faces``."""
     radius, half, n_sections, keep_caps, keep_sides = template
     _launch.launch(
         kernel_creation.cylinder_mesh,
@@ -1162,7 +1161,6 @@ def _cylinder_into(
             wp.int32(keep_caps),
             wp.int32(keep_sides),
             *_placement(transform),
-            wp.int32(vertex_base),
         ],
         outputs=[vertices, faces],
         device=vertices.device,
@@ -2166,16 +2164,18 @@ def axis(
 
     # Each cylinder is built centered on the origin, so it has to be pushed out along its own axis
     # by half its length, then carried by the marker transform: the two compose on the host into
-    # the one matrix its kernel places it with. The four parts are written straight into views of
-    # the final buffers, the ball first, so there is no concatenation pass.
+    # the one matrix its kernel places it with. The ball and then the three cylinders (one launch)
+    # are written straight into the final buffers, so there is no concatenation pass.
     shift = np.eye(4)
     shift[2, 3] = float(axis_length) / 2.0
     marker = np.eye(4) if transform is None else od.transform.matrix_to_numpy(transform)
 
-    template = _cylinder_template(float(axis_radius), float(axis_length) / 2.0, DEFAULT_SECTIONS)
+    radius, half, n_sections, keep_caps, keep_sides = _cylinder_template(
+        float(axis_radius), float(axis_length) / 2.0, DEFAULT_SECTIONS
+    )
     ball_vertices, ball_faces = _icosphere_sizes(_AXIS_BALL_LEVELS)
     cylinder_vertices = 2 * DEFAULT_SECTIONS + 2
-    cylinder_faces = _cylinder_face_count(template)
+    cylinder_faces = (2 * keep_caps + 2 * keep_sides) * n_sections
     device = wp.get_device(device)
     vertices = _launch.empty(ball_vertices + 3 * cylinder_vertices, dtype=wp.vec3, device=device)
     faces = _launch.empty(3 * (ball_faces + 3 * cylinder_faces), dtype=wp.int32, device=device)
@@ -2186,17 +2186,28 @@ def axis(
         odt.as_dense(vertices[:ball_vertices]),
         odt.as_dense(faces[: 3 * ball_faces]),
     )
-    for k, direction in enumerate((_UNIT_X, _UNIT_Y, _UNIT_Z)):
-        placement = marker @ _align_vectors(_UNIT_Z, direction).dot(shift)
-        vertex_start = ball_vertices + k * cylinder_vertices
-        face_start = 3 * (ball_faces + k * cylinder_faces)
-        _cylinder_into(
-            template,
-            wp.mat44(*placement.flatten()),
-            vertex_start,
-            odt.as_dense(vertices[vertex_start : vertex_start + cylinder_vertices]),
-            odt.as_dense(faces[face_start : face_start + 3 * cylinder_faces]),
-        )
+    placements = [
+        _placement(wp.mat44(*(marker @ _align_vectors(_UNIT_Z, direction).dot(shift)).flatten()))
+        for direction in (_UNIT_X, _UNIT_Y, _UNIT_Z)
+    ]
+    _launch.launch(
+        kernel_creation.axis_cylinder_meshes,
+        dim=(3, n_sections),
+        inputs=[
+            wp.float32(radius),
+            wp.float32(half),
+            wp.int32(n_sections),
+            _FULL_TURN,
+            wp.int32(keep_caps),
+            wp.int32(keep_sides),
+            *(matrix for matrix, _mode in placements),
+            wp.vec3i(*(int(mode) for _matrix, mode in placements)),
+            wp.int32(ball_vertices),
+            wp.int32(ball_faces),
+        ],
+        outputs=[vertices, faces],
+        device=device,
+    )
     return vertices, faces
 
 

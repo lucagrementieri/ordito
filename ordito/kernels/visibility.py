@@ -6,6 +6,7 @@ from ordito.constants import TOLERANCE_PLANAR_CONSTANT
 from ordito.kernels.array import RegisterBlockedTable, morton_code_30, morton_frame, to_vec3d
 from ordito.kernels.predicates import point_triangle_offset
 from ordito.kernels.proximity import closest_point_query
+from ordito.kernels.ray import longest_ray_distance
 from ordito.kernels.reduce import block_sum
 from ordito.kernels.tangent_space import any_perpendicular
 
@@ -348,8 +349,8 @@ def shape_diameter(
 
 @wp.func
 def ray_direction(normal: wp.vec3, sign: wp.float32) -> wp.vec3:
-    # The unit ray direction ``sign * normalize(normal)``: one map where a normalize and a
-    # negation were two, and scaling by ``+-1`` is exact, so the directions are unchanged.
+    # The unit ray direction ``sign * normalize(normal)``: scaling by ``+-1`` is exact, so the sign
+    # costs no rounding.
     return sign * wp.normalize(normal)
 
 
@@ -388,6 +389,42 @@ def init_sphere_radii_finite(
         radius = distance * wp.float32(0.5)
         finite = True
     return radius, finite, not finite, sphere_center(point, direction, radius)
+
+
+@wp.kernel
+def init_tangent_spheres(
+    mesh_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    sign: wp.float32,
+    max_t: wp.float32,
+    planar_tol: wp.float32,
+    out_ray_dirs: wp.array[wp.vec3],
+    out_radii: wp.array[wp.float32],
+    out_not_converged: wp.array[wp.bool],
+    out_needs_support: wp.array[wp.bool],
+    out_centers: wp.array[wp.vec3],
+    out_n_not_converged: wp.array[wp.int32],
+) -> None:
+    # ``max_tangent_sphere``'s seed, one thread per query: the ray direction (``ray_direction``),
+    # the longest ray along it (``ray.longest_ray``'s ``longest_ray_distance``) and the sphere it
+    # seeds (``init_sphere_radii_finite``), each read only at this thread's own index, so neither
+    # the direction nor the distance makes a round trip through memory before the seed reads it.
+    # The direction is still written: the support pass and every shrink step read it. A seeded
+    # sphere is counted into ``out_n_not_converged[0]``, the loop's first convergence test, and
+    # ``init_sphere_radii_support`` adds the deferred ones it seeds.
+    i = wp.int32(wp.tid())
+    point = points[i]
+    direction = ray_direction(normals[i], sign)
+    distance = longest_ray_distance(mesh_id, point, direction, max_t, planar_tol)
+    radius, finite, needs_support, center = init_sphere_radii_finite(distance, point, direction)
+    out_ray_dirs[i] = direction
+    out_radii[i] = radius
+    out_not_converged[i] = finite
+    out_needs_support[i] = needs_support
+    out_centers[i] = center
+    if finite:
+        wp.atomic_add(out_n_not_converged, 0, wp.int32(1))
 
 
 @wp.func
@@ -488,9 +525,11 @@ def init_sphere_radii_support(
     out_radii: wp.array[wp.float32],
     out_not_converged: wp.array[wp.bool],
     out_centers: wp.array[wp.vec3],
+    out_n_not_converged: wp.array[wp.int32],
 ) -> None:
     # Tail pass over the deferred subset: decode the support point and derive the
-    # tangent-sphere radius, scattering it back into the full arrays.
+    # tangent-sphere radius, scattering it back into the full arrays. A seeded sphere is counted
+    # into ``out_n_not_converged[0]`` beside ``init_tangent_spheres``' own.
     q = wp.int32(wp.tid())
     tid = support_indices[q]
     packed = packed_support[q]
@@ -515,6 +554,8 @@ def init_sphere_radii_support(
     out_radii[tid] = radius
     out_not_converged[tid] = found
     out_centers[tid] = sphere_center(p, n, radius)
+    if found:
+        wp.atomic_add(out_n_not_converged, 0, wp.int32(1))
 
 
 @wp.kernel

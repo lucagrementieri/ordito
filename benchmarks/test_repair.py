@@ -852,6 +852,24 @@ def test_remove_degenerate_faces(bench_case: BenchCase) -> None:
     assert kept_vertices.size <= bench_case.n_vertices
 
 
+@pytest.mark.benchmark(group="remove_folded_faces")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_remove_folded_faces(bench_case: BenchCase) -> None:
+    """
+    The fold test of ``face_defective_mask`` and a submesh extraction of the faces it spares.
+
+    Ordito alone: MeshLab's ``meshing_remove_folded_faces`` flips the offending edge rather than
+    deleting a face, so it is a different operation, not a slower one.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    kept_vertices, kept_faces = bench_case.run(
+        lambda: od.repair.remove_folded_faces(vertices, faces), rounds=3
+    )
+    assert kept_faces.size <= faces.size
+    assert kept_vertices.size <= bench_case.n_vertices
+
+
 @pytest.mark.benchmark(group="fix_self_intersections")
 @pytest.mark.benchaxis("tangle")
 @pytest.mark.benchlibs("ordito", "meshlib")

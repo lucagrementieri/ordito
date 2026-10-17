@@ -770,7 +770,7 @@ def submesh_from_face_mask(
             f"face_mask must have one entry per face, got {face_mask.size} for {n_faces}"
         )
     sub_vertices, sub_faces, vertex_index, _ = _submesh_from_mask(
-        vertices, faces, face_mask, keep_masked=True
+        vertices, faces, face_mask, keep_masked=True, with_index=return_index
     )
     if return_index:
         return sub_vertices, sub_faces, vertex_index
@@ -1085,6 +1085,7 @@ def _submesh_from_mask(
     face_mask: wp.array[wp.bool],
     *,
     keep_masked: bool,
+    with_index: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Extract the faces whose mask entry equals ``keep_masked``, reindexed from zero.
@@ -1093,7 +1094,8 @@ def _submesh_from_mask(
     [`submesh_from_face_indices`][ordito.selection.submesh_from_face_indices] returns them, and
     ``ranks`` the ``(n_faces + n_vertices,)`` inclusive scan whose leading ``n_faces`` entries rank
     the kept faces. One scan orders the kept faces and the vertices they reference, and a single
-    two-value readback sizes both outputs.
+    two-value readback sizes both outputs. Without ``with_index`` the ``vertex_index`` returned is
+    empty and none is written.
     """
     device = vertices.device
     n_faces = face_mask.size
@@ -1109,7 +1111,9 @@ def _submesh_from_mask(
         inputs=[faces, face_mask, keep_masked, ranks],
         device=device,
     )
-    return _compact_marked_submesh(vertices, faces, face_mask, ranks, keep_masked=keep_masked)
+    return _compact_marked_submesh(
+        vertices, faces, face_mask, ranks, keep_masked=keep_masked, with_index=with_index
+    )
 
 
 def _compact_marked_submesh(
@@ -1119,6 +1123,7 @@ def _compact_marked_submesh(
     ranks: wp.array[wp.int32],
     *,
     keep_masked: bool,
+    with_index: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Scan, size and compact a submesh whose rank buffer is already marked.
@@ -1126,7 +1131,7 @@ def _compact_marked_submesh(
     The second half of ``_submesh_from_mask``, for a caller
     whose own kernel wrote the face mask and the ``(n_faces + n_vertices,)`` 0/1 flags (with
     ``kernels/selection.mark_submesh_face``) in the pass that decided them. Returns what
-    ``_submesh_from_mask`` returns; ``n_faces`` must be positive.
+    ``_submesh_from_mask`` returns, ``with_index`` included; ``n_faces`` must be positive.
     """
     device = vertices.device
     n_faces = face_mask.size
@@ -1141,7 +1146,9 @@ def _compact_marked_submesh(
 
     sub_vertices = _launch.empty(n_kept_vertices, dtype=wp.vec3, device=device)
     sub_faces = _launch.empty(3 * n_kept_faces, dtype=wp.int32, device=device)
-    vertex_index = _launch.empty(n_kept_vertices, dtype=wp.int32, device=device)
+    vertex_index = _launch.empty(
+        n_kept_vertices if with_index else 0, dtype=wp.int32, device=device
+    )
     if n_kept_faces > 0:
         _launch.launch(
             kernel_selection.compact_submesh,
@@ -1154,7 +1161,7 @@ def _compact_marked_submesh(
                 ranks,
                 sub_faces,
                 sub_vertices,
-                vertex_index,
+                vertex_index if with_index else None,
             ],
             device=device,
         )
@@ -1223,10 +1230,10 @@ def submesh_from_vertex_indices(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, vertex_indices=vertex_indices)
-    face_indices = face_indices_from_vertex_indices(
-        faces, vertex_indices, face_mode=face_mode, n_vertices=vertices.size
-    )
-    return submesh_from_face_indices(vertices, faces, face_indices)
+    # The index list as a membership mask, then the mask path: one scan and one readback size the
+    # faces and the vertices together. Both orders are ascending, as the indexed route gives them.
+    vertex_mask = od.array.indices_to_mask(vertex_indices, vertices.size, device=vertices.device)
+    return _submesh_from_vertex_mask(vertices, faces, vertex_mask, face_mode)
 
 
 def submesh_from_vertex_mask(
@@ -1301,41 +1308,44 @@ def submesh_from_vertex_mask(
             f"vertex_mask length must equal n_vertices={n_vertices}, got {vertex_mask.size}"
         )
 
-    face_mask = _face_mask_from_vertex_mask(faces, vertex_mask, face_mode=face_mode)
-    return submesh_from_face_mask(vertices, faces, face_mask)
+    return _submesh_from_vertex_mask(vertices, faces, vertex_mask, face_mode)
 
 
-def _face_mask_from_vertex_mask(
+def _submesh_from_vertex_mask(
+    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_mask: wp.array[wp.bool],
-    *,
-    face_mode: Literal["all", "any"] = "all",
-) -> wp.array[wp.bool]:
+    face_mode: Literal["all", "any"],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    Reduce a per-vertex mask onto a per-face mask under the all/any rule.
+    Extract the faces a vertex mask selects under the all/any rule, reindexed from zero.
 
-    The mask counterpart of
-    [`face_indices_from_vertex_indices`][ordito.selection.face_indices_from_vertex_indices], and
-    the reason a mask input is cheaper: one kernel with three O(1) mask lookups per face, against
-    that function's ``isin`` (two min/max reductions with a host readback each, then either a
-    radix sort or a span-sized lookup table) plus a row reduction plus a ``flatnonzero``.
+    ``_submesh_from_mask`` with each face's selection decided from its corners in the marking
+    pass (``kernels/selection.mark_submesh_by_vertex_mask``) rather than by a separate face-mask
+    launch. A mask is the cheap input: three O(1) lookups per face, where
+    [`face_indices_from_vertex_indices`][ordito.selection.face_indices_from_vertex_indices] needs a
+    scan and a compaction of the selected faces.
     """
     if face_mode not in ("all", "any"):
         raise ValueError(f'face_mode must be "all" or "any", got {face_mode!r}')
-
-    device = faces.device
+    device = vertices.device
     n_faces = faces.size // 3
-    out_face_mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     if n_faces == 0:
-        return out_face_mask
-
+        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
+            0, dtype=wp.int32, device=device
+        )
+    face_mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_selection.face_mask_from_vertex_mask,
+        kernel_selection.mark_submesh_by_vertex_mask,
         dim=n_faces,
-        inputs=[faces, vertex_mask, wp.bool(face_mode == "all"), out_face_mask],
+        inputs=[faces, vertex_mask, wp.bool(face_mode == "all"), face_mask, ranks],
         device=device,
     )
-    return out_face_mask
+    sub_vertices, sub_faces, _, _ = _compact_marked_submesh(
+        vertices, faces, face_mask, ranks, keep_masked=True, with_index=False
+    )
+    return sub_vertices, sub_faces
 
 
 def expand_vertex_mask(

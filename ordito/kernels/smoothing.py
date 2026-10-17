@@ -1,8 +1,12 @@
+from typing import Any
+
 import warp as wp
 
 from ordito.kernels.array import (
+    OverloadTable,
     greater,
     inverse_or_one,
+    mask_and_not,
     next_row_entry,
     sort_segment,
     to_vec3,
@@ -820,15 +824,18 @@ def rescale_about_center(position: wp.vec3d, center: wp.vec3d, scale: wp.float64
 
 @wp.kernel
 def volume_rescale_parameters(
-    volume_current: wp.array[wp.float64], state: wp.array[wp.float64]
+    volume_current: wp.array[wp.float64],
+    anchor_volume: wp.array[wp.float64],
+    anchor_moments: wp.array[wp.float64],
+    state: wp.array[wp.float64],
 ) -> None:
     """
     Form the volume constraint's scale and centre once on the device, for a whole pass.
 
-    In place: ``state`` is ``[volume, centroid integrals x 4, scale, centre x 3]``. The first five
-    are written before the smoothing starts -- the signed volume of the input in ``float64``
-    (``measures.volume``'s kernel) and the first four of ``measures.moments``' integrals of its
-    ``float32`` copy -- and this kernel writes the last four from them and the current volume. The
+    ``state`` is ``[scale, centre x 3]``, written here from the anchor and the current volume. The
+    anchor is read where its block commits left it, in slot 0 of each buffer: the signed volume of
+    the input in ``float64`` (``measures.volume``'s kernel) in ``anchor_volume[0]`` and the first
+    four of ``measures.moments``' integrals of its ``float32`` copy in ``anchor_moments[0:4]``. The
     centre is formed the way ``measures.moments`` forms it on the host -- first moment over volume
     in ``float64``, rounded to ``float32``, ``NaN`` for a zero volume -- and stays the *initial*
     one on every pass, as ``trimesh.smoothing.filter_laplacian`` rescales about that fixed point.
@@ -844,32 +851,32 @@ def volume_rescale_parameters(
     current = volume_current[0]
     scale = wp.float64(0.0)
     if current != wp.float64(0.0):
-        ratio = state[0] / current
+        ratio = anchor_volume[0] / current
         if ratio > wp.float64(0.0):
             scale = wp.pow(ratio, wp.float64(1.0) / wp.float64(3.0))
-    state[5] = scale
-    total = state[1]
+    state[0] = scale
+    total = anchor_moments[0]
     center = wp.vec3d(wp.float64(wp.nan), wp.float64(wp.nan), wp.float64(wp.nan))
     if total != wp.float64(0.0):
         center = to_vec3d(
             wp.vec3(
-                wp.float32(state[2] / total),
-                wp.float32(state[3] / total),
-                wp.float32(state[4] / total),
+                wp.float32(anchor_moments[1] / total),
+                wp.float32(anchor_moments[2] / total),
+                wp.float32(anchor_moments[3] / total),
             )
         )
     for k in range(3):
-        state[6 + k] = center[k]
+        state[1 + k] = center[k]
 
 
 @wp.func
 def rescaled_to_volume(state: wp.array[wp.float64], position: wp.vec3d) -> wp.vec3d:
     # ``position`` rescaled by the scale and about the centre ``volume_rescale_parameters`` wrote;
     # a zero scale is the skip.
-    scale = state[5]
+    scale = state[0]
     if scale == wp.float64(0.0):
         return position
-    return rescale_about_center(position, wp.vec3d(state[6], state[7], state[8]), scale)
+    return rescale_about_center(position, wp.vec3d(state[1], state[2], state[3]), scale)
 
 
 @wp.kernel
@@ -904,6 +911,12 @@ def mut_dif_step(
 # extra launch and one ``(n_vertices,)`` float64x3 round trip through global memory per pass;
 # applying the row in the consuming thread removes both. Each step is one expression with exactly
 # one caller, so it is written here rather than behind a helper name.
+#
+# The pass kernels whose filters start from and return ``wp.vec3`` positions take either vector
+# type on the read and the write (overloads in ``_register_overloads``): a filter's first pass reads
+# the ``float32`` input, widened exactly as each entry is read, and its last writes the ``float32``
+# answer, narrowed as it is stored -- the arithmetic of a widening copy before the passes and a
+# narrowing one after them, without either.
 
 
 @wp.kernel
@@ -911,16 +924,16 @@ def diffuse_vec3_pass(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
-    positions: wp.array[wp.vec3d],
+    positions: wp.array[Any],
     coeff: wp.float64,
-    out_next: wp.array[wp.vec3d],
+    out_next: wp.array[Any],
 ) -> None:
     # Explicit diffusion step v' = v + coeff * (L.v - v); coeff = +lambda (shrink) or -nu
     # (inflate). ``wp.lerp`` extrapolates for coeff outside [0, 1], which the inflating step of
     # ``filter_taubin`` relies on.
     i = wp.int32(wp.tid())
     lv = operator_row(offsets, columns, values, positions, i)
-    out_next[i] = wp.lerp(positions[i], lv, coeff)
+    out_next[i] = out_next.dtype(wp.lerp(wp.vec3d(positions[i]), lv, coeff))
 
 
 @wp.kernel
@@ -928,33 +941,35 @@ def neighborhood_average_pass(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
-    positions: wp.array[wp.vec3d],
-    out_next: wp.array[wp.vec3d],
+    positions: wp.array[Any],
+    out_next: wp.array[Any],
 ) -> None:
     # Closed 1-ring average: new_v = (v + deg * L.v) / (deg + 1), where L is the neighbors-only
     # averaging operator and deg is the CSR row length (the vertex degree). deg = 0 -> new_v = v.
     i = wp.int32(wp.tid())
     lv = operator_row(offsets, columns, values, positions, i)
     deg = wp.float64(offsets[i + 1] - offsets[i])
-    out_next[i] = (positions[i] + deg * lv) / (deg + wp.float64(1.0))
+    out_next[i] = out_next.dtype((wp.vec3d(positions[i]) + deg * lv) / (deg + wp.float64(1.0)))
 
 
 @wp.kernel
 def mark_spikes(
     angle_sums: wp.array[wp.float32],
     min_defect: wp.float32,
+    slot: wp.int32,
     out_spikes: wp.array[wp.bool],
     out_count: wp.array[wp.int32],
 ) -> None:
     # A spike is a vertex whose angle *defect* ``2 pi - angle_sum`` exceeds ``min_defect``
-    # (``vertices.vertex_defects``' quantity, ``array.greater``'s test), counted into ``out_count``.
-    # In place: the sum is re-zeroed once read, so the next pass's scatter needs no fill.
+    # (``vertices.vertex_defects``' quantity, ``array.greater``'s test), counted into the zeroed
+    # ``out_count[slot]`` (a slot per pass, so no pass clears one). In place: the sum is re-zeroed
+    # once read, so the next pass's scatter needs no fill.
     v = wp.int32(wp.tid())
     spike = greater(angle_defect(angle_sums[v]), min_defect)
     angle_sums[v] = wp.float32(0.0)
     out_spikes[v] = spike
     if spike:
-        wp.atomic_add(out_count, 0, 1)
+        wp.atomic_add(out_count, slot, 1)
 
 
 @wp.kernel
@@ -984,27 +999,28 @@ def spike_neighbor_keys(
     faces: wp.array[wp.int32],
     spikes: wp.array[wp.bool],
     base: wp.uint64,
+    slot: wp.int32,
     out_count: wp.array[wp.int32],
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
 ) -> None:
     # The spike rows of ``laplacian.laplacian(symmetric=True)``'s pattern, as
     # ``row * base + column`` keys: each corner on a spike contributes its face's other two
-    # corners, a degenerate face's repeated vertex its self-edge. Appended through ``out_count``'s
-    # cursor into a radix sort's double-width buffers (identity payload) while they have room; past
-    # it only the count grows, and the caller re-runs at the size it read.
+    # corners, a degenerate face's repeated vertex its self-edge. Appended through the zeroed
+    # ``out_count[slot]`` cursor into a radix sort's double-width buffers (identity payload) while
+    # they have room; past it only the count grows, and the caller re-runs at the size it read.
     f = wp.int32(wp.tid())
     capacity = out_order.shape[0] // 2
     for k in range(3):
         v = faces[3 * f + k]
         if spikes[v]:
-            slot = wp.atomic_add(out_count, 0, 2)
-            if slot + 2 <= capacity:
+            at = wp.atomic_add(out_count, slot, 2)
+            if at + 2 <= capacity:
                 row = wp.uint64(v) * base
-                out_keys[slot] = row + wp.uint64(faces[3 * f + (k + 1) % 3])
-                out_keys[slot + 1] = row + wp.uint64(faces[3 * f + (k + 2) % 3])
-                out_order[slot] = slot
-                out_order[slot + 1] = slot + 1
+                out_keys[at] = row + wp.uint64(faces[3 * f + (k + 1) % 3])
+                out_keys[at + 1] = row + wp.uint64(faces[3 * f + (k + 2) % 3])
+                out_order[at] = at
+                out_order[at + 1] = at + 1
 
 
 @wp.func
@@ -1077,18 +1093,19 @@ def humphrey_residual_pass(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
-    positions: wp.array[wp.vec3d],
-    original: wp.array[wp.vec3d],
+    positions: wp.array[Any],
+    original: wp.array[wp.vec3],
     alpha: wp.float64,
     out_lv: wp.array[wp.vec3d],
     out_b: wp.array[wp.vec3d],
 ) -> None:
     # b = L.v - (alpha * original + (1 - alpha) * q), the Humphrey correction term. ``out_lv`` is
-    # still written because the update pass below reads it; only ``L.b`` disappears.
+    # still written because the update pass below reads it; only ``L.b`` disappears. ``original``
+    # is the ``float32`` input, widened as it is read.
     i = wp.int32(wp.tid())
     lv = operator_row(offsets, columns, values, positions, i)
     out_lv[i] = lv
-    out_b[i] = lv - wp.lerp(positions[i], original[i], alpha)
+    out_b[i] = lv - wp.lerp(wp.vec3d(positions[i]), to_vec3d(original[i]), alpha)
 
 
 @wp.kernel
@@ -1099,12 +1116,12 @@ def humphrey_update_pass(
     lv: wp.array[wp.vec3d],
     b: wp.array[wp.vec3d],
     beta: wp.float64,
-    out_next: wp.array[wp.vec3d],
+    out_next: wp.array[Any],
 ) -> None:
     # v' = L.v - (beta * b + (1 - beta) * L.b), with L.b formed here rather than in a buffer.
     i = wp.int32(wp.tid())
     lb = operator_row(offsets, columns, values, b, i)
-    out_next[i] = lv[i] - wp.lerp(lb, b[i], beta)
+    out_next[i] = out_next.dtype(lv[i] - wp.lerp(lb, b[i], beta))
 
 
 @wp.func
@@ -1178,6 +1195,14 @@ def add_scaled_normal(v_prev: wp.vec3d, normal: wp.vec3, scale: wp.float64) -> w
     return v_prev + scale * to_vec3d(normal)
 
 
+@wp.func
+def mut_dif_probe_step(area_max: wp.array[wp.float32]) -> wp.float64:
+    # The volume constraint's finite-difference step ``eps = 0.01 * sqrt(max face area)``, formed
+    # from the device-resident maximum so that the wrapper reads nothing back to set it. Shared by
+    # the probe ``mut_dif_step_scaled`` writes and the slope ``mut_dif_volume_correct`` calibrates.
+    return wp.float64(0.01) * wp.sqrt(wp.float64(area_max[0]))
+
+
 @wp.kernel
 def mut_dif_step_scaled(
     positions: wp.array[wp.vec3d],
@@ -1186,7 +1211,7 @@ def mut_dif_step_scaled(
     inv_n: wp.float64,
     lamb: wp.float64,
     normals: wp.array[wp.vec3],
-    probe_scale: wp.float64,
+    area_max: wp.array[wp.float32],
     out_next: wp.array[wp.vec3d],
     out_probe: wp.array[wp.vec3d],
     out_sensitivity: wp.array[wp.float64],
@@ -1196,7 +1221,7 @@ def mut_dif_step_scaled(
     # the length-1 ``adil_sum`` is a uniform argument, which wp.map cannot broadcast.
     #
     # A non-empty ``out_probe`` (the volume constraint's first pass) also receives the stepped
-    # vertex offset by ``probe_scale`` along its normal: the finite-difference probe
+    # vertex offset by ``mut_dif_probe_step`` along its normal: the finite-difference probe
     # ``mut_dif_volume_correct`` calibrates its slope against, formed from the value this thread
     # has just computed rather than read back by a map of its own.
     i = wp.int32(wp.tid())
@@ -1209,7 +1234,7 @@ def mut_dif_step_scaled(
     stepped = mut_dif_step(position, row, mut_dif_adil(normals[i], position, row), mean_adil, lamb)
     out_next[i] = stepped
     if out_probe.shape[0] > 0:
-        out_probe[i] = add_scaled_normal(stepped, normals[i], probe_scale)
+        out_probe[i] = add_scaled_normal(stepped, normals[i], mut_dif_probe_step(area_max))
 
 
 @wp.func
@@ -1238,7 +1263,7 @@ def mut_dif_volume_correct(
     volume_initial: wp.array[wp.float64],
     volume_current: wp.array[wp.float64],
     volume_probe: wp.array[wp.float64],
-    eps: wp.float64,
+    area_max: wp.array[wp.float32],
     calibrate: wp.int32,
     slope: wp.array[wp.float64],
     out_positions: wp.array[wp.vec3d],
@@ -1259,7 +1284,7 @@ def mut_dif_volume_correct(
     v = wp.int32(wp.tid())
     s = wp.float64(0.0)
     if calibrate != 0:
-        s = mut_dif_volume_slope(volume_current, volume_probe, eps)
+        s = mut_dif_volume_slope(volume_current, volume_probe, mut_dif_probe_step(area_max))
         if v == 0:
             slope[0] = s
     else:
@@ -1286,6 +1311,16 @@ def seed_and_mass_weight_components(
 @wp.func
 def combine_components(x: wp.float64, y: wp.float64, z: wp.float64) -> wp.vec3d:
     return wp.vec3d(x, y, z)
+
+
+@wp.kernel
+def mark_free_new_vertices(
+    first_new: wp.int32, boundary: wp.array[wp.bool], out_free: wp.array[wp.bool]
+) -> None:
+    # ``refine_and_smooth_region``'s free set: the vertices from ``first_new`` on (the tail the
+    # subdivision appended) that are not on the mesh boundary.
+    v = wp.int32(wp.tid())
+    out_free[v] = mask_and_not(v >= first_new, boundary[v])
 
 
 @wp.kernel
@@ -2209,3 +2244,56 @@ def mark_band_vertices(
         out_band[b] = True
     if inside[c]:
         out_band[c] = True
+
+
+# The concrete handles of the generic pass kernels above, keyed by the dtype of the positions read
+# and of the positions written (``humphrey_*``: the one generic side); see
+# [`OverloadTable`][ordito.kernels.array.OverloadTable]. Filled in by ``_register_overloads``.
+DIFFUSE_VEC3_PASS: OverloadTable
+NEIGHBORHOOD_AVERAGE_PASS: OverloadTable
+HUMPHREY_RESIDUAL_PASS: OverloadTable
+HUMPHREY_UPDATE_PASS: OverloadTable
+
+
+def _register_overloads() -> None:
+    """Instantiate every concrete overload of this module's generic kernels."""
+    global DIFFUSE_VEC3_PASS, NEIGHBORHOOD_AVERAGE_PASS, HUMPHREY_RESIDUAL_PASS
+    global HUMPHREY_UPDATE_PASS
+    vectors = (wp.vec3, wp.vec3d)
+    rows = [wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.float32]]
+    DIFFUSE_VEC3_PASS = OverloadTable(
+        diffuse_vec3_pass,
+        {
+            (src, dst): [*rows, wp.array[src], wp.float64, wp.array[dst]]
+            for src in vectors
+            for dst in vectors
+        },
+    )
+    NEIGHBORHOOD_AVERAGE_PASS = OverloadTable(
+        neighborhood_average_pass,
+        {(src, dst): [*rows, wp.array[src], wp.array[dst]] for src in vectors for dst in vectors},
+    )
+    HUMPHREY_RESIDUAL_PASS = OverloadTable(
+        humphrey_residual_pass,
+        {
+            src: [
+                *rows,
+                wp.array[src],
+                wp.array[wp.vec3],
+                wp.float64,
+                wp.array[wp.vec3d],
+                wp.array[wp.vec3d],
+            ]
+            for src in vectors
+        },
+    )
+    HUMPHREY_UPDATE_PASS = OverloadTable(
+        humphrey_update_pass,
+        {
+            dst: [*rows, wp.array[wp.vec3d], wp.array[wp.vec3d], wp.float64, wp.array[dst]]
+            for dst in vectors
+        },
+    )
+
+
+_register_overloads()

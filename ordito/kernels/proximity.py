@@ -1,12 +1,14 @@
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE_CONSTANT, TWO_PI
+from ordito.constants import FLOAT32_INF_CONSTANT, INT64_MAX, TOLERANCE_MERGE_CONSTANT, TWO_PI
 from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels.array import (
     RegisterBlockedTable,
+    lattice_position,
     lift_vec2,
     morton_code_30,
     morton_frame,
+    pack_nearest_key,
     to_vec3,
     to_vec3d,
 )
@@ -24,9 +26,20 @@ from ordito.kernels.predicates import (
     triangle_aabb,
     triangle_triangle_distance_sq,
 )
-from ordito.kernels.reduce import block_argmin, block_barrier, block_sum
+from ordito.kernels.reduce import (
+    block_argmin,
+    block_barrier,
+    block_chunk_1d,
+    block_max,
+    block_min,
+    block_sum,
+    thread_fence,
+)
 
 wp.set_module_options({"enable_backward": False})
+
+# The empty ``pack_nearest_key`` (no element yet), and the seed of every ``nearest_face_pair`` slot.
+NO_NEAREST_KEY = wp.int64(INT64_MAX)
 
 # ``face_to_mesh_distance`` / ``_tiled`` publish each thread's own best distance into
 # ``global_best_sq`` so other threads can prune against it (see the wrapper's seeding comment for
@@ -114,10 +127,11 @@ def closest_point_on_edges(
     edges: wp.array2d[wp.int32],
     queries: wp.array[wp.vec3],
     bvh_id: wp.uint64,
-    max_dist: wp.float32,
-    initial_radius: wp.float32,
-    min_bound: wp.vec3,
-    max_bound: wp.vec3,
+    corners: wp.array[wp.float32],
+    derive_limit: wp.int32,
+    caller_max_dist: wp.float32,
+    caller_initial_radius: wp.float32,
+    initial_radius_scale: wp.float32,
     out_closest: wp.array[wp.vec3],
     out_distance: wp.array[wp.float32],
     out_edge: wp.array[wp.int32],
@@ -148,9 +162,25 @@ def closest_point_on_edges(
     # Unlike the point BVH next door this still needs its narrow phase,
     # because an edge's bounds are not degenerate -- a sphere may overlap the AABB of an edge whose
     # closest point lies outside it.
+    #
+    # ``corners`` is ``minmax_vec3_pair_chunked``'s two-box buffer (box 0 the vertices, box 1 the
+    # queries, upper corners negated), read here rather than on the host so the call needs no
+    # readback. The vertex box bounds the complete search radius. ``derive_limit`` means the caller
+    # gave no limit: it is then the diagonal of the union of both boxes, which no query's nearest
+    # edge exceeds, so it only seeds the first radius (``initial_radius_scale`` of it); otherwise
+    # the caller's limit and seed are used as given.
     tid = wp.int32(wp.tid())
     q = queries[tid]
 
+    min_bound = wp.vec3(corners[0], corners[1], corners[2])
+    max_bound = wp.vec3(-corners[3], -corners[4], -corners[5])
+    max_dist = caller_max_dist
+    initial_radius = caller_initial_radius
+    if derive_limit != 0:
+        union_lower = wp.min(min_bound, wp.vec3(corners[6], corners[7], corners[8]))
+        union_upper = wp.max(max_bound, wp.vec3(-corners[9], -corners[10], -corners[11]))
+        max_dist = wp.length(union_upper - union_lower)
+        initial_radius = initial_radius_scale * max_dist
     r_hard, r = search_radius_bounds(q, min_bound, max_bound, max_dist, initial_radius)
     best_distance = FLOAT32_INF_CONSTANT
     best_edge = wp.int32(-1)
@@ -437,36 +467,23 @@ def face_to_mesh_distance(
         overflow[wp.atomic_add(counter, 0, 1)] = f
 
 
-@wp.kernel(enable_backward=False)
-def face_to_mesh_distance_tiled(
+@wp.func
+def settle_straggler_face(
     query_vertices: wp.array[wp.vec3],
     query_faces: wp.array[wp.int32],
     target_vertices: wp.array[wp.vec3],
     target_faces: wp.array[wp.int32],
     target_lower: wp.array[wp.vec3],
     target_upper: wp.array[wp.vec3],
-    target_mesh: wp.uint64,
-    overflow: wp.array[wp.int32],
+    target_bvh: wp.uint64,
+    n_target_faces: wp.int32,
+    f: wp.int32,
     global_best_sq: wp.array[wp.float32],
     out_distance_sq: wp.array[wp.float32],
     out_witness: wp.array[wp.int32],
-) -> None:
-    # **One block per straggler face**, re-walking the query the thread pass gave up on with
-    # ``wp.tile_bvh_query_aabb``, which hands one candidate per lane per step. Same candidate set,
-    # same ``face_pair_distance_sq`` test; only the walk's *depth* changes, from one thread's
-    # thousands of sequential steps to that over the block width. This is the identical trick
-    # ``kernels/algorithms/ball_pivoting.py`` uses on its pivot search, and for the identical
-    # reason -- see its comment for why a *serial* BVH walk is not the win.
-    #
-    # Each lane keeps its own running best, so a lane cannot prune against its siblings' minima and
-    # slightly more candidates reach the leaf test. The answer is unchanged: the minimum over the
-    # block is the minimum of the per-lane minima, and the global atomic is still read every step.
-    # ``wp.mesh_get_bvh`` (Warp 1.17) hands back the ``wp.Mesh``'s *own* BVH over its faces, so the
-    # caller builds no second structure -- see the wrapper for the measured share.
-    target_bvh = wp.mesh_get_bvh(target_mesh)
-    slot = wp.int32(wp.tid())
-    f = overflow[slot]
-    n_target_faces = target_faces.shape[0] // 3
+):
+    # One straggler face ``f`` re-walked by the whole block; block-collective, so every lane of
+    # the block must call it with the same ``f``. ``face_to_mesh_distance_tiled`` explains the walk.
     a0, a1, a2, lower, upper, grown_lower, grown_upper = query_face_broad_phase(
         query_vertices, query_faces, f, global_best_sq[UPPER_BOUND_SLOT]
     )
@@ -531,6 +548,109 @@ def face_to_mesh_distance_tiled(
     if block_best < out_distance_sq[f]:
         out_distance_sq[f] = block_best
         out_witness[f] = block_witness
+
+
+@wp.kernel(enable_backward=False)
+def face_to_mesh_distance_tiled(
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
+    target_lower: wp.array[wp.vec3],
+    target_upper: wp.array[wp.vec3],
+    target_mesh: wp.uint64,
+    counter: wp.array[wp.int32],
+    overflow: wp.array[wp.int32],
+    global_best_sq: wp.array[wp.float32],
+    out_distance_sq: wp.array[wp.float32],
+    out_witness: wp.array[wp.int32],
+    out_claim: wp.array[wp.int32],
+) -> None:
+    # **One block per straggler face**, re-walking the query the thread pass gave up on with
+    # ``wp.tile_bvh_query_aabb``, which hands one candidate per lane per step. Same candidate set,
+    # same ``face_pair_distance_sq`` test; only the walk's *depth* changes, from one thread's
+    # thousands of sequential steps to that over the block width. This is the identical trick
+    # ``kernels/algorithms/ball_pivoting.py`` uses on its pivot search, and for the identical
+    # reason -- see its comment for why a *serial* BVH walk is not the win.
+    #
+    # Each lane keeps its own running best, so a lane cannot prune against its siblings' minima and
+    # slightly more candidates reach the leaf test. The answer is unchanged: the minimum over the
+    # block is the minimum of the per-lane minima, and the global atomic is still read every step.
+    # ``wp.mesh_get_bvh`` (Warp 1.17) hands back the ``wp.Mesh``'s *own* BVH over its faces, so the
+    # caller builds no second structure -- see the wrapper for the measured share.
+    #
+    # **Persistent blocks fetching work**, so the straggler count is never read back to size the
+    # launch: ``counter[0]`` is the count the thread pass appended, ``out_claim[1]`` (zeroed) the
+    # next unclaimed straggler -- the same two-slot buffer passed twice, read in slot 0 and claimed
+    # in slot 1. Lane 0 of a block claims one, ``block_max`` hands it to every lane, and
+    # the block walks it and claims again until none is left; a dynamic claim keeps the load
+    # balance a block per straggler had, where a fixed stride would not (straggler costs vary by
+    # orders of magnitude). The claim is block-uniform, so the tile walk inside stays collective.
+    target_bvh = wp.mesh_get_bvh(target_mesh)
+    _block, lane = wp.tid()
+    n_target_faces = target_faces.shape[0] // 3
+    n_overflow = counter[0]
+    while True:
+        claimed = wp.int32(-1)
+        if lane == 0:
+            claimed = wp.atomic_add(out_claim, 1, 1)
+        slot = block_max(claimed)
+        if slot >= n_overflow:
+            break
+        settle_straggler_face(
+            query_vertices,
+            query_faces,
+            target_vertices,
+            target_faces,
+            target_lower,
+            target_upper,
+            target_bvh,
+            n_target_faces,
+            overflow[slot],
+            global_best_sq,
+            out_distance_sq,
+            out_witness,
+        )
+
+
+@wp.func
+def block_nearest_key(distances: wp.array[wp.float32], chunk: wp.int32, lane: wp.int32) -> wp.int64:
+    # The smallest ``pack_nearest_key(distances[i], i)`` over block ``chunk``'s
+    # ``ITEMS_PER_BLOCK_1D`` chunk, on every lane; ``NO_NEAREST_KEY`` for an empty chunk. Lanes
+    # stride the chunk by ``wp.block_dim()``, so the CPU device's single lane covers it. The same
+    # statement run as ``neighbors.nearest_key_argmin``'s.
+    offset, count = block_chunk_1d(distances.shape[0], chunk)
+    best = NO_NEAREST_KEY
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        best = wp.min(best, pack_nearest_key(distances[i], i))
+    return block_min(best)
+
+
+@wp.kernel
+def nearest_face_pair(
+    distances: wp.array[wp.float32],
+    partners: wp.array[wp.int32],
+    n_blocks: wp.int32,
+    out_result: wp.array[wp.int64],
+) -> None:
+    # ``neighbors.nearest_key_argmin`` and ``neighbors.nearest_key_partner`` in one launch, for
+    # ``mesh_to_mesh_distance``: the smallest ``pack_nearest_key(distances[i], i)`` into
+    # ``out_result[0]`` and ``partners`` of its winner into ``out_result[1]``. The block that draws
+    # the last ticket (``out_result[2]``, counting down from ``INT64_MAX``; all three slots arrive
+    # seeded at ``INT64_MAX``) has seen every block's ``atomic_min`` land, so it reads the winner
+    # (atomically, past any cached copy) and writes its partner. The fence publishes a block's
+    # minimum before its ticket. Launched as ``nearest_key_argmin`` is, ``n_blocks`` wide.
+    chunk, lane = wp.tid()
+    block_best = block_nearest_key(distances, chunk, lane)
+    if lane == 0:
+        wp.atomic_min(out_result, 0, block_best)
+        thread_fence()
+        ticket = wp.atomic_add(out_result, 2, wp.int64(-1))
+        if ticket == NO_NEAREST_KEY - wp.int64(n_blocks - 1):
+            thread_fence()
+            key = wp.atomic_min(out_result, 0, NO_NEAREST_KEY)
+            out_result[1] = wp.int64(partners[wp.int32(key & wp.int64(0xFFFFFFFF))])
 
 
 @wp.func
@@ -606,6 +726,22 @@ def signed_distance_from_query(
     return sign * dist
 
 
+@wp.func
+def signed_distance_parity(
+    mesh_id: wp.uint64,
+    p: wp.vec3,
+    max_dist: wp.float32,
+    n_sample: wp.int32,
+    perturbation_scale: wp.float32,
+) -> wp.float32:
+    # The ray-parity head: one query and the shared tail. Read by the point kernel and the lattice
+    # kernel, which differ only in where ``p`` comes from.
+    query = wp.mesh_query_point_sign_parity(mesh_id, p, max_dist, n_sample, perturbation_scale)
+    return signed_distance_from_query(
+        mesh_id, p, query.result, query.face, query.u, query.v, query.sign, max_dist
+    )
+
+
 @wp.kernel
 def signed_distance_on_mesh(
     mesh_id: wp.uint64,
@@ -616,9 +752,46 @@ def signed_distance_on_mesh(
     out_distance: wp.array[wp.float32],
 ) -> None:
     tid = wp.int32(wp.tid())
-    p = points[tid]
-    query = wp.mesh_query_point_sign_parity(mesh_id, p, max_dist, n_sample, perturbation_scale)
-    out_distance[tid] = signed_distance_from_query(
+    out_distance[tid] = signed_distance_parity(
+        mesh_id, points[tid], max_dist, n_sample, perturbation_scale
+    )
+
+
+@wp.kernel
+def signed_distance_on_lattice(
+    mesh_id: wp.uint64,
+    lower: wp.vec3,
+    step: wp.vec3,
+    max_dist: wp.float32,
+    n_sample: wp.int32,
+    perturbation_scale: wp.float32,
+    out_distance: wp.array3d[wp.float32],
+) -> None:
+    # ``signed_distance_on_mesh`` with each query point formed in the thread from its lattice node,
+    # by the ``lattice_position`` that ``voxels.lattice_points`` stores, so no position buffer is
+    # materialised and the value is the stored node's.
+    i, j, k = wp.tid()
+    out_distance[i, j, k] = signed_distance_parity(
+        mesh_id, lattice_position(lower, step, i, j, k), max_dist, n_sample, perturbation_scale
+    )
+
+
+@wp.func
+def signed_distance_winding(
+    mesh_id: wp.uint64,
+    p: wp.vec3,
+    max_dist: wp.float32,
+    accuracy: wp.float32,
+    winding_threshold: wp.float32,
+) -> wp.float32:
+    # Only the sign differs from ``signed_distance_parity``; the closest-point and tolerance-band
+    # handling is the shared ``signed_distance_from_query``. ``mesh_id`` MUST come from a
+    # ``wp.Mesh`` built with ``support_winding_number=True`` -- otherwise this builtin silently
+    # falls back to ray parity (warp/native/mesh.h:1348).
+    query = wp.mesh_query_point_sign_winding_number(
+        mesh_id, p, max_dist, accuracy, winding_threshold
+    )
+    return signed_distance_from_query(
         mesh_id, p, query.result, query.face, query.u, query.v, query.sign, max_dist
     )
 
@@ -632,17 +805,26 @@ def signed_distance_on_mesh_winding(
     winding_threshold: wp.float32,
     out_distance: wp.array[wp.float32],
 ) -> None:
-    # Only the sign differs from ``signed_distance_on_mesh``; the closest-point and tolerance-band
-    # handling is the shared ``signed_distance_from_query``. ``mesh_id`` MUST come from a
-    # ``wp.Mesh`` built with ``support_winding_number=True`` -- otherwise this builtin silently
-    # falls back to ray parity (warp/native/mesh.h:1348).
     tid = wp.int32(wp.tid())
-    p = points[tid]
-    query = wp.mesh_query_point_sign_winding_number(
-        mesh_id, p, max_dist, accuracy, winding_threshold
+    out_distance[tid] = signed_distance_winding(
+        mesh_id, points[tid], max_dist, accuracy, winding_threshold
     )
-    out_distance[tid] = signed_distance_from_query(
-        mesh_id, p, query.result, query.face, query.u, query.v, query.sign, max_dist
+
+
+@wp.kernel
+def signed_distance_on_lattice_winding(
+    mesh_id: wp.uint64,
+    lower: wp.vec3,
+    step: wp.vec3,
+    max_dist: wp.float32,
+    accuracy: wp.float32,
+    winding_threshold: wp.float32,
+    out_distance: wp.array3d[wp.float32],
+) -> None:
+    # ``signed_distance_on_lattice`` with the winding head.
+    i, j, k = wp.tid()
+    out_distance[i, j, k] = signed_distance_winding(
+        mesh_id, lattice_position(lower, step, i, j, k), max_dist, accuracy, winding_threshold
     )
 
 
@@ -1318,7 +1500,8 @@ def face_containing_point_2d(
     vertices: wp.array[wp.vec2],
     faces: wp.array[wp.int32],
     points: wp.array[wp.vec2],
-    search_radius: wp.float32,
+    corners: wp.array[wp.float32],
+    search_scale: wp.float32,
     barycentric_epsilon: wp.float32,
     out_face: wp.array[wp.int32],
 ) -> None:
@@ -1340,9 +1523,16 @@ def face_containing_point_2d(
     # declined: the radius prunes the descent of every query landing outside, so dropping it, and
     # with it the reduction and readback that size it, is 2.4x at 40 000 queries on CUDA but
     # 1.1-1.2x slower at a million, and 1.2-2.3x slower at every size on the CPU.
+    #
+    # The radius is ``search_scale`` times the triangulation's box diagonal, read from
+    # ``minmax_vec3_chunked``'s ``corners`` (upper corner negated) in the thread rather than on the
+    # host, so sizing it costs no readback. Since the answer does not depend on the radius beyond
+    # its being loose enough, its float32 rounding here is immaterial.
     tid = wp.int32(wp.tid())
     p = points[tid]
     out_face[tid] = wp.int32(-1)
+    extent = wp.vec3(-corners[3] - corners[0], -corners[4] - corners[1], -corners[5] - corners[2])
+    search_radius = search_scale * wp.length(extent)
     query = wp.mesh_query_point_no_sign(mesh_id, lift_vec2(p, wp.float32(0.0)), search_radius)
     if not query.result:
         return

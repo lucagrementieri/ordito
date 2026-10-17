@@ -493,10 +493,11 @@ def transfer_through_operator(
     if int(operator.ncol) != n_source:
         raise ValueError(f"operator has {operator.ncol} columns but values has {n_source} entries")
 
-    out_values = _launch.zeros(n_out, dtype=values.dtype, device=device)
     if n_out == 0 or n_source == 0:
-        return out_values
+        return _launch.zeros(n_out, dtype=values.dtype, device=device)
 
+    # Every row is written, an empty one with the additive identity, so no initial value.
+    out_values = _launch.empty(n_out, dtype=values.dtype, device=device)
     _launch.launch(
         kernel_interpolation.APPLY_TRANSFER_OPERATOR[values.dtype],
         dim=n_out,

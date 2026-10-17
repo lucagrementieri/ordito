@@ -266,10 +266,13 @@ def isotropic_remesh(
     n_faces = faces.size // 3
     device = vertices.device
     n_vertices = vertices.size
-    current_vertices = _launch.clone(vertices)
-    current_faces = _launch.clone(faces)
     if n_faces == 0 or iterations <= 0:
-        return current_vertices, current_faces
+        return _launch.clone(vertices), _launch.clone(faces)
+    # The working buffers start as the caller's own: every stage but the flip pass returns fresh
+    # buffers rather than writing its input, so a copy is taken only before that in-place pass and
+    # on return, for whichever buffer no stage replaced.
+    current_vertices = vertices
+    current_faces = faces
 
     diag = od.bounds.enclosing_diagonal(vertices)
     sizing_input: wp.array[wp.float32] | None = None
@@ -346,7 +349,7 @@ def isotropic_remesh(
                     device,
                 )[1]
             current_vertices, current_faces, _index, grouping = _subdivide_to_size(
-                current_vertices, current_faces, split_limit, max_iter=20
+                current_vertices, current_faces, split_limit, max_iter=20, index=False, copy=False
             )
         else:
             grouping = None
@@ -368,6 +371,8 @@ def isotropic_remesh(
         if current_faces.size == 0:
             break
         if swap:
+            if current_faces is faces:
+                current_faces = _launch.clone(faces)
             flips, topology = _valence_flip_pass(
                 current_vertices, current_faces, feature, incidence=incidence
             )
@@ -409,6 +414,10 @@ def isotropic_remesh(
             )
             current_vertices = bounded
 
+    if current_vertices is vertices:
+        current_vertices = _launch.clone(vertices)
+    if current_faces is faces:
+        current_faces = _launch.clone(faces)
     return current_vertices, current_faces
 
 
@@ -2588,7 +2597,7 @@ def flip_to_delaunay(
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     device = faces.device
-    setup = _flip_setup(faces, region)
+    setup = _flip_setup(faces, region, vertices.size)
     if setup is None:
         return _launch.clone(faces)
     out_faces, n_vertices, region_flags = setup
@@ -2762,7 +2771,7 @@ def flip_by_objective(
         raise ValueError(f"planar_angle must be in [0, 180] degrees, got {planar_angle}")
 
     device = faces.device
-    setup = _flip_setup(faces, region)
+    setup = _flip_setup(faces, region, vertices.size)
     if setup is None:
         return _launch.clone(faces)
     out_faces, n_vertices, region_flags = setup
@@ -2816,7 +2825,7 @@ def flip_by_objective(
 
 
 def _flip_setup(
-    faces: wp.array[wp.int32], region: wp.array[wp.bool] | None
+    faces: wp.array[wp.int32], region: wp.array[wp.bool] | None, n_vertices: int
 ) -> tuple[wp.array[wp.int32], int, wp.array[wp.int32]] | None:
     """
     Working face buffer, vertex count and per-face region flags shared by the two flip drivers.
@@ -2832,6 +2841,9 @@ def _flip_setup(
         Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
     region
         Optional length-``n_faces`` ``wp.bool`` mask restricting which faces may flip.
+    n_vertices
+        The vertex count, ``len(vertices)``: the radix of the flip loop's edge keys, which the
+        faces' indices must stay below (``_flip_region_faces`` keys the same way).
 
     Returns
     -------
@@ -2854,7 +2866,7 @@ def _flip_setup(
         region_flags = _launch.full(n_faces, 1, dtype=wp.int32, device=device)
     else:
         region_flags = od.array.astype(region, wp.int32)
-    return _launch.clone(faces), od.array.index_bound(faces), region_flags
+    return _launch.clone(faces), n_vertices, region_flags
 
 
 def intrinsic_delaunay(
@@ -3229,9 +3241,14 @@ def subdivide_loop(
     unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     n_unique = int(unique_edges.shape[0])
 
-    # How many faces each edge carries, and the sum of the vertices opposite it.
-    edge_opposite_sum = _launch.zeros(n_unique, dtype=wp.vec3, device=device)
-    edge_face_count = _launch.zeros(n_unique, dtype=wp.int32, device=device)
+    # Two zeroed buffers, one per dtype, split into the six accumulators: per unique edge, how many
+    # faces carry it and the sum of the vertices opposite it; per vertex, the valence and ring sum
+    # and the boundary-edge count and boundary-neighbour sum.
+    bounds = [0, n_unique, n_unique + n_vertices, n_unique + 2 * n_vertices]
+    counts = _launch.zeros(bounds[-1], dtype=wp.int32, device=device)
+    sums = _launch.zeros(bounds[-1], dtype=wp.vec3, device=device)
+    edge_face_count, valence, boundary_count = od.array.split(counts, bounds)
+    edge_opposite_sum, ring_sum, boundary_sum = od.array.split(sums, bounds)
     _launch.launch(
         kernel_remesh.loop_edge_opposites,
         dim=n_faces,
@@ -3239,10 +3256,6 @@ def subdivide_loop(
         device=device,
     )
 
-    valence = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
-    ring_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
-    boundary_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
-    boundary_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
     # One buffer sized for its final use, written through two views: the relocated originals in the
     # prefix and the new edge vertices after them, which is the index layout `_split_faces_four`
     # assumes and the one ``igl.loop`` returns. The edge vertices are written by the ring pass,
@@ -3473,9 +3486,9 @@ def subdivide_to_size(
     """
     require_same_device(vertices=vertices, faces=faces, max_edge=max_edge)
     new_vertices, new_faces, index, _grouping = _subdivide_to_size(
-        vertices, faces, max_edge, max_iter
+        vertices, faces, max_edge, max_iter, index=return_index
     )
-    if return_index:
+    if index is not None:
         return new_vertices, new_faces, index
     return new_vertices, new_faces
 
@@ -3485,10 +3498,13 @@ def _subdivide_to_size(
     faces: wp.array[wp.int32],
     max_edge: float | wp.array[wp.float32],
     max_iter: int,
+    *,
+    index: bool = True,
+    copy: bool = True,
 ) -> tuple[
     wp.array[wp.vec3],
     wp.array[wp.int32],
-    wp.array[wp.int32],
+    wp.array[wp.int32] | None,
     tuple[odt.Array2dInt32, wp.array[wp.int32]] | None,
 ]:
     """
@@ -3496,6 +3512,10 @@ def _subdivide_to_size(
 
     The grouping is ``edges_unique``'s ``(unique_edges, inverse)``, which the pass that found
     nothing left to split computed for exactly the faces returned; ``None`` for an empty mesh.
+
+    ``index=False`` tracks no face index and returns ``None`` in its place. ``copy=False`` returns
+    a mesh with nothing to split as the input buffers themselves rather than copies, for a caller
+    that copies only before writing in place (``isotropic_remesh``).
     """
     device = vertices.device
     sizing = max_edge if isinstance(max_edge, wp.array) else None
@@ -3504,10 +3524,12 @@ def _subdivide_to_size(
     current_vertices = vertices
     current_faces = faces
     n_faces = faces.size // 3
-    index = od.array.arange(n_faces, device=device)
+    face_index = od.array.arange(n_faces, device=device) if index else None
 
     if n_faces == 0:
-        return _launch.clone(vertices), _launch.clone(faces), index, None
+        if not copy:
+            return vertices, faces, face_index, None
+        return _launch.clone(vertices), _launch.clone(faces), face_index, None
 
     grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None
     for i in range(max_iter + 1):
@@ -3565,12 +3587,12 @@ def _subdivide_to_size(
             n_split,
             unique_edges,
             inverse,
-            index,
-            index,
+            face_index,
+            face_index,
             None,
             True,
         )
-        current_vertices, current_faces, index, sizing = (
+        current_vertices, current_faces, face_index, sizing = (
             new_vertices,
             new_faces,
             new_index,
@@ -3582,9 +3604,9 @@ def _subdivide_to_size(
     # that mutates a "subdivided" mesh must not reach back into its own input. Cloning here rather
     # than up front keeps the path that *did* split free, since ``split_edges`` already handed back
     # fresh buffers there.
-    if current_vertices is vertices:
+    if copy and current_vertices is vertices:
         current_vertices, current_faces = _launch.clone(vertices), _launch.clone(faces)
-    return current_vertices, current_faces, index, grouping
+    return current_vertices, current_faces, face_index, grouping
 
 
 def _extend_sizing_field(
@@ -4344,6 +4366,7 @@ def split_edges(
     return new_vertices, new_faces
 
 
+@overload
 def _split_ranked_edges(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -4356,7 +4379,48 @@ def _split_ranked_edges(
     index: wp.array[wp.int32] | None,
     split_positions: wp.array[wp.vec3] | None,
     return_index: bool,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
+@overload
+def _split_ranked_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    split_mask: wp.array[wp.bool],
+    offsets: wp.array[wp.int32],
+    n_split: int,
+    edges: odt.Array2dInt32,
+    corner_edge: wp.array[wp.int32],
+    carried: None,
+    index: None,
+    split_positions: wp.array[wp.vec3] | None,
+    return_index: bool,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], None]: ...
+@overload
+def _split_ranked_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    split_mask: wp.array[wp.bool],
+    offsets: wp.array[wp.int32],
+    n_split: int,
+    edges: odt.Array2dInt32,
+    corner_edge: wp.array[wp.int32],
+    carried: wp.array[wp.int32] | None,
+    index: wp.array[wp.int32] | None,
+    split_positions: wp.array[wp.vec3] | None,
+    return_index: bool,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]: ...
+def _split_ranked_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    split_mask: wp.array[wp.bool],
+    offsets: wp.array[wp.int32],
+    n_split: int,
+    edges: odt.Array2dInt32,
+    corner_edge: wp.array[wp.int32],
+    carried: wp.array[wp.int32] | None,
+    index: wp.array[wp.int32] | None,
+    split_positions: wp.array[wp.vec3] | None,
+    return_index: bool,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     Split the ranked edges: the body of [`split_edges`][ordito.remesh.split_edges] past its scan.
 
@@ -4365,7 +4429,7 @@ def _split_ranked_edges(
     its count readback run twice per pass. ``carried`` is the provenance to thread through
     (``index`` or a fresh ``arange``); the no-split path copies it when it is the caller's ``index``
     and ``return_index`` asks for it back. The provenance is always the third element;
-    ``split_edges`` drops it when not asked.
+    ``split_edges`` drops it when not asked. ``carried=None`` threads none and returns ``None``.
     """
     device = vertices.device
     n_vertices = vertices.size
@@ -4376,7 +4440,11 @@ def _split_ranked_edges(
         # copied for the same reason ``vertices`` and ``faces`` are: every return is independently
         # owned on the no-split path exactly as on the splitting one. When ``index`` was ``None``
         # the ``arange`` already allocated it fresh.
-        owned = _launch.clone(carried) if return_index and carried is index else carried
+        owned = (
+            _launch.clone(carried)
+            if return_index and carried is not None and carried is index
+            else carried
+        )
         return _launch.clone(vertices), _launch.clone(faces), owned
 
     # One buffer sized for its final use: the originals in the prefix and the new vertices written
@@ -4412,7 +4480,10 @@ def _split_ranked_edges(
     )
     face_offsets, n_out_faces = od.array.counts_to_offsets(child_counts)
     out_faces = odt.empty_2d((n_out_faces, 3), wp.int32, device=device)
-    out_index = _launch.empty(n_out_faces, dtype=wp.int32, device=device)
+    # ``None`` reaches the kernel as an empty array, which ``write_split_children`` skips.
+    out_index = (
+        None if carried is None else _launch.empty(n_out_faces, dtype=wp.int32, device=device)
+    )
     _launch.launch(
         kernel_remesh.emit_size_faces,
         dim=n_faces,

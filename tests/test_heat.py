@@ -1708,6 +1708,38 @@ def test_reused_operators_give_the_same_transport(
     assert mesh.heat_solver().nbytes > 0
 
 
+@pytest.mark.parametrize("t", [None, 0.01], ids=["default_t", "explicit_t"])
+def test_vector_heat_operators_reuse_a_prebuilt_scalar_bundle(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], t: float | None
+) -> None:
+    """
+    Ordito against ordito: a prebuilt scalar bundle gives the vector system bit for bit.
+
+    Not a parity assert: ``test_transport_tangent_vectors_matches_potpourri3d`` carries the oracle.
+    Handed a bundle [`heat_operators`][ordito.heat.heat_operators] built, the vector assembly takes
+    that build's lumped mass and timestep sums instead of rebuilding them, which a `Trimesh`'s
+    solver whose scalar operators were reached first relies on; the system must be the one it
+    assembles alone.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    alone = od.heat.vector_heat_operators(vertices, faces, t)[0]
+    scalar = od.heat.heat_operators(vertices, faces, t)
+    reused = od.heat.vector_heat_operators(vertices, faces, t, scalar_operators=scalar)[0]
+    # A mesh's solver whose scalar bundle is reached first, as ``heat_geodesic`` reaches it.
+    mesh = od.Trimesh(vertices, faces)
+    solver = mesh.heat_solver(t)
+    assert solver.operators is not None
+    scalar_first = solver.vector_operators[0]
+
+    n_entries = int(alone.offsets.numpy()[-1])
+    values = alone.values.numpy()[:n_entries]
+    assert np.abs(values).max() > 0.0
+    for other in (reused, scalar_first):
+        assert np.array_equal(other.offsets.numpy(), alone.offsets.numpy())
+        assert np.array_equal(other.values.numpy()[:n_entries], values)
+
+
 def test_trimesh_keeps_one_heat_solver_per_diffusion_time(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:

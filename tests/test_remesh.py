@@ -842,6 +842,52 @@ def test_remesh_zero_iterations_returns_the_input_faces(device: str) -> None:
     assert out_f.size == faces_wp.size
 
 
+@pytest.mark.parametrize("swap", [True, False])
+def test_remesh_never_writes_or_returns_the_input_buffers(device: str, swap: bool) -> None:
+    """
+    The valence flip runs on a copy of the faces, and a run with every stage off returns copies.
+
+    Not a library comparison: an ownership contract. The working buffers start as the caller's
+    and are copied only before the in-place flip and on return. **Bug class excluded:** an in-place
+    write into an argument, or an output aliasing one. **Mutation probe:** without the copy before
+    the flip, ``swap=True`` fails the first assert (the grid's faces are rewritten); without the
+    copy on return, ``swap=False`` fails the pointer asserts.
+    """
+    # A 5 x 5 quad grid split along one diagonal, except one interior quad split along the other:
+    # that quad's diagonal leaves two valence-5 and two valence-7 vertices, and flipping it back
+    # restores valence 6 at all four without worsening any triangle, so the flip pass has work.
+    n = 6
+    vertices_np = np.array([[i, j, 0.0] for j in range(n) for i in range(n)], dtype=np.float64)
+    rows = []
+    for j in range(n - 1):
+        for i in range(n - 1):
+            a, b, c, d = j * n + i, j * n + i + 1, (j + 1) * n + i + 1, (j + 1) * n + i
+            rows += [[a, b, d], [b, c, d]] if (i, j) == (2, 2) else [[a, b, c], [a, c, d]]
+    faces_np = np.array(rows, dtype=np.int64)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    faces_before = faces_wp.numpy().copy()
+    vertices_before = vertices_wp.numpy().copy()
+
+    out_vertices_wp, out_faces_wp = od.remesh.isotropic_remesh(
+        vertices_wp,
+        faces_wp,
+        iterations=1,
+        split=False,
+        collapse=False,
+        swap=swap,
+        smooth=False,
+        reproject=False,
+    )
+
+    assert np.array_equal(faces_wp.numpy(), faces_before)
+    assert np.array_equal(vertices_wp.numpy(), vertices_before)
+    assert out_faces_wp.ptr != faces_wp.ptr
+    assert out_vertices_wp.ptr != vertices_wp.ptr
+    # Non-vacuity: the flip pass really rewrote the faces when it ran, and nothing else did.
+    assert np.array_equal(out_faces_wp.numpy(), faces_before) != swap
+    assert np.array_equal(out_vertices_wp.numpy(), vertices_before)
+
+
 # ---------------------------------------------------------------------------
 # Vertex-clustering decimation vs open3d / pymeshlab
 # ---------------------------------------------------------------------------

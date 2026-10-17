@@ -58,12 +58,14 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device, slice_count
+from ordito._device import read_scalar, require_same_device, slice_count
+from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_ZERO
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import scatter as kernel_scatter
 
 # Relative slack, against the support extent along a direction, for recognizing a point as that
 # direction's support point. It cannot be zero: the reducing kernel and the marking kernel compute
@@ -234,10 +236,10 @@ def centroid(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     ```
     """
     n = points.size
-    out = _point_sum(points)
-    if n == 0:
-        return out
-    _launch.map(wp.div, out, wp.float32(n), out=out)
+    out = _point_sum(points, divisor=float(max(n, 1)))
+    if n > 0 and not is_deterministic():
+        # The ``atomic_add`` commit has no last block to divide in.
+        _launch.map(wp.div, out, wp.float32(n), out=out)
     return out
 
 
@@ -550,8 +552,10 @@ def covariance(points: wp.array[wp.vec3], ddof: int = 1) -> wp.array[wp.mat33]:
     n = points.size
     if n - ddof <= 0:
         raise ValueError(f"covariance requires n > ddof, got n={n}, ddof={ddof}")
-    out = centered_covariance(points)
-    _launch.map(wp.div, out, wp.float32(n - ddof), out=out)
+    out = _scatter_matrix(points, _point_sum(points), float(n), divisor=float(n - ddof))
+    if not is_deterministic():
+        # The ``atomic_add`` commit has no last block to divide in.
+        _launch.map(wp.div, out, wp.float32(n - ddof), out=out)
     return out
 
 
@@ -754,8 +758,13 @@ def estimate_normals(
     return out_normals
 
 
-def _point_sum(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
-    """``sum(points)`` as a ``(1,)`` device array, zero when ``points`` is empty."""
+def _point_sum(points: wp.array[wp.vec3], divisor: float = 1.0) -> wp.array[wp.vec3]:
+    """
+    ``sum(points)`` as a ``(1,)`` device array, zero when ``points`` is empty.
+
+    Divided by ``divisor`` in the reproducible commit only: while
+    [`ordito.config.is_deterministic`][ordito.config.is_deterministic] is off the caller divides.
+    """
     device = points.device
     n = points.size
     if n == 0:
@@ -766,7 +775,7 @@ def _point_sum(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     _launch.launch_tiled(
         kernel_points.point_sum,
         dim=[blocks],
-        inputs=[points, stride, out],
+        inputs=[points, wp.float32(divisor), stride, out],
         block_dim=TILE_1D,
         device=device,
     )
@@ -774,13 +783,17 @@ def _point_sum(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
 
 
 def _scatter_matrix(
-    points: wp.array[wp.vec3], center: wp.array[wp.vec3] | None, center_divisor: float
+    points: wp.array[wp.vec3],
+    center: wp.array[wp.vec3] | None,
+    center_divisor: float,
+    divisor: float = 1.0,
 ) -> wp.array[wp.mat33]:
     """
     ``sum_k outer(x_k - c, x_k - c)`` with ``c = center[0] / center_divisor`` as a ``(1,)`` array.
 
     ``center`` is either a centroid (``center_divisor = 1.0``, which divides exactly) or the raw
-    point sum with ``n``; ``None`` is the zero center, i.e. the uncentred Gram matrix.
+    point sum with ``n``; ``None`` is the zero center, i.e. the uncentred Gram matrix. The result
+    is divided by ``divisor`` in the reproducible commit only, as in ``_point_sum``.
     """
     device = points.device
     n = points.size
@@ -791,7 +804,7 @@ def _scatter_matrix(
     _launch.launch_tiled(
         kernel_points.centered_covariance,
         dim=[blocks],
-        inputs=[points, center, wp.float32(center_divisor), stride, out],
+        inputs=[points, center, wp.float32(center_divisor), wp.float32(divisor), stride, out],
         block_dim=TILE_1D,
         device=device,
     )
@@ -1482,27 +1495,8 @@ def convex_subset_mask(
     if n_points == 0:
         return _launch.empty(0, dtype=wp.bool, device=device)
 
-    n_dir = int(n_directions)
-    directions = od.sample.sample_fibonacci_hemisphere(n_dir, device=device)
-    best_max, best_min, stride, slice_max, slice_min = _support_extremes(points, directions)
-
     out_mask = _launch.zeros(n_points, dtype=wp.bool, device=device)
-    _launch.launch(
-        kernel_points.mark_hull_support,
-        dim=(n_dir, stride),
-        inputs=[
-            points,
-            directions,
-            best_max,
-            best_min,
-            wp.float32(tolerance),
-            stride,
-            slice_max,
-            slice_min,
-            out_mask,
-        ],
-        device=device,
-    )
+    _mark_hull_support(points, n_directions, tolerance, kernel_points.mark_hull_support, out_mask)
     return out_mask
 
 
@@ -1558,9 +1552,63 @@ def convex_subset(
     print(hull_points.shape)  # (8,)
     ```
     """
-    mask = convex_subset_mask(points, n_directions=n_directions, tolerance=tolerance)
-    indices = od.array.flatnonzero(mask)
-    return od.array.gather(points, indices)
+    device = points.device
+    n_points = points.size
+    if n_points == 0:
+        return _launch.empty(0, dtype=wp.vec3, device=device)
+    # ``convex_subset_mask`` as ``int32`` flags, scanned in place; the compaction then writes the
+    # selected points themselves, so neither a mask nor an index array is built.
+    inclusive = _launch.zeros(n_points, dtype=wp.int32, device=device)
+    _mark_hull_support(points, n_directions, tolerance, kernel_points.flag_hull_support, inclusive)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    # Readback: the subset's length sizes the output.
+    n_out = int(read_scalar(inclusive))
+    out_points = _launch.empty(n_out, dtype=wp.vec3, device=device)
+    if n_out > 0:
+        _launch.launch(
+            kernel_scatter.scatter_value_where_scanned,
+            dim=n_points,
+            inputs=[inclusive, points, out_points],
+            device=device,
+        )
+    return out_points
+
+
+def _mark_hull_support(
+    points: wp.array[wp.vec3],
+    n_directions: int,
+    tolerance: float,
+    kernel: odt.Kernel,
+    out_marks: wp.array[wp.bool] | wp.array[wp.int32],
+) -> None:
+    """
+    Mark every point extremal along a sampled direction into a zeroed ``out_marks``.
+
+    The support sweep [`convex_subset_mask`][ordito.points.convex_subset_mask] and
+    [`convex_subset`][ordito.points.convex_subset] share: ``kernel`` is
+    ``kernel_points.mark_hull_support`` for a ``bool`` mask or ``flag_hull_support`` for the
+    ``int32`` flags a scan compacts.
+    """
+    device = points.device
+    n_dir = int(n_directions)
+    directions = od.sample.sample_fibonacci_hemisphere(n_dir, device=device)
+    best_max, best_min, stride, slice_max, slice_min = _support_extremes(points, directions)
+    _launch.launch(
+        kernel,
+        dim=(n_dir, stride),
+        inputs=[
+            points,
+            directions,
+            best_max,
+            best_min,
+            wp.float32(tolerance),
+            stride,
+            slice_max,
+            slice_min,
+            out_marks,
+        ],
+        device=device,
+    )
 
 
 def convex_superset_mask(
@@ -1913,9 +1961,15 @@ def radial_sort(
         axis0 = odt.cross(unit_start, unit_normal)
         axis1 = odt.cross(axis0, unit_normal)
 
-    out_keys = _launch.empty(n, dtype=wp.float32, device=device)
-    _launch.map(kernel_points.radial_sort_key, points, origin, axis0, axis1, out=out_keys)
-
-    # Ascending radix sort of the negated angles yields the descending-angle order.
-    _sorted_keys, order = od.array.sort_and_argsort(out_keys, fill_value=n)
+    # Ascending radix sort of the negated angles yields the descending-angle order. The keys and
+    # the identity payload go straight into the sort's double-width buffers.
+    keys_buffer = _launch.empty(2 * n, dtype=wp.float32, device=device)
+    order_buffer = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_points.radial_sort_keys_and_identity,
+        dim=n,
+        inputs=[points, origin, axis0, axis1, keys_buffer, order_buffer],
+        device=device,
+    )
+    _sorted_keys, order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
     return od.array.gather(points, order)

@@ -283,23 +283,36 @@ def compact_from_table(
 
 
 @wp.kernel
-def keys_and_identity(
-    data: wp.array[wp.Int], out_keys: wp.array[wp.Int], out_order: wp.array[wp.int32]
-) -> None:
-    # The leading halves of a radix sort's double-width key and payload buffers: the keys as given
-    # and the identity permutation the sort carries. The upper halves are sort scratch.
-    i = wp.int32(wp.tid())
-    out_keys[i] = data[i]
-    out_order[i] = i
-
-
-@wp.kernel
 def mark_sorted_run_starts(sorted_keys: wp.array[wp.Int], out_starts: wp.array[wp.int32]) -> None:
     # ``1`` at the first sorted position of every run of equal keys, ``0`` elsewhere: the input of
     # the inclusive scan ``emit_sorted_unique`` and ``edges.emit_sorted_unique_edges`` read.
     # ``int32`` for the scan.
     i = wp.int32(wp.tid())
     out_starts[i] = wp.where(sorted_run_start(sorted_keys, i), wp.int32(1), wp.int32(0))
+
+
+@wp.func
+def emit_sorted_run(
+    i: wp.int32,
+    r: wp.int32,
+    sorted_keys: wp.array[wp.Int],
+    order: wp.array[wp.int32],
+    out_unique: wp.array[wp.Int],
+    out_inverse: wp.array[wp.int32],
+    out_first: wp.array[wp.int32],
+) -> wp.bool:
+    # The outputs ``emit_sorted_unique`` and ``emit_sorted_unique_counts`` share for sorted
+    # position ``i`` of unique index ``r``: its inverse slot, and at a run's first position the
+    # value and the input index sorted there. Returns whether ``i`` starts its run.
+    if out_inverse.shape[0] > 0:
+        out_inverse[order[i]] = r
+    start = sorted_run_start(sorted_keys, i)
+    if start:
+        if out_unique.shape[0] > 0:
+            out_unique[r] = sorted_keys[i]
+        if out_first.shape[0] > 0:
+            out_first[r] = order[i]
+    return start
 
 
 @wp.kernel
@@ -318,30 +331,41 @@ def emit_sorted_unique(
     # index sorted there -- the class's *first* occurrence, because the sort is stable, which is
     # what ``first_occurrence_indices`` computes. ``out_starts`` is the ``n_unique + 1``
     # total-terminated offsets of the runs (the last position writes the terminator), so run ``r``
-    # is ``out_starts[r] : out_starts[r + 1]`` of the sorted buffer: ``run_lengths``' counts, and
-    # ``sample``'s blue-noise cell bounds. Launched over the ``ranks.shape[0]`` sorted positions.
-    # The start is re-derived from the keys, so the marks may be scanned in place. Every output
-    # may be a null descriptor (``None`` at the launch).
+    # is ``out_starts[r] : out_starts[r + 1]`` of the sorted buffer: ``sample``'s blue-noise cell
+    # bounds. Launched over the ``ranks.shape[0]`` sorted positions. The start is re-derived from
+    # the keys, so the marks may be scanned in place. Every output may be a null descriptor
+    # (``None`` at the launch). ``emit_sorted_unique_counts`` differs only in writing the run
+    # lengths in place of their offsets.
     i = wp.int32(wp.tid())
     r = ranks[i] - 1
-    if out_inverse.shape[0] > 0:
-        out_inverse[order[i]] = r
-    if sorted_run_start(sorted_keys, i):
-        if out_unique.shape[0] > 0:
-            out_unique[r] = sorted_keys[i]
+    if emit_sorted_run(i, r, sorted_keys, order, out_unique, out_inverse, out_first):
         if out_starts.shape[0] > 0:
             out_starts[r] = i
-        if out_first.shape[0] > 0:
-            out_first[r] = order[i]
     if i == ranks.shape[0] - 1 and out_starts.shape[0] > 0:
         out_starts[r + 1] = i + 1
 
 
 @wp.kernel
-def run_lengths(offsets: wp.array[wp.int32], out_counts: wp.array[wp.int32]) -> None:
-    # Each run's length from the total-terminated run offsets ``emit_sorted_unique`` writes.
-    r = wp.int32(wp.tid())
-    out_counts[r] = offsets[r + 1] - offsets[r]
+def emit_sorted_unique_counts(
+    sorted_keys: wp.array[wp.Int],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    out_unique: wp.array[wp.Int],
+    out_inverse: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_first: wp.array[wp.int32],
+) -> None:
+    # ``emit_sorted_unique`` with each run's length in place of its offsets: the run's first
+    # position subtracts its index and its last adds one past it, two integer atomics per run into
+    # a zeroed ``out_counts`` (exact in any order), so no offsets buffer and no second pass.
+    i = wp.int32(wp.tid())
+    r = ranks[i] - 1
+    if emit_sorted_run(i, r, sorted_keys, order, out_unique, out_inverse, out_first):
+        wp.atomic_sub(out_counts, r, i)
+    if i == ranks.shape[0] - 1:
+        wp.atomic_add(out_counts, r, i + 1)
+    elif ranks[i + 1] != ranks[i]:
+        wp.atomic_add(out_counts, r, i + 1)
 
 
 @wp.func
@@ -432,8 +456,8 @@ def pack_indices_and_order(
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
 ) -> None:
-    # ``pack_indices`` plus ``keys_and_identity`` in one launch: each row's key and the identity
-    # payload into the leading halves of a radix sort's double-width buffers.
+    # ``pack_indices`` plus ``array.keys_and_identity`` in one launch: each row's key and the
+    # identity payload into the leading halves of a radix sort's double-width buffers.
     tid = wp.int32(wp.tid())
     out_keys[tid] = pack_index_row(indices, tid, max_index)
     out_order[tid] = tid
@@ -450,8 +474,8 @@ def pack_sorted_face_keys_and_order(
     # order, packed as ``pack_indices`` packs a three-column row. Sorting in registers and packing
     # in the same thread drops the ``(n, 3)`` table of sorted rows a separate sort launch would
     # write for this one to read. Written with the identity payload straight into the leading
-    # halves of the radix sort's double-width buffers, ``keys_and_identity``'s layout, so the keys
-    # are never copied into the sort's buffer.
+    # halves of the radix sort's double-width buffers, ``array.keys_and_identity``'s layout, so the
+    # keys are never copied into the sort's buffer.
     f = wp.int32(wp.tid())
     a, b, c = corner_triple(faces, f)
     out_keys[f] = pack_triangle_key(a, b, c, max_index)
@@ -505,12 +529,13 @@ COMPACT_FROM_TABLE: OverloadTable
 KEYS_AND_IDENTITY: OverloadTable
 MARK_SORTED_RUN_STARTS: OverloadTable
 EMIT_SORTED_UNIQUE: OverloadTable
+EMIT_SORTED_UNIQUE_COUNTS: OverloadTable
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global MARK_GROUP_STARTS, HASH_INSERT, COMPACT_FROM_TABLE
-    global KEYS_AND_IDENTITY, MARK_SORTED_RUN_STARTS, EMIT_SORTED_UNIQUE
+    global KEYS_AND_IDENTITY, MARK_SORTED_RUN_STARTS, EMIT_SORTED_UNIQUE, EMIT_SORTED_UNIQUE_COUNTS
     MARK_GROUP_STARTS = OverloadTable(
         mark_group_starts,
         {d: [wp.array[d], wp.int32, wp.int32, wp.array[wp.int32]] for d in _KEY_DTYPES},
@@ -537,15 +562,29 @@ def _register_overloads() -> None:
             for d in _TABLE_DTYPES
         },
     )
-    # The sorted ``unique_1d``: every integer dtype Warp's radix sort orders directly.
-    KEYS_AND_IDENTITY = OverloadTable(
-        keys_and_identity, {d: [wp.array[d], wp.array[d], wp.array[wp.int32]] for d in _KEY_DTYPES}
-    )
+    # The sorted ``unique_1d``'s keys and identity: the shared library's table, which covers every
+    # dtype Warp's radix sort orders directly.
+    KEYS_AND_IDENTITY = kernel_array.KEYS_AND_IDENTITY
     MARK_SORTED_RUN_STARTS = OverloadTable(
         mark_sorted_run_starts, {d: [wp.array[d], wp.array[wp.int32]] for d in _KEY_DTYPES}
     )
     EMIT_SORTED_UNIQUE = OverloadTable(
         emit_sorted_unique,
+        {
+            d: [
+                wp.array[d],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[d],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+            ]
+            for d in _KEY_DTYPES
+        },
+    )
+    EMIT_SORTED_UNIQUE_COUNTS = OverloadTable(
+        emit_sorted_unique_counts,
         {
             d: [
                 wp.array[d],

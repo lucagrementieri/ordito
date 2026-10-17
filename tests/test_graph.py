@@ -398,6 +398,24 @@ def test_connected_component_labels_empty_edges(device: str, node_count: int) ->
     assert np.array_equal(labels_wp.numpy(), labels_exp)
 
 
+@pytest.mark.parametrize("stale_nnz", [0, 1000], ids=["undercounted", "overcounted"])
+def test_connected_component_labels_ignores_a_stale_nnz(device: str, stale_nnz: int) -> None:
+    """
+    Class B against scipy (same partition): the labels follow the CSR rows, whatever ``nnz`` says.
+
+    ``BsrMatrix.nnz`` is a cached capacity that only ``nnz_sync()`` repairs, so it can read ``0``
+    on a matrix with entries or exceed the entry count of an empty one. Both are set by hand here;
+    the first used to short-circuit to one component per node. The empty matrix under the
+    overcount is the other arm, where every node must label itself.
+    """
+    edges_np = np.array([[0, 1], [1, 2], [3, 4]], dtype=np.int32)
+    for edges in (edges_np, np.empty((0, 2), dtype=np.int32)):
+        adjacency = od.graph.edges_to_csr(6, _edges_wp(edges, device))
+        adjacency.nnz = stale_nnz
+        labels_wp = od.graph.connected_component_labels(adjacency)
+        assert same_partition(labels_wp.numpy(), _scipy_component_labels(edges, 6))
+
+
 def test_connected_component_labels_star_graph(device: str) -> None:
     n = 512
     hub = 0

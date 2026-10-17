@@ -1360,7 +1360,7 @@ def test_triangulate_too_few_points(device: str) -> None:
     assert faces_wp.shape == (0, 3)
 
 
-@pytest.mark.parametrize("one_block_max", [512, 0])
+@pytest.mark.parametrize("one_block_max", [1024, 512, 0])
 def test_triangulate_from_offsets_matches_each_loop(
     device: str, one_block_max: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1371,7 +1371,8 @@ def test_triangulate_from_offsets_matches_each_loop(
     the packed form must give every loop the same triangle set, offset to packed indices. The
     loops cover the block path's convex fan, a clockwise L, a star in a tilted plane, a loop
     repeating its first point, one of two points (no faces) and a random star longer than the
-    one-block cap, which takes the round loop; ``one_block_max = 0`` sends every loop there.
+    one-block cap, which takes the round loop; ``one_block_max = 0`` sends every loop there, and
+    ``1024`` keeps every loop on the block launch, the path with no host assembly.
     """
     monkeypatch.setattr(kernel_polyline, "EAR_ONE_BLOCK_MAX", one_block_max)
     rng = np.random.default_rng(7)

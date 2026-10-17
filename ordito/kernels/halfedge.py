@@ -505,7 +505,10 @@ def write_one_rings(
         out_halfedges[begin + count] = h
         count += wp.int32(1)
         nxt = twins[halfedge_prev(h)]
-        if nxt == wp.int32(-1) or nxt == start:
+        # A boundary (``-1``) ends the fan. So does any other entry outside the halfedges: only a
+        # caller-supplied table that ``count_mispaired_twins`` rejects in the same call holds one,
+        # and the range test keeps the walk over it from reading past ``twins``.
+        if nxt < wp.int32(0) or nxt >= twins.shape[0] or nxt == start:
             break
         h = nxt
     if count != degree:

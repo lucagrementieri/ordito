@@ -1553,8 +1553,9 @@ def fan_triangulate(out_faces: wp.array2d[wp.int32]) -> None:
 # count ``clip_selected`` appends through, then the round's "some ear is good" flag
 # (``compute_ears`` raises it, ``select_independent`` reads it, ``ear_loop_continue`` lowers it for
 # the next round), then whether the next round walks thin corners (set by ``ear_loop_continue``
-# after a round with no good ear; see ``ear_grade``). One buffer, seeded by ``init_ring``, so the
-# loop needs no host upload and no zero-fill of its own and the final count is a read of one slot.
+# after a round with no good ear; see ``ear_grade``). One buffer, seeded by ``init_ear_clip``, so
+# the loop needs no host upload and no zero-fill of its own and the final count is a read of one
+# slot.
 EAR_COUNT = wp.constant(wp.int32(2))
 EAR_ANY_GOOD = wp.constant(wp.int32(3))
 EAR_CHECK_THIN = wp.constant(wp.int32(4))
@@ -1571,33 +1572,16 @@ def init_ring_slot(
     n: wp.int32,
 ) -> None:
     # Corner ``i`` of the ``n``-corner ring at ``start`` before any clip: linked to both neighbours
-    # and active. Shared by ``init_ring`` (one thread per corner) and ``ear_clip_ring`` (one
+    # and active. Shared by ``init_ear_clip`` (one thread per corner) and ``ear_clip_ring`` (one
     # block).
     left[start + i] = start + wp.where(i == 0, n - 1, i - 1)
     right[start + i] = start + loop_point(i + 1, n)
     active[start + i] = wp.int32(1)
 
 
-@wp.kernel
-def init_ring(
-    left: wp.array[wp.int32],
-    right: wp.array[wp.int32],
-    active: wp.array[wp.int32],
-    out_state: wp.array[wp.int32],
-) -> None:
-    i = wp.int32(wp.tid())
-    if i == 0:
-        out_state[LOOP_ROUND] = wp.int32(0)
-        out_state[LOOP_CONDITION] = wp.int32(1)
-        out_state[EAR_COUNT] = wp.int32(0)
-        out_state[EAR_ANY_GOOD] = wp.int32(0)
-        out_state[EAR_CHECK_THIN] = wp.int32(0)
-    init_ring_slot(left, right, active, 0, i, left.shape[0])
-
-
 # The ear grid of the multi-launch clip: a uniform grid over the ring's 2D points, cells keyed in
 # row-major order and the points sorted by cell (``ear_grid_cells``, a radix sort,
-# ``ear_grid_starts``), so a corner's containment test walks only the cells its triangle's box
+# ``init_ear_clip``), so a corner's containment test walks only the cells its triangle's box
 # overlaps rather than the whole ring. The grid holds every ring vertex, not only the reflex ones
 # (only a reflex vertex can lie inside an ear of a simple polygon, but which corners read as reflex
 # is a property of their float32 rounding), so it tests exactly the vertices the ring walk would
@@ -1642,15 +1626,15 @@ def ear_grid_cells(
     out_order[i] = i
 
 
-@wp.kernel
-def ear_grid_starts(
-    keys: wp.array[wp.int32], n_ring: wp.int32, out_starts: wp.array[wp.int32]
+@wp.func
+def write_cell_starts(
+    keys: wp.array[wp.int32], n_ring: wp.int32, k: wp.int32, out_starts: wp.array[wp.int32]
 ) -> None:
-    # dim == n_ring over the sorted cell keys: ``out_starts[c]`` is the first sorted position of
-    # cell ``c`` (``n_cells + 1`` entries, the last ``n_ring``). Position ``k`` writes every cell in
-    # ``(keys[k - 1], keys[k]]``, the first the cells up to its key and the last the cells after
-    # its key, so each entry is written exactly once and empty cells need no pass of their own.
-    k = wp.int32(wp.tid())
+    # Sorted position ``k``'s share of the cell starts over the sorted cell keys: ``out_starts[c]``
+    # is the first sorted position of cell ``c`` (``n_cells + 1`` entries, the last ``n_ring``).
+    # Position ``k`` writes every cell in ``(keys[k - 1], keys[k]]``, the first the cells up to its
+    # key and the last the cells after its key, so each entry is written exactly once and empty
+    # cells need no pass of their own.
     key = keys[k]
     previous = wp.where(k == 0, wp.int32(-1), keys[wp.max(k - 1, 0)])
     for c in range(previous + 1, key + 1):
@@ -1658,6 +1642,32 @@ def ear_grid_starts(
     if k == n_ring - 1:
         for c in range(key + 1, out_starts.shape[0]):
             out_starts[c] = n_ring
+
+
+@wp.kernel
+def init_ear_clip(
+    keys: wp.array[wp.int32],
+    n_ring: wp.int32,
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    out_starts: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # dim == n_ring, the multi-launch clip's set-up in one pass: the ear grid's cell starts over the
+    # radix-sorted keys (``write_cell_starts``), the ring linked as before any clip
+    # (``init_ring_slot``, ``left`` / ``right`` / ``active`` being ``n_ring`` long), and the loop
+    # state seeded. The two halves touch disjoint buffers and are each own-index, so one launch
+    # serves both.
+    k = wp.int32(wp.tid())
+    if k == 0:
+        out_state[LOOP_ROUND] = wp.int32(0)
+        out_state[LOOP_CONDITION] = wp.int32(1)
+        out_state[EAR_COUNT] = wp.int32(0)
+        out_state[EAR_ANY_GOOD] = wp.int32(0)
+        out_state[EAR_CHECK_THIN] = wp.int32(0)
+    init_ring_slot(left, right, active, 0, k, n_ring)
+    write_cell_starts(keys, n_ring, k, out_starts)
 
 
 @wp.func
@@ -1971,7 +1981,7 @@ def ear_clip_ring(
     count: wp.array[wp.int32],
     count_slot: wp.int32,
 ) -> None:
-    # ``init_ring`` plus every round of ``compute_ears`` -> ``select_independent`` ->
+    # ``init_ear_clip`` plus every round of ``compute_ears`` -> ``select_independent`` ->
     # ``clip_selected`` -> ``ear_loop_continue`` on the ring ``points2d[start : start + n]``, by
     # one block whose lanes stride the ring by ``wp.block_dim()`` -- so on the CPU device, where a
     # block is one lane, it is the same serial walk the four launches make, corner by corner in

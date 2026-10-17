@@ -1941,17 +1941,20 @@ def clip_mesh_with_field(
     )
     rim = od.boundary.oriented_boundary_edges(new_vertices, touching)
     # Host bookkeeping over the touching faces' rim alone: its edges and their section flags cross
-    # in two small copies, and the section edges go back in one.
-    if rim.shape[0] == 0:
+    # in one small copy, and the section edges go back in one.
+    n_rim = int(rim.shape[0])
+    if n_rim == 0:
         return new_vertices, new_faces
-    on_section = _launch.empty(rim.shape[0], dtype=wp.bool, device=device)
+    rim_rows = odt.empty_2d((n_rim, 3), wp.int32, device=device)
     _launch.launch(
         kernel_intersections.section_rim_edges,
-        dim=rim.shape[0],
-        inputs=[rim, source, shifted, on_section],
+        dim=n_rim,
+        inputs=[rim, source, shifted, rim_rows],
         device=device,
     )
-    section_np = rim.numpy()[on_section.numpy()]
+    # Readback: the section edges are chained on the host.
+    rim_rows_np = rim_rows.numpy()
+    section_np = rim_rows_np[rim_rows_np[:, 2] != 0, :2]
     if section_np.shape[0] == 0:
         return new_vertices, new_faces
     # The section's vertices are numbered compactly for the chaining, so its tables are sized by
@@ -2153,6 +2156,10 @@ def _shifted_field(
     carries, so narrowing earlier would lose the subtraction's precision and narrowing later would
     mean doing it per face.
     """
+    if values.dtype is wp.float32 and isovalue == 0.0:
+        # ``x - 0.0`` is ``x`` bit for bit, signed zeros and NaN included, and every consumer only
+        # reads the field, so the caller's array serves as it is.
+        return cast("wp.array[wp.float32]", values)
     device = values.device
     shifted = _launch.empty(values.size, dtype=wp.float32, device=device)
     if values.dtype is wp.float32:

@@ -1864,6 +1864,38 @@ def test_cells_reports_the_active_length_of_a_rebuildable_grid(device: str):
     assert np.array_equal(lexsort_rows(rows), lexsort_rows(cells_np[:2]))
 
 
+def test_union_reads_only_the_active_voxels_of_rebuildable_grids(device: str):
+    """
+    Not a library comparison: ``union`` of two padded rebuildable grids is the union of their cells.
+
+    ``union`` reads both grids' voxels straight into one buffer, and ``get_voxels`` writes a
+    rebuildable grid's whole capacity, padding rows at ``[0, 0, 0]`` after the active ones. No
+    input cell is ``[0, 0, 0]``, so a padding row leaking into the result shows up as an extra cell;
+    both grids are padded, so the first grid's padding must be overwritten and the second's cut.
+    """
+
+    def padded(cells_np: np.ndarray, active: int) -> wp.Volume:
+        grid = wp.Volume.allocate_by_voxels(
+            wp.array(cells_np, dtype=wp.int32, device=device),
+            voxel_size=1.0,
+            translation=(0.5, 0.5, 0.5),
+            max_active_voxels=64,
+            max_leaf_nodes=64,
+            max_lower_nodes=64,
+            max_upper_nodes=64,
+            device=device,
+        )
+        grid.rebuild(wp.array(cells_np[:active], dtype=wp.int32, device=device))
+        assert grid.get_voxel_count() > active
+        return grid
+
+    a_np = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.int32)
+    b_np = np.array([[-1, -2, -3], [4, 5, 6], [10, 0, 1]], dtype=np.int32)
+    merged = od.voxels.union(padded(a_np, 2), padded(b_np, 3))
+    expected_np = np.unique(np.concatenate([a_np[:2], b_np]), axis=0)
+    assert np.array_equal(lexsort_rows(od.voxels.cells(merged).numpy()), lexsort_rows(expected_np))
+
+
 def test_voxels_imports_warp_fem_lazily():
     """
     ``warp.fem`` is imported inside [`voxel_corners`][ordito.voxels.voxel_corners], not at scope.

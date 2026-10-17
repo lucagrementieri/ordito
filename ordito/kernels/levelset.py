@@ -2,7 +2,7 @@ import warp as wp
 from warp.geometry import IsoSurfaceMarchingCubes
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE, TOLERANCE_MERGE_CONSTANT
-from ordito.kernels.array import ravel_index
+from ordito.kernels.array import lattice_position, ravel_index
 
 
 def lattice_edge_margin(spacing: float) -> float:
@@ -473,7 +473,8 @@ def cone_component_winding(
 
 @wp.kernel
 def lattice_winding_numbers(
-    points: wp.array3d[wp.vec3],
+    lower: wp.vec3,
+    step: wp.vec3,
     crossings_z: wp.array3d[wp.int32],
     crossings_x: wp.array3d[wp.int32],
     ambiguous: wp.array3d[wp.int32],
@@ -499,7 +500,7 @@ def lattice_winding_numbers(
     # -- and whose lattice value is in doubt gets a slot in ``out_undecided`` (``slot + 1`` in
     # ``out_slots``; ``out_count[0]`` counts them all, past the buffer too).
     i, j, k = wp.tid()
-    p = points[i, j, k]
+    p = lattice_position(lower, step, i, j, k)
     base = wp.float32(crossings_z[i, j, k])
     d = distance[i, j, k]
     if d < sign_irrelevant_below:
@@ -598,7 +599,8 @@ def take_exact_winding(
 @wp.kernel
 def warp_winding_sign(
     mesh: wp.uint64,
-    points: wp.array3d[wp.vec3],
+    lower: wp.vec3,
+    step: wp.vec3,
     slots: wp.array3d[wp.int32],
     winding: wp.array3d[wp.float32],
 ) -> None:
@@ -609,7 +611,7 @@ def warp_winding_sign(
     if slots[i, j, k] == 0:
         return
     query = wp.mesh_query_point_sign_winding_number(
-        mesh, points[i, j, k], FLOAT32_INF_CONSTANT, 2.0, 0.5
+        mesh, lattice_position(lower, step, i, j, k), FLOAT32_INF_CONSTANT, 2.0, 0.5
     )
     winding[i, j, k] = wp.where(query.sign < 0.0, 1.0, 0.0)
 
@@ -617,14 +619,19 @@ def warp_winding_sign(
 @wp.kernel
 def capped_distance(
     mesh: wp.uint64,
-    points: wp.array3d[wp.vec3],
+    lower: wp.vec3,
+    step: wp.vec3,
     cap: wp.float32,
     out_distance: wp.array3d[wp.float32],
 ) -> None:
     # Unsigned distance to the closest point, or ``cap`` when none is closer: under the cap the
     # search returns the uncapped search's face and coordinates bit for bit.
+    #
+    # Every lattice kernel of the winding band forms its node's position from ``(lower, step)``
+    # (``array.lattice_position``, the arithmetic ``voxels.grid_points`` stores) rather than
+    # reading a stored ``(nx, ny, nz)`` position grid, which would be twelve bytes a node.
     i, j, k = wp.tid()
-    p = points[i, j, k]
+    p = lattice_position(lower, step, i, j, k)
     query = wp.mesh_query_point_no_sign(mesh, p, cap)
     d = cap
     if query.result:
@@ -639,62 +646,56 @@ def signed_value(d: wp.float32, winding: wp.float32) -> wp.float32:
     return wp.where(d <= TOLERANCE_MERGE_CONSTANT, d, wp.where(winding > 0.5, -d, d))
 
 
-@wp.kernel
-def signed_band_values(
-    distance: wp.array3d[wp.float32],
-    winding: wp.array3d[wp.float32],
-    out_values: wp.array3d[wp.float32],
-) -> None:
-    i, j, k = wp.tid()
-    out_values[i, j, k] = signed_value(distance[i, j, k], winding[i, j, k])
-
-
 @wp.func
 def crosses(
-    values: wp.array3d[wp.float32],
+    distance: wp.array3d[wp.float32],
+    winding: wp.array3d[wp.float32],
     i: wp.int32,
     j: wp.int32,
     k: wp.int32,
     above: wp.bool,
     iso: wp.float32,
 ) -> wp.bool:
-    return (values[i, j, k] >= iso) != above
+    # Whether node ``(i, j, k)``'s signed value lies on the other side of ``iso`` from ``above``.
+    return (signed_value(distance[i, j, k], winding[i, j, k]) >= iso) != above
 
 
 @wp.kernel
 def resolve_crossing_endpoints(
     mesh: wp.uint64,
-    points: wp.array3d[wp.vec3],
+    lower: wp.vec3,
+    step: wp.vec3,
     cap: wp.float32,
     iso: wp.float32,
+    distance: wp.array3d[wp.float32],
     winding: wp.array3d[wp.float32],
-    values: wp.array3d[wp.float32],
     out_field: wp.array3d[wp.float32],
 ) -> None:
     # The field marching cubes reads: every node as signed, except a capped node with an axis
     # neighbour on the other side of ``iso`` -- an edge marching cubes interpolates across -- which
     # gets its exact distance from the uncapped search. Only a field that is not 1-Lipschitz (signed
-    # by the winding number of an open surface) has one.
+    # by the winding number of an open surface) has one. A node's signed value (``signed_value``) is
+    # formed where it is read, its own and its neighbours', rather than stored by a pass of its own.
     i, j, k = wp.tid()
-    value = values[i, j, k]
+    value = signed_value(distance[i, j, k], winding[i, j, k])
     result = value
     if wp.abs(value) >= cap:
         above = value >= iso
         crossing = False
         if i > 0:
-            crossing = crossing or crosses(values, i - 1, j, k, above, iso)
-        if i + 1 < values.shape[0]:
-            crossing = crossing or crosses(values, i + 1, j, k, above, iso)
+            crossing = crossing or crosses(distance, winding, i - 1, j, k, above, iso)
+        if i + 1 < distance.shape[0]:
+            crossing = crossing or crosses(distance, winding, i + 1, j, k, above, iso)
         if j > 0:
-            crossing = crossing or crosses(values, i, j - 1, k, above, iso)
-        if j + 1 < values.shape[1]:
-            crossing = crossing or crosses(values, i, j + 1, k, above, iso)
+            crossing = crossing or crosses(distance, winding, i, j - 1, k, above, iso)
+        if j + 1 < distance.shape[1]:
+            crossing = crossing or crosses(distance, winding, i, j + 1, k, above, iso)
         if k > 0:
-            crossing = crossing or crosses(values, i, j, k - 1, above, iso)
-        if k + 1 < values.shape[2]:
-            crossing = crossing or crosses(values, i, j, k + 1, above, iso)
+            crossing = crossing or crosses(distance, winding, i, j, k - 1, above, iso)
+        if k + 1 < distance.shape[2]:
+            crossing = crossing or crosses(distance, winding, i, j, k + 1, above, iso)
         if crossing:
-            p = points[i, j, k]
+            p = lattice_position(lower, step, i, j, k)
             query = wp.mesh_query_point_no_sign(mesh, p, FLOAT32_INF_CONSTANT)
             d = wp.length(p - wp.mesh_eval_position(mesh, query.face, query.u, query.v))
             result = signed_value(d, winding[i, j, k])

@@ -1838,23 +1838,20 @@ def _triangulate_ring(
         cell_keys, cell_points, count=n_ring, end_bit=max(1, (n_cells - 1).bit_length())
     )
     cell_starts = _launch.empty(n_cells + 1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_polyline.ear_grid_starts,
-        dim=n_ring,
-        inputs=[cell_keys, wp.int32(n_ring)],
-        outputs=[cell_starts],
-        device=device,
-    )
-
     left = _launch.empty(n_ring, dtype=wp.int32, device=device)
     right = _launch.empty(n_ring, dtype=wp.int32, device=device)
     active = _launch.empty(n_ring, dtype=wp.int32, device=device)
     is_ear = _launch.empty(n_ring, dtype=wp.int32, device=device)
     selected = _launch.empty(n_ring, dtype=wp.int32, device=device)
-    # [rounds run, loop condition, face count, some ear good], seeded by ``init_ring``.
+    # [rounds run, loop condition, face count, some ear good], seeded by ``init_ear_clip`` with
+    # the grid's cell starts and the ring's links.
     state = _launch.empty(kernel_polyline.EAR_STATE_SIZE, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_polyline.init_ring, dim=n_ring, inputs=[left, right, active, state], device=device
+        kernel_polyline.init_ear_clip,
+        dim=n_ring,
+        inputs=[cell_keys, wp.int32(n_ring), left, right, active],
+        outputs=[cell_starts, state],
+        device=device,
     )
 
     def clip_round() -> None:

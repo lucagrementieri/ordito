@@ -359,7 +359,6 @@ _METRIC_IDS = {
 }
 # Metrics that accumulate with ``max`` instead of ``sum`` (kernel COMBINE_MAX == 1); default sum.
 _METRIC_COMBINE = {"max_dihedral": 1}
-_BAD_TRIANGULATION_METRIC = 1e10  # kernel ``BAD_METRIC``; a forced-bad triangulation reaches it.
 # The metrics whose per-triangle or per-edge term can *be* ``BAD_METRIC`` -- a flipped, tilted or
 # degenerate triangle, a folded dihedral -- and so the only ones whose total reaching it means a bad
 # triangle was forced, which is what the ``min_area`` retry is for. The others never score a term
@@ -389,28 +388,50 @@ class _EdgeTable:
         self.faces = faces
         self.n_halfedges = faces.size // 3 * 3
         self.base = wp.uint64(n_vertices)
+        # Every key packs two indices below ``n_vertices``, so it is below ``n_vertices ** 2`` and
+        # the sort orders only that many low bits.
+        self.key_bits = max(1, (n_vertices * n_vertices - 1).bit_length())
         self.n_vertices = n_vertices
         self.device = device
 
+    def rim_sort_buffers(self, total: int) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
+        """
+        Allocate the rim sort's double-width key and slot buffers, for ``total`` rim slots.
+
+        A producer writes each slot's key and the identity payload into the first ``total``
+        entries (``kernels/holes.write_rim_sort_entry``); the upper halves are the sort's scratch.
+        """
+        keys = _launch.empty(2 * total, dtype=wp.uint64, device=self.device)
+        slots = _launch.empty(2 * total, dtype=wp.int32, device=self.device)
+        return keys, slots
+
     def rim_opposite(
-        self, loops: _PackedLoops, keys: wp.array[wp.uint64] | None = None
+        self,
+        loops: _PackedLoops,
+        sort_buffers: tuple[wp.array[wp.uint64], wp.array[wp.int32]] | None = None,
     ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
         """
         Opposite-vertex position + validity per rim edge, for every loop in one pass.
 
-        ``keys`` are the rim edges' undirected keys under ``self.base``, for a caller whose own
-        pass over the rim already wrote them (the fill's ``loop_rim_metrics``); ``None`` keys them
-        here.
+        ``sort_buffers`` are ``rim_sort_buffers(loops.total)`` holding the rim edges' undirected
+        keys under ``self.base`` and the identity slots, for a caller whose own pass over the rim
+        already wrote them (the fill's ``loop_rim_metrics``); ``None`` writes them here. Sorted in
+        place.
         """
-        if keys is None:
-            keys = _launch.empty(loops.total, dtype=wp.uint64, device=self.device)
+        n = loops.total
+        if sort_buffers is None:
+            sort_buffers = self.rim_sort_buffers(n)
             _launch.launch(
                 kernel_holes.rim_edge_keys,
-                dim=loops.total,
-                inputs=[loops.flat_loops, loops.loop_id, loops.offsets, self.base, keys],
+                dim=n,
+                inputs=[loops.flat_loops, loops.loop_id, loops.offsets, self.base, *sort_buffers],
                 device=self.device,
             )
-        sorted_keys, slots = od.array.sort_and_argsort(keys)
+        keys, order = sort_buffers
+        if n > 0:
+            _launch.radix_sort_pairs(keys, order, count=n, end_bit=self.key_bits)
+        sorted_keys = odt.as_dense(keys[:n])
+        slots = odt.as_dense(order[:n])
         third = _launch.full(
             loops.total, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=self.device
         )
@@ -705,7 +726,7 @@ def _fill_packed_loops(
     min_area_id = _METRIC_IDS["min_area"]
 
     loop_pos = _launch.empty(loops.total, dtype=wp.vec3, device=device)
-    rim_keys = _launch.empty(loops.total, dtype=wp.uint64, device=device)
+    rim_keys, rim_slots = edge_table.rim_sort_buffers(loops.total)
     # Accumulated into, then finished in place: the finalize pass reads each loop's sum and writes
     # that loop's slot, so the plane normals overwrite the Newell sums and the ``char_area`` scales
     # overwrite the longest edges rather than taking two buffers of their own.
@@ -724,6 +745,7 @@ def _fill_packed_loops(
             plane_normals,
             loop_pos,
             rim_keys,
+            rim_slots,
         ],
         device=device,
     )
@@ -739,7 +761,7 @@ def _fill_packed_loops(
         if resolve_multiple_edges
         else _launch.zeros(loops.dp_total, dtype=wp.int32, device=device)
     )
-    rim_opp_pos, rim_opp_valid = edge_table.rim_opposite(loops, rim_keys)
+    rim_opp_pos, rim_opp_valid = edge_table.rim_opposite(loops, (rim_keys, rim_slots))
 
     dp = _launch.empty(loops.dp_total, dtype=wp.float32, device=device)
     prev = _launch.empty(loops.dp_total, dtype=wp.int32, device=device)
@@ -2508,8 +2530,8 @@ def stitch_loops(
     _launch.launch(
         kernel_holes.stitch_rim_positions,
         dim=n + m,
-        inputs=[vertices_a, loop_a, vertices_b, loop_b],
-        outputs=[a_pos, b_pos],
+        inputs=[vertices_a, loop_a, vertices_b, loop_b, wp.int32(0), wp.int32(0)],
+        outputs=[a_pos, b_pos, None, None],
         device=device,
     )
 
@@ -2586,8 +2608,11 @@ def stitch_loops(
             device=device,
         )
 
-    # The band, referencing the concatenated vertex buffer (A first, then B offset).
-    bridge = _launch.empty(3 * (n + m), dtype=wp.int32, device=device)
+    # The band, referencing the concatenated vertex buffer (A first, then B offset), written
+    # straight into the tail of the combined face buffer.
+    combined_vertices, combined_faces, bridge = _stitched_mesh(
+        vertices_a, faces_a, vertices_b, faces_b, n + m
+    )
     _launch.launch(
         kernel_holes.bridge_faces,
         dim=n + m,
@@ -2602,11 +2627,53 @@ def stitch_loops(
         outputs=[bridge],
         device=device,
     )
+    return combined_vertices, combined_faces
 
-    combined_vertices, combined_faces = od.combine.concatenate(
-        [(vertices_a, faces_a), (vertices_b, faces_b)]
+
+def _stitched_mesh(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    n_band_faces: int,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Concatenate two meshes with room for a band of ``n_band_faces`` faces after them.
+
+    Returns the combined vertices (A's, then B's), the combined face buffer (A's faces, B's offset
+    by A's vertex count, then the band) and a ``(3 * n_band_faces,)`` view of its unwritten band
+    tail, which the caller fills. The same buffers as
+    [`combine.concatenate`][ordito.combine.concatenate] followed by
+    [`array.concatenate`][ordito.array.concatenate] with the band, each allocated once at its
+    final size.
+    """
+    device = faces_a.device
+    n_vertices_a = vertices_a.size
+    n_vertices_b = vertices_b.size
+    vertices = _launch.empty(n_vertices_a + n_vertices_b, dtype=wp.vec3, device=device)
+    if n_vertices_a > 0:
+        _launch.copy(vertices, vertices_a, count=n_vertices_a)
+    if n_vertices_b > 0:
+        _launch.copy(vertices, vertices_b, dest_offset=n_vertices_a, count=n_vertices_b)
+    size_a = faces_a.size
+    size_b = faces_b.size
+    faces = _launch.empty(size_a + size_b + 3 * n_band_faces, dtype=wp.int32, device=device)
+    if size_a > 0:
+        _launch.copy(faces, faces_a, count=size_a)
+    if size_b > 0:
+        _launch.map(
+            wp.add,
+            faces_b,
+            wp.int32(n_vertices_a),
+            out=odt.as_dense(faces[size_a : size_a + size_b]),
+        )
+    # Warp raises on a zero-length slice, and a traceback that reached no cell has no band.
+    band = (
+        odt.as_dense(faces[size_a + size_b :])
+        if n_band_faces > 0
+        else _launch.empty(0, dtype=wp.int32, device=device)
     )
-    return combined_vertices, od.array.concatenate([combined_faces, bridge])
+    return vertices, faces, band
 
 
 def _non_increasing_indices(numbers: np.ndarray) -> np.ndarray:
@@ -2764,21 +2831,34 @@ def stitch_loops_min_weight(
 
     # Reverse loop A so the two rims wind oppositely (facing), then align both at the closest pair.
     # ``la`` / ``lb`` stay on the host for the sequential band traceback, but the closest-pair
-    # search, rim gathers and rim-opposite lookups all run on device. This preamble (two readbacks,
-    # the closest-pair gather, the host roll and two more uploads) is a fixed cost that the
-    # anti-diagonal DP below dominates and outgrows as the rims lengthen.
-    la = loop_a.numpy()[::-1].copy()
-    lb = loop_b.numpy().copy()
-    a_rim = od.array.gather(vertices_a, _launch.array(la, dtype=wp.int32, device=device))
-    b_rim = od.array.gather(vertices_b, _launch.array(lb, dtype=wp.int32, device=device))
+    # search, the reversed and rolled rims and the rim-opposite lookups all run on device. This
+    # preamble (two loop readbacks and the closest pair's) is a fixed cost that the anti-diagonal
+    # DP below dominates and outgrows as the rims lengthen.
+    a_rim = _launch.empty(n_a, dtype=wp.vec3, device=device)
+    b_rim = _launch.empty(n_b, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_holes.stitch_rim_positions,
+        dim=n_a + n_b,
+        inputs=[vertices_a, loop_a, vertices_b, loop_b, wp.int32(0), wp.int32(0)],
+        outputs=[a_rim, b_rim, None, None],
+        device=device,
+    )
     start_a, start_b = _closest_loop_pair(a_rim, b_rim)
-    la = np.roll(la, -start_a)
-    lb = np.roll(lb, -start_b)
-
-    la_wp = _launch.array(la, dtype=wp.int32, device=device)
-    lb_wp = _launch.array(lb, dtype=wp.int32, device=device)
-    a_pos = od.array.gather(vertices_a, la_wp)
-    b_pos = od.array.gather(vertices_b, lb_wp)
+    # The traceback's host copies of the rolled loops; the device ones are written alongside
+    # their positions, by the same roll.
+    la = np.roll(loop_a.numpy()[::-1], -start_a)
+    lb = np.roll(loop_b.numpy(), -start_b)
+    la_wp = _launch.empty(n_a, dtype=wp.int32, device=device)
+    lb_wp = _launch.empty(n_b, dtype=wp.int32, device=device)
+    a_pos = _launch.empty(n_a, dtype=wp.vec3, device=device)
+    b_pos = _launch.empty(n_b, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_holes.stitch_rim_positions,
+        dim=n_a + n_b,
+        inputs=[vertices_a, loop_a, vertices_b, loop_b, wp.int32(start_a), wp.int32(start_b)],
+        outputs=[a_pos, b_pos, la_wp, lb_wp],
+        device=device,
+    )
     table_a = _EdgeTable(vertices_a, faces_a)
     table_b = _EdgeTable(vertices_b, faces_b)
     # The stitch DP works on exactly one rim per side, so each rim is its own one-loop batch.
@@ -2786,15 +2866,10 @@ def stitch_loops_min_weight(
     b_opp, b_opp_valid = table_b.rim_opposite(_PackedLoops(lb_wp, np.array([n_b], dtype=np.int64)))
     up = wp.vec3(*(up_dir if up_dir is not None else (0.0, 0.0, 1.0)))
 
-    dp = odt.as_array2d(
-        _launch.full(
-            (n_a + 1, n_b + 1), _BAD_TRIANGULATION_METRIC, dtype=wp.float32, device=device
-        ),
-        wp.float32,
-    )
-    _launch.launch(kernel_holes.set_dp_origin, dim=1, inputs=[dp], device=device)
-    came = odt.as_array2d(
-        _launch.full((n_a + 1, n_b + 1), -1, dtype=wp.int32, device=device), wp.int32
+    dp = odt.empty_2d((n_a + 1, n_b + 1), wp.float32, device=device)
+    came = odt.empty_2d((n_a + 1, n_b + 1), wp.int32, device=device)
+    _launch.launch(
+        kernel_holes.seed_stitch_tables, dim=(n_a + 1, n_b + 1), inputs=[dp, came], device=device
     )
     # Built once, outside the loop: the ten values below are the same on every one of the
     # ``n_a + n_b`` launches, and a wp.launch argument costs host time linearly on both devices, so
@@ -2814,11 +2889,12 @@ def stitch_loops_min_weight(
     came_np = came.numpy()
 
     band = _stitch_band_triangles(came_np, la, lb, n_a, n_b, offset)
-    combined_vertices, combined_faces = od.combine.concatenate(
-        [(vertices_a, faces_a), (vertices_b, faces_b)]
+    combined_vertices, combined_faces, band_faces = _stitched_mesh(
+        vertices_a, faces_a, vertices_b, faces_b, band.shape[0]
     )
-    band_faces = _launch.array(band.reshape(-1), dtype=wp.int32, device=device)
-    return combined_vertices, od.array.concatenate([combined_faces, band_faces])
+    if band.size > 0:
+        band_faces.assign(band.reshape(-1))
+    return combined_vertices, combined_faces
 
 
 def _run_stitch_dp(
@@ -3532,7 +3608,8 @@ class _JoinRim:
         """Build the rim of ``faces``, or return ``None`` when it has no boundary."""
         device = faces.device
         boundary = od.boundary.oriented_boundary_edges(vertices, faces)
-        if int(boundary.shape[0]) == 0:
+        n_rows = int(boundary.shape[0])
+        if n_rows == 0:
             return None
         n_faces = faces.size // 3
         face_labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
@@ -3543,11 +3620,24 @@ class _JoinRim:
             inputs=[faces, face_labels, vertex_labels],
             device=device,
         )
-        # The two host reads of the whole loop: the rim and every vertex's component.
-        rows = boundary.numpy().astype(np.int64)
-        names, compact = np.unique(vertex_labels.numpy(), return_inverse=True)
-        vertex_compact = compact.astype(np.int64)
-        return _JoinRim(vertices, rows, vertex_compact[rows[:, 0]], vertex_compact, names.size)
+        table = odt.empty_2d((n_rows, 3), wp.int32, device=device)
+        _launch.launch(
+            kernel_holes.rim_rows_and_tail_labels,
+            dim=n_rows,
+            inputs=[boundary, vertex_labels, table],
+            device=device,
+        )
+        # The one host read of the whole loop: the rim rows and each row's tail component. Only
+        # rim vertices are ever looked up (every one is some row's tail), so the compact names are
+        # ranked over the rim alone; ranking keeps their order, and only equality and the merge's
+        # minimum read them.
+        table_np = table.numpy().astype(np.int64)
+        rows = table_np[:, :2]
+        names, row_labels = np.unique(table_np[:, 2], return_inverse=True)
+        row_labels = row_labels.astype(np.int64).reshape(-1)
+        vertex_compact = np.full(vertices.size, -1, dtype=np.int64)
+        vertex_compact[rows[:, 0]] = row_labels
+        return _JoinRim(vertices, rows, row_labels, vertex_compact, names.size)
 
     def _key(
         self, tails: npt.NDArray[np.int64], heads: npt.NDArray[np.int64]

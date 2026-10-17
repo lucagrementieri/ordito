@@ -1,3 +1,5 @@
+from typing import Any
+
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D
@@ -22,6 +24,7 @@ from ordito.kernels.reduce import (
     last_ticket_vector,
     outer_sum_chunk,
     store_block_total,
+    store_block_total_divided,
     store_sum_and_count,
 )
 
@@ -58,16 +61,20 @@ def centroid_from_sum(point_sum: wp.array[wp.vec3], n: wp.float32) -> wp.vec3:
 
 
 @wp.kernel
-def point_sum(points: wp.array[wp.vec3], stride: wp.int32, out_sum: wp.array[wp.vec3]) -> None:
-    # ``sum(points)`` for ``points.centroid`` and the centred scatter matrix, as a reproducible
-    # block commit (``store_block_total``): one block per ``ITEMS_PER_BLOCK_1D`` points, lanes
-    # striding the block's own chunk by ``wp.block_dim()``, so the one CPU lane walks it all.
+def point_sum(
+    points: wp.array[wp.vec3], divisor: wp.float32, stride: wp.int32, out_sum: wp.array[wp.vec3]
+) -> None:
+    # ``sum(points) / divisor`` for ``points.centroid`` (``divisor = n``) and the centred scatter
+    # matrix (``1.0``, which divides exactly), as a reproducible block commit
+    # (``store_block_total_divided``; its ``atomic_add`` form leaves the division to the caller):
+    # one block per ``ITEMS_PER_BLOCK_1D`` points, lanes striding the block's own chunk by
+    # ``wp.block_dim()``, so the one CPU lane walks it all.
     chunk, lane = wp.tid()
     offset, remaining = block_chunk_1d(points.shape[0], chunk)
     total = wp.vec3()
     for k in range(lane, remaining, wp.block_dim()):
         total += points[offset + k]
-    store_block_total(chunk, lane, total, out_sum, 0, stride, last_ticket_vector)
+    store_block_total_divided(chunk, lane, total, out_sum, 0, stride, last_ticket_vector, divisor)
 
 
 @wp.kernel
@@ -75,6 +82,7 @@ def centered_covariance(
     points: wp.array[wp.vec3],
     center: wp.array[wp.vec3],
     center_divisor: wp.float32,
+    divisor: wp.float32,
     stride: wp.int32,
     out_cov: wp.array[wp.mat33],
 ) -> None:
@@ -94,7 +102,8 @@ def centered_covariance(
     # Launched ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)``: one block per
     # ``ITEMS_PER_BLOCK_1D`` points, lanes striding that block's own chunk, nine ``wp.tile_sum``
     # tree reductions, one ``wp.mat33`` row per block that the last block adds in a fixed order
-    # (``store_block_total``; one atomic per block made the answer's last bits move on CUDA).
+    # (``store_block_total_divided``; one atomic per block made the answer's last bits move on
+    # CUDA).
     #
     # **The redundant lane arithmetic is not the cost -- the block count is**, the same finding as
     # ``registration.accumulate_procrustes_moments``: what costs is one add per block on each of
@@ -116,8 +125,10 @@ def centered_covariance(
         points, centroid_from_sum(center, center_divisor), offset, remaining, lane, wp.block_dim()
     )
 
-    # Block-collective, so it runs outside the ``lane == 0`` guard.
-    store_block_total(chunk, lane, m, out_cov, 0, stride, last_ticket_matrix)
+    # Block-collective, so it runs outside the ``lane == 0`` guard. ``divisor`` scales the
+    # reproducible result (``covariance``'s ``n - ddof``; ``1.0``, which divides exactly, for the
+    # scatter and Gram matrices); the ``atomic_add`` form leaves it to the caller.
+    store_block_total_divided(chunk, lane, m, out_cov, 0, stride, last_ticket_matrix, divisor)
 
 
 @wp.kernel
@@ -785,6 +796,41 @@ def support_thresholds(
     return best_max[k] - slack, best_min[k] + slack
 
 
+@wp.func
+def mark_support_slice(
+    points: wp.array[wp.vec3],
+    directions: wp.array[wp.vec3],
+    best_max: wp.array[wp.float32],
+    best_min: wp.array[wp.float32],
+    tolerance: wp.float32,
+    stride: wp.int32,
+    slice_max: wp.array2d[wp.float32],
+    slice_min: wp.array2d[wp.float32],
+    k: wp.int32,
+    j: wp.int32,
+    out_marks: Any,
+    mark: Any,
+) -> None:
+    """Write ``mark`` at every point of slice ``(k, j)`` that supports direction ``k``."""
+    # Thread ``(k, j)`` tests points ``j, j + stride, ...`` against direction ``k``. Two launch
+    # shapes, one rule: one thread per point (``stride`` the point count, the slice tables
+    # ``None``), or one per ``(direction, slice)`` of ``hull_support_extremes``' launch with its
+    # slice tables, walking a slice only if the slice's own extreme reaches one of the direction's
+    # two thresholds -- every point the exhaustive test would mark lies in such a slice, since its
+    # support value is the same ``wp.dot`` the slice extreme was folded from.
+    # A hemisphere direction n covers both +n (max, supports the vertex farthest
+    # along n) and -n (min, supports the vertex farthest along -n).
+    direction = directions[k]
+    upper, lower = support_thresholds(best_max, best_min, tolerance, k)
+    if slice_max.shape[0] > 0:
+        if slice_max[k, j] < upper and slice_min[k, j] > lower:
+            return
+    for i in range(j, points.shape[0], stride):
+        distance = wp.dot(direction, points[i])
+        if distance >= upper or distance <= lower:
+            out_marks[i] = mark
+
+
 @wp.kernel
 def mark_hull_support(
     points: wp.array[wp.vec3],
@@ -797,24 +843,53 @@ def mark_hull_support(
     slice_min: wp.array2d[wp.float32],
     out_mask: wp.array[wp.bool],
 ) -> None:
-    # Thread ``(k, j)`` tests points ``j, j + stride, ...`` against direction ``k``. Two launch
-    # shapes, one rule: one thread per point (``stride`` the point count, the slice tables
-    # ``None``), or one per ``(direction, slice)`` of ``hull_support_extremes``' launch with its
-    # slice tables, walking a slice only if the slice's own extreme reaches one of the direction's
-    # two thresholds -- every point the exhaustive test would mark lies in such a slice, since its
-    # support value is the same ``wp.dot`` the slice extreme was folded from.
+    # ``convex_subset_mask``'s bool mask. ``flag_hull_support`` differs only in writing ``int32``
+    # ``1`` flags that ``convex_subset`` scans in place.
     k, j = wp.tid()
-    # A hemisphere direction n covers both +n (max, supports the vertex farthest
-    # along n) and -n (min, supports the vertex farthest along -n).
-    direction = directions[k]
-    upper, lower = support_thresholds(best_max, best_min, tolerance, k)
-    if slice_max.shape[0] > 0:
-        if slice_max[k, j] < upper and slice_min[k, j] > lower:
-            return
-    for i in range(j, points.shape[0], stride):
-        distance = wp.dot(direction, points[i])
-        if distance >= upper or distance <= lower:
-            out_mask[i] = True
+    mark_support_slice(
+        points,
+        directions,
+        best_max,
+        best_min,
+        tolerance,
+        stride,
+        slice_max,
+        slice_min,
+        k,
+        j,
+        out_mask,
+        True,
+    )
+
+
+@wp.kernel
+def flag_hull_support(
+    points: wp.array[wp.vec3],
+    directions: wp.array[wp.vec3],
+    best_max: wp.array[wp.float32],
+    best_min: wp.array[wp.float32],
+    tolerance: wp.float32,
+    stride: wp.int32,
+    slice_max: wp.array2d[wp.float32],
+    slice_min: wp.array2d[wp.float32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``mark_hull_support`` writing ``int32`` ``1`` flags, the input of an in-place scan.
+    k, j = wp.tid()
+    mark_support_slice(
+        points,
+        directions,
+        best_max,
+        best_min,
+        tolerance,
+        stride,
+        slice_max,
+        slice_min,
+        k,
+        j,
+        out_flags,
+        wp.int32(1),
+    )
 
 
 @wp.kernel
@@ -968,6 +1043,22 @@ def radial_sort_key(point: wp.vec3, origin: wp.vec3, axis0: wp.vec3, axis1: wp.v
     return -wp.atan2(wp.dot(v, axis0), wp.dot(v, axis1))
 
 
+@wp.kernel
+def radial_sort_keys_and_identity(
+    points: wp.array[wp.vec3],
+    origin: wp.vec3,
+    axis0: wp.vec3,
+    axis1: wp.vec3,
+    out_keys: wp.array[wp.float32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``radial_sort_key`` and ``array.keys_and_identity`` in one launch: each point's key and the
+    # identity payload into the leading halves of the radix sort's double-width buffers.
+    i = wp.int32(wp.tid())
+    out_keys[i] = radial_sort_key(points[i], origin, axis0, axis1)
+    out_order[i] = i
+
+
 def _declare_map_kernels() -> None:
     """
     Pre-declare this module's forking ``wp.map`` signatures so each builds one module, not three.
@@ -976,10 +1067,10 @@ def _declare_map_kernels() -> None:
     derived and what forks a ``wp.map`` module; only this module's *own* forking ops belong
     here (the shared builtins are declared there).
 
-    Three ops are ``wp.map``'d from ``points.py``; all three are declared. ``is_finite_point``
-    (``point_finite_mask``) and ``radial_sort_key`` (``radial_sort``) are reachable from a length-1
-    point cloud exactly as ``is_in_half_space`` is, and each forks its own module the first time a
-    call at the other length is seen.
+    Two ops are ``wp.map``'d from ``points.py``; both are declared. ``is_finite_point``
+    (``point_finite_mask``) is reachable from a length-1 point cloud exactly as
+    ``is_in_half_space`` is, and each forks its own module the first time a call at the other
+    length is seen.
     """
     dense, single = map_probe, map_probe_single
     declare_map_signatures(
@@ -988,8 +1079,6 @@ def _declare_map_kernels() -> None:
             (is_in_half_space, (single(wp.vec3), wp.vec3(), wp.vec3()), wp.bool),
             (is_finite_point, (dense(wp.vec3),), wp.bool),
             (is_finite_point, (single(wp.vec3),), wp.bool),
-            (radial_sort_key, (dense(wp.vec3), wp.vec3(), wp.vec3(), wp.vec3()), wp.float32),
-            (radial_sort_key, (single(wp.vec3), wp.vec3(), wp.vec3(), wp.vec3()), wp.float32),
         ]
     )
 

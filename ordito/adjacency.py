@@ -576,14 +576,21 @@ def face_adjacency_angles(
         return _sorted_pair_values(kernel_adjacency.emit_sorted_angles, vertices, faces, wp.float32)
     if face_adjacency is None:
         face_adjacency = od.adjacency.face_adjacency(faces, n_vertices=vertices.size)
-    if face_normals is None:
-        face_normals, _ = od.triangles.face_normals_and_areas(vertices, faces)
 
     m = int(face_adjacency.shape[0])
     if m == 0:
         return _launch.empty(0, dtype=wp.float32, device=device)
 
     out_angles = _launch.empty(m, dtype=wp.float32, device=device)
+    if face_normals is None:
+        # The pair's normals are formed where they are read, the values a normal table would hold.
+        _launch.launch(
+            kernel_adjacency.face_adjacency_angles_from_positions,
+            dim=m,
+            inputs=[vertices, faces, face_adjacency, out_angles],
+            device=device,
+        )
+        return out_angles
     _launch.launch(
         kernel_adjacency.face_adjacency_angles,
         dim=m,

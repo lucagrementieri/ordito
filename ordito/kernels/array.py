@@ -431,6 +431,18 @@ def sort_pair_indices(n: wp.Int, fill_value: wp.Int, out_indices: wp.array[wp.In
 
 
 @wp.kernel
+def keys_and_identity(
+    data: wp.array[wp.Scalar], out_keys: wp.array[wp.Scalar], out_order: wp.array[wp.int32]
+) -> None:
+    # The leading halves of a radix sort's double-width key and payload buffers: the keys as given
+    # and the identity permutation the sort carries. The upper halves are sort scratch, which
+    # Warp's radix sort writes before it reads on both devices, so nothing pads them.
+    i = wp.int32(wp.tid())
+    out_keys[i] = data[i]
+    out_order[i] = i
+
+
+@wp.kernel
 def arange_repeat(repeats: wp.Int, out_indices: wp.array[wp.Int]) -> None:
     i = wp.int32(wp.tid())
     out_indices[i] = i // repeats
@@ -671,6 +683,19 @@ def complement_flag(a: wp.bool) -> wp.int32:
     # ``1`` where the mask is False, ``0`` where it is True: the scan input for an inverted
     # ``mask_to_compact_ranks`` (free/interior DOFs of a fixed-vertex mask, for instance).
     return wp.where(a, wp.int32(0), wp.int32(1))
+
+
+@wp.kernel
+def mask_rank_flags(
+    mask: wp.array[wp.bool], invert: wp.bool, out_offsets: wp.array[wp.int32]
+) -> None:
+    # The scan input of ``mask_to_compact_ranks``, written into its ``n + 1`` offsets buffer: ``1``
+    # at ``i + 1`` per selected entry (``True``, or ``False`` under ``invert``), and the leading
+    # exclusive offset ``0`` by thread 0, so the buffer needs no zeroing.
+    i = wp.int32(wp.tid())
+    if i == 0:
+        out_offsets[0] = 0
+    out_offsets[i + 1] = wp.where(mask[i] != invert, 1, 0)
 
 
 @wp.kernel
@@ -1277,6 +1302,7 @@ ARANGE: OverloadTable
 ARANGE_AFFINE: OverloadTable
 ARANGE_REPEAT: OverloadTable
 SORT_PAIR_INDICES: OverloadTable
+KEYS_AND_IDENTITY: OverloadTable
 ISIN_MARK_TABLE: OverloadTable
 ISIN_LOOKUP_MASK: OverloadTable
 ISIN_LOOKUP_SORTED: OverloadTable
@@ -1289,7 +1315,7 @@ CSR_FROM_FLAGGED_RUNS: OverloadTable
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global ARANGE, ARANGE_AFFINE, ARANGE_REPEAT, SORT_PAIR_INDICES
+    global ARANGE, ARANGE_AFFINE, ARANGE_REPEAT, SORT_PAIR_INDICES, KEYS_AND_IDENTITY
     global \
         ISIN_MARK_TABLE, \
         ISIN_LOOKUP_MASK, \
@@ -1302,6 +1328,12 @@ def _register_overloads() -> None:
     ARANGE_REPEAT = OverloadTable(arange_repeat, {d: [d, wp.array[d]] for d in _INDEX_DTYPES})
     SORT_PAIR_INDICES = OverloadTable(
         sort_pair_indices, {d: [d, d, wp.array[d]] for d in _INDEX_DTYPES}
+    )
+    # Every key dtype Warp's radix sort orders directly: ``sort_and_argsort``'s keys, and the
+    # sorted ``grouping.unique_1d``'s.
+    KEYS_AND_IDENTITY = OverloadTable(
+        keys_and_identity,
+        {d: [wp.array[d], wp.array[d], wp.array[wp.int32]] for d in _SORT_KEY_DTYPES},
     )
     ISIN_MARK_TABLE = OverloadTable(
         isin_mark_table, {d: [wp.array[d], d, d, wp.array[wp.bool]] for d in _KEY_DTYPES}
