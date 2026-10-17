@@ -3847,24 +3847,31 @@
 
     <div class="doc doc-contents first">
 
-        <p>Runtime configuration: whether floating-point reductions and scans repeat bit for bit.</p>
+        <p>Runtime configuration: whether results repeat bit for bit, and come back in the same order.</p>
 <p>On CUDA, a floating-point sum whose blocks commit in arrival order, or a <code>float32</code> scan whose
-blocks combine in arrival order, can change its last bits from one call to the next. With
-determinism on (the default) every such sum in ordito adds its per-block partials in one fixed
-order and every <code>float32</code> scan takes a fixed-order tile scan, so repeated calls on the same input
-return identical bits, and a seeded sampler draws the same points. Off, the arrival-order forms are
-used, which saves a few microseconds per reduction and matters only on short calls.</p>
-<p>What the setting governs:</p>
+blocks combine in arrival order, can change its last bits from one call to the next, and an output
+filled through atomic slots can list its entries in a different order. With determinism on every
+such sum in ordito adds its per-block partials in one fixed order, every <code>float32</code> scan takes a
+fixed-order tile scan and those outputs come back in a fixed order, so repeated calls on the same
+input return identical arrays, and a seeded sampler draws the same points. Off (the default), the
+arrival-order forms are used, which saves a few microseconds per reduction and a sort per ordered
+output.</p>
+<p>What the setting governs, on the CUDA device (the CPU device runs its blocks in turn and is
+deterministic either way):</p>
 <ul>
 <li>floating-point block reductions (sums, means, moments, fits, the reductions inside the energies,
   metrics, measures, registration and solver loops) and <code>float32</code> scans (the CDF behind every
-  sampler, arc lengths, resampling) on the CUDA device. The CPU device runs its blocks in turn and
-  is deterministic either way.</li>
+  sampler, arc lengths, resampling);</li>
+<li>the per-vertex sums of <a class="autorefs autorefs-internal" title="hessian_energy" href="../energies/#ordito.energies.hessian_energy"><code>hessian_energy</code></a>,
+  <a class="autorefs autorefs-internal" title="curved_hessian_energy" href="../energies/#ordito.energies.curved_hessian_energy"><code>curved_hessian_energy</code></a> and
+  <a class="autorefs autorefs-internal" title="vertex_defects" href="../vertices/#ordito.vertices.vertex_defects"><code>vertex_defects</code></a>;</li>
+<li>the order within each row of
+  <a class="autorefs autorefs-internal" title="vertex_face_adjacency" href="../adjacency/#ordito.adjacency.vertex_face_adjacency"><code>vertex_face_adjacency</code></a> (ascending when on).</li>
 </ul>
 <p>What it does not govern:</p>
 <ul>
-<li>floating-point atomic scatters, such as the face-to-vertex accumulation of vertex normals or
-  areas, which stay in arrival order on CUDA whatever the setting;</li>
+<li>the other floating-point atomic scatters, which stay in arrival order on CUDA whatever the
+  setting (the vertex areas and normals sum exactly, and so repeat anyway);</li>
 <li>integer reductions and scans, which are exact in any order.</li>
 </ul>
 <p>The setting is read when a reduction launches. Two consequences follow:</p>
@@ -3883,9 +3890,9 @@ override wins over the default for as long as it is active, even if the default 
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 1 place</summary>
+      <summary>Referenced by 4 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.deterministic">deterministic</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.deterministic">deterministic</a></span> · <span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.is_deterministic">is_deterministic</a></span> · <span class="ordito-backlink"><a href="./#ordito.config">config</a> › <a href="./#ordito.config.set_deterministic">set_deterministic</a></span></p>
     </details>
 
 
@@ -3910,7 +3917,7 @@ override wins over the default for as long as it is active, even if the default 
               <td><code><a class="autorefs autorefs-internal" title="set_deterministic (ordito.config.set_deterministic)" href="./#ordito.config.set_deterministic">set_deterministic</a></code></td>
               <td>
                 <div class="doc-md-description">
-                  <p>Set the process-wide default for reproducible floating-point reductions and scans.</p>
+                  <p>Set the process-wide default for reproducible results (see <a class="autorefs autorefs-internal" title="ordito.config" href="./#ordito.config"><code>ordito.config</code></a>).</p>
                 </div>
               </td>
             </tr>
@@ -3918,7 +3925,7 @@ override wins over the default for as long as it is active, even if the default 
               <td><code><a class="autorefs autorefs-internal" title="is_deterministic (ordito.config.is_deterministic)" href="./#ordito.config.is_deterministic">is_deterministic</a></code></td>
               <td>
                 <div class="doc-md-description">
-                  <p>Whether floating-point reductions and scans are reproducible in the current context.</p>
+                  <p>Whether results are reproducible in the current context (see <a class="autorefs autorefs-internal" title="ordito.config" href="./#ordito.config"><code>ordito.config</code></a>).</p>
                 </div>
               </td>
             </tr>
@@ -3960,7 +3967,7 @@ override wins over the default for as long as it is active, even if the default 
 
     <div class="doc doc-contents ">
 
-        <p>Set the process-wide default for reproducible floating-point reductions and scans.</p>
+        <p>Set the process-wide default for reproducible results (see <a class="autorefs autorefs-internal" title="ordito.config" href="./#ordito.config"><code>ordito.config</code></a>).</p>
 <p>Every thread and task without an active <a class="autorefs autorefs-internal" title="deterministic" href="./#ordito.config.deterministic"><code>deterministic</code></a>
 override sees the new value from its next reduction on. An active override is not changed.</p>
 
@@ -3985,9 +3992,10 @@ override sees the new value from its next reduction on. An active override is no
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>True</code> (the default at import) adds per-block partial sums in one fixed order and takes
-the fixed-order <code>float32</code> scan, so repeated calls return identical bits on CUDA.
-<code>False</code> takes the faster arrival-order forms.</p>
+                <p><code>True</code> adds per-block partial sums in one fixed order, takes the fixed-order
+<code>float32</code> scan and fixes the order of the outputs the setting governs, so repeated calls
+return identical arrays on CUDA. <code>False</code> (the default at import) takes the faster
+arrival-order forms.</p>
               </div>
             </td>
             <td>
@@ -4007,10 +4015,10 @@ is_deterministic : Read the setting in force.</p>
 <p><span class="doc-section-title">Examples:</span></p>
     <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 
-<span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">set_deterministic</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">is_deterministic</span><span class="p">())</span>  <span class="c1"># False</span>
 <span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">set_deterministic</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">is_deterministic</span><span class="p">())</span>  <span class="c1"># True</span>
+<span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">set_deterministic</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">is_deterministic</span><span class="p">())</span>  <span class="c1"># False</span>
 </code></pre></div>
 
           
@@ -4023,14 +4031,7 @@ is_deterministic : Read the setting in force.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">59</span>
-<span class="normal">60</span>
-<span class="normal">61</span>
-<span class="normal">62</span>
-<span class="normal">63</span>
-<span class="normal">64</span>
-<span class="normal">65</span>
-<span class="normal">66</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">66</span>
 <span class="normal">67</span>
 <span class="normal">68</span>
 <span class="normal">69</span>
@@ -4054,9 +4055,17 @@ is_deterministic : Read the setting in force.</p>
 <span class="normal">87</span>
 <span class="normal">88</span>
 <span class="normal">89</span>
-<span class="normal">90</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">90</span>
+<span class="normal">91</span>
+<span class="normal">92</span>
+<span class="normal">93</span>
+<span class="normal">94</span>
+<span class="normal">95</span>
+<span class="normal">96</span>
+<span class="normal">97</span>
+<span class="normal">98</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Set the process-wide default for reproducible floating-point reductions and scans.</span>
+<span class="sd">    Set the process-wide default for reproducible results (see [`ordito.config`][ordito.config]).</span>
 
 <span class="sd">    Every thread and task without an active [`deterministic`][ordito.config.deterministic]</span>
 <span class="sd">    override sees the new value from its next reduction on. An active override is not changed.</span>
@@ -4064,9 +4073,10 @@ is_deterministic : Read the setting in force.</p>
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
 <span class="sd">    enabled</span>
-<span class="sd">        ``True`` (the default at import) adds per-block partial sums in one fixed order and takes</span>
-<span class="sd">        the fixed-order ``float32`` scan, so repeated calls return identical bits on CUDA.</span>
-<span class="sd">        ``False`` takes the faster arrival-order forms.</span>
+<span class="sd">        ``True`` adds per-block partial sums in one fixed order, takes the fixed-order</span>
+<span class="sd">        ``float32`` scan and fixes the order of the outputs the setting governs, so repeated calls</span>
+<span class="sd">        return identical arrays on CUDA. ``False`` (the default at import) takes the faster</span>
+<span class="sd">        arrival-order forms.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -4078,10 +4088,10 @@ is_deterministic : Read the setting in force.</p>
 <span class="sd">    ```python</span>
 <span class="sd">    import ordito as od</span>
 
-<span class="sd">    od.config.set_deterministic(False)</span>
-<span class="sd">    print(od.config.is_deterministic())  # False</span>
 <span class="sd">    od.config.set_deterministic(True)</span>
 <span class="sd">    print(od.config.is_deterministic())  # True</span>
+<span class="sd">    od.config.set_deterministic(False)</span>
+<span class="sd">    print(od.config.is_deterministic())  # False</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="k">global</span> <span class="n">_process_default</span>
@@ -4105,7 +4115,7 @@ is_deterministic : Read the setting in force.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Whether floating-point reductions and scans are reproducible in the current context.</p>
+        <p>Whether results are reproducible in the current context (see <a class="autorefs autorefs-internal" title="ordito.config" href="./#ordito.config"><code>ordito.config</code></a>).</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -4136,7 +4146,8 @@ thread or task, or the process-wide default set by
 <p><span class="doc-section-title">Examples:</span></p>
     <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">is_deterministic</span><span class="p">())</span>  <span class="c1"># True</span>
+<span class="k">with</span> <span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">deterministic</span><span class="p">(</span><span class="kc">True</span><span class="p">):</span>
+    <span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">is_deterministic</span><span class="p">())</span>  <span class="c1"># True</span>
 </code></pre></div>
 
           
@@ -4149,15 +4160,7 @@ thread or task, or the process-wide default set by
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 93</span>
-<span class="normal"> 94</span>
-<span class="normal"> 95</span>
-<span class="normal"> 96</span>
-<span class="normal"> 97</span>
-<span class="normal"> 98</span>
-<span class="normal"> 99</span>
-<span class="normal">100</span>
-<span class="normal">101</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">101</span>
 <span class="normal">102</span>
 <span class="normal">103</span>
 <span class="normal">104</span>
@@ -4169,9 +4172,18 @@ thread or task, or the process-wide default set by
 <span class="normal">110</span>
 <span class="normal">111</span>
 <span class="normal">112</span>
-<span class="normal">113</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_deterministic</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">113</span>
+<span class="normal">114</span>
+<span class="normal">115</span>
+<span class="normal">116</span>
+<span class="normal">117</span>
+<span class="normal">118</span>
+<span class="normal">119</span>
+<span class="normal">120</span>
+<span class="normal">121</span>
+<span class="normal">122</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_deterministic</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Whether floating-point reductions and scans are reproducible in the current context.</span>
+<span class="sd">    Whether results are reproducible in the current context (see [`ordito.config`][ordito.config]).</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -4185,7 +4197,8 @@ thread or task, or the process-wide default set by
 <span class="sd">    ```python</span>
 <span class="sd">    import ordito as od</span>
 
-<span class="sd">    print(od.config.is_deterministic())  # True</span>
+<span class="sd">    with od.config.deterministic(True):</span>
+<span class="sd">        print(od.config.is_deterministic())  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">override</span> <span class="o">=</span> <span class="n">_override</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
@@ -4236,8 +4249,8 @@ block inherit it), nests, and restores the previous value on exit, also when the
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>True</code> for reproducible floating-point reductions and <code>float32</code> scans, <code>False</code> for
-the faster arrival-order forms (see <a class="autorefs autorefs-internal" title="ordito.config" href="./#ordito.config"><code>ordito.config</code></a>).</p>
+                <p><code>True</code> for reproducible results, <code>False</code> for the faster arrival-order forms (see
+<a class="autorefs autorefs-internal" title="ordito.config" href="./#ordito.config"><code>ordito.config</code></a>).</p>
               </div>
             </td>
             <td>
@@ -4281,9 +4294,10 @@ the faster arrival-order forms (see <a class="autorefs autorefs-internal" title=
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">icosphere</span><span class="p">(</span><span class="n">subdivisions</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
 <span class="k">with</span> <span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">deterministic</span><span class="p">(</span><span class="kc">False</span><span class="p">):</span>
+    <span class="k">with</span> <span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">deterministic</span><span class="p">(</span><span class="kc">True</span><span class="p">):</span>
+        <span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">is_deterministic</span><span class="p">())</span>  <span class="c1"># True</span>
+        <span class="n">points</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">sample</span><span class="o">.</span><span class="n">sample_surface</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="mi">100</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
     <span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">is_deterministic</span><span class="p">())</span>  <span class="c1"># False</span>
-    <span class="n">points</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">sample</span><span class="o">.</span><span class="n">sample_surface</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="mi">100</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">config</span><span class="o">.</span><span class="n">is_deterministic</span><span class="p">())</span>  <span class="c1"># True</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">points</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (100,)</span>
 </code></pre></div>
 
@@ -4297,16 +4311,7 @@ the faster arrival-order forms (see <a class="autorefs autorefs-internal" title=
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">116</span>
-<span class="normal">117</span>
-<span class="normal">118</span>
-<span class="normal">119</span>
-<span class="normal">120</span>
-<span class="normal">121</span>
-<span class="normal">122</span>
-<span class="normal">123</span>
-<span class="normal">124</span>
-<span class="normal">125</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">125</span>
 <span class="normal">126</span>
 <span class="normal">127</span>
 <span class="normal">128</span>
@@ -4337,7 +4342,17 @@ the faster arrival-order forms (see <a class="autorefs autorefs-internal" title=
 <span class="normal">153</span>
 <span class="normal">154</span>
 <span class="normal">155</span>
-<span class="normal">156</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span>
+<span class="normal">163</span>
+<span class="normal">164</span>
+<span class="normal">165</span>
+<span class="normal">166</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Generator</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Override the determinism setting within a ``with`` block.</span>
@@ -4348,8 +4363,8 @@ the faster arrival-order forms (see <a class="autorefs autorefs-internal" title=
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
 <span class="sd">    enabled</span>
-<span class="sd">        ``True`` for reproducible floating-point reductions and ``float32`` scans, ``False`` for</span>
-<span class="sd">        the faster arrival-order forms (see [`ordito.config`][ordito.config]).</span>
+<span class="sd">        ``True`` for reproducible results, ``False`` for the faster arrival-order forms (see</span>
+<span class="sd">        [`ordito.config`][ordito.config]).</span>
 
 <span class="sd">    Yields</span>
 <span class="sd">    ------</span>
@@ -4367,9 +4382,10 @@ the faster arrival-order forms (see <a class="autorefs autorefs-internal" title=
 
 <span class="sd">    vertices, faces = od.creation.icosphere(subdivisions=2)</span>
 <span class="sd">    with od.config.deterministic(False):</span>
+<span class="sd">        with od.config.deterministic(True):</span>
+<span class="sd">            print(od.config.is_deterministic())  # True</span>
+<span class="sd">            points, _ = od.sample.sample_surface(vertices, faces, 100, seed=0)</span>
 <span class="sd">        print(od.config.is_deterministic())  # False</span>
-<span class="sd">        points, _ = od.sample.sample_surface(vertices, faces, 100, seed=0)</span>
-<span class="sd">    print(od.config.is_deterministic())  # True</span>
 <span class="sd">    print(points.shape)  # (100,)</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
