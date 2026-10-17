@@ -593,13 +593,26 @@ def thickness(
         return radii
 
     # No ray length: an unbounded ``longest_ray`` finds the same first hit as one bounded by the
-    # box enclosing the mesh and the points, and a miss is ``inf`` either way.
+    # box enclosing the mesh and the points, and a miss is ``inf`` either way. The sign flip is
+    # folded into the ray kernel.
     normals = _resolve_normals(mesh, points, normals, "thickness")
-    ray_dirs = normals
-    if not exterior:
-        ray_dirs = _launch.empty(points.size, dtype=wp.vec3, device=points.device)
-        _launch.map(wp.neg, normals, out=ray_dirs)
-    return od.ray.longest_ray(mesh, points, ray_dirs)
+    out_thickness = _launch.empty(points.size, dtype=wp.float32, device=points.device)
+    if points.size > 0:
+        _launch.launch(
+            kernel_visibility.longest_ray_along_normals,
+            dim=points.size,
+            inputs=[
+                wp.uint64(mesh.id),
+                points,
+                normals,
+                not exterior,
+                wp.float32(math.inf),
+                wp.float32(TOLERANCE_PLANAR),
+                out_thickness,
+            ],
+            device=points.device,
+        )
+    return out_thickness
 
 
 def max_tangent_sphere(
@@ -723,13 +736,15 @@ def max_tangent_sphere(
     # Slot ``r`` of ``n_not_converged`` is the not-converged count after round ``r - 1``,
     # accumulated by the step kernel itself, so each round's test is one 4-byte read with no
     # reduction launch in front of it. Slot 0 is the seed's count, accumulated by the two seed
-    # kernels.
-    n_not_converged = _launch.zeros(max_iter + 1, dtype=wp.int32, device=device)
+    # kernels. ``n_not_converged`` is a view one slot into ``counts``, whose slot 0 counts the
+    # deferred queries the seed lists in ``support_indices``, so one read carries both.
+    counts = _launch.zeros(max_iter + 2, dtype=wp.int32, device=device)
+    n_not_converged = odt.as_dense(counts[1:])
     n_verts = mesh.points.size
     ray_dirs = _launch.empty(m, dtype=wp.vec3, device=device)
     radii = _launch.empty(m, dtype=wp.float32, device=device)
     not_converged = _launch.empty(m, dtype=wp.bool, device=device)
-    needs_support = _launch.empty(m, dtype=wp.bool, device=device)
+    support_indices = _launch.empty(m, dtype=wp.int32, device=device)
     centers = _launch.empty(m, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_visibility.init_tangent_spheres,
@@ -744,19 +759,22 @@ def max_tangent_sphere(
             ray_dirs,
             radii,
             not_converged,
-            needs_support,
             centers,
             n_not_converged,
+            support_indices,
+            counts,
         ],
         device=device,
     )
     # Escaped rays (typically exterior/reach queries) need the support point of the vertex
-    # cloud in the ray direction. Compact them first — interior queries usually leave the
-    # subset empty — then run one grid-stride packed-argmax pass over the vertices for just
+    # cloud in the ray direction. The seed lists them -- interior queries usually leave the
+    # subset empty -- then one grid-stride packed-argmax pass runs over the vertices for just
     # that subset instead of a serial all-vertices loop per query thread.
-    support_indices = od.array.flatnonzero(needs_support)
-    k = support_indices.size
+    # Host readback: the deferred count sizes the support passes, and when it is zero the seed's
+    # not-converged count beside it is already the first round's test.
+    k, n_seeded = (int(value) for value in read_values(counts, 0, 2))
     if k > 0:
+        support_indices = odt.as_dense(support_indices[:k])
         n_vert_slices = max(1, (n_verts + ITEMS_PER_QUERY_SLICE - 1) // ITEMS_PER_QUERY_SLICE)
         packed_support = _launch.zeros(k, dtype=wp.uint64, device=device)
         kernel, dim = kernel_visibility.SUPPORT_ARGMAX_SLICED.launch_shape(k, n_vert_slices)
@@ -802,7 +820,12 @@ def max_tangent_sphere(
 
     for round_index in range(max_iter):
         # Host readback: whether any sphere is still shrinking decides whether to launch a round.
-        if int(read_scalar(n_not_converged, round_index)) == 0:
+        # The first round's count is already on the host unless the support pass added to it.
+        if round_index == 0 and k == 0:
+            still_shrinking = n_seeded
+        else:
+            still_shrinking = int(read_scalar(n_not_converged, round_index))
+        if still_shrinking == 0:
             break
 
         _launch.launch(

@@ -347,6 +347,29 @@ def shape_diameter(
         out_diameter[i] = wp.where(kept <= 0.0, mean, weighted / kept)
 
 
+@wp.kernel
+def longest_ray_along_normals(
+    mesh_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    inward: wp.bool,
+    max_t: wp.float32,
+    planar_tol: wp.float32,
+    out_thickness: wp.array[wp.float32],
+) -> None:
+    # ``thickness(method="ray")``: the direction (the normal, negated when ``inward``) and
+    # ``longest_ray``'s walk along it in one pass, so no direction buffer is written. The negation
+    # is the value ``wp.neg`` gave and ``longest_ray_distance`` normalizes it as ``longest_ray``
+    # does, so the hits are its own bit for bit on both devices. Forming the closest-face normal
+    # in this thread too (``normals_at_closest_faces_computed``'s body, even behind a uniform
+    # branch) moved 2-4 % of CUDA hits by an ulp or two, a code-generation effect the CPU device
+    # does not show, so that stays its own launch.
+    i = wp.int32(wp.tid())
+    normal = normals[i]
+    direction = wp.where(inward, -normal, normal)
+    out_thickness[i] = longest_ray_distance(mesh_id, points[i], direction, max_t, planar_tol)
+
+
 @wp.func
 def ray_direction(normal: wp.vec3, sign: wp.float32) -> wp.vec3:
     # The unit ray direction ``sign * normalize(normal)``: scaling by ``+-1`` is exact, so the sign
@@ -402,9 +425,10 @@ def init_tangent_spheres(
     out_ray_dirs: wp.array[wp.vec3],
     out_radii: wp.array[wp.float32],
     out_not_converged: wp.array[wp.bool],
-    out_needs_support: wp.array[wp.bool],
     out_centers: wp.array[wp.vec3],
     out_n_not_converged: wp.array[wp.int32],
+    out_support_indices: wp.array[wp.int32],
+    out_n_support: wp.array[wp.int32],
 ) -> None:
     # ``max_tangent_sphere``'s seed, one thread per query: the ray direction (``ray_direction``),
     # the longest ray along it (``ray.longest_ray``'s ``longest_ray_distance``) and the sphere it
@@ -412,7 +436,9 @@ def init_tangent_spheres(
     # the direction nor the distance makes a round trip through memory before the seed reads it.
     # The direction is still written: the support pass and every shrink step read it. A seeded
     # sphere is counted into ``out_n_not_converged[0]``, the loop's first convergence test, and
-    # ``init_sphere_radii_support`` adds the deferred ones it seeds.
+    # ``init_sphere_radii_support`` adds the deferred ones it seeds. A deferred query takes a slot
+    # of ``out_support_indices`` by an atomic on ``out_n_support[0]``: arrival order, which nothing
+    # observes, since the support passes resolve each query on its own and scatter by its index.
     i = wp.int32(wp.tid())
     point = points[i]
     direction = ray_direction(normals[i], sign)
@@ -421,10 +447,11 @@ def init_tangent_spheres(
     out_ray_dirs[i] = direction
     out_radii[i] = radius
     out_not_converged[i] = finite
-    out_needs_support[i] = needs_support
     out_centers[i] = center
     if finite:
         wp.atomic_add(out_n_not_converged, 0, wp.int32(1))
+    if needs_support:
+        out_support_indices[wp.atomic_add(out_n_support, 0, wp.int32(1))] = i
 
 
 @wp.func
