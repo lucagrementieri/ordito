@@ -11040,15 +11040,7 @@ already split) is refined until it matches its surroundings:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3893</span>
-<span class="normal">3894</span>
-<span class="normal">3895</span>
-<span class="normal">3896</span>
-<span class="normal">3897</span>
-<span class="normal">3898</span>
-<span class="normal">3899</span>
-<span class="normal">3900</span>
-<span class="normal">3901</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3901</span>
 <span class="normal">3902</span>
 <span class="normal">3903</span>
 <span class="normal">3904</span>
@@ -11242,7 +11234,15 @@ already split) is refined until it matches its surroundings:</p>
 <span class="normal">4092</span>
 <span class="normal">4093</span>
 <span class="normal">4094</span>
-<span class="normal">4095</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
+<span class="normal">4095</span>
+<span class="normal">4096</span>
+<span class="normal">4097</span>
+<span class="normal">4098</span>
+<span class="normal">4099</span>
+<span class="normal">4100</span>
+<span class="normal">4101</span>
+<span class="normal">4102</span>
+<span class="normal">4103</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -11821,15 +11821,7 @@ splits just the two faces sharing that edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4193</span>
-<span class="normal">4194</span>
-<span class="normal">4195</span>
-<span class="normal">4196</span>
-<span class="normal">4197</span>
-<span class="normal">4198</span>
-<span class="normal">4199</span>
-<span class="normal">4200</span>
-<span class="normal">4201</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4201</span>
 <span class="normal">4202</span>
 <span class="normal">4203</span>
 <span class="normal">4204</span>
@@ -11994,7 +11986,24 @@ splits just the two faces sharing that edge:</p>
 <span class="normal">4363</span>
 <span class="normal">4364</span>
 <span class="normal">4365</span>
-<span class="normal">4366</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
+<span class="normal">4366</span>
+<span class="normal">4367</span>
+<span class="normal">4368</span>
+<span class="normal">4369</span>
+<span class="normal">4370</span>
+<span class="normal">4371</span>
+<span class="normal">4372</span>
+<span class="normal">4373</span>
+<span class="normal">4374</span>
+<span class="normal">4375</span>
+<span class="normal">4376</span>
+<span class="normal">4377</span>
+<span class="normal">4378</span>
+<span class="normal">4379</span>
+<span class="normal">4380</span>
+<span class="normal">4381</span>
+<span class="normal">4382</span>
+<span class="normal">4383</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">split_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -12145,9 +12154,17 @@ splits just the two faces sharing that edge:</p>
             <span class="sa">f</span><span class="s2">"split_mask must have one entry per unique edge (</span><span class="si">{</span><span class="n">n_edges</span><span class="si">}</span><span class="s2">), got </span><span class="si">{</span><span class="n">split_mask</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">."</span>
         <span class="p">)</span>
 
-    <span class="n">carried</span> <span class="o">=</span> <span class="n">index</span> <span class="k">if</span> <span class="n">index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">carried</span><span class="o">.</span><span class="n">size</span> <span class="o">!=</span> <span class="n">n_faces</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"index must have one entry per face (</span><span class="si">{</span><span class="n">n_faces</span><span class="si">}</span><span class="s2">), got </span><span class="si">{</span><span class="n">carried</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">."</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">index</span><span class="o">.</span><span class="n">size</span> <span class="o">!=</span> <span class="n">n_faces</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"index must have one entry per face (</span><span class="si">{</span><span class="n">n_faces</span><span class="si">}</span><span class="s2">), got </span><span class="si">{</span><span class="n">index</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">."</span><span class="p">)</span>
+    <span class="c1"># Provenance is threaded only when it is returned: without ``return_index`` nothing reads it, so</span>
+    <span class="c1"># no identity is built and the emission writes none.</span>
+    <span class="n">carried</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="kc">None</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">return_index</span>
+        <span class="k">else</span> <span class="n">index</span>
+        <span class="k">if</span> <span class="n">index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="k">else</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">arange</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="p">)</span>
 
     <span class="c1"># The exclusive scan both counts the split edges and assigns each one its new vertex slot, which</span>
     <span class="c1"># is the indexing ``split_positions`` is documented against.</span>
@@ -12166,6 +12183,7 @@ splits just the two faces sharing that edge:</p>
         <span class="n">return_index</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">if</span> <span class="n">return_index</span><span class="p">:</span>
+        <span class="k">assert</span> <span class="n">new_index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>  <span class="c1"># ``carried`` is an array whenever ``return_index`` is set</span>
         <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span><span class="p">,</span> <span class="n">new_index</span>
     <span class="k">return</span> <span class="n">new_vertices</span><span class="p">,</span> <span class="n">new_faces</span>
 </code></pre></div></td></tr></table></div>
