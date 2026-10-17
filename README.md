@@ -94,8 +94,9 @@ Requires Python ≥ 3.11 and `warp-lang` ≥ 1.18. A CUDA-capable GPU is recomme
 required — every function also runs on Warp's CPU backend. Mesh file I/O via
 [meshio](https://github.com/nschloe/meshio) is an optional extra: `pip install "ordito[io]"`.
 
-Tested on **Linux**, with and without CUDA. The wheel is pure Python and `warp-lang` supports
-macOS and Windows, so ordito is expected to work there, but neither is verified — see
+Tested on **Linux**, with and without CUDA, and on **macOS** (Apple Silicon, CPU backend). The
+wheel is pure Python and `warp-lang` supports Windows, so ordito is expected to work there, but it
+is not verified — see
 [Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
 ## Quickstart

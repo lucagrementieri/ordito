@@ -2023,7 +2023,20 @@ def test_containing_faces_2d_matches_scipy_and_pyvista(device: str) -> None:
     faces_sp = triangulation_sp.find_simplex(queries_np)
     assert (faces_sp >= 0).sum() > 20_000, "the reference places most queries inside"
     assert (faces_sp < 0).sum() > 5_000, "and a substantial minority outside"
-    assert np.array_equal(located_wp, faces_sp)
+    # ordito locates in float32, scipy in float64: a query within float32 rounding of a shared edge
+    # may land on either side (one of the 40 000 on macOS arm64, 9e-07 from the edge). A
+    # disagreement is admitted only where ordito's face contains the query to that rounding.
+    mismatch_np = np.flatnonzero(located_wp != faces_sp)
+    assert mismatch_np.size <= 4, "near-ties are rare; more is an algorithm bug"
+    assert np.all(located_wp[mismatch_np] >= 0)
+    corners_np = points_np[faces_np[located_wp[mismatch_np]]]
+    edges_np = np.roll(corners_np, -1, axis=1) - corners_np
+    offsets_np = queries_np[mismatch_np, None, :] - corners_np
+    signed_np = edges_np[..., 0] * offsets_np[..., 1] - edges_np[..., 1] * offsets_np[..., 0]
+    orientation_np = np.sign(signed_np.sum(axis=1, keepdims=True))
+    distances_np = orientation_np * signed_np / np.linalg.norm(edges_np, axis=2)
+    rounding = 8.0 * np.finfo(np.float32).eps * np.abs(queries_np).max()
+    assert np.all(distances_np.min(axis=1) >= -rounding)
 
     n_pv = 10_000
     mesh_pv = pv.PolyData.from_regular_faces(

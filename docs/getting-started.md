@@ -31,12 +31,12 @@ much of it is *verified*, not how much of it is meant to work.
 |---|---|
 | **Linux + CUDA** | The developed and measured target. Every performance figure in these docs is this configuration, and the full test suite plus the eleven-library comparison suite run here on every release. |
 | **Linux, CPU only** | Fully supported and correctness-tested on every change, via Warp's CPU backend. Not performance-tuned: the CPU backend runs a launch grid far less parallel than a GPU does, and tuning decisions in ordito are made on the CUDA measurement. |
-| **macOS** | Untested. `warp-lang` supports macOS on the CPU backend (there is no CUDA, and Metal is not a Warp backend), so ordito is expected to work, but nothing verifies it. |
-| **Windows** | Untested. Same position as macOS: `warp-lang` supports it, ordito is not checked against it. |
+| **macOS (Apple Silicon)** | Tested by hand on macOS 26 (arm64), CPU backend only: there is no CUDA, and Metal is not a Warp backend. The full development environment installs, the type and lint gates pass, and the test suite passes except for a handful of comparison tests that crash inside pymeshlab's macOS build. Not part of CI and not performance-tuned. |
+| **Windows** | Untested. `warp-lang` supports it, ordito is not checked against it. |
 
-The untested rows are a statement about coverage, not a warning — if ordito works or fails for
-you on either, a short [issue](https://github.com/lucagrementieri/ordito/issues) saying so is
-what would move them up the table.
+The untested row is a statement about coverage, not a warning — if ordito works or fails for
+you on Windows, a short [issue](https://github.com/lucagrementieri/ordito/issues) saying so is
+what would move it up the table.
 
 ## The five-minute mental model
 

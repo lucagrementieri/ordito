@@ -325,7 +325,7 @@ def _face_mask_ml(mask_np: np.ndarray) -> mm.FaceBitSet:
     """
     packed_np = np.packbits(mask_np, bitorder="little")
     packed_np = np.pad(packed_np, (0, (-packed_np.size) % 8)).view(np.uint64)
-    bitset_ml = mm.BitSet.fromBlocks(mm.std_vector_unsigned_long(packed_np.tolist()))
+    bitset_ml = mm.BitSet.fromBlocks(packed_np.tolist())
     bitset_ml.resize(int(mask_np.size))
     return mm.FaceBitSet(bitset_ml)
 

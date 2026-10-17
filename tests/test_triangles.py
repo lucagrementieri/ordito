@@ -553,7 +553,15 @@ def test_per_face_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_
     normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
     normals_ml = mn.toNumpyArray(mm.computePerFaceNormals(mesh_ml))
     assert np.allclose(np.linalg.norm(normals_ml, axis=1), 1.0, atol=1e-6)
-    assert np.allclose(normals_wp.numpy(), normals_ml, rtol=1e-5, atol=1e-5)
+    # A float32 cross product of a needle's edges is off by about eps32 * l_max**2 / (2 * area),
+    # its condition number: 0.52x that bound on ``saddle_graded``'s worst needles (cond ~4 700,
+    # 6.7e-05 absolute on macOS arm64), so the per-face tolerance carries 4x eps32 * cond and stays
+    # at 1e-5 on well-shaped faces.
+    corners_np = mesh_tm.vertices[mesh_tm.faces]
+    edge_lengths_np = np.linalg.norm(corners_np - np.roll(corners_np, 1, axis=1), axis=2)
+    condition_np = edge_lengths_np.max(axis=1) ** 2 / (2.0 * mesh_tm.area_faces)
+    tolerance_np = 1e-5 + 4.0 * np.finfo(np.float32).eps * condition_np
+    assert np.all(np.abs(normals_wp.numpy() - normals_ml) <= tolerance_np[:, None])
 
     faces_ml = [mm.FaceId(f) for f in range(n_faces)]
     areas_ml = np.array([mm.dblArea(topology_ml, points_ml, f) / 2.0 for f in faces_ml])
