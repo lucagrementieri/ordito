@@ -45,6 +45,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
+from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import graph as kernel_graph
@@ -1429,8 +1430,10 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
     count, which sizes the returned slice. The plane frame is accumulated and consumed on
     the device and never crosses to the host.
 
-    Every path produces the same triangulation up to row order, and that row order is not stable on
-    CUDA -- faces are appended through an atomic counter.
+    Every path produces the same triangulation up to row order. Faces are appended through an atomic
+    counter, so on CUDA their row order changes from call to call, unless
+    [`is_deterministic`][ordito.config.is_deterministic]: then the rows are listed by ascending
+    middle index (the tip of the ear each one clipped).
 
     See Also
     --------
@@ -1504,7 +1507,8 @@ def polyline_triangulate_from_offsets(
     faces : odt.Array2dInt32
         ``(m, 3)`` triangle vertex indices into ``polylines`` (not into each loop), loop after
         loop. A simple ``k``-point loop contributes ``k - 2``; a degenerate or self-intersecting
-        one may contribute fewer, and a loop of fewer than three points none.
+        one may contribute fewer, and a loop of fewer than three points none. Each loop's rows are
+        in the order [`polyline_triangulate`][ordito.polyline.polyline_triangulate] describes.
     face_offsets : wp.array[wp.int32]
         ``(n_loops + 1,)`` offsets of each loop's rows in ``faces``, total-terminated.
 
@@ -1588,6 +1592,10 @@ def polyline_triangulate_from_offsets(
             inputs=[faces, bases_scan, ends, face_offsets, out_faces],
             device=device,
         )
+        if is_deterministic() and n_rows > 1:
+            # Each loop's tips lie in its own range of ``polylines``, so one sort of every row by
+            # tip keeps the loops in order and lists each loop's rows by ascending tip.
+            return _faces_in_tip_order(out_faces, polylines.size), face_offsets
     return odt.as_array2d(out_faces, wp.int32), face_offsets
 
 
@@ -1616,8 +1624,11 @@ def _triangulate_from_offsets_on_host(
         # Readbacks: each loop's face count, then the reserved rows, compacted below.
         ends_np = counts.numpy()
         faces_np = faces.numpy()
+        ordered = is_deterministic()
         for r in np.flatnonzero(short).tolist():
-            loop_faces[r] = faces_np[bases[r] : ends_np[r]]
+            rows = faces_np[bases[r] : ends_np[r]]
+            # The rows by ascending tip, the order ``_clipped_faces`` gives a single loop.
+            loop_faces[r] = rows[np.argsort(rows[:, 1], kind="stable")] if ordered else rows
     for r in np.flatnonzero(sizes > kernel_polyline.EAR_ONE_BLOCK_MAX).tolist():
         start = int(offsets_np[r])
         local = polyline_triangulate(odt.as_dense(polylines[start : int(offsets_np[r + 1])]))
@@ -1714,7 +1725,9 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
       face layout used throughout ordito.
 
     The ring must be a simple (non self-intersecting) polygon. A degenerate ring yields a partial
-    triangulation with fewer than ``n - 2`` triangles rather than raising.
+    triangulation with fewer than ``n - 2`` triangles rather than raising. The faces come in the
+    order [`polyline_triangulate`][ordito.polyline.polyline_triangulate] describes: on CUDA it
+    repeats from call to call only with [`is_deterministic`][ordito.config.is_deterministic].
 
     See Also
     --------
@@ -1806,7 +1819,7 @@ def _triangulate_ring(
             device=device,
         )
         count = int(read_scalar(count_wp, 0))
-        return n_ring, odt.as_array2d(odt.as_dense(out_faces[0:count]), wp.int32)
+        return n_ring, _clipped_faces(out_faces, count, n_ring)
 
     # The ear grid (see ``kernels/polyline.ear_grade_grid``): square cells, about
     # ``EAR_GRID_CELLS_PER_POINT`` per ring point over the ring's box, read back with the turning
@@ -1898,4 +1911,41 @@ def _triangulate_ring(
     run_device_loop(device, condition, clip_round)
 
     count = int(read_scalar(state, int(kernel_polyline.EAR_COUNT)))
-    return n_ring, odt.as_array2d(odt.as_dense(out_faces[0:count]), wp.int32)
+    return n_ring, _clipped_faces(out_faces, count, n_ring)
+
+
+def _clipped_faces(faces: odt.Array2dInt32, count: int, n_tips: int) -> odt.Array2dInt32:
+    """
+    Return the first ``count`` rows of an ear clip's faces, by ascending tip when deterministic.
+
+    The clip appends its faces through an atomic counter, so on CUDA their rows come in arrival
+    order; with [`is_deterministic`][ordito.config.is_deterministic] they are sorted by their middle
+    index (the ear's tip, below ``n_tips`` and distinct per face), the order a fan already has.
+    """
+    clipped = odt.as_array2d(odt.as_dense(faces[0:count]), wp.int32)
+    if not is_deterministic() or count < 2:
+        return clipped
+    return _faces_in_tip_order(clipped, n_tips)
+
+
+def _faces_in_tip_order(faces: odt.Array2dInt32, n_tips: int) -> odt.Array2dInt32:
+    """
+    Return ``faces`` with its rows sorted by their middle index, distinct per row below ``n_tips``.
+
+    One radix sort of the tips over the bits ``n_tips`` needs, then a gather of the rows.
+    """
+    device = faces.device
+    n_faces = faces.shape[0]
+    keys = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    rows = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_polyline.face_tip_keys,
+        dim=n_faces,
+        inputs=[faces],
+        outputs=[keys, rows],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, rows, count=n_faces, end_bit=max(1, (n_tips - 1).bit_length()))
+    ordered = odt.empty_2d((n_faces, 3), wp.int32, device=device)
+    _launch.copy(ordered, faces[odt.as_dense(rows[:n_faces])])
+    return odt.as_array2d(ordered, wp.int32)

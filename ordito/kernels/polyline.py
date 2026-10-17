@@ -2202,6 +2202,19 @@ def compact_ring_faces(
 
 
 @wp.kernel
+def face_tip_keys(
+    faces: wp.array2d[wp.int32], out_keys: wp.array[wp.int32], out_rows: wp.array[wp.int32]
+) -> None:
+    # dim == n_faces: each clipped face's tip -- its middle index, ``clip_ear``'s corner ``i`` and
+    # the fan's ``k + 1`` -- and its own row, into a radix sort's double-width buffers. Every
+    # corner is clipped at most once, so the tips are distinct and sorting by them fixes the row
+    # order the atomic face counter leaves to arrival.
+    s = wp.int32(wp.tid())
+    out_keys[s] = faces[s, 1]
+    out_rows[s] = s
+
+
+@wp.kernel
 def polyline_total_length(
     points: wp.array[wp.vec3],
     n_segments: wp.int32,

@@ -2108,6 +2108,57 @@ def test_polyline_triangulate_is_reproducible_far_from_the_origin(device: str) -
     assert all(np.array_equal(sets[0], other) for other in sets[1:])
 
 
+def _triangulate_star_loops(entry: str, device: str) -> np.ndarray:
+    """Triangulate random stars through ``entry``, as ``(m, 3)`` rows in the order returned."""
+    rng = np.random.default_rng(11)
+    loops_np = []
+    for n in (64, 600):
+        angle_np = np.sort(rng.uniform(0.0, 2.0 * np.pi, n))
+        radius_np = rng.uniform(0.2, 1.0, n)
+        loops_np.append(
+            np.column_stack((radius_np * np.cos(angle_np), radius_np * np.sin(angle_np)))
+        )
+    if entry == "triangulate_polygon":
+        _, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(loops_np[0], device))
+        return faces_wp.numpy().reshape(-1, 3)
+    loops_np = [np.column_stack((loop_np, np.zeros(loop_np.shape[0]))) for loop_np in loops_np]
+    if entry == "polyline_triangulate":
+        return od.polyline.polyline_triangulate(points_to_warp(loops_np[1], device)).numpy()
+    loops_np.append(_planar_circle(9, 1.5))
+    offsets_np = np.concatenate(([0], np.cumsum([loop.shape[0] for loop in loops_np])))
+    faces_wp, _ = od.polyline.polyline_triangulate_from_offsets(
+        points_to_warp(np.concatenate(loops_np), device),
+        wp.array(offsets_np.astype(np.int32), dtype=wp.int32, device=device),
+    )
+    return faces_wp.numpy()
+
+
+@pytest.mark.parametrize(
+    "entry", ["polyline_triangulate", "triangulate_polygon", "polyline_triangulate_from_offsets"]
+)
+@pytest.mark.parametrize("cap", [0, 10**9], ids=["round_loop", "single_block"])
+def test_triangulate_row_order_is_reproducible_when_deterministic(
+    device: str, entry: str, cap: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: deterministic mode returns the same rows in the same order every call.
+
+    The ear clip appends faces through an atomic counter, so on CUDA its rows come in arrival
+    order; with the setting on they are listed by ascending tip (the middle index), loop after
+    loop for the packed form. Random stars are not convex, so the rows are clipped ears, not the
+    fan, which is in tip order already. Both clipping paths are forced; for the packed form the
+    round loop sends every loop through the host-assembled path and the block cap keeps every loop
+    on the shared block launch. Without the sort the tip assert fails on both devices (the CPU
+    device appends round by round) and the repeat assert on CUDA.
+    """
+    monkeypatch.setattr(kernel_polyline, "EAR_ONE_BLOCK_MAX", cap)
+    with od.config.deterministic(True):
+        runs_np = [_triangulate_star_loops(entry, device) for _ in range(6)]
+    assert not np.all(np.any(runs_np[0] == 0, axis=1))  # not a fan from vertex 0
+    assert all(np.array_equal(runs_np[0], other) for other in runs_np[1:])
+    assert np.all(np.diff(runs_np[0][:, 1]) > 0)
+
+
 # --- od.config.deterministic(False): the arrival-order scan and block commits ---
 
 
