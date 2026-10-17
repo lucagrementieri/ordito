@@ -63,6 +63,7 @@ import ordito.typing as odt
 from ordito import _launch, laplacian
 from ordito._device import read_scalar, require_same_device
 from ordito.cholesky import SparseCholesky, sparse_cholesky
+from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
@@ -2990,14 +2991,28 @@ def _edge_weights(
 
     Unit weights need no array: the row walks read ``1`` instead
     (``kernels/smoothing.edge_weight``). The cotangent weights are summed per edge and clamped as
-    they are read.
+    they are read. Under [`is_deterministic`][ordito.config.is_deterministic] they are summed
+    exactly in ``float64`` and narrowed once (``edge_cotan_add_exact``), so a non-manifold edge's
+    weight is the same on every run; otherwise ``float32`` atomics sum them in arrival order.
     """
     if edge_weights == "unit":
         return None, 1
     if edge_weights != "cotan":
         raise ValueError(f"edge_weights must be 'unit' or 'cotan', got {edge_weights!r}")
     device = vertices.device
-    weights = _launch.zeros(int(region.unique_edges.shape[0]), dtype=wp.float32, device=device)
+    n_edges = int(region.unique_edges.shape[0])
+    if is_deterministic():
+        exact = _launch.zeros(n_edges, dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_smoothing.edge_cotan_add_exact,
+            dim=faces.size // 3,
+            inputs=[vertices, faces, region.inverse, exact],
+            device=device,
+        )
+        weights = _launch.empty(n_edges, dtype=wp.float32, device=device)
+        od.array.copyto(weights, exact)
+        return weights, 0
+    weights = _launch.zeros(n_edges, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_smoothing.edge_cotan_add,
         dim=faces.size // 3,

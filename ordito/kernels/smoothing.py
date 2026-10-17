@@ -64,6 +64,33 @@ def edge_cotan_add(
     add_corner_triple(out_w, inverse, f, two * half_cotan2, two * half_cotan0, two * half_cotan1)
 
 
+@wp.kernel
+def edge_cotan_add_exact(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    out_w: wp.array[wp.float64],
+) -> None:
+    # ``edge_cotan_add`` under the deterministic setting, differing only in the accumulator: the
+    # same ``float32`` cotangents go into ``float64`` sums unscaled (``scatter_face_areas_exact``'s
+    # device). A sum of a few ``float32`` values is exact in ``float64`` while their exponents span
+    # under ``29 - log2(count)`` bits, so the commit order changes no bit, and the caller's one
+    # narrowing to ``float32`` is the ``float32`` sum a manifold edge's two adds give. The
+    # ``float32`` atomics are exact only for those two adds onto zero: on a non-manifold edge
+    # (three or more faces, which a refilled self-intersection leaves) they commit in arrival order.
+    f = wp.int32(wp.tid())
+    half_cotan0, half_cotan1, half_cotan2 = face_half_cotangents(vertices, faces, f)
+    two = wp.float32(2.0)
+    add_corner_triple(
+        out_w,
+        inverse,
+        f,
+        wp.float64(two * half_cotan2),
+        wp.float64(two * half_cotan0),
+        wp.float64(two * half_cotan1),
+    )
+
+
 @wp.func
 def clamp_cotan(w: wp.float32) -> wp.float32:
     # The summed cotangent edge weight is clamped: a degenerate edge gives arbitrarily high cot.

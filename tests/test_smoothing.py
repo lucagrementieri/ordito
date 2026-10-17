@@ -26,7 +26,7 @@ import ordito as od
 import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
 from ordito.kernels import smoothing as kernel_smoothing
-from tests.conftest import saddle_graded_large_arrays
+from tests.conftest import saddle_graded_large_arrays, sphere_irregular_arrays
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -1586,6 +1586,42 @@ def test_smooth_region_matches_meshlib(device: str, edge_weights: str):
 
     assert np.allclose(result_wp.numpy(), verts_ml, rtol=1e-4, atol=1e-4)
     assert np.array_equal(result_wp.numpy()[~free_np], v_wp.numpy()[~free_np])
+
+
+def test_smooth_region_is_reproducible_on_non_manifold_edges(device: str) -> None:
+    """
+    Not a parity assert: under the deterministic setting repeated cotangent solves agree exactly.
+
+    Each face's first edge gets two fins, so the edges carry four to six faces' cotangents. The
+    off mode sums them in ``float32`` with atomics, exact only for the two adds of a manifold edge,
+    and 30 CUDA calls gave 8 distinct results (the largest group 17); the deterministic mode sums
+    them exactly in ``float64`` and narrows once, so the commit order changes no bit.
+    """
+    vertices_np, faces_np = sphere_irregular_arrays()
+    faces_np = np.asarray(faces_np)
+    rng = np.random.default_rng(0)
+    apex_np = (vertices_np[faces_np[:, 0]] + vertices_np[faces_np[:, 1]]) / 2.0
+    apex_np = apex_np + rng.normal(size=apex_np.shape) * 0.05
+    apex_ids_np = vertices_np.shape[0] + np.arange(faces_np.shape[0])
+    fins_np = np.vstack(
+        [
+            np.column_stack([faces_np[:, 0], faces_np[:, 1], apex_ids_np]),
+            np.column_stack([faces_np[:, 1], faces_np[:, 0], apex_ids_np]),
+        ]
+    )
+    all_vertices_np = np.vstack([vertices_np, apex_np])
+    all_faces_np = np.vstack([faces_np, fins_np])
+    vertices_wp, faces_wp = numpy_to_warp(all_vertices_np, all_faces_np, device)
+    assert not od.validation.edge_manifold_mask(faces_wp).numpy().all()  # non-vacuity
+    free_np = np.zeros(all_vertices_np.shape[0], dtype=bool)
+    free_np[: vertices_np.shape[0] // 2] = True
+    free_wp = wp.array(free_np, dtype=wp.bool, device=device)
+
+    smoothed_np = od.smoothing.smooth_region(vertices_wp, faces_wp, free_wp).numpy()
+    assert not np.array_equal(smoothed_np, all_vertices_np.astype(np.float32))  # it moved
+    for _ in range(7):
+        again_np = od.smoothing.smooth_region(vertices_wp, faces_wp, free_wp).numpy()
+        assert np.array_equal(again_np, smoothed_np)
 
 
 def test_smooth_region_empty_region(device: str):
