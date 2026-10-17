@@ -16,6 +16,9 @@ deterministic either way):
 - floating-point block reductions (sums, means, moments, fits, the reductions inside the energies,
   metrics, measures, registration and solver loops) and ``float32`` scans (the CDF behind every
   sampler, arc lengths, resampling);
+- the lumped masses of [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries] and
+  [`mass_matrix`][ordito.laplacian.mass_matrix] given ``float64`` face areas (summed in ascending
+  face order when on; ``float32`` or computed areas sum exactly and repeat either way);
 - the per-vertex sums of [`hessian_energy`][ordito.energies.hessian_energy],
   [`curved_hessian_energy`][ordito.energies.curved_hessian_energy] and
   [`vertex_defects`][ordito.vertices.vertex_defects];

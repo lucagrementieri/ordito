@@ -1343,6 +1343,37 @@ def test_mass_matrix_entries_is_reproducible_and_exact(
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("dtype", [wp.float32, wp.float64])
+def test_mass_matrix_entries_float64_areas_repeat_in_face_order(
+    request: pytest.FixtureRequest, mesh_name: str, dtype: type
+) -> None:
+    """
+    Not a library comparison: given ``float64`` areas, five calls return one sum in face order.
+
+    ``float64`` areas have no exact sum, so with the deterministic setting on (every test) each
+    vertex adds its rounded thirds in ascending corner order. The oracle is that sum formed on the
+    host in the same order, bit for bit, on both devices; the arrival-order atomic scatter it
+    replaces moved the last bits between calls on CUDA. ``mass_matrix`` must carry the same values.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    areas = od.array.astype(od.triangles.face_normals_and_areas(vertices, faces)[1], wp.float64)
+    areas_np = areas.numpy()
+    np_dtype = np.float32 if dtype == wp.float32 else np.float64
+    third_np = (areas_np.astype(np_dtype) / np_dtype(3.0)).astype(np_dtype)
+    ordered_np = np.zeros(vertices.size, dtype=np_dtype)
+    for corner, vertex in enumerate(faces.numpy()):
+        ordered_np[vertex] = np_dtype(ordered_np[vertex] + third_np[corner // 3])
+    for _ in range(5):
+        mass_np = od.laplacian.mass_matrix_entries(
+            vertices, faces, dtype=dtype, face_areas=areas
+        ).numpy()
+        assert np.array_equal(mass_np, ordered_np)
+    matrix = od.laplacian.mass_matrix(vertices, faces, dtype=dtype, face_areas=areas)
+    assert np.array_equal(matrix.values.numpy()[: vertices.size], ordered_np)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_operators_float64_match_float32(request: pytest.FixtureRequest, mesh_name: str) -> None:
     # Every operator exposes a ``dtype`` parameter for native float64 assembly (used by the
     # linear-system solvers). The float64 build must carry float64 values and agree with the

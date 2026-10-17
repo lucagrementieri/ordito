@@ -175,6 +175,31 @@ def scatter_face_thirds(
 
 
 @wp.kernel
+def sum_sorted_face_thirds(
+    sorted_vertices: wp.array[wp.int32],
+    corner_order: wp.array[wp.int32],
+    areas: wp.array[Any],
+    count: wp.Float,
+    out_mass: wp.array[wp.Float],
+) -> None:
+    # ``scatter_face_thirds`` in ascending corner order: each vertex walks its run of the face
+    # buffer's stable sort and adds the same rounded ``areas[f] / count`` per corner, so the sum
+    # repeats bit for bit where the atomics commit in arrival order. The deterministic form for
+    # ``float64`` areas, which have no exact ``float64`` sum (``sum_sorted_corner_values`` walks
+    # the same runs over a per-corner table).
+    v = wp.int32(wp.tid())
+    n = sorted_vertices.shape[0]
+    i = binary_search_index_left(sorted_vertices, v)
+    total = type(count)(0.0)
+    while i < n:
+        if sorted_vertices[i] != v:
+            break
+        total += type(count)(areas[corner_order[i] // 3]) / count
+        i += 1
+    out_mass[v] = total
+
+
+@wp.kernel
 def scatter_face_areas_exact(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -635,6 +660,7 @@ DIVIDE_BY_DENSITY: OverloadTable
 SPLAT_GRID_TRILINEAR: OverloadTable
 SCATTER_ADD: OverloadTable
 SCATTER_FACE_THIRDS: OverloadTable
+SUM_SORTED_FACE_THIRDS: OverloadTable
 SCALE_FACE_SUMS: OverloadTable
 SCATTER_SUM_SCALAR: OverloadTable
 SCATTER_SUM_VEC: OverloadTable
@@ -644,7 +670,7 @@ SCATTER_WEIGHTED_SUM_VEC: OverloadTable
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global DIVIDE_BY_DENSITY, SPLAT_GRID_TRILINEAR, SCATTER_ADD
-    global SCALE_FACE_SUMS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR
+    global SCALE_FACE_SUMS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR, SUM_SORTED_FACE_THIRDS
     global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC, SUM_SORTED_CORNER_VALUES
     DIVIDE_BY_DENSITY = OverloadTable(
         divide_by_density,
@@ -673,6 +699,14 @@ def _register_overloads() -> None:
         scatter_face_thirds,
         {
             (a, d): [wp.array[wp.int32], wp.array[a], d, wp.array[d]]
+            for a in _VALUE_DTYPES
+            for d in _VALUE_DTYPES
+        },
+    )
+    SUM_SORTED_FACE_THIRDS = OverloadTable(
+        sum_sorted_face_thirds,
+        {
+            (a, d): [wp.array[wp.int32], wp.array[wp.int32], wp.array[a], d, wp.array[d]]
             for a in _VALUE_DTYPES
             for d in _VALUE_DTYPES
         },

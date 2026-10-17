@@ -41,6 +41,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
+from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_MOLLIFY
 from ordito.edges import edges_unique, face_edge_lengths, faces_to_edges
 from ordito.kernels import laplacian as kernel_laplacian
@@ -1518,7 +1519,7 @@ def mass_matrix_entries(
     faces: wp.array[wp.int32],
     dtype: type[wp.float32] = wp.float32,
     *,
-    face_areas: wp.array[wp.float32] | None = None,
+    face_areas: wp.array[wp.float32] | wp.array[wp.float64] | None = None,
 ) -> wp.array[wp.float32]: ...
 @overload
 def mass_matrix_entries(
@@ -1526,14 +1527,14 @@ def mass_matrix_entries(
     faces: wp.array[wp.int32],
     dtype: type[wp.float64],
     *,
-    face_areas: wp.array[wp.float32] | None = None,
+    face_areas: wp.array[wp.float32] | wp.array[wp.float64] | None = None,
 ) -> wp.array[wp.float64]: ...
 def mass_matrix_entries(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     dtype: type = wp.float32,
     *,
-    face_areas: wp.array[wp.float32] | None = None,
+    face_areas: wp.array[wp.float32] | wp.array[wp.float64] | None = None,
 ) -> wp.array[wp.float32] | wp.array[wp.float64]:
     """
     Per-vertex barycentric lumped mass: a third of each incident triangle's area.
@@ -1585,7 +1586,9 @@ def mass_matrix_entries(
     Reproducible bit for bit on both devices when the areas are computed here or given in
     ``float32``: each vertex sums its faces' ``float32`` areas exactly in ``float64`` -- whatever
     order the device commits them in -- and is divided by three once. Given ``float64`` areas, no
-    sum is exact and the result is reproducible only to rounding on CUDA.
+    sum is exact: under the deterministic setting ([`ordito.config`][ordito.config]) each vertex
+    sums its thirds in ascending face order over one sort of the faces, and with it off they are
+    committed in arrival order, reproducible only to rounding on CUDA.
 
     Examples
     --------
@@ -1611,8 +1614,22 @@ def mass_matrix_entries(
         return _launch.zeros(n_vertices, dtype=dtype, device=device)
     sums = _exact_area_sums(vertices, faces, face_areas)
     if sums is None:
-        # ``float64`` areas have no exact ``float64`` sum: rounded thirds, committed atomically.
+        # ``float64`` areas have no exact ``float64`` sum: rounded thirds, committed atomically,
+        # or under the deterministic setting summed in ascending corner order over one stable sort.
         assert face_areas is not None
+        if is_deterministic():
+            sorted_vertices, corner_order = od.array.sort_and_argsort(
+                faces, end_bit=max(1, (n_vertices - 1).bit_length())
+            )
+            mass = _launch.empty(n_vertices, dtype=dtype, device=device)
+            _launch.launch(
+                kernel_scatter.SUM_SORTED_FACE_THIRDS[face_areas.dtype, dtype],
+                dim=n_vertices,
+                inputs=[sorted_vertices, corner_order, face_areas, dtype(3.0)],
+                outputs=[mass],
+                device=device,
+            )
+            return mass
         mass = _launch.zeros(n_vertices, dtype=dtype, device=device)
         _launch.launch(
             kernel_scatter.SCATTER_FACE_THIRDS[face_areas.dtype, dtype],
@@ -1637,7 +1654,7 @@ def mass_matrix(
     faces: wp.array[wp.int32],
     dtype: type[odt.Block] = wp.float32,
     *,
-    face_areas: wp.array[wp.float32] | None = None,
+    face_areas: wp.array[wp.float32] | wp.array[wp.float64] | None = None,
 ) -> odt.BsrMatrix[odt.Block]:
     """
     Diagonal barycentric lumped mass matrix of the mesh.
@@ -1732,7 +1749,9 @@ def mass_matrix(
 
 
 def _exact_area_sums(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_areas: wp.array[wp.float32] | None
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_areas: wp.array[wp.float32] | wp.array[wp.float64] | None,
 ) -> wp.array[wp.float64] | None:
     """
     Each vertex's summed incident ``float32`` face areas, exact in ``float64``, or ``None``.
