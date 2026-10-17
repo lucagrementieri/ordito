@@ -1587,8 +1587,8 @@ def test_signed_distance_grid_guards_and_conventions(
     assert tight_field_wp.numpy().max() < 0.0
 
 
-@pytest.mark.parametrize("sign_mode", ["parity", "winding"])
-@pytest.mark.parametrize("voxel_size", [None, 0.1])
+# Each spacing and each sign mode once: the full cross product only repeats the node arithmetic.
+@pytest.mark.parametrize(("voxel_size", "sign_mode"), [(None, "parity"), (0.1, "winding")])
 def test_signed_distance_grid_equals_sampled_lattice(
     sign_mode: Literal["parity", "winding"],
     voxel_size: float | None,

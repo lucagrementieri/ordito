@@ -31,7 +31,7 @@ import ordito as od  # after
 - **The solver state lives on the mesh, not in a solver object.** Where potpourri3d builds a
   solver per mesh and calls methods on it, ordito's functions take a `Trimesh` that keeps the
   operators and factorizations (see
-  [Many source sets on one mesh](../cookbook/geodesic-distance.md#many-source-sets-on-one-mesh));
+  [Geodesic distance with the heat method](../examples/geodesics.md#g1));
   the `vertices, faces` form keeps nothing between calls.
 - **The defaults discretize differently.** potpourri3d's solvers default to `use_robust=True`,
   which mollifies the mesh and builds an intrinsic Delaunay Laplacian; ordito defaults to the

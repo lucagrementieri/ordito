@@ -34,6 +34,24 @@ META = Meta(
             "https://github.com/mikedh/trimesh/blob/main/examples/scan_register.py",
         ),
     ),
+    notes="""
+    **Reading the cost.** The third return value says how well the moved scan fits. `icp` and
+    [`procrustes`][ordito.registration.procrustes] report the **mean** squared distance, so its
+    square root is an RMS distance in the scan's units, and a converged fit sits at the noise
+    level of the data. `icp_point_to_plane` reports the **sum** of squared point-to-plane
+    residuals (Open3D's convention): divide by the point count before taking the root.
+
+    **When ICP stops too early.** `icp` stops when the cost improves by less than `threshold`
+    between iterations. On a smooth, curved target point-to-point ICP corrects a rotation
+    slowly, because every closest point slides along the surface, so the default stopping rule
+    can fire with the rotation still visibly wrong. Tighten it (`threshold=1e-9`, more
+    `max_iterations`) and check that the RMS distance comes down to your scanner's noise, or
+    switch to point-to-plane, which does not pay for sliding.
+
+    **When the start is far off.** ICP finds the nearest good alignment only. Pass a better
+    starting pose with `initial=` (a `wp.mat44`), from the capture setup or from a
+    [Procrustes fit](#rr6) over a few hand-picked landmark pairs.
+    """,
 )
 
 

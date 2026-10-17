@@ -27,7 +27,7 @@ topology functions take `n_vertices=` (see [Concepts](concepts.md#host-syncs-are
 quantities are computed once and cached. The sparse operators behind the heat method and the
 parametrizations are kept on the mesh too, and from the second solve on a sparse Cholesky
 factorization of them, so a loop over many source sets on one mesh pays the setup once (see
-[Geodesic distance fields](cookbook/geodesic-distance.md#many-source-sets-on-one-mesh)).
+[Geodesic distance with the heat method](examples/geodesics.md#g1)).
 
 **Small meshes do not need a GPU.** Each call costs tens of microseconds of launch overhead
 whatever the mesh size, so on a mesh of a few hundred triangles the CPU device can be as fast.

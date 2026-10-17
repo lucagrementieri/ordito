@@ -193,29 +193,43 @@ def test_heat_operators_reject_cot_entries_with_use_robust(
         od.heat.heat_operators(vertices_wp, faces_wp, cot_entries=cot_entries_wp, use_robust=True)
 
 
-def test_heat_operators_reuse_a_prebuilt_pattern(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+@pytest.mark.parametrize("t", [None, 0.01], ids=["default_t", "explicit_t"])
+def test_heat_operators_reuse_prebuilt_parts(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], t: float | None
 ) -> None:
     """
-    Ordito against ordito: a prebuilt ``pattern`` gives both heat bundles bit for bit.
+    Ordito against ordito: a prebuilt ``pattern`` or scalar bundle gives the bundles bit for bit.
 
     Not a parity assert: ``test_heat_geodesic_matches_igl`` and
     ``test_transport_tangent_vectors_matches_potpourri3d`` carry the oracles. A `Trimesh` hands its
-    cached pattern to both assemblies, so each must equal the build that sorts its own; a pattern
-    for another operator or vertex count is refused rather than read as garbage.
+    cached pattern to both assemblies, and its solver hands the scalar bundle (lumped mass and
+    timestep sums) to the vector one when the scalar operators were reached first; each must equal
+    the build that forms its own. A pattern for another operator or vertex count is refused rather
+    than read as garbage.
     """
     _mesh_tm, mesh_wp = sphere_irregular
     vertices, faces = mesh_wp.points, mesh_wp.indices
     n_vertices = vertices.shape[0]
     pattern = od.laplacian.mesh_operator_pattern(faces, n_vertices)
 
-    scalar_alone = od.heat.heat_operators(vertices, faces)
-    scalar_reused = od.heat.heat_operators(vertices, faces, pattern=pattern)
-    vector_alone = od.heat.vector_heat_operators(vertices, faces)[0]
-    vector_reused = od.heat.vector_heat_operators(vertices, faces, pattern=pattern)[0]
+    scalar_alone = od.heat.heat_operators(vertices, faces, t)
+    scalar_reused = od.heat.heat_operators(vertices, faces, t, pattern=pattern)
+    vector_alone = od.heat.vector_heat_operators(vertices, faces, t)[0]
+    vector_reused = od.heat.vector_heat_operators(vertices, faces, t, pattern=pattern)[0]
+    vector_from_scalar = od.heat.vector_heat_operators(
+        vertices, faces, t, scalar_operators=scalar_alone
+    )[0]
+    mesh = od.Trimesh(vertices, faces)  # bound: a solver holds its mesh weakly
+    solver = mesh.heat_solver(t)
+    assert solver.operators is not None  # the scalar bundle first, as ``heat_geodesic`` reaches it
     assert scalar_reused[0].offsets is pattern.offsets
     assert vector_reused.offsets is pattern.offsets
-    for alone, reused in ((scalar_alone[0], scalar_reused[0]), (vector_alone, vector_reused)):
+    for alone, reused in (
+        (scalar_alone[0], scalar_reused[0]),
+        (vector_alone, vector_reused),
+        (vector_alone, vector_from_scalar),
+        (vector_alone, solver.vector_operators[0]),
+    ):
         n_entries = int(alone.offsets.numpy()[-1])
         values = alone.values.numpy()[:n_entries]
         assert np.abs(values).max() > 0.0
@@ -1745,38 +1759,6 @@ def test_reused_operators_give_the_same_transport(
                     radius_fresh, radius_reused, rtol=0.0, atol=tolerance * radius_span
                 )
     assert mesh.heat_solver().nbytes > 0
-
-
-@pytest.mark.parametrize("t", [None, 0.01], ids=["default_t", "explicit_t"])
-def test_vector_heat_operators_reuse_a_prebuilt_scalar_bundle(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], t: float | None
-) -> None:
-    """
-    Ordito against ordito: a prebuilt scalar bundle gives the vector system bit for bit.
-
-    Not a parity assert: ``test_transport_tangent_vectors_matches_potpourri3d`` carries the oracle.
-    Handed a bundle [`heat_operators`][ordito.heat.heat_operators] built, the vector assembly takes
-    that build's lumped mass and timestep sums instead of rebuilding them, which a `Trimesh`'s
-    solver whose scalar operators were reached first relies on; the system must be the one it
-    assembles alone.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    vertices, faces = mesh_wp.points, mesh_wp.indices
-    alone = od.heat.vector_heat_operators(vertices, faces, t)[0]
-    scalar = od.heat.heat_operators(vertices, faces, t)
-    reused = od.heat.vector_heat_operators(vertices, faces, t, scalar_operators=scalar)[0]
-    # A mesh's solver whose scalar bundle is reached first, as ``heat_geodesic`` reaches it.
-    mesh = od.Trimesh(vertices, faces)
-    solver = mesh.heat_solver(t)
-    assert solver.operators is not None
-    scalar_first = solver.vector_operators[0]
-
-    n_entries = int(alone.offsets.numpy()[-1])
-    values = alone.values.numpy()[:n_entries]
-    assert np.abs(values).max() > 0.0
-    for other in (reused, scalar_first):
-        assert np.array_equal(other.offsets.numpy(), alone.offsets.numpy())
-        assert np.array_equal(other.values.numpy()[:n_entries], values)
 
 
 def test_trimesh_keeps_one_heat_solver_per_diffusion_time(

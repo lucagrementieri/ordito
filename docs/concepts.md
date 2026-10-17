@@ -105,6 +105,6 @@ number.
 
 ## Where to next
 
-- **[Cookbook](cookbook/index.md)**: these four ideas applied to real tasks.
+- **[Examples](examples/index.md)**: these four ideas applied to real tasks.
 - **[Migrating from another library](migrating-from/index.md)**: how these conventions map onto
   the API you already know.

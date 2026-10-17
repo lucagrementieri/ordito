@@ -480,4 +480,8 @@ own output.
 
     [Known correspondences: Procrustes alignment](reconstruction.md#rr6)
 
+-   [![From a bare scan: normals, then Poisson or ball pivoting](../assets/examples/rr7-thumb.webp)](reconstruction.md#rr7)
+
+    [From a bare scan: normals, then Poisson or ball pivoting](reconstruction.md#rr7)
+
 </div>

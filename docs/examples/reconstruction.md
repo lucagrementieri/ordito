@@ -163,6 +163,23 @@ point-to-plane recovered a rotation of 15.1 degrees
 
 ![Rigid ICP: point-to-point vs point-to-plane](../assets/examples/rr4.webp)
 
+**Reading the cost.** The third return value says how well the moved scan fits. `icp` and
+[`procrustes`][ordito.registration.procrustes] report the **mean** squared distance, so its
+square root is an RMS distance in the scan's units, and a converged fit sits at the noise
+level of the data. `icp_point_to_plane` reports the **sum** of squared point-to-plane
+residuals (Open3D's convention): divide by the point count before taking the root.
+
+**When ICP stops too early.** `icp` stops when the cost improves by less than `threshold`
+between iterations. On a smooth, curved target point-to-point ICP corrects a rotation
+slowly, because every closest point slides along the surface, so the default stopping rule
+can fire with the rotation still visibly wrong. Tighten it (`threshold=1e-9`, more
+`max_iterations`) and check that the RMS distance comes down to your scanner's noise, or
+switch to point-to-plane, which does not pay for sliding.
+
+**When the start is far off.** ICP finds the nearest good alignment only. Pass a better
+starting pose with `initial=` (a `wp.mat44`), from the capture setup or from a
+[Procrustes fit](#rr6) over a few hand-picked landmark pairs.
+
 Modelled on: [Open3D: ICP registration](https://www.open3d.org/docs/release/tutorial/pipelines/icp_registration.html) · [MeshLib: ICP](https://meshlib.io/documentation/ExampleMeshICP.html) · [libigl 808](https://libigl.github.io/tutorial/#iterative-closest-point) · [trimesh: scan registration](https://github.com/mikedh/trimesh/blob/main/examples/scan_register.py)
 {: .ordito-credits }
 
@@ -243,4 +260,68 @@ rms residual 0.00087, jitter 0.00087
 ![Known correspondences: Procrustes alignment](../assets/examples/rr6.webp)
 
 Modelled on: [pytorch3d: corresponding_points_alignment](https://pytorch3d.readthedocs.io/en/latest/modules/ops.html) · [trimesh: procrustes](https://trimesh.org/trimesh.registration.html)
+{: .ordito-credits }
+
+## From a bare scan: normals, then Poisson or ball pivoting {#rr7}
+
+A scanner gives points without normals, so the pipeline starts with
+[`estimate_normals`][ordito.points.estimate_normals]. The two reconstructions then answer
+different questions. [`screened_poisson`][ordito.reconstruction.screened_poisson] is closed
+whatever the sampling looks like, but its vertices are new points.
+[`ball_pivoting`][ordito.reconstruction.ball_pivoting] keeps the input points as vertices,
+and is only as good as the sampling: a random sample clumps in places and leaves gaps the
+ball falls through, while the same number of points spread evenly by
+[`sample_surface_blue_noise`][ordito.sample.sample_surface_blue_noise] leaves far fewer holes
+(rims in red).
+
+```python
+import warp as wp
+
+import ordito as od
+from examples import data
+
+vertices, faces = data.load("bunny", device)
+random_points, _ = od.sample.sample_surface(vertices, faces, 20_000, seed=0)
+even_points, _ = od.sample.sample_surface_blue_noise(vertices, faces, radius=0.00135, seed=0)
+
+def normals_of(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
+    neighbours, _ = od.neighbors.query_nearest(points, points, k=16)
+    return od.points.estimate_normals(points, neighbours)
+
+poisson = od.reconstruction.screened_poisson(random_points, normals_of(random_points), depth=7)
+print(f"screened Poisson: {poisson[1].shape[0] // 3} faces")
+print(f"watertight: {od.validation.is_watertight(*poisson)}")
+
+pivoted = {}
+for name, points in (("random", random_points), ("even", even_points)):
+    pivoted[name] = od.reconstruction.ball_pivoting(points, normals_of(points))
+    holes = od.boundary.boundary_loops(*pivoted[name])
+    print(f"ball pivoting, {name} sample of {points.shape[0]}: {len(holes)} holes")
+```
+
+```text title="Output"
+screened Poisson: 119100 faces
+watertight: True
+ball pivoting, random sample of 20000: 1238 holes
+ball pivoting, even sample of 19918: 26 holes
+```
+
+![From a bare scan: normals, then Poisson or ball pivoting](../assets/examples/rr7.webp)
+
+**Orienting normals on a real scan.** A plane fit fixes each normal's line, not its sign. By
+default every normal points away from the cloud's centroid, which is right for a closed,
+roughly convex object and wrong in deep concavities ([PC3](points.md#pc3) shows where).
+`camera_location=wp.vec3(...)` points every normal toward the scanner, the right choice for a
+single-view scan; `orient_reference=wp.vec3(...)` points them along one direction (`+z` for
+terrain). `k=16` neighbours is a common default: raise it for noisy data, lower it where the
+surface has fine detail.
+
+**Choosing between the two.** Use `screened_poisson` for noisy or unevenly sampled clouds and
+whenever the surface must be closed (a volume, a print, inside/outside tests); each extra
+`depth` level gives about four times the faces at about eight times the cost
+([RR1](#rr1)). Use `ball_pivoting` when output vertices must be input points (to carry
+per-point colours or labels) and the cloud is dense and evenly spaced. If the sampling is
+uneven, thin it out evenly first rather than hoping a larger ball bridges the gaps.
+
+Modelled on: [Open3D: surface reconstruction](https://www.open3d.org/docs/release/tutorial/geometry/surface_reconstruction.html)
 {: .ordito-credits }

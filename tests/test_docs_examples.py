@@ -43,7 +43,7 @@ def _blocks(page: str) -> list[str]:
 def test_every_page_with_examples_is_collected() -> None:
     """Not a library comparison: the parametrization below finds the pages that have examples."""
     assert "README.md" in _PAGES
-    assert "docs/cookbook/align-two-scans.md" in _PAGES
+    assert "docs/getting-started.md" in _PAGES
     assert all(_blocks(page) for page in _PAGES)
 
 
