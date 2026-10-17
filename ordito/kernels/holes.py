@@ -2,7 +2,7 @@
 
 import warp as wp
 
-from ordito.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT
+from ordito.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT, INT64_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import (
     loop_next_slot,
@@ -23,7 +23,15 @@ from ordito.kernels.predicates import (
     triangle_aspect_ratio,
     triangle_double_area,
 )
-from ordito.kernels.reduce import block_argmin, block_barrier, block_min
+from ordito.kernels.reduce import (
+    block_argmin,
+    block_barrier,
+    block_max,
+    block_min,
+    last_ticket,
+    take_ticket,
+    thread_fence,
+)
 from ordito.kernels.triangles import corner_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -1193,21 +1201,6 @@ def global_argmin(
     out_shift[1] = col_min[best_row]
 
 
-@wp.kernel
-def rolled_edge_map(
-    col_min: wp.array[wp.int32],
-    shift: wp.array[wp.int32],
-    n_a: wp.int32,
-    m_b: wp.int32,
-    out_edge: wp.array[wp.int32],
-) -> None:
-    # Per-edge B vertex after rolling both loops so the global-min pair is first
-    # (``argmin(roll(roll(perimeters, -shift_a, 0), -shift_b, 1), axis=1)``). ``shift`` is
-    # ``global_argmin``'s ``(shift_a, shift_b)``, read here rather than passed through the host.
-    i = wp.int32(wp.tid())
-    out_edge[i] = _wrap(col_min[_wrap(i + shift[0], n_a)] - shift[1], m_b)
-
-
 @wp.kernel(enable_backward=False)
 def resolve_corrections(
     a_pos: wp.array[wp.vec3],
@@ -1772,56 +1765,6 @@ def bridge_edge_census(
                 out_census[q, 2] = corner[_wrap(k + 2, 3)] + 1
 
 
-# Lanes per member of ``reduce_closest_cross_label_pair``.
-CLOSEST_PAIR_BLOCK = 64
-
-
-@wp.kernel(enable_backward=False)
-def reduce_closest_cross_label_pair(
-    vertices: wp.array[wp.vec3],
-    members: wp.array2d[wp.int32],
-    labels: wp.array[wp.int32],
-    max_distance_sq: wp.float32,
-    out_best: wp.array[wp.int64],
-    out_partner: wp.array[wp.int32],
-) -> None:
-    # The globally closest pair of ``members`` carrying **different** labels, a member being the
-    # first column of each row of ``members`` (the tail of an oriented boundary edge, read in place
-    # rather than copied out of the strided column first), reduced into one
-    # ``int64`` by ``pack_nearest_key`` -- "smallest distance, lowest index on a tie", so the answer
-    # is deterministic whatever the thread order. Block ``i`` finds member ``i``'s nearest
-    # cross-label partner and records it in ``out_partner[i]``, so the winning *pair* is
-    # recoverable from the key (whose low half is the query index) plus one lookup.
-    #
-    # The scan is exhaustive: every member is tested against every other. That is ``O(B^2)`` for
-    # ``B`` members and it is the deliberate choice, because the members here are *boundary*
-    # vertices of a mesh with more than one component -- a single-component mesh has no cross-label
-    # pair and the caller never launches this -- so ``B`` is split across the components that
-    # exist. Accelerating it means a structure per round and a label predicate inside the query;
-    # nothing has measured a need for that yet.
-    #
-    # One block per query: ``B`` is a few hundred on the benchmarked inputs, so one thread per
-    # query walking every member was a short grid of long dependent chains. The lanes stride the
-    # members by ``wp.block_dim()`` with the serial walk's strict-``<`` ``update_argmin``, so each
-    # keeps the lowest index among its own ties, and ``block_argmin`` keeps the lowest across lanes
-    # -- the serial walk's answer exactly, on the one CPU lane too.
-    i, lane = wp.tid()
-    n = members.shape[0]
-    position = vertices[members[i, 0]]
-    label = labels[i]
-    best_sq = FLOAT32_INF_CONSTANT
-    best = wp.int32(-1)
-    for j in range(lane, n, wp.block_dim()):
-        if labels[j] == label:
-            continue
-        update_argmin(best_sq, best, wp.length_sq(vertices[members[j, 0]] - position), j)
-    best_sq, best = block_argmin(best_sq, best)
-    if lane == 0:
-        out_partner[i] = best
-        if best >= 0 and best_sq <= max_distance_sq:
-            wp.atomic_min(out_best, 0, pack_nearest_key(wp.sqrt(best_sq), i))
-
-
 @wp.kernel
 def rim_rows_and_tail_labels(
     edges: wp.array2d[wp.int32], vertex_labels: wp.array[wp.int32], out_table: wp.array2d[wp.int32]
@@ -1836,28 +1779,294 @@ def rim_rows_and_tail_labels(
     out_table[i, 2] = vertex_labels[tail]
 
 
-@wp.kernel
-def closest_pair_rows(
+# Lanes per rim row of ``join_round``.
+CLOSEST_PAIR_BLOCK = 64
+
+# ``join_round``'s state word, one ``int32`` slot each: which half of ``rows`` holds the current
+# rim table, its row count, whether a round has found no admissible pair, the patch entries written
+# so far, and the rounds' block ticket counter (zero between launches).
+JOIN_PARITY = 0
+JOIN_COUNT = 1
+JOIN_DONE = 2
+JOIN_PATCH = 3
+JOIN_TICKET = 4
+JOIN_STATE_SIZE = 5
+
+# A bridge patch's directed edges (at most two triangles) and the facts derived from each.
+vec6i = wp.types.vector(length=6, dtype=wp.int32)
+vec6l = wp.types.vector(length=6, dtype=wp.int64)
+
+# ``vec6l`` entry of an edge that does not open a rim row: above every real key.
+JOIN_NO_KEY = wp.int64(INT64_MAX)
+
+
+@wp.func
+def rim_edge_key(u: wp.int32, v: wp.int32, radix: wp.int64) -> wp.int64:
+    # The undirected key ``boundary.oriented_boundary_edges`` orders its rows by: ``(min, max)``
+    # with the larger index as the high digit.
+    return wp.int64(wp.max(u, v)) * radix + wp.int64(wp.min(u, v))
+
+
+@wp.func
+def rim_row_key(
+    rows: wp.array3d[wp.int32], half: wp.int32, r: wp.int32, radix: wp.int64
+) -> wp.int64:
+    return rim_edge_key(rows[half, r, 0], rows[half, r, 1], radix)
+
+
+@wp.func
+def rim_row_lower_bound(
+    rows: wp.array3d[wp.int32], half: wp.int32, n: wp.int32, key: wp.int64, radix: wp.int64
+) -> wp.int32:
+    # First row of the key-sorted table half ``half`` (``n`` rows) whose key is not below ``key``.
+    low = wp.int32(0)
+    high = n
+    while low < high:
+        mid = (low + high) // 2
+        if rim_row_key(rows, half, mid, radix) < key:
+            low = mid + 1
+        else:
+            high = mid
+    return low
+
+
+@wp.func
+def distinct_corners(t: wp.vec3i) -> wp.bool:
+    return t[0] != t[1] and t[1] != t[2] and t[0] != t[2]
+
+
+@wp.func
+def bridge_patch(
+    a0: wp.int32, a1: wp.int32, b0: wp.int32, b1: wp.int32
+) -> tuple[wp.vec3i, wp.vec3i, wp.int32]:
+    # The device form of ``holes._bridge_triangles`` (whose comments give the reasoning): the
+    # quadrilateral ``(a1, a0, b1, b0)`` split along the ``a0``-``b0`` diagonal, the one or two
+    # triangles it leaves in the same order, and their count. The two must agree triangle for
+    # triangle: ``bridge_edges`` builds its patch on the host and ``join_round`` here.
+    if a0 == b0:
+        return wp.vec3i(a1, a0, b1), wp.vec3i(), 1
+    if a1 == b1:
+        return wp.vec3i(a1, a0, b0), wp.vec3i(), 1
+    first = wp.vec3i(a1, a0, b0)
+    second = wp.vec3i(a0, b1, b0)
+    if distinct_corners(first):
+        if distinct_corners(second):
+            return first, second, 2
+        return first, wp.vec3i(), 1
+    if distinct_corners(second):
+        return second, wp.vec3i(), 1
+    return first, second, 0
+
+
+@wp.func
+def join_patch_edits(
+    rows: wp.array3d[wp.int32],
+    half: wp.int32,
+    n: wp.int32,
+    radix: wp.int64,
+    us: vec6i,
+    vs: vec6i,
+    n_edges: wp.int32,
+) -> tuple[vec6i, vec6l]:
+    # What a patch's directed edges ``(us[e], vs[e])``, ``e < n_edges``, do to the rim table: the
+    # distinct rows they close (an edge whose key is a row's; ``-1`` elsewhere and for a repeat),
+    # and the keys of the edges that open a row (``JOIN_NO_KEY`` elsewhere). An opening edge is the
+    # last occurrence of a key no row has, occurring an odd number of times, so the patch's own
+    # diagonal (twice) opens nothing -- the parity ``_JoinRim``'s dictionary of added keys kept.
+    closed = vec6i(-1, -1, -1, -1, -1, -1)
+    opened = vec6l(JOIN_NO_KEY, JOIN_NO_KEY, JOIN_NO_KEY, JOIN_NO_KEY, JOIN_NO_KEY, JOIN_NO_KEY)
+    keys = vec6l()
+    found = vec6i()
+    for e in range(6):
+        if e < n_edges:
+            key = rim_edge_key(us[e], vs[e], radix)
+            keys[e] = key
+            slot = rim_row_lower_bound(rows, half, n, key, radix)
+            if slot < n:
+                if rim_row_key(rows, half, slot, radix) == key:
+                    found[e] = 1
+                    repeat = wp.int32(0)
+                    for f in range(6):
+                        if f < e and closed[f] == slot:
+                            repeat = 1
+                    if repeat == 0:
+                        closed[e] = slot
+    for e in range(6):
+        if e < n_edges and found[e] == 0:
+            earlier = wp.int32(0)
+            later = wp.int32(0)
+            for f in range(6):
+                if f < n_edges and found[f] == 0 and keys[f] == keys[e]:
+                    if f < e:
+                        earlier += 1
+                    if f > e:
+                        later += 1
+            if later == 0 and earlier % 2 == 0:
+                opened[e] = keys[e]
+    return closed, opened
+
+
+@wp.func
+def slots_below(slots: vec6i, r: wp.int32) -> wp.int32:
+    # How many of the (distinct, ``-1``-padded) ``slots`` are below ``r``.
+    count = wp.int32(0)
+    for e in range(6):
+        if slots[e] >= 0 and slots[e] < r:
+            count += 1
+    return count
+
+
+@wp.func
+def keys_below(keys: vec6l, key: wp.int64) -> wp.int32:
+    # How many of ``keys`` are below ``key``; ``JOIN_NO_KEY`` padding never is.
+    count = wp.int32(0)
+    for e in range(6):
+        if keys[e] < key:
+            count += 1
+    return count
+
+
+@wp.func
+def holds_value(values: vec6i, value: wp.int32) -> wp.bool:
+    found = False
+    for e in range(6):
+        if values[e] == value:
+            found = True
+    return found
+
+
+@wp.kernel(enable_backward=False)
+def join_round(
+    vertices: wp.array[wp.vec3],
+    rows: wp.array3d[wp.int32],
+    component: wp.array[wp.int32],
+    vertex_label: wp.array[wp.int32],
+    max_distance_sq: wp.float32,
+    radix: wp.int64,
+    seed: wp.int64,
+    state: wp.array[wp.int32],
     best: wp.array[wp.int64],
     partner: wp.array[wp.int32],
-    edges: wp.array2d[wp.int32],
-    seed: wp.int64,
-    out_rows: wp.array[wp.int32],
+    out_patch: wp.array[wp.int32],
 ) -> None:
-    # Decode ``reduce_closest_cross_label_pair``'s answer into the five integers the host needs:
-    # whether any pair was found, then the two edge rows it names -- the winning slot (the key's
-    # low half) and that thread's partner. One small buffer, so the host reads the whole answer in
-    # one transfer instead of the key, then the partner, then the rows. ``best`` is re-armed to
-    # ``seed`` once read, so a caller reusing it for the next round needs no fill.
+    # One round of ``join_closest_components``: pick the closest cross-component pair of rim rows
+    # and bridge it, the whole round in one launch with nothing read back.
+    #
+    # The rim table lives on the device as ``rows[half, r] = (tail, head, component)``, sorted by
+    # ``rim_edge_key`` -- the order ``boundary.oriented_boundary_edges`` emits, whose row index is
+    # the pairing's tie-break -- with ``state[JOIN_PARITY]`` naming the current half and
+    # ``state[JOIN_COUNT]`` its rows. ``component`` maps each original rim label to its current
+    # component and ``vertex_label`` each rim vertex to its original label (``-1`` off the rim, read
+    # as the last label, the host's negative index). A component is a name only equality reads.
+    #
+    # The pairing: the globally closest pair of row tails carrying **different** components,
+    # reduced into one ``int64`` by ``pack_nearest_key`` -- "smallest distance, lowest row on a
+    # tie", so the answer is deterministic whatever the thread order. Block ``i`` finds row ``i``'s
+    # nearest cross-component partner (``partner[i]``), so the winning pair is the key's low half
+    # plus one lookup. Lanes stride the rows by ``wp.block_dim()`` with the serial walk's
+    # strict-``<`` ``update_argmin`` and ``block_argmin`` keeps the lowest across lanes: the serial
+    # walk's answer exactly, on the one CPU lane too. The scan is exhaustive, ``O(B^2)`` for ``B``
+    # rim rows: they are split across the components that exist, and an accelerated query would
+    # need a structure per round and a label predicate inside it, which nothing has measured a
+    # need for. One block per row because one thread per row walking every row was a short grid of
+    # long dependent chains.
+    #
+    # The bridge, by the block drawing the last ticket (the ``reduce.store_block_*`` pattern): the
+    # patch (``bridge_patch``) is appended to ``out_patch``; its edges that are rows close and the
+    # others open, wound as the patch winds them (``join_patch_edits``); every component a patch
+    # corner lies in merges into the smallest. The edited table is written, still key-sorted, into
+    # the other half: a kept row moves down past the closed rows below it and up past the opened
+    # keys below its own. A round with no admissible pair sets ``JOIN_DONE``, and every later
+    # launch returns at once.
+    i, lane = wp.tid()
+    if state[JOIN_DONE] != 0:
+        return
+    half = state[JOIN_PARITY]
+    n = state[JOIN_COUNT]
+    if i < n:
+        label = rows[half, i, 2]
+        position = vertices[rows[half, i, 0]]
+        best_sq = FLOAT32_INF_CONSTANT
+        best_row = wp.int32(-1)
+        for j in range(lane, n, wp.block_dim()):
+            if rows[half, j, 2] == label:
+                continue
+            update_argmin(best_sq, best_row, wp.length_sq(vertices[rows[half, j, 0]] - position), j)
+        best_sq, best_row = block_argmin(best_sq, best_row)
+        if lane == 0:
+            partner[i] = best_row
+            if best_row >= 0 and best_sq <= max_distance_sq:
+                wp.atomic_min(best, 0, pack_nearest_key(wp.sqrt(best_sq), i))
+    last = wp.int32(0)
+    if lane == 0:
+        last = last_ticket(take_ticket(state, JOIN_TICKET, wp.int32(0)), rows.shape[1])
+    if block_max(last) == 0:
+        return
+    thread_fence()
+
     key = best[0]
-    best[0] = seed
     if key == seed:
-        out_rows[0] = 0
+        if lane == 0:
+            state[JOIN_DONE] = 1
+            state[JOIN_TICKET] = 0
         return
     slot_a = wp.int32(wp.uint32(wp.uint64(key) & wp.uint64(4294967295)))
     slot_b = partner[slot_a]
-    out_rows[0] = 1
-    out_rows[1] = edges[slot_a, 0]
-    out_rows[2] = edges[slot_a, 1]
-    out_rows[3] = edges[slot_b, 0]
-    out_rows[4] = edges[slot_b, 1]
+    first, second, n_triangles = bridge_patch(
+        rows[half, slot_a, 0], rows[half, slot_a, 1], rows[half, slot_b, 0], rows[half, slot_b, 1]
+    )
+    us = vec6i()
+    vs = vec6i()
+    for k in range(3):
+        us[k] = first[k]
+        vs[k] = first[_wrap(k + 1, 3)]
+        us[k + 3] = second[k]
+        vs[k + 3] = second[_wrap(k + 1, 3)]
+    n_edges = 3 * n_triangles
+    closed, opened = join_patch_edits(rows, half, n, radix, us, vs, n_edges)
+
+    n_labels = component.shape[0]
+    merged = vec6i(-1, -1, -1, -1, -1, -1)
+    merged_min = INT32_MAX_CONSTANT
+    for e in range(6):
+        if e < n_edges:
+            label_e = vertex_label[us[e]]
+            c = component[wp.where(label_e < 0, n_labels - 1, label_e)]
+            merged[e] = c
+            merged_min = wp.min(merged_min, c)
+    # Every lane has read the components it merges before any is rewritten.
+    block_barrier()
+
+    other = 1 - half
+    for r in range(lane, n, wp.block_dim()):
+        if holds_value(closed, r):
+            continue
+        target = r - slots_below(closed, r) + keys_below(opened, rim_row_key(rows, half, r, radix))
+        c = rows[half, r, 2]
+        rows[other, target, 0] = rows[half, r, 0]
+        rows[other, target, 1] = rows[half, r, 1]
+        rows[other, target, 2] = wp.where(holds_value(merged, c), merged_min, c)
+    for k in range(lane, n_labels, wp.block_dim()):
+        if holds_value(merged, component[k]):
+            component[k] = merged_min
+    if lane == 0:
+        n_opened = wp.int32(0)
+        for e in range(6):
+            if opened[e] != JOIN_NO_KEY:
+                below = rim_row_lower_bound(rows, half, n, opened[e], radix)
+                target = below - slots_below(closed, below) + keys_below(opened, opened[e])
+                rows[other, target, 0] = us[e]
+                rows[other, target, 1] = vs[e]
+                rows[other, target, 2] = merged_min
+                n_opened += 1
+        base = state[JOIN_PATCH]
+        for k in range(3):
+            if n_triangles > 0:
+                out_patch[base + k] = first[k]
+            if n_triangles > 1:
+                out_patch[base + 3 + k] = second[k]
+        state[JOIN_PATCH] = base + 3 * n_triangles
+        state[JOIN_COUNT] = n - slots_below(closed, n) + n_opened
+        state[JOIN_PARITY] = other
+        state[JOIN_TICKET] = 0
+        best[0] = seed
