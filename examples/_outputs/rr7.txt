@@ -1,0 +1,4 @@
+screened Poisson: 119100 faces
+watertight: True
+ball pivoting, random sample of 20000: 1238 holes
+ball pivoting, even sample of 19918: 26 holes

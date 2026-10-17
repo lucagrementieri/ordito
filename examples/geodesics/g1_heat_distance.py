@@ -22,6 +22,20 @@ META = Meta(
         ("potpourri3d", "https://github.com/nmwsharp/potpourri3d#mesh-distance"),
         ("PyMeshLab", "https://pymeshlab.readthedocs.io/en/latest/filter_list.html"),
     ),
+    notes="""
+    **Accuracy.** The heat method is an approximation whose error depends on the mesh
+    resolution and on the diffusion time `t`; the default is the squared mean edge length, the
+    value its authors recommend, and the one libigl and potpourri3d use. On the unit icosphere
+    with 2 562 vertices, where the exact distance is the angle `arccos(p · q)`, the mean error is
+    about 0.01 and the worst about 0.03. In exchange it costs two sparse solves rather than a
+    shortest-path search per source.
+
+    **Many source sets on one mesh.** The operators and their factorizations depend on the mesh
+    alone, so a loop over source sets (one per frame, one per candidate) should pass the same
+    `Trimesh`: every call after the second costs a few triangular solves. The factorizations hold
+    device memory while the mesh lives;
+    [`release_factorizations`][ordito.mesh.Trimesh.release_factorizations] returns it.
+    """,
 )
 
 

@@ -23,7 +23,7 @@ import ordito as od  # after
 | `igl.per_face_normals(V, F, Z)` | [`triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas] (normals and areas together) |
 | `igl.doublearea(V, F) / 2` | [`triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas]'s area output |
 | `igl.heat_geodesics_precompute` + `igl.heat_geodesics_solve` | `mesh = od.Trimesh(vertices, faces)` + [`heat.heat_geodesic(mesh, sources)`][ordito.heat.heat_geodesic] (the mesh keeps the precompute) |
-| `igl.exact_geodesic` | No exact solver. [`heat.heat_geodesic`][ordito.heat.heat_geodesic] approximates the same distance (within about 1% on a sphere at 2 562 vertices; see the [cookbook](../cookbook/geodesic-distance.md)). |
+| `igl.exact_geodesic` | No exact solver. [`heat.heat_geodesic`][ordito.heat.heat_geodesic] approximates the same distance (within about 1% on a sphere at 2 562 vertices; see the [example](../examples/geodesics.md#g1)). |
 | `igl.harmonic(V, F, b, bc, k)` | [`parametrization.harmonic`][ordito.parametrization.harmonic] |
 | `igl.lscm(V, F, b, bc)` | [`parametrization.lscm`][ordito.parametrization.lscm] |
 | `igl.arap_precomputation` + `igl.arap_solve` | [`parametrization.arap`][ordito.parametrization.arap] |

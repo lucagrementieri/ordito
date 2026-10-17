@@ -38,9 +38,9 @@ and falls back to CPU otherwise, with the same code.
 
 - **[Getting started](https://lucagrementieri.github.io/ordito/getting-started/)** — install, the
   mental model, and a first repair-then-remesh pipeline.
-- **[Cookbook](https://lucagrementieri.github.io/ordito/cookbook/)** — task-oriented recipes:
-  cleaning a scan, point clouds to watertight surfaces, geodesic distance fields, aligning two
-  scans.
+- **[Examples](https://lucagrementieri.github.io/ordito/examples/)** — a gallery of runnable
+  examples with the images they produce: cleaning a scan, point clouds to watertight surfaces,
+  geodesic distance fields, aligning two scans, and many more.
 - **[Migrating from another library](https://lucagrementieri.github.io/ordito/migrating-from/)**
   — already know trimesh, libigl, Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here for a
   function-by-function map.
@@ -139,7 +139,7 @@ Interop with NumPy is a `wp.array(...)` / `.numpy()` pair away, and
 `od.mesh.Trimesh.from_warp_mesh` / `mesh.warp_mesh` bridge to Warp's own `wp.Mesh` BVH for ray
 and proximity queries. For a pipeline that starts from a realistically messy input — a hole to
 close, stray debris to drop — see the
-[Cookbook](https://lucagrementieri.github.io/ordito/cookbook/).
+[one-call watertight solid example](https://lucagrementieri.github.io/ordito/examples/repair/#h10).
 
 ## What's inside
 

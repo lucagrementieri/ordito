@@ -94,8 +94,6 @@ repair-then-remesh pipeline on a realistically broken mesh), or jump straight to
 
 - **[Concepts](concepts.md)** — the design principles worth knowing before writing anything
   nontrivial.
-- **[Cookbook](cookbook/index.md)** — task-oriented recipes: cleaning a scan, point clouds to
-  watertight surfaces, geodesic distance fields, aligning two scans.
 - **[Examples](examples/index.md)** — a gallery of runnable examples, each with the image it
   produces: creation, inspection, curvature, geodesics, parametrization, smoothing, remeshing,
   repair, voxels, queries, cutting, point clouds, reconstruction and registration.

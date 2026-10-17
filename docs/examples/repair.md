@@ -428,5 +428,29 @@ volume: 0.000651 -> 0.000752
 
 ![One-call watertight solid](../assets/examples/h10.webp)
 
+**What `make_solid` runs, in order.** Each stage is a public function you can call alone
+when only one applies. (1) It validates the faces and raises `ValueError` on an index past
+the vertex count. (2) It repairs connectivity:
+[`remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices],
+[`make_winding_consistent`][ordito.repair.make_winding_consistent],
+[`split_non_manifold_vertices`][ordito.repair.split_non_manifold_vertices]. (3) It chooses
+what to keep: `keep_largest=True` (the default) runs
+[`remove_small_components`][ordito.repair.remove_small_components], which drops the debris
+here, and `join_components=True` runs
+[`join_closest_components`][ordito.holes.join_closest_components] instead
+([H4](#h4)). (4) It fills every hole with
+[`fill_min_weight`][ordito.holes.fill_min_weight]. (5) It cleans up until nothing changes
+(at most `max_iter` rounds):
+[`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces],
+[`collapse_small_triangles`][ordito.repair.collapse_small_triangles],
+[`fix_self_intersections`][ordito.repair.fix_self_intersections], with the small-component
+filter again, since cutting out an intersection can split off a fragment. (6) It fills once
+more, last, so that no cleanup pass can reopen a hole a sliver closed.
+
+`make_solid` has no success flag: check the result with
+[`is_watertight`][ordito.validation.is_watertight], as the table does. A repaired scan is
+usually remeshed next, to even out the fill triangles: see
+[isotropic remeshing](remesh.md#r4).
+
 Modelled on: [pymeshfix](https://pymeshfix.pyvista.org/examples/index.html) · [MeshLib examples](https://meshlib.io/documentation/Examples.html)
 {: .ordito-credits }

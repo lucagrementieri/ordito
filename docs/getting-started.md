@@ -189,8 +189,9 @@ print(all(0.0 <= value <= 1.0 for value in (*lower, *upper)))  # True
 - **[Concepts](concepts.md)** — the four ideas worth understanding before writing anything
   nontrivial: arrays in/arrays out, the device follows the data, host syncs are budgeted, and
   everything is measured rather than assumed.
-- **[Cookbook](cookbook/index.md)** — task-oriented recipes: cleaning a scan, point clouds to
-  watertight surfaces, geodesic distance fields, aligning two scans.
+- **[Examples](examples/index.md)** — a gallery of runnable examples with the images they
+  produce: cleaning a scan, point clouds to watertight surfaces, geodesic distance fields,
+  aligning two scans, and many more.
 - **[Migrating from another library](migrating-from/index.md)** — already know trimesh, libigl,
   Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here for a function-by-function map.
 - **[API Reference](reference.md)** — a task index and a map of every module; each module page
