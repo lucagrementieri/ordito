@@ -204,6 +204,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "face's fate in the submesh extraction's own marking pass; submesh_from_face_mask would "
         "need the keep mask built by a pass of its own first"
     ),
+    ("bounds", "selection._compact_marked_submesh"): (
+        "crop_mesh decides each face's fate from the box in the marking pass, as repair's passes "
+        "do from their own rules; submesh_from_vertex_mask would need the box mask built and "
+        "stored by a launch of its own first"
+    ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "
         "rebuilds connectivity as well, which reconstruction must not do to a fresh triangulation"

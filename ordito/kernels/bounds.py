@@ -6,6 +6,8 @@ from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.array import RegisterBlockedTable, atomic_min_packed_box, scanned_count
 from ordito.kernels.predicates import TWO_PI_F64, is_in_aabb, is_in_obb
 from ordito.kernels.reduce import block_argmin
+from ordito.kernels.selection import mark_submesh_face
+from ordito.kernels.triangles import corner_triple
 
 wp.set_module_options({"enable_backward": False})
 
@@ -447,6 +449,20 @@ def packed_box_diagonal(corners: wp.array[wp.float32], box: wp.int32) -> wp.floa
     return wp.length(extent)
 
 
+@wp.func
+def point_in_box(
+    point: wp.vec3, rotation: wp.mat33, min_bound: wp.vec3, max_bound: wp.vec3, oriented: wp.int32
+) -> wp.bool:
+    # "Inside the box" for the box kernels below. ``oriented`` is a warp-uniform selector, not a
+    # rotation by the identity: ``0 * inf`` is ``nan``, so the identity product would move a point
+    # at an infinity into the box's ``nan`` convention. The two arms are the predicates
+    # ``points_in_aabb_mask`` / ``points_in_obb_mask`` map, so the index, crop and mask forms
+    # cannot disagree.
+    if oriented != 0:
+        return is_in_obb(point, rotation, min_bound, max_bound)
+    return is_in_aabb(point, min_bound, max_bound)
+
+
 @wp.kernel
 def box_flags(
     points: wp.array[wp.vec3],
@@ -458,18 +474,53 @@ def box_flags(
 ) -> None:
     # ``1`` / ``0`` per point for "inside the box", written as the ``int32`` an in-place
     # ``wp.utils.array_scan`` reads -- the index and crop forms of ``bounds.points_in_*`` scan this
-    # directly instead of mapping a ``wp.bool`` mask and widening it. ``oriented`` is a
-    # warp-uniform selector, not a rotation by the identity: ``0 * inf`` is ``nan``, so the
-    # identity product would move a point at an infinity into the box's ``nan`` convention. The two
-    # arms are the predicates ``points_in_aabb_mask`` / ``points_in_obb_mask`` map, so the index
-    # and mask forms cannot disagree.
+    # directly instead of mapping a ``wp.bool`` mask and widening it.
     i = wp.int32(wp.tid())
-    inside = wp.bool(False)
-    if oriented != 0:
-        inside = is_in_obb(points[i], rotation, min_bound, max_bound)
-    else:
-        inside = is_in_aabb(points[i], min_bound, max_bound)
+    inside = point_in_box(points[i], rotation, min_bound, max_bound, oriented)
     out_flags[i] = wp.where(inside, 1, 0)
+
+
+@wp.func
+def corner_in_box(
+    vertices: wp.array[wp.vec3],
+    v: wp.int32,
+    rotation: wp.mat33,
+    min_bound: wp.vec3,
+    max_bound: wp.vec3,
+    oriented: wp.int32,
+) -> wp.bool:
+    # ``point_in_box`` at vertex ``v``, ``False`` for an index outside ``vertices`` -- the answer
+    # ``selection.masked_at`` gives a vertex mask, so a malformed face buffer reads no further.
+    if v < 0 or v >= vertices.shape[0]:
+        return False
+    return point_in_box(vertices[v], rotation, min_bound, max_bound, oriented)
+
+
+@wp.kernel
+def mark_submesh_in_box(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    rotation: wp.mat33,
+    min_bound: wp.vec3,
+    max_bound: wp.vec3,
+    oriented: wp.int32,
+    out_face_mask: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``crop_mesh``'s marking pass: ``kernels/selection.mark_submesh_by_vertex_mask`` with
+    # ``require_all`` and the box test in place of the vertex mask, so no mask is written. A
+    # corner shared by several faces is tested once per face, which costs less than the mask's
+    # launch and buffer.
+    f = wp.int32(wp.tid())
+    a, b, c = corner_triple(faces, f)
+    selected = (
+        corner_in_box(vertices, a, rotation, min_bound, max_bound, oriented)
+        and corner_in_box(vertices, b, rotation, min_bound, max_bound, oriented)
+        and corner_in_box(vertices, c, rotation, min_bound, max_bound, oriented)
+    )
+    out_face_mask[f] = selected
+    if selected:
+        mark_submesh_face(faces, out_face_mask.shape[0], f, out_flags)
 
 
 @wp.kernel

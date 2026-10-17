@@ -32,6 +32,7 @@ from ordito.kernels import array as kernel_array
 from ordito.kernels import bounds as kernel_bounds
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
+from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPrivateUsage]
 
 # Points reduced per thread by the per-candidate extent reduction in
 # [`oriented_bounding_box`][ordito.bounds.oriented_bounding_box]. Long, and one value for both
@@ -579,7 +580,8 @@ def crop_mesh(
     --------
     [`crop_points`][ordito.bounds.crop_points]
     [`ordito.selection.submesh_from_vertex_mask`][ordito.selection.submesh_from_vertex_mask]
-        The face selection this delegates to, where ``face_mode`` is exposed.
+        The same selection over a box mask (``face_mode="all"``), where ``face_mode`` is
+        exposed.
 
     Examples
     --------
@@ -613,17 +615,35 @@ def crop_mesh(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    vertex_mask = _box_mask(vertices, min_bound, max_bound, rotation)
-    return od.selection.submesh_from_vertex_mask(vertices, faces, vertex_mask, face_mode="all")
-
-
-def _box_mask(
-    points: wp.array[wp.vec3], min_bound: wp.vec3, max_bound: wp.vec3, rotation: wp.mat33 | None
-) -> wp.array[wp.bool]:
-    """Dispatch ``crop_mesh`` onto the axis-aligned or the oriented mask."""
-    if rotation is None:
-        return points_in_aabb_mask(points, min_bound, max_bound)
-    return points_in_obb_mask(points, rotation, min_bound, max_bound)
+    device = vertices.device
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
+            0, dtype=wp.int32, device=device
+        )
+    # ``submesh_from_vertex_mask(..., face_mode="all")`` over the box mask, with each corner's box
+    # test taken in the marking pass itself, so the mask is neither launched nor stored.
+    face_mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_bounds.mark_submesh_in_box,
+        dim=n_faces,
+        inputs=[
+            vertices,
+            faces,
+            _UNUSED_ROTATION if rotation is None else rotation,
+            min_bound,
+            max_bound,
+            0 if rotation is None else 1,
+            face_mask,
+            ranks,
+        ],
+        device=device,
+    )
+    sub_vertices, sub_faces, _, _ = _compact_marked_submesh(
+        vertices, faces, face_mask, ranks, keep_masked=True, with_index=False
+    )
+    return sub_vertices, sub_faces
 
 
 def _box_indices(
