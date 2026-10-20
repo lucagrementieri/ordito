@@ -12,7 +12,7 @@ from ordito.kernels.algorithms.connected_components import (
 )
 from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, mate_twin_defect
 from ordito.kernels.predicates import vector_angle
-from ordito.kernels.triangles import face_vertices, triangle_radius_ratio
+from ordito.kernels.triangles import face_normals_and_area, face_vertices, triangle_radius_ratio
 
 wp.set_module_options({"enable_backward": False})
 
@@ -665,9 +665,31 @@ def mate_pair_key(mates: wp.array[wp.int32], h: wp.int32) -> wp.int32:
 
 
 @wp.func
+def stored_or_face_normal(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    f: wp.int32,
+) -> wp.vec3:
+    # Face ``f``'s unit normal: the caller's table entry when ``face_normals`` is given, else formed
+    # from the corners by ``triangles.face_normals_and_area``, the value
+    # ``triangles.face_normals_and_areas`` would have stored, so the bad-face criteria need no
+    # normal table written by a launch of its own. ``face_normals`` is a null descriptor (shape 0)
+    # when the caller passed none, so the branch is warp-uniform.
+    if face_normals.shape[0] > 0:
+        return face_normals[f]
+    normal, _area = face_normals_and_area(vertices, faces, f)
+    return normal
+
+
+@wp.func
 def neighbor_normals(
-    face_normals: wp.array[wp.vec3], mates: wp.array[wp.int32], f: wp.int32
-) -> tuple[wp.vec3, wp.float32]:
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    mates: wp.array[wp.int32],
+    f: wp.int32,
+) -> tuple[wp.vec3, wp.vec3, wp.float32]:
     # Both per-face quantities the bad-face criteria need, gathered through the face's three
     # halfedge mates: the sum of the neighbouring face normals (whose direction is the local
     # consensus) and the sharpest dihedral angle to any neighbour (which is what a fold looks like).
@@ -676,8 +698,9 @@ def neighbor_normals(
     #
     # The sum is formed in ascending pair-key order (each pair keyed by its lower halfedge), the
     # order a serial scatter over the pairs adds them in, so the result does not depend on which
-    # corner of the face a neighbour sits at.
-    normal = face_normals[f]
+    # corner of the face a neighbour sits at. Returns the face's own normal first, which every
+    # criterion compares against. Normals come from ``stored_or_face_normal``.
+    normal = stored_or_face_normal(vertices, faces, face_normals, f)
     keys = wp.vec3i(
         mate_pair_key(mates, 3 * f),
         mate_pair_key(mates, 3 * f + 1),
@@ -699,11 +722,11 @@ def neighbor_normals(
     for k in range(3):
         if keys[k] != INT32_MAX_CONSTANT:
             g = mates[3 * f + slots[k]] // 3
-            other = face_normals[g]
+            other = stored_or_face_normal(vertices, faces, face_normals, g)
             total = total + other
             angle = wp.where(f < g, vector_angle(normal, other), vector_angle(other, normal))
             max_angle = wp.max(max_angle, angle)
-    return total, max_angle
+    return normal, total, max_angle
 
 
 @wp.func
@@ -727,7 +750,8 @@ def face_defective(
     # registers, and the neighbourhood is gathered through the face's halfedge mates
     # (``neighbor_normals``) rather than scattered into per-face tables. ``face_normals`` and
     # ``mates`` are never read when both angle criteria are off, so a caller passes ``None`` for
-    # them then (the branch is warp-uniform).
+    # them then (the branch is warp-uniform); with a criterion on, ``face_normals`` may still be
+    # ``None``, and each normal is then formed from the corners where it is read.
     if min_quality > -1.0:
         v0, v1, v2 = face_vertices(vertices, faces, f)
         if triangle_radius_ratio(v0, v1, v2) < min_quality:
@@ -735,12 +759,12 @@ def face_defective(
     if max_normal_cos <= -2.0 and max_fold_cos <= -2.0:
         return False
 
-    neighbor_sum, max_angle = neighbor_normals(face_normals, mates, f)
+    normal, neighbor_sum, max_angle = neighbor_normals(vertices, faces, face_normals, mates, f)
     # Direction of the sum of the neighbouring normals: the local consensus. ``wp.normalize`` of a
     # zero vector is zero in Warp, which is how an isolated face -- and a face whose neighbours
     # cancel each other exactly -- ends up with no consensus to disagree with.
     consensus = wp.normalize(neighbor_sum)
-    agreement = wp.dot(face_normals[f], consensus)
+    agreement = wp.dot(normal, consensus)
     if wp.length_sq(consensus) > 0.0 and agreement < max_normal_cos:
         return True
 

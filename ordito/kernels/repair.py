@@ -333,7 +333,8 @@ def mark_unfolded_faces(
     out_flags: wp.array[wp.int32],
 ) -> None:
     # ``validation.face_defective_mask`` at its fold criterion alone and the submesh compaction's
-    # marking in one pass, for ``remove_folded_faces``: a face is kept unless it folds.
+    # marking in one pass, for ``remove_folded_faces``: a face is kept unless it folds. The wrapper
+    # passes ``face_normals`` as ``None``, so each normal is formed where the fold test reads it.
     f = wp.int32(wp.tid())
     folded = face_defective(
         vertices, faces, face_normals, mates, f, wp.float32(-1.0), wp.float32(-2.0), max_fold_cos

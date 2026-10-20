@@ -2559,7 +2559,6 @@ def remove_folded_faces(
     n_faces = faces.size // 3
     if n_faces == 0:
         return _launch.clone(vertices), _launch.clone(faces)
-    face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
     mates = od.halfedge.halfedge_mates(faces, vertices.size)
     # The fold decision and the submesh extraction's marking pass in one launch; the keep mask it
     # writes is what the compaction reads.
@@ -2571,7 +2570,7 @@ def remove_folded_faces(
         inputs=[
             vertices,
             faces,
-            face_normals,
+            None,
             mates,
             wp.float32(math.cos(math.radians(angle))),
             keep,

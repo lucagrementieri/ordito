@@ -1657,9 +1657,8 @@ def face_defective_mask(
         ``(0, 180]``. ``None`` disables it.
     face_normals
         ``(n_faces,)`` unit face normals from
-        [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]; recomputed when
-        ``None``. Only the two angle criteria read them, so this is the one geometry pass a caller
-        already holding normals can skip.
+        [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]; formed from the
+        corners where they are read when ``None``. Only the two angle criteria read them.
     mates
         ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
@@ -1746,14 +1745,13 @@ def face_defective_mask(
         return out_bad
 
     # Both angle criteria read the face normals and the halfedge mates; with both off the kernel
-    # reads neither, see its comment.
-    mates = None
+    # reads neither, see its comment. Normals not given are formed in the kernel, from the
+    # corners, where each is read: no normal table and no launch to write one.
     if max_normal_angle is not None or max_fold_angle is not None:
-        if face_normals is None:
-            face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
         mates = mates if mates is not None else od.halfedge.halfedge_mates(faces, vertices.size)
     else:
         face_normals = None
+        mates = None
 
     # -2 is unreachable for a cosine and -1 for the normalized quality, so a disabled criterion
     # simply never fires and the kernel needs no per-criterion flag.
