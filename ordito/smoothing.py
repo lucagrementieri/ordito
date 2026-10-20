@@ -3809,20 +3809,40 @@ def filter_sharpen(
     # and sharpened there in place.
     operator = _resolved_operator(vertices, faces, laplacian_operator)
     coeff = wp.float64(1.0)
-    _vec3_passes(
-        vertices,
-        iterations,
-        lambda _index, src, dst: _diffuse_pass(operator, coeff, src, dst),
-        out=out,
-    )
-    _launch.map(
-        kernel_smoothing.unsharp_step,
-        vertices,
-        out,
-        wp.float32(weight),
-        wp.float32(weight_original),
-        out=out,
-    )
+    if iterations <= 0:
+        _launch.map(
+            kernel_smoothing.unsharp_step,
+            vertices,
+            vertices,
+            wp.float32(weight),
+            wp.float32(weight_original),
+            out=out,
+        )
+        return out
+
+    def sharpen_pass(index: int, src: _Positions, dst: _Positions) -> None:
+        # The last pass applies the unsharp mask as it writes, so the smoothed field is not stored.
+        if index < iterations - 1:
+            _diffuse_pass(operator, coeff, src, dst)
+            return
+        _launch.launch(
+            kernel_smoothing.SHARPEN_PASS[src.dtype],
+            dim=n,
+            inputs=[
+                operator.offsets,
+                operator.columns,
+                operator.values,
+                src,
+                coeff,
+                vertices,
+                wp.float32(weight),
+                wp.float32(weight_original),
+            ],
+            outputs=[dst],
+            device=device,
+        )
+
+    _vec3_passes(vertices, iterations, sharpen_pass, out=out)
     return out
 
 
