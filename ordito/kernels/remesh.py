@@ -110,20 +110,6 @@ def edge_midpoint(
     return wp.lerp(v0, v1, wp.float32(0.5))
 
 
-@wp.kernel
-def vertices_with_midpoints(
-    vertices: wp.array[wp.vec3], unique_edges: wp.array2d[wp.int32], out_vertices: wp.array[wp.vec3]
-) -> None:
-    # The originals followed by one midpoint per unique edge, over ``n_vertices + n_edges`` threads:
-    # the prefix copy and the midpoint tail in one launch.
-    t = wp.int32(wp.tid())
-    n_vertices = vertices.shape[0]
-    if t < n_vertices:
-        out_vertices[t] = vertices[t]
-    else:
-        out_vertices[t] = edge_midpoint(vertices, unique_edges, t - n_vertices)
-
-
 @wp.func
 def split_face_four(fv: wp.vec3i, mv: wp.vec3i) -> tuple[wp.vec3i, wp.vec3i, wp.vec3i, wp.vec3i]:
     # 1 -> 4 loop-subdivision template: three corner triangles, then the central triangle.
@@ -146,7 +132,7 @@ def write_four_children(
     # ``k``'s edge is ``corner_edge[3f + k]`` and every edge is split, so its new vertex is
     # ``vertex_offset`` plus the edge id -- the shift is applied here rather than materialised as a
     # ``3 * n_faces`` index buffer by a separate pass that the split would read straight back.
-    # Shared by ``subdivide_faces`` (``subdivide``) and ``loop_edge_opposites``
+    # Shared by ``subdivide_mesh`` (``subdivide``) and ``loop_edge_opposites``
     # (``subdivide_loop``), which writes the faces in its own pass over them.
     fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
     mv = wp.vec3i(
@@ -171,15 +157,26 @@ def write_four_children(
 
 
 @wp.kernel
-def subdivide_faces(
+def subdivide_mesh(
+    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
     corner_edge: wp.array[wp.int32],
-    vertex_offset: wp.int32,
+    out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # The uniform split's face table alone; ``loop_edge_opposites`` writes the same table in its
-    # pass over the faces.
-    write_four_children(faces, corner_edge, vertex_offset, wp.int32(wp.tid()), out_faces)
+    # The uniform 1 -> 4 split whole, over ``max(n_vertices + n_edges, n_faces)`` threads: the
+    # originals followed by one midpoint per unique edge, and each face's four children
+    # (``write_four_children``; ``loop_edge_opposites`` writes the same table in its pass over the
+    # faces).
+    t = wp.int32(wp.tid())
+    n_vertices = vertices.shape[0]
+    if t < n_vertices:
+        out_vertices[t] = vertices[t]
+    elif t < out_vertices.shape[0]:
+        out_vertices[t] = edge_midpoint(vertices, unique_edges, t - n_vertices)
+    if t < faces.shape[0] // 3:
+        write_four_children(faces, corner_edge, n_vertices, t, out_faces)
 
 
 @wp.kernel

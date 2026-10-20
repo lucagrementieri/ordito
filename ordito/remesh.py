@@ -3164,39 +3164,19 @@ def subdivide(
     n_unique = int(unique_edges.shape[0])
 
     # One buffer sized for its final use: the originals copied into the prefix and one midpoint per
-    # unique edge written straight into the tail, which is the layout ``_split_faces_four`` indexes.
+    # unique edge written straight into the tail -- new vertex ``n_vertices + e`` belongs to unique
+    # edge ``e``, so shifting the corner -> edge map by ``n_vertices`` is the whole index
+    # translation the face table needs. Both are written by one launch.
     new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
+    new_faces = _launch.empty(n_faces * 12, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_remesh.vertices_with_midpoints,
-        dim=n_vertices + n_unique,
-        inputs=[vertices, unique_edges],
-        outputs=[new_vertices],
+        kernel_remesh.subdivide_mesh,
+        dim=max(n_vertices + n_unique, n_faces),
+        inputs=[vertices, faces, unique_edges, inverse],
+        outputs=[new_vertices, new_faces],
         device=device,
     )
-    return new_vertices, _split_faces_four(faces, inverse, n_vertices)
-
-
-def _split_faces_four(
-    faces: wp.array[wp.int32], inverse: wp.array[wp.int32], n_vertices: int
-) -> wp.array[wp.int32]:
-    """
-    Build [`subdivide`][ordito.remesh.subdivide]'s 1-to-4 face table from the per-corner edge map.
-
-    New vertex ``n_vertices + e`` belongs to unique edge ``e``, and corner ``j`` of face ``f`` spans
-    ``(fv[j], fv[j + 1])``, so shifting ``inverse`` by ``n_vertices`` is the whole index translation
-    the split needs. [`subdivide_loop`][ordito.remesh.subdivide_loop] writes the same table
-    (``kernel_remesh.write_four_children``) inside its pass over the faces.
-    """
-    device = faces.device
-    n_faces = faces.size // 3
-    out_new_faces = _launch.empty(n_faces * 12, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_remesh.subdivide_faces,
-        dim=n_faces,
-        inputs=[faces, inverse, wp.int32(n_vertices), out_new_faces],
-        device=device,
-    )
-    return out_new_faces
+    return new_vertices, new_faces
 
 
 @overload
@@ -3347,7 +3327,7 @@ def subdivide_loop(
     sums = _launch.zeros(bounds[-1], dtype=wp.vec3, device=device)
     edge_face_count, valence, boundary_count = od.array.split(counts, bounds)
     edge_opposite_sum, ring_sum, boundary_sum = od.array.split(sums, bounds)
-    # The 1-to-4 face table is written by the same pass over the faces, in ``_split_faces_four``'s
+    # The 1-to-4 face table is written by the same pass over the faces, in ``subdivide``'s
     # layout.
     new_faces = _launch.empty(n_faces * 12, dtype=wp.int32, device=device)
     _launch.launch(
@@ -3359,7 +3339,7 @@ def subdivide_loop(
     )
 
     # One buffer sized for its final use, written through two views: the relocated originals in the
-    # prefix and the new edge vertices after them, which is the index layout `_split_faces_four`
+    # prefix and the new edge vertices after them, which is the index layout ``subdivide``
     # assumes and the one ``igl.loop`` returns. The edge vertices are written by the ring pass,
     # which has their endpoints in hand.
     new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
