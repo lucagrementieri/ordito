@@ -33,7 +33,8 @@ def first_hit_append(
     out_locations: wp.array[wp.vec3],
     out_count: wp.array[wp.int32],
 ) -> None:
-    # Single-pass compaction: each ray that hits atomically claims one output slot.
+    # Single-pass compaction: each ray that hits atomically claims one output slot, in arrival
+    # order; the deterministic setting takes ``first_hit_flags`` instead.
     i = wp.int32(wp.tid())
     face, location = first_hit(mesh_id, ray_origins[i], ray_directions[i], max_t)
     if face >= 0:
@@ -41,6 +42,45 @@ def first_hit_append(
         out_index_ray[slot] = i
         out_index_tri[slot] = face
         out_locations[slot] = location
+
+
+@wp.kernel
+def first_hit_flags(
+    mesh_id: wp.uint64,
+    ray_origins: wp.array[wp.vec3],
+    ray_directions: wp.array[wp.vec3],
+    max_t: wp.float32,
+    out_faces: wp.array[wp.int32],
+    out_locations: wp.array[wp.vec3],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``first_hit_append``'s ray-ordered form, for the deterministic setting: every ray's hit at
+    # its own index and a ``0`` / ``1`` hit flag, which the wrapper scans in place and
+    # ``compact_scanned_hits`` compacts in ascending ray order.
+    i = wp.int32(wp.tid())
+    face, location = first_hit(mesh_id, ray_origins[i], ray_directions[i], max_t)
+    out_faces[i] = face
+    out_locations[i] = location
+    out_flags[i] = wp.where(face >= 0, 1, 0)
+
+
+@wp.kernel
+def compact_scanned_hits(
+    faces: wp.array[wp.int32],
+    locations: wp.array[wp.vec3],
+    inclusive: wp.array[wp.int32],
+    out_index_ray: wp.array[wp.int32],
+    out_index_tri: wp.array[wp.int32],
+    out_locations: wp.array[wp.vec3],
+) -> None:
+    # The hits ``first_hit_flags`` wrote, at their rank in its scanned flags.
+    i = wp.int32(wp.tid())
+    face = faces[i]
+    if face >= 0:
+        slot = inclusive[i] - 1
+        out_index_ray[slot] = i
+        out_index_tri[slot] = face
+        out_locations[slot] = locations[i]
 
 
 @wp.func

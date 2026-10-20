@@ -9,6 +9,7 @@ import warp as wp
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
+from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import ray as kernel_ray
@@ -30,13 +31,12 @@ def intersects_location(
     carrying the same set of hits as the dense output of
     [`intersects_first`][ordito.ray.intersects_first].
 
-    The returned arrays are prefix views of buffers sized for every ray, so they keep that
-    storage alive for as long as they are held.
-
-    **Row order is unspecified.** Each hitting ray claims its output slot from an atomic
-    counter, so rows arrive in the order the rays completed rather than in ray order, and two
-    runs over the same input may order them differently. Sort by ``index_ray`` (or read
-    [`intersects_first`][ordito.ray.intersects_first] instead) when a stable order matters.
+    With [`is_deterministic`][ordito.config.is_deterministic] off (the default) the returned
+    arrays are prefix views of buffers sized for every ray, so they keep that storage alive for
+    as long as they are held, and **row order is unspecified**: each hitting ray claims its
+    output slot from an atomic counter, so rows arrive in the order the rays completed rather than
+    in ray order, and two runs over the same input may order them differently. With it on, the
+    rows come back in ascending ray order, from a scan of the hit flags.
 
     Parameters
     ----------
@@ -97,6 +97,8 @@ def intersects_location(
     if max_t is None:
         max_t = math.inf
 
+    if is_deterministic():
+        return _intersects_location_ordered(mesh, ray_origins, ray_directions, max_t)
     index_ray = _launch.empty(n, dtype=wp.int32, device=device)
     index_tri = _launch.empty(n, dtype=wp.int32, device=device)
     locations = _launch.empty(n, dtype=wp.vec3, device=device)
@@ -127,6 +129,45 @@ def intersects_location(
         odt.as_dense(index_ray[:n_hits]),
         odt.as_dense(index_tri[:n_hits]),
     )
+
+
+def _intersects_location_ordered(
+    mesh: wp.Mesh, ray_origins: wp.array[wp.vec3], ray_directions: wp.array[wp.vec3], max_t: float
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    [`intersects_location`][ordito.ray.intersects_location]'s hits in ascending ray order.
+
+    The deterministic setting's form: every ray's hit is stored at its own index, the hit flags
+    are scanned in place and the hits compacted at their rank, so the order does not follow which
+    ray's thread finished first.
+    """
+    device = ray_origins.device
+    n = ray_origins.size
+    faces = _launch.empty(n, dtype=wp.int32, device=device)
+    hit_locations = _launch.empty(n, dtype=wp.vec3, device=device)
+    inclusive = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_ray.first_hit_flags,
+        dim=n,
+        inputs=[wp.uint64(mesh.id), ray_origins, ray_directions, wp.float32(max_t)],
+        outputs=[faces, hit_locations, inclusive],
+        device=device,
+    )
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    # The hit count sizes the outputs.
+    n_hits = int(read_scalar(inclusive))
+    locations = _launch.empty(n_hits, dtype=wp.vec3, device=device)
+    index_ray = _launch.empty(n_hits, dtype=wp.int32, device=device)
+    index_tri = _launch.empty(n_hits, dtype=wp.int32, device=device)
+    if n_hits > 0:
+        _launch.launch(
+            kernel_ray.compact_scanned_hits,
+            dim=n,
+            inputs=[faces, hit_locations, inclusive],
+            outputs=[index_ray, index_tri, locations],
+            device=device,
+        )
+    return locations, index_ray, index_tri
 
 
 def intersects_first(

@@ -36,6 +36,8 @@ deterministic either way):
   and so the seam [`make_winding_consistent`][ordito.repair.make_winding_consistent] leaves;
 - the positions of [`subdivide_loop`][ordito.remesh.subdivide_loop], whose 1-ring sums are
   added in a fixed order.
+- the order of the hits [`intersects_location`][ordito.ray.intersects_location] returns
+  (ascending ray order when on).
 
 What it does not govern:
 
