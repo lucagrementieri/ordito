@@ -3847,14 +3847,16 @@ def _row_path(matrix: odt.SparseMatrix, n: int, fold: bool) -> tuple[bool, int]:
     capacity -- and only for a column too long to fold: below that a round is bound by its
     launches, and one ``bsr_mv`` a column plus a dots launch lose to the one fused launch (measured
     0.91-0.94x on ``smooth_region``'s three-column, twenty-entry-a-row systems). One four-byte
-    read for a column that does not fold.
+    read for a column that does not fold, and none where the storage itself (``columns``' length,
+    which bounds the true count from above) is too small for a heavy row.
 
     The block-per-row kernel is a ``launch_tiled`` kernel whose lanes split a row, and the CPU
     device runs one lane per block, so there it would form ``A u`` from
     one lane's share and the solve would stop at zero iterations; the CPU keeps the lane-per-row
     kernel, as ``bsr_mv``'s own heuristic does.
     """
-    entries = read_scalar(matrix.offsets, n) if n > 0 and not fold else 0
+    light = matrix.columns.size <= CG_HEAVY_ROW_ENTRIES * n
+    entries = read_scalar(matrix.offsets, n) if n > 0 and not fold and not light else 0
     heavy = entries > CG_HEAVY_ROW_ENTRIES * n
     tiled = matrix.device.is_cuda and entries > _HEAVY_ROW_TILED_ENTRIES * n
     return heavy, _HEAVY_ROW_TILE if tiled else -1
