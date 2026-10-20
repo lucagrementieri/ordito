@@ -293,6 +293,24 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
         assert len(cloud.points) == target
 
 
+@pytest.mark.benchmark(group="sample_surface_poisson_disk")
+@pytest.mark.benchlibs("ordito")
+def test_sample_surface_poisson_disk(bench_case: BenchCase) -> None:
+    """
+    Yuksel's weighted sample elimination down to ``_TARGET_SAMPLES``, from its default pool.
+
+    The rounds remove every local weight maximum above the global floor at once; the last round,
+    whose maxima outnumber what is left to delete, ranks them, so the row prices both kinds.
+    """
+    skip_larger_than(bench_case, "bunny")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    points, face_index = bench_case.run(
+        lambda: od.sample.sample_surface_poisson_disk(vertices, faces, _TARGET_SAMPLES, seed=_SEED)
+    )
+    assert points.shape[0] == _TARGET_SAMPLES
+    assert face_index.shape == points.shape
+
+
 @pytest.mark.benchmark(group="sample_volume")
 @pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
 @pytest.mark.benchlibs("ordito")

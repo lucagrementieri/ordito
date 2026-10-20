@@ -40,7 +40,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
-from ordito.array import flatnonzero, gather
+from ordito.array import flatnonzero
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
@@ -548,12 +548,17 @@ def _top_maxima_by_weight(
         device=device,
     )
     _sorted, order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
-    # No clone: ``order`` need not outlive this frame (no further sort call reuses its scratch),
-    # and ``gather`` only requires a contiguous index array, which a prefix slice already is.
-    chosen = gather(flagged, odt.as_dense(order[:excess]))
-    return od.array.astype(
-        od.array.indices_to_mask(chosen, n_pool, device=candidates.device), wp.int32
+    # The first ``excess`` ranks, flagged in place: ``order`` is read before any later sort call
+    # reuses its scratch.
+    out_flags = _launch.zeros(n_pool, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_sample.mark_ranked_flagged,
+        dim=excess,
+        inputs=[flagged, order],
+        outputs=[out_flags],
+        device=device,
     )
+    return out_flags
 
 
 def sample_surface_blue_noise(
