@@ -1824,6 +1824,8 @@ def front_terms_and_keys(
     terms[4] = f_count
     terms[5] = b_count
     out_terms[sn + 1] = terms
+    if sn == 0:
+        out_terms[0] = front_terms()
     h = height[sn]
     out_level_keys[sn] = wp.uint64(h) * wp.uint64(n_sn) + wp.uint64(sn)
     out_level_values[sn] = sn
@@ -1851,6 +1853,8 @@ def level_terms(
         wp.int64(ncol[sn]), wp.int64(front_size[sn])
     )
     out_terms[r + 1] = wp.vec4i(wp.int32(f_count), front_size[sn], wp.int32(b_count), ncol[sn])
+    if r == 0:
+        out_terms[0] = wp.vec4i(0, 0, 0, 0)
 
 
 @wp.kernel
