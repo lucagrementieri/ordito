@@ -1091,9 +1091,17 @@ def _flip_interior_edges(
     graph = None
     capturable = wp.get_device(device).is_cuda
     total = 0
-    for round_index in range(max_iter):
+    round_index = 0
+    while round_index < max_iter:
         if graph is not None:
-            wp.capture_launch(graph)
+            # Several replays a readback, as many as the key set's headroom allows: a round flips
+            # at most one edge per two faces, so this many rounds cannot overfill it before the
+            # rebuild ``flipped`` decides on. A replay past the fixpoint flips nothing and changes
+            # nothing, so the faces and the total are the per-round loop's.
+            batch = min(max_iter - round_index, topology.replay_headroom())
+            for _ in range(batch):
+                wp.capture_launch(graph)
+            round_index += batch
         elif capturable and round_index >= _FLIP_CAPTURE_FROM_ROUND:
             # Every round is the same launch sequence over the same buffers -- only the face
             # buffer's contents change -- so a long call records one round and replays it, and a
@@ -1108,10 +1116,12 @@ def _flip_interior_edges(
             graph = capture.graph
             assert graph is not None
             wp.capture_launch(graph)
+            round_index += 1
         else:
             # An issued round reads its count before refreshing, so a round that flipped nothing --
             # the common last round, and the only one a call at the fixpoint runs -- skips it.
             flip_round(count, refresh=False)
+            round_index += 1
             n = int(read_scalar(count, 0)) - total
             total += n
             if n == 0:
@@ -1396,6 +1406,18 @@ class _FlipTopology:
     def active_edge_set_mask(self) -> int:
         """``edge_set_mask`` once an incremental build seeded the key set, else ``-1``."""
         return self.edge_set_mask if self.incremental else -1
+
+    def replay_headroom(self) -> int:
+        """
+        Count the rounds that may run before the next ``flipped`` with the key set still safe.
+
+        ``flipped`` rebuilds once the flips since the last build pass the budget, so a round may
+        start anywhere up to it; a round flips at most one edge per two faces (each flip claims
+        both of its own), so this many back-to-back rounds end no further past the budget than
+        one round can.
+        """
+        per_round = max(1, self._n_faces // 2)
+        return max(1, (self._flip_budget - self._flips_since_build) // per_round + 1)
 
     def flipped(self, count: int) -> None:
         """
