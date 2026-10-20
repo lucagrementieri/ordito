@@ -69,7 +69,7 @@ from ordito.kernels.reconstruction import (
     screened_laplacian_row,
     screened_laplacian_scaled_inverse_diagonal,
 )
-from ordito.kernels.reduce import block_sum
+from ordito.kernels.reduce import block_sum, term_sum_1d
 
 wp.set_module_options({"enable_backward": False})
 
@@ -905,6 +905,32 @@ def band_cg_matvec_dots(
 # ---------------------------------------------------------------------------------------------
 
 
+@wp.func
+def band_sample_at_point(
+    point: wp.vec3,
+    lower: wp.vec3,
+    inv_cell: wp.float32,
+    res: wp.int32,
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    x: wp.array[wp.float32],
+) -> wp.float32:
+    # The finest band's solution at a sample, trilinearly (``sample_field_trilinear``'s cell and
+    # weights); every corner is in the band (``mark_sample_bricks``).
+    g = (point - lower) * inv_cell
+    base, next_corner, fractions = trilinear_cell(g, wp.vec3i(res, res, res))
+    acc = wp.float32(0.0)
+    for di in range(2):
+        for dj in range(2):
+            for dk in range(2):
+                corner = trilinear_corner(base, next_corner, wp.vec3i(di, dj, dk))
+                acc += (
+                    trilinear_weight(fractions, di, dj, dk)
+                    * x[band_node(brick_map, nbk, corner[0], corner[1], corner[2])]
+                )
+    return acc
+
+
 @wp.kernel
 def band_sample(
     points: wp.array[wp.vec3],
@@ -916,21 +942,42 @@ def band_sample(
     x: wp.array[wp.float32],
     out_values: wp.array[wp.float32],
 ) -> None:
-    # The finest band's solution at every sample, trilinearly (``sample_field_trilinear``'s cell
-    # and weights); every corner is in the band (``mark_sample_bricks``).
+    # ``band_sample_at_point`` at every sample, for the confidence-weighted iso-value; the uniform
+    # one sums it without storing it (``BAND_SAMPLE_SUM``).
     s = wp.int32(wp.tid())
-    g = (points[s] - lower) * inv_cell
-    base, next_corner, fractions = trilinear_cell(g, wp.vec3i(res, res, res))
-    acc = wp.float32(0.0)
-    for di in range(2):
-        for dj in range(2):
-            for dk in range(2):
-                corner = trilinear_corner(base, next_corner, wp.vec3i(di, dj, dk))
-                acc += (
-                    trilinear_weight(fractions, di, dj, dk)
-                    * x[band_node(brick_map, nbk, corner[0], corner[1], corner[2])]
-                )
-    out_values[s] = acc
+    out_values[s] = band_sample_at_point(points[s], lower, inv_cell, res, brick_map, nbk, x)
+
+
+@wp.struct
+class BandSampleTerms:
+    """The samples and the finest band ``BAND_SAMPLE_SUM`` sums ``band_sample_at_point`` over."""
+
+    n: wp.int32
+    points: wp.array[wp.vec3]
+    lower: wp.vec3
+    inv_cell: wp.float32
+    res: wp.int32
+    brick_map: wp.array[wp.int32]
+    nbk: wp.int32
+    x: wp.array[wp.float32]
+
+
+@wp.func
+def band_sample_term(local: wp.int32, offset: wp.int32, terms: BandSampleTerms) -> wp.float32:
+    # The finest band at sample ``offset + local``, the term of the band iso-value's mean.
+    return band_sample_at_point(
+        terms.points[offset + local],
+        terms.lower,
+        terms.inv_cell,
+        terms.res,
+        terms.brick_map,
+        terms.nbk,
+        terms.x,
+    )
+
+
+# The uniform band iso-value's sum, bit for bit ``reduce.sum`` of what ``band_sample`` writes.
+BAND_SAMPLE_SUM = term_sum_1d(band_sample_term, BandSampleTerms, "poisson_band_sample_sum")
 
 
 @wp.func

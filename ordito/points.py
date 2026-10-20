@@ -89,6 +89,16 @@ SUPPORT_SLICE_FILTER_FROM = 1 << 17
 # makes every margin in the useful range unsafe.
 TETRAHEDRON_FLATNESS = wp.constant(wp.float32(1e-3))
 
+# Bytes in one ``wp.mat33``: where a fit's ticket sits in its two-matrix atomic buffer.
+_MAT33_BYTES = 9 * 4
+
+# Blocks above which an arrival-order fit (``fit_line`` / ``fit_plane`` / ``principal_axes`` with
+# ``ordito.config`` determinism off) runs its SVD in a launch of its own rather than in the last
+# block of the scatter launch. The election is one integer ticket a block on one counter, which
+# measured equal device time to 2 048 blocks (2 M points) and 1.11x the separate launch's at 14 k
+# (``lucy``); the reproducible commit elects its last block anyway and always fuses.
+_FIT_TICKET_MAX_BLOCKS = 1 << 11
+
 
 def point_plane_distance(
     points: wp.array[wp.vec3], plane_normal: wp.vec3, plane_origin: wp.vec3 | None = None
@@ -330,17 +340,13 @@ def fit_line(points: wp.array[wp.vec3]) -> wp.vec3:
     print(np.round(np.abs(np.array(axis)), 3))  # [0.333 0.667 0.667]
     ```
     """
-    device = points.device
     n = points.size
     if n == 0:
         return wp.vec3(0.0, 0.0, 0.0)
 
-    # Pass 1: accumulate the (uncentred) Gram matrix G = sum_j outer(x_j, x_j).
-    gram = gram_matrix(points)
-
-    # Pass 2: SVD of the 3x3 matrix and axis extraction (single thread).
-    out_axis = _launch.empty(1, dtype=wp.vec3, device=device)
-    _launch.launch(kernel_points.finalize_fit_line, dim=1, inputs=[gram, out_axis], device=device)
+    # One launch: the (uncentred) Gram matrix G = sum_j outer(x_j, x_j), whose last block takes
+    # its SVD and writes the axis.
+    out_axis = _scatter_fit(points, None, 1.0, kernel_points.SCATTER_FIT_LINE, 1)
     return cast(wp.vec3, out_axis.list()[0])
 
 
@@ -436,7 +442,6 @@ def fit_plane(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
     print(f"{abs(normal[2]):.3f}")  # 1.000
     ```
     """
-    device = points.device
     n = points.size
     if n == 0:
         # Both zero, so the order is readability rather than behaviour: normal, then centroid.
@@ -446,22 +451,12 @@ def fit_plane(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
     # centroid ``centroid`` would return, so no division launch runs between the passes.
     point_sum = _point_sum(points)
 
-    # Pass 2: covariance matrix of the centred points. Centring before the
-    # outer products (rather than via the sum(x x^T) - n c c^T identity) avoids
-    # float32 catastrophic cancellation.
-    cov = _scatter_matrix(points, point_sum, float(n))
-
-    # Pass 3: SVD of the 3x3 covariance and centroid/normal extraction (single thread). Both
-    # results land in one buffer and cross to the host in one readback: they are two rows of three
-    # floats, so what a second readback would buy is nothing and what it costs is another
-    # synchronization.
-    out_plane = _launch.empty(2, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_points.finalize_fit_plane,
-        dim=1,
-        inputs=[point_sum, wp.float32(n), cov, out_plane],
-        device=device,
-    )
+    # Pass 2: covariance matrix of the centred points, whose last block takes its SVD and writes
+    # the normal and the centroid. Centring before the outer products (rather than via the
+    # sum(x x^T) - n c c^T identity) avoids float32 catastrophic cancellation. Both results land
+    # in one buffer and cross to the host in one readback: they are two rows of three floats, so
+    # what a second readback would buy is nothing and what it costs is another synchronization.
+    out_plane = _scatter_fit(points, point_sum, float(n), kernel_points.SCATTER_FIT_PLANE, 2)
     normal, centroid_out = out_plane.numpy()
     return (wp.vec3(*normal), wp.vec3(*centroid_out))
 
@@ -614,23 +609,17 @@ def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec
     print(np.array(eigenvalues).round(3))  # [32.  8.  2.]
     ```
     """
-    device = points.device
     n = points.size
     if n == 0:
         return wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0), wp.vec3(), wp.vec3()
 
     point_sum = _point_sum(points)
-    scatter = _scatter_matrix(points, point_sum, float(n))
-    # All three results in one buffer, read back once: fifteen floats is less than a single
-    # readback's fixed cost, so three of them bought three synchronizations and nothing else.
-    out_frame = _launch.empty(5, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_points.finalize_principal_axes,
-        dim=1,
-        inputs=[point_sum, wp.float32(n), scatter, out_frame],
-        device=device,
-    )
-    frame = out_frame.numpy()
+    # The scatter matrix, whose last block takes its SVD. All three results in one buffer, read
+    # back once: fifteen floats is less than a single readback's fixed cost, so three of them
+    # bought three synchronizations and nothing else.
+    frame = _scatter_fit(
+        points, point_sum, float(n), kernel_points.SCATTER_PRINCIPAL_AXES, 5
+    ).numpy()
     return (wp.mat33(*frame[:3].ravel()), wp.vec3(*frame[3]), wp.vec3(*frame[4]))
 
 
@@ -803,11 +792,80 @@ def _scatter_matrix(
     _launch.launch_tiled(
         kernel_points.centered_covariance,
         dim=[blocks],
-        inputs=[points, center, wp.float32(center_divisor), wp.float32(divisor), stride, out],
+        inputs=[
+            points,
+            center,
+            wp.float32(center_divisor),
+            wp.float32(divisor),
+            stride,
+            kernel_points.SCATTER_ONLY,
+            blocks,
+            None,
+            out,
+            None,
+        ],
         block_dim=TILE_1D,
         device=device,
     )
     return _launch.view(out, 0, 1)
+
+
+def _scatter_fit(
+    points: wp.array[wp.vec3],
+    center: wp.array[wp.vec3] | None,
+    center_divisor: float,
+    finish: wp.int32,
+    rows: int,
+) -> wp.array[wp.vec3]:
+    """
+    Run fit ``finish`` on ``_scatter_matrix(points, center, center_divisor)``; ``(rows,)`` result.
+
+    One launch: the block that completes the matrix runs the fit on it
+    (``kernel_points.write_scatter_fit``). ``points`` must be non-empty.
+    """
+    device = points.device
+    blocks = kernel_reduce.blocks_1d(points.size)
+    out_frame = _launch.empty(rows, dtype=wp.vec3, device=device)
+    if not is_deterministic() and blocks > _FIT_TICKET_MAX_BLOCKS:
+        # The arrival-order commit with a launch of its own for the fit: past this many blocks one
+        # ticket a block on a single counter costs more device time than the launch.
+        scatter = _scatter_matrix(points, center, center_divisor)
+        _launch.launch(
+            kernel_points.scatter_fit,
+            dim=1,
+            inputs=[finish, scatter, center, wp.float32(center_divisor), out_frame],
+            device=device,
+        )
+        return out_frame
+    ticket = None
+    if is_deterministic():
+        out, stride = _launch.block_partials(blocks, 1, wp.mat33, device)
+    else:
+        # The atomic commit's total and, in the zeroed matrix after it, the integer ticket that
+        # elects the block to run the fit: one allocation, read as ``int32`` through a view.
+        out, stride = _launch.zeros(2, dtype=wp.mat33, device=device), 1
+        ticket = wp.array(
+            ptr=cast(int, out.ptr) + _MAT33_BYTES, dtype=wp.int32, shape=1, device=device
+        )
+    _launch.launch_tiled(
+        kernel_points.centered_covariance,
+        dim=[blocks],
+        inputs=[
+            points,
+            center,
+            wp.float32(center_divisor),
+            wp.float32(1.0),
+            stride,
+            finish,
+            blocks,
+            ticket,
+            out,
+            out_frame,
+        ],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    return out_frame
 
 
 def outlier_probability(

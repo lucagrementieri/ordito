@@ -2080,15 +2080,15 @@ def geodesic_ball(
     requires this exact frame; the default frame-independent computation does not depend on it.
     Isolated vertices reference themselves.
 
-    The traversal runs entirely on device. Vertex adjacency is built as a CSR graph via
-    [`edges_unique`][ordito.edges.edges_unique] +
-    [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists] with sorted rows, then a
-    single-pass BFS collects each ball into its per-source queue row (the queue prefix *is* the
-    result) and a scan + gather compacts the rows into the CSR neighbor buffer. Each source uses
-    fixed-capacity scratch of ``PER_SOURCE_MAX_NEIGHBORS`` neighbors
-    (``ordito.kernels.algorithms.bfs``, currently 512);
-    if a vertex collects more than that the surplus is dropped and a warning reports how many
-    vertices' neighborhoods were clipped.
+    The traversal runs entirely on device. Vertex adjacency is built as a CSR graph with sorted
+    rows -- the buffer [`edges_unique`][ordito.edges.edges_unique] +
+    [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists] would give -- from one radix
+    sort of both directions of every face edge, then a single-pass BFS collects each ball into its
+    per-source queue row (the queue prefix *is* the result) and a scan + gather compacts the rows
+    into the CSR neighbor buffer. Each source uses fixed-capacity scratch of
+    ``PER_SOURCE_MAX_NEIGHBORS`` neighbors (``ordito.kernels.algorithms.bfs``, currently 512); if a
+    vertex collects more than that the surplus is dropped and a warning reports how many vertices'
+    neighborhoods were clipped.
 
     !!! note
 
@@ -2155,18 +2155,7 @@ def geodesic_ball(
     # moves its answer at the near-flat vertices where the fit is ill conditioned. Sorted rows make
     # this builder's output identical to ``graph.edges_to_csr``'s, for a fraction of its cost; a
     # mesh vertex's valence is far below the degree where the per-row sort stops paying.
-    unique_edges, _ = od.edges.edges_unique(faces, n_vertices=n, validate=False)
-    adj_columns, adj_offsets = od.graph.edges_to_neighbor_lists(
-        n, unique_edges, validate=False, sort_rows=True
-    )
-
-    reference_neighbors = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_neighbors.geodesic_ball_reference_neighbors,
-        dim=n,
-        inputs=[adj_offsets, adj_columns, reference_neighbors],
-        device=device,
-    )
+    adj_columns, adj_offsets, reference_neighbors = _sorted_vertex_adjacency(faces, n)
 
     # Per-source scratch lives in shared global-memory pools sized for one chunk of sources
     # (queue rows, an open-addressing visited row pre-filled with -1 per launch, and a small
@@ -2270,3 +2259,67 @@ def geodesic_ball(
     # Chunk order equals ascending source order, so concatenation lines up with the global scan.
     # Same per-segment ``wp.copy`` loop either way -- that is the packing floor -- one call for it.
     return od.array.concatenate(chunk_flats), offsets, reference_neighbors
+
+
+def _sorted_vertex_adjacency(
+    faces: wp.array[wp.int32], n_vertices: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    ``(columns, offsets, reference)``: the mesh's vertex adjacency with ascending rows.
+
+    Row for row ``edges_unique`` + ``edges_to_neighbor_lists(sort_rows=True)`` over the faces
+    (indices trusted, as at ``validate=False``), and each vertex's lowest neighbour, itself when it
+    has none. Both directions of every corner edge are packed source-major and radix-sorted, so
+    each row is a run of ascending targets and its first occurrences are the row: a count, a scan
+    and one emit that also writes the row bounds and the references. No count is read back --
+    ``columns`` is sized for the ``6 * n_faces`` keys, its tail past ``offsets[n_vertices]``
+    unwritten.
+    """
+    device = faces.device
+    n_keys = 6 * (faces.size // 3)
+    reference = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    if n_keys == 0:
+        offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
+        columns = _launch.empty(0, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_neighbors.geodesic_ball_reference_neighbors,
+            dim=n_vertices,
+            inputs=[offsets, columns, reference],
+            device=device,
+        )
+        return columns, offsets, reference
+    # Double width, as the radix sort wants. The payload carries nothing: its upper half, free once
+    # the sort has run, holds the slot counts and their scan.
+    keys = _launch.empty(2 * n_keys, dtype=wp.uint64, device=device)
+    payload = _launch.empty(2 * n_keys, dtype=wp.int32, device=device)
+    base = wp.uint64(n_vertices)
+    _launch.launch(
+        kernel_neighbors.directed_face_edge_keys,
+        dim=n_keys // 6,
+        inputs=[faces, base, keys],
+        device=device,
+    )
+    _launch.radix_sort_pairs(
+        keys,
+        payload,
+        count=n_keys,
+        end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length())),
+    )
+    sorted_keys = odt.as_dense(keys[:n_keys])
+    ranks = odt.as_dense(payload[n_keys:])
+    _launch.launch(
+        kernel_neighbors.directed_neighbor_slots,
+        dim=n_keys,
+        inputs=[sorted_keys, base, ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    columns = _launch.empty(n_keys, dtype=wp.int32, device=device)
+    offsets = _launch.empty(n_vertices + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_neighbors.emit_directed_neighbor_lists,
+        dim=n_keys,
+        inputs=[sorted_keys, ranks, base, wp.int32(n_vertices), columns, offsets, reference],
+        device=device,
+    )
+    return columns, offsets, reference

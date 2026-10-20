@@ -19,13 +19,18 @@ from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
     block_max,
+    block_sum,
+    fold_block_totals,
     last_ticket,
     last_ticket_matrix,
     last_ticket_vector,
     outer_sum_chunk,
+    stage_block_total,
     store_block_total,
     store_block_total_divided,
     store_sum_and_count,
+    take_ticket,
+    thread_fence,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -77,6 +82,99 @@ def point_sum(
     store_block_total_divided(chunk, lane, total, out_sum, 0, stride, last_ticket_vector, divisor)
 
 
+# What ``centered_covariance``'s last block does with the summed matrix: nothing (the matrix is the
+# answer), or one of the three fits, whose ``wp.svd3`` used to be a ``dim=1`` launch of its own.
+SCATTER_ONLY = wp.constant(wp.int32(0))
+SCATTER_FIT_LINE = wp.constant(wp.int32(1))
+SCATTER_FIT_PLANE = wp.constant(wp.int32(2))
+SCATTER_PRINCIPAL_AXES = wp.constant(wp.int32(3))
+
+
+@wp.func
+def write_fit_line(m: wp.mat33, out_axis: wp.array[wp.vec3]) -> None:
+    # gram matrix of the (uncentred) points: M = sum_j outer(x_j, x_j)
+    # the singular values / right singular vectors of M match the squared
+    # singular values / right singular vectors of the (n, 3) point matrix.
+    u, sigma, _v = wp.svd3(m)
+    # axis = sum_i S_i * rsv_i, where S_i = sqrt(sigma_i) are the point singular values and the
+    # right singular vectors are the columns of u -- i.e. exactly the matrix-vector product
+    # u * (S_0, S_1, S_2). ``wp.sqrt`` is scalar-only, so the weight vector is built explicitly.
+    axis = u * wp.vec3(wp.sqrt(sigma[0]), wp.sqrt(sigma[1]), wp.sqrt(sigma[2]))
+    out_axis[0] = wp.normalize(axis)
+
+
+@wp.func
+def write_fit_plane(
+    m: wp.mat33, point_sum: wp.array[wp.vec3], n: wp.float32, out_plane: wp.array[wp.vec3]
+) -> None:
+    # One output buffer rather than two, because both entries cross to the host together and a
+    # readback costs far more than the row of it that is read: slot 0 is the normal, slot 1 the
+    # centroid, in the order ``fit_plane`` returns them.
+    #
+    # plane origin is the centroid of the point set; the covariance matrix of
+    # the centred points was accumulated into m.
+    u, _sigma, _v = wp.svd3(m)
+    # normal is the singular vector with the smallest singular value
+    # (svd3 returns singular values in descending order: last column of u).
+    out_plane[0] = wp.normalize(mat33_column(u, 2))
+    out_plane[1] = centroid_from_sum(point_sum, n)
+
+
+@wp.func
+def write_principal_axes(
+    m: wp.mat33, point_sum: wp.array[wp.vec3], n: wp.float32, out_frame: wp.array[wp.vec3]
+) -> None:
+    # One ``(5,)`` output buffer rather than three, because all three results cross to the host
+    # together: rows 0-2 are the rotation's rows, row 3 the eigenvalues, row 4 the centroid --
+    # the order ``principal_axes`` returns them in. One readback of five rows is several times
+    # cheaper than three readbacks of one.
+    # ``wp.svd3`` returns singular values in descending order, so the columns of ``u`` are the
+    # principal axes from widest to narrowest. The rows of the result are those axes, which is the
+    # convention that makes ``rotation * p`` the coordinates of ``p`` in the principal frame.
+    u, sigma, _v = wp.svd3(m)
+    axis0 = wp.normalize(mat33_column(u, 0))
+    axis1 = wp.normalize(mat33_column(u, 1))
+    # Take the third axis from the cross product rather than from ``u``: that forces a proper
+    # rotation (determinant +1) whatever sign convention the SVD chose, so the frame is always
+    # right-handed and only the first two signs are free.
+    axis2 = wp.cross(axis0, axis1)
+    out_frame[0] = axis0
+    out_frame[1] = axis1
+    out_frame[2] = axis2
+    out_frame[3] = sigma
+    out_frame[4] = centroid_from_sum(point_sum, n)
+
+
+@wp.func
+def write_scatter_fit(
+    finish: wp.int32,
+    m: wp.mat33,
+    point_sum: wp.array[wp.vec3],
+    n: wp.float32,
+    out_frame: wp.array[wp.vec3],
+) -> None:
+    # The fit ``finish`` names, from the summed scatter matrix ``m``.
+    if finish == SCATTER_FIT_LINE:
+        write_fit_line(m, out_frame)
+    elif finish == SCATTER_FIT_PLANE:
+        write_fit_plane(m, point_sum, n, out_frame)
+    elif finish == SCATTER_PRINCIPAL_AXES:
+        write_principal_axes(m, point_sum, n, out_frame)
+
+
+@wp.kernel
+def scatter_fit(
+    finish: wp.int32,
+    scatter: wp.array[wp.mat33],
+    point_sum: wp.array[wp.vec3],
+    n: wp.float32,
+    out_frame: wp.array[wp.vec3],
+) -> None:
+    # ``write_scatter_fit`` on a summed scatter matrix, one thread: the fit of a large
+    # arrival-order scatter, whose blocks elect no last one (``centered_covariance``'s note).
+    write_scatter_fit(finish, scatter[0], point_sum, n, out_frame)
+
+
 @wp.kernel
 def centered_covariance(
     points: wp.array[wp.vec3],
@@ -84,7 +182,11 @@ def centered_covariance(
     center_divisor: wp.float32,
     divisor: wp.float32,
     stride: wp.int32,
+    finish: wp.int32,
+    n_blocks: wp.int32,
+    ticket: wp.array[wp.int32],
     out_cov: wp.array[wp.mat33],
+    out_frame: wp.array[wp.vec3],
 ) -> None:
     # Scatter matrix C = sum_k outer(x_k - c, x_k - c) with ``c = center[0] / center_divisor``, so
     # a caller holding the point *sum* passes it with ``n`` and pays no division launch of its own
@@ -116,6 +218,14 @@ def centered_covariance(
     # the lanes partition a chunk the block already owns and stride by ``wp.block_dim()``, which
     # reads 1 on CPU. ``metrics.chamfer_nn_term_tiled`` needs a device pair because *its* lanes
     # partition the outer work at a constant stride; this is the other form.
+    #
+    # ``finish`` other than ``SCATTER_ONLY`` has the block that completes the sum also run the fit
+    # on it (``write_scatter_fit``), so a fit is this launch and its centre's. The reproducible
+    # commit already has that block (the one that folds the rows); the arrival-order one, which
+    # passes a one-slot zeroed ``ticket``, gets it from that: each block adds its fold, fences and
+    # draws one integer ticket, and the last reads the total the other blocks' atomics have
+    # finished. A matrix-valued ticket (``take_ticket`` on ``out_cov``) would be nine more atomics
+    # a block on one address, which at a million points cost more than the launch it saves.
     chunk, lane = wp.tid()
     offset, remaining = block_chunk_1d(points.shape[0], chunk)
     if remaining <= 0:
@@ -128,68 +238,36 @@ def centered_covariance(
     # Block-collective, so it runs outside the ``lane == 0`` guard. ``divisor`` scales the
     # reproducible result (``covariance``'s ``n - ddof``; ``1.0``, which divides exactly, for the
     # scatter and Gram matrices); the ``atomic_add`` form leaves it to the caller.
-    store_block_total_divided(chunk, lane, m, out_cov, 0, stride, last_ticket_matrix, divisor)
-
-
-@wp.kernel
-def finalize_fit_line(m: wp.array[wp.mat33], out_axis: wp.array[wp.vec3]) -> None:
-    # gram matrix of the (uncentred) points: M = sum_j outer(x_j, x_j)
-    # the singular values / right singular vectors of M match the squared
-    # singular values / right singular vectors of the (n, 3) point matrix.
-    u, sigma, _v = wp.svd3(m[0])
-    # axis = sum_i S_i * rsv_i, where S_i = sqrt(sigma_i) are the point singular values and the
-    # right singular vectors are the columns of u -- i.e. exactly the matrix-vector product
-    # u * (S_0, S_1, S_2). ``wp.sqrt`` is scalar-only, so the weight vector is built explicitly.
-    axis = u * wp.vec3(wp.sqrt(sigma[0]), wp.sqrt(sigma[1]), wp.sqrt(sigma[2]))
-    out_axis[0] = wp.normalize(axis)
-
-
-@wp.kernel
-def finalize_fit_plane(
-    point_sum: wp.array[wp.vec3], n: wp.float32, m: wp.array[wp.mat33], out_plane: wp.array[wp.vec3]
-) -> None:
-    # One output buffer rather than two, because both entries cross to the host together and a
-    # readback costs far more than the row of it that is read: slot 0 is the normal, slot 1 the
-    # centroid, in the order ``fit_plane`` returns them.
-    #
-    # plane origin is the centroid of the point set; the covariance matrix of
-    # the centred points was accumulated into m.
-    u, _sigma, _v = wp.svd3(m[0])
-    # normal is the singular vector with the smallest singular value
-    # (svd3 returns singular values in descending order: last column of u).
-    out_plane[0] = wp.normalize(mat33_column(u, 2))
-    out_plane[1] = centroid_from_sum(point_sum, n)
+    if finish == SCATTER_ONLY:
+        store_block_total_divided(chunk, lane, m, out_cov, 0, stride, last_ticket_matrix, divisor)
+        return
+    folded = block_sum(m)
+    zero = wp.mat33()
+    if ticket.shape[0] > 0:
+        last = wp.int32(0)
+        if lane == 0:
+            wp.atomic_add(out_cov, 0, folded)
+            last = last_ticket(take_ticket(ticket, 0, wp.int32(0)), n_blocks)
+        if block_max(last) != 0:
+            thread_fence()
+            if lane == 0:
+                write_scatter_fit(finish, out_cov[0], center, center_divisor, out_frame)
+        return
+    if (
+        stage_block_total(chunk, lane, folded, out_cov, 0, stride, n_blocks, last_ticket_matrix)
+        != 0
+    ):
+        grand = fold_block_totals(lane, out_cov, 0, stride, n_blocks, zero) / divisor
+        if lane == 0:
+            out_cov[0] = grand
+            out_cov[stride] = zero
+            write_scatter_fit(finish, grand, center, center_divisor, out_frame)
 
 
 # Orientation modes for estimate_point_normals (mirror Open3D's orient methods).
 ORIENT_CENTROID = wp.constant(wp.int32(0))  # outward from the cloud centroid (the default)
 ORIENT_DIRECTION = wp.constant(wp.int32(1))  # align with a fixed direction
 ORIENT_CAMERA = wp.constant(wp.int32(2))  # point toward a camera location
-
-
-@wp.kernel
-def finalize_principal_axes(
-    point_sum: wp.array[wp.vec3], n: wp.float32, m: wp.array[wp.mat33], out_frame: wp.array[wp.vec3]
-) -> None:
-    # One ``(5,)`` output buffer rather than three, because all three results cross to the host
-    # together: rows 0-2 are the rotation's rows, row 3 the eigenvalues, row 4 the centroid --
-    # the order ``principal_axes`` returns them in. One readback of five rows is several times
-    # cheaper than three readbacks of one.
-    # ``wp.svd3`` returns singular values in descending order, so the columns of ``u`` are the
-    # principal axes from widest to narrowest. The rows of the result are those axes, which is the
-    # convention that makes ``rotation * p`` the coordinates of ``p`` in the principal frame.
-    u, sigma, _v = wp.svd3(m[0])
-    axis0 = wp.normalize(mat33_column(u, 0))
-    axis1 = wp.normalize(mat33_column(u, 1))
-    # Take the third axis from the cross product rather than from ``u``: that forces a proper
-    # rotation (determinant +1) whatever sign convention the SVD chose, so the frame is always
-    # right-handed and only the first two signs are free.
-    axis2 = wp.cross(axis0, axis1)
-    out_frame[0] = axis0
-    out_frame[1] = axis1
-    out_frame[2] = axis2
-    out_frame[3] = sigma
-    out_frame[4] = centroid_from_sum(point_sum, n)
 
 
 @wp.kernel

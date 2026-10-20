@@ -27,6 +27,7 @@ from __future__ import annotations
 import functools
 import math
 import warnings
+from collections.abc import Callable
 from typing import Literal, NamedTuple, cast
 
 import numpy as np
@@ -661,15 +662,9 @@ def screened_poisson(
             solver_tolerance,
             device,
         )
-        inv_cell = float(res - 1) / cube_size
-        sampled = _launch.empty(n, dtype=wp.float32, device=device)
-        _launch.launch(
-            kernel_reconstruction.sample_field_trilinear,
-            dim=n,
-            inputs=[solution, res, cube_lower, inv_cell, points, sampled],
-            device=device,
+        iso = _field_iso_value(
+            solution, res, cube_lower, float(res - 1) / cube_size, points, normals, confidence
         )
-        iso = _poisson_iso_value(sampled, normals, confidence)
         vertices, faces = od.levelset.marching_cubes(
             odt.as_array3d(solution.reshape((res, res, res)), wp.float32),
             iso,
@@ -704,8 +699,47 @@ def _poisson_cube(points: wp.array[wp.vec3], scale: float) -> tuple[wp.vec3, wp.
     return center - half, center + half, cube_size
 
 
+def _field_iso_value(
+    field: wp.array[wp.float32],
+    res: int,
+    cube_lower: wp.vec3,
+    inv_cell: float,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    confidence: bool,
+) -> float:
+    """``_poisson_iso_value`` of the ``res**3`` node ``field`` at the samples."""
+    device = points.device
+    terms = kernel_reconstruction.FieldSampleTerms()
+    terms.n = points.size
+    terms.field = field
+    terms.res = res
+    terms.cube_lower = cube_lower
+    terms.inv_cell = inv_cell
+
+    def sample() -> wp.array[wp.float32]:
+        sampled = _launch.empty(points.size, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_reconstruction.sample_field_trilinear,
+            dim=points.size,
+            inputs=[field, res, cube_lower, wp.float32(inv_cell), points],
+            outputs=[sampled],
+            device=device,
+        )
+        return sampled
+
+    terms.points = points
+    return _poisson_iso_value(
+        kernel_reconstruction.FIELD_SAMPLE_SUM, terms, sample, normals, confidence
+    )
+
+
 def _poisson_iso_value(
-    sampled: wp.array[wp.float32], normals: wp.array[wp.vec3], confidence: bool
+    sum_kernels: kernel_reduce.TermSum,
+    terms: object,
+    sample: Callable[[], wp.array[wp.float32]],
+    normals: wp.array[wp.vec3],
+    confidence: bool,
 ) -> float:
     """
     Iso-value for the extraction: the mean of the solution at the input samples.
@@ -713,12 +747,18 @@ def _poisson_iso_value(
     PoissonRecon's ``GetIsoValue``. With ``confidence`` set, the mean is weighted by
     ``|normals[i]|`` (the same per-sample confidence the splat/quadrature weights use) instead of
     uniform; the two weightings are deliberately kept distinct rather than unified. Shared by both
-    backends, whose only difference is how ``sampled`` was produced.
+    backends, whose only difference is how the solution is sampled: ``sum_kernels`` sums the
+    samples over ``terms`` without storing them -- ``reduce.mean`` of the sampled values, bit for
+    bit -- and ``sample`` stores them, for the weighted mean.
 
     Both branches reduce on the device rather than reading the fields back.
     """
+    n = normals.size
     if not confidence:
-        return od.reduce.mean(sampled)
+        total = od.reduce.sum_of_terms(sum_kernels, [terms], n, device=normals.device)
+        # The mean's one readback: the extraction takes the iso-value as a host scalar.
+        return float(read_scalar(total, 0)) / n
+    sampled = sample()
     lengths = odt.empty_1d(normals.size, wp.float32, device=normals.device)
     _launch.map(wp.length, normals, out=lengths)
     total_weight = od.reduce.sum(lengths)
@@ -1309,25 +1349,13 @@ def _screened_poisson_band(
     )
 
     # Pass 2: add the bricks the base surface crosses, and move the data onto the final bands.
-    sampled = _launch.empty(n, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_reconstruction.sample_field_trilinear,
-        dim=n,
-        inputs=[base_x, res_b, cube_lower, wp.float32((res_b - 1) / cube_size), points],
-        outputs=[sampled],
-        device=device,
+    base_iso = _field_iso_value(
+        base_x, res_b, cube_lower, (res_b - 1) / cube_size, points, normals, confidence
     )
     _launch.launch(
         kernel_poisson_band.mark_crossing_bricks,
         dim=(res_b - 1, res_b - 1, res_b - 1),
-        inputs=[
-            base_x,
-            res_b,
-            wp.float32(_poisson_iso_value(sampled, normals, confidence)),
-            (res_f - 1) // (res_b - 1),
-            res_f,
-            nbk_f,
-        ],
+        inputs=[base_x, res_b, wp.float32(base_iso), (res_f - 1) // (res_b - 1), res_f, nbk_f],
         outputs=[final_flags],
         device=device,
     )
@@ -1492,22 +1520,38 @@ def _screened_poisson_band(
         )
     )
     finest = bands[depth]
-    _launch.launch(
-        kernel_poisson_band.band_sample,
-        dim=n,
-        inputs=[
-            points,
-            cube_lower,
-            wp.float32((res_f - 1) / cube_size),
-            res_f,
-            finest.brick_map,
-            finest.nbk,
-            fine_x,
-        ],
-        outputs=[sampled],
-        device=device,
+    terms = kernel_poisson_band.BandSampleTerms()
+    terms.n = n
+    terms.points = points
+    terms.lower = cube_lower
+    terms.inv_cell = (res_f - 1) / cube_size
+    terms.res = res_f
+    terms.brick_map = finest.brick_map
+    terms.nbk = finest.nbk
+    terms.x = fine_x
+
+    def sample_band() -> wp.array[wp.float32]:
+        sampled = _launch.empty(n, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_poisson_band.band_sample,
+            dim=n,
+            inputs=[
+                points,
+                cube_lower,
+                wp.float32((res_f - 1) / cube_size),
+                res_f,
+                finest.brick_map,
+                finest.nbk,
+                fine_x,
+            ],
+            outputs=[sampled],
+            device=device,
+        )
+        return sampled
+
+    iso = _poisson_iso_value(
+        kernel_poisson_band.BAND_SAMPLE_SUM, terms, sample_band, normals, confidence
     )
-    iso = _poisson_iso_value(sampled, normals, confidence)
     composite = [
         finest.brick_map,
         fine_x,
