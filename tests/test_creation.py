@@ -1038,6 +1038,7 @@ def test_solids_of_revolution_agree_with_the_general_engine(
 
     # Force the general engine for the same call, so both answers come from one process and one
     # device rather than from a remembered table.
+    monkeypatch.setattr(od.creation, "_revolve_closed_form", lambda *a, **k: None)
     monkeypatch.setattr(od.creation, "_revolve_regular", lambda *a, **k: None)
     slow_vertices, slow_faces = builder(device=device, **kwargs)
 
