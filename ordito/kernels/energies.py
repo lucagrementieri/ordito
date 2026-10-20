@@ -2,6 +2,7 @@ import warp as wp
 
 from ordito.kernels.array import OverloadTable, to_vec3d
 from ordito.kernels.halfedge import halfedge_endpoints
+from ordito.kernels.laplacian import store_half_cotangents
 from ordito.kernels.predicates import (
     angle_defect,
     corner_cosines_from_l2,
@@ -316,19 +317,87 @@ def hessian_face_terms(
     add_or_store_corner_triple(out_mass, out_corner_mass, faces, f, quad0, quad1, quad2)
 
 
+@wp.func
+def corner_multiplicity(faces: wp.array[wp.int32], face: wp.int32, vertex: wp.int32) -> wp.int32:
+    # How many of ``face``'s corners are ``vertex``: how many times a vertex-face row lists it.
+    r = wp.int32(0)
+    for k in range(3):
+        if faces[3 * face + k] == vertex:
+            r += 1
+    return r
+
+
+@wp.func
+def row_edge_weight(
+    faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
+    vertex: wp.int32,
+    lo: wp.int32,
+    hi: wp.int32,
+) -> wp.int32:
+    # Six times the number of halfedges spanning the undirected edge ``(lo, hi)``, counted over
+    # ``vertex``'s vertex-face row, which holds every face with a halfedge at ``vertex``. A face
+    # the row lists once per corner at ``vertex`` weighs ``6 / multiplicity`` a listing, so each
+    # face counts once in whole numbers.
+    weight = wp.int32(0)
+    for t in range(vf_offsets[vertex], vf_offsets[vertex + 1]):
+        g = vf_indices[t]
+        matches = wp.int32(0)
+        for q in range(3):
+            c = faces[3 * g + q]
+            d = faces[3 * g + (q + 1) % 3]
+            if wp.min(c, d) == lo and wp.max(c, d) == hi:
+                matches += 1
+        if matches > 0:
+            weight += matches * (6 // corner_multiplicity(faces, g, vertex))
+    return weight
+
+
+@wp.func
+def row_vertex_on_boundary(
+    faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
+    vertex: wp.int32,
+) -> wp.bool:
+    # Whether a halfedge at ``vertex`` spans its undirected edge alone -- the boundary code of
+    # ``halfedge.halfedge_mates``, the rule ``kernels/boundary.zero_at_boundary_vertices`` zeroes
+    # by -- read off ``vertex``'s own vertex-face row instead of a mesh-wide pairing: every
+    # halfedge on an edge at ``vertex`` belongs to a face in that row. Quadratic in the row's
+    # length, as the Hessian rows it gates are.
+    for s in range(vf_offsets[vertex], vf_offsets[vertex + 1]):
+        f = vf_indices[s]
+        for k in range(3):
+            a = faces[3 * f + k]
+            b = faces[3 * f + (k + 1) % 3]
+            if a == vertex or b == vertex:
+                weight = row_edge_weight(
+                    faces, vf_offsets, vf_indices, vertex, wp.min(a, b), wp.max(a, b)
+                )
+                if weight == 6:
+                    return True
+    return False
+
+
 @wp.kernel
 def hessian_energy_counts(
+    faces: wp.array[wp.int32],
     vf_offsets: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
     mass: wp.array[wp.float64],
     out_inverse_mass: wp.array[wp.float64],
     out_counts: wp.array[wp.int32],
 ) -> None:
     # Vertex ``k`` couples every ordered pair of its incident faces, 3 x 3 corners each; a killed
-    # degree of freedom (boundary vertex, zeroed mass) emits nothing. The mass inversion rides in
-    # the same launch: the gate reads the inverse it has just written, which is the value
-    # ``hessian_energy_triplets`` gates on.
+    # degree of freedom (boundary vertex, zeroed mass) emits nothing. The mass is defined only at
+    # interior vertices, so a boundary vertex (``row_vertex_on_boundary``) inverts as a zero mass.
+    # The mass inversion rides in the same launch: the gate reads the inverse it has just written,
+    # which is the value ``hessian_energy_triplets`` gates on.
     k = wp.int32(wp.tid())
-    inverse = reciprocal_or_zero(mass[k])
+    inverse = wp.float64(0.0)
+    if not row_vertex_on_boundary(faces, vf_offsets, vf_indices, k):
+        inverse = reciprocal_or_zero(mass[k])
     out_inverse_mass[k] = inverse
     if inverse > wp.float64(0.0):
         degree = vf_offsets[k + 1] - vf_offsets[k]
@@ -402,7 +471,7 @@ def zero_at_boundary_edges(
 ) -> None:
     # Zero ``out_values`` at both endpoints of every unique edge with one halfedge -- every
     # boundary vertex, read off the halfedge counts ``internal_angles_and_sums`` leaves rather
-    # than a second pass over the halfedge mates (``energies._zero_at_boundary``'s route). An edge
+    # than a pass over the halfedge mates. An edge
     # with three or more halfedges sets ``out_nonmanifold[0]``, the edge-manifold validation
     # ``curved_hessian_energy`` raises on, read off the same counts in the same pass.
     #
@@ -418,6 +487,17 @@ def zero_at_boundary_edges(
         out_nonmanifold[0] = 1
 
 
+@wp.func
+def cr_face_mass_third(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32
+) -> wp.float64:
+    # The third of face ``f``'s area it gives each of its edges' lumped Crouzeix-Raviart mass: the
+    # one per-face term of ``crouzeix_raviart_mass_diag`` and of ``internal_angles_and_sums``' mass,
+    # so ``crouzeix_raviart_massmatrix`` and ``curved_hessian_energy`` share one mass.
+    v0, v1, v2 = face_vertices_vec3d(vertices, faces, f)
+    return triangle_double_area(v0, v1, v2) / wp.float64(6.0)
+
+
 @wp.kernel
 def internal_angles_and_sums(
     vertices: wp.array[wp.vec3],
@@ -427,6 +507,7 @@ def internal_angles_and_sums(
     out_angles: wp.array2d[wp.float64],
     out_angle_sums: wp.array[wp.float64],
     out_edge_halfedges: wp.array2d[wp.int32],
+    out_edge_mass: wp.array[wp.float64],
 ) -> None:
     # Interior angle at each corner (law of cosines, float64), plus the per-vertex angle sum the
     # curvature correction normalizes by, added atomically into ``out_angle_sums`` when the caller
@@ -443,11 +524,15 @@ def internal_angles_and_sums(
     # ``curved_hessian_energy``'s setup, riding the face pass it already pays for. The cursor counts
     # every halfedge, so that caller validates edge-manifoldness from it afterwards (a count above
     # two); ``scatter.append_to_pair``'s two-slot bound keeps a third halfedge from writing out of
-    # ``out_edge_halfedges``' row width before the check raises.
+    # ``out_edge_halfedges``' row width before the check raises. The lumped Crouzeix-Raviart edge
+    # mass rides the same pass (``cr_face_mass_third``, the scatter of
+    # ``crouzeix_raviart_mass_diag``) into a zeroed ``out_edge_mass``.
     f = wp.int32(wp.tid())
     for k in range(3):
         h = 3 * f + k
         append_to_pair(inverse[h], h, edge_cursor, out_edge_halfedges)
+    third = cr_face_mass_third(vertices, faces, f)
+    add_corner_triple(out_edge_mass, inverse, f, third, third, third)
     l2_0, l2_1, l2_2, dbl_area = triangle_geometry_f64(vertices, faces, f)
     zero = wp.float64(0.0)
     if dbl_area <= zero:
@@ -487,11 +572,17 @@ def cr_gradient_rows(
     # perpendicular components of the CR gradient operator, supported on at most 4 vertices (the
     # edge's endpoints in slots 0/1, each incident face's apex in slot 2/3, ``-1`` when absent).
     # The edge's positive orientation is min-vertex-first, matching ``unique_edges``' sorted rows;
-    # the assembled energy is invariant to that gauge choice.
+    # the assembled energy is invariant to that gauge choice. The thread clears its own row first,
+    # so the three tables need no fill.
     u = wp.int32(wp.tid())
     a = unique_edges[u, 0]
     out_vertex_slots[u, 0] = a
     out_vertex_slots[u, 1] = unique_edges[u, 1]
+    out_vertex_slots[u, 2] = -1
+    out_vertex_slots[u, 3] = -1
+    for slot in range(4):
+        out_par[u, slot] = wp.float64(0.0)
+        out_perp[u, slot] = wp.float64(0.0)
     for t in range(2):
         h = edge_halfedges[u, t]
         if h < 0:
@@ -683,23 +774,33 @@ CR_NO_COLUMN = wp.int32(2147483647)
 
 
 @wp.kernel
-def crouzeix_raviart_edge_faces(
+def crouzeix_raviart_face_terms(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
+    write_cot: wp.int32,
     out_face_counts: wp.array[wp.int32],
     out_edge_faces: wp.array[wp.int32],
     out_nonmanifold: wp.array[wp.int32],
+    out_cot: wp.array2d[wp.float32],
 ) -> None:
-    # One pass over the face corners that both tests edge-manifoldness and records each edge's
-    # (at most two) incident faces: corner ``k`` claims a slot of its edge, slots ``2 e`` and
+    # One pass over the faces that both tests edge-manifoldness and records each edge's (at most
+    # two) incident faces: each corner ``k`` claims a slot of its edge, slots ``2 e`` and
     # ``2 e + 1`` hold the faces, and a third claim flags the mesh. A degenerate face naming one
-    # edge twice claims two slots with the same face.
-    k = wp.int32(wp.tid())
-    e = inverse[k]
-    slot = wp.atomic_add(out_face_counts, e, 1)
-    if slot < 2:
-        out_edge_faces[2 * e + slot] = k // 3
-    else:
-        out_nonmanifold[0] = 1
+    # edge twice claims two slots with the same face. With ``write_cot`` set the same pass writes
+    # the face's ``float32`` half-cotangents (``laplacian.cotmatrix_entries``' row), which
+    # ``crouzeix_raviart_entry`` casts to the matrix precision as it reads them.
+    f = wp.int32(wp.tid())
+    for c in range(3):
+        k = 3 * f + c
+        e = inverse[k]
+        slot = wp.atomic_add(out_face_counts, e, 1)
+        if slot < 2:
+            out_edge_faces[2 * e + slot] = f
+        else:
+            out_nonmanifold[0] = 1
+    if write_cot != 0:
+        store_half_cotangents(vertices, faces, f, out_cot)
 
 
 @wp.func
@@ -824,8 +925,7 @@ def crouzeix_raviart_mass_diag(
     # ``igl::crouzeix_raviart_massmatrix``'s diagonal and (per parallel/perpendicular component)
     # ``igl::cr_vector_mass``'s.
     f = wp.int32(wp.tid())
-    v0, v1, v2 = face_vertices_vec3d(vertices, faces, f)
-    third = type(out_mass[0])(triangle_double_area(v0, v1, v2) / wp.float64(6.0))
+    third = type(out_mass[0])(cr_face_mass_third(vertices, faces, f))
     add_corner_triple(out_mass, inverse, f, third, third, third)
 
 

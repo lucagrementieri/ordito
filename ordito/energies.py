@@ -53,12 +53,11 @@ from ordito import _launch
 from ordito._device import read_scalar, require_same_device
 from ordito.config import is_deterministic
 from ordito.edges import edges_unique, edges_unique_length
-from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import energies as kernel_energies
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
-from ordito.laplacian import MeshOperatorPattern, cotmatrix, cotmatrix_entries
+from ordito.laplacian import MeshOperatorPattern, cotmatrix
 
 
 def edge_length_loss(
@@ -286,20 +285,24 @@ def laplacian_smoothing_loss(
     if method == "uniform":
         operator = od.laplacian.laplacian(vertices, faces, equal_weight=True)
         selector = kernel_energies.SMOOTHING_UNIFORM
-    else:
+    elif method == "cot":
         operator = cotmatrix(vertices, faces)
         selector = kernel_energies.SMOOTHING_COT
-        if method == "cotcurv":
-            # ``mass_matrix_entries``' exact area sums; the row kernel divides them by three.
-            area_sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-            _launch.launch(
-                kernel_scatter.scatter_face_areas_exact,
-                dim=faces.size // 3,
-                inputs=[vertices, faces, None],
-                outputs=[area_sums],
-                device=device,
-            )
-            selector = kernel_energies.SMOOTHING_COTCURV
+    else:
+        # ``mass_matrix_entries``' exact area sums, formed in the face pass that writes the
+        # half-cotangents; the row kernel divides them by three.
+        n_faces = faces.size // 3
+        cot_entries = odt.empty_2d((n_faces, 3), wp.float32, device=device)
+        area_sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_laplacian.cotmatrix_entries_and_area_sums,
+            dim=n_faces,
+            inputs=[vertices, faces, wp.int32(1)],
+            outputs=[cot_entries, area_sums],
+            device=device,
+        )
+        operator = cotmatrix(vertices, faces, cot_entries)
+        selector = kernel_energies.SMOOTHING_COTCURV
     # Each method's per-row scales are formed in the row's own thread, so no scale buffer exists.
     norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     _launch.launch(
@@ -631,8 +634,6 @@ def hessian_energy(
         mass, sorted_rows = _sorted_vertex_corner_sums(
             faces, corner_mass, n_vertices, with_rows=vertex_faces is None
         )
-    # The mass diagonal is defined only at interior vertices; the count kernel below inverts it.
-    _zero_at_boundary(vertices, faces, mass)
 
     if vertex_faces is not None:
         vf_indices, vf_offsets = vertex_faces
@@ -645,7 +646,7 @@ def hessian_energy(
     _launch.launch(
         kernel_energies.hessian_energy_counts,
         dim=n_vertices,
-        inputs=[vf_offsets, mass, inverse_mass, counts],
+        inputs=[faces, vf_offsets, vf_indices, mass, inverse_mass, counts],
         device=device,
     )
     # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
@@ -773,11 +774,13 @@ def curved_hessian_energy(
     # Each unique edge's two halfedges are recorded by the same face pass.
     edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
     cursor = _launch.zeros(n_edges, dtype=wp.int32, device=device)
+    # ``_cr_mass_diagonal``'s edge mass, summed by the same face pass.
+    mass = _launch.zeros(n_edges, dtype=wp.float64, device=device)
     _launch.launch(
         kernel_energies.internal_angles_and_sums,
         dim=n_faces,
         inputs=[vertices, faces, inverse, cursor],
-        outputs=[angles, angle_sums, edge_halfedges],
+        outputs=[angles, angle_sums, edge_halfedges, mass],
         device=device,
     )
     if deterministic:
@@ -804,11 +807,10 @@ def curved_hessian_energy(
             "Crouzeix-Raviart discretization curved_hessian_energy is built on is undefined "
             "otherwise, like igl::curved_hessian_energy, which asserts it"
         )
-    mass = _cr_mass_diagonal(vertices, faces, inverse, n_edges, wp.float64)
 
-    vertex_slots = _launch.full((n_edges, 4), -1, dtype=wp.int32, device=device)
-    par = _launch.zeros((n_edges, 4), dtype=wp.float64, device=device)
-    perp = _launch.zeros((n_edges, 4), dtype=wp.float64, device=device)
+    vertex_slots = _launch.empty((n_edges, 4), dtype=wp.int32, device=device)
+    par = _launch.empty((n_edges, 4), dtype=wp.float64, device=device)
+    perp = _launch.empty((n_edges, 4), dtype=wp.float64, device=device)
     _launch.launch(
         kernel_energies.cr_gradient_rows,
         dim=n_edges,
@@ -868,8 +870,7 @@ def crouzeix_raviart_cotmatrix(
         ``(3 * n_faces,)`` triangle index buffer.
     cot_entries
         ``(n_faces, 3)`` optional precomputed weights from
-        [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries]; computed in ``dtype`` when
-        ``None``.
+        [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries]; computed when ``None``.
     dtype
         Scalar block type of the assembled matrix: ``wp.float32`` (default) or ``wp.float64``.
     unique_edges, edge_map
@@ -936,15 +937,19 @@ def crouzeix_raviart_cotmatrix(
     if n_faces == 0:
         return od.array.empty_square_bsr(n_edges, dtype, device)
 
-    # One pass over the corners records each edge's incident faces and flags a third one.
+    # One pass over the faces records each edge's incident faces and flags a third one, and writes
+    # the half-cotangents when the caller has none.
     face_counts = _launch.zeros(n_edges, dtype=wp.int32, device=device)
     edge_faces = _launch.full(2 * n_edges, -1, dtype=wp.int32, device=device)
     nonmanifold = _launch.zeros(1, dtype=wp.int32, device=device)
+    computed_cot = odt.empty_2d(
+        (n_faces if cot_entries is None else 0, 3), wp.float32, device=device
+    )
     _launch.launch(
-        kernel_energies.crouzeix_raviart_edge_faces,
-        dim=3 * n_faces,
-        inputs=[edge_map],
-        outputs=[face_counts, edge_faces, nonmanifold],
+        kernel_energies.crouzeix_raviart_face_terms,
+        dim=n_faces,
+        inputs=[vertices, faces, edge_map, wp.int32(cot_entries is None)],
+        outputs=[face_counts, edge_faces, nonmanifold, computed_cot],
         device=device,
     )
     # The validation raises on the host, so its flag is read back.
@@ -956,7 +961,7 @@ def crouzeix_raviart_cotmatrix(
         )
 
     if cot_entries is None:
-        cot_entries = cotmatrix_entries(vertices, faces, dtype=dtype)
+        cot_entries = computed_cot
 
     # The pattern follows from the incidence: a row holds its diagonal and the other edges of its
     # (at most two) faces, so at most five entries, and the count pass and a scan give the offsets.
@@ -1332,24 +1337,3 @@ def _sorted_vertex_corner_sums(
         device=device,
     )
     return sums, ((vertex_faces, offsets) if with_rows else None)
-
-
-def _zero_at_boundary(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], values: wp.array[wp.float64]
-) -> None:
-    """
-    Zero ``values`` in place at every boundary vertex.
-
-    Both quantities these energies build on -- a mass diagonal and an angle defect -- are defined
-    only at interior vertices, so each is zeroed on the boundary before being inverted or scaled.
-    Cleared straight off the halfedge mates: no index list, scan or readback, and a closed mesh
-    pays one launch that writes nothing.
-    """
-    mates = od.halfedge.halfedge_mates(faces, vertices.size)
-    _launch.launch(
-        kernel_boundary.zero_at_boundary_vertices,
-        dim=mates.size,
-        inputs=[mates, faces],
-        outputs=[values],
-        device=values.device,
-    )

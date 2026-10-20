@@ -67,7 +67,7 @@ from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
-from ordito.kernels import linalg as kernel_linalg
+from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
@@ -478,21 +478,23 @@ def inflate(
         _diffuse_pass(operator, coeff, wide, diffused)
         constraint.apply(diffused, out=positions)
 
+    # Without the pre-smoothing pass the first displacement reads the input itself.
+    current = vertices
     if pre_smooth:
         od.array.copyto(wide, vertices)
         relax(vertices)
-    else:
-        _launch.copy(positions, vertices)
+        current = positions
     for step in range(iterations):
         amount = pressure * (step + 1) / iterations if gradual else pressure
         _launch.launch(
             kernel_smoothing.inflate_displace,
             dim=n_vertices,
-            inputs=[positions, faces, vf_offsets, vf_indices, wp.float32(amount)],
+            inputs=[current, faces, vf_offsets, vf_indices, wp.float32(amount)],
             outputs=[displaced, wide],
             device=device,
         )
         relax(displaced)
+        current = positions
     return positions
 
 
@@ -1992,18 +1994,11 @@ def filter_implicit_fairing(
         return _launch.clone(vertices)
 
     positions = _as_vec3d(vertices)
-    rhs = _component_columns(n, device)
-    solutions = _component_columns(n, device)
-    # Both column lists are viewed once. The buffers are allocated here and never rebound -- only
-    # the *operator* is rebuilt each pass, which is what the note in the loop is about -- so
-    # re-slicing them per pass would be half a dozen views an iteration, buying nothing.
-    rhs_rows = [odt.as_dense(rhs[column]) for column in range(3)]
-    solution_rows = [odt.as_dense(solutions[column]) for column in range(3)]
 
     # Boundary topology is fixed for the whole flow, so the partition is built once. ``None`` means
     # "solve over every vertex" -- either the caller asked for the unconstrained flow, or the mesh
     # is closed and there is nothing to pin.
-    dirichlet = _dirichlet_state(faces, positions, n, device) if pin_boundary else None
+    dirichlet = _dirichlet_state(faces, n, device) if pin_boundary else None
     if dirichlet is not None and dirichlet.n_free == 0:
         # Every vertex is pinned, so the flow has no unknown to move and the pass is the identity.
         return _as_vec3(positions)
@@ -2011,72 +2006,95 @@ def filter_implicit_fairing(
     # The sparsity depends on the connectivity alone, so it is built once for every pass.
     pattern = laplacian.mesh_operator_pattern(faces, n)
     # The conformalized flow keeps the input's stiffness for every pass; only the mass follows the
-    # surface.
+    # surface. The ordinary flow's stiffness is never stored: each pass forms its rows from the
+    # half-cotangents inside the system kernel.
     fixed_stiffness = (
-        laplacian.cotmatrix(vertices, faces, dtype=wp.float64, pattern=pattern)
+        laplacian.cotmatrix(vertices, faces, dtype=wp.float64, pattern=pattern).values
         if conformalized
-        else None
+        else _launch.empty(0, dtype=wp.float64, device=device)
     )
+    # Per-face scratch every pass rewrites: the half-cotangents (unread by the conformalized flow)
+    # and the exact area sums, which each pass clears before its face pass adds into them.
+    cot_entries = odt.empty_2d((0 if conformalized else n_faces, 3), wp.float32, device=device)
+    area_sums = _launch.empty(n, dtype=wp.float64, device=device)
     # The ordinary flow's conditioning changes as the surface moves, so its solver decides again
     # after every iterated pass; the conformalized flow's stiffness is the input's, so its first
     # pass speaks for every later one.
     fairing = _FairingSolver(vertices, dirichlet, redecide=not conformalized)
-    interior_pattern: odt.BsrMatrix[wp.float64] | None = None
-    interior_rhs: odt.Array2dFloat64 | None = None
+    # Each pass's system values are a new buffer (the solver's state for one pass's operator must
+    # not see the next one's), over a pattern fixed for the whole flow: the mesh pattern, or for the
+    # Dirichlet pass its interior block, extracted once from it (the values that extraction reads
+    # and writes are the first pass's buffer, which that pass then overwrites).
+    first_values = _launch.empty(pattern.columns.size, dtype=wp.float64, device=device)
+    template = od.array.bsr_from_csr(n, n, pattern.offsets, pattern.columns, first_values)
+    if dirichlet is None:
+        fixed_mask = free_map = None
+        n_rows = n
+        solution_2d = _component_columns(n, device)
+    else:
+        template, _ = twl.assemble_interior_system(
+            template,
+            dirichlet.fixed_mask,
+            dirichlet.free_map,
+            odt.empty_2d((0, n), wp.float64, device=device),
+            dirichlet.n_free,
+        )
+        first_values = template.values
+        fixed_mask, free_map = dirichlet.fixed_mask, dirichlet.free_map
+        n_rows = dirichlet.n_free
+        solution_2d = dirichlet.solution
+    rhs = _component_columns(n_rows, device)
+    # Viewed once: the solution buffer is never rebound.
+    solution_rows = [odt.as_dense(solution_2d[column]) for column in range(3)]
     # The first pass reads the input itself: ``positions`` is its exact widening. Every pass then
     # writes the next one's ``wp.vec3`` positions beside its ``wp.vec3d`` ones, and the last pass's
     # are the answer.
     current = vertices
     for _ in range(iterations):
-        # Otherwise rebuilt every pass: the cotangent weights depend on ``current``, which the
-        # fairing step moves, so the ordinary flow re-linearises on the moving surface.
-        stiffness = (
-            fixed_stiffness
-            if fixed_stiffness is not None
-            else laplacian.cotmatrix(current, faces, dtype=wp.float64, pattern=pattern)
+        # Two launches assemble a pass: the face pass (half-cotangents of ``current`` -- the
+        # ordinary flow re-linearises on the moving surface -- and the exact area sums), then one
+        # row pass forming ``M - lamb L`` (or its interior block), the right-hand side and the CG
+        # seed.
+        _launch.zero_(area_sums)
+        _launch.launch(
+            kernel_laplacian.cotmatrix_entries_and_area_sums,
+            dim=n_faces,
+            inputs=[current, faces, wp.int32(not conformalized)],
+            outputs=[cot_entries, area_sums],
+            device=device,
         )
-
-        mass = laplacian.mass_matrix_entries(current, faces, dtype=wp.float64)
-
-        if dirichlet is None:
-            # A = M - lamb L (SPD: L has a negative diagonal, so subtracting it adds to the
-            # diagonal), written over L's own pattern: every referenced vertex's row stores its
-            # diagonal, and an unreferenced one has no mass, so the pattern merge ``bsr_axpy``
-            # against a ``bsr_diag`` performs would only add stored zeros.
-            system_values = _launch.empty_like(stiffness.values)
-            _launch.launch(
-                kernel_linalg.SHIFTED_SYSTEM_VALUES[wp.float64],
-                dim=n,
-                inputs=[
-                    stiffness.offsets,
-                    stiffness.columns,
-                    stiffness.values,
-                    mass,
-                    wp.float64(-float(lamb)),
-                    None,
-                    wp.int32(0),
-                    wp.int32(0),
-                ],
-                outputs=[system_values, None],
-                device=device,
-            )
-            system = twl.bsr_with_values(stiffness, system_values)
-            # Right-hand side b = M V and the CG seed in one pass. The seed is the current
-            # positions, not ``b = M V``: an unreferenced vertex has an all-zero row and a zero
-            # right-hand side, so CG never writes its entry and it would keep whatever the seed
-            # left there. One batched solve advances all three columns together; the operator is
-            # rebuilt every pass, so there is no state to hoist. The Dirichlet branch below forms
-            # its own right-hand side over the free rows, so it takes neither.
-            _launch.map(
-                kernel_smoothing.seed_and_mass_weight_components,
+        if first_values is not None:
+            values, first_values = first_values, None
+        else:
+            values = _launch.empty_like(template.values)
+        _launch.launch(
+            kernel_smoothing.fairing_system_rows,
+            dim=n,
+            inputs=[
+                pattern.offsets,
+                pattern.columns,
+                pattern.run_start,
+                pattern.keys,
+                wp.int32(pattern.n_keys),
+                pattern.order,
+                cot_entries,
+                fixed_stiffness,
+                area_sums,
+                wp.float64(-float(lamb)),
+                fixed_mask,
+                free_map,
                 positions,
-                mass,
-                out=[*solution_rows, *rhs_rows],
-            )
-            # ``M - lamb L`` over the whole mesh, a solve long enough for the polynomial
-            # preconditioner; the Dirichlet branch below is the same system less the pinned rows.
-            fairing.solve(system, rhs, solutions, maxiter=10 * n)
-            current = _launch.empty(n, dtype=wp.vec3, device=device)
+                template.offsets,
+            ],
+            outputs=[values, rhs, solution_2d],
+            device=device,
+        )
+        system = twl.bsr_with_values(template, values)
+        # One batched solve advances all three columns together; ``M - lamb L`` over the whole mesh
+        # (or its interior block) is a solve long enough for the polynomial preconditioner.
+        fairing.solve(system, rhs, solution_2d, maxiter=10 * n_rows)
+        current = _launch.empty(n, dtype=wp.vec3, device=device)
+        if dirichlet is None:
             _launch.map(
                 kernel_smoothing.combine_components_narrowed,
                 solution_rows[0],
@@ -2084,63 +2102,21 @@ def filter_implicit_fairing(
                 solution_rows[2],
                 out=[positions, current],
             )
-            continue
-
-        # Dirichlet pass: the interior block of ``M - lamb L`` with the pinned rows and columns
-        # eliminated, its right-hand side ``(M V)_u - A_ub x_b`` and the CG seed (the free
-        # vertices' current positions, exactly as the unreduced branch above seeds), all formed
-        # from the stiffness row in one launch. The interior pattern depends on the connectivity
-        # and the pinned set alone, so it is extracted once, from the first pass's stiffness; that
-        # extraction's values are a buffer of the right size for the first pass to overwrite.
-        if interior_pattern is None:
-            interior_pattern, _ = twl.assemble_interior_system(
-                stiffness,
-                dirichlet.fixed_mask,
-                dirichlet.free_map,
-                odt.empty_2d((0, n), wp.float64, device=device),
-                dirichlet.n_free,
-            )
-            interior_values = interior_pattern.values
-            interior_rhs = _component_columns(dirichlet.n_free, device)
         else:
-            interior_values = _launch.empty_like(interior_pattern.values)
-        assert interior_rhs is not None
-        solution_2d = dirichlet.solution
-        _launch.launch(
-            kernel_smoothing.interior_fairing_system,
-            dim=n,
-            inputs=[
-                stiffness.offsets,
-                stiffness.columns,
-                stiffness.values,
-                mass,
-                wp.float64(-float(lamb)),
-                dirichlet.fixed_mask,
-                dirichlet.free_map,
-                dirichlet.pinned,
-                positions,
-                interior_pattern.offsets,
-            ],
-            outputs=[interior_values, interior_rhs, solution_2d],
-            device=device,
-        )
-        interior_system = twl.bsr_with_values(interior_pattern, interior_values)
-        fairing.solve(interior_system, interior_rhs, solution_2d, maxiter=10 * dirichlet.n_free)
-        current = _launch.empty(n, dtype=wp.vec3, device=device)
-        _launch.launch(
-            kernel_smoothing.scatter_free_positions,
-            dim=n,
-            inputs=[
-                dirichlet.fixed_mask,
-                dirichlet.free_map,
-                solution_2d[0],
-                solution_2d[1],
-                solution_2d[2],
-                positions,
-                current,
-            ],
-            device=device,
-        )
+            _launch.launch(
+                kernel_smoothing.scatter_free_positions,
+                dim=n,
+                inputs=[
+                    dirichlet.fixed_mask,
+                    dirichlet.free_map,
+                    solution_rows[0],
+                    solution_rows[1],
+                    solution_rows[2],
+                    positions,
+                    current,
+                ],
+                device=device,
+            )
 
     return current
 
@@ -2244,15 +2220,11 @@ class _Dirichlet(NamedTuple):
     fixed_mask: wp.array[wp.bool]
     free_map: wp.array[wp.int32]
     n_free: int
-    pinned: odt.Array2dFloat
-    """``(3, n_vertices)`` prescribed values; only the pinned rows are ever read."""
     solution: odt.Array2dFloat
     """``(3, n_free)`` scratch for the reduced solve."""
 
 
-def _dirichlet_state(
-    faces: wp.array[wp.int32], positions: wp.array[wp.vec3d], n: int, device: wp.DeviceLike
-) -> _Dirichlet | None:
+def _dirichlet_state(faces: wp.array[wp.int32], n: int, device: wp.DeviceLike) -> _Dirichlet | None:
     """
     Boundary-pinned solve state, or ``None`` when there is no boundary to pin.
 
@@ -2278,13 +2250,10 @@ def _dirichlet_state(
     # on the boundary (a single triangle, a fan, a strip, a small hole patch) would then have the
     # unconstrained flow move every vertex the caller asked to pin. The caller reads ``n_free`` and
     # returns the input unchanged instead.
-    # Every element of both is written before it is read: the map fills all three rows, and each
-    # pass's seed writes every free row of the solution before the solve reads it.
-    pinned = _component_columns(n, device)
-    _launch.map(
-        kernel_smoothing.extract_components, positions, out=[pinned[column] for column in range(3)]
-    )
-    return _Dirichlet(fixed_mask, free_map, n_free, pinned, _component_columns(n_free, device))
+    # The prescribed values are the pinned vertices' ``positions``, which no pass writes. Every
+    # element of the solution is written before it is read: each pass's seed writes every free row
+    # before the solve reads it.
+    return _Dirichlet(fixed_mask, free_map, n_free, _component_columns(n_free, device))
 
 
 def _component_columns(n: int, device: wp.DeviceLike) -> odt.Array2dFloat64:
@@ -2619,7 +2588,8 @@ def refine_and_smooth_region(
 
     if natural_smooth:
         edges_bd = od.selection.region_boundary_edges(faces, patch_face_mask, n_vertices=n)
-        endpoints = _launch.clone(odt.as_array2d(edges_bd, wp.int32).reshape(-1))
+        # A view: the seam table is exact-size and contiguous, so its rows flatten in place.
+        endpoints = odt.as_array2d(edges_bd, wp.int32).reshape(-1)
         incident = od.array.indices_to_mask(endpoints, n, device=device)
         incident = od.selection.expand_vertex_mask(faces, incident, 5)
         incident = od.selection.shrink_vertex_mask(faces, incident, 2)
@@ -3405,23 +3375,26 @@ def filter_scalar_laplacian(
             f"values must have one entry per vertex, got {values.size} for {n} vertices"
         )
 
-    out = _launch.clone(values)
-    if n == 0 or iterations == 0:
-        return out
+    if n == 0 or iterations <= 0:
+        return _launch.clone(values)
 
     operator = _resolved_operator(vertices, faces, laplacian_operator, symmetric=True)
-    nxt = _launch.empty(n, dtype=wp.float32, device=device)
     coeff = wp.float32(lamb)
-    for _ in range(iterations):
+    # The first pass reads ``values`` itself, so the input is never copied: the passes ping-pong two
+    # buffers of this call, the second only when there is a second pass.
+    buffers = [_launch.empty(n, dtype=wp.float32, device=device) for _ in range(min(2, iterations))]
+    field = values
+    for index in range(iterations):
+        out = buffers[index % 2]
         _launch.launch(
             kernel_smoothing.diffuse_scalar_pass,
             dim=n,
-            inputs=[operator.offsets, operator.columns, operator.values, out, coeff],
-            outputs=[nxt],
+            inputs=[operator.offsets, operator.columns, operator.values, field, coeff],
+            outputs=[out],
             device=device,
         )
-        out, nxt = nxt, out
-    return out
+        field = out
+    return field
 
 
 def filter_normals(
@@ -3650,11 +3623,26 @@ def filter_two_step(
     # The fit steps ping-pong between two buffers of this call; the input is only ever read.
     positions = vertices
     spare: wp.array[wp.vec3] | None = None
-    # The normal passes' second buffer, lent to every outer pass: the field it held is spent by
-    # the time the next pass filters.
+    # The face field, its areas and the normal passes' second buffer, lent to every outer pass:
+    # the field they held is spent by the time the next pass recomputes it.
+    #
+    # Forming the field inside the first normal pass instead (each face's own and its three
+    # neighbours' normals from the positions, one launch fewer per outer pass) was measured and
+    # declined: that pass is 2.1x the face pass plus the plain first pass on a scrambled 1.3 M-face
+    # sphere and 1.27x at 82 k faces (four gathered faces' cross products per face against reading
+    # a table).
+    face_field = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    normal_areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
     spare_normals: wp.array[wp.vec3] | None = None
     for _ in range(iterations):
-        normals, normal_areas = face_normals_and_areas(positions, faces)
+        _launch.launch(
+            kernel_triangles.face_normals_and_areas,
+            dim=n_faces,
+            inputs=[positions, faces],
+            outputs=[face_field, normal_areas],
+            device=device,
+        )
+        normals = face_field
         if normal_iterations > 0:
             if spare_normals is None:
                 spare_normals = _launch.empty(n_faces, dtype=wp.vec3, device=device)
@@ -3842,20 +3830,40 @@ def filter_sharpen(
     # and sharpened there in place.
     operator = _resolved_operator(vertices, faces, laplacian_operator)
     coeff = wp.float64(1.0)
-    _vec3_passes(
-        vertices,
-        iterations,
-        lambda _index, src, dst: _diffuse_pass(operator, coeff, src, dst),
-        out=out,
-    )
-    _launch.map(
-        kernel_smoothing.unsharp_step,
-        vertices,
-        out,
-        wp.float32(weight),
-        wp.float32(weight_original),
-        out=out,
-    )
+    if iterations <= 0:
+        _launch.map(
+            kernel_smoothing.unsharp_step,
+            vertices,
+            vertices,
+            wp.float32(weight),
+            wp.float32(weight_original),
+            out=out,
+        )
+        return out
+
+    def sharpen_pass(index: int, src: _Positions, dst: _Positions) -> None:
+        # The last pass applies the unsharp mask as it writes, so the smoothed field is not stored.
+        if index < iterations - 1:
+            _diffuse_pass(operator, coeff, src, dst)
+            return
+        _launch.launch(
+            kernel_smoothing.SHARPEN_PASS[src.dtype],
+            dim=n,
+            inputs=[
+                operator.offsets,
+                operator.columns,
+                operator.values,
+                src,
+                coeff,
+                vertices,
+                wp.float32(weight),
+                wp.float32(weight_original),
+            ],
+            outputs=[dst],
+            device=device,
+        )
+
+    _vec3_passes(vertices, iterations, sharpen_pass, out=out)
     return out
 
 
