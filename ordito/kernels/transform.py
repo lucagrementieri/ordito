@@ -11,6 +11,7 @@ apply it would cost the readback [`ordito.registration`][ordito.registration] ex
 import warp as wp
 
 from ordito.kernels.predicates import normalize_or_zero
+from ordito.kernels.triangles import corner_triple, write_corner_triple_reversible
 
 wp.set_module_options({"enable_backward": False})
 
@@ -52,3 +53,47 @@ def apply_transform_mat44(
 ) -> None:
     i = wp.int32(wp.tid())
     out_points[i] = transform_point_mat44(points[i], matrix[0])
+
+
+# What ``transform_mesh_buffers`` does with the faces: leave them (an in-place call that keeps the
+# winding), copy them, or copy them corner-reversed (a mirroring matrix).
+FACES_KEEP = wp.int32(0)
+FACES_COPY = wp.int32(1)
+FACES_REVERSE = wp.int32(2)
+
+
+@wp.func
+def transform_mesh_row(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    matrix: wp.mat44,
+    face_mode: wp.int32,
+    i: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # Vertex ``i`` placed by ``matrix`` and face ``i`` written under ``face_mode``, each guarded by
+    # its own array's length; shared by ``transform_mesh_buffers`` and
+    # ``kernels/mesh.transform_mesh_and_directions``, which also maps a mesh's cached directions.
+    if i < vertices.shape[0]:
+        out_vertices[i] = transform_point_mat44(vertices[i], matrix)
+    if face_mode != FACES_KEEP and i < faces.shape[0] // 3:
+        a, b, c = corner_triple(faces, i)
+        write_corner_triple_reversible(out_faces, i, a, b, c, face_mode == FACES_REVERSE)
+
+
+@wp.kernel
+def transform_mesh_buffers(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    matrix: wp.mat44,
+    face_mode: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # ``transform.transform_mesh`` in one launch over ``max(n_vertices, n_faces)``: thread ``i``
+    # places vertex ``i`` (``transform_point_mat44``, the ``wp.map`` of ``transform_points``) and
+    # writes face ``i`` under ``face_mode`` (``repair.reverse_face_winding``'s reversal). Each
+    # thread reads its own rows before writing them, so it runs in place.
+    i = wp.int32(wp.tid())
+    transform_mesh_row(vertices, faces, matrix, face_mode, i, out_vertices, out_faces)

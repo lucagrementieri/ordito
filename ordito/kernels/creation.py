@@ -184,8 +184,8 @@ def icosphere_edge_vertex(
     return corner, index, project_to_radius(midpoint, radius)
 
 
-@wp.kernel
-def icosphere_mesh(
+@wp.func
+def icosphere_lattice_point(
     table: wp.array2d[wp.int32],
     corners: wp.array[wp.vec3],
     n: wp.int32,
@@ -194,6 +194,9 @@ def icosphere_mesh(
     radius: wp.float32,
     matrix: wp.mat44,
     transform_mode: wp.int32,
+    f: wp.int32,
+    ti: wp.int32,
+    tj: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
@@ -226,7 +229,9 @@ def icosphere_mesh(
     # ``place_point`` applies only on a single-launch build (``coarse == n`` and ``stride == 1``):
     # a later launch reads the coarser vertices back, so the wrapper passes ``TRANSFORM_NONE`` to a
     # multi-launch build.
-    f, ti, tj = wp.tid()
+    #
+    # Thread ``(f, ti, tj)`` of ``icosphere_mesh``; ``axis_mesh`` runs the same threads ahead of its
+    # three cylinders, so the two kernels differ only in what else a launch writes.
     i = ti * stride
     j = tj * stride
     if stride == 1 and i < n and j < n:
@@ -399,6 +404,38 @@ def icosphere_mesh(
         out_vertices[index2] = place_point(position2, matrix, transform_mode)
 
 
+@wp.kernel
+def icosphere_mesh(
+    table: wp.array2d[wp.int32],
+    corners: wp.array[wp.vec3],
+    n: wp.int32,
+    coarse: wp.int32,
+    stride: wp.int32,
+    radius: wp.float32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # Launched ``dim=(20, n // stride + 1, n // stride + 1)``; see ``icosphere_lattice_point``.
+    f, ti, tj = wp.tid()
+    icosphere_lattice_point(
+        table,
+        corners,
+        n,
+        coarse,
+        stride,
+        radius,
+        matrix,
+        transform_mode,
+        f,
+        ti,
+        tj,
+        out_vertices,
+        out_faces,
+    )
+
+
 @wp.func
 def revolve_template_triangle(t: wp.int32, per: wp.int32) -> wp.vec3i:
     # trimesh's quad template [0, per, 1, 1, per, per + 1] tiled over profile segment i = t // 2
@@ -515,7 +552,7 @@ def cylinder_wedge(
     # Wedge ``k`` of a capped cylinder whose ``2 * sections + 2`` vertices start at
     # ``first_vertex`` and whose triangles start at row ``first_row`` of the output buffers (its
     # face indices are offset by ``first_vertex`` too). Shared by ``cylinder_mesh`` (one cylinder)
-    # and ``axis_cylinder_meshes`` (three, one launch), which differ only in how many cylinders a
+    # and ``axis_mesh`` (three, after the ball, one launch), which differ only in what else a
     # launch writes and where.
     #
     # Vertex 0 is the bottom axis point, 1..sections the bottom ring, sections + 1..2 * sections
@@ -591,7 +628,13 @@ def cylinder_mesh(
 
 
 @wp.kernel
-def axis_cylinder_meshes(
+def axis_mesh(
+    table: wp.array2d[wp.int32],
+    corners: wp.array[wp.vec3],
+    ball_n: wp.int32,
+    ball_radius: wp.float32,
+    ball_matrix: wp.mat44,
+    ball_mode: wp.int32,
     radius: wp.float32,
     half_height: wp.float32,
     sections: wp.int32,
@@ -607,10 +650,32 @@ def axis_cylinder_meshes(
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # ``creation.axis``'s three cylinders in one launch, ``dim = (3, sections)``: cylinder ``c``,
-    # placed by its own matrix, follows cylinder ``c - 1`` in both buffers, from ``first_vertex``
-    # and ``first_row`` on (after the ball).
-    c, k = wp.tid()
+    # ``creation.axis`` in one launch: the ``20 * (ball_n + 1) ** 2`` threads of a single-launch
+    # ``icosphere_mesh`` (the origin ball, placed by ``ball_matrix``), then ``3 * sections``
+    # cylinder wedges -- cylinder ``c``, placed by its own matrix, follows cylinder ``c - 1`` in
+    # both buffers, from ``first_vertex`` and ``first_row`` on (after the ball).
+    r = wp.int32(wp.tid())
+    side = ball_n + 1
+    n_ball = 20 * side * side
+    if r < n_ball:
+        icosphere_lattice_point(
+            table,
+            corners,
+            ball_n,
+            ball_n,
+            1,
+            ball_radius,
+            ball_matrix,
+            ball_mode,
+            r // (side * side),
+            (r // side) % side,
+            r % side,
+            out_vertices,
+            out_faces,
+        )
+        return
+    c = (r - n_ball) // sections
+    k = (r - n_ball) % sections
     matrix = matrix_x
     if c == 1:
         matrix = matrix_y
@@ -1809,9 +1874,85 @@ def revolve_uniform_slot(
     return ring_base + (column - ring_base) * n_slices + slice_index
 
 
+# Where ``revolve_uniform`` reads its profile: ``PROFILE_TABLE`` from the uploaded ``profile``
+# array, every other kind evaluates the column in closed form from ``profile_params``
+# (``closed_profile_point``), so the solid is written from scalars with nothing uploaded.
+PROFILE_TABLE = wp.int32(0)
+PROFILE_UV_SPHERE = wp.int32(1)
+PROFILE_CAPSULE = wp.int32(2)
+PROFILE_ANNULUS = wp.int32(3)
+PROFILE_TORUS = wp.int32(4)
+
+HALF_PI_D = wp.float64(0.5 * math.pi)
+
+
+@wp.func
+def closed_profile_point(
+    kind: wp.int32, c: wp.int32, n_columns: wp.int32, params: wp.vec4d
+) -> wp.vec2:
+    # Column ``c`` of a closed-form solid's profile, the same ``float64`` operations in the same
+    # order as the host build it replaces (``numpy.linspace``'s ``k * step + start`` with the stop
+    # hit exactly, then the shape's scale and offset), rounded to ``float32`` once, as the upload
+    # rounded it. ``params`` per kind:
+    #   uv_sphere ``(radius, step)``: ``(sin t, -cos t) * radius``, ``t = c * step``, poles snapped.
+    #   capsule ``(radius, half_height, step)``: two quarter circles ``(cos t, sin t) * radius``
+    #       from ``-pi / 2`` to ``0`` and ``0`` to ``pi / 2``, shifted down / up by the half height,
+    #       poles snapped.
+    #   annulus ``(r_min, r_max, half_height)``: the rectangle, counter-clockwise from the inner
+    #       bottom corner.
+    #   torus ``(major, minor, step)``: ``minor * (cos t, sin t) + (major, 0)``, ``t = c * step``.
+    zero = wp.float64(0.0)
+    x = zero
+    y = zero
+    if kind == PROFILE_UV_SPHERE:
+        radius = params[0]
+        if c == 0:
+            y = -radius
+        elif c == n_columns - 1:
+            y = radius
+        else:
+            t = wp.float64(c) * params[1]
+            x = wp.sin(t) * radius
+            y = -wp.cos(t) * radius
+    elif kind == PROFILE_CAPSULE:
+        radius = params[0]
+        half = params[1]
+        quarter = n_columns // 2
+        if c == 0:
+            y = -half - radius
+        elif c == n_columns - 1:
+            y = half + radius
+        else:
+            k = c
+            start = -HALF_PI_D
+            stop = zero
+            shift = -half
+            if c >= quarter:
+                k = c - quarter
+                start = zero
+                stop = HALF_PI_D
+                shift = half
+            t = stop
+            if k < quarter - 1:
+                t = wp.float64(k) * params[2] + start
+            x = wp.cos(t) * radius
+            y = wp.sin(t) * radius + shift
+    elif kind == PROFILE_ANNULUS:
+        x = wp.where(c == 0 or c == 3, params[0], params[1])
+        y = wp.where(c < 2, -params[2], params[2])
+    else:
+        t = wp.float64(c) * params[2]
+        x = params[1] * wp.cos(t) + params[0]
+        y = params[1] * wp.sin(t) + zero
+    return wp.vec2(wp.float32(x), wp.float32(y))
+
+
 @wp.kernel
 def revolve_uniform(
     profile: wp.array[wp.vec2],
+    profile_kind: wp.int32,
+    profile_params: wp.vec4d,
+    n_columns: wp.int32,
     n_slices: wp.int32,
     angle: wp.float32,
     axis_first: wp.int32,
@@ -1837,13 +1978,13 @@ def revolve_uniform(
     #
     # Launched ``dim=(n_slices, n_columns)`` over the *deduplicated* columns: a closed profile
     # repeats its first point last, and ``wrap`` says so rather than the profile carrying the
-    # duplicate.
+    # duplicate. The columns are ``profile``'s at ``PROFILE_TABLE`` and closed form otherwise
+    # (``closed_profile_point``, ``profile`` then null).
     #
     # ``first_segment_faces`` and ``faces_per_slice`` are the caller's own count of what survives,
     # so a thread can find its slice's block and its segment's place in it without a prefix scan:
     # only the two end segments can be short, so every interior segment contributes exactly two.
     s, c = wp.tid()
-    n_columns = profile.shape[0]
     ring_base = axis_first
     on_axis_c = (c == 0 and axis_first != 0) or (c == n_columns - 1 and axis_last != 0)
 
@@ -1852,7 +1993,11 @@ def revolve_uniform(
     # the same value for every slice there, and a single writer keeps it deterministic.
     here = revolve_uniform_slot(c, s, n_columns, n_slices, ring_base, axis_first, axis_last)
     if not on_axis_c or s == 0:
-        point = profile[c]
+        point = wp.vec2()
+        if profile_kind == PROFILE_TABLE:
+            point = profile[c]
+        else:
+            point = closed_profile_point(profile_kind, c, n_columns, profile_params)
         out_vertices[here] = place_point(
             revolution_point(point[0], point[1], s, n_slices, angle), matrix, transform_mode
         )
