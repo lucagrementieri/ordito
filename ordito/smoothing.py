@@ -2586,7 +2586,8 @@ def refine_and_smooth_region(
 
     if natural_smooth:
         edges_bd = od.selection.region_boundary_edges(faces, patch_face_mask, n_vertices=n)
-        endpoints = _launch.clone(odt.as_array2d(edges_bd, wp.int32).reshape(-1))
+        # A view: the seam table is exact-size and contiguous, so its rows flatten in place.
+        endpoints = odt.as_array2d(edges_bd, wp.int32).reshape(-1)
         incident = od.array.indices_to_mask(endpoints, n, device=device)
         incident = od.selection.expand_vertex_mask(faces, incident, 5)
         incident = od.selection.shrink_vertex_mask(faces, incident, 2)
