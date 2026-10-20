@@ -4334,13 +4334,12 @@ def chebyshev_preconditioner(
     each step of the polynomial is one fused mat-vec launch, where each iteration it removes is
     half a dozen launches and two reductions. So the iteration count falls several-fold and the
     solve with it, on well- and ill-conditioned Laplacian systems alike. It needs no setup beyond
-    one copy of the matrix and one reduction for the bound: unlike
+    the inverse diagonal and the interval's bound, both formed on the device: unlike
     [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner] there is no hierarchy.
 
-    The setup -- one copy of the matrix and the bound's reduction, which reads one scalar back --
-    runs at the operator's **first apply**, so building one that is never applied is free. That
-    first apply therefore cannot sit inside a CUDA graph capture; ``warp.optim.linear.cg`` makes it
-    before its own captured loop.
+    The setup runs at the operator's **first apply**, so building one that is never applied is
+    free. That first apply allocates, and therefore cannot sit inside a CUDA graph capture;
+    ``warp.optim.linear.cg`` makes it before its own captured loop.
 
     !!! warning "The operator must be symmetric"
         ``p(D⁻¹ A) D⁻¹`` is symmetric only when ``A`` is, and conjugate gradient needs a symmetric
@@ -4395,8 +4394,7 @@ def chebyshev_preconditioner(
     """
     n = int(matrix.nrow)
     # Built on the first apply rather than here, so an operator handed out and never applied costs
-    # nothing: the bound's reduction reads a scalar back, which would drain whatever the caller
-    # has queued.
+    # nothing.
     cycle: list[_JacobiChebyshevApply] = []
 
     def matvec(x: odt.ArrayNd, _y: odt.ArrayNd, z: odt.ArrayNd, alpha: float, beta: float) -> None:
