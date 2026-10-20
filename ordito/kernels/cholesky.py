@@ -920,7 +920,7 @@ def backward_error_exceeds(
     # ``BACKWARD_ERROR_UNCONVERGED`` for a column outside its threshold, which takes precedence (a
     # maximum, so the read is the same whatever order the rows land in; the plain read first
     # spares the atomic once it is set). A word left at or below ``base`` reads as verified, so the
-    # caller reuses it with a higher ``base`` instead of clearing it (``linalg._VerdictFlag``).
+    # caller reuses it with a higher ``base`` instead of clearing it (``linalg._StampedFlag``).
     i, column = wp.tid()
     offset = column * n
     total, scale = residual_and_scale(offsets, columns, values, solution, rhs, offset, i)

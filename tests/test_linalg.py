@@ -322,6 +322,29 @@ def test_min_quad_with_fixed_solves_no_right_hand_side(device: str, solver: str)
     assert solution_wp.shape == (0, n_free)
 
 
+def test_min_quad_with_fixed_data_matches_only_its_own_mask(device: str) -> None:
+    """
+    Not a library comparison: ``matches`` compares pinned sets, on one flag reused uncleared.
+
+    Equal, differing and equal again, in that order: the flag is not cleared between calls (each
+    raises it above a fresh base), so a difference that leaked into the next call would make the
+    third answer ``False``; a mask of another length never matches.
+    """
+    matrix_wp, fixed_wp, _values_wp, _expected_np = _pinned_grid(device)
+    data = od.linalg.min_quad_with_fixed_precompute(matrix_wp, fixed_wp)
+    other_np = fixed_wp.numpy().copy()
+    other_np[np.flatnonzero(~other_np)[0]] = True
+    other_wp = wp.array(other_np, dtype=wp.bool, device=device)
+    copy_wp = wp.array(fixed_wp.numpy(), dtype=wp.bool, device=device)
+    assert [data.matches(mask) for mask in (copy_wp, other_wp, copy_wp, other_wp)] == [
+        True,
+        False,
+        True,
+        False,
+    ]
+    assert not data.matches(wp.array(other_np[:-1], dtype=wp.bool, device=device))
+
+
 def test_operator_entry_points_reject_an_operator_on_another_device() -> None:
     """
     Not a library comparison: an operator on another device than its operands raises.

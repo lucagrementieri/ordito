@@ -643,7 +643,7 @@ class MinQuadWithFixedData:
         self.fixed_mask = fixed_mask
         self.free_map, self.n_free = free_partition(fixed_mask)
         self.factorization: OperatorFactorization | None = None
-        self._match_flag: wp.array[wp.int32] | None = None
+        self._match_flag: _StampedFlag | None = None
         if self.n_free == 0 or (fixed_values is not None and int(fixed_values.shape[0]) == 0):
             return None
         values = fixed_values
@@ -726,19 +726,15 @@ class MinQuadWithFixedData:
         if fixed_mask.size == 0:
             return True
         device = fixed_mask.device
-        if self._match_flag is None:
-            self._match_flag = _launch.zeros(1, dtype=wp.int32, device=device)
-        else:
-            _launch.zero_(self._match_flag)
-        flag = self._match_flag
+        flag = self._match_flag = _StampedFlag.reused(self._match_flag, device)
         _launch.launch(
             kernel_linalg.masks_differ,
             dim=fixed_mask.size,
-            inputs=[fixed_mask, self.fixed_mask],
-            outputs=[flag],
+            inputs=[fixed_mask, self.fixed_mask, wp.int32(flag.base)],
+            outputs=[flag.word],
             device=device,
         )
-        return read_scalar(flag, 0) == 0
+        return flag.verdict() == 0
 
     def solve(
         self,
@@ -1830,7 +1826,7 @@ def _verdict(
         return int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED)
     device = rhs.device
     n_columns, n = int(rhs.shape[0]), int(rhs.shape[1])
-    flag = factorization._flag = _VerdictFlag.reused(factorization._flag, device)  # pyright: ignore[reportPrivateUsage]
+    flag = factorization._flag = _StampedFlag.reused(factorization._flag, device)  # pyright: ignore[reportPrivateUsage]
     on_device = isinstance(residual, wp.array)
     _launch.launch(
         kernel_cholesky.backward_error_exceeds,
@@ -2101,7 +2097,7 @@ class OperatorFactorization:
         # one-element arrays a call is three allocations on a path that costs a few launches.
         self._reports: dict[float, tuple[Any, Any, Any]] = {}
         # The verified solve's backward-error flag (``_verdict``), kept across solves.
-        self._flag: _VerdictFlag | None = None
+        self._flag: _StampedFlag | None = None
 
     @property
     def matrix(self) -> odt.SparseMatrix:
@@ -2389,7 +2385,7 @@ def solve_spd_settled(
     # exactly (a settled solve sits orders of magnitude below the bar, a failed one at 1), and the
     # direct factorization -- which reaches every entry with its own relative precision -- takes
     # over. One four-byte read: the decision to factor is the host's.
-    flag = solver.flag = _VerdictFlag.reused(solver.flag, rhs.device)
+    flag = solver.flag = _StampedFlag.reused(solver.flag, rhs.device)
     _launch.launch(
         kernel_cholesky.backward_error_exceeds,
         dim=(int(scalar.nrow), n_columns),
@@ -2418,14 +2414,14 @@ def solve_spd_settled(
     return solver.iterations
 
 
-class _VerdictFlag:
+class _StampedFlag:
     """
-    The device word ``kernels/cholesky.backward_error_exceeds`` raises to its verdict, reused.
+    A device word a check raises above a base to flag its finding, reused without a clear.
 
-    Each verification raises the word to ``base`` plus its verdict code, by a maximum, and the next
-    one runs from a ``base`` above anything the last could have written, so the word is reused
-    with no clear (a memset) per verification. Zeroed again only when ``base`` nears the
-    ``int32`` range.
+    A check (``kernels/cholesky.backward_error_exceeds``' verdicts, ``kernels/linalg.
+    masks_differ``) raises the word to ``base`` plus its code, and the next one runs from a
+    ``base`` above anything the last could have written, so the word is reused with no clear (a
+    memset) per check. Zeroed again only when ``base`` nears the ``int32`` range.
     """
 
     __slots__ = ("base", "word")
@@ -2439,7 +2435,7 @@ class _VerdictFlag:
         self.base = 0
 
     @classmethod
-    def reused(cls, flag: _VerdictFlag | None, device: wp.DeviceLike) -> _VerdictFlag:
+    def reused(cls, flag: _StampedFlag | None, device: wp.DeviceLike) -> _StampedFlag:
         """Return ``flag`` advanced to a fresh base, or a new flag on ``device`` when it is none."""
         if flag is None:
             return cls(device)
@@ -2450,7 +2446,7 @@ class _VerdictFlag:
         return flag
 
     def verdict(self) -> int:
-        """Read the verification's verdict back: ``0`` (verified) or its code past the base."""
+        """Read the check's finding back: ``0`` (nothing flagged) or its code past the base."""
         value = int(read_scalar(self.word, 0))
         return value - self.base if value > self.base else 0
 
@@ -3228,7 +3224,7 @@ class _BatchedCg:
         # ``_initialize``, which reads the caller's operands, is issued per call.
         self._graph = None
         # ``solve_spd_settled``'s backward-error flag, kept across its solves.
-        self.flag: _VerdictFlag | None = None
+        self.flag: _StampedFlag | None = None
 
         # The settle monitor ``solve_spd_settled`` runs (``check_rounds``, ``change_tolerance``,
         # ``settle_rounds``): every ``check_rounds`` rounds ``cg_settle_change`` compares the

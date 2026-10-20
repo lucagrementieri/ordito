@@ -226,13 +226,19 @@ def interior_system_csr(
 
 @wp.kernel
 def masks_differ(
-    first: wp.array[wp.bool], second: wp.array[wp.bool], out_flag: wp.array[wp.int32]
+    first: wp.array[wp.bool],
+    second: wp.array[wp.bool],
+    base: wp.int32,
+    out_flag: wp.array[wp.int32],
 ) -> None:
     # Whether a call pins the degrees of freedom a precomputed factorization was built for: the
     # reduced operator depends on the pinned *set*, so two masks are compared, not index lists.
+    # A difference writes ``base + 1``, every writer the same value; a word left at or below
+    # ``base`` reads as equal, so the caller reuses it above a fresh base instead of clearing it
+    # (``linalg._StampedFlag``).
     i = wp.int32(wp.tid())
     if first[i] != second[i]:
-        out_flag[0] = 1
+        out_flag[0] = base + 1
 
 
 @wp.kernel
