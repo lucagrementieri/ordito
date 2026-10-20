@@ -472,6 +472,32 @@ def mate_signed_edge(
 
 
 @wp.kernel
+def mate_prehook_parity(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], out_words: wp.array[wp.int32]
+) -> None:
+    # ``connected_components.ecl_init_parent_parity`` with each face pre-hooked to its smallest
+    # edge neighbour, at the sign of the pair between them (``mate_signed_edge`` of the pair's
+    # lower halfedge), the pre-hook ``ecl_init_parent`` makes and the parity form could not without
+    # a signed CSR: a face's three halfedge mates are that CSR row. One thread per face writes its
+    # own word, so no identity forest is laid down first; a face with no smaller neighbour is its
+    # own root at parity 0. Every link taken is one ``mate_hook_parity`` also hooks, so the forest
+    # it starts from is consistent with the signed edges.
+    f = wp.int32(wp.tid())
+    parent = f
+    parity = wp.int32(0)
+    for k in range(3):
+        h = 3 * f + k
+        mate = mates[h]
+        if mate >= 0:
+            g = mate // 3
+            if g < parent:
+                _f0, _f1, sign = mate_signed_edge(faces, mates, wp.min(h, mate))
+                parent = g
+                parity = sign
+    out_words[f] = (parent << 1) | parity
+
+
+@wp.kernel
 def mate_hook_parity(
     faces: wp.array[wp.int32], mates: wp.array[wp.int32], words: wp.array[wp.int32]
 ) -> None:

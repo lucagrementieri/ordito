@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 import warp as wp
 
@@ -1302,35 +1302,24 @@ def _orientation_words_from_mates(
     if mates is None:
         mates = od.halfedge.halfedge_mates(faces, n_vertices)
     # Every endpoint is a face id derived in the thread from a halfedge index, bounded by
-    # ``n_faces`` by construction, and every sign is ``0`` or ``1``.
-    words = _orientation_words(
-        faces.size // 3,
+    # ``n_faces`` by construction, and every sign is ``0`` or ``1``. The pre-hook lays the forest
+    # down already hooked to each face's smallest neighbour, so no identity forest is written first.
+    n_faces = faces.size // 3
+    words = _launch.empty(n_faces, dtype=wp.int32, device=faces.device)
+    _launch.launch(
+        kernel_validation.mate_prehook_parity,
+        dim=n_faces,
+        inputs=[faces, mates],
+        outputs=[words],
+        device=faces.device,
+    )
+    _launch.launch(
         kernel_validation.mate_hook_parity,
-        mates.size,
-        [faces, mates],
-        faces.device,
+        dim=mates.size,
+        inputs=[faces, mates, words],
+        device=faces.device,
     )
     return words, mates
-
-
-def _orientation_words(
-    n_faces: int,
-    hook: odt.Kernel,
-    n_edges: int,
-    hook_inputs: Sequence[object],
-    device: wp.DeviceLike,
-) -> wp.array[wp.int32]:
-    """Initialize the packed parity words and run ``hook`` over them, ready to flatten."""
-    words = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_connected_components.ecl_init_parent_parity,
-        dim=n_faces,
-        inputs=[words],
-        device=device,
-    )
-    if n_edges > 0:
-        _launch.launch(hook, dim=n_edges, inputs=[*hook_inputs, words], device=device)
-    return words
 
 
 def _flatten_orientation(words: wp.array[wp.int32]) -> wp.array[wp.int32]:
