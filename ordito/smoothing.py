@@ -3617,11 +3617,26 @@ def filter_two_step(
     # The fit steps ping-pong between two buffers of this call; the input is only ever read.
     positions = vertices
     spare: wp.array[wp.vec3] | None = None
-    # The normal passes' second buffer, lent to every outer pass: the field it held is spent by
-    # the time the next pass filters.
+    # The face field, its areas and the normal passes' second buffer, lent to every outer pass:
+    # the field they held is spent by the time the next pass recomputes it.
+    #
+    # Forming the field inside the first normal pass instead (each face's own and its three
+    # neighbours' normals from the positions, one launch fewer per outer pass) was measured and
+    # declined: that pass is 2.1x the face pass plus the plain first pass on a scrambled 1.3 M-face
+    # sphere and 1.27x at 82 k faces (four gathered faces' cross products per face against reading
+    # a table).
+    face_field = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    normal_areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
     spare_normals: wp.array[wp.vec3] | None = None
     for _ in range(iterations):
-        normals, normal_areas = face_normals_and_areas(positions, faces)
+        _launch.launch(
+            kernel_triangles.face_normals_and_areas,
+            dim=n_faces,
+            inputs=[positions, faces],
+            outputs=[face_field, normal_areas],
+            device=device,
+        )
+        normals = face_field
         if normal_iterations > 0:
             if spare_normals is None:
                 spare_normals = _launch.empty(n_faces, dtype=wp.vec3, device=device)
