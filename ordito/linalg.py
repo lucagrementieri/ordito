@@ -641,10 +641,10 @@ class MinQuadWithFixedData:
             )
         self.q = q
         self.fixed_mask = fixed_mask
-        self.free_map, self.n_free = free_partition(fixed_mask)
         self.factorization: OperatorFactorization | None = None
         self._match_flag: _StampedFlag | None = None
-        if self.n_free == 0 or (fixed_values is not None and int(fixed_values.shape[0]) == 0):
+        if fixed_values is not None and int(fixed_values.shape[0]) == 0:
+            self.free_map, self.n_free = free_partition(fixed_mask)
             return None
         values = fixed_values
         if values is None:
@@ -652,7 +652,9 @@ class MinQuadWithFixedData:
                 _launch.empty((0, fixed_mask.size), dtype=wp.float64, device=fixed_mask.device),
                 wp.float64,
             )
-        q_uu, rhs = assemble_interior_system(q, fixed_mask, self.free_map, values, self.n_free)
+        q_uu, rhs, self.free_map, self.n_free = partitioned_interior_system(q, fixed_mask, values)
+        if self.n_free == 0:
+            return None
         self.factorization = OperatorFactorization(
             q_uu, free_coordinates(coordinates, fixed_mask, self.free_map, self.n_free)
         )
@@ -1086,15 +1088,7 @@ def assemble_interior_system(
     )
     device = fixed_mask.device
     n_dofs = fixed_mask.size
-    n_rhs = int(fixed_values.shape[0])
-    if load is not None:
-        n_load = int(load.shape[0])
-        if n_rhs not in (0, n_load):
-            raise ValueError(
-                f"load has {n_load} rows but fixed_values has {n_rhs}; they must match, or "
-                "fixed_values must have none."
-            )
-        n_rhs = n_load
+    n_rhs = _rhs_rows(fixed_values, load)
     # Every free row writes its own count and its column of ``rhs`` exactly once (``free_map`` is a
     # bijection onto ``[0, n_free)``), so there is nothing to pre-zero.
     counts = _launch.empty(n_free, dtype=wp.int32, device=device)
@@ -1140,6 +1134,138 @@ def assemble_interior_system(
     # Hand the finished CSR to a compact ``BsrMatrix`` directly (``_bsr_over``).
     q_uu = _bsr_over(n_free, n_free, row_offsets, columns, values, nnz_uu)
     return q_uu, odt.as_array2d(rhs, wp.float64)
+
+
+def partitioned_interior_system(
+    q: odt.SparseMatrix,
+    fixed_mask: wp.array[wp.bool],
+    fixed_values: odt.Array2dFloat,
+    *,
+    scale: float = 1.0,
+    load: odt.Array2dFloat | None = None,
+) -> tuple[odt.BsrMatrix[wp.float64], odt.Array2dFloat, wp.array[wp.int32], int]:
+    """
+    Extract ``Q_uu`` and ``b_u - Q_ub bc`` together with the free partition they are taken over.
+
+    [`free_partition`][ordito.linalg.free_partition] followed by
+    [`assemble_interior_system`][ordito.linalg.assemble_interior_system], in two launches, one
+    scan and one host read: one pass counts each row's ``(free, kept entries)`` pair, one scan of
+    the pairs gives every row's free rank and output offset at once (and both totals, read back
+    together), and one pass writes the map, the CSR and the right-hand side. The results are
+    those of the two-step form, entry for entry.
+
+    Parameters
+    ----------
+    q
+        ``(n_dofs, n_dofs)`` symmetric positive-semi-definite operator, ``float64``.
+    fixed_mask
+        ``(n_dofs,)`` mask: ``True`` marks a pinned degree of freedom.
+    fixed_values
+        ``(n_rhs, n_dofs)`` prescribed values.
+    scale
+        Factor applied to ``q`` as it is read, as
+        [`assemble_interior_system`][ordito.linalg.assemble_interior_system] takes it.
+    load
+        ``(n_rhs, n_dofs)`` linear term ``b``, as
+        [`assemble_interior_system`][ordito.linalg.assemble_interior_system] takes it.
+
+    Returns
+    -------
+    q_uu : ``warp.sparse.BsrMatrix``
+        ``(n_free, n_free)`` reduced operator.
+    rhs : odt.Array2dFloat
+        ``(n_rhs, n_free)`` constant right-hand side.
+    free_map : wp.array[wp.int32]
+        ``(n_dofs,)`` compact remap of the free degrees of freedom, as
+        [`free_partition`][ordito.linalg.free_partition] returns it.
+    n_free : int
+        Number of unpinned degrees of freedom.
+
+    Raises
+    ------
+    RuntimeError
+        If ``q``, ``fixed_mask``, ``fixed_values`` and ``load`` are not all on one device.
+    ValueError
+        If ``load`` and ``fixed_values`` both have rows and their row counts differ.
+
+    See Also
+    --------
+    [`assemble_interior_system`][ordito.linalg.assemble_interior_system]
+    [`free_partition`][ordito.linalg.free_partition]
+
+    Examples
+    --------
+    The interior block of ``-L`` on a flat grid, with the boundary fixed to its ``x`` coordinates:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(8, 8))
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    mask = np.zeros(vertices.shape[0], dtype=bool)
+    mask[od.boundary.longest_boundary_loop(vertices, faces).numpy()] = True
+    x = vertices.numpy()[:, 0].astype(np.float64)
+    q_uu, rhs, free_map, n_free = od.linalg.partitioned_interior_system(
+        L, wp.array(mask, dtype=wp.bool), wp.array(x[None, :], dtype=wp.float64), scale=-1.0
+    )
+    print(q_uu.shape, rhs.shape, n_free)  # (36, 36) (1, 36) 36
+    interior = wp.array(x[~mask], dtype=wp.float64)
+    print(np.allclose((q_uu @ interior).numpy(), rhs.numpy()[0]))  # True
+    ```
+    """
+    require_same_device(q=q, fixed_mask=fixed_mask, fixed_values=fixed_values, load=load)
+    n_rhs = _rhs_rows(fixed_values, load)
+    device = fixed_mask.device
+    n_dofs = fixed_mask.size
+    if n_dofs == 0:
+        free_map, n_free = free_partition(fixed_mask)
+        q_uu, rhs = assemble_interior_system(
+            q, fixed_mask, free_map, fixed_values, n_free, scale=scale, load=load
+        )
+        return q_uu, rhs, free_map, n_free
+    ranks = _launch.empty(n_dofs + 1, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_linalg.interior_partition_counts,
+        dim=n_dofs,
+        inputs=[q.offsets, q.columns, fixed_mask],
+        outputs=[ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # One read for both totals: the free count and the reduced entry count size everything after.
+    n_free, nnz_uu = (int(v) for v in read_values(ranks, n_dofs, 1)[0])
+    free_map = _launch.empty(n_dofs, dtype=wp.int32, device=device)
+    row_offsets = _launch.empty(n_free + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(nnz_uu, dtype=wp.int32, device=device)
+    values = _launch.empty(nnz_uu, dtype=wp.float64, device=device)
+    rhs = _launch.empty((n_rhs, n_free), dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_linalg.interior_partition_system,
+        dim=n_dofs,
+        inputs=[q.offsets, q.columns, q.values, fixed_mask, ranks, fixed_values,
+                wp.float64(scale), load],
+        outputs=[free_map, row_offsets, columns, values, rhs],
+        device=device,
+    )  # fmt: skip
+    q_uu = _bsr_over(n_free, n_free, row_offsets, columns, values, nnz_uu)
+    return q_uu, odt.as_array2d(rhs, wp.float64), free_map, n_free
+
+
+def _rhs_rows(fixed_values: odt.ArrayNd, load: odt.ArrayNd | None) -> int:
+    """Return an extraction's right-hand-side row count; raise if ``load`` disagrees with it."""
+    n_rhs = int(fixed_values.shape[0])
+    if load is not None:
+        n_load = int(load.shape[0])
+        if n_rhs not in (0, n_load):
+            raise ValueError(
+                f"load has {n_load} rows but fixed_values has {n_rhs}; they must match, or "
+                "fixed_values must have none."
+            )
+        n_rhs = n_load
+    return n_rhs
 
 
 def solve_spd(

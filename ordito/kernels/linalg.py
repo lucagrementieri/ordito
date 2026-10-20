@@ -129,6 +129,52 @@ def selected_row(
     return index_map[i]
 
 
+@wp.func
+def interior_kept(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    fixed_mask: wp.array[wp.bool],
+    i: wp.int32,
+) -> wp.int32:
+    # How many of row ``i``'s entries survive the elimination: those whose column is free. Shared
+    # by the two extractions' counting passes (``interior_row_counts``,
+    # ``interior_partition_counts``).
+    kept = wp.int32(0)
+    for e in range(offsets[i], offsets[i + 1]):
+        if not fixed_mask[columns[e]]:
+            kept += 1
+    return kept
+
+
+@wp.func
+def interior_rhs_row(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    fixed_values: wp.array2d[wp.float64],
+    scale: wp.float64,
+    load: wp.array2d[wp.float64],
+    i: wp.int32,
+    ri: wp.int32,
+    out_rhs: wp.array2d[wp.float64],
+) -> None:
+    # Column ``ri`` of the reduced right-hand side, from free row ``i`` of ``Q``: the load's entry
+    # less the pinned columns' ``scale * Q_ij bc_j``, for every right-hand-side row. A row past
+    # ``load``'s or ``fixed_values``' own row count reads that array as zero. Shared by both
+    # extractions (``interior_row_counts``, ``interior_partition_system``).
+    for c in range(out_rhs.shape[0]):
+        acc = wp.float64(0.0)
+        if c < load.shape[0]:
+            acc = load[c, i]
+        if c < fixed_values.shape[0]:
+            for e in range(offsets[i], offsets[i + 1]):
+                j = columns[e]
+                if fixed_mask[j]:
+                    acc -= scale * values[e] * fixed_values[c, j]
+        out_rhs[c, ri] = acc
+
+
 @wp.kernel
 def interior_row_counts(
     offsets: wp.array[wp.int32],
@@ -154,15 +200,9 @@ def interior_row_counts(
     ri = free_row(fixed_mask, free_map, i)
     if ri < 0:
         return
-    start = offsets[i]
-    end = offsets[i + 1]
-    kept = wp.int32(0)
-    for e in range(start, end):
-        if not fixed_mask[columns[e]]:
-            kept += 1
     # A free row every one of whose columns is pinned counts 0 and becomes an *empty* CSR row, not a
     # dropped one -- the scan of these counts is what keeps the row offsets in step.
-    out_counts[ri] = kept
+    out_counts[ri] = interior_kept(offsets, columns, fixed_mask, i)
     # The thread owns row ``ri`` of ``out_rhs`` exclusively, so a single register accumulator and
     # write suffice per right-hand-side column.
     #
@@ -181,16 +221,9 @@ def interior_row_counts(
     # ``None`` reads as zero rows -- seeds the accumulator, so a linear term ``b_u`` is compacted in
     # this launch rather than a scatter of its own. A right-hand-side row past either array's own
     # row count reads that array as zero.
-    for c in range(out_rhs.shape[0]):
-        acc = wp.float64(0.0)
-        if c < load.shape[0]:
-            acc = load[c, i]
-        if c < fixed_values.shape[0]:
-            for e in range(start, end):
-                j = columns[e]
-                if fixed_mask[j]:
-                    acc -= scale * values[e] * fixed_values[c, j]
-        out_rhs[c, ri] = acc
+    interior_rhs_row(
+        offsets, columns, values, fixed_mask, fixed_values, scale, load, i, ri, out_rhs
+    )
 
 
 @wp.kernel
@@ -222,6 +255,68 @@ def interior_system_csr(
             out_columns[slot] = free_map[j]
             out_values[slot] = scale * values[e]
             slot += 1
+
+
+@wp.kernel
+def interior_partition_counts(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    fixed_mask: wp.array[wp.bool],
+    out_ranks: wp.array[wp.vec2i],
+) -> None:
+    # The partitioned extraction's one counting pass (``linalg.partitioned_interior_system``): row
+    # ``i``'s ``(free, kept entries)`` at ``i + 1`` of an ``n + 1`` buffer, ``(0, 0)`` for a pinned
+    # row, and the leading zero by thread 0, so one inclusive scan of it holds every row's free
+    # rank and output offset at once, and its last element both totals for one read.
+    i = wp.int32(wp.tid())
+    if i == 0:
+        out_ranks[0] = wp.vec2i(0, 0)
+    if fixed_mask[i]:
+        out_ranks[i + 1] = wp.vec2i(0, 0)
+    else:
+        out_ranks[i + 1] = wp.vec2i(1, interior_kept(offsets, columns, fixed_mask, i))
+
+
+@wp.kernel
+def interior_partition_system(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    ranks: wp.array[wp.vec2i],
+    fixed_values: wp.array2d[wp.float64],
+    scale: wp.float64,
+    load: wp.array2d[wp.float64],
+    out_free_map: wp.array[wp.int32],
+    out_row_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+    out_rhs: wp.array2d[wp.float64],
+) -> None:
+    # Everything the extraction writes, from the scanned ``(free, kept)`` pairs: row ``i``'s free
+    # rank (``free_partition``'s map, defined at pinned rows too), and for a free row its CSR
+    # offset, its surviving entries -- columns renumbered by the scan, so no map is read back --
+    # and its right-hand-side column (``interior_rhs_row``). ``interior_system_csr`` emits the same
+    # entries from a map it is handed; the two differ only in where a column's rank comes from.
+    i = wp.int32(wp.tid())
+    n = fixed_mask.shape[0]
+    rank = ranks[i][0]
+    out_free_map[i] = rank
+    if i == 0:
+        out_row_offsets[ranks[n][0]] = ranks[n][1]
+    if fixed_mask[i]:
+        return
+    out_row_offsets[rank] = ranks[i][1]
+    slot = ranks[i][1]
+    for e in range(offsets[i], offsets[i + 1]):
+        j = columns[e]
+        if not fixed_mask[j]:
+            out_columns[slot] = ranks[j][0]
+            out_values[slot] = scale * values[e]
+            slot += 1
+    interior_rhs_row(
+        offsets, columns, values, fixed_mask, fixed_values, scale, load, i, rank, out_rhs
+    )
 
 
 @wp.kernel

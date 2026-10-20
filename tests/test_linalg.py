@@ -505,6 +505,39 @@ def test_assemble_interior_system_scales_and_adds_a_load(device: str) -> None:
         )
 
 
+@pytest.mark.parametrize("pinned", ["border", "none", "all"])
+def test_partitioned_interior_system_equals_the_two_step_extraction(
+    device: str, pinned: str
+) -> None:
+    """
+    Ordito against ordito: one-read extraction equals ``free_partition`` + the two-step assembly.
+
+    The two-step form carries the dense oracle (the two tests above); this pins the fused form to
+    it entry for entry -- map, offsets, columns, values and right-hand side, with ``scale`` and
+    ``load`` -- over a border pin, nothing pinned and everything pinned (empty system).
+    """
+    matrix_wp, _fixed_wp, fixed_values_wp, _dense_np, values_np, fixed_np = _pinned_system(device)
+    mask_np = {"border": fixed_np, "none": np.zeros_like(fixed_np), "all": np.ones_like(fixed_np)}
+    mask_wp = wp.array(mask_np[pinned], dtype=wp.bool, device=device)
+    load_np = np.random.default_rng(5).standard_normal(values_np.shape)
+    load_wp = odt.as_array2d(wp.array(load_np, dtype=wp.float64, device=device), wp.float64)
+    free_map_wp, n_free = od.linalg.free_partition(mask_wp)
+    q_two, rhs_two = od.linalg.assemble_interior_system(
+        matrix_wp, mask_wp, free_map_wp, fixed_values_wp, n_free, scale=-1.0, load=load_wp
+    )
+    q_one, rhs_one, map_one, n_one = od.linalg.partitioned_interior_system(
+        matrix_wp, mask_wp, fixed_values_wp, scale=-1.0, load=load_wp
+    )
+    assert n_one == n_free
+    assert np.array_equal(map_one.numpy(), free_map_wp.numpy())
+    nnz = int(q_two.offsets.numpy()[n_free])
+    assert q_one.nnz_sync() == nnz
+    assert np.array_equal(q_one.offsets.numpy()[: n_free + 1], q_two.offsets.numpy()[: n_free + 1])
+    assert np.array_equal(q_one.columns.numpy()[:nnz], q_two.columns.numpy()[:nnz])
+    assert np.array_equal(q_one.values.numpy()[:nnz], q_two.values.numpy()[:nnz])
+    assert np.array_equal(rhs_one.numpy(), rhs_two.numpy())
+
+
 @pytest.mark.parity(
     "solve_spd_columns",
     "numpy",
