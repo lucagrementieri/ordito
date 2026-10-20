@@ -138,7 +138,7 @@ import warp.optim.linear as wpl
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.cholesky import NotPositiveDefiniteError, SparseCholesky, sparse_cholesky
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
@@ -2607,7 +2607,8 @@ def _cg_one_block(
     )
     if device_result:
         return iterations, residual, threshold
-    results_np = results.numpy()
+    # One offset copy into a kept host scratch, not ``.numpy()``'s fresh staging array.
+    results_np = np.asarray(read_values(results, 0, 3 * n_columns))
     residual_norm, threshold_norm = _worst_column(
         results_np[:n_columns], results_np[n_columns : 2 * n_columns]
     )
@@ -3006,6 +3007,9 @@ class _BatchedCg:
         # contiguous span a host result reads in one readback (``host_result``).
         head = _launch.zeros(_INT_WORDS + 10 * self._n_columns, dtype=wp.float64, device=device)
         self._head = odt.as_dense(head[: _INT_WORDS + 2 * self._n_columns])
+        # The head's host mirror on a CUDA state, allocated by the first host read and rewritten
+        # by every later one (``_read_head``).
+        self._head_host: wp.array[wp.float64] | None = None
         scalars = odt.as_dense(head[_INT_WORDS:]).reshape((10, self._n_columns))
         self._residual_tolerance = odt.as_array2d(odt.as_dense(scalars[0:2]), wp.float64)
         self._atol_sq = odt.as_dense(scalars[0])
@@ -3453,7 +3457,7 @@ class _BatchedCg:
                 self._settle_check()
             # The condition, the iteration count and the result rows share one span, so the last
             # check's read is also the result's.
-            head = self._head.numpy()
+            head = self._read_head()
             if not int(_head_ints(head)[int(kernel_array.LOOP_CONDITION)]):
                 break
         if (
@@ -3462,7 +3466,7 @@ class _BatchedCg:
         ):
             # Stopped by the cap after a round that stepped: re-measure the residual it left.
             self._capped_residual()
-            head = self._head.numpy()
+            head = self._read_head()
         return self.host_result(head)
 
     def _capped_residual(self) -> None:
@@ -3493,10 +3497,26 @@ class _BatchedCg:
         column's own pair (``_worst_column``).
         """
         if head is None:
-            head = self._head.numpy()
+            head = self._read_head()
         rows = np.asarray(head[_INT_WORDS:]).reshape((2, self._n_columns))
         residual, threshold = _worst_column(rows[1], rows[0])
         return int(_head_ints(head)[kernel_array.LOOP_STATE_SIZE]), residual, threshold
+
+    def _read_head(self) -> npt.NDArray[np.float64]:
+        """
+        Read the head span (loop state, count, threshold and residual rows) back to the host.
+
+        A CUDA state copies it into one pageable host buffer it keeps, so a host-checked loop pays
+        a copy a check and no host allocation (``.numpy()`` stages through a fresh one each call).
+        Pageable, not pinned, for ``_device.read_scalar``'s reason: the copy then returns only once
+        it has landed. The returned view aliases that buffer and is valid until the next read.
+        """
+        if not self._device.is_cuda:
+            return self._head.numpy()
+        if self._head_host is None:
+            self._head_host = _launch.empty(self._head.size, dtype=wp.float64, device="cpu")
+        _launch.copy(self._head_host, self._head)
+        return self._head_host.numpy()
 
 
 # ``float64`` words at the head of a ``_BatchedCg``'s scalar buffer that hold its ``int32`` loop
