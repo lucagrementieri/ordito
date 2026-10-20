@@ -2381,16 +2381,17 @@ def stitch_smooth(
         result = (combined_vertices, combined_faces)
         return (*result, patch_mask) if return_patch else result
 
-    # Independent copies, not views: ``boundary_loops`` returns slices of one shared packed buffer
-    # and ``_mean_rim_edge_length`` must not alias it. ``wp.clone`` says exactly that; the round
-    # trip through ``.numpy()`` these used to take said nothing and crossed the bus twice. The
-    # second loop's shift into the combined numbering is elementwise, so it maps on the device.
-    shifted_loop_b = _launch.empty(loop_b.size, dtype=wp.int32, device=device)
-    _launch.map(wp.add, loop_b, wp.int32(vertices_a.size), out=shifted_loop_b)
-    rim_loops = [_launch.clone(loop_a), shifted_loop_b]
-    target_edge = (
-        max_edge if max_edge is not None else _mean_rim_edge_length(combined_vertices, rim_loops)
-    )
+    target_edge = max_edge
+    if target_edge is None:
+        # Both rims in the combined numbering, packed into one buffer as they are written: loop A
+        # copied, loop B shifted past A's vertices by an elementwise map into the tail.
+        n_a, n_b = loop_a.size, loop_b.size
+        rims = _launch.empty(n_a + n_b, dtype=wp.int32, device=device)
+        _launch.copy(rims, loop_a, count=n_a)
+        _launch.map(wp.add, loop_b, wp.int32(vertices_a.size), out=odt.as_dense(rims[n_a:]))
+        target_edge = _mean_rim_edge_length(
+            combined_vertices, _PackedLoops(rims, np.array([n_a, n_b], dtype=np.int64))
+        )
     new_vertices, new_faces, out_patch = od.smoothing.refine_and_smooth_region(
         combined_vertices,
         combined_faces,
@@ -3914,26 +3915,19 @@ def _patch_mask(
     return mask
 
 
-def _mean_rim_edge_length(
-    vertices: wp.array[wp.vec3], loops: _PackedLoops | list[wp.array[wp.int32]]
-) -> float:
+def _mean_rim_edge_length(vertices: wp.array[wp.vec3], loops: _PackedLoops) -> float:
     """
     Mean edge length over the rims of the given loops (the derived subdivision target).
 
     Every rim is closed, so its edge count is its vertex count and the mean is the total perimeter
     over ``sum(sizes)`` -- which makes this one
     [`_PackedLoops.perimeters`][ordito.holes._PackedLoops.perimeters] launch plus its one
-    readback, the same measurement [`fill_small`][ordito.holes.fill_small] already pays. A list
-    is accepted because
-    [`ordito.holes.stitch_smooth`][ordito.holes.stitch_smooth] holds its two rims
-    individually; it is packed here rather than at that call site so the private surface stays one
-    name wide.
+    readback, the same measurement [`fill_small`][ordito.holes.fill_small] already pays.
     """
-    packed = loops if isinstance(loops, _PackedLoops) else _pack_loops(loops)
-    count = int(packed.sizes_np.sum())
+    count = int(loops.sizes_np.sum())
     if count == 0:
         return 0.0
-    return float(packed.perimeters(vertices).sum()) / count
+    return float(loops.perimeters(vertices).sum()) / count
 
 
 def _hole_loops(
