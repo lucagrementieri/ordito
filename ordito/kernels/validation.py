@@ -10,7 +10,7 @@ from ordito.kernels.algorithms.connected_components import (
     find_representative_parity,
     parity_root_word,
 )
-from ordito.kernels.halfedge import halfedge_endpoints
+from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, mate_twin_defect
 from ordito.kernels.predicates import vector_angle
 from ordito.kernels.triangles import face_vertices, triangle_radius_ratio
 
@@ -148,6 +148,17 @@ def edge_share_count_violation(
         out_violation[0] = 1
 
 
+@wp.func
+def mate_share_count(mate: wp.int32) -> wp.int32:
+    """
+    Return the face-share count ``edge_manifold`` asks of a halfedge's edge, from its mate code.
+
+    ``halfedge.halfedge_mates`` says it outright: ``-1`` one, a partner two, ``<= -2`` three or
+    more (reported as three, all ``edge_manifold`` distinguishes).
+    """
+    return wp.where(mate >= 0, wp.int32(2), wp.where(mate == -1, wp.int32(1), wp.int32(3)))
+
+
 @wp.kernel
 def mate_manifold_mask(
     mates: wp.array[wp.int32], allow_boundary: wp.bool, out_mask: wp.array[wp.bool]
@@ -163,9 +174,7 @@ def mate_manifold_mask(
     stores the same ``False``.
     """
     h = wp.int32(wp.tid())
-    mate = mates[h]
-    count = wp.where(mate >= 0, wp.int32(2), wp.where(mate == -1, wp.int32(1), wp.int32(3)))
-    if not edge_manifold(count, allow_boundary):
+    if not edge_manifold(mate_share_count(mates[h]), allow_boundary):
         out_mask[h // 3] = False
 
 
@@ -231,7 +240,7 @@ def adjacency_corner_hook(
 
 @wp.func
 def mate_corner_link(
-    faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.int32
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], oriented: wp.bool, h: wp.int32
 ) -> tuple[wp.int32, wp.int32, wp.bool]:
     """
     Corner-graph edge of halfedge ``h``, plus whether its edge is not shared by exactly two faces.
@@ -244,10 +253,21 @@ def mate_corner_link(
     or multiplicity the unions come in, so they equal the adjacency path's exactly. Shared by
     ``mate_corner_prehook`` and ``mate_corner_hook``, which form the edge in the thread so no
     ``(3 n_faces, 2)`` corner-edge table is written only to be read back twice.
+
+    ``oriented`` (warp-uniform) joins corners only across a pair that runs the edge both ways, its
+    halfedge twin (``halfedge.mate_twin_defect``): ``repair.split_non_manifold_vertices``' graph,
+    where an edge wound the same way by both faces separates them. The link is then positional,
+    corner ``h`` with the twin's next corner, the two corners at ``h``'s origin, so a face repeating
+    a vertex is never searched for it.
     """
     mate = mates[h]
     if mate < 0:
         return h, h, wp.bool(True)
+    if oriented:
+        twin, _defect = mate_twin_defect(faces, mate, h)
+        if twin < 0:
+            return h, h, wp.bool(False)
+        return h, halfedge_next(twin), wp.bool(False)
     e0 = wp.min(h, mate)
     a, b = edge_endpoints(faces, e0)
     c0, c1 = corner_link(faces, e0 // 3, wp.max(h, mate) // 3, wp.where(h == e0, a, b))
@@ -277,6 +297,7 @@ def mate_corner_prehook(
     faces: wp.array[wp.int32],
     mates: wp.array[wp.int32],
     require_pairs: wp.bool,
+    oriented: wp.bool,
     out_parents: wp.array[wp.int32],
     out_violation: wp.array[wp.int32],
 ) -> None:
@@ -297,13 +318,13 @@ def mate_corner_prehook(
     unpaired_any = wp.bool(False)
     for k in range(3):
         h = base + k
-        c0, c1, unpaired = mate_corner_link(faces, mates, h)
+        c0, c1, unpaired = mate_corner_link(faces, mates, oriented, h)
         if unpaired:
             unpaired_any = True
         p0, p1, p2 = lower_face_corner_parents(p0, p1, p2, base, c0, c1)
         mate = mates[h]
         if mate >= 0:
-            m0, m1, _unpaired = mate_corner_link(faces, mates, mate)
+            m0, m1, _unpaired = mate_corner_link(faces, mates, oriented, mate)
             p0, p1, p2 = lower_face_corner_parents(p0, p1, p2, base, m0, m1)
     if unpaired_any and require_pairs:
         out_violation[0] = 1
@@ -314,10 +335,13 @@ def mate_corner_prehook(
 
 @wp.kernel
 def mate_corner_hook(
-    faces: wp.array[wp.int32], mates: wp.array[wp.int32], parents: wp.array[wp.int32]
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    oriented: wp.bool,
+    parents: wp.array[wp.int32],
 ) -> None:
     # ``connected_components.ecl_hook_edges`` over the same edges, after ``mate_corner_prehook``.
-    c0, c1, _unpaired = mate_corner_link(faces, mates, wp.int32(wp.tid()))
+    c0, c1, _unpaired = mate_corner_link(faces, mates, oriented, wp.int32(wp.tid()))
     ecl_hook_pair(parents, c0, c1)
 
 

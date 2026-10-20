@@ -82,7 +82,10 @@ from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import selection as kernel_selection
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPrivateUsage]
-from ordito.validation import _face_flip_words  # pyright: ignore[reportPrivateUsage]
+from ordito.validation import (
+    _corner_parents_from_mates,  # pyright: ignore[reportPrivateUsage]
+    _face_flip_words,  # pyright: ignore[reportPrivateUsage]
+)
 
 # Lattice resolution for ``fix_self_intersections(method="voxel")``, in samples across the mesh's
 # bounding-box diagonal. The same order as ``offset.offset_mesh``'s automatic floor, and the field
@@ -248,8 +251,20 @@ def make_solid(
     # characteristic and one component while still **not watertight**, because nothing downstream
     # addresses a non-manifold edge.
     vertices, faces, _remap = remove_unreferenced_vertices(vertices, faces)
-    faces = make_winding_consistent(faces, n_vertices=vertices.size)
-    vertices, faces, _source = split_non_manifold_vertices(vertices, faces)
+    # ``make_winding_consistent`` then ``split_non_manifold_vertices`` over one pairing of the
+    # halfedges: the flip carries the mates over to the wound faces, which the split reads.
+    n_faces = faces.size // 3
+    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    wound = _launch.empty(3 * n_faces, dtype=wp.int32, device=faces.device)
+    wound_mates = _launch.empty(3 * n_faces, dtype=wp.int32, device=faces.device)
+    _launch.launch(
+        kernel_repair.flip_faces_and_mates_by_parity,
+        dim=n_faces,
+        inputs=[faces, mates, _face_flip_words(faces, vertices.size, mates)],
+        outputs=[wound, wound_mates],
+        device=faces.device,
+    )
+    vertices, faces, _source = _split_corners(vertices, wound, wound_mates)
 
     if keep_largest:
         vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
@@ -824,9 +839,9 @@ def remove_non_manifold_faces(
     """
     require_same_device(vertices=vertices, faces=faces)
     # The radix of the edge keys; any bound above every index groups the edges identically, so the
-    # one taken from the input serves every pass over a subset of its faces.
-    n_vertices = od.array.index_bound(faces, require_non_negative=True)
-    survivors, keep = _edge_manifold_survivors(faces, None, n_vertices, max_iter)
+    # vertex count serves every pass over a subset of the faces, as it does for
+    # ``remove_degenerate_and_non_manifold_faces``, with no reduction and readback to infer one.
+    survivors, keep = _edge_manifold_survivors(faces, None, vertices.size, max_iter)
     if keep is None:
         return vertices, faces
     return od.selection.submesh_from_face_mask(vertices, survivors, keep)
@@ -897,20 +912,37 @@ def remove_degenerate_and_non_manifold_faces(
     require_same_device(vertices=vertices, faces=faces)
     if faces.size == 0:
         return _launch.clone(vertices), _launch.clone(faces)
-    keep = od.triangles.face_nondegenerate_mask(vertices, faces)
-    survivors, keep = _edge_manifold_survivors(faces, keep, vertices.size, max_iter)
+    # ``triangles.face_nondegenerate_mask`` with the flags its survivors are compacted from, in the
+    # one pass.
+    n_faces = faces.size // 3
+    keep = _launch.empty(n_faces, dtype=wp.bool, device=faces.device)
+    keep_flags = _launch.empty(n_faces, dtype=wp.int32, device=faces.device)
+    _launch.launch(
+        kernel_repair.nondegenerate_face_flags,
+        dim=n_faces,
+        inputs=[vertices, faces],
+        outputs=[keep, keep_flags],
+        device=faces.device,
+    )
+    survivors, keep = _edge_manifold_survivors(faces, (keep, keep_flags), vertices.size, max_iter)
     assert keep is not None
     return od.selection.submesh_from_face_mask(vertices, survivors, keep)
 
 
 def _edge_manifold_survivors(
-    faces: wp.array[wp.int32], keep: wp.array[wp.bool] | None, n_vertices: int, max_iter: int
+    faces: wp.array[wp.int32],
+    prefilter: tuple[wp.array[wp.bool], wp.array[wp.int32]] | None,
+    n_vertices: int,
+    max_iter: int,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.bool] | None]:
     """
     Run up to ``max_iter`` edge-manifold removal passes over ``faces[keep]``, in index space.
 
+    ``prefilter`` is ``keep`` with its ``0`` / ``1`` ``int32`` flags (consumed by the scan), or
+    ``None`` for all of ``faces``.
+
     The surviving faces are always ``faces[keep]`` for the pair this returns (all of ``faces``
-    when ``keep`` is ``None``), with ``keep`` ``None`` only when it came in ``None`` and no pass
+    when ``keep`` is ``None``), with ``keep`` ``None`` only when ``prefilter`` is and no pass
     removed a face. Vertex indices are never remapped, so a caller compacts once with
     [`submesh_from_face_mask`][ordito.selection.submesh_from_face_mask]. A pass stops the loop
     when it keeps every face or when no face is left. The pair returned is the last removing pass's
@@ -920,8 +952,10 @@ def _edge_manifold_survivors(
     ``n_vertices`` is the edge-key radix: any bound above every index of ``faces``.
     """
     tested = faces
-    if keep is not None:
-        kept = od.array.flatnonzero(keep)
+    keep = None
+    if prefilter is not None:
+        keep, keep_flags = prefilter
+        kept = od.array.flatnonzero_in_place(keep_flags)
         # Readback: the kept count decides whether the prefilter dropped anything to gather out.
         if kept.size != faces.size // 3:
             tested = od.array.gather(faces.reshape((-1, 3)), kept).reshape((-1,))
@@ -933,10 +967,19 @@ def _edge_manifold_survivors(
         n_faces = tested.size // 3
         if n_faces == 0:
             break
-        manifold = od.validation.edge_manifold_mask(
-            tested, allow_boundary_edges=True, n_vertices=n_vertices, validate=False
+        # ``validation.edge_manifold_mask`` with the flags its indices are compacted from written
+        # by the same per-face pass, so no fill and no bool-to-flag pass sit before the scan.
+        mates = od.halfedge.halfedge_mates(tested, n_vertices)
+        manifold = _launch.empty(n_faces, dtype=wp.bool, device=tested.device)
+        flags = _launch.empty(n_faces, dtype=wp.int32, device=tested.device)
+        _launch.launch(
+            kernel_repair.face_mate_manifold_flags,
+            dim=n_faces,
+            inputs=[mates, wp.bool(True)],
+            outputs=[manifold, flags],
+            device=tested.device,
         )
-        pending = od.array.flatnonzero(manifold)
+        pending = od.array.flatnonzero_in_place(flags)
         # Readback: the kept count is the stopping test.
         if pending.size == n_faces:
             break  # already edge-manifold
@@ -1205,8 +1248,8 @@ def split_non_manifold_vertices(
     vertex and the face stays degenerate.
 
     The implementation is a connected-components pass over a graph of ``3 * n_faces`` corner nodes
-    rather than a per-vertex star walk: one kernel counts each edge's half-edges by direction, and
-    a union-find joins the two corner pairs of every mergeable edge, as
+    rather than a per-vertex star walk: the half-edges are paired by their undirected edge, and a
+    union-find joins the two corner pairs of every edge whose pair runs it both ways, as
     [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
     does for an edge list. ``igl::split_nonmanifold`` instead explodes the mesh to ``3 * n_faces``
     singleton vertices and greedily re-merges pairs, re-testing manifoldness after each candidate --
@@ -1260,56 +1303,26 @@ def split_non_manifold_vertices(
         empty_index = _launch.empty(0, dtype=wp.int32, device=device)
         return _launch.empty(0, dtype=wp.vec3, device=vertices.device), faces, empty_index
 
-    n_corners = 3 * n_faces
-    _unique_edges, edge_of_corner = od.edges.edges_unique(
-        faces, n_vertices=vertices.size, validate=False
-    )
-    n_unique = int(_unique_edges.shape[0])
+    return _split_corners(vertices, faces, od.halfedge.halfedge_mates(faces, vertices.size))
 
-    # The four tables are the quarters of one zeroed buffer. A corner slot is read only where each
-    # direction's count is exactly one, and then the ``atomic_max`` over a non-negative corner index
-    # has left that corner in it whatever it started from, so zero seeds the slots as well as the
-    # counts.
-    tables = _launch.zeros(4 * n_unique, dtype=wp.int32, device=device)
-    forward_count, backward_count, forward_corner, backward_corner = (
-        odt.as_dense(tables[k * n_unique : (k + 1) * n_unique]) for k in range(4)
-    )
-    _launch.launch(
-        kernel_repair.halfedge_orientation_slots,
-        dim=n_corners,
-        inputs=[
-            faces,
-            edge_of_corner,
-            forward_count,
-            backward_count,
-            forward_corner,
-            backward_corner,
-        ],
-        device=device,
-    )
 
-    # Components over the corners, by union-find straight over the unique edges: each edge names two
-    # joins of the corner graph (self-loops where it is not mergeable), formed in the thread, so no
-    # link list is materialised. Every root is its component's smallest corner, and a corner *is* a
-    # node, so a root's vertex is the original its copy came from.
-    count_inputs = [forward_count, backward_count, forward_corner, backward_corner]
-    parents = od.array.arange(n_corners, device=device)
-    _launch.launch(
-        kernel_repair.corner_merge_prehook,
-        dim=2 * n_unique,
-        inputs=[*count_inputs, parents],
-        device=device,
-    )
-    if n_corners >= kernel_connected_components.ECL_COMPRESS_FROM:
-        _launch.launch(
-            kernel_connected_components.ecl_compress, dim=n_corners, inputs=[parents], device=device
-        )
-    _launch.launch(
-        kernel_repair.corner_merge_hook,
-        dim=2 * n_unique,
-        inputs=[*count_inputs, parents],
-        device=device,
-    )
+def _split_corners(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], mates: wp.array[wp.int32]
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    [`split_non_manifold_vertices`][ordito.repair.split_non_manifold_vertices] over given mates.
+
+    Nonempty ``faces`` and their [`halfedge_mates`][ordito.halfedge.halfedge_mates], which a
+    caller that already paired the halfedges passes rather than sorting them again.
+    """
+    device = faces.device
+    n_corners = faces.size // 3 * 3
+    # Components over the corners, by union-find straight over the halfedge mates: a pair wound
+    # both ways (the halfedge twins) names two joins of the corner graph, formed in the thread, and
+    # every other halfedge a self-loop, so neither an edge table nor a link list is materialised.
+    # Every root is its component's smallest corner, and a corner *is* a node, so a root's vertex
+    # is the original its copy came from.
+    parents = _corner_parents_from_mates(faces, mates, False, None, oriented=True)
     roots = _launch.empty(n_corners, dtype=wp.int32, device=device)
     root_ranks = _launch.empty(n_corners, dtype=wp.int32, device=device)
     _launch.launch(

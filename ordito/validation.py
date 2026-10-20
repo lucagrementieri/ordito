@@ -1784,6 +1784,8 @@ def _corner_parents_from_mates(
     mates: wp.array[wp.int32],
     require_pairs: bool,
     violation: wp.array[wp.int32] | None,
+    *,
+    oriented: bool = False,
 ) -> wp.array[wp.int32]:
     """
     Union-find forest of the corner graph, hooked straight off the halfedge mates.
@@ -1794,14 +1796,17 @@ def _corner_parents_from_mates(
     first; every other halfedge links its own corner to itself. The pre-hook writes every
     corner's parent itself, so no identity forest is laid down before it. With ``require_pairs``
     the pre-hook raises ``violation[0]`` on any edge not shared by exactly two faces; without it
-    ``violation`` is never read and may be ``None``.
+    ``violation`` is never read and may be ``None``. With ``oriented`` two corners are joined only
+    across a pair wound both ways, which is
+    [`split_non_manifold_vertices`][ordito.repair.split_non_manifold_vertices]' graph rather than
+    the vertex-manifold one.
     """
     n = mates.size
     parents = _launch.empty(n, dtype=wp.int32, device=faces.device)
     _launch.launch(
         kernel_validation.mate_corner_prehook,
         dim=n // 3,
-        inputs=[faces, mates, require_pairs],
+        inputs=[faces, mates, require_pairs, oriented],
         outputs=[parents, violation],
         device=faces.device,
     )
@@ -1812,7 +1817,7 @@ def _corner_parents_from_mates(
     _launch.launch(
         kernel_validation.mate_corner_hook,
         dim=n,
-        inputs=[faces, mates, parents],
+        inputs=[faces, mates, oriented, parents],
         device=faces.device,
     )
     return parents

@@ -215,6 +215,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "make_winding_consistent applies each face's flip in the pass that reads it off the parity "
         "words; face_flip_mask would store the mask for a second launch to read back"
     ),
+    ("repair", "validation._corner_parents_from_mates"): (
+        "split_non_manifold_vertices' corner graph is the vertex-manifold one restricted to pairs "
+        "wound both ways, hooked off the same halfedge mates; a public form would expose an "
+        "unflattened union-find forest"
+    ),
     ("bounds", "selection._compact_marked_submesh"): (
         "crop_mesh decides each face's fate from the box in the marking pass, as repair's passes "
         "do from their own rules; submesh_from_vertex_mask would need the box mask built and "

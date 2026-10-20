@@ -1,11 +1,7 @@
 import warp as wp
 
 from ordito.constants import INDEX_RADIX_PAIR
-from ordito.kernels.algorithms.connected_components import (
-    ecl_hook_pair,
-    ecl_prehook_pair,
-    write_corner_component_rank,
-)
+from ordito.kernels.algorithms.connected_components import write_corner_component_rank
 from ordito.kernels.array import (
     binary_search_index,
     binary_search_sorted_contains,
@@ -39,7 +35,12 @@ from ordito.kernels.triangles import (
     triangle_quality,
     write_corner_triple,
 )
-from ordito.kernels.validation import face_defective, face_parity_flip
+from ordito.kernels.validation import (
+    edge_manifold,
+    face_defective,
+    face_parity_flip,
+    mate_share_count,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -266,6 +267,47 @@ def mark_face_fate(
 
 
 @wp.kernel
+def face_mate_manifold_flags(
+    mates: wp.array[wp.int32],
+    allow_boundary: wp.bool,
+    out_mask: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    """
+    ``validation.mate_manifold_mask`` per face, also writing the mask as a ``0`` / ``1`` flag.
+
+    For ``repair``'s edge-manifold passes, which compact the manifold faces' indices: the flag is
+    what ``array.flatnonzero_in_place`` scans, so neither the all-``True`` fill nor a bool-to-flag
+    pass sits between the test and the scan. The two kernels differ only in their thread domain and
+    outputs; the per-edge rule is ``edge_manifold`` of ``mate_share_count`` in both.
+    """
+    f = wp.int32(wp.tid())
+    keep = wp.bool(True)
+    for k in range(3):
+        if not edge_manifold(mate_share_count(mates[3 * f + k]), allow_boundary):
+            keep = False
+    out_mask[f] = keep
+    out_flags[f] = wp.where(keep, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def nondegenerate_face_flags(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_keep: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``triangles.face_nondegenerate_mask`` also writing the mask as the ``0`` / ``1`` flag
+    # ``array.flatnonzero_in_place`` scans, for ``remove_degenerate_and_non_manifold_faces``'
+    # prefilter: ``mark_nondegenerate_faces`` with a plain flag in place of the submesh marking.
+    f = wp.int32(wp.tid())
+    v0, v1, v2 = face_vertices(vertices, faces, f)
+    keep = triangle_nondegenerate(v0, v1, v2)
+    out_keep[f] = keep
+    out_flags[f] = wp.where(keep, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
 def mark_nondegenerate_faces(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -353,6 +395,44 @@ def flip_faces_by_parity(
     # read off the parity words where it is applied, so no mask is stored between two launches.
     f = wp.int32(wp.tid())
     write_face_winding(faces, f, face_parity_flip(words, f), out_faces)
+
+
+@wp.func
+def flipped_halfedge(h: wp.int32, flipped: wp.bool) -> wp.int32:
+    # Where halfedge ``h`` lands when ``write_face_winding`` reverses its face: corner 0 stays and
+    # corners 1 and 2 swap, so the face's halfedges ``a -> b``, ``b -> c``, ``c -> a`` become
+    # ``b -> a``, ``c -> b``, ``a -> c`` at local slots 2, 1, 0: slot ``k`` goes to ``2 - k``.
+    if not flipped:
+        return h
+    base = (h // 3) * 3
+    return base + 2 - (h - base)
+
+
+@wp.kernel
+def flip_faces_and_mates_by_parity(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    words: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_mates: wp.array[wp.int32],
+) -> None:
+    # ``flip_faces_by_parity``, also carrying ``faces``' halfedge mates over to the flipped faces,
+    # so a consumer of the wound mesh pairs no halfedges again. A flip moves halfedges within their
+    # own face (``flipped_halfedge``) and pairs the same undirected edges, so each mate is the old
+    # one moved with its face. A code ``-2 - lowest`` moves its halfedge too, which then still names
+    # a halfedge of the edge but no longer always its lowest; a ``-1`` stays.
+    f = wp.int32(wp.tid())
+    flip = face_parity_flip(words, f)
+    write_face_winding(faces, f, flip, out_faces)
+    for k in range(3):
+        h = 3 * f + k
+        mate = mates[h]
+        if mate >= 0:
+            mate = flipped_halfedge(mate, face_parity_flip(words, mate // 3))
+        elif mate <= -2:
+            lowest = -2 - mate
+            mate = -2 - flipped_halfedge(lowest, face_parity_flip(words, lowest // 3))
+        out_mates[flipped_halfedge(h, flip)] = mate
 
 
 @wp.kernel
@@ -473,95 +553,6 @@ def flip_faces_by_component_volume(
     # buffer for a value one indirection away. Measured 1.15x on ``make_volume(multibody=True)``.
     f = wp.int32(wp.tid())
     write_face_winding(faces, f, component_volume[labels[f]] < wp.float32(0.0), out_faces)
-
-
-@wp.kernel
-def halfedge_orientation_slots(
-    faces: wp.array[wp.int32],
-    edge_of_corner: wp.array[wp.int32],
-    out_forward_count: wp.array[wp.int32],
-    out_backward_count: wp.array[wp.int32],
-    out_forward_corner: wp.array[wp.int32],
-    out_backward_corner: wp.array[wp.int32],
-) -> None:
-    # Per unique edge: how many half-edges traverse it each way, and which corner they belong to.
-    #
-    # Corner ``c = 3f + j`` is the half-edge ``(faces[c], halfedge_destination(faces, c))`` -- the
-    # shared face-local cycle rather than a second spelling of it here. ``unique_edges`` rows are
-    # sorted min-first, so a half-edge is "forward" when it runs low index to high. A
-    # *consistently oriented manifold* edge has exactly one of each; anything else -- two forward
-    # (a flipped neighbour), three or more of either (a non-manifold edge), or one alone (a
-    # boundary) -- is not mergeable, so its corner slot is never read and the ``atomic_max`` only
-    # keeps the write deterministic. A mergeable edge's slot holds its one corner, so the slots need
-    # no seed below every corner index: zero, the counts' own seed, does.
-    c = wp.int32(wp.tid())
-    e = edge_of_corner[c]
-    if faces[c] < halfedge_destination(faces, c):
-        wp.atomic_add(out_forward_count, e, 1)
-        wp.atomic_max(out_forward_corner, e, c)
-    else:
-        wp.atomic_add(out_backward_count, e, 1)
-        wp.atomic_max(out_backward_corner, e, c)
-
-
-@wp.func
-def corner_merge_link(
-    forward_count: wp.array[wp.int32],
-    backward_count: wp.array[wp.int32],
-    forward_corner: wp.array[wp.int32],
-    backward_corner: wp.array[wp.int32],
-    link: wp.int32,
-) -> tuple[wp.int32, wp.int32]:
-    # One link of the corner graph: link ``2e`` joins the corners at edge ``e``'s low endpoint and
-    # link ``2e + 1`` those at its high endpoint, one corner from each of the edge's two faces.
-    #
-    # Nodes are ``(face, vertex slot)`` pairs under the same ``3f + k`` numbering, so node
-    # ``3f + k`` *is* the corner whose vertex is ``faces[3f + k]``, and a link only ever joins two
-    # copies of one original vertex. Connected components of this graph are the vertex copies.
-    #
-    # A non-mergeable edge gives the self-loop ``(0, 0)``, which unions nothing.
-    e = link // 2
-    if forward_count[e] != 1 or backward_count[e] != 1:
-        return wp.int32(0), wp.int32(0)
-    forward = forward_corner[e]
-    backward = backward_corner[e]
-    # The forward half-edge runs (low, high) from its own corner; the backward one runs (high, low),
-    # so its *next* slot holds the low endpoint.
-    if link % 2 == 0:
-        return forward, halfedge_next(backward)  # low endpoint, both faces
-    return halfedge_next(forward), backward  # high endpoint, both faces
-
-
-@wp.kernel
-def corner_merge_prehook(
-    forward_count: wp.array[wp.int32],
-    backward_count: wp.array[wp.int32],
-    forward_corner: wp.array[wp.int32],
-    backward_corner: wp.array[wp.int32],
-    parents: wp.array[wp.int32],
-) -> None:
-    # ``connected_components.ecl_init_parent_edges`` over the corner graph, each link formed by
-    # ``corner_merge_link`` in the thread rather than read from a materialised edge list. Runs over
-    # an identity ``parents``; changes no root. ``corner_merge_hook`` hooks the same links.
-    link = wp.int32(wp.tid())
-    a, b = corner_merge_link(forward_count, backward_count, forward_corner, backward_corner, link)
-    ecl_prehook_pair(parents, a, b)
-
-
-@wp.kernel
-def corner_merge_hook(
-    forward_count: wp.array[wp.int32],
-    backward_count: wp.array[wp.int32],
-    forward_corner: wp.array[wp.int32],
-    backward_corner: wp.array[wp.int32],
-    parents: wp.array[wp.int32],
-) -> None:
-    # ``connected_components.ecl_hook_edges`` over the same links. Every union points the larger
-    # root at the smaller, so each component's root is its smallest corner whichever order the
-    # unions ran in.
-    link = wp.int32(wp.tid())
-    a, b = corner_merge_link(forward_count, backward_count, forward_corner, backward_corner, link)
-    ecl_hook_pair(parents, a, b)
 
 
 @wp.kernel
