@@ -525,6 +525,13 @@ def mark_long_edges(
     # mask the split reads, and as the ``int32`` flag the caller scans in place into its ranks.
     # ``out_flags`` is that ``n_edges + 1`` rank buffer whole: edge ``e``'s flag goes to entry
     # ``e + 1``, behind the leading zero thread 0 writes, so the buffer needs no zero-fill.
+    #
+    # **Declined: marking per face instead**, counting each face's children in the same launch
+    # (a slot counter beside the flags) so the split and face counts come back in one copy and the
+    # child-count launch goes. Measured on a jittered 82 k-face sphere, device time: the per-face
+    # mark (three gathered edges, scattered duplicate flag stores) plus an emit that also writes
+    # the vertices took the whole pass 1.24x (``subdivide_to_size``) and 1.19x (``split_edges``)
+    # of this per-edge form, and the zeroed counter adds a memset to the pass that splits nothing.
     e = wp.int32(wp.tid())
     target = max_edge
     if use_sizing:
