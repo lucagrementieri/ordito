@@ -13,7 +13,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import ALLCLOSE_ATOL, ALLCLOSE_RTOL, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import reduce as kernel_reduce
@@ -2048,7 +2048,7 @@ def isin(
             block_dim=TILE_1D,
             device=device,
         )
-    offset, high = (int(bound) for bound in bounds.numpy())
+    offset, high = (int(bound) for bound in read_values(bounds, 0, 2))
     span = high - offset + 1
     if span <= _ISIN_MASK_SIZE_FACTOR * k:
         out_flat = _isin_lookup_mask(elements_flat, tests, span, offset)
