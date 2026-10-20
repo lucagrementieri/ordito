@@ -2021,10 +2021,11 @@ class _DecimationBuffers:
         # edges, commits, removed faces]``: the last two are the pass's collapse and removed-face
         # counts, which the pass kernels reach through the ``_count`` view, so the one readback a
         # pass ends with answers both "did it commit anything" and the next pass's size test.
-        self.state = _launch.array(
-            [self.n_faces, self.n_vertices, 0, 0, 0], dtype=wp.int32, device=device
-        )
-        self._host_state = None
+        seed = [self.n_faces, self.n_vertices, 0, 0, 0]
+        self.state = _launch.array(seed, dtype=wp.int32, device=device)
+        # The host's copy of ``state`` as of the last pass, and before the first its seed, so the
+        # first pass reads nothing back to learn what it uploaded.
+        self._host_state: list[int] = seed
         self._count = self.state[3:5]
 
         n = self.n_corners
@@ -2159,7 +2160,7 @@ class _DecimationBuffers:
         every pass instead and the pass is issued: that keeps the CPU path tracking the live mesh
         rather than paying the pass-0 width forever.
         """
-        counts = self._host_state if self._host_state is not None else self.state.numpy()
+        counts = self._host_state
         if int(counts[0]) <= self._target or int(counts[1]) == 0:
             return False
         live = int(counts[0])
@@ -2185,8 +2186,8 @@ class _DecimationBuffers:
             else:
                 self._issue_pass()
         self._passes += 1
-        self._host_state = self.state.numpy()
-        return int(self._host_state[3]) != 0
+        self._host_state = [int(value) for value in read_values(self.state, 0, 5)]
+        return self._host_state[3] != 0
 
     def _tighten(self, faces: int, edges: int) -> None:
         """
@@ -2204,7 +2205,7 @@ class _DecimationBuffers:
 
     def result(self) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
         """Copy the live prefixes out of the fixed buffers, which is the only place a size leaks."""
-        counts = self._host_state if self._host_state is not None else self.state.numpy()
+        counts = self._host_state
         n_faces, n_vertices = int(counts[0]), int(counts[1])
         vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=self._device)
         faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=self._device)
