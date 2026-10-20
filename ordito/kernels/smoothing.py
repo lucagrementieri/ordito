@@ -12,7 +12,7 @@ from ordito.kernels.array import (
     to_vec3,
     to_vec3d,
 )
-from ordito.kernels.laplacian import face_half_cotangents, operator_row
+from ordito.kernels.laplacian import cotmatrix_offdiagonal, face_half_cotangents, operator_row
 from ordito.kernels.linalg import (
     free_row,
     selected_row,
@@ -788,55 +788,100 @@ def scatter_free_solution(
 
 
 @wp.kernel
-def interior_fairing_system(
+def fairing_system_rows(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.float32],
     stiffness: wp.array[wp.float64],
-    mass: wp.array[wp.float64],
+    area_sums: wp.array[wp.float64],
     scale: wp.float64,
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
-    pinned: wp.array2d[wp.float64],
     positions: wp.array[wp.vec3d],
-    interior_offsets: wp.array[wp.int32],
+    system_offsets: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
     out_rhs: wp.array2d[wp.float64],
     out_solution: wp.array2d[wp.float64],
 ) -> None:
-    # One implicit-fairing Dirichlet pass's reduced system, from the stiffness row in one thread per
-    # vertex: the free-free block of ``A = M + scale L`` (``scale = -lamb``) written into the
-    # interior pattern a ``linalg.assemble_interior_system`` call built once for the whole flow,
-    # its right-hand side ``(M V)_u - A_ub x_b`` and the CG seed (the free vertex's current
-    # position). Each entry of ``A`` is ``kernels/linalg.shifted_scalar_entry``'s, as
-    # ``SHIFTED_SYSTEM_VALUES`` forms it; the extraction is ``interior_row_counts`` /
-    # ``interior_system_csr``'s at ``scale = 1`` and three right-hand sides, the pinned columns
-    # subtracted in row order before the mass term is added. What this kernel drops is the
-    # mesh-wide ``A`` those three launches materialize and read back, and the per-pass count, scan
-    # and readback that re-derive a pattern the fixed topology and pinned set never change.
-    # ``interior_offsets`` is that pattern's row offsets; its columns are the first build's.
+    # One implicit-fairing pass's system ``A = M + scale L`` (``scale = -lamb``), its right-hand
+    # side and its CG seed (the vertex's current position), one thread per vertex over a mesh
+    # operator pattern (``laplacian._mesh_operator_pattern``). The stiffness row is the input's
+    # ``stiffness`` values (the conformalized flow) or, with ``stiffness`` empty, formed in the
+    # thread from the half-cotangents ``laplacian.cotmatrix_entries_and_area_sums`` writes, as
+    # ``laplacian.cotmatrix_rows`` forms it (``cotmatrix_offdiagonal``; the diagonal minus the
+    # off-diagonal sum in column order), so the mesh-wide ``L`` is never stored. The mass is
+    # ``area_sums`` over three (``scatter.scale_face_sums``) and each entry is
+    # ``kernels/linalg.shifted_scalar_entry``'s.
+    #
+    # With ``fixed_mask`` empty every vertex is free and ``A`` is written over the pattern itself
+    # with right-hand side ``M V``. Otherwise this is the Dirichlet pass: the free-free block of
+    # ``A`` written into the interior pattern a ``linalg.assemble_interior_system`` call built once
+    # for the whole flow (``system_offsets``; its columns are that build's), and the right-hand
+    # side ``(M V)_u - A_ub x_b``, the pinned columns subtracted in row order before the mass term
+    # is added, as ``interior_row_counts`` / ``interior_system_csr`` extract it. A pinned vertex's
+    # value is its ``positions`` entry, which no pass writes.
     v = wp.int32(wp.tid())
-    i = free_row(fixed_mask, free_map, v)
-    if i < 0:
-        return
-    m = mass[v]
+    dirichlet = fixed_mask.shape[0] > 0
+    i = v
+    if dirichlet:
+        i = free_row(fixed_mask, free_map, v)
+        if i < 0:
+            return
+    m = area_sums[v] / wp.float64(3.0)
     p = positions[v]
-    slot = interior_offsets[i]
+    from_cot = stiffness.shape[0] == 0
+    slot = system_offsets[i]
     acc0 = wp.float64(0.0)
     acc1 = wp.float64(0.0)
     acc2 = wp.float64(0.0)
+    total = wp.float64(0.0)
+    diagonal_entry = wp.int32(-1)
+    diagonal_slot = wp.int32(-1)
     for e in range(offsets[v], offsets[v + 1]):
         j = columns[e]
-        value = shifted_scalar_entry(stiffness[e], scale, j == v, m)
-        if fixed_mask[j]:
-            acc0 -= value * pinned[0, j]
-            acc1 -= value * pinned[1, j]
-            acc2 -= value * pinned[2, j]
+        if j == v:
+            # Formed after the row: from the cotangents it is minus the off-diagonal sum.
+            diagonal_entry = e
+            diagonal_slot = slot
+            slot += 1
+            continue
+        raw = wp.float64(0.0)
+        if from_cot:
+            raw = cotmatrix_offdiagonal(e, run_start, keys, count, order, cot_entries, raw)
+            total += raw
+        else:
+            raw = stiffness[e]
+        value = shifted_scalar_entry(raw, scale, j == v, m)
+        if dirichlet and fixed_mask[j]:
+            pinned = positions[j]
+            acc0 -= value * pinned[0]
+            acc1 -= value * pinned[1]
+            acc2 -= value * pinned[2]
         else:
             out_values[slot] = value
             slot += 1
-    out_rhs[0, i] = acc0 + m * p[0]
-    out_rhs[1, i] = acc1 + m * p[1]
-    out_rhs[2, i] = acc2 + m * p[2]
+    if diagonal_entry >= 0:
+        raw = -total
+        if not from_cot:
+            raw = stiffness[diagonal_entry]
+        # The flag is read off the pattern rather than written as the constant it is here, as
+        # ``kernels/heat.heat_system_rows`` explains: a constant lets the CUDA compiler fuse the
+        # mass's addition into the product's rounding.
+        out_values[diagonal_slot] = shifted_scalar_entry(
+            raw, scale, columns[diagonal_entry] == v, m
+        )
+    if dirichlet:
+        out_rhs[0, i] = acc0 + m * p[0]
+        out_rhs[1, i] = acc1 + m * p[1]
+        out_rhs[2, i] = acc2 + m * p[2]
+    else:
+        out_rhs[0, i] = m * p[0]
+        out_rhs[1, i] = m * p[1]
+        out_rhs[2, i] = m * p[2]
     out_solution[0, i] = p[0]
     out_solution[1, i] = p[1]
     out_solution[2, i] = p[2]
@@ -1351,16 +1396,6 @@ def mut_dif_volume_correct(
 @wp.func
 def extract_components(v: wp.vec3d) -> tuple[wp.float64, wp.float64, wp.float64]:
     return v[0], v[1], v[2]
-
-
-@wp.func
-def seed_and_mass_weight_components(
-    v: wp.vec3d, mass: wp.float64
-) -> tuple[wp.float64, wp.float64, wp.float64, wp.float64, wp.float64, wp.float64]:
-    # ``extract_components`` twice over, once as is and once weighted by the lumped mass: the
-    # implicit-fairing pass seeds its solve with the positions and solves against ``M V``, and both
-    # are per-vertex, so one map writes the three seed rows and the three right-hand-side rows.
-    return v[0], v[1], v[2], mass * v[0], mass * v[1], mass * v[2]
 
 
 @wp.func

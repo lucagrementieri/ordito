@@ -5,7 +5,8 @@ import warp as wp
 from ordito.kernels.array import OverloadTable, csr_key, csr_run_start, sorted_run_end
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import doublearea_from_lengths, triangle_double_area
-from ordito.kernels.triangles import face_vertices, row_triple
+from ordito.kernels.scatter import add_corner_triple
+from ordito.kernels.triangles import face_normals_and_area, face_vertices, row_triple
 
 wp.set_module_options({"enable_backward": False})
 
@@ -76,17 +77,61 @@ def face_half_cotangents(
     return c0, c1, c2
 
 
-@wp.kernel
-def cotmatrix_entries(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_cot: wp.array2d[wp.Float]
+@wp.func
+def store_half_cotangents(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32, out_cot: Any
 ) -> None:
-    # ``out_cot`` is generic: the half-cotangent weights are computed in float32 (the vertex
-    # precision) and cast to the requested output dtype (float32 or float64) at store time.
-    f = wp.int32(wp.tid())
+    # Face ``f``'s row of the half-cotangent table, computed in float32 (the vertex precision) and
+    # cast to the table's dtype (float32 or float64) at store time: ``cotmatrix_entries``' body,
+    # shared by every face pass that writes the table beside something else.
     c0, c1, c2 = face_half_cotangents(vertices, faces, f)
     out_cot[f, 0] = type(out_cot[f, 0])(c0)
     out_cot[f, 1] = type(out_cot[f, 1])(c1)
     out_cot[f, 2] = type(out_cot[f, 2])(c2)
+
+
+@wp.func
+def add_face_area_exact(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    out_area_sums: wp.array[wp.float64],
+) -> None:
+    # Face ``f``'s ``float32`` area (``face_normals_and_area``'s) added exactly into each corner's
+    # ``float64`` sum: the barycentric mass before its division by three, as
+    # ``scatter.scatter_face_areas_exact`` forms it from the positions.
+    _normal, area = face_normals_and_area(vertices, faces, f)
+    value = wp.float64(area)
+    add_corner_triple(out_area_sums, faces, f, value, value, value)
+
+
+@wp.kernel
+def cotmatrix_entries(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_cot: wp.array2d[wp.Float]
+) -> None:
+    # ``out_cot`` is generic: see ``store_half_cotangents``.
+    f = wp.int32(wp.tid())
+    store_half_cotangents(vertices, faces, f, out_cot)
+
+
+@wp.kernel
+def cotmatrix_entries_and_area_sums(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    write_cot: wp.int32,
+    out_cot: wp.array2d[wp.float32],
+    out_area_sums: wp.array[wp.float64],
+) -> None:
+    # The two per-face quantities a cotangent stiffness and its lumped mass are built from, in one
+    # pass over the faces: the ``float32`` half-cotangent table (``cotmatrix_entries``' row;
+    # skipped when ``write_cot`` is 0) and the area's exact ``float64`` scatter into each corner
+    # (``scatter.scatter_face_areas_exact``, the barycentric mass before its division by three).
+    # Each value is the standalone kernel's bit for bit, and a ``float64`` matrix casts each
+    # ``float32`` half-cotangent as it sums it, so the narrower table changes no entry.
+    f = wp.int32(wp.tid())
+    if write_cot != 0:
+        store_half_cotangents(vertices, faces, f, out_cot)
+    add_face_area_exact(vertices, faces, f, out_area_sums)
 
 
 @wp.kernel
