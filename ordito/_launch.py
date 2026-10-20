@@ -1019,13 +1019,17 @@ def copy_to_host(dest: Any, src: Any, src_offset: int, count: int) -> None:
         and count <= dest.size
         and not dest.pinned
     ):
-        device = src.device
+        # Both are allocated arrays here (a size of at least ``count > 0``), so neither has a
+        # ``None`` device or pointer, which Warp's annotations allow.
+        device: Any = src.device
+        dest_device: Any = dest.device
+        src_ptr: Any = src.ptr
         itemsize = _type_size(src.dtype)
-        if device.is_cuda and dest.device.is_cpu and _type_size(dest.dtype) == itemsize:
+        if device.is_cuda and dest_device.is_cpu and _type_size(dest.dtype) == itemsize:
             if not runtime.core.wp_memcpy_d2h(
                 device.context,
                 dest.ptr,
-                src.ptr + src_offset * itemsize,
+                src_ptr + src_offset * itemsize,
                 count * itemsize,
                 device._stream.cuda_stream,
             ):
