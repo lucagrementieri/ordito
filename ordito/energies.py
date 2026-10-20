@@ -285,20 +285,24 @@ def laplacian_smoothing_loss(
     if method == "uniform":
         operator = od.laplacian.laplacian(vertices, faces, equal_weight=True)
         selector = kernel_energies.SMOOTHING_UNIFORM
-    else:
+    elif method == "cot":
         operator = cotmatrix(vertices, faces)
         selector = kernel_energies.SMOOTHING_COT
-        if method == "cotcurv":
-            # ``mass_matrix_entries``' exact area sums; the row kernel divides them by three.
-            area_sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-            _launch.launch(
-                kernel_scatter.scatter_face_areas_exact,
-                dim=faces.size // 3,
-                inputs=[vertices, faces, None],
-                outputs=[area_sums],
-                device=device,
-            )
-            selector = kernel_energies.SMOOTHING_COTCURV
+    else:
+        # ``mass_matrix_entries``' exact area sums, formed in the face pass that writes the
+        # half-cotangents; the row kernel divides them by three.
+        n_faces = faces.size // 3
+        cot_entries = odt.empty_2d((n_faces, 3), wp.float32, device=device)
+        area_sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_laplacian.cotmatrix_entries_and_area_sums,
+            dim=n_faces,
+            inputs=[vertices, faces, wp.int32(1)],
+            outputs=[cot_entries, area_sums],
+            device=device,
+        )
+        operator = cotmatrix(vertices, faces, cot_entries)
+        selector = kernel_energies.SMOOTHING_COTCURV
     # Each method's per-row scales are formed in the row's own thread, so no scale buffer exists.
     norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     _launch.launch(
