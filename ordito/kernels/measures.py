@@ -3,7 +3,8 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import TILE_1D
-from ordito.kernels.array import OverloadTable, sorted_run_start
+from ordito.kernels.adjacency import write_face_edge_keys
+from ordito.kernels.array import OverloadTable, mark_at, sorted_run_start
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
@@ -263,6 +264,23 @@ def centroid_integrals(
 # Keyed by the vertex dtype; the volume is accumulated in its scalar type, as
 # ``triangles.face_signed_volumes`` stores it.
 MESH_SIGNED_VOLUME: OverloadTable
+
+
+@wp.kernel
+def face_edge_keys_and_referenced(
+    faces: wp.array[wp.int32],
+    base: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_referenced: wp.array[wp.bool],
+) -> None:
+    # ``measures.euler_characteristic``'s one pass over the faces: the three undirected edge keys
+    # of face ``f`` (``adjacency.write_face_edge_keys``, into the leading half of the radix sort's
+    # buffer) and the referenced-vertex mask its corners mark (``array.indices_to_mask``'s
+    # scatter). No identity payload: the count reads only the sorted keys.
+    f = wp.int32(wp.tid())
+    write_face_edge_keys(faces, f, 3 * f, base, out_keys)
+    for k in range(3):
+        mark_at(out_referenced, faces[3 * f + k])
 
 
 @wp.kernel

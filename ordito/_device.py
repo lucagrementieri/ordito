@@ -376,8 +376,9 @@ def _named_devices(name: str, value: object) -> list[tuple[str, object]]:
 
 
 # One scratch buffer per dtype for ``read_scalar`` below, allocated on first use and reused for the
-# life of the process. A single element each, so the whole table is a few dozen bytes.
-_SCALAR_SCRATCH: dict[type, wp.array[Any]] = {}
+# life of the process, with the NumPy view of it the reads index (built once: a ``.numpy()`` per
+# read is a fifth of the read). A single element each, so the whole table is a few dozen bytes.
+_SCALAR_SCRATCH: dict[type, tuple[wp.array[Any], np.ndarray[Any, Any]]] = {}
 
 
 def read_scalar(arr: odt.ArrayNd, index: int = -1) -> Any:
@@ -431,19 +432,20 @@ def read_scalar(arr: odt.ArrayNd, index: int = -1) -> Any:
     device = arr.device
     if device is None or not device.is_cuda:
         return _detached(arr.numpy()[slot])
-    scratch = _SCALAR_SCRATCH.get(arr.dtype)
-    if scratch is None:
-        scratch = _launch.empty(1, dtype=arr.dtype, device="cpu")
-        _SCALAR_SCRATCH[arr.dtype] = scratch
+    cached = _SCALAR_SCRATCH.get(arr.dtype)
+    if cached is None:
+        buffer = _launch.empty(1, dtype=arr.dtype, device="cpu")
+        cached = _SCALAR_SCRATCH[arr.dtype] = (buffer, buffer.numpy())
+    scratch, scratch_np = cached
     # An offset copy rather than a copy of ``arr[slot : slot + 1]``: the one-element slice is a
     # whole ``wp.array`` construction to name four bytes ``wp.copy`` can address directly. The
     # offset path needs a contiguous source -- a strided one would be staged whole across devices
     # -- so a strided view keeps the slice, which is contiguous by construction.
     if arr.ndim == 1 and arr.is_contiguous:
-        _launch.copy(scratch, arr, src_offset=slot, count=1)
+        _launch.copy_to_host(scratch, arr, slot, 1)
     else:
         _launch.copy(scratch, arr[slot : slot + 1])
-    return _detached(scratch.numpy()[0])
+    return _detached(scratch_np[0])
 
 
 def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
@@ -478,15 +480,17 @@ def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
     if device is None or not device.is_cuda:
         return arr.numpy()[start : start + count].tolist()
     key = (arr.dtype, count)
-    scratch = _VALUES_SCRATCH.get(key)
-    if scratch is None:
-        scratch = _launch.empty(count, dtype=arr.dtype, device="cpu")
-        _VALUES_SCRATCH[key] = scratch
-    _launch.copy(scratch, arr, src_offset=start, count=count)
-    return scratch.numpy().tolist()
+    cached = _VALUES_SCRATCH.get(key)
+    if cached is None:
+        buffer = _launch.empty(count, dtype=arr.dtype, device="cpu")
+        cached = _VALUES_SCRATCH[key] = (buffer, buffer.numpy())
+    scratch, scratch_np = cached
+    _launch.copy_to_host(scratch, arr, start, count)
+    return scratch_np.tolist()
 
 
-_VALUES_SCRATCH: dict[tuple[type, int], wp.array[Any]] = {}
+# ``read_values``' scratch per ``(dtype, count)`` and its NumPy view, as ``_SCALAR_SCRATCH``.
+_VALUES_SCRATCH: dict[tuple[type, int], tuple[wp.array[Any], np.ndarray[Any, Any]]] = {}
 
 
 def _detached(value: T) -> T:

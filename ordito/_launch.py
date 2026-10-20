@@ -992,6 +992,52 @@ def copy(dest: Any, src: Any, dest_offset: int = 0, src_offset: int = 0, count: 
     wp.copy(dest, src, dest_offset=dest_offset, src_offset=src_offset, count=count)
 
 
+def copy_to_host(dest: Any, src: Any, src_offset: int, count: int) -> None:
+    """
+    ``wp.copy(dest, src, src_offset=src_offset, count=count)`` into a pageable host buffer.
+
+    The one native device-to-host copy for a contiguous CUDA ``src`` and a contiguous CPU ``dest``
+    of the same element size, outside any capture, on ``src``'s current stream -- what
+    ``wp.copy`` issues there, without its validation. A pageable destination makes the copy return
+    only once it has landed, which is what a readback relies on. Anything else, including every
+    input Warp would reject, goes to ``wp.copy``.
+    """
+    runtime = _ctx.runtime
+    if (
+        runtime is not None  # pyright: ignore[reportUnnecessaryComparison]
+        and runtime._apic_capture is None
+        and not runtime.captures
+        and type(src) is _ARRAY
+        and type(dest) is _ARRAY
+        and src.is_contiguous
+        and dest.is_contiguous
+        and type(src_offset) is int
+        and type(count) is int
+        and 0 <= src_offset
+        and 0 < count
+        and src_offset + count <= src.size
+        and count <= dest.size
+        and not dest.pinned
+    ):
+        # Both are allocated arrays here (a size of at least ``count > 0``), so neither has a
+        # ``None`` device or pointer, which Warp's annotations allow.
+        device: Any = src.device
+        dest_device: Any = dest.device
+        src_ptr: Any = src.ptr
+        itemsize = _type_size(src.dtype)
+        if device.is_cuda and dest_device.is_cpu and _type_size(dest.dtype) == itemsize:
+            if not runtime.core.wp_memcpy_d2h(
+                device.context,
+                dest.ptr,
+                src_ptr + src_offset * itemsize,
+                count * itemsize,
+                device._stream.cuda_stream,
+            ):
+                raise RuntimeError(f"Warp copy error: {runtime.get_error_string()}")
+            return
+    wp.copy(dest, src, src_offset=src_offset, count=count)
+
+
 def fill_(arr: Any, value: Any) -> None:
     """``arr.fill_(value)``, as one native memset or memtile for a contiguous CUDA scalar array."""
     runtime = _ctx.runtime
@@ -1015,6 +1061,40 @@ def fill_(arr: Any, value: Any) -> None:
                 arr._is_read = False
                 return
     arr.fill_(value)
+
+
+def pattern(values: Sequence[Any], dtype: Any, device: Any) -> Any:
+    """
+    ``array(values, dtype, device)`` for a few host scalars: one native fill, no upload.
+
+    On a CUDA device outside capture the scalars are written by one ``wp_memtile_device`` of their
+    packed bytes (passed to the fill kernel by value, so nothing is staged from host memory) into a
+    stamped [`empty`][ordito._launch.empty] buffer; anything else -- the CPU device, a vector or
+    half dtype -- is [`array`][ordito._launch.array].
+    """
+    if type(device) is not _Device:
+        # ``_ctx.runtime`` is ``None`` until ``wp.init()``; Warp annotates it as always set.
+        device = None if _ctx.runtime is None else _ctx.runtime.get_device(device)  # pyright: ignore[reportUnnecessaryComparison]
+    runtime = _ctx.runtime
+    ctor: Any = getattr(dtype, "_type_", None)
+    if (
+        device is not None
+        and device.is_cuda
+        and values
+        and ctor in _SCALAR_CHARS
+        and dtype not in _HALF
+        and not issubclass(dtype, ctypes.Array)
+        and not runtime.captures
+        and runtime._apic_capture is None
+    ):
+        arr = empty(len(values), dtype=dtype, device=device)
+        if type(arr) is _ARRAY:
+            packed = (ctor * len(values))(*values)
+            runtime.core.wp_memtile_device(
+                device.context, arr.ptr, ctypes.byref(packed), ctypes.sizeof(packed), 1
+            )
+            return arr
+    return array(list(values), dtype=dtype, device=device)
 
 
 def zero_(arr: Any) -> None:
@@ -1234,7 +1314,7 @@ def full(
     if _is_zero(value):
         return zeros(shape, dtype=dtype, device=device)
     arr = empty(shape, dtype=dtype, device=device)
-    arr.fill_(value)
+    fill_(arr, value)
     return arr
 
 

@@ -299,6 +299,27 @@ def mate_twin_defect(
     return mate, HALFEDGE_DEFECT_NONE
 
 
+@wp.func
+def pair_bucketed_halfedge(
+    faces: wp.array[wp.int32],
+    degrees: wp.array[wp.int32],
+    ends: wp.array[wp.int32],
+    buckets: wp.array[wp.vec2i],
+    h: wp.int32,
+    out_twins: wp.array[wp.int32],
+    out_defect_counts: wp.array[wp.int32],
+) -> wp.int32:
+    # Halfedge ``h``'s twin from the per-vertex edge buckets under ``mate_twin_defect``, written to
+    # ``out_twins[h]`` and returned, its defect counted into the two-slot buffer.
+    twin, defect = mate_twin_defect(
+        faces, bucketed_halfedge_mate(faces, degrees, ends, buckets, h), h
+    )
+    if defect != HALFEDGE_DEFECT_NONE:
+        wp.atomic_add(out_defect_counts, defect, 1)
+    out_twins[h] = twin
+    return twin
+
+
 @wp.kernel
 def pair_bucketed_halfedges(
     faces: wp.array[wp.int32],
@@ -321,12 +342,41 @@ def pair_bucketed_halfedges(
     # size (0.29-0.57x: the sort's passes are cheap serial loops there, the bucket scans are not),
     # so the CPU keeps the sort (``halfedge._BUCKETED_PAIRING_ON_CPU``).
     h = wp.int32(wp.tid())
-    twin, defect = mate_twin_defect(
-        faces, bucketed_halfedge_mate(faces, degrees, ends, buckets, h), h
-    )
-    if defect != HALFEDGE_DEFECT_NONE:
-        wp.atomic_add(out_defect_counts, defect, 1)
-    out_twins[h] = twin
+    pair_bucketed_halfedge(faces, degrees, ends, buckets, h, out_twins, out_defect_counts)
+
+
+@wp.func
+def record_ring_start(
+    faces: wp.array[wp.int32], h: wp.int32, twin: wp.int32, out_starts: wp.array2d[wp.int32]
+) -> None:
+    # Halfedge ``h``'s bid for its origin's ring-walk start: the lowest-indexed outgoing halfedge,
+    # tracked twice -- row 0 over all of them, row 1 over the twin-less (boundary) ones alone, since
+    # a boundary vertex must start its CCW walk at its boundary halfedge (the clockwise-most edge of
+    # its fan) or the walk covers only part of the fan. ``atomic_min`` makes both picks
+    # deterministic regardless of thread order; ``out_starts`` arrives filled with ``INT32_MAX``.
+    origin = faces[h]
+    wp.atomic_min(out_starts, 0, origin, h)
+    if twin == wp.int32(-1):
+        wp.atomic_min(out_starts, 1, origin, h)
+
+
+@wp.kernel
+def pair_bucketed_halfedges_and_ring_starts(
+    faces: wp.array[wp.int32],
+    degrees: wp.array[wp.int32],
+    ends: wp.array[wp.int32],
+    buckets: wp.array[wp.vec2i],
+    out_twins: wp.array[wp.int32],
+    out_defect_counts: wp.array[wp.int32],
+    out_ring_starts: wp.array2d[wp.int32],
+) -> None:
+    # ``pair_bucketed_halfedges`` for ``halfedge.vertex_one_rings``, which bids each halfedge for
+    # its origin's walk start as soon as its twin is known: the ``ring_degrees_and_starts`` pass the
+    # walk would otherwise take, whose ring degrees are the buckets' own ``degrees``. Differs from
+    # ``pair_bucketed_halfedges`` only in the ``record_ring_start`` call.
+    h = wp.int32(wp.tid())
+    twin = pair_bucketed_halfedge(faces, degrees, ends, buckets, h, out_twins, out_defect_counts)
+    record_ring_start(faces, h, twin, out_ring_starts)
 
 
 @wp.kernel
@@ -449,21 +499,15 @@ def ring_degrees_and_starts(
 ) -> None:
     # One thread per halfedge, answering both per-vertex questions the ring walk needs before it
     # can start: the ring size (every face contributes exactly one outgoing halfedge per corner, so
-    # it is how often the vertex appears in the flat face buffer) and the lowest-indexed outgoing
-    # halfedge, tracked twice -- row 0 over all of them, row 1 over the twin-less (boundary) ones
-    # alone. A boundary vertex must start its CCW walk at its boundary halfedge -- the
-    # clockwise-most edge of its fan -- or the walk covers only part of the fan. ``atomic_min``
-    # makes both picks deterministic regardless of thread order.
+    # it is how often the vertex appears in the flat face buffer) and the walk's start candidates
+    # (``record_ring_start``), for a twin table the call did not pair itself.
     #
     # Both halves are a scatter over the same ``faces[h]`` index, so they share one pass rather
     # than a ``scatter.count_occurrences`` launch of their own over the same buffer.
     # ``out_degrees`` arrives zeroed and ``out_starts`` filled with ``INT32_MAX``.
     h = wp.int32(wp.tid())
-    origin = faces[h]
-    wp.atomic_add(out_degrees, origin, 1)
-    wp.atomic_min(out_starts, 0, origin, h)
-    if twins[h] == wp.int32(-1):
-        wp.atomic_min(out_starts, 1, origin, h)
+    wp.atomic_add(out_degrees, faces[h], 1)
+    record_ring_start(faces, h, twins[h], out_starts)
 
 
 @wp.kernel
@@ -480,7 +524,7 @@ def write_one_rings(
     # is bounded by the vertex's known ring size, so a pinched (vertex-non-manifold) vertex — where
     # the rotation closes early on one of its fans — is reported instead of silently truncated.
     #
-    # ``starts`` is ``ring_degrees_and_starts``' two candidate rows, resolved at this thread's own
+    # ``starts`` is ``record_ring_start``'s two candidate rows, resolved at this thread's own
     # vertex. Start: prefer the boundary halfedge; ``INT32_MAX`` means "no candidate of this kind".
     # Boundary: a vertex lies on one exactly when an outgoing halfedge has no twin, which is the
     # same comparison -- so ``out_is_boundary`` is written here, for every vertex, isolated ones

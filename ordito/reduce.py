@@ -11,7 +11,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.array import _sorted_copy, astype  # pyright: ignore[reportPrivateUsage]
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TILE_2D
@@ -361,7 +361,7 @@ def sum(
             raise ValueError("sum requires a non-empty array.")
         dtype = array.dtype
         total = _sum_in_fixed_order(_VECTOR_SUM_PARTIALS[dtype], [array], n, dtype, array.device)
-        return cast(wp.vec3 | wp.vec4, total.list()[0])
+        return cast(wp.vec3 | wp.vec4, dtype(*read_scalar(total, 0)))
     if array.dtype == wp.bool:
         mask = cast(wp.array[wp.bool], array)
         if axis is None:
@@ -534,7 +534,7 @@ def weighted_sum(
             wp.vec3,
             values.device,
         )
-        return cast(wp.vec3, total.list()[0])
+        return wp.vec3(*read_scalar(total, 0))
     total = sum_of_terms(kernel_reduce.WEIGHTED_SUM, [values, weights], n_values)
     return float(read_scalar(total, 0))
 
@@ -714,7 +714,7 @@ def median(array: odt.ArrayNdScalar) -> float:
     sorted_values = _sorted_copy(array)
     if n % 2 == 1:
         return float(read_scalar(sorted_values, n // 2))
-    middle = sorted_values[n // 2 - 1 : n // 2 + 1].numpy()
+    middle = read_values(sorted_values, n // 2 - 1, 2)
     return (float(middle[0]) + float(middle[1])) / 2.0
 
 
@@ -888,9 +888,11 @@ def _launch_global_vec3_minmax(array: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.ve
         inputs=[array, corners],
         device=array.device,
     )
-    corners_np = corners.numpy()
-    # Slots 3..5 hold the *negated* upper corner; see the kernel.
-    return wp.vec3(*corners_np[:3]), wp.vec3(*(-corners_np[3:]))
+    # One readback of the six slots; 3..5 hold the *negated* upper corner (see the kernel).
+    lower_and_negated_upper = read_values(corners, 0, 6)
+    return wp.vec3(*lower_and_negated_upper[:3]), wp.vec3(
+        *(-value for value in lower_and_negated_upper[3:])
+    )
 
 
 def _reduce_scalar(
@@ -926,9 +928,10 @@ def _launch_global_scalar_tiled(
         )
         return float(read_scalar(total, 0))
     if spec.global_output_slots == 2:
-        # The two seeds are uploaded from a host list: a ``full`` plus a ``fill_`` of the second
-        # slot (no host buffer) measured 2x slower on CUDA and 1.07x on CPU, so it stays.
-        out = _launch.array(
+        # Both seeds in one native fill of their packed bytes: 1.4x cheaper on CUDA than uploading
+        # them from a host list, which was itself 2x cheaper than a ``full`` plus a ``fill_`` of
+        # the second slot.
+        out = _launch.pattern(
             [odt.dtype_max(array.dtype), odt.dtype_min(array.dtype)],
             dtype=array.dtype,
             device=array.device,
@@ -956,14 +959,13 @@ def _launch_global_scalar_tiled(
             device=array.device,
         )
 
-    # ``.item()``, not ``read_scalar`` -- ``out`` is already a single-slot array, so there is no
-    # whole-array copy to avoid, and unlike ``read_scalar`` (which hands back a numpy scalar; see
-    # its own docstring on wrapping with ``int()``/``float()``), ``.item()`` converts to the
-    # correct native Python type for whichever of ``int``/``float`` ``array.dtype`` is.
-    out_np = out.numpy()
+    # ``read_values``, not ``out.numpy()``: one offset copy into a cached host scratch rather than a
+    # fresh host array (about half the cost), and its ``tolist`` hands back the native Python
+    # ``int`` / ``float`` for whichever ``array.dtype`` is.
+    values = read_values(out, 0, spec.global_output_slots)
     if spec.global_output_slots == 2:
-        return cast(tuple[int, int] | tuple[float, float], (out_np[0].item(), out_np[1].item()))
-    return cast(float | int, out_np.item())
+        return cast(tuple[int, int] | tuple[float, float], (values[0], values[1]))
+    return cast(float | int, values[0])
 
 
 def _flattened_for_global(array: odt.ArrayNdScalar) -> odt.Array1dScalar | None:

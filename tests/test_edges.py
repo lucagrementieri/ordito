@@ -514,13 +514,12 @@ def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
         == unique_wp.shape[0]
     )
 
-    # A precomputed table gives the lengths the function would derive from ``faces`` itself.
+    # A precomputed table gives the lengths the function derives from ``faces`` itself, bit for bit
+    # and row for row: the derived lengths are written at the unique edges' ranks off the sort.
     unique_fresh_wp, _ = od.edges.edges_unique(faces_wp)
-    assert np.allclose(
+    assert np.array_equal(
         od.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=unique_fresh_wp).numpy(),
         od.edges.edges_unique_length(vertices_wp, faces_wp).numpy(),
-        rtol=1e-5,
-        atol=1e-5,
     )
     edges_in_wp = od.edges.faces_to_edges(faces_wp)
     assert np.allclose(

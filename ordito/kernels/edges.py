@@ -1,6 +1,6 @@
 import warp as wp
 
-from ordito.kernels.adjacency import write_edge_row, write_face_edge_keys
+from ordito.kernels.adjacency import edge_endpoints, write_edge_row, write_face_edge_keys
 from ordito.kernels.array import sorted_run_start, unpack_edge_key
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb, side_lengths
@@ -130,12 +130,40 @@ def emit_sorted_unique_edges(
         write_edge_row(faces, corner, e, out_unique_edges)
 
 
+@wp.func
+def edge_row_length(vertices: wp.array[wp.vec3], lo: wp.int32, hi: wp.int32) -> wp.float32:
+    # Length of the edge row ``(lo, hi)``, second endpoint minus first: the one spelling the edge
+    # table's lengths (``edge_lengths``), the unique edges' lengths emitted off the sort
+    # (``emit_sorted_unique_edge_lengths``) and their mean's partials share, so the three agree bit
+    # for bit.
+    return wp.length(vertices[hi] - vertices[lo])
+
+
+@wp.kernel
+def emit_sorted_unique_edge_lengths(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    out_lengths: wp.array[wp.float32],
+) -> None:
+    # ``edges.edges_unique_length`` straight off the sort ``emit_sorted_unique_edges`` reads: a
+    # run's first position writes the length of the row that kernel would write there, so neither
+    # the ``(m, 2)`` table nor the corner inverse is materialized only for ``edge_lengths`` to read
+    # the table back. Differs from ``emit_sorted_unique_edges`` only in what it writes.
+    i = wp.int32(wp.tid())
+    if sorted_run_start(sorted_keys, i):
+        lo, hi = edge_endpoints(faces, order[i])
+        out_lengths[ranks[i] - 1] = edge_row_length(vertices, lo, hi)
+
+
 @wp.kernel
 def edge_lengths(
     vertices: wp.array[wp.vec3], edges: wp.array2d[wp.int32], out_lengths: wp.array[wp.float32]
 ) -> None:
     i = wp.int32(wp.tid())
-    out_lengths[i] = wp.length(vertices[edges[i, 1]] - vertices[edges[i, 0]])
+    out_lengths[i] = edge_row_length(vertices, edges[i, 0], edges[i, 1])
 
 
 @wp.func
@@ -208,7 +236,7 @@ def unique_edge_length_partials(
         i = offset + k
         if sorted_run_start(sorted_keys, i):
             lo, hi = unpack_edge_key(sorted_keys[i], base)
-            acc += wp.vec3(wp.length(vertices[hi] - vertices[lo]), 1.0, 0.0)
+            acc += wp.vec3(edge_row_length(vertices, lo, hi), 1.0, 0.0)
     if block == 0 and lane == 0:
         acc += wp.vec3(0.0, 0.0, wp.float32(flags[flag_slot]))
     block_total = block_sum(acc)

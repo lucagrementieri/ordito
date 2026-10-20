@@ -253,7 +253,7 @@ def _paired_edge_groups(faces: wp.array[wp.int32], n_vertices: int | None) -> od
     ``2k, 2k + 1`` as row ``k``: the sort's permutation, read two to a row, is that answer already.
     """
     _, order, n = _sorted_face_edge_buffers(faces, n_vertices)
-    return odt.as_array2d(odt.as_dense(order[:n]).reshape((n // 2, 2)), wp.int32)
+    return odt.as_array2d(_launch.view(order, 0, n).reshape((n // 2, 2)), wp.int32)
 
 
 def _sorted_pair_scan(
@@ -277,7 +277,7 @@ def _sorted_pair_scan(
     order, for more work.
     """
     keys, order, n = _sorted_face_edge_buffers(faces, n_vertices)
-    inclusive = odt.as_dense(order[n:])
+    inclusive = _launch.view(order, n, 2 * n)
     _launch.launch(
         kernel_grouping.MARK_GROUP_STARTS[keys.dtype],
         dim=n,
@@ -435,7 +435,8 @@ def vertex_face_adjacency_from_counts(
     # Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is 3 * n_faces, known on the host). Converting for
     # symmetry would add a device synchronization where there is currently none.
-    _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
+    tail = _launch.view(offsets, 1, row_count + 1)
+    _launch.array_scan(counts, out_array=tail, inclusive=True)
     if is_deterministic():
         # The stable sort of the face buffer lists each vertex's corners in ascending order, so its
         # permutation's faces are the rows in ascending face order: the same on every run, where
@@ -1126,7 +1127,7 @@ def sorted_face_edge_keys(
     ```
     """
     keys, order, n = _sorted_face_edge_buffers(faces, n_vertices)
-    return odt.as_dense(keys[:n]), odt.as_dense(order[:n])
+    return _launch.view(keys, 0, n), _launch.view(order, 0, n)
 
 
 def _sorted_face_edge_buffers(

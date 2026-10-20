@@ -354,15 +354,23 @@ def vertex_one_rings(
     # raised in the order the contract lists them.
     defect_counts = _launch.zeros(4, dtype=wp.int32, device=device)
     check_twins = not twins_given and validate
-    if twins is None:
-        # The pairing writes only the first two slots, so it takes the buffer whole.
-        twins = _pair_halfedges(faces, n_vertices, defect_counts)
-    elif n_halfedges > 0:
-        # ``require_matching_twins``' structural half, read back with the rings' own counts. The
-        # walk below reads a table that fails it only within bounds (``write_one_rings``), and
-        # nothing it wrote is returned before the raise.
-        _count_mispaired_twins(faces, twins, odt.as_dense(defect_counts[3:4]))
-    rings = _walk_one_rings(faces, twins, n_vertices, odt.as_dense(defect_counts[2:3]))
+    incomplete = _launch.view(defect_counts, 2, 3)
+    if twins is None and n_halfedges > 0 and n_vertices > 0 and _buckets_on(faces):
+        # The bucketed pairing bids every halfedge for its ring's walk start as it writes the twin,
+        # and its vertex degrees are the ring sizes: no pass of the walk's own over the twins. It
+        # writes only the first two slots of the buffer, so it takes it whole.
+        starts = _launch.full((2, n_vertices), INT32_MAX, dtype=wp.int32, device=device)
+        twins, degrees = _pair_bucketed_halfedges(faces, n_vertices, defect_counts, starts)
+        rings = _walk_one_rings(faces, twins, n_vertices, incomplete, (degrees, starts))
+    else:
+        if twins is None:
+            twins = _pair_halfedges(faces, n_vertices, defect_counts)
+        elif n_halfedges > 0:
+            # ``require_matching_twins``' structural half, read back with the rings' own counts.
+            # The walk below reads a table that fails it only within bounds (``write_one_rings``),
+            # and nothing it wrote is returned before the raise.
+            _count_mispaired_twins(faces, twins, _launch.view(defect_counts, 3, 4))
+        rings = _walk_one_rings(faces, twins, n_vertices, incomplete)
     if n_halfedges > 0 and (twins_given or validate):
         counts_np = read_values(defect_counts, 0, 4)
         _raise_mispaired_twins(int(counts_np[3]))
@@ -384,8 +392,15 @@ def _walk_one_rings(
     twins: wp.array[wp.int32],
     n_vertices: int,
     out_incomplete: wp.array[wp.int32],
+    degrees_and_starts: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]:
-    """``vertex_one_rings``' CSR build, counting pinched vertices into ``out_incomplete[0]``."""
+    """
+    ``vertex_one_rings``' CSR build, counting pinched vertices into ``out_incomplete[0]``.
+
+    ``degrees_and_starts`` is the ring sizes and the ``(2, n_vertices)`` walk-start candidates when
+    the pairing already formed them (``pair_bucketed_halfedges_and_ring_starts``); ``None`` forms
+    them here in one pass over ``twins``.
+    """
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
@@ -401,19 +416,24 @@ def _walk_one_rings(
     # one outgoing halfedge per corner, so a vertex's ring size is how often it appears in the
     # flat face buffer -- no walk needed. The degrees are counted straight into ``offsets[1:]``,
     # already zeroed, and scanned there in place.
-    counts = offsets[1:]
-    candidate_starts = _launch.full((2, n_vertices), INT32_MAX, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_halfedge.ring_degrees_and_starts,
-        dim=n_halfedges,
-        inputs=[faces, twins, counts, candidate_starts],
-        device=device,
-    )
-    # The inclusive scan in place leaves the leading zero, giving the usual CSR bounds.
-    # Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and
-    # this function never needs it (it is n_halfedges, known on the host). Converting for symmetry
-    # would add a device synchronization where there is currently none.
-    _launch.array_scan(counts, out_array=counts, inclusive=True)
+    counts = _launch.view(offsets, 1, n_vertices + 1)
+    if degrees_and_starts is None:
+        candidate_starts = _launch.full((2, n_vertices), INT32_MAX, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_halfedge.ring_degrees_and_starts,
+            dim=n_halfedges,
+            inputs=[faces, twins, counts, candidate_starts],
+            device=device,
+        )
+        degrees = counts
+    else:
+        degrees, candidate_starts = degrees_and_starts
+    # The inclusive scan behind the leading zero gives the usual CSR bounds (in place when the
+    # degrees were counted into ``offsets[1:]``). Deliberately NOT od.array.counts_to_offsets: that
+    # helper always reads the total back, and this function never needs it (it is n_halfedges,
+    # known on the host). Converting for symmetry would add a device synchronization where there is
+    # currently none.
+    _launch.array_scan(degrees, out_array=counts, inclusive=True)
 
     # The walk resolves each vertex's start and boundary flag from the candidates itself, and
     # writes the flag for every vertex, so ``is_boundary`` needs no initial value.
@@ -649,7 +669,7 @@ def key_ordered_halfedges(
         count=count,
         end_bit=min(64, max(1, (n_classes * n_vertices * n_vertices - 1).bit_length())),
     )
-    return odt.as_dense(order[:count])
+    return _launch.view(order, 0, count)
 
 
 def _pair_halfedges(
@@ -665,7 +685,7 @@ def _pair_halfedges(
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     if n_halfedges > 0 and n_vertices is not None and _buckets_on(faces):
-        return _pair_bucketed_halfedges(faces, n_vertices, defect_counts)
+        return _pair_bucketed_halfedges(faces, n_vertices, defect_counts)[0]
     twins = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     if n_halfedges == 0:
         return twins
@@ -682,27 +702,36 @@ def _pair_halfedges(
 
 
 def _pair_bucketed_halfedges(
-    faces: wp.array[wp.int32], n_vertices: int, defect_counts: wp.array[wp.int32]
-) -> wp.array[wp.int32]:
+    faces: wp.array[wp.int32],
+    n_vertices: int,
+    defect_counts: wp.array[wp.int32],
+    ring_starts: wp.array[wp.int32] | None = None,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Build the twin table from per-vertex edge buckets, with the sort path's rule and defect counts.
 
     A counting sort of the halfedges by the lower-degree endpoint of their edge (the bucketing of
     ``warp.geometry.tri_tri_adjacency``, keyed so that a hub's bucket stays small), then one thread
     per halfedge scanning its bucket. ``n_vertices`` sizes the buckets, so it must exceed every
-    index in ``faces``.
+    index in ``faces``. Returns the twins and every vertex's corner count. With ``ring_starts``, a
+    ``(2, n_vertices)`` buffer filled with ``INT32_MAX``, the pairing also records every vertex's
+    ring-walk start candidates there (``kernels/halfedge.record_ring_start``).
     """
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     degrees, cursors, buckets = _edge_buckets(faces, n_vertices)
     twins = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+    if ring_starts is None:
+        kernel, extra = kernel_halfedge.pair_bucketed_halfedges, []
+    else:
+        kernel, extra = kernel_halfedge.pair_bucketed_halfedges_and_ring_starts, [ring_starts]
     _launch.launch(
-        kernel_halfedge.pair_bucketed_halfedges,
+        kernel,
         dim=n_halfedges,
-        inputs=[faces, degrees, cursors, buckets, twins, defect_counts],
+        inputs=[faces, degrees, cursors, buckets, twins, defect_counts, *extra],
         device=device,
     )
-    return twins
+    return twins, degrees
 
 
 def _edge_buckets(
@@ -720,21 +749,22 @@ def _edge_buckets(
     # Both counters start at zero, so they share one zeroed allocation: the degrees, then the
     # cursors.
     counters = _launch.zeros(2 * n_vertices + 1, dtype=wp.int32, device=device)
-    degrees = odt.as_dense(counters[:n_vertices])
+    degrees = _launch.view(counters, 0, n_vertices)
     _launch.launch(
         kernel_scatter.count_occurrences, dim=n_halfedges, inputs=[faces, degrees], device=device
     )
     # Bucket ``v`` is counted into ``cursors[v + 1]``; the inclusive scan in place turns the counts
     # into bucket ends there, which leaves ``cursors[v]`` holding bucket ``v``'s start for the
     # scatter to advance to its end.
-    cursors = odt.as_dense(counters[n_vertices:])
+    cursors = _launch.view(counters, n_vertices, 2 * n_vertices + 1)
     _launch.launch(
         kernel_halfedge.count_edge_buckets,
         dim=n_halfedges,
         inputs=[faces, degrees, cursors],
         device=device,
     )
-    _launch.array_scan(cursors[1:], out_array=cursors[1:], inclusive=True)
+    ends = _launch.view(counters, n_vertices + 1, 2 * n_vertices + 1)
+    _launch.array_scan(ends, out_array=ends, inclusive=True)
     buckets = _launch.empty(n_halfedges, dtype=wp.vec2i, device=device)
     _launch.launch(
         kernel_halfedge.scatter_edge_buckets,

@@ -340,6 +340,12 @@ def euler_characteristic(faces: wp.array[wp.int32], *, n_vertices: int | None = 
     int
         ``(#distinct referenced vertices) - (#unique edges) + (#faces)``. ``0`` for an empty mesh.
 
+    Raises
+    ------
+    ValueError
+        If ``n_vertices`` is given and not positive, or, when it is inferred, if ``faces`` holds a
+        negative index.
+
     See Also
     --------
     [`unique_edge_count`][ordito.edges.unique_edge_count]
@@ -368,20 +374,39 @@ def euler_characteristic(faces: wp.array[wp.int32], *, n_vertices: int | None = 
     # give, and costs nothing -- both ends come out of the one reduction.
     if n_vertices is None:
         n_vertices = od.array.index_bound(faces, require_non_negative=True)
+    elif n_vertices <= 0:
+        raise ValueError(f"n_vertices must be positive, got {n_vertices}")
+    device = faces.device
+    n = 3 * n_faces
     # The referenced-vertex count is a membership mask's popcount rather than the length of
     # ``unique_1d(faces)``: the indices are bounded by ``n_vertices``, so the mask is the same set
-    # without the hash table, compaction and sort, and the count is one read instead of two.
-    referenced = od.array.indices_to_mask(faces, n_vertices)
+    # without the hash table, compaction and sort, and the count is one read instead of two. The
+    # mask is marked in the pass that packs the halfedge keys into the sort's buffer, over the
+    # bits a key below ``n_vertices ** 2`` can set; the sort's payload is never read.
+    referenced = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    _launch.launch(
+        kernel_measures.face_edge_keys_and_referenced,
+        dim=n_faces,
+        inputs=[faces, wp.uint64(n_vertices), keys, referenced],
+        device=device,
+    )
+    _launch.radix_sort_pairs(
+        keys,
+        _launch.empty(2 * n, dtype=wp.int32, device=device),
+        count=n,
+        end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length())),
+    )
+    sorted_keys = _launch.view(keys, 0, n)
     # The unique edges are the sorted halfedge keys' runs, so only their count is formed: no run
     # scan and no emitted edge table. Both counts fold in one launch and come back in one read.
-    sorted_keys, _ = od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
-    counts = _launch.zeros(2, dtype=wp.int32, device=faces.device)
+    counts = _launch.zeros(2, dtype=wp.int32, device=device)
     _launch.launch_tiled(
         kernel_measures.referenced_vertex_and_unique_edge_counts,
-        dim=[kernel_reduce.blocks_1d(max(n_vertices, sorted_keys.size))],
-        inputs=[referenced, sorted_keys, max(n_vertices, sorted_keys.size), counts],
+        dim=[kernel_reduce.blocks_1d(max(n_vertices, n))],
+        inputs=[referenced, sorted_keys, max(n_vertices, n), counts],
         block_dim=TILE_1D,
-        device=faces.device,
+        device=device,
     )
     # The two counts are the answer.
     n_referenced, n_edges = read_values(counts, 0, 2)
