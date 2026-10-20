@@ -10,9 +10,15 @@ from ordito.kernels.algorithms.connected_components import (
     find_representative_parity,
     parity_root_word,
 )
-from ordito.kernels.halfedge import halfedge_endpoints
+from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, mate_twin_defect
 from ordito.kernels.predicates import vector_angle
-from ordito.kernels.triangles import face_vertices, triangle_radius_ratio
+from ordito.kernels.reduce import block_chunk_1d, last_ticket_vector, store_block_total
+from ordito.kernels.triangles import (
+    face_normals_and_area,
+    face_signed_volume,
+    face_vertices,
+    triangle_radius_ratio,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -46,6 +52,33 @@ def edge_pair_winding_mask(
     out_consistent[tid] = b0 == a1
 
 
+@wp.func
+def mate_pair_violated(
+    faces: wp.array[wp.int32],
+    edges: wp.array2d[wp.int32],
+    mates: wp.array[wp.int32],
+    require_pairs: wp.bool,
+    require_opposite: wp.bool,
+    h: wp.int32,
+) -> wp.bool:
+    """
+    Whether halfedge ``h`` breaks "every edge shared by two faces, traversed both ways".
+
+    With ``require_opposite``, a pair's lower halfedge fails when the pair's two faces traverse
+    their edge the same way (``edge_pair_winding_mask``'s per-pair test, read off the halfedge
+    mates); with ``require_pairs`` a halfedge fails when its edge is not shared by exactly two
+    faces. Shared by ``mate_pair_winding_violation`` and ``closed_signed_volume``.
+    """
+    mate = mates[h]
+    if mate < 0:
+        return require_pairs
+    if require_opposite and mate > h:
+        _a0, b0 = directed_edge(faces, edges, h)
+        a1, _b1 = directed_edge(faces, edges, mate)
+        return b0 != a1
+    return False
+
+
 @wp.kernel
 def mate_pair_winding_violation(
     faces: wp.array[wp.int32],
@@ -57,20 +90,47 @@ def mate_pair_winding_violation(
     """
     Raise ``out_violation[0]`` when a shared edge's two faces traverse it the same way.
 
-    ``edge_pair_winding_mask``'s per-pair test, read off the halfedge mates (each pair's lower
-    halfedge does it), so a predicate needs no compacted group table and no host read of its
-    length. With ``require_pairs`` a halfedge whose edge is not shared by exactly two faces also
-    raises the flag: the "every edge shared by exactly two faces" half of ``is_volume``.
+    ``mate_pair_violated`` per halfedge, so a predicate needs no compacted group table and no host
+    read of its length. With ``require_pairs`` a halfedge whose edge is not shared by exactly two
+    faces also raises the flag.
     """
-    h = wp.int32(wp.tid())
-    mate = mates[h]
-    if mate < 0 and require_pairs:
+    if mate_pair_violated(faces, edges, mates, require_pairs, True, wp.int32(wp.tid())):
         out_violation[0] = 1
-    if mate > h:
-        _a0, b0 = directed_edge(faces, edges, h)
-        a1, _b1 = directed_edge(faces, edges, mate)
-        if b0 != a1:
-            out_violation[0] = 1
+
+
+@wp.kernel(module="unique")
+def closed_signed_volume(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edges: wp.array2d[wp.int32],
+    mates: wp.array[wp.int32],
+    require_opposite: wp.bool,
+    stride: wp.int32,
+    out_total: wp.array[wp.vec2],
+) -> None:
+    """
+    Fold the mesh's signed volume from the origin and count the halfedges breaking closedness.
+
+    ``measures.mesh_signed_volume``'s fold -- the same chunks, lane stride and fixed-order commit,
+    so component 0 is ``measures.volume`` bit for bit -- with ``mate_pair_violated`` counted over
+    each face's three halfedges in component 1 (every edge shared by two faces, and with
+    ``require_opposite`` traversed both ways), so a closed-volume test is one launch and one
+    readback where the edge test and the volume were a launch and a readback each. Its own module
+    (``module="unique"``): the only tiled launch here, at ``TILE_1D``, so the module launched at
+    the default width is not built a second time.
+    """
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    total = wp.vec2(0.0)
+    origin = wp.vec3()
+    for k in range(lane, count, wp.block_dim()):
+        f = offset + k
+        broken = wp.float32(0.0)
+        for corner in range(3):
+            if mate_pair_violated(faces, edges, mates, True, require_opposite, 3 * f + corner):
+                broken += wp.float32(1.0)
+        total += wp.vec2(face_signed_volume(vertices, faces, f, origin), broken)
+    store_block_total(block, lane, total, out_total, 0, stride, last_ticket_vector)
 
 
 @wp.func
@@ -148,6 +208,17 @@ def edge_share_count_violation(
         out_violation[0] = 1
 
 
+@wp.func
+def mate_share_count(mate: wp.int32) -> wp.int32:
+    """
+    Return the face-share count ``edge_manifold`` asks of a halfedge's edge, from its mate code.
+
+    ``halfedge.halfedge_mates`` says it outright: ``-1`` one, a partner two, ``<= -2`` three or
+    more (reported as three, all ``edge_manifold`` distinguishes).
+    """
+    return wp.where(mate >= 0, wp.int32(2), wp.where(mate == -1, wp.int32(1), wp.int32(3)))
+
+
 @wp.kernel
 def mate_manifold_mask(
     mates: wp.array[wp.int32], allow_boundary: wp.bool, out_mask: wp.array[wp.bool]
@@ -163,9 +234,7 @@ def mate_manifold_mask(
     stores the same ``False``.
     """
     h = wp.int32(wp.tid())
-    mate = mates[h]
-    count = wp.where(mate >= 0, wp.int32(2), wp.where(mate == -1, wp.int32(1), wp.int32(3)))
-    if not edge_manifold(count, allow_boundary):
+    if not edge_manifold(mate_share_count(mates[h]), allow_boundary):
         out_mask[h // 3] = False
 
 
@@ -231,7 +300,7 @@ def adjacency_corner_hook(
 
 @wp.func
 def mate_corner_link(
-    faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.int32
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], oriented: wp.bool, h: wp.int32
 ) -> tuple[wp.int32, wp.int32, wp.bool]:
     """
     Corner-graph edge of halfedge ``h``, plus whether its edge is not shared by exactly two faces.
@@ -244,10 +313,21 @@ def mate_corner_link(
     or multiplicity the unions come in, so they equal the adjacency path's exactly. Shared by
     ``mate_corner_prehook`` and ``mate_corner_hook``, which form the edge in the thread so no
     ``(3 n_faces, 2)`` corner-edge table is written only to be read back twice.
+
+    ``oriented`` (warp-uniform) joins corners only across a pair that runs the edge both ways, its
+    halfedge twin (``halfedge.mate_twin_defect``): ``repair.split_non_manifold_vertices``' graph,
+    where an edge wound the same way by both faces separates them. The link is then positional,
+    corner ``h`` with the twin's next corner, the two corners at ``h``'s origin, so a face repeating
+    a vertex is never searched for it.
     """
     mate = mates[h]
     if mate < 0:
         return h, h, wp.bool(True)
+    if oriented:
+        twin, _defect = mate_twin_defect(faces, mate, h)
+        if twin < 0:
+            return h, h, wp.bool(False)
+        return h, halfedge_next(twin), wp.bool(False)
     e0 = wp.min(h, mate)
     a, b = edge_endpoints(faces, e0)
     c0, c1 = corner_link(faces, e0 // 3, wp.max(h, mate) // 3, wp.where(h == e0, a, b))
@@ -277,6 +357,7 @@ def mate_corner_prehook(
     faces: wp.array[wp.int32],
     mates: wp.array[wp.int32],
     require_pairs: wp.bool,
+    oriented: wp.bool,
     out_parents: wp.array[wp.int32],
     out_violation: wp.array[wp.int32],
 ) -> None:
@@ -297,13 +378,13 @@ def mate_corner_prehook(
     unpaired_any = wp.bool(False)
     for k in range(3):
         h = base + k
-        c0, c1, unpaired = mate_corner_link(faces, mates, h)
+        c0, c1, unpaired = mate_corner_link(faces, mates, oriented, h)
         if unpaired:
             unpaired_any = True
         p0, p1, p2 = lower_face_corner_parents(p0, p1, p2, base, c0, c1)
         mate = mates[h]
         if mate >= 0:
-            m0, m1, _unpaired = mate_corner_link(faces, mates, mate)
+            m0, m1, _unpaired = mate_corner_link(faces, mates, oriented, mate)
             p0, p1, p2 = lower_face_corner_parents(p0, p1, p2, base, m0, m1)
     if unpaired_any and require_pairs:
         out_violation[0] = 1
@@ -314,10 +395,13 @@ def mate_corner_prehook(
 
 @wp.kernel
 def mate_corner_hook(
-    faces: wp.array[wp.int32], mates: wp.array[wp.int32], parents: wp.array[wp.int32]
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    oriented: wp.bool,
+    parents: wp.array[wp.int32],
 ) -> None:
     # ``connected_components.ecl_hook_edges`` over the same edges, after ``mate_corner_prehook``.
-    c0, c1, _unpaired = mate_corner_link(faces, mates, wp.int32(wp.tid()))
+    c0, c1, _unpaired = mate_corner_link(faces, mates, oriented, wp.int32(wp.tid()))
     ecl_hook_pair(parents, c0, c1)
 
 
@@ -445,6 +529,32 @@ def mate_signed_edge(
     f1 = wp.max(g0, g1)
     a, b = edge_endpoints(faces, h)
     return f0, f1, pair_flip_sign(faces, f0, f1, a, b)
+
+
+@wp.kernel
+def mate_prehook_parity(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], out_words: wp.array[wp.int32]
+) -> None:
+    # ``connected_components.ecl_init_parent_parity`` with each face pre-hooked to its smallest
+    # edge neighbour, at the sign of the pair between them (``mate_signed_edge`` of the pair's
+    # lower halfedge), the pre-hook ``ecl_init_parent`` makes and the parity form could not without
+    # a signed CSR: a face's three halfedge mates are that CSR row. One thread per face writes its
+    # own word, so no identity forest is laid down first; a face with no smaller neighbour is its
+    # own root at parity 0. Every link taken is one ``mate_hook_parity`` also hooks, so the forest
+    # it starts from is consistent with the signed edges.
+    f = wp.int32(wp.tid())
+    parent = f
+    parity = wp.int32(0)
+    for k in range(3):
+        h = 3 * f + k
+        mate = mates[h]
+        if mate >= 0:
+            g = mate // 3
+            if g < parent:
+                _f0, _f1, sign = mate_signed_edge(faces, mates, wp.min(h, mate))
+                parent = g
+                parity = sign
+    out_words[f] = (parent << 1) | parity
 
 
 @wp.kernel
@@ -641,9 +751,31 @@ def mate_pair_key(mates: wp.array[wp.int32], h: wp.int32) -> wp.int32:
 
 
 @wp.func
+def stored_or_face_normal(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    f: wp.int32,
+) -> wp.vec3:
+    # Face ``f``'s unit normal: the caller's table entry when ``face_normals`` is given, else formed
+    # from the corners by ``triangles.face_normals_and_area``, the value
+    # ``triangles.face_normals_and_areas`` would have stored, so the bad-face criteria need no
+    # normal table written by a launch of its own. ``face_normals`` is a null descriptor (shape 0)
+    # when the caller passed none, so the branch is warp-uniform.
+    if face_normals.shape[0] > 0:
+        return face_normals[f]
+    normal, _area = face_normals_and_area(vertices, faces, f)
+    return normal
+
+
+@wp.func
 def neighbor_normals(
-    face_normals: wp.array[wp.vec3], mates: wp.array[wp.int32], f: wp.int32
-) -> tuple[wp.vec3, wp.float32]:
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    mates: wp.array[wp.int32],
+    f: wp.int32,
+) -> tuple[wp.vec3, wp.vec3, wp.float32]:
     # Both per-face quantities the bad-face criteria need, gathered through the face's three
     # halfedge mates: the sum of the neighbouring face normals (whose direction is the local
     # consensus) and the sharpest dihedral angle to any neighbour (which is what a fold looks like).
@@ -652,8 +784,9 @@ def neighbor_normals(
     #
     # The sum is formed in ascending pair-key order (each pair keyed by its lower halfedge), the
     # order a serial scatter over the pairs adds them in, so the result does not depend on which
-    # corner of the face a neighbour sits at.
-    normal = face_normals[f]
+    # corner of the face a neighbour sits at. Returns the face's own normal first, which every
+    # criterion compares against. Normals come from ``stored_or_face_normal``.
+    normal = stored_or_face_normal(vertices, faces, face_normals, f)
     keys = wp.vec3i(
         mate_pair_key(mates, 3 * f),
         mate_pair_key(mates, 3 * f + 1),
@@ -675,11 +808,11 @@ def neighbor_normals(
     for k in range(3):
         if keys[k] != INT32_MAX_CONSTANT:
             g = mates[3 * f + slots[k]] // 3
-            other = face_normals[g]
+            other = stored_or_face_normal(vertices, faces, face_normals, g)
             total = total + other
             angle = wp.where(f < g, vector_angle(normal, other), vector_angle(other, normal))
             max_angle = wp.max(max_angle, angle)
-    return total, max_angle
+    return normal, total, max_angle
 
 
 @wp.func
@@ -703,7 +836,8 @@ def face_defective(
     # registers, and the neighbourhood is gathered through the face's halfedge mates
     # (``neighbor_normals``) rather than scattered into per-face tables. ``face_normals`` and
     # ``mates`` are never read when both angle criteria are off, so a caller passes ``None`` for
-    # them then (the branch is warp-uniform).
+    # them then (the branch is warp-uniform); with a criterion on, ``face_normals`` may still be
+    # ``None``, and each normal is then formed from the corners where it is read.
     if min_quality > -1.0:
         v0, v1, v2 = face_vertices(vertices, faces, f)
         if triangle_radius_ratio(v0, v1, v2) < min_quality:
@@ -711,12 +845,12 @@ def face_defective(
     if max_normal_cos <= -2.0 and max_fold_cos <= -2.0:
         return False
 
-    neighbor_sum, max_angle = neighbor_normals(face_normals, mates, f)
+    normal, neighbor_sum, max_angle = neighbor_normals(vertices, faces, face_normals, mates, f)
     # Direction of the sum of the neighbouring normals: the local consensus. ``wp.normalize`` of a
     # zero vector is zero in Warp, which is how an isolated face -- and a face whose neighbours
     # cancel each other exactly -- ends up with no consensus to disagree with.
     consensus = wp.normalize(neighbor_sum)
-    agreement = wp.dot(face_normals[f], consensus)
+    agreement = wp.dot(normal, consensus)
     if wp.length_sq(consensus) > 0.0 and agreement < max_normal_cos:
         return True
 

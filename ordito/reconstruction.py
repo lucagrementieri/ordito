@@ -2634,7 +2634,7 @@ def _clean_reconstruction(
         return _launch.clone(points), faces
 
     if deduplicate:
-        faces, _ = od.repair.resolve_duplicated_faces(faces)
+        faces, _ = od.repair.resolve_duplicated_faces(faces, n_vertices=points.size)
     # One vertex compaction for both filters, rather than one after each: the faces here are this
     # package's own, so their indices are in range, which the combined filter requires.
     vertices, faces = od.repair.remove_degenerate_and_non_manifold_faces(points, faces)

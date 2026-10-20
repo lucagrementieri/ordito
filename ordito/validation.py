@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 import warp as wp
 
@@ -18,9 +18,10 @@ from ordito._device import (
     require_valid_faces,
 )
 from ordito.config import is_deterministic
-from ordito.constants import INDEX_RADIX_PAIR
+from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import intersection as kernel_intersections
+from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import validation as kernel_validation
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -1302,35 +1303,24 @@ def _orientation_words_from_mates(
     if mates is None:
         mates = od.halfedge.halfedge_mates(faces, n_vertices)
     # Every endpoint is a face id derived in the thread from a halfedge index, bounded by
-    # ``n_faces`` by construction, and every sign is ``0`` or ``1``.
-    words = _orientation_words(
-        faces.size // 3,
+    # ``n_faces`` by construction, and every sign is ``0`` or ``1``. The pre-hook lays the forest
+    # down already hooked to each face's smallest neighbour, so no identity forest is written first.
+    n_faces = faces.size // 3
+    words = _launch.empty(n_faces, dtype=wp.int32, device=faces.device)
+    _launch.launch(
+        kernel_validation.mate_prehook_parity,
+        dim=n_faces,
+        inputs=[faces, mates],
+        outputs=[words],
+        device=faces.device,
+    )
+    _launch.launch(
         kernel_validation.mate_hook_parity,
-        mates.size,
-        [faces, mates],
-        faces.device,
+        dim=mates.size,
+        inputs=[faces, mates, words],
+        device=faces.device,
     )
     return words, mates
-
-
-def _orientation_words(
-    n_faces: int,
-    hook: odt.Kernel,
-    n_edges: int,
-    hook_inputs: Sequence[object],
-    device: wp.DeviceLike,
-) -> wp.array[wp.int32]:
-    """Initialize the packed parity words and run ``hook`` over them, ready to flatten."""
-    words = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_connected_components.ecl_init_parent_parity,
-        dim=n_faces,
-        inputs=[words],
-        device=device,
-    )
-    if n_edges > 0:
-        _launch.launch(hook, dim=n_edges, inputs=[*hook_inputs, words], device=device)
-    return words
 
 
 def _flatten_orientation(words: wp.array[wp.int32]) -> wp.array[wp.int32]:
@@ -1595,21 +1585,41 @@ def is_volume(
     if n_faces == 0:
         return False
 
-    # Watertightness and winding consistency are one pass over the halfedge mates: a halfedge
+    # Watertightness and winding consistency are a count over the halfedge mates -- a halfedge
     # without a mate is on an edge not shared by exactly two faces, and each pair's two directed
-    # copies must be reversed. One flag, one readback, and the volume only if it passes.
+    # copies must be reversed -- taken in the launch that folds the volume, read back with it.
     mates = mates if mates is not None else od.halfedge.halfedge_mates(faces, vertices.size)
-    violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
-    _launch.launch(
-        kernel_validation.mate_pair_winding_violation,
-        dim=mates.size,
-        inputs=[faces, edges, mates, True, violation],
-        device=faces.device,
-    )
-    if int(read_scalar(violation)) != 0:
-        return False
+    volume, closed = _closed_signed_volume(vertices, faces, mates, edges, True)
+    return closed and volume > 0.0
 
-    return od.measures.volume(vertices, faces) > 0.0
+
+def _closed_signed_volume(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    edges: odt.Array2dInt32 | None,
+    require_opposite: bool,
+) -> tuple[float, bool]:
+    """
+    [`measures.volume`][ordito.measures.volume], and whether every edge has two faces.
+
+    With ``require_opposite`` the two faces must also traverse their edge both ways. ``mates`` are
+    ``faces``' [`halfedge_mates`][ordito.halfedge.halfedge_mates]; ``edges`` as
+    [`is_volume`][ordito.validation.is_volume] takes it. Nonempty ``faces``; one launch and one
+    readback (``kernels/validation.closed_signed_volume``).
+    """
+    device = faces.device
+    blocks = kernel_reduce.blocks_1d(faces.size // 3)
+    total, stride = _launch.block_partials(blocks, 1, wp.vec2, device)
+    _launch.launch_tiled(
+        kernel_validation.closed_signed_volume,
+        dim=[blocks],
+        inputs=[vertices, faces, edges, mates, require_opposite, stride, total],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    volume, broken = read_scalar(total, 0)
+    return float(volume), float(broken) == 0.0
 
 
 def face_defective_mask(
@@ -1657,9 +1667,8 @@ def face_defective_mask(
         ``(0, 180]``. ``None`` disables it.
     face_normals
         ``(n_faces,)`` unit face normals from
-        [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]; recomputed when
-        ``None``. Only the two angle criteria read them, so this is the one geometry pass a caller
-        already holding normals can skip.
+        [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]; formed from the
+        corners where they are read when ``None``. Only the two angle criteria read them.
     mates
         ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
@@ -1746,14 +1755,13 @@ def face_defective_mask(
         return out_bad
 
     # Both angle criteria read the face normals and the halfedge mates; with both off the kernel
-    # reads neither, see its comment.
-    mates = None
+    # reads neither, see its comment. Normals not given are formed in the kernel, from the
+    # corners, where each is read: no normal table and no launch to write one.
     if max_normal_angle is not None or max_fold_angle is not None:
-        if face_normals is None:
-            face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
         mates = mates if mates is not None else od.halfedge.halfedge_mates(faces, vertices.size)
     else:
         face_normals = None
+        mates = None
 
     # -2 is unreachable for a cosine and -1 for the normalized quality, so a disabled criterion
     # simply never fires and the kernel needs no per-criterion flag.
@@ -1784,6 +1792,8 @@ def _corner_parents_from_mates(
     mates: wp.array[wp.int32],
     require_pairs: bool,
     violation: wp.array[wp.int32] | None,
+    *,
+    oriented: bool = False,
 ) -> wp.array[wp.int32]:
     """
     Union-find forest of the corner graph, hooked straight off the halfedge mates.
@@ -1794,14 +1804,17 @@ def _corner_parents_from_mates(
     first; every other halfedge links its own corner to itself. The pre-hook writes every
     corner's parent itself, so no identity forest is laid down before it. With ``require_pairs``
     the pre-hook raises ``violation[0]`` on any edge not shared by exactly two faces; without it
-    ``violation`` is never read and may be ``None``.
+    ``violation`` is never read and may be ``None``. With ``oriented`` two corners are joined only
+    across a pair wound both ways, which is
+    [`split_non_manifold_vertices`][ordito.repair.split_non_manifold_vertices]' graph rather than
+    the vertex-manifold one.
     """
     n = mates.size
     parents = _launch.empty(n, dtype=wp.int32, device=faces.device)
     _launch.launch(
         kernel_validation.mate_corner_prehook,
         dim=n // 3,
-        inputs=[faces, mates, require_pairs],
+        inputs=[faces, mates, require_pairs, oriented],
         outputs=[parents, violation],
         device=faces.device,
     )
@@ -1812,7 +1825,7 @@ def _corner_parents_from_mates(
     _launch.launch(
         kernel_validation.mate_corner_hook,
         dim=n,
-        inputs=[faces, mates, parents],
+        inputs=[faces, mates, oriented, parents],
         device=faces.device,
     )
     return parents

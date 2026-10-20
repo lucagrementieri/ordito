@@ -249,6 +249,22 @@ def test_make_solid_closes_and_connects_open_shells(device: str) -> None:
     assert welded_faces_wp.size > largest_faces_wp.size
 
 
+def test_make_solid_runs_with_no_cut_passes(device: str) -> None:
+    """
+    Ordito against ordito: ``inner_iter=0`` is a valid cap, zero cut-and-refill passes.
+
+    The documented range is non-negative, so zero must run rather than reach the
+    ``fix_self_intersections`` guard against a zero pass count. Three open bowls never intersect,
+    so the result is the default call's, byte for byte.
+    """
+    mesh_tm = _spaced_bowls_tm(3)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    default_wp, default_faces_wp = od.repair.make_solid(vertices_wp, faces_wp)
+    uncut_wp, uncut_faces_wp = od.repair.make_solid(vertices_wp, faces_wp, inner_iter=0)
+    assert np.array_equal(uncut_faces_wp.numpy(), default_faces_wp.numpy())
+    assert np.array_equal(uncut_wp.numpy(), default_wp.numpy())
+
+
 def test_make_solid_leaves_a_solid_alone(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: a mesh that is already a solid comes back as one, unchanged in size.
