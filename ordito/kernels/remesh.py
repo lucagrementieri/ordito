@@ -682,6 +682,35 @@ def mark_long_region_edges(
             out_flags[e] = wp.int32(1)
 
 
+@wp.kernel
+def longest_edge_sort_keys(
+    vertices: wp.array[wp.vec3],
+    unique_edges: wp.array2d[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_keys: wp.array[wp.float32],
+    out_edges: wp.array[wp.int32],
+) -> None:
+    # A budget-trimmed refinement pass's sort input, one thread per unique edge: each flagged edge
+    # (``offsets`` is the ``n_edges + 1`` scan of the flags, so it steps there) writes its negated
+    # length -- ascending on it is descending on the length -- and its own index at its rank, the
+    # flagged edges in ascending order, straight into the radix sort's double-width buffers.
+    e = wp.int32(wp.tid())
+    slot, flagged = scanned_slot(offsets, e)
+    if flagged:
+        out_keys[slot] = -unique_edge_length(vertices, unique_edges, e)
+        out_edges[slot] = e
+
+
+@wp.kernel
+def keep_longest_edges(
+    sorted_edges: wp.array[wp.int32], remaining: wp.int32, out_mask: wp.array[wp.bool]
+) -> None:
+    # One thread per flagged edge in descending length order: the first ``remaining`` stay flagged
+    # in ``out_mask`` and the rest are cleared, in place (every unflagged edge is already clear).
+    i = wp.int32(wp.tid())
+    out_mask[sorted_edges[i]] = i < remaining
+
+
 # ---------------------------------------------------------------------------
 # Region-restricted density refinement (Liepa 2003, section 3)
 # ---------------------------------------------------------------------------

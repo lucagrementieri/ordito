@@ -3875,14 +3875,11 @@ def subdivide_region_to_size(
                 break
             if n_long > remaining:
                 # It keeps exactly ``remaining`` of the flagged edges, by construction, so the
-                # new count needs no second reduction.
-                # The lengths are measured only here, on the pass the budget actually trims:
-                # the flagging above computes each one where it tests it.
-                lengths = od.edges.edges_unique_length(
-                    current_vertices, current_faces, unique_edges=unique_edges
+                # new count needs no readback.
+                offsets = _keep_longest_edges(
+                    current_vertices, unique_edges, long_mask, rank_buffer, n_long, remaining
                 )
-                long_mask = _keep_longest_edges(long_mask, lengths, remaining, m, device)
-                offsets, n_long = od.array.mask_to_compact_ranks(long_mask)
+                n_long = remaining
 
         # The crack-free split itself is [`split_edges`][ordito.remesh.split_edges], which is
         # exactly what this loop contributes nothing new to: all this function decides is *which*
@@ -3940,44 +3937,55 @@ def subdivide_region_to_size(
 
 
 def _keep_longest_edges(
+    vertices: wp.array[wp.vec3],
+    unique_edges: odt.Array2dInt32,
     long_mask: wp.array[wp.bool],
-    lengths: wp.array[wp.float32],
+    ranks: wp.array[wp.int32],
+    n_long: int,
     remaining: int,
-    m: int,
-    device: wp.DeviceLike,
-) -> wp.array[wp.bool]:
+) -> wp.array[wp.int32]:
     """
-    Keep only the ``remaining`` longest edges currently flagged in ``long_mask``.
+    Keep only the ``remaining`` longest edges flagged in ``long_mask``, in place, and rank them.
 
-    Sorts the eligible lengths on the device rather than reading ``long_mask`` and ``lengths`` back
-    to pick the top ``remaining`` with ``numpy.argsort``, the same spelling
-    [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk]'s final round uses.
-    ``m`` is the unique-edge count and grows with the mesh, which is what makes a host readback here
-    the wrong side of the trade at scale.
+    ``ranks`` is the ``n_edges + 1`` exclusive scan of the flags, ending in their count ``n_long``.
+    The flagged edges are sorted by length on the device rather than read back to pick the top
+    ``remaining`` with ``numpy.argsort``, the spelling
+    [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk]'s final round uses:
+    one launch writes each flagged edge's negated length and index at its rank, straight into the
+    sort's buffers, with the length measured there -- only on the pass the budget actually trims --
+    and one launch over the sorted edges clears all but the first ``remaining``. The returned ranks
+    are the trimmed mask's ``array.mask_to_compact_ranks``, without its count readback.
 
     Ties are not ordered by contract on either path -- ``numpy.argsort``'s introsort is unstable and
-    ``sort_and_argsort`` is a stable radix sort, and the budget is documented as soft and as keeping
-    "the longest eligible edges", which every tie-break satisfies equally.
+    the radix sort is stable, and the budget is documented as soft and as keeping "the longest
+    eligible edges", which every tie-break satisfies equally.
     """
-    eligible = od.array.flatnonzero(long_mask)
-    n_eligible = eligible.size
-    # Ascending on the negated length is descending on the length; one launch writes those keys and
-    # the identity payload straight into the radix sort's double-width buffers.
-    # ``order[:remaining]`` is a contiguous *prefix* slice, which is the case a gather may index
-    # through directly -- it is a column (``arr[:, k]``) or a step slice whose stride Warp ignores.
-    # Cloning it dense first is a measurable loss on the gather for byte-identical output.
-    keys_buffer = _launch.empty(2 * n_eligible, dtype=wp.float32, device=device)
-    order_buffer = _launch.empty(2 * n_eligible, dtype=wp.int32, device=device)
+    device = vertices.device
+    m = int(unique_edges.shape[0])
+    keys_buffer = _launch.empty(2 * n_long, dtype=wp.float32, device=device)
+    edges_buffer = _launch.empty(2 * n_long, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_array.negated_gather_keys_and_identity,
-        dim=n_eligible,
-        inputs=[lengths, eligible],
-        outputs=[keys_buffer, order_buffer],
+        kernel_remesh.longest_edge_sort_keys,
+        dim=m,
+        inputs=[vertices, unique_edges, ranks],
+        outputs=[keys_buffer, edges_buffer],
         device=device,
     )
-    _sorted, order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
-    keep = od.array.gather(eligible, odt.as_dense(order[:remaining]))
-    return od.array.indices_to_mask(keep, m, device=device)
+    _sorted, sorted_edges = od.array.sort_and_argsort_in_place(keys_buffer, edges_buffer)
+    _launch.launch(
+        kernel_remesh.keep_longest_edges,
+        dim=n_long,
+        inputs=[sorted_edges, wp.int32(remaining)],
+        outputs=[long_mask],
+        device=device,
+    )
+    kept_ranks = _launch.empty(m + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_array.mask_rank_flags, dim=m, inputs=[long_mask, False, kept_ranks], device=device
+    )
+    flags = odt.as_dense(kept_ranks[1:])
+    _launch.array_scan(flags, flags, inclusive=True)
+    return odt.as_dense(kept_ranks[:m])
 
 
 def refine_region_to_density(
