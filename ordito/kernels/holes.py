@@ -239,9 +239,20 @@ def write_rim_sort_entry(
 ) -> None:
     # Rim slot ``t``'s entry of the sort ``probe_rim_edges`` searches: the undirected key of its
     # edge ``(u, v)`` and the identity payload, written straight into the radix sort's
-    # double-width buffers. The one spelling ``loop_rim_metrics`` and ``rim_edge_keys`` share.
+    # double-width buffers. The one spelling ``loop_rim_metrics`` and ``stitch_rolled_rims``
+    # share.
     out_keys[t] = kernel_array.pack_edge_key(u, v, base)
     out_slots[t] = t
+
+
+@wp.func
+def record_loop_position(u: wp.int32, t: wp.int32, out_flat_slot: wp.array[wp.int32]) -> None:
+    # Where mesh vertex ``u`` sits in the packed loop buffer, for ``mark_forbidden_chords``. The
+    # value stored is the *flat* index ``t``, which is globally unique and increases with position
+    # inside a loop -- so the highest position still wins on a duplicated loop vertex (matching
+    # the last-write-wins dict the host implementation built), and a pinch vertex shared by two
+    # loops resolves to the later loop rather than needing the scratch cleared between loops.
+    wp.atomic_max(out_flat_slot, u, t)
 
 
 @wp.kernel
@@ -256,6 +267,7 @@ def loop_rim_metrics(
     out_loop_pos: wp.array[wp.vec3],
     out_keys: wp.array[wp.uint64],
     out_slots: wp.array[wp.int32],
+    out_flat_slot: wp.array[wp.int32],
 ) -> None:
     # One thread per rim vertex of every loop at once. Each thread owns the rim edge leaving its
     # vertex and folds it into its loop's two per-loop scalars: the longest edge (segmented max,
@@ -263,10 +275,11 @@ def loop_rim_metrics(
     # per-loop equivalents are ``od.reduce.max`` over a gathered rim and
     # ``od.polyline.polyline_normal``, each of which costs a host synchronization per loop.
     #
-    # The same pass writes the two per-slot tables the fill reads next, since it has already
-    # loaded both: the rim vertex's position (the gather ``loop_pos`` would otherwise be) and the
-    # edge's undirected key with its slot, which is ``rim_edge_keys``' output for the rim-opposite
-    # probe.
+    # The same pass writes the per-slot tables the fill reads next, since it has already loaded
+    # them: the rim vertex's position (the gather ``loop_pos`` would otherwise be), the edge's
+    # undirected key with its slot for the rim-opposite probe, and -- when ``out_flat_slot`` is not
+    # empty, which is when the fill forbids existing chords -- where each mesh vertex sits in the
+    # packed loop buffer (``record_loop_position``) for ``mark_forbidden_chords``.
     t = wp.int32(wp.tid())
     ell = loop_id[t]
     u, v = loop_rim_edge_vertices(flat_loops, loop_id, loop_offsets, t)
@@ -274,6 +287,8 @@ def loop_rim_metrics(
     c = vertices[v]
     out_loop_pos[t] = a
     write_rim_sort_entry(u, v, base, t, out_keys, out_slots)
+    if out_flat_slot.shape[0] > 0:
+        record_loop_position(u, t, out_flat_slot)
     wp.atomic_max(out_max_edge_sq, ell, wp.length_sq(c - a))
     wp.atomic_add(out_normal, ell, newell_term(a, c, vertices[flat_loops[loop_offsets[ell]]]))
 
@@ -945,23 +960,6 @@ def flag_bad_triangulations(
         out_state[FILL_STATE_RETRY] = 1
 
 
-@wp.kernel
-def rim_edge_keys(
-    flat_loops: wp.array[wp.int32],
-    loop_id: wp.array[wp.int32],
-    loop_offsets: wp.array[wp.int32],
-    base: wp.uint64,
-    out_keys: wp.array[wp.uint64],
-    out_slots: wp.array[wp.int32],
-) -> None:
-    # The undirected key of rim edge ``(loop[t], loop[t + 1])`` of every loop at once, keyed on
-    # slot ``t``: the table ``probe_rim_edges`` searches. The fill computes the same keys inside
-    # ``loop_rim_metrics``; this is the stand-alone form for a caller with no rim metrics to take.
-    t = wp.int32(wp.tid())
-    u, v = loop_rim_edge_vertices(flat_loops, loop_id, loop_offsets, t)
-    write_rim_sort_entry(u, v, base, t, out_keys, out_slots)
-
-
 # ``probe_rim_edges``' two non-vertex answers: a rim edge no face contains, and one several do.
 RIM_NO_FACE = wp.constant(-1)
 RIM_MANY_FACES = wp.constant(-2)
@@ -1024,19 +1022,6 @@ def rim_opposite_positions(
 
 
 @wp.kernel
-def scatter_loop_positions(
-    flat_loops: wp.array[wp.int32], out_flat_slot: wp.array[wp.int32]
-) -> None:
-    # Where each mesh vertex sits in the packed loop buffer, for the chord test below. The value
-    # stored is the *flat* index, which is globally unique and increases with position inside a
-    # loop — so the highest position still wins on a duplicated loop vertex (matching the
-    # last-write-wins dict the host implementation built), and a pinch vertex shared by two loops
-    # resolves to the later loop rather than needing the scratch cleared between loops.
-    t = wp.int32(wp.tid())
-    wp.atomic_max(out_flat_slot, flat_loops[t], t)
-
-
-@wp.kernel
 def mark_forbidden_chords(
     faces: wp.array[wp.int32],
     flat_slot: wp.array[wp.int32],
@@ -1086,6 +1071,30 @@ def rim_vertex(
     return loop[k]
 
 
+@wp.func
+def stitch_rim_entry(
+    loop_a: wp.array[wp.int32],
+    loop_b: wp.array[wp.int32],
+    t: wp.int32,
+    shift_a: wp.int32,
+    shift_b: wp.int32,
+) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # Thread ``t`` of a launch over both rims' ``n + m`` slots: its slot on its own rim, the rim
+    # vertex there and the one after it -- rim A reversed, so both rims wind the same way, and rim
+    # B as given, each rolled by its shift. The two stitch rim passes below share it and differ in
+    # what they write: positions only, or the rolled loops and their rim-edge keys too.
+    n = loop_a.shape[0]
+    if t < n:
+        return (
+            t,
+            rim_vertex(loop_a, n, t, shift_a, True),
+            rim_vertex(loop_a, n, t + 1, shift_a, True),
+        )
+    j = t - n
+    m = loop_b.shape[0]
+    return j, rim_vertex(loop_b, m, j, shift_b, False), rim_vertex(loop_b, m, j + 1, shift_b, False)
+
+
 @wp.kernel
 def stitch_rim_positions(
     vertices_a: wp.array[wp.vec3],
@@ -1099,23 +1108,53 @@ def stitch_rim_positions(
     out_loop_a: wp.array[wp.int32],
     out_loop_b: wp.array[wp.int32],
 ) -> None:
-    # Both rims' positions in one launch over ``n + m`` threads: rim A reversed, so both rims wind
-    # the same way, and rim B as given, each rolled by its shift. ``out_loop_a`` / ``out_loop_b``,
-    # when not empty (``None`` at launch), also take the rolled loops' vertex ids, for a caller
-    # that needs them materialized (``stitch_loops_min_weight``'s rim-opposite lookup).
+    # Both rims' positions in one launch over ``n + m`` threads (``stitch_rim_entry``).
+    # ``out_loop_a`` / ``out_loop_b``, when not empty (``None`` at launch), also take the rolled
+    # loops' vertex ids.
     t = wp.int32(wp.tid())
-    n = loop_a.shape[0]
-    if t < n:
-        v = rim_vertex(loop_a, n, t, shift_a, True)
-        out_a_pos[t] = vertices_a[v]
+    j, v, _next = stitch_rim_entry(loop_a, loop_b, t, shift_a, shift_b)
+    if t < loop_a.shape[0]:
+        out_a_pos[j] = vertices_a[v]
         if out_loop_a.shape[0] > 0:
-            out_loop_a[t] = v
+            out_loop_a[j] = v
     else:
-        j = t - n
-        v = rim_vertex(loop_b, loop_b.shape[0], j, shift_b, False)
         out_b_pos[j] = vertices_b[v]
         if out_loop_b.shape[0] > 0:
             out_loop_b[j] = v
+
+
+@wp.kernel
+def stitch_rolled_rims(
+    vertices_a: wp.array[wp.vec3],
+    loop_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    loop_b: wp.array[wp.int32],
+    start: wp.array[wp.int32],
+    base_a: wp.uint64,
+    base_b: wp.uint64,
+    out_a_pos: wp.array[wp.vec3],
+    out_b_pos: wp.array[wp.vec3],
+    out_loop_a: wp.array[wp.int32],
+    out_loop_b: wp.array[wp.int32],
+    out_keys_a: wp.array[wp.uint64],
+    out_slots_a: wp.array[wp.int32],
+    out_keys_b: wp.array[wp.uint64],
+    out_slots_b: wp.array[wp.int32],
+) -> None:
+    # ``stitch_rim_positions`` rolled to the band start ``start[0:2]`` read on the device (the
+    # closest pair ``global_argmin`` wrote), also writing the rolled loops and each rim edge's
+    # sort entry (``write_rim_sort_entry``, keyed on slot ``j``'s edge ``(loop[j], loop[j + 1])``)
+    # for each rim's rim-opposite probe, under that rim's own mesh radix.
+    t = wp.int32(wp.tid())
+    j, v, v_next = stitch_rim_entry(loop_a, loop_b, t, start[0], start[1])
+    if t < loop_a.shape[0]:
+        out_a_pos[j] = vertices_a[v]
+        out_loop_a[j] = v
+        write_rim_sort_entry(v, v_next, base_a, j, out_keys_a, out_slots_a)
+    else:
+        out_b_pos[j] = vertices_b[v]
+        out_loop_b[j] = v
+        write_rim_sort_entry(v, v_next, base_b, j, out_keys_b, out_slots_b)
 
 
 # The two costs ``row_argmin`` minimises, selected per launch (warp-uniform).
@@ -1437,7 +1476,7 @@ def stitch_dp_cell(
             if out_came[i, j - 1] != CAME_NONE:
                 c_op = stitch_prev_apex(a_pos, b_pos, out_came, n_a, n_b, i, j - 1)
                 w = w + stitch_edge_metric(a_cur, b_prev, c_op, b_cur)
-            # ``rim_edge_keys`` keys slot k on the rim edge (loop[k], loop[k + 1]), so
+            # ``stitch_rolled_rims`` keys slot k on the rim edge (loop[k], loop[k + 1]), so
             # the edge (b[j - 1], b[j]) introduced by this step is slot j - 1, not j -- the same
             # convention the A branch uses above.
             if tables.b_opp_valid[(j - 1) % n_b] != 0:
@@ -1540,6 +1579,43 @@ def stitch_dp_tile(
         # Every lane must see this anti-diagonal's writes before reading them as the next one's
         # predecessors.
         block_barrier()
+
+
+@wp.kernel(enable_backward=False)
+def trace_stitch_band(
+    came: wp.array2d[wp.int32],
+    loop_a: wp.array[wp.int32],
+    loop_b: wp.array[wp.int32],
+    b_offset: wp.int32,
+    out_faces: wp.array[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # The band triangles, traced from cell ``(n_a, n_b)`` back to the seed along ``came`` by one
+    # thread: the walk is a dependency chain, and its table never leaves the device. Triangle ``t``
+    # is the ``t``-th step back, ``loop_a`` / ``loop_b`` are the rolled rims and B's vertices are
+    # offset into the combined buffer. A cell with no predecessor (``CAME_NONE``) stops the walk
+    # early, and ``out_count[0]`` says how many triangles were written.
+    n_a = loop_a.shape[0]
+    n_b = loop_b.shape[0]
+    i = n_a
+    j = n_b
+    t = wp.int32(0)
+    while i > 0 or j > 0:
+        step = came[i, j]
+        if step == CAME_A:
+            out_faces[3 * t + 0] = loop_a[(i - 1) % n_a]
+            out_faces[3 * t + 1] = loop_a[i % n_a]
+            out_faces[3 * t + 2] = loop_b[j % n_b] + b_offset
+            i = i - 1
+        elif step == CAME_B:
+            out_faces[3 * t + 0] = loop_a[i % n_a]
+            out_faces[3 * t + 1] = loop_b[j % n_b] + b_offset
+            out_faces[3 * t + 2] = loop_b[(j - 1) % n_b] + b_offset
+            j = j - 1
+        else:
+            break
+        t = t + 1
+    out_count[0] = t
 
 
 @wp.kernel
@@ -1785,6 +1861,11 @@ CLOSEST_PAIR_BLOCK = 64
 # ``join_round``'s state word, one ``int32`` slot each: which half of ``rows`` holds the current
 # rim table, its row count, whether a round has found no admissible pair, the patch entries written
 # so far, and the rounds' block ticket counter (zero between launches).
+#
+# **Recording a group of rounds as a CUDA graph and replaying it is measured and declined.** Every
+# round is the same launch, so with a device-side join cap the chain is repeatable, but a round is
+# device-bound rather than launch-bound and the recording is paid on every call: groups of 8
+# replayed from 16 rounds measured 0.85-0.88x at 64 open shells and 0.95-0.99x at 256.
 JOIN_PARITY = 0
 JOIN_COUNT = 1
 JOIN_DONE = 2
