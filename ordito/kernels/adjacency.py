@@ -19,7 +19,7 @@ def write_face_edge_keys(
     out_keys: wp.array[wp.uint64],
 ) -> None:
     # The three undirected edge keys of face ``f``, in corner order, at ``slot .. slot + 2``.
-    # Every caller here but ``selection.deleted_face_edge_keys`` passes ``slot = 3f``: edge
+    # Every caller here but ``selection.compact_submesh`` passes ``slot = 3f``: edge
     # ``3f + k`` then belongs to face ``f``, which is what lets ``edge_pairs_to_face_pairs`` and
     # ``edge_endpoints`` recover everything else from an edge index alone.
     #
