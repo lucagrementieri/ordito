@@ -5,7 +5,6 @@ import warp as wp
 from ordito.kernels.adjacency import write_edge_row
 from ordito.kernels.algorithms.connected_components import (
     ecl_hook_pair,
-    ecl_prehook_pair,
     write_corner_component_rank,
 )
 from ordito.kernels.array import (
@@ -125,14 +124,23 @@ def corner_union_prehook(
     twins: wp.array[wp.int32],
     marked_keys: wp.array[wp.uint64],
     key_base: wp.uint64,
-    parents: wp.array[wp.int32],
+    out_parents: wp.array[wp.int32],
 ) -> None:
-    # ``connected_components.ecl_init_parent_edges`` over the corner graph, with each edge formed
-    # from ``corner_union`` in the thread rather than read from a materialised edge list. Runs over
-    # an identity ``parents``; changes no root and keeps the hook below cheap (see there).
+    # The union-find's initial forest, written as each corner's own value rather than pre-hooked
+    # into an identity ``parents``: corner ``h`` points at the other end of its own halfedge's
+    # join (``corner_union``) when that is smaller, else at itself. Every pointer goes to a
+    # smaller corner of the same component, so the hook below finds the same roots -- each
+    # component's smallest corner -- and the outputs are those of the identity plus the
+    # ``atomic_min`` pre-hook over every join. That form also took the joins arriving from the
+    # three other halfedges that can touch ``h`` (its twin, ``prev(h)`` and that one's twin): the
+    # same forest as the pre-hook, with no identity launch, but the four ``corner_union`` binary
+    # searches cost the union kernels 0.69x at 328 k faces, where this own-join form is 1.1x.
     h = wp.int32(wp.tid())
     a, b = corner_union(faces, twins, marked_keys, key_base, h)
-    ecl_prehook_pair(parents, a, b)
+    lowest = h
+    if a == h:
+        lowest = wp.min(h, b)
+    out_parents[h] = lowest
 
 
 @wp.kernel
