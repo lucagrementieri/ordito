@@ -712,7 +712,6 @@ def unique_rows(
             device=device,
         )
         end_bit = min(64, max(1, (radix ** int(rows.shape[1]) - 1).bit_length()))
-        inverse, first_idx, counts = _unique_keys_core(keys, order, end_bit, return_counts)
     else:
         row_keys = hash_rows(data)
         _launch.launch(
@@ -721,16 +720,20 @@ def unique_rows(
             inputs=[row_keys, keys, order],
             device=device,
         )
-        inverse, first_idx, counts = _unique_keys_core(keys, order, None, return_counts)
+        end_bit = None
 
     if not is_vec3:
         odt.ensure_ndim(data, 2)
-    # ``gather`` performs both rank-1 (vec3) and rank-2 (int32/float32 row) gather.
+    # Each class's first row is written into the result by the emit itself.
+    emitted = _unique_sorted_rows(keys, order, data, end_bit, return_inverse, return_counts)
+    if emitted is not None:
+        return _pack_unique_result(emitted[0], inverse=emitted[1], counts=emitted[2])
+    # A strided table, or a width with no vector view, is gathered as it is.
+    inverse, first_idx, counts = _unique_keys_core(keys, order, end_bit, return_counts)
     unique_rows_out = gather(data, first_idx)
-
-    if not return_inverse:
-        inverse = None
-    return _pack_unique_result(unique_rows_out, inverse=inverse, counts=counts)
+    return _pack_unique_result(
+        unique_rows_out, inverse=inverse if return_inverse else None, counts=counts
+    )
 
 
 @overload
@@ -824,16 +827,17 @@ def unique_faces(
         inputs=[faces, wp.uint64(max_index), keys, order],
         device=device,
     )
-    # Not ``unique_rows`` on the sorted rows: that gathers the sorted rows by the first-occurrence
-    # indices to build its own return, an answer this function has no use for -- it gathers the
-    # unsorted faces by the same indices instead, to keep each representative's original winding.
-    # Three sorted indices below ``max_index`` pack below ``max_index ** 3``.
+    # Not ``unique_rows`` on the sorted rows: that would return the sorted rows, an answer this
+    # function has no use for -- the emit copies each class's first *unsorted* face instead, to keep
+    # the representative's original winding. Three sorted indices below ``max_index`` pack below
+    # ``max_index ** 3``.
     end_bit = max(1, (min(max_index**3, 1 << 64) - 1).bit_length())
-    _unique, inverse, _counts, first = _unique_sorted_runs(
-        keys, order, n_faces, False, return_inverse, False, True, end_bit
+    emitted = _unique_sorted_rows(
+        keys, order, faces.reshape((-1, 3)), end_bit, return_inverse, False
     )
-    assert first is not None
-    unique_faces_out = gather(faces.reshape((-1, 3)), first).reshape((-1,))
+    assert emitted is not None  # a contiguous ``(n_faces, 3)`` ``int32`` table has its view
+    unique_faces_out = emitted[0].reshape((-1,))
+    inverse = emitted[1]
     if return_inverse:
         assert inverse is not None
         return unique_faces_out, inverse
@@ -889,14 +893,7 @@ def _unique_sorted_runs(
     """
     device = keys.device
     dtype = keys.dtype
-    _launch.radix_sort_pairs(keys, order, count=n, end_bit=end_bit)
-    ranks = odt.as_dense(order[n:])
-    _launch.launch(
-        kernel_grouping.MARK_SORTED_RUN_STARTS[dtype], dim=n, inputs=[keys, ranks], device=device
-    )
-    _launch.array_scan(ranks, ranks, inclusive=True)
-    # The distinct count sizes the outputs.
-    n_unique = int(read_scalar(order, 2 * n - 1))
+    ranks, n_unique = _sorted_run_ranks(keys, order, n, end_bit)
     unique_values = _launch.empty(n_unique, dtype=dtype, device=device) if return_values else None
     inverse = _launch.empty(n, dtype=wp.int32, device=device) if return_inverse else None
     first = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_first else None
@@ -915,6 +912,86 @@ def _unique_sorted_runs(
         device=device,
     )
     return unique_values, inverse, counts, first
+
+
+def _sorted_run_ranks(
+    keys: wp.array[Any], order: wp.array[wp.int32], n: int, end_bit: int | None
+) -> tuple[wp.array[wp.int32], int]:
+    """
+    Sort the double-width ``keys`` / ``order`` buffers; return each sorted position's run rank.
+
+    ``ranks[i] - 1`` is the unique index of sorted position ``i``: the inclusive scan of the run
+    starts, marked into the payload's upper half (free scratch once the sort has run) and scanned
+    there in place. The distinct count comes back with it, since it sizes every output. ``n > 0``.
+    """
+    _launch.radix_sort_pairs(keys, order, count=n, end_bit=end_bit)
+    ranks = odt.as_dense(order[n:])
+    _launch.launch(
+        kernel_grouping.MARK_SORTED_RUN_STARTS[keys.dtype],
+        dim=n,
+        inputs=[keys, ranks],
+        device=keys.device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # The distinct count sizes the outputs.
+    return ranks, int(read_scalar(order, 2 * n - 1))
+
+
+def _unique_sorted_rows(
+    keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    rows: wp.array[Any],
+    end_bit: int | None,
+    return_inverse: bool,
+    return_counts: bool,
+) -> tuple[wp.array[Any], wp.array[wp.int32] | None, wp.array[wp.int32] | None] | None:
+    """
+    ``(unique_rows, inverse, counts)`` of ``rows`` from their keys in the sort's buffers.
+
+    ``keys`` / ``order`` are the double-width sort buffers, their leading halves holding one key
+    per row of ``rows`` and the identity permutation. One emit writes the inverse, the counts and,
+    at every run's first sorted position, that class's first row straight into the result, so no
+    first-occurrence table is built for a gather to read. ``inverse`` / ``counts`` are ``None``
+    unless asked for. ``None``, before anything is launched, when ``rows`` has no integer-vector
+    view (``_row_vectors``). ``n > 0``.
+    """
+    row_vectors = _row_vectors(rows)
+    if row_vectors is None:
+        return None
+    device = keys.device
+    n = keys.size // 2
+    ranks, n_unique = _sorted_run_ranks(keys, order, n, end_bit)
+    unique = _launch.empty((n_unique, *rows.shape[1:]), dtype=rows.dtype, device=device)
+    unique_vectors = _row_vectors(unique)
+    assert unique_vectors is not None  # the same row type as ``rows``, freshly allocated
+    inverse = _launch.empty(n, dtype=wp.int32, device=device) if return_inverse else None
+    counts = _launch.zeros(n_unique, dtype=wp.int32, device=device) if return_counts else None
+    _launch.launch(
+        kernel_grouping.EMIT_SORTED_UNIQUE_ROWS[row_vectors.dtype],
+        dim=n,
+        inputs=[keys, order, ranks, row_vectors, inverse, counts, unique_vectors],
+        device=device,
+    )
+    return unique, inverse, counts
+
+
+def _row_vectors(rows: wp.array[Any]) -> wp.array[Any] | None:
+    """
+    ``rows`` viewed as one integer vector per row, or ``None`` where no such view exists.
+
+    A contiguous ``(n, w)`` table of a four-byte dtype, or an ``(n,)`` ``wp.vec3`` array, of a
+    width ``kernels/grouping.ROW_VECTOR_DTYPES`` covers; a strided table or another width has none.
+    """
+    if rows.dtype == wp.vec3:
+        rows = rows.view(wp.float32)
+    if (
+        not rows.is_contiguous
+        or rows.ndim != 2
+        or wp.types.type_size_in_bytes(rows.dtype) != 4
+        or int(rows.shape[1]) not in kernel_grouping.ROW_VECTOR_DTYPES
+    ):
+        return None
+    return rows.view(kernel_grouping.ROW_VECTOR_DTYPES[int(rows.shape[1])])
 
 
 def first_occurrence_indices(

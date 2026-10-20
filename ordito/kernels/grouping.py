@@ -1,3 +1,5 @@
+from typing import Any
+
 import warp as wp
 
 from ordito.kernels import array as kernel_array
@@ -292,6 +294,22 @@ def mark_sorted_run_starts(sorted_keys: wp.array[wp.Int], out_starts: wp.array[w
 
 
 @wp.func
+def emit_sorted_inverse(
+    i: wp.int32,
+    r: wp.int32,
+    sorted_keys: wp.array[wp.Int],
+    order: wp.array[wp.int32],
+    out_inverse: wp.array[wp.int32],
+) -> wp.bool:
+    # Sorted position ``i`` of unique index ``r``: its inverse slot, when ``out_inverse`` is not a
+    # null descriptor. Returns whether ``i`` starts its run -- where every emit over the sorted runs
+    # (``emit_sorted_run``, ``emit_sorted_unique_rows``) writes its per-class outputs.
+    if out_inverse.shape[0] > 0:
+        out_inverse[order[i]] = r
+    return sorted_run_start(sorted_keys, i)
+
+
+@wp.func
 def emit_sorted_run(
     i: wp.int32,
     r: wp.int32,
@@ -304,9 +322,7 @@ def emit_sorted_run(
     # The outputs ``emit_sorted_unique`` and ``emit_sorted_unique_counts`` share for sorted
     # position ``i`` of unique index ``r``: its inverse slot, and at a run's first position the
     # value and the input index sorted there. Returns whether ``i`` starts its run.
-    if out_inverse.shape[0] > 0:
-        out_inverse[order[i]] = r
-    start = sorted_run_start(sorted_keys, i)
+    start = emit_sorted_inverse(i, r, sorted_keys, order, out_inverse)
     if start:
         if out_unique.shape[0] > 0:
             out_unique[r] = sorted_keys[i]
@@ -345,6 +361,26 @@ def emit_sorted_unique(
         out_starts[r + 1] = i + 1
 
 
+@wp.func
+def add_sorted_run_length(
+    i: wp.int32,
+    r: wp.int32,
+    start: wp.bool,
+    ranks: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # Sorted position ``i``'s share of its run's length, for a zeroed ``out_counts``: the run's
+    # first position subtracts its index and its last adds one past it, two integer atomics per
+    # run (exact in any order), so no offsets buffer and no second pass. ``start`` is whether ``i``
+    # begins its run, ``r`` the run's unique index.
+    if start:
+        wp.atomic_sub(out_counts, r, i)
+    if i == ranks.shape[0] - 1:
+        wp.atomic_add(out_counts, r, i + 1)
+    elif ranks[i + 1] != ranks[i]:
+        wp.atomic_add(out_counts, r, i + 1)
+
+
 @wp.kernel
 def emit_sorted_unique_counts(
     sorted_keys: wp.array[wp.Int],
@@ -355,17 +391,38 @@ def emit_sorted_unique_counts(
     out_counts: wp.array[wp.int32],
     out_first: wp.array[wp.int32],
 ) -> None:
-    # ``emit_sorted_unique`` with each run's length in place of its offsets: the run's first
-    # position subtracts its index and its last adds one past it, two integer atomics per run into
-    # a zeroed ``out_counts`` (exact in any order), so no offsets buffer and no second pass.
+    # ``emit_sorted_unique`` with each run's length in place of its offsets
+    # (``add_sorted_run_length``).
     i = wp.int32(wp.tid())
     r = ranks[i] - 1
-    if emit_sorted_run(i, r, sorted_keys, order, out_unique, out_inverse, out_first):
-        wp.atomic_sub(out_counts, r, i)
-    if i == ranks.shape[0] - 1:
-        wp.atomic_add(out_counts, r, i + 1)
-    elif ranks[i + 1] != ranks[i]:
-        wp.atomic_add(out_counts, r, i + 1)
+    start = emit_sorted_run(i, r, sorted_keys, order, out_unique, out_inverse, out_first)
+    add_sorted_run_length(i, r, start, ranks, out_counts)
+
+
+@wp.kernel
+def emit_sorted_unique_rows(
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    rows: wp.array[Any],
+    out_inverse: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_rows: wp.array[Any],
+) -> None:
+    # ``grouping.unique_rows`` / ``unique_faces``' emit over the sorted row keys: what
+    # ``emit_sorted_unique`` / ``emit_sorted_unique_counts`` write for the inverse and the counts,
+    # and at a run's first position the row of the input index sorted there -- the class's first
+    # occurrence, as the stable sort leaves it -- so no ``first_occurrence_indices`` table is
+    # written only for a gather to read. ``rows`` and ``out_rows`` are integer-vector views of any
+    # four-byte row table (``ROW_VECTOR_DTYPES``), so a row is one load and one store and the copy
+    # is bit-exact for every dtype; the inverse and the counts may be null descriptors.
+    i = wp.int32(wp.tid())
+    r = ranks[i] - 1
+    start = emit_sorted_inverse(i, r, sorted_keys, order, out_inverse)
+    if start:
+        out_rows[r] = rows[order[i]]
+    if out_counts.shape[0] > 0:
+        add_sorted_run_length(i, r, start, ranks, out_counts)
 
 
 @wp.func
@@ -530,12 +587,18 @@ KEYS_AND_IDENTITY: OverloadTable
 MARK_SORTED_RUN_STARTS: OverloadTable
 EMIT_SORTED_UNIQUE: OverloadTable
 EMIT_SORTED_UNIQUE_COUNTS: OverloadTable
+EMIT_SORTED_UNIQUE_ROWS: OverloadTable
+
+# The row widths ``emit_sorted_unique_rows`` copies, as the integer vector one row of a four-byte
+# table reads as: edge rows, triangle rows and ``wp.vec3`` points, and a quad.
+ROW_VECTOR_DTYPES = {2: wp.vec2i, 3: wp.vec3i, 4: wp.vec4i}
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global MARK_GROUP_STARTS, HASH_INSERT, COMPACT_FROM_TABLE
     global KEYS_AND_IDENTITY, MARK_SORTED_RUN_STARTS, EMIT_SORTED_UNIQUE, EMIT_SORTED_UNIQUE_COUNTS
+    global EMIT_SORTED_UNIQUE_ROWS
     MARK_GROUP_STARTS = OverloadTable(
         mark_group_starts,
         {d: [wp.array[d], wp.int32, wp.int32, wp.array[wp.int32]] for d in _KEY_DTYPES},
@@ -596,6 +659,21 @@ def _register_overloads() -> None:
                 wp.array[wp.int32],
             ]
             for d in _KEY_DTYPES
+        },
+    )
+    EMIT_SORTED_UNIQUE_ROWS = OverloadTable(
+        emit_sorted_unique_rows,
+        {
+            d: [
+                wp.array[wp.uint64],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[d],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[d],
+            ]
+            for d in ROW_VECTOR_DTYPES.values()
         },
     )
 
