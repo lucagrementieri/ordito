@@ -18,9 +18,10 @@ from ordito._device import (
     require_valid_faces,
 )
 from ordito.config import is_deterministic
-from ordito.constants import INDEX_RADIX_PAIR
+from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import intersection as kernel_intersections
+from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import validation as kernel_validation
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -1584,21 +1585,41 @@ def is_volume(
     if n_faces == 0:
         return False
 
-    # Watertightness and winding consistency are one pass over the halfedge mates: a halfedge
+    # Watertightness and winding consistency are a count over the halfedge mates -- a halfedge
     # without a mate is on an edge not shared by exactly two faces, and each pair's two directed
-    # copies must be reversed. One flag, one readback, and the volume only if it passes.
+    # copies must be reversed -- taken in the launch that folds the volume, read back with it.
     mates = mates if mates is not None else od.halfedge.halfedge_mates(faces, vertices.size)
-    violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
-    _launch.launch(
-        kernel_validation.mate_pair_winding_violation,
-        dim=mates.size,
-        inputs=[faces, edges, mates, True, violation],
-        device=faces.device,
-    )
-    if int(read_scalar(violation)) != 0:
-        return False
+    volume, closed = _closed_signed_volume(vertices, faces, mates, edges, True)
+    return closed and volume > 0.0
 
-    return od.measures.volume(vertices, faces) > 0.0
+
+def _closed_signed_volume(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    edges: odt.Array2dInt32 | None,
+    require_opposite: bool,
+) -> tuple[float, bool]:
+    """
+    [`measures.volume`][ordito.measures.volume], and whether every edge has two faces.
+
+    With ``require_opposite`` the two faces must also traverse their edge both ways. ``mates`` are
+    ``faces``' [`halfedge_mates`][ordito.halfedge.halfedge_mates]; ``edges`` as
+    [`is_volume`][ordito.validation.is_volume] takes it. Nonempty ``faces``; one launch and one
+    readback (``kernels/validation.closed_signed_volume``).
+    """
+    device = faces.device
+    blocks = kernel_reduce.blocks_1d(faces.size // 3)
+    total, stride = _launch.block_partials(blocks, 1, wp.vec2, device)
+    _launch.launch_tiled(
+        kernel_validation.closed_signed_volume,
+        dim=[blocks],
+        inputs=[vertices, faces, edges, mates, require_opposite, stride, total],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    volume, broken = read_scalar(total, 0)
+    return float(volume), float(broken) == 0.0
 
 
 def face_defective_mask(

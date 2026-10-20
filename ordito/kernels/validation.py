@@ -12,7 +12,13 @@ from ordito.kernels.algorithms.connected_components import (
 )
 from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, mate_twin_defect
 from ordito.kernels.predicates import vector_angle
-from ordito.kernels.triangles import face_normals_and_area, face_vertices, triangle_radius_ratio
+from ordito.kernels.reduce import block_chunk_1d, last_ticket_vector, store_block_total
+from ordito.kernels.triangles import (
+    face_normals_and_area,
+    face_signed_volume,
+    face_vertices,
+    triangle_radius_ratio,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -46,6 +52,33 @@ def edge_pair_winding_mask(
     out_consistent[tid] = b0 == a1
 
 
+@wp.func
+def mate_pair_violated(
+    faces: wp.array[wp.int32],
+    edges: wp.array2d[wp.int32],
+    mates: wp.array[wp.int32],
+    require_pairs: wp.bool,
+    require_opposite: wp.bool,
+    h: wp.int32,
+) -> wp.bool:
+    """
+    Whether halfedge ``h`` breaks "every edge shared by two faces, traversed both ways".
+
+    With ``require_opposite``, a pair's lower halfedge fails when the pair's two faces traverse
+    their edge the same way (``edge_pair_winding_mask``'s per-pair test, read off the halfedge
+    mates); with ``require_pairs`` a halfedge fails when its edge is not shared by exactly two
+    faces. Shared by ``mate_pair_winding_violation`` and ``closed_signed_volume``.
+    """
+    mate = mates[h]
+    if mate < 0:
+        return require_pairs
+    if require_opposite and mate > h:
+        _a0, b0 = directed_edge(faces, edges, h)
+        a1, _b1 = directed_edge(faces, edges, mate)
+        return b0 != a1
+    return False
+
+
 @wp.kernel
 def mate_pair_winding_violation(
     faces: wp.array[wp.int32],
@@ -57,20 +90,47 @@ def mate_pair_winding_violation(
     """
     Raise ``out_violation[0]`` when a shared edge's two faces traverse it the same way.
 
-    ``edge_pair_winding_mask``'s per-pair test, read off the halfedge mates (each pair's lower
-    halfedge does it), so a predicate needs no compacted group table and no host read of its
-    length. With ``require_pairs`` a halfedge whose edge is not shared by exactly two faces also
-    raises the flag: the "every edge shared by exactly two faces" half of ``is_volume``.
+    ``mate_pair_violated`` per halfedge, so a predicate needs no compacted group table and no host
+    read of its length. With ``require_pairs`` a halfedge whose edge is not shared by exactly two
+    faces also raises the flag.
     """
-    h = wp.int32(wp.tid())
-    mate = mates[h]
-    if mate < 0 and require_pairs:
+    if mate_pair_violated(faces, edges, mates, require_pairs, True, wp.int32(wp.tid())):
         out_violation[0] = 1
-    if mate > h:
-        _a0, b0 = directed_edge(faces, edges, h)
-        a1, _b1 = directed_edge(faces, edges, mate)
-        if b0 != a1:
-            out_violation[0] = 1
+
+
+@wp.kernel(module="unique")
+def closed_signed_volume(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edges: wp.array2d[wp.int32],
+    mates: wp.array[wp.int32],
+    require_opposite: wp.bool,
+    stride: wp.int32,
+    out_total: wp.array[wp.vec2],
+) -> None:
+    """
+    Fold the mesh's signed volume from the origin and count the halfedges breaking closedness.
+
+    ``measures.mesh_signed_volume``'s fold -- the same chunks, lane stride and fixed-order commit,
+    so component 0 is ``measures.volume`` bit for bit -- with ``mate_pair_violated`` counted over
+    each face's three halfedges in component 1 (every edge shared by two faces, and with
+    ``require_opposite`` traversed both ways), so a closed-volume test is one launch and one
+    readback where the edge test and the volume were a launch and a readback each. Its own module
+    (``module="unique"``): the only tiled launch here, at ``TILE_1D``, so the module launched at
+    the default width is not built a second time.
+    """
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    total = wp.vec2(0.0)
+    origin = wp.vec3()
+    for k in range(lane, count, wp.block_dim()):
+        f = offset + k
+        broken = wp.float32(0.0)
+        for corner in range(3):
+            if mate_pair_violated(faces, edges, mates, True, require_opposite, 3 * f + corner):
+                broken += wp.float32(1.0)
+        total += wp.vec2(face_signed_volume(vertices, faces, f, origin), broken)
+    store_block_total(block, lane, total, out_total, 0, stride, last_ticket_vector)
 
 
 @wp.func

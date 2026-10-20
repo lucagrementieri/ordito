@@ -220,6 +220,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "wound both ways, hooked off the same halfedge mates; a public form would expose an "
         "unflattened union-find forest"
     ),
+    ("repair", "validation._closed_signed_volume"): (
+        "make_volume and make_normals_outward test closedness and fold the volume in one launch "
+        "and one readback, as is_volume does; is_volume's public answer also needs the winding "
+        "test, and is_edge_manifold plus measures.volume is a launch and a readback each"
+    ),
     ("bounds", "selection._compact_marked_submesh"): (
         "crop_mesh decides each face's fate from the box in the marking pass, as repair's passes "
         "do from their own rules; submesh_from_vertex_mask would need the box mask built and "

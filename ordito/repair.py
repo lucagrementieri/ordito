@@ -83,6 +83,7 @@ from ordito.kernels import selection as kernel_selection
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPrivateUsage]
 from ordito.validation import (
+    _closed_signed_volume,  # pyright: ignore[reportPrivateUsage]
     _corner_parents_from_mates,  # pyright: ignore[reportPrivateUsage]
     _face_flip_words,  # pyright: ignore[reportPrivateUsage]
 )
@@ -253,18 +254,7 @@ def make_solid(
     vertices, faces, _remap = remove_unreferenced_vertices(vertices, faces)
     # ``make_winding_consistent`` then ``split_non_manifold_vertices`` over one pairing of the
     # halfedges: the flip carries the mates over to the wound faces, which the split reads.
-    n_faces = faces.size // 3
-    mates = od.halfedge.halfedge_mates(faces, vertices.size)
-    wound = _launch.empty(3 * n_faces, dtype=wp.int32, device=faces.device)
-    wound_mates = _launch.empty(3 * n_faces, dtype=wp.int32, device=faces.device)
-    _launch.launch(
-        kernel_repair.flip_faces_and_mates_by_parity,
-        dim=n_faces,
-        inputs=[faces, mates, _face_flip_words(faces, vertices.size, mates)],
-        outputs=[wound, wound_mates],
-        device=faces.device,
-    )
-    vertices, faces, _source = _split_corners(vertices, wound, wound_mates)
+    vertices, faces, _source = _split_corners(vertices, *_wound_with_mates(faces, vertices.size))
 
     # Every stage below is a deterministic function of the mesh it is handed, and ``version`` counts
     # the changes made to the mesh, so a stage is skipped while the mesh is still one it is known
@@ -2455,19 +2445,54 @@ def make_normals_outward(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    wound = make_winding_consistent(faces, n_vertices=vertices.size)
-    # ``wound`` is this call's own buffer, so a mesh already facing outward returns it as it is.
-    return _outward_faces(vertices, wound, multibody=multibody, owned=True)
+    if faces.size // 3 == 0:
+        return _launch.empty(0, dtype=wp.int32, device=faces.device)
+    # ``make_winding_consistent`` carrying the halfedge mates over to the wound faces, which the
+    # orientation test reads rather than pairing the halfedges again. ``wound`` is this call's own
+    # buffer, so a mesh already facing outward returns it as it is.
+    wound, wound_mates = _wound_with_mates(faces, vertices.size)
+    return _outward_faces(vertices, wound, multibody=multibody, owned=True, mates=wound_mates)
+
+
+def _wound_with_mates(
+    faces: wp.array[wp.int32], n_vertices: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    [`make_winding_consistent`][ordito.repair.make_winding_consistent]'s faces, with their mates.
+
+    The [`halfedge_mates`][ordito.halfedge.halfedge_mates] of the wound faces, moved with each
+    flipped face (``kernels/repair.flip_faces_and_mates_by_parity``) from the one pairing the
+    winding fix sorts anyway, for a caller that pairs the wound halfedges next. A ``-2 - lowest``
+    code may name another halfedge of its edge than the lowest. Nonempty ``faces``.
+    """
+    n_faces = faces.size // 3
+    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    wound = _launch.empty(3 * n_faces, dtype=wp.int32, device=faces.device)
+    wound_mates = _launch.empty(3 * n_faces, dtype=wp.int32, device=faces.device)
+    _launch.launch(
+        kernel_repair.flip_faces_and_mates_by_parity,
+        dim=n_faces,
+        inputs=[faces, mates, _face_flip_words(faces, n_vertices, mates)],
+        outputs=[wound, wound_mates],
+        device=faces.device,
+    )
+    return wound, wound_mates
 
 
 def _outward_faces(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, multibody: bool, owned: bool
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    multibody: bool,
+    owned: bool,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.int32]:
     """
     [`make_volume`][ordito.repair.make_volume]'s answer, without its device check.
 
     ``owned`` says ``faces`` is a buffer the caller allocated and hands over: where the faces need
-    no flip it is returned itself rather than cloned.
+    no flip it is returned itself rather than cloned. ``mates`` are ``faces``' halfedge mates when
+    the caller holds them (``-2`` codes need not name the lowest halfedge).
     """
     n_faces = faces.size // 3
     device = faces.device
@@ -2476,7 +2501,9 @@ def _outward_faces(
 
     if multibody:
         out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-        labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+        labels = od.adjacency.face_connected_component_labels(
+            faces, n_vertices=vertices.size, mates=mates
+        )
         accum = _launch.zeros(n_faces, dtype=wp.float32, device=device)
         _launch.launch(
             kernel_repair.scatter_face_volume_by_group,
@@ -2494,16 +2521,13 @@ def _outward_faces(
         )
         return out_faces
 
-    # The predicate, not ``all(face_watertight_mask(faces))``: the mask additionally builds
-    # ``unique_1d``'s inverse and runs a per-face gather pass, only to be reduced to one bool.
-    # Both answer "is every undirected edge shared by exactly two faces", because every unique edge
-    # in the table comes from a face.
-    if not od.validation.is_edge_manifold(
-        faces, allow_boundary_edges=False, n_vertices=vertices.size
-    ):
-        return faces if owned else _launch.clone(faces)
-
-    if od.measures.volume(vertices, faces) >= 0.0:
+    # "Is every undirected edge shared by exactly two faces" -- ``is_edge_manifold`` with
+    # ``allow_boundary_edges=False`` -- is "does every halfedge have a mate", counted over the mates
+    # in the launch that folds the volume (``measures.volume`` bit for bit) and read back with it.
+    if mates is None:
+        mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    volume, closed = _closed_signed_volume(vertices, faces, mates, None, False)
+    if not closed or volume >= 0.0:
         return faces if owned else _launch.clone(faces)
 
     out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
