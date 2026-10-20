@@ -138,7 +138,7 @@ import warp.optim.linear as wpl
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.cholesky import NotPositiveDefiniteError, SparseCholesky, sparse_cholesky
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
@@ -447,9 +447,15 @@ def min_quad_with_fixed(
             f'min_quad_with_fixed: unknown solver {solver!r}, expected "iterative" or "direct".'
         )
     _require_preconditioner_name(preconditioner, "min_quad_with_fixed")
-    system = MinQuadWithFixedData(q, fixed_mask, coordinates, factor=solver == "direct")
-    return system.solve(
-        fixed_values, tol=tol, check_every=check_every, preconditioner=preconditioner
+    return MinQuadWithFixedData._solved_once(  # pyright: ignore[reportPrivateUsage]
+        q,
+        fixed_mask,
+        coordinates,
+        odt.as_array2d(fixed_values, wp.float64),
+        factor=solver == "direct",
+        tol=tol,
+        check_every=check_every,
+        preconditioner=preconditioner,
     )
 
 
@@ -605,33 +611,87 @@ class MinQuadWithFixedData:
             If ``q``, ``fixed_mask`` and ``coordinates`` are not all on one device.
         """
         require_same_device(q=q, fixed_mask=fixed_mask, coordinates=coordinates)
+        device = fixed_mask.device
+        self._extract(q, _launch.clone(fixed_mask), coordinates, None, factor=factor)
+        if self.factorization is not None:
+            # The right-hand side's extraction pass also counts each free row's kept entries,
+            # which only the system's assembly needed: scratch every solve rewrites.
+            self._row_counts = _launch.empty(self.n_free, dtype=wp.int32, device=device)
+
+    def _extract(
+        self,
+        q: odt.SparseMatrix,
+        fixed_mask: wp.array[wp.bool],
+        coordinates: wp.array[wp.vec3] | None,
+        fixed_values: odt.Array2dFloat | None,
+        *,
+        factor: bool,
+    ) -> odt.Array2dFloat | None:
+        """
+        Hold ``fixed_mask`` and extract the reduced system, with ``fixed_values``' right-hand side.
+
+        The extraction forms the right-hand side of ``fixed_values``' rows as it counts the rows,
+        and returns it; ``None`` (no values) extracts the operator alone, for later solves. Nothing
+        is extracted, and ``None`` returned, when nothing is free or ``fixed_values`` has no row.
+        """
         if int(q.nrow) != fixed_mask.size or int(q.ncol) != fixed_mask.size:
             raise ValueError(
                 f"min_quad_with_fixed: q is {int(q.nrow)} x {int(q.ncol)} but fixed_mask has "
                 f"{fixed_mask.size} entries"
             )
         self.q = q
-        self.fixed_mask = _launch.clone(fixed_mask)
-        self.free_map, self.n_free = free_partition(self.fixed_mask)
+        self.fixed_mask = fixed_mask
         self.factorization: OperatorFactorization | None = None
-        self._match_flag: wp.array[wp.int32] | None = None
+        self._match_flag: _StampedFlag | None = None
+        if fixed_values is not None and int(fixed_values.shape[0]) == 0:
+            self.free_map, self.n_free = free_partition(fixed_mask)
+            return None
+        values = fixed_values
+        if values is None:
+            values = odt.as_array2d(
+                _launch.empty((0, fixed_mask.size), dtype=wp.float64, device=fixed_mask.device),
+                wp.float64,
+            )
+        q_uu, rhs, self.free_map, self.n_free = partitioned_interior_system(q, fixed_mask, values)
         if self.n_free == 0:
-            return
-        device = fixed_mask.device
-        no_values = odt.as_array2d(
-            _launch.empty((0, fixed_mask.size), dtype=wp.float64, device=device), wp.float64
-        )
-        q_uu, _ = assemble_interior_system(
-            q, self.fixed_mask, self.free_map, no_values, self.n_free
-        )
-        # The right-hand side's extraction pass also counts each free row's kept entries, which
-        # only the system's assembly above needed: scratch every solve rewrites.
-        self._row_counts = _launch.empty(self.n_free, dtype=wp.int32, device=device)
+            return None
         self.factorization = OperatorFactorization(
-            q_uu, free_coordinates(coordinates, self.fixed_mask, self.free_map, self.n_free)
+            q_uu, free_coordinates(coordinates, fixed_mask, self.free_map, self.n_free)
         )
         if factor:
             self.factorization.factor()
+        return None if fixed_values is None else rhs
+
+    @classmethod
+    def _solved_once(
+        cls,
+        q: odt.SparseMatrix,
+        fixed_mask: wp.array[wp.bool],
+        coordinates: wp.array[wp.vec3] | None,
+        fixed_values: odt.Array2dFloat,
+        *,
+        factor: bool,
+        tol: float,
+        check_every: int,
+        preconditioner: str,
+    ) -> tuple[odt.Array2dFloat, wp.array[wp.int32], int]:
+        """
+        ``min_quad_with_fixed``'s one-shot solve, its inputs already validated.
+
+        The system lives only for the call, so it holds ``fixed_mask`` itself rather than a copy,
+        and the right-hand side is formed by the extraction's own counting pass.
+        """
+        system = cls.__new__(cls)
+        n_rhs = int(fixed_values.shape[0])
+        rhs = system._extract(q, fixed_mask, coordinates, fixed_values, factor=factor)
+        solution = odt.as_array2d(
+            _launch.zeros((n_rhs, system.n_free), dtype=wp.float64, device=fixed_mask.device),
+            wp.float64,
+        )
+        if rhs is None:
+            return solution, system.free_map, system.n_free
+        system._solve_formed(rhs, solution, tol, check_every, preconditioner)
+        return solution, system.free_map, system.n_free
 
     @property
     def factored(self) -> bool:
@@ -668,19 +728,15 @@ class MinQuadWithFixedData:
         if fixed_mask.size == 0:
             return True
         device = fixed_mask.device
-        if self._match_flag is None:
-            self._match_flag = _launch.zeros(1, dtype=wp.int32, device=device)
-        else:
-            _launch.zero_(self._match_flag)
-        flag = self._match_flag
+        flag = self._match_flag = _StampedFlag.reused(self._match_flag, device)
         _launch.launch(
             kernel_linalg.masks_differ,
             dim=fixed_mask.size,
-            inputs=[fixed_mask, self.fixed_mask],
-            outputs=[flag],
+            inputs=[fixed_mask, self.fixed_mask, wp.int32(flag.base)],
+            outputs=[flag.word],
             device=device,
         )
-        return read_scalar(flag, 0) == 0
+        return flag.verdict() == 0
 
     def solve(
         self,
@@ -770,20 +826,34 @@ class MinQuadWithFixedData:
             ],
             device=device,
         )
-        if self.factorization.factorization is not None:
+        self._solve_formed(rhs, solution, tol, check_every, preconditioner)
+        return solution, self.free_map, self.n_free
+
+    def _solve_formed(
+        self,
+        rhs: odt.Array2dFloat,
+        solution: odt.Array2dFloat,
+        tol: float,
+        check_every: int,
+        preconditioner: str | SquaredLaplacianPreconditioner,
+    ) -> None:
+        """Solve the reduced system for a formed, non-empty ``rhs`` into ``solution``."""
+        factorization = self.factorization
+        assert factorization is not None
+        if factorization.factorization is not None:
             # Factored: ``solve_spd_columns``' first branch, without its report.
-            self.factorization.solve(rhs, solution, tol=tol)
-            return solution, self.free_map, self.n_free
-        solve_spd_columns(
-            cast("odt.BsrMatrix[wp.float64]", self.factorization.matrix),
+            factorization.solve(rhs, solution, tol=tol)
+            return
+        _solve_columns_verified(
+            cast("odt.BsrMatrix[wp.float64]", factorization.matrix),
             rhs,
             solution,
+            factorization,
             tol=tol,
+            maxiter=None,
             check_every=check_every,
             preconditioner=preconditioner,
-            factorization=self.factorization,
         )
-        return solution, self.free_map, self.n_free
 
     def release(self) -> None:
         """Drop the factorization; later solves iterate, verified, until it is built again."""
@@ -1018,15 +1088,7 @@ def assemble_interior_system(
     )
     device = fixed_mask.device
     n_dofs = fixed_mask.size
-    n_rhs = int(fixed_values.shape[0])
-    if load is not None:
-        n_load = int(load.shape[0])
-        if n_rhs not in (0, n_load):
-            raise ValueError(
-                f"load has {n_load} rows but fixed_values has {n_rhs}; they must match, or "
-                "fixed_values must have none."
-            )
-        n_rhs = n_load
+    n_rhs = _rhs_rows(fixed_values, load)
     # Every free row writes its own count and its column of ``rhs`` exactly once (``free_map`` is a
     # bijection onto ``[0, n_free)``), so there is nothing to pre-zero.
     counts = _launch.empty(n_free, dtype=wp.int32, device=device)
@@ -1072,6 +1134,138 @@ def assemble_interior_system(
     # Hand the finished CSR to a compact ``BsrMatrix`` directly (``_bsr_over``).
     q_uu = _bsr_over(n_free, n_free, row_offsets, columns, values, nnz_uu)
     return q_uu, odt.as_array2d(rhs, wp.float64)
+
+
+def partitioned_interior_system(
+    q: odt.SparseMatrix,
+    fixed_mask: wp.array[wp.bool],
+    fixed_values: odt.Array2dFloat,
+    *,
+    scale: float = 1.0,
+    load: odt.Array2dFloat | None = None,
+) -> tuple[odt.BsrMatrix[wp.float64], odt.Array2dFloat, wp.array[wp.int32], int]:
+    """
+    Extract ``Q_uu`` and ``b_u - Q_ub bc`` together with the free partition they are taken over.
+
+    [`free_partition`][ordito.linalg.free_partition] followed by
+    [`assemble_interior_system`][ordito.linalg.assemble_interior_system], in two launches, one
+    scan and one host read: one pass counts each row's ``(free, kept entries)`` pair, one scan of
+    the pairs gives every row's free rank and output offset at once (and both totals, read back
+    together), and one pass writes the map, the CSR and the right-hand side. The results are
+    those of the two-step form, entry for entry.
+
+    Parameters
+    ----------
+    q
+        ``(n_dofs, n_dofs)`` symmetric positive-semi-definite operator, ``float64``.
+    fixed_mask
+        ``(n_dofs,)`` mask: ``True`` marks a pinned degree of freedom.
+    fixed_values
+        ``(n_rhs, n_dofs)`` prescribed values.
+    scale
+        Factor applied to ``q`` as it is read, as
+        [`assemble_interior_system`][ordito.linalg.assemble_interior_system] takes it.
+    load
+        ``(n_rhs, n_dofs)`` linear term ``b``, as
+        [`assemble_interior_system`][ordito.linalg.assemble_interior_system] takes it.
+
+    Returns
+    -------
+    q_uu : ``warp.sparse.BsrMatrix``
+        ``(n_free, n_free)`` reduced operator.
+    rhs : odt.Array2dFloat
+        ``(n_rhs, n_free)`` constant right-hand side.
+    free_map : wp.array[wp.int32]
+        ``(n_dofs,)`` compact remap of the free degrees of freedom, as
+        [`free_partition`][ordito.linalg.free_partition] returns it.
+    n_free : int
+        Number of unpinned degrees of freedom.
+
+    Raises
+    ------
+    RuntimeError
+        If ``q``, ``fixed_mask``, ``fixed_values`` and ``load`` are not all on one device.
+    ValueError
+        If ``load`` and ``fixed_values`` both have rows and their row counts differ.
+
+    See Also
+    --------
+    [`assemble_interior_system`][ordito.linalg.assemble_interior_system]
+    [`free_partition`][ordito.linalg.free_partition]
+
+    Examples
+    --------
+    The interior block of ``-L`` on a flat grid, with the boundary fixed to its ``x`` coordinates:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(8, 8))
+    L = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
+    mask = np.zeros(vertices.shape[0], dtype=bool)
+    mask[od.boundary.longest_boundary_loop(vertices, faces).numpy()] = True
+    x = vertices.numpy()[:, 0].astype(np.float64)
+    q_uu, rhs, free_map, n_free = od.linalg.partitioned_interior_system(
+        L, wp.array(mask, dtype=wp.bool), wp.array(x[None, :], dtype=wp.float64), scale=-1.0
+    )
+    print(q_uu.shape, rhs.shape, n_free)  # (36, 36) (1, 36) 36
+    interior = wp.array(x[~mask], dtype=wp.float64)
+    print(np.allclose((q_uu @ interior).numpy(), rhs.numpy()[0]))  # True
+    ```
+    """
+    require_same_device(q=q, fixed_mask=fixed_mask, fixed_values=fixed_values, load=load)
+    n_rhs = _rhs_rows(fixed_values, load)
+    device = fixed_mask.device
+    n_dofs = fixed_mask.size
+    if n_dofs == 0:
+        free_map, n_free = free_partition(fixed_mask)
+        q_uu, rhs = assemble_interior_system(
+            q, fixed_mask, free_map, fixed_values, n_free, scale=scale, load=load
+        )
+        return q_uu, rhs, free_map, n_free
+    ranks = _launch.empty(n_dofs + 1, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_linalg.interior_partition_counts,
+        dim=n_dofs,
+        inputs=[q.offsets, q.columns, fixed_mask],
+        outputs=[ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # One read for both totals: the free count and the reduced entry count size everything after.
+    n_free, nnz_uu = (int(v) for v in read_values(ranks, n_dofs, 1)[0])
+    free_map = _launch.empty(n_dofs, dtype=wp.int32, device=device)
+    row_offsets = _launch.empty(n_free + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(nnz_uu, dtype=wp.int32, device=device)
+    values = _launch.empty(nnz_uu, dtype=wp.float64, device=device)
+    rhs = _launch.empty((n_rhs, n_free), dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_linalg.interior_partition_system,
+        dim=n_dofs,
+        inputs=[q.offsets, q.columns, q.values, fixed_mask, ranks, fixed_values,
+                wp.float64(scale), load],
+        outputs=[free_map, row_offsets, columns, values, rhs],
+        device=device,
+    )  # fmt: skip
+    q_uu = _bsr_over(n_free, n_free, row_offsets, columns, values, nnz_uu)
+    return q_uu, odt.as_array2d(rhs, wp.float64), free_map, n_free
+
+
+def _rhs_rows(fixed_values: odt.ArrayNd, load: odt.ArrayNd | None) -> int:
+    """Return an extraction's right-hand-side row count; raise if ``load`` disagrees with it."""
+    n_rhs = int(fixed_values.shape[0])
+    if load is not None:
+        n_load = int(load.shape[0])
+        if n_rhs not in (0, n_load):
+            raise ValueError(
+                f"load has {n_load} rows but fixed_values has {n_rhs}; they must match, or "
+                "fixed_values must have none."
+            )
+        n_rhs = n_load
+    return n_rhs
 
 
 def solve_spd(
@@ -1666,18 +1860,39 @@ def _solve_columns_verified(
         factorization.solve(rhs, solution, tol=tol)
         return _direct_result(factorization, tol, check_every, rhs.device)
     rent = min(cap, CG_FACTOR_AFTER_ROUNDS)
-    result = _cg_columns(
-        matrix,
-        rhs,
-        solution,
-        tol=tol,
-        maxiter=rent,
-        check_every=check_every,
-        preconditioner=preconditioner,
-        run=True,
-        caller="solve_spd_columns",
-    )
-    if _verified(matrix, rhs, solution, result, tol, factorization):
+    verdict: int | None = None
+    if preconditioner == "adaptive":
+        # The probe's escalation test and the verification share one read: the verification's
+        # flag also says whether a column stayed outside its threshold, which is the probe's own
+        # question, so a solve that settles inside the probe is decided by a single readback.
+        adaptive = _AdaptiveCg(
+            matrix,
+            rhs,
+            solution,
+            tol=tol,
+            maxiter=rent,
+            check_every=_supported_check_every(check_every),
+            cached=True,
+        )
+        result = adaptive(
+            verify=lambda probe: _verdict(matrix, rhs, solution, probe, tol, factorization)
+        )
+        verdict = adaptive.verdict
+    else:
+        result = _cg_columns(
+            matrix,
+            rhs,
+            solution,
+            tol=tol,
+            maxiter=rent,
+            check_every=check_every,
+            preconditioner=preconditioner,
+            run=True,
+            caller="solve_spd_columns",
+        )
+    if verdict is None:
+        verdict = _verdict(matrix, rhs, solution, result, tol, factorization)
+    if verdict == 0:
         return result
     if factorization.factor():
         # From zero, not from the rejected iterate: refinement corrects an initial guess through
@@ -1701,7 +1916,7 @@ def _solve_columns_verified(
             run=True,
             caller="solve_spd_columns",
         )
-        if _verified(matrix, rhs, solution, result, tol, factorization):
+        if _verdict(matrix, rhs, solution, result, tol, factorization) == 0:
             return result
     warnings.warn(
         "solve_spd_columns: conjugate gradient did not reach a verified solution in "
@@ -1713,40 +1928,43 @@ def _solve_columns_verified(
     return result
 
 
-def _verified(
+def _verdict(
     matrix: odt.BsrMatrix[wp.float64],
     rhs: odt.Array2dFloat,
     solution: odt.Array2dFloat,
     result: tuple[Any, Any, Any],
     tol: float,
     factorization: OperatorFactorization,
-) -> bool:
+) -> int:
     """
     Whether a conjugate-gradient result converged and its solution passes the backward-error test.
 
-    The convergence half reads the solver's own residual against its threshold; the other half
-    recomputes the residual from ``matrix``, entry by entry against ``(|A| |x| + |b|)_i``, which a
-    recurrence residual drifting from the true one -- an operator ill-conditioned in places --
-    cannot fool. Both write one device flag, held by ``factorization``, read back once.
+    ``0`` when both hold, ``kernels/cholesky.BACKWARD_ERROR_UNCONVERGED`` when the result did not
+    converge, else ``BACKWARD_ERROR_FAILED``. The convergence half reads the solver's own residual
+    against its threshold; the other half recomputes the residual from ``matrix``, entry by entry
+    against ``(|A| |x| + |b|)_i``, which a recurrence residual drifting from the true one -- an
+    operator ill-conditioned in places -- cannot fool. Both write one device flag, held by
+    ``factorization``, read back once.
     """
     _iterations, residual, threshold = result
     # Spelled as the negation of "inside": a ``NaN`` residual is outside every threshold.
     if not isinstance(residual, wp.array) and not float(residual) <= float(threshold):
-        return False
+        return int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED)
     device = rhs.device
     n_columns, n = int(rhs.shape[0]), int(rhs.shape[1])
-    flag = factorization._flag = _cleared_flag(factorization._flag, device)  # pyright: ignore[reportPrivateUsage]
+    flag = factorization._flag = _StampedFlag.reused(factorization._flag, device)  # pyright: ignore[reportPrivateUsage]
     on_device = isinstance(residual, wp.array)
     _launch.launch(
         kernel_cholesky.backward_error_exceeds,
         dim=(n, n_columns),
         inputs=[matrix.offsets, matrix.columns, matrix.values, solution.flatten(), rhs.flatten(),
                 wp.int32(n), wp.float64(max(VERIFIED_BACKWARD_ERROR, 100.0 * tol)),
-                residual if on_device else None, threshold if on_device else None],
-        outputs=[flag],
+                residual if on_device else None, threshold if on_device else None,
+                wp.int32(flag.base)],
+        outputs=[flag.word],
         device=device,
     )  # fmt: skip
-    return read_scalar(flag, 0) == 0
+    return flag.verdict()
 
 
 def spd_column_solver(
@@ -2004,8 +2222,8 @@ class OperatorFactorization:
         # A factored solve's device report per tolerance (``_direct_result``), built once: three
         # one-element arrays a call is three allocations on a path that costs a few launches.
         self._reports: dict[float, tuple[Any, Any, Any]] = {}
-        # The verified solve's one-word backward-error flag (``_verified``), kept across solves.
-        self._flag: wp.array[wp.int32] | None = None
+        # The verified solve's backward-error flag (``_verdict``), kept across solves.
+        self._flag: _StampedFlag | None = None
 
     @property
     def matrix(self) -> odt.SparseMatrix:
@@ -2293,16 +2511,17 @@ def solve_spd_settled(
     # exactly (a settled solve sits orders of magnitude below the bar, a failed one at 1), and the
     # direct factorization -- which reaches every entry with its own relative precision -- takes
     # over. One four-byte read: the decision to factor is the host's.
-    flag = solver.flag = _cleared_flag(solver.flag, rhs.device)
+    flag = solver.flag = _StampedFlag.reused(solver.flag, rhs.device)
     _launch.launch(
         kernel_cholesky.backward_error_exceeds,
         dim=(int(scalar.nrow), n_columns),
         inputs=[scalar.offsets, scalar.columns, scalar.values, solution_flat, rhs_flat,
-                wp.int32(int(scalar.nrow)), wp.float64(SETTLE_BACKWARD_ERROR), None, None],
-        outputs=[flag],
+                wp.int32(int(scalar.nrow)), wp.float64(SETTLE_BACKWARD_ERROR), None, None,
+                wp.int32(flag.base)],
+        outputs=[flag.word],
         device=rhs.device,
     )  # fmt: skip
-    if read_scalar(flag, 0) == 0:
+    if flag.verdict() == 0:
         return solver.iterations
     fallback = factorization if factorization is not None else OperatorFactorization(matrix)
     if not fallback.factor():
@@ -2321,12 +2540,41 @@ def solve_spd_settled(
     return solver.iterations
 
 
-def _cleared_flag(flag: wp.array[wp.int32] | None, device: wp.DeviceLike) -> wp.array[wp.int32]:
-    """Return ``flag`` cleared, or a new cleared one-word flag on ``device`` when there is none."""
-    if flag is None:
-        return _launch.zeros(1, dtype=wp.int32, device=device)
-    _launch.zero_(flag)
-    return flag
+class _StampedFlag:
+    """
+    A device word a check raises above a base to flag its finding, reused without a clear.
+
+    A check (``kernels/cholesky.backward_error_exceeds``' verdicts, ``kernels/linalg.
+    masks_differ``) raises the word to ``base`` plus its code, and the next one runs from a
+    ``base`` above anything the last could have written, so the word is reused with no clear (a
+    memset) per check. Zeroed again only when ``base`` nears the ``int32`` range.
+    """
+
+    __slots__ = ("base", "word")
+
+    # Above every verdict code, so one verification's values all sit below the next one's base.
+    _STRIDE = 4
+    _LIMIT = 1 << 30
+
+    def __init__(self, device: wp.DeviceLike) -> None:
+        self.word = _launch.zeros(1, dtype=wp.int32, device=device)
+        self.base = 0
+
+    @classmethod
+    def reused(cls, flag: _StampedFlag | None, device: wp.DeviceLike) -> _StampedFlag:
+        """Return ``flag`` advanced to a fresh base, or a new flag on ``device`` when it is none."""
+        if flag is None:
+            return cls(device)
+        flag.base += cls._STRIDE
+        if flag.base >= cls._LIMIT:
+            _launch.zero_(flag.word)
+            flag.base = 0
+        return flag
+
+    def verdict(self) -> int:
+        """Read the check's finding back: ``0`` (nothing flagged) or its code past the base."""
+        value = int(read_scalar(self.word, 0))
+        return value - self.base if value > self.base else 0
 
 
 def _direct_result(
@@ -2607,7 +2855,8 @@ def _cg_one_block(
     )
     if device_result:
         return iterations, residual, threshold
-    results_np = results.numpy()
+    # One offset copy into a kept host scratch, not ``.numpy()``'s fresh staging array.
+    results_np = np.asarray(read_values(results, 0, 3 * n_columns))
     residual_norm, threshold_norm = _worst_column(
         results_np[:n_columns], results_np[n_columns : 2 * n_columns]
     )
@@ -2809,8 +3058,11 @@ class _AdaptiveCg:
         self._probe_cap = min(maxiter, CG_CHEBYSHEV_PROBE_ITERATIONS)
         self._probe = self._state("diag", self._probe_cap)
         # Built on the first escalation: a solve that never escalates never pays the polynomial's
-        # setup, which reads a bound back.
+        # setup (its bound's launches and buffers).
         self._escalation: _BatchedCg | None = None
+        # The last call's verdict on the probe, when a ``verify`` decided it and the probe's
+        # result is what that call returned; ``None`` otherwise.
+        self.verdict: int | None = None
 
     def _state(self, preconditioner: str, maxiter: int) -> _BatchedCg:
         if self._cached:
@@ -2837,16 +3089,29 @@ class _AdaptiveCg:
             return state()
         return state.solve(self._rhs.flatten(), self._solution.flatten())
 
-    def __call__(self):
-        """Run the probe, and the escalation if the probe did not converge."""
+    def __call__(self, verify: Callable[[tuple[Any, Any, Any]], int] | None = None):
+        """
+        Run the probe, and the escalation if the probe did not converge.
+
+        ``verify``, when given, judges the probe's result in place of reading its residual back
+        (``_verdict``'s codes); the escalation runs on ``BACKWARD_ERROR_UNCONVERGED``, and any
+        other verdict is kept in ``verdict`` with the probe's result returned.
+        """
+        self.verdict = None
         result = self._run(self._probe)
         if self._probe_cap >= self._maxiter:
             return result
-        # One readback: the probe's residual against its tolerance. It is the price of deciding,
-        # and a solve short enough to finish inside the probe pays nothing else.
-        residual, tolerance = _cg_residual_and_tolerance(result)
-        if residual <= tolerance:
-            return result
+        if verify is not None:
+            verdict = verify(result)
+            if verdict != int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED):
+                self.verdict = verdict
+                return result
+        else:
+            # One readback: the probe's residual against its tolerance. It is the price of
+            # deciding, and a solve short enough to finish inside the probe pays nothing else.
+            residual, tolerance = _cg_residual_and_tolerance(result)
+            if residual <= tolerance:
+                return result
         if self._escalation is None:
             self._escalation = self._state("chebyshev", self._maxiter - self._probe_cap)
         iterations, residual, tolerance = self._run(self._escalation)
@@ -3006,6 +3271,9 @@ class _BatchedCg:
         # contiguous span a host result reads in one readback (``host_result``).
         head = _launch.zeros(_INT_WORDS + 10 * self._n_columns, dtype=wp.float64, device=device)
         self._head = odt.as_dense(head[: _INT_WORDS + 2 * self._n_columns])
+        # The head's host mirror on a CUDA state, allocated by the first host read and rewritten
+        # by every later one (``_read_head``).
+        self._head_host: wp.array[wp.float64] | None = None
         scalars = odt.as_dense(head[_INT_WORDS:]).reshape((10, self._n_columns))
         self._residual_tolerance = odt.as_array2d(odt.as_dense(scalars[0:2]), wp.float64)
         self._atol_sq = odt.as_dense(scalars[0])
@@ -3081,8 +3349,8 @@ class _BatchedCg:
         # every launch in the body, plus the graph instantiation, for an identical graph. Only
         # ``_initialize``, which reads the caller's operands, is issued per call.
         self._graph = None
-        # ``solve_spd_settled``'s one-word backward-error flag, kept across its solves.
-        self.flag: wp.array[wp.int32] | None = None
+        # ``solve_spd_settled``'s backward-error flag, kept across its solves.
+        self.flag: _StampedFlag | None = None
 
         # The settle monitor ``solve_spd_settled`` runs (``check_rounds``, ``change_tolerance``,
         # ``settle_rounds``): every ``check_rounds`` rounds ``cg_settle_change`` compares the
@@ -3453,7 +3721,7 @@ class _BatchedCg:
                 self._settle_check()
             # The condition, the iteration count and the result rows share one span, so the last
             # check's read is also the result's.
-            head = self._head.numpy()
+            head = self._read_head()
             if not int(_head_ints(head)[int(kernel_array.LOOP_CONDITION)]):
                 break
         if (
@@ -3462,7 +3730,7 @@ class _BatchedCg:
         ):
             # Stopped by the cap after a round that stepped: re-measure the residual it left.
             self._capped_residual()
-            head = self._head.numpy()
+            head = self._read_head()
         return self.host_result(head)
 
     def _capped_residual(self) -> None:
@@ -3493,10 +3761,26 @@ class _BatchedCg:
         column's own pair (``_worst_column``).
         """
         if head is None:
-            head = self._head.numpy()
+            head = self._read_head()
         rows = np.asarray(head[_INT_WORDS:]).reshape((2, self._n_columns))
         residual, threshold = _worst_column(rows[1], rows[0])
         return int(_head_ints(head)[kernel_array.LOOP_STATE_SIZE]), residual, threshold
+
+    def _read_head(self) -> npt.NDArray[np.float64]:
+        """
+        Read the head span (loop state, count, threshold and residual rows) back to the host.
+
+        A CUDA state copies it into one pageable host buffer it keeps, so a host-checked loop pays
+        a copy a check and no host allocation (``.numpy()`` stages through a fresh one each call).
+        Pageable, not pinned, for ``_device.read_scalar``'s reason: the copy then returns only once
+        it has landed. The returned view aliases that buffer and is valid until the next read.
+        """
+        if not self._device.is_cuda:
+            return self._head.numpy()
+        if self._head_host is None:
+            self._head_host = _launch.empty(self._head.size, dtype=wp.float64, device="cpu")
+        _launch.copy(self._head_host, self._head)
+        return self._head_host.numpy()
 
 
 # ``float64`` words at the head of a ``_BatchedCg``'s scalar buffer that hold its ``int32`` loop
@@ -3689,14 +3973,16 @@ def _row_path(matrix: odt.SparseMatrix, n: int, fold: bool) -> tuple[bool, int]:
     capacity -- and only for a column too long to fold: below that a round is bound by its
     launches, and one ``bsr_mv`` a column plus a dots launch lose to the one fused launch (measured
     0.91-0.94x on ``smooth_region``'s three-column, twenty-entry-a-row systems). One four-byte
-    read for a column that does not fold.
+    read for a column that does not fold, and none where the storage itself (``columns``' length,
+    which bounds the true count from above) is too small for a heavy row.
 
     The block-per-row kernel is a ``launch_tiled`` kernel whose lanes split a row, and the CPU
     device runs one lane per block, so there it would form ``A u`` from
     one lane's share and the solve would stop at zero iterations; the CPU keeps the lane-per-row
     kernel, as ``bsr_mv``'s own heuristic does.
     """
-    entries = read_scalar(matrix.offsets, n) if n > 0 and not fold else 0
+    light = matrix.columns.size <= CG_HEAVY_ROW_ENTRIES * n
+    entries = read_scalar(matrix.offsets, n) if n > 0 and not fold and not light else 0
     heavy = entries > CG_HEAVY_ROW_ENTRIES * n
     tiled = matrix.device.is_cuda and entries > _HEAVY_ROW_TILED_ENTRIES * n
     return heavy, _HEAVY_ROW_TILE if tiled else -1
@@ -4172,13 +4458,12 @@ def chebyshev_preconditioner(
     each step of the polynomial is one fused mat-vec launch, where each iteration it removes is
     half a dozen launches and two reductions. So the iteration count falls several-fold and the
     solve with it, on well- and ill-conditioned Laplacian systems alike. It needs no setup beyond
-    one copy of the matrix and one reduction for the bound: unlike
+    the inverse diagonal and the interval's bound, both formed on the device: unlike
     [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner] there is no hierarchy.
 
-    The setup -- one copy of the matrix and the bound's reduction, which reads one scalar back --
-    runs at the operator's **first apply**, so building one that is never applied is free. That
-    first apply therefore cannot sit inside a CUDA graph capture; ``warp.optim.linear.cg`` makes it
-    before its own captured loop.
+    The setup runs at the operator's **first apply**, so building one that is never applied is
+    free. That first apply allocates, and therefore cannot sit inside a CUDA graph capture;
+    ``warp.optim.linear.cg`` makes it before its own captured loop.
 
     !!! warning "The operator must be symmetric"
         ``p(D⁻¹ A) D⁻¹`` is symmetric only when ``A`` is, and conjugate gradient needs a symmetric
@@ -4233,8 +4518,7 @@ def chebyshev_preconditioner(
     """
     n = int(matrix.nrow)
     # Built on the first apply rather than here, so an operator handed out and never applied costs
-    # nothing: the bound's reduction reads a scalar back, which would drain whatever the caller
-    # has queued.
+    # nothing.
     cycle: list[_JacobiChebyshevApply] = []
 
     def matvec(x: odt.ArrayNd, _y: odt.ArrayNd, z: odt.ArrayNd, alpha: float, beta: float) -> None:
@@ -4863,6 +5147,17 @@ _MULTIGRID_JACOBI_FACTOR = 4.0 / 3.0
 _MULTIGRID_POWER_STEPS = 8
 _MULTIGRID_MIS_ROUNDS = 32
 
+# Rounds of the independent set issued before the host first reads its undecided count, and between
+# later reads, on CUDA. A round after the set is complete changes nothing (every node is decided and
+# keeps its state and flag), so reading less often only costs the idle rounds after the last
+# decision, where each read drains the queue. The benchmark operators' levels (cotangent and heat
+# systems, ``sphere_small`` to ``dragon``) decide in 5-12 rounds, most in 6-10: reading after round
+# 7 and every second round after it reads 1-3 times a level instead of 5-12, for at most one idle
+# round past the seventh (two below it). The CPU, whose read is free and whose idle round is not,
+# reads every round.
+_MULTIGRID_MIS_FIRST_CHECK = 7
+_MULTIGRID_MIS_CHECK_EVERY = 2
+
 # Strength-of-connection threshold for the aggregation: an off-diagonal counts as an edge only when
 # ``|A_ij| >= theta sqrt(A_ii A_jj)``. ``0.0`` keeps every off-diagonal, which is the aggregation
 # this package shipped first and is bit-exactly what a zero threshold reduces to.
@@ -4936,17 +5231,15 @@ def _multigrid_hierarchy(
         levels.append(level)
         if level.n <= _MULTIGRID_MAX_COARSE or len(levels) >= _MULTIGRID_MAX_LEVELS:
             break
-        # One extraction per level, read by both consumers: the aggregation's strength test wants
-        # ``sqrt(|A_ii|)`` and the smoother wants ``1 / A_ii``. ``wps.bsr_get_diag`` is an
-        # allocation *and* a launch, so extracting it once here rather than once per consumer saves
-        # a redundant diagonal extraction per level.
-        diag = odt.bsr_get_diag(operator)
-        label, sizes, n_aggregates = _multigrid_aggregate(operator, diag, seed)
+        # The diagonal, read by the aggregation's strength test (``sqrt(|A_ii|)``) and the smoother
+        # (``1 / A_ii``), and the power iteration's first step are formed by the aggregation's own
+        # setup launch.
+        diag, power, label, sizes, n_aggregates = _multigrid_aggregate(operator, seed)
         if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
         # ``omega D^-1``, the damping already folded in, so the smoother and the prolongator read
         # one scaled diagonal and no level reads its spectral radius back to the host.
-        level.inverse_diagonal = _multigrid_damped_diagonal(operator, diag, seed)
+        level.inverse_diagonal = _multigrid_damped_diagonal(operator, diag, power, seed)
         level.prolongator = _multigrid_prolongator(
             operator, label, sizes, n_aggregates, level.inverse_diagonal, stored
         )
@@ -4960,13 +5253,16 @@ def _multigrid_hierarchy(
 
 
 def _multigrid_aggregate(
-    matrix: odt.BsrMatrix[wp.float64], diagonal: wp.array[wp.float64], seed: int
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int]:
+    matrix: odt.BsrMatrix[wp.float64], seed: int
+) -> tuple[wp.array[wp.float64], wp.array[wp.float64], wp.array[wp.int32], wp.array[wp.int32], int]:
     """
     Aggregate label per row, from a distance-2 maximal independent set on the off-diagonal graph.
 
-    Returns ``(label, sizes, n_aggregates)``, ``sizes`` being each aggregate's row count, counted
-    by the spread's final hop.
+    Returns ``(diagonal, power, label, sizes, n_aggregates)``: ``matrix``'s diagonal, which the
+    setup launch extracts for the strength test and hands on to the smoother; the first step of the
+    smoother's power iteration (``_multigrid_damped_diagonal``), which needs only the row and so
+    rides on the same launch; and ``sizes`` each aggregate's row count, counted by the spread's
+    final hop.
 
     The selection is the randomized-priority pattern ``sample.dart_select_minima`` runs, lifted to
     distance 2 by propagating the packed ``(state, priority, index)`` maximum over one-hop
@@ -4976,25 +5272,28 @@ def _multigrid_aggregate(
     Both walks are over the operator's **strong** off-diagonal graph
     (``|A_ij| >= _MULTIGRID_THETA sqrt(A_ii A_jj)``), tested per edge rather than materialized, so
     that a level pays no extra allocation for the filter and ``theta = 0`` is bit-exactly the
-    unfiltered aggregation. ``diagonal`` is ``matrix``'s, passed in because the caller has already
-    extracted it for the smoother.
+    unfiltered aggregation.
     """
     device = matrix.device
     n = int(matrix.nrow)
     offsets, columns, values = matrix.offsets, matrix.columns, matrix.values
     theta = wp.float64(_MULTIGRID_THETA)
-    # ``sqrt(|A_ii|)`` per row, so the strength test below is a product rather than a square root
-    # per edge, read by both walks; the priority order; and the undecided start state -- one
-    # launch. The ``diagonal`` argument is the caller's, because the hierarchy needs the same
-    # extraction for the smoother and must not repeat it here.
+    # The diagonal; ``sqrt(|A_ii|)`` per row, so the strength test below is a product rather than
+    # a square root per edge, read by both walks; the priority order; the undecided start state;
+    # and the power iteration's first step -- one launch.
+    diagonal = _launch.empty(n, dtype=wp.float64, device=device)
     scaled_diagonal = _launch.empty(n, dtype=wp.float64, device=device)
     priority = _launch.empty(n, dtype=wp.uint32, device=device)
     state = _launch.empty(n, dtype=wp.int32, device=device)
+    power = _launch.empty(n, dtype=wp.float64, device=device)
+    # The undecided count (cleared by every round's first launch) and the roots so far (cleared
+    # by the setup launch), read together.
+    counts = _launch.empty(2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_mg.mis_level_setup,
         dim=n,
-        inputs=[wp.int32(seed), diagonal],
-        outputs=[scaled_diagonal, priority, state],
+        inputs=[wp.int32(seed), offsets, columns, values],
+        outputs=[diagonal, scaled_diagonal, priority, state, power, counts],
         device=device,
     )
     next_state = _launch.empty(n, dtype=wp.int32, device=device)
@@ -5002,35 +5301,46 @@ def _multigrid_aggregate(
     # Every node's root flag, written by the round that decides it (and every round it is still
     # undecided), so the scan below needs no map over the final state.
     flags = _launch.empty(n, dtype=wp.int32, device=device)
-    # Cleared by every round's first launch.
-    undecided = _launch.empty(1, dtype=wp.int32, device=device)
-    for _ in range(_MULTIGRID_MIS_ROUNDS):
+    first_check, check_every = (
+        (_MULTIGRID_MIS_FIRST_CHECK, _MULTIGRID_MIS_CHECK_EVERY) if device.is_cuda else (1, 1)
+    )
+    undecided = roots = None
+    for round_index in range(1, _MULTIGRID_MIS_ROUNDS + 1):
         # Two launches a round: the first hop forms every key from the state as it reads it, the
         # second hop decides as it reduces.
         _launch.launch(
             kernel_mg.mis_propagate_states,
             dim=n,
             inputs=[state, priority, offsets, columns, values, scaled_diagonal, theta],
-            outputs=[key, undecided],
+            outputs=[key, counts],
             device=device,
         )
         _launch.launch(
             kernel_mg.mis_propagate_decide,
             dim=n,
             inputs=[key, priority, offsets, columns, values, scaled_diagonal, theta, state],
-            outputs=[next_state, flags, undecided],
+            outputs=[next_state, flags, counts],
             device=device,
         )
         state, next_state = next_state, state
-        # One 4-byte read per round, and there are a handful of rounds: the loop cannot be a
-        # device-side one because the *number of aggregates* sizes every buffer downstream.
-        if int(read_scalar(undecided, 0)) == 0:
+        # An 8-byte read every few rounds (``_MULTIGRID_MIS_CHECK_EVERY``), and the last round
+        # read whatever the schedule: the loop cannot be a device-side one because the *number of
+        # aggregates* sizes every buffer downstream.
+        last = round_index == _MULTIGRID_MIS_ROUNDS
+        if not last and (round_index < first_check or (round_index - first_check) % check_every):
+            continue
+        undecided, roots = read_values(counts, 0, 2)
+        if undecided == 0 or last:
             break
+    # Every node not excluded claims an aggregate: the roots and any node the round cap left
+    # undecided, which is what the flags' scan below numbers.
+    assert undecided is not None
+    assert roots is not None
+    n_aggregates = int(roots) + int(undecided)
 
     # The root flags are scanned in place: only their scan is read from here on.
     scan_pos = flags
     _launch.array_scan(flags, scan_pos, inclusive=True)
-    n_aggregates = int(read_scalar(scan_pos))
 
     # Two hops of the spread. The first reads each label straight from ``(state, scan_pos)`` (its
     # ``label`` argument is not read); the second reads the first's output.
@@ -5053,17 +5363,22 @@ def _multigrid_aggregate(
         outputs=[label, sizes],
         device=device,
     )
-    return label, sizes, n_aggregates
+    return diagonal, power, label, sizes, n_aggregates
 
 
 def _multigrid_damped_diagonal(
-    matrix: odt.BsrMatrix[wp.float64], diagonal: wp.array[wp.float64], seed: int
+    matrix: odt.BsrMatrix[wp.float64],
+    diagonal: wp.array[wp.float64],
+    first_step: wp.array[wp.float64],
+    seed: int,
 ) -> wp.array[wp.float64]:
     """
     ``omega D^-1``, with ``omega = 4/3 / rho`` and ``rho`` the spectral radius of ``D^-1 A``.
 
     ``diagonal`` is ``matrix``'s own; ``D^-1`` is ``array.inverse_or_one`` of it, which the kernels
-    apply as they read it.
+    apply as they read it. ``first_step`` is the power iteration's first iterate, ``D^-1 A s`` of
+    the sign vector, which the aggregation's setup launch forms (``_multigrid_aggregate``); this
+    buffer is spent by the iteration.
 
     ``rho`` comes from an unnormalized power iteration. Normalizing every step would cost a host
     readback per step; leaving the iterate to grow and taking the geometric mean of the growth over
@@ -5081,15 +5396,15 @@ def _multigrid_damped_diagonal(
     """
     device = matrix.device
     n = int(matrix.nrow)
-    x = _launch.empty(n, dtype=wp.float64, device=device)
+    x = first_step
     y = _launch.empty(n, dtype=wp.float64, device=device)
-    for step in range(_MULTIGRID_POWER_STEPS - 1):
+    for _ in range(1, _MULTIGRID_POWER_STEPS - 1):
         _launch.launch(
             kernel_mg.power_step,
             dim=n,
             inputs=[
                 wp.int32(seed),
-                wp.int32(step == 0),
+                wp.int32(0),
                 diagonal,
                 matrix.offsets,
                 matrix.columns,
@@ -5234,6 +5549,7 @@ def _multigrid_galerkin(
         kernel_mg.product_triplets,
         [matrix.offsets, matrix.columns, matrix.values, p.offsets, p.columns, p.values],
         budget=budget,
+        synced=False,
     )
     if product is None:
         product = odt.bsr_mm(matrix, p)
@@ -5249,7 +5565,9 @@ def _multigrid_galerkin(
         out_rows=n_coarse,
     )
     if galerkin is None:
-        # ``bsr_mm``'s structural zeros are what ``bsr_compress`` drops here.
+        # ``bsr_mm``'s structural zeros are what ``bsr_compress`` drops here; it reads the
+        # product's ``nnz``, which a triplet-assembled product leaves unsynced.
+        product.nnz_sync()
         galerkin = _synced(
             odt.bsr_compress(
                 odt.bsr_mm(od.array.csr_transpose(p), product), prune_numerical_zeros=True
@@ -5269,15 +5587,17 @@ def _row_triplet_assembly(
     *,
     budget: int,
     out_rows: int | None = None,
+    synced: bool = True,
 ) -> odt.BsrMatrix[wp.float64] | None:
     """
-    Sum the triplets ``n`` fine rows emit into a pruned, ``nnz``-synced CSR.
+    Sum the triplets ``n`` fine rows emit into a pruned CSR, ``nnz``-synced when ``synced``.
 
     Each row's thread counts its triplets (``count_kernel`` writes ``counts[i + 1]`` and a leading
     zero, in ``int64``), the counts are scanned in place into starts, and ``triplet_kernel`` writes
     row ``i``'s triplets from ``starts[i]``. The result has ``out_rows`` rows (``n`` by default)
     and ``n_cols`` columns. ``None``, with nothing allocated past the counts, when the triplets
-    would number more than ``budget``.
+    would number more than ``budget``. An unsynced result's ``nnz`` is the triplet count, a
+    capacity: for a consumer that reads only the offsets and the entries they bound.
     """
     # Counted and scanned in 64 bits: the budget test must see the true total, which an ``int32``
     # scan wraps on a dense level.
@@ -5299,9 +5619,10 @@ def _row_triplet_assembly(
         device=device,
     )
     n_out = n if out_rows is None else out_rows
-    return _synced(
-        od.array.csr_from_triplets(n_out, n_cols, rows, cols, values, prune_numerical_zeros=True)
+    assembled = od.array.csr_from_triplets(
+        n_out, n_cols, rows, cols, values, prune_numerical_zeros=True
     )
+    return _synced(assembled) if synced else assembled
 
 
 def _synced(matrix: odt.BsrMatrix[wp.float64]) -> odt.BsrMatrix[wp.float64]:

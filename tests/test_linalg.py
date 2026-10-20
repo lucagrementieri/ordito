@@ -18,6 +18,7 @@ from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
 
 import ordito as od
 import ordito.typing as odt
+from ordito.kernels import cholesky as kernel_cholesky
 from tests.comparisons import assert_nonconstant
 from tests.conversions import bsr_to_dense, scipy_to_bsr, trimesh_to_pymeshlab
 
@@ -321,6 +322,29 @@ def test_min_quad_with_fixed_solves_no_right_hand_side(device: str, solver: str)
     assert solution_wp.shape == (0, n_free)
 
 
+def test_min_quad_with_fixed_data_matches_only_its_own_mask(device: str) -> None:
+    """
+    Not a library comparison: ``matches`` compares pinned sets, on one flag reused uncleared.
+
+    Equal, differing and equal again, in that order: the flag is not cleared between calls (each
+    raises it above a fresh base), so a difference that leaked into the next call would make the
+    third answer ``False``; a mask of another length never matches.
+    """
+    matrix_wp, fixed_wp, _values_wp, _expected_np = _pinned_grid(device)
+    data = od.linalg.min_quad_with_fixed_precompute(matrix_wp, fixed_wp)
+    other_np = fixed_wp.numpy().copy()
+    other_np[np.flatnonzero(~other_np)[0]] = True
+    other_wp = wp.array(other_np, dtype=wp.bool, device=device)
+    copy_wp = wp.array(fixed_wp.numpy(), dtype=wp.bool, device=device)
+    assert [data.matches(mask) for mask in (copy_wp, other_wp, copy_wp, other_wp)] == [
+        True,
+        False,
+        True,
+        False,
+    ]
+    assert not data.matches(wp.array(other_np[:-1], dtype=wp.bool, device=device))
+
+
 def test_operator_entry_points_reject_an_operator_on_another_device() -> None:
     """
     Not a library comparison: an operator on another device than its operands raises.
@@ -479,6 +503,39 @@ def test_assemble_interior_system_scales_and_adds_a_load(device: str) -> None:
         od.linalg.assemble_interior_system(
             matrix_wp, fixed_wp, free_map_wp, fixed_values_wp, n_free, load=one_row
         )
+
+
+@pytest.mark.parametrize("pinned", ["border", "none", "all"])
+def test_partitioned_interior_system_equals_the_two_step_extraction(
+    device: str, pinned: str
+) -> None:
+    """
+    Ordito against ordito: one-read extraction equals ``free_partition`` + the two-step assembly.
+
+    The two-step form carries the dense oracle (the two tests above); this pins the fused form to
+    it entry for entry -- map, offsets, columns, values and right-hand side, with ``scale`` and
+    ``load`` -- over a border pin, nothing pinned and everything pinned (empty system).
+    """
+    matrix_wp, _fixed_wp, fixed_values_wp, _dense_np, values_np, fixed_np = _pinned_system(device)
+    mask_np = {"border": fixed_np, "none": np.zeros_like(fixed_np), "all": np.ones_like(fixed_np)}
+    mask_wp = wp.array(mask_np[pinned], dtype=wp.bool, device=device)
+    load_np = np.random.default_rng(5).standard_normal(values_np.shape)
+    load_wp = odt.as_array2d(wp.array(load_np, dtype=wp.float64, device=device), wp.float64)
+    free_map_wp, n_free = od.linalg.free_partition(mask_wp)
+    q_two, rhs_two = od.linalg.assemble_interior_system(
+        matrix_wp, mask_wp, free_map_wp, fixed_values_wp, n_free, scale=-1.0, load=load_wp
+    )
+    q_one, rhs_one, map_one, n_one = od.linalg.partitioned_interior_system(
+        matrix_wp, mask_wp, fixed_values_wp, scale=-1.0, load=load_wp
+    )
+    assert n_one == n_free
+    assert np.array_equal(map_one.numpy(), free_map_wp.numpy())
+    nnz = int(q_two.offsets.numpy()[n_free])
+    assert q_one.nnz_sync() == nnz
+    assert np.array_equal(q_one.offsets.numpy()[: n_free + 1], q_two.offsets.numpy()[: n_free + 1])
+    assert np.array_equal(q_one.columns.numpy()[:nnz], q_two.columns.numpy()[:nnz])
+    assert np.array_equal(q_one.values.numpy()[:nnz], q_two.values.numpy()[:nnz])
+    assert np.array_equal(rhs_one.numpy(), rhs_two.numpy())
 
 
 @pytest.mark.parity(
@@ -880,8 +937,27 @@ def test_verified_solve_rejects_a_nan_iterate(device: str) -> None:
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
     # The convergence half alone: the exact solution passes the backward-error half, so only a
     # ``NaN`` residual read as outside its threshold rejects it.
-    assert od.linalg._verified(matrix_wp, rhs_wp, solution_wp, (1, 0.0, 1.0), 1e-10, held)
-    assert not od.linalg._verified(matrix_wp, rhs_wp, solution_wp, (1, np.nan, 1.0), 1e-10, held)
+    assert od.linalg._verdict(matrix_wp, rhs_wp, solution_wp, (1, 0.0, 1.0), 1e-10, held) == 0
+    assert od.linalg._verdict(matrix_wp, rhs_wp, solution_wp, (1, np.nan, 1.0), 1e-10, held) != 0
+    # The device form tells an unconverged column from a converged one failing the backward-error
+    # half (the adaptive probe escalates on the first only), on one reused flag.
+    n_columns = int(rhs_wp.shape[0])
+    inside = wp.zeros(n_columns, dtype=wp.float64, device=device)
+    bound = wp.ones(n_columns, dtype=wp.float64, device=device)
+    outside = wp.full(n_columns, 2.0, dtype=wp.float64, device=device)
+    perturbed_wp = odt.as_array2d(
+        wp.array(expected_np + 1e-3, dtype=wp.float64, device=device), wp.float64
+    )
+    unconverged = int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED)
+    failed = int(kernel_cholesky.BACKWARD_ERROR_FAILED)
+    for result, answer, verdict in (
+        ((1, inside, bound), solution_wp, 0),
+        ((1, outside, bound), solution_wp, unconverged),
+        ((1, inside, bound), perturbed_wp, failed),
+        ((1, outside, bound), perturbed_wp, unconverged),
+        ((1, inside, bound), solution_wp, 0),
+    ):
+        assert od.linalg._verdict(matrix_wp, rhs_wp, answer, result, 1e-10, held) == verdict
 
 
 def test_solve_spd_columns_warns_on_a_nan_iterate(device: str) -> None:
@@ -1521,6 +1597,29 @@ def test_multigrid_galerkin_fallback_builds_the_same_hierarchy(
         assert dense_triplet.shape == dense_fallback.shape
         assert np.allclose(dense_triplet, dense_fallback, rtol=1e-12, atol=1e-12)
         assert level_triplet.operator.nnz_sync() == level_fallback.operator.nnz_sync()
+
+
+def test_multigrid_aggregation_counts_the_aggregates_it_labels(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the aggregate count read with the round counters numbers the labels.
+
+    No reference aggregates this way. The count is the roots plus the nodes the round cap left
+    undecided (each its own aggregate), so the capped arm, which leaves some undecided, fails a
+    count of the roots alone; every label must index ``sizes`` and every aggregate be non-empty.
+    """
+    matrix_wp, _rhs, _dense_np, _rhs_np = _grid_laplacian_system(device, k=24)
+    counts = {}
+    for cap in (1, od.linalg._MULTIGRID_MIS_ROUNDS):
+        monkeypatch.setattr(od.linalg, "_MULTIGRID_MIS_ROUNDS", cap)
+        _diag, _power, label, sizes, n_aggregates = od.linalg._multigrid_aggregate(matrix_wp, 0)
+        label_np, sizes_np = label.numpy(), sizes.numpy()
+        assert sizes_np.shape == (n_aggregates,)
+        assert np.array_equal(np.unique(label_np), np.arange(n_aggregates))
+        assert np.array_equal(np.bincount(label_np, minlength=n_aggregates), sizes_np)
+        counts[cap] = n_aggregates
+    assert counts[1] > counts[od.linalg._MULTIGRID_MIS_ROUNDS] > 1
 
 
 @pytest.mark.parametrize(("preconditioner", "factor"), [("multigrid", 2), ("chebyshev", 4)])

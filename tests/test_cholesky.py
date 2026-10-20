@@ -372,25 +372,28 @@ def test_refinement_never_passes_a_nan_residual(
             dim=(n, 1),
             inputs=[system.offsets, system.columns, system.values,
                     wp.array(guess_np, dtype=wp.float64, device=device), rhs, wp.int32(n),
-                    wp.float64(1e-10), nothing, nothing],
+                    wp.float64(1e-10), nothing, nothing, wp.int32(0)],
             outputs=[flag],
             device=device,
         )  # fmt: skip
         assert int(flag.numpy()[0]) == flagged
-        # A NaN residual or threshold of a conjugate-gradient result flags its column too.
+        # A NaN residual or threshold of a conjugate-gradient result flags its column too, as
+        # unconverged; a later check reuses the word uncleared, raised above a higher base.
         residual = wp.array([np.nan], dtype=wp.float64, device=device)
         threshold = wp.array([1.0], dtype=wp.float64, device=device)
-        flag.zero_()
-        wp.launch(
-            kernel_cholesky.backward_error_exceeds,
-            dim=(n, 1),
-            inputs=[system.offsets, system.columns, system.values,
-                    wp.array(exact_np, dtype=wp.float64, device=device), rhs, wp.int32(n),
-                    wp.float64(1e-10), residual, threshold],
-            outputs=[flag],
-            device=device,
-        )  # fmt: skip
-        assert int(flag.numpy()[0]) == 1
+        for base in (0, 4):
+            if base == 0:
+                flag.zero_()
+            wp.launch(
+                kernel_cholesky.backward_error_exceeds,
+                dim=(n, 1),
+                inputs=[system.offsets, system.columns, system.values,
+                        wp.array(exact_np, dtype=wp.float64, device=device), rhs, wp.int32(n),
+                        wp.float64(1e-10), residual, threshold, wp.int32(base)],
+                outputs=[flag],
+                device=device,
+            )  # fmt: skip
+            assert int(flag.numpy()[0]) == base + int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED)
 
 
 def test_negated_factorization_solves_a_negative_definite_operator(

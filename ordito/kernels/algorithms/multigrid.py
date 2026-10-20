@@ -49,6 +49,7 @@ import warp as wp
 
 from ordito.constants import TILE_1D
 from ordito.kernels.array import element_priority, inverse_or_one, sqrt_abs
+from ordito.kernels.linalg import csr_row_diagonal
 from ordito.kernels.reduce import block_chunk, block_sum
 
 wp.set_module_options({"enable_backward": False})
@@ -126,25 +127,6 @@ def mis_root_flag(state: wp.int32) -> wp.int32:
     # composing an inequality with an ``array_cast(bool -> int32)``, which would be two device
     # passes and a second buffer.
     return wp.where(state != MG_EXCLUDED, wp.int32(1), wp.int32(0))
-
-
-@wp.kernel
-def mis_level_setup(
-    seed: wp.int32,
-    diagonal: wp.array[wp.float64],
-    out_scaled_diagonal: wp.array[wp.float64],
-    out_priority: wp.array[wp.uint32],
-    out_state: wp.array[wp.int32],
-) -> None:
-    # Everything one level's aggregation reads per row before its first round, in one launch: the
-    # strength test's ``sqrt(|A_ii|)`` (``array.sqrt_abs``), the priority order
-    # (``array.element_priority``, so the draw is exactly ``array.random_priorities``') and the
-    # undecided start state. Three independent elementwise writes at one ``dim``; launched apart
-    # they were two launches and a fill.
-    i = wp.int32(wp.tid())
-    out_scaled_diagonal[i] = sqrt_abs(diagonal[i])
-    out_priority[i] = element_priority(seed, i)
-    out_state[i] = MG_UNDECIDED
 
 
 @wp.func
@@ -259,6 +241,11 @@ def mis_propagate_decide(
     out_root_flags[i] = mis_root_flag(verdict)
     if verdict == MG_UNDECIDED:
         wp.atomic_add(out_undecided, 0, wp.int32(1))
+    elif verdict == MG_ROOT:
+        # The roots so far, in the counter's second slot (cleared by ``mis_level_setup``): with the
+        # nodes still undecided, which become aggregates of their own, it is the aggregate count,
+        # read with the undecided count rather than off the flags' scan.
+        wp.atomic_add(out_undecided, 1, wp.int32(1))
 
 
 @wp.func
@@ -719,6 +706,41 @@ def power_row(
     else:
         total = csr_row_dot(i, wp.int32(0), offsets, columns, values, x)
     return inverse_or_one(diagonal[i]) * total
+
+
+@wp.kernel
+def mis_level_setup(
+    seed: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    out_diagonal: wp.array[wp.float64],
+    out_scaled_diagonal: wp.array[wp.float64],
+    out_priority: wp.array[wp.uint32],
+    out_state: wp.array[wp.int32],
+    out_power: wp.array[wp.float64],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # Everything one level reads per row before its aggregation's first round, in one launch: the
+    # operator's diagonal (``linalg.csr_row_diagonal``, 0 for a row without one, as
+    # ``bsr_get_diag`` gives it), the strength test's ``sqrt(|A_ii|)`` (``array.sqrt_abs``), the
+    # priority order (``array.element_priority``, so the draw is exactly
+    # ``array.random_priorities``'), the undecided start state, and the power iteration's first
+    # step from its sign vector (``power_row``, reading the diagonal this thread just wrote), which
+    # needs nothing but the row. Independent elementwise writes at one ``dim``; launched apart they
+    # were four launches, a fill and a memset. Placed after ``power_row``, which it calls.
+    i = wp.int32(wp.tid())
+    diagonal, _off_sum = csr_row_diagonal(offsets, columns, values, i)
+    out_diagonal[i] = diagonal
+    out_scaled_diagonal[i] = sqrt_abs(diagonal)
+    out_priority[i] = element_priority(seed, i)
+    out_state[i] = MG_UNDECIDED
+    out_power[i] = power_row(
+        seed, wp.int32(1), out_diagonal, offsets, columns, values, out_power, i
+    )
+    if i == 0:
+        # The rounds' root count (``mis_propagate_decide``); each round clears the undecided slot.
+        out_counts[1] = 0
 
 
 @wp.kernel

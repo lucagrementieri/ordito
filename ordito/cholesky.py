@@ -667,7 +667,8 @@ class _Plan:
         sentinel = wp.uint64((1 << sn_bits) - 1)
         self.front_size = empty(n_sn, wp.int32)
         parent_clamped = empty(n_sn, wp.int32)
-        terms = _launch.zeros(n_sn + 1, dtype=kernel_cholesky.front_terms, device=device)
+        # Every slot written by the launch below, the leading zero by its first thread.
+        terms = empty(n_sn + 1, kernel_cholesky.front_terms)
         level_keys = empty(2 * n_sn, wp.uint64)
         level_nodes_all = empty(2 * n_sn, wp.int32)
         child_keys = empty(2 * n_sn, wp.uint64)
@@ -688,7 +689,7 @@ class _Plan:
         )
         _launch.radix_sort_pairs(child_keys, child_values, n_sn, end_bit=sn_bits)
         level_nodes = _launch.view(level_nodes_all, 0, n_sn)
-        level_sums = _launch.zeros(n_sn + 1, dtype=wp.vec4i, device=device)
+        level_sums = empty(n_sn + 1, wp.vec4i)
         _launch.launch(
             kernel_cholesky.level_terms,
             dim=n_sn,
@@ -945,15 +946,21 @@ class _Plan:
         _launch.array_scan(self.chunk_offsets, self.chunk_offsets, inclusive=True)
 
     def numeric(self) -> _Numeric:
-        """Allocate the per-factorization state of this pattern."""
+        """
+        Allocate the per-factorization state of this pattern.
+
+        Uninitialized: every factorization starts with [`factor`][ordito.cholesky._Plan.factor],
+        which clears ``status`` and ``blocks``, seeds ``singular`` and writes every row of
+        ``pinned`` and ``dropped`` before anything reads them.
+        """
         n, device = self.n, self.device
         return _Numeric(
-            singular=_launch.zeros(n, dtype=wp.int32, device=device),
-            pinned=_launch.zeros(n, dtype=wp.int32, device=device),
-            dropped=_launch.zeros(n, dtype=wp.int32, device=device),
+            singular=_launch.empty(n, dtype=wp.int32, device=device),
+            pinned=_launch.empty(n, dtype=wp.int32, device=device),
+            dropped=_launch.empty(n, dtype=wp.int32, device=device),
             # A bad pivot (slot 0) and whether any component is singular (slot 1).
-            status=_launch.zeros(2, dtype=wp.int32, device=device),
-            blocks=_launch.zeros(self.block_entries, dtype=wp.float64, device=device),
+            status=_launch.empty(2, dtype=wp.int32, device=device),
+            blocks=_launch.empty(self.block_entries, dtype=wp.float64, device=device),
         )
 
     def numeric_nbytes(self) -> int:
