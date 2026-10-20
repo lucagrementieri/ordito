@@ -266,24 +266,57 @@ def make_solid(
     )
     vertices, faces, _source = _split_corners(vertices, wound, wound_mates)
 
+    # Every stage below is a deterministic function of the mesh it is handed, and ``version`` counts
+    # the changes made to the mesh, so a stage is skipped while the mesh is still one it is known
+    # to leave alone: the output of the last run of an idempotent stage (degeneracy removal, the
+    # collapse to a fixpoint, the largest-component filter), or a mesh the cut-and-refill found
+    # nothing to cut in. Each stage reports a change exactly: the removers only drop faces and
+    # compact the vertices those keep, so equal counts are an identical mesh; the fill only adds
+    # faces; the cut-and-refill returns its own input when it cuts nothing.
+    version = 0
+    clean_after = {"degenerate": -1, "collapse": -1, "cut": -1, "components": -1}
+
+    def counts() -> tuple[int, int]:
+        return vertices.size, faces.size
+
     if keep_largest:
         vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
+        clean_after["components"] = version
     if join_components:
         faces = od.holes.join_closest_components(vertices, faces)
+        version += 1
 
     # The fill finds the rims itself and returns the faces unchanged (a copy) when there is none, so
     # no separate boundary test runs first.
+    before = counts()
     faces = od.holes.fill_min_weight(vertices, faces)
+    version += int(counts() != before)
     for _ in range(max_iter):
         n_faces_before = faces.size
-        vertices, faces = remove_degenerate_faces(vertices, faces)
-        vertices, faces = collapse_small_triangles(vertices, faces)
-        vertices, faces = fix_self_intersections(vertices, faces, max_iter=inner_iter)
+        for name, remover in (
+            ("degenerate", remove_degenerate_faces),
+            ("collapse", collapse_small_triangles),
+        ):
+            if clean_after[name] != version:
+                before = counts()
+                vertices, faces = remover(vertices, faces)
+                version += int(counts() != before)
+                clean_after[name] = version
+        if clean_after["cut"] != version:
+            uncut = faces
+            vertices, faces = _cut_and_refill(vertices, faces, 1, inner_iter)
+            if faces is uncut:
+                clean_after["cut"] = version
+            else:
+                version += 1
         # Cutting an intersecting band out can *disconnect* the surface, so the component filter has
         # to run again here and not only at the top: a single pass at the start cannot see a
         # component that did not exist yet.
-        if keep_largest:
+        if keep_largest and clean_after["components"] != version:
+            before = counts()
             vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
+            version += int(counts() != before)
+            clean_after["components"] = version
         if faces.size == n_faces_before:
             break
 
@@ -292,8 +325,10 @@ def make_solid(
     # nothing geometric may run *after* it: filling a small rim produces one sliver, degeneracy
     # removal deletes that sliver and reopens the rim, and the two then trade the same faces
     # forever -- so the fill goes last.
+    before = counts()
     faces = od.holes.fill_min_weight(vertices, faces)
-    if keep_largest:
+    version += int(counts() != before)
+    if keep_largest and clean_after["components"] != version:
         vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
     return vertices, faces
 
@@ -2744,7 +2779,23 @@ def fix_self_intersections(
         )
 
     # The input buffers are only read until the first refill replaces them, so the copy a clean
-    # input is owed is taken at the end rather than paid on every call.
+    # input is owed is taken here rather than paid on every pass.
+    new_vertices, new_faces = _cut_and_refill(vertices, faces, max_expand, max_iter)
+    if new_faces is faces:
+        return _launch.clone(vertices), _launch.clone(faces)
+    return new_vertices, new_faces
+
+
+def _cut_and_refill(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_expand: int, max_iter: int
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    [`fix_self_intersections`][ordito.repair.fix_self_intersections]' ``"local"`` passes.
+
+    Returns ``vertices`` and ``faces`` themselves, not copies, when nothing intersects, so a caller
+    tells "unchanged" by identity: [`make_solid`][ordito.repair.make_solid] then knows the mesh is
+    one this pass leaves alone, and skips it while nothing else has changed the mesh.
+    """
     current_vertices, current_faces = vertices, faces
     # Two decision words per pass, each raised on the device by the launch that produced its mask
     # (``kernel_repair.flag_any_selected``, the dilation's last lookup): a four-byte read each
@@ -2773,8 +2824,6 @@ def fix_self_intersections(
         )
         if current_faces.size == 0:
             break
-    if current_faces is faces:
-        return _launch.clone(vertices), _launch.clone(faces)
     return current_vertices, current_faces
 
 
