@@ -112,6 +112,34 @@ def closest_point_on_mesh(
 
 
 @wp.kernel
+def closest_faces_both_ways(
+    first_mesh: wp.uint64,
+    first_points: wp.array[wp.vec3],
+    second_mesh: wp.uint64,
+    second_points: wp.array[wp.vec3],
+    out_distance: wp.array[wp.float32],
+    out_face: wp.array[wp.int32],
+) -> None:
+    # Two unbounded ``closest_point_on_mesh`` queries in one launch, for a pair of meshes measured
+    # against each other (``metrics``' mesh-to-mesh distances): thread ``t`` below
+    # ``first_points``' length queries ``first_mesh`` and the rest query ``second_mesh``, writing
+    # one concatenated row of distances and closest faces. The closest point itself is not stored;
+    # the query is ``closest_point_query``'s, so the values are ``closest_point_on_mesh``'s.
+    tid = wp.int32(wp.tid())
+    n_first = first_points.shape[0]
+    mesh_id = first_mesh
+    p = wp.vec3()
+    if tid < n_first:
+        p = first_points[tid]
+    else:
+        mesh_id = second_mesh
+        p = second_points[tid - n_first]
+    _closest, distance, face = closest_point_query(mesh_id, p, wp.float32(wp.inf))
+    out_distance[tid] = distance
+    out_face[tid] = face
+
+
+@wp.kernel
 def closest_point_on_edges(
     vertices: wp.array[wp.vec3],
     edges: wp.array2d[wp.int32],
