@@ -227,7 +227,7 @@ def loop_rim_edge_vertices(
 ) -> tuple[wp.int32, wp.int32]:
     # The two vertex ids of the rim edge leaving packed slot ``slot`` -- the far one found through
     # ``loop_next_slot`` above, so it wraps inside its own loop rather than into the next one's.
-    # ``holes.loop_rim_metrics`` and ``holes.rim_edge_keys`` read the ids to key the edge;
+    # ``holes.loop_rim_metrics`` reads the ids to key the edge;
     # ``loop_rim_edge`` below reads per-vertex values at them.
     return (flat_loops[slot], flat_loops[loop_next_slot(loop_id, offsets, slot)])
 

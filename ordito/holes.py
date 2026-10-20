@@ -472,75 +472,62 @@ class _EdgeTable:
         return keys, slots
 
     def rim_opposite(
-        self,
-        loops: _PackedLoops,
-        sort_buffers: tuple[wp.array[wp.uint64], wp.array[wp.int32]] | None = None,
+        self, total: int, sort_buffers: tuple[wp.array[wp.uint64], wp.array[wp.int32]]
     ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
         """
         Opposite-vertex position + validity per rim edge, for every loop in one pass.
 
-        ``sort_buffers`` are ``rim_sort_buffers(loops.total)`` holding the rim edges' undirected
-        keys under ``self.base`` and the identity slots, for a caller whose own pass over the rim
-        already wrote them (the fill's ``loop_rim_metrics``); ``None`` writes them here. Sorted in
-        place.
+        ``sort_buffers`` are ``rim_sort_buffers(total)`` holding the ``total`` rim edges' undirected
+        keys under ``self.base`` and the identity slots, written by the caller's own pass over the
+        rim (``write_rim_sort_entry``: the fill's ``loop_rim_metrics``, the stitch's
+        ``stitch_rolled_rims``). Sorted in place.
         """
-        n = loops.total
-        if sort_buffers is None:
-            sort_buffers = self.rim_sort_buffers(n)
-            _launch.launch(
-                kernel_holes.rim_edge_keys,
-                dim=n,
-                inputs=[loops.flat_loops, loops.loop_id, loops.offsets, self.base, *sort_buffers],
-                device=self.device,
-            )
         keys, order = sort_buffers
-        if n > 0:
-            _launch.radix_sort_pairs(keys, order, count=n, end_bit=self.key_bits)
-        sorted_keys = odt.as_dense(keys[:n])
-        slots = odt.as_dense(order[:n])
-        third = _launch.full(
-            loops.total, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=self.device
-        )
+        if total > 0:
+            _launch.radix_sort_pairs(keys, order, count=total, end_bit=self.key_bits)
+        sorted_keys = odt.as_dense(keys[:total])
+        slots = odt.as_dense(order[:total])
+        third = _launch.full(total, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=self.device)
         _launch.launch(
             kernel_holes.probe_rim_edges,
             dim=self.faces.size // 3,
             inputs=[self.faces, sorted_keys, slots, self.base, third],
             device=self.device,
         )
-        positions = _launch.empty(loops.total, dtype=wp.vec3, device=self.device)
-        valid = _launch.empty(loops.total, dtype=wp.int32, device=self.device)
+        positions = _launch.empty(total, dtype=wp.vec3, device=self.device)
+        valid = _launch.empty(total, dtype=wp.int32, device=self.device)
         _launch.launch(
             kernel_holes.rim_opposite_positions,
-            dim=loops.total,
+            dim=total,
             inputs=[self.vertices, third, positions, valid],
             device=self.device,
         )
         return positions, valid
 
-    def forbidden_chords(self, loops: _PackedLoops) -> wp.array[wp.int32]:
+    def forbidden_chords(
+        self, loops: _PackedLoops, flat_slot: wp.array[wp.int32]
+    ) -> wp.array[wp.int32]:
         """
         Ragged mask of the chords that already exist as mesh edges, for every loop at once.
 
-        The ``(n_vertices,)`` scratch holds each vertex's *flat* slot rather than its position
-        within one loop, which is what lets every loop's mask be marked by a single pass over the
-        mesh edges — the per-loop version ran one full ``dim = 3 * n_faces`` pass per hole, and
-        cleared the scratch between them.
+        ``flat_slot`` is the ``(n_vertices,)`` scratch the rim pass filled with each vertex's
+        *flat* slot (``kernels/holes.record_loop_position``) rather than its position within one
+        loop, which is what lets every loop's mask be marked by a single pass over the mesh edges
+        -- the per-loop version ran one full ``dim = 3 * n_faces`` pass per hole, and cleared the
+        scratch between them.
         """
-        slot = _launch.full(self.n_vertices, -1, dtype=wp.int32, device=self.device)
-        _launch.launch(
-            kernel_holes.scatter_loop_positions,
-            dim=loops.total,
-            inputs=[loops.flat_loops, slot],
-            device=self.device,
-        )
         mask = _launch.zeros(loops.dp_total, dtype=wp.int32, device=self.device)
         _launch.launch(
             kernel_holes.mark_forbidden_chords,
             dim=self.n_halfedges,
-            inputs=[self.faces, slot, loops.loop_id, loops.offsets, loops.dp_offsets, mask],
+            inputs=[self.faces, flat_slot, loops.loop_id, loops.offsets, loops.dp_offsets, mask],
             device=self.device,
         )
         return mask
+
+    def flat_slot_scratch(self) -> wp.array[wp.int32]:
+        """``(n_vertices,)`` ``-1``-filled scratch the rim pass records loop positions into."""
+        return _launch.full(self.n_vertices, -1, dtype=wp.int32, device=self.device)
 
 
 def fill_min_weight(
@@ -802,6 +789,12 @@ def _fill_packed_loops(
     # triangulation.
     plane_normals = _launch.zeros(loops.n_loops, dtype=wp.vec3, device=device)
     char_areas = _launch.zeros(loops.n_loops, dtype=wp.float32, device=device)
+    # The chord test's vertex-to-slot scratch is filled by the same rim pass.
+    flat_slot = (
+        edge_table.flat_slot_scratch()
+        if resolve_multiple_edges
+        else _launch.empty(0, dtype=wp.int32, device=device)
+    )
     _launch.launch(
         kernel_holes.loop_rim_metrics,
         dim=loops.total,
@@ -816,6 +809,7 @@ def _fill_packed_loops(
             loop_pos,
             rim_keys,
             rim_slots,
+            flat_slot,
         ],
         device=device,
     )
@@ -844,11 +838,11 @@ def _fill_packed_loops(
         )
 
     forbidden = (
-        edge_table.forbidden_chords(loops)
+        edge_table.forbidden_chords(loops, flat_slot)
         if resolve_multiple_edges
         else _launch.zeros(loops.dp_total, dtype=wp.int32, device=device)
     )
-    rim_opp_pos, rim_opp_valid = edge_table.rim_opposite(loops, (rim_keys, rim_slots))
+    rim_opp_pos, rim_opp_valid = edge_table.rim_opposite(loops.total, (rim_keys, rim_slots))
 
     dp = _launch.empty(loops.dp_total, dtype=wp.float32, device=device)
     prev = _launch.empty(loops.dp_total, dtype=wp.int32, device=device)
@@ -2928,53 +2922,42 @@ def stitch_loops_min_weight(
     device = faces_a.device
     metric_id = _STITCH_METRIC_IDS[metric]
     offset = vertices_a.size
+    table_a = _EdgeTable(vertices_a, faces_a)
+    table_b = _EdgeTable(vertices_b, faces_b)
 
     # Reverse loop A so the two rims wind oppositely (facing), then align both at the closest pair.
-    # ``la`` / ``lb`` stay on the host for the sequential band traceback, but the closest-pair
-    # search, the reversed and rolled rims and the rim-opposite lookups all run on device. This
-    # preamble (one readback of the loops and the closest pair) is a fixed cost that the
-    # anti-diagonal DP below dominates and outgrows as the rims lengthen.
+    # Everything runs on the device, the band's traceback included, so the one thing read back is
+    # the band's triangle count: the closest pair is read where it was written, by the launch that
+    # rolls both rims to it.
     a_rim = _launch.empty(n_a, dtype=wp.vec3, device=device)
     b_rim = _launch.empty(n_b, dtype=wp.vec3, device=device)
-    # ``[reversed loop A, loop B, start_a, start_b]``: the traceback's loops and the closest pair,
-    # side by side so the host reads them back once.
-    loops_and_pair = _launch.empty(n_a + n_b + 2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_holes.stitch_rim_positions,
         dim=n_a + n_b,
         inputs=[vertices_a, loop_a, vertices_b, loop_b, wp.int32(0), wp.int32(0)],
-        outputs=[
-            a_rim,
-            b_rim,
-            odt.as_dense(loops_and_pair[:n_a]),
-            odt.as_dense(loops_and_pair[n_a : n_a + n_b]),
-        ],
+        outputs=[a_rim, b_rim, None, None],
         device=device,
     )
-    _closest_loop_pair(a_rim, b_rim, odt.as_dense(loops_and_pair[n_a + n_b :]))
-    loops_and_pair_np = loops_and_pair.numpy()
-    start_a = int(loops_and_pair_np[n_a + n_b])
-    start_b = int(loops_and_pair_np[n_a + n_b + 1])
-    # The traceback's host copies of the rolled loops; the device ones are written alongside
-    # their positions, by the same roll.
-    la = np.roll(loops_and_pair_np[:n_a], -start_a)
-    lb = np.roll(loops_and_pair_np[n_a : n_a + n_b], -start_b)
+    # ``[start_a, start_b, band triangle count]``.
+    pair_and_count = _launch.empty(3, dtype=wp.int32, device=device)
+    _closest_loop_pair(a_rim, b_rim, odt.as_dense(pair_and_count[:2]))
+    # The rolled rims: their positions, their vertex ids (the traceback's loops) and each rim's
+    # edge keys for its rim-opposite probe, written by the pass that already holds both ends.
     la_wp = _launch.empty(n_a, dtype=wp.int32, device=device)
     lb_wp = _launch.empty(n_b, dtype=wp.int32, device=device)
     a_pos = _launch.empty(n_a, dtype=wp.vec3, device=device)
     b_pos = _launch.empty(n_b, dtype=wp.vec3, device=device)
+    sort_a = table_a.rim_sort_buffers(n_a)
+    sort_b = table_b.rim_sort_buffers(n_b)
     _launch.launch(
-        kernel_holes.stitch_rim_positions,
+        kernel_holes.stitch_rolled_rims,
         dim=n_a + n_b,
-        inputs=[vertices_a, loop_a, vertices_b, loop_b, wp.int32(start_a), wp.int32(start_b)],
-        outputs=[a_pos, b_pos, la_wp, lb_wp],
+        inputs=[vertices_a, loop_a, vertices_b, loop_b, pair_and_count, table_a.base, table_b.base],
+        outputs=[a_pos, b_pos, la_wp, lb_wp, *sort_a, *sort_b],
         device=device,
     )
-    table_a = _EdgeTable(vertices_a, faces_a)
-    table_b = _EdgeTable(vertices_b, faces_b)
-    # The stitch DP works on exactly one rim per side, so each rim is its own one-loop batch.
-    a_opp, a_opp_valid = table_a.rim_opposite(_PackedLoops(la_wp, np.array([n_a], dtype=np.int64)))
-    b_opp, b_opp_valid = table_b.rim_opposite(_PackedLoops(lb_wp, np.array([n_b], dtype=np.int64)))
+    a_opp, a_opp_valid = table_a.rim_opposite(n_a, sort_a)
+    b_opp, b_opp_valid = table_b.rim_opposite(n_b, sort_b)
     up = wp.vec3(*(up_dir if up_dir is not None else (0.0, 0.0, 1.0)))
 
     dp = odt.empty_2d((n_a + 1, n_b + 1), wp.float32, device=device)
@@ -2997,15 +2980,28 @@ def stitch_loops_min_weight(
     tables.n_a = wp.int32(n_a)
     tables.n_b = wp.int32(n_b)
     _run_stitch_dp(tables, n_a, n_b, dp, came, device)
-    came_np = came.numpy()
 
-    band = _stitch_band_triangles(came_np, la, lb, n_a, n_b, offset)
+    # Every path from the far corner to the seed is ``n_a + n_b`` steps, so the band is written at
+    # that size straight into the tail of the combined buffer, and the count read back is short
+    # only where the walk met a cell with no predecessor.
+    n_steps = n_a + n_b
     combined_vertices, combined_faces, band_faces = _stitched_mesh(
-        vertices_a, faces_a, vertices_b, faces_b, band.shape[0]
+        vertices_a, faces_a, vertices_b, faces_b, n_steps
     )
-    if band.size > 0:
-        band_faces.assign(band.reshape(-1))
-    return combined_vertices, combined_faces
+    _launch.launch(
+        kernel_holes.trace_stitch_band,
+        dim=1,
+        inputs=[came, la_wp, lb_wp, wp.int32(offset)],
+        outputs=[band_faces, odt.as_dense(pair_and_count[2:])],
+        device=device,
+    )
+    n_band = int(read_scalar(pair_and_count, 2))
+    if n_band == n_steps:
+        return combined_vertices, combined_faces
+    # A short band is the buffer's prefix, a contiguous view: nothing is copied.
+    return combined_vertices, odt.as_dense(
+        combined_faces[: combined_faces.size - 3 * (n_steps - n_band)]
+    )
 
 
 def _run_stitch_dp(
@@ -3098,26 +3094,6 @@ def _closest_loop_pair(
         inputs=[col_min, val_min, wp.int32(n_a), out_pair],
         device=device,
     )
-
-
-def _stitch_band_triangles(
-    came_np: np.ndarray, la: np.ndarray, lb: np.ndarray, n_a: int, n_b: int, offset: int
-) -> np.ndarray:
-    """Trace the grid-DP came-from table from ``(n_a, n_b)`` to ``(0, 0)`` into band triangles."""
-    triangles: list[tuple[int, int, int]] = []
-    i, j = n_a, n_b
-    while i > 0 or j > 0:
-        if came_np[i, j] == 0:  # advanced A: triangle (a[i-1], a[i], b[j])
-            triangles.append((int(la[(i - 1) % n_a]), int(la[i % n_a]), int(lb[j % n_b]) + offset))
-            i -= 1
-        elif came_np[i, j] == 1:  # advanced B: triangle (a[i], b[j], b[j-1])
-            triangles.append(
-                (int(la[i % n_a]), int(lb[j % n_b]) + offset, int(lb[(j - 1) % n_b]) + offset)
-            )
-            j -= 1
-        else:  # unreachable cell (should not happen for valid rims)
-            break
-    return np.asarray(triangles, dtype=np.int32)
 
 
 def bridge_edges(
