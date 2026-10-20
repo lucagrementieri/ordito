@@ -15,11 +15,13 @@ they share with the hole fillers lives.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Sequence
 
 import warp as wp
 
 import ordito as od
+import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
 from ordito.kernels import combine as kernel_combine
@@ -82,26 +84,36 @@ def concatenate(
 
     require_same_device(meshes_data=meshes_data)
     device = meshes_data[0][0].device
+    if len(meshes_data) == 1:
+        vertices, faces = meshes_data[0]
+        return _launch.clone(vertices), _launch.clone(faces)
+    # Both packings' offsets are host metadata, read off each piece's length: they reach the device
+    # once, as the one table the renumbering reads, rather than once per packing.
     vertex_counts = [vertices.size for vertices, _ in meshes_data]
-
-    if sum(vertex_counts) == 0:
-        concatenated_vertices = _launch.empty(0, dtype=wp.vec3, device=device)
-        vertex_offsets = _launch.zeros(len(meshes_data) + 1, dtype=wp.int32, device=device)
-    else:
-        concatenated_vertices, vertex_offsets = od.array.pack_1d_arrays(
-            [vertices for vertices, _ in meshes_data]
-        )
-
-    concatenated_faces, piece_starts = od.array.pack_1d_arrays([faces for _, faces in meshes_data])
+    face_sizes = [faces.size for _, faces in meshes_data]
+    concatenated_vertices = od.array.concatenate([vertices for vertices, _ in meshes_data])
+    concatenated_faces = od.array.concatenate([faces for _, faces in meshes_data])
     total_indices = concatenated_faces.size
     if total_indices > 0:
+        n_pieces = len(meshes_data)
+        offsets = _launch.array(
+            [
+                *itertools.accumulate(face_sizes, initial=0),
+                *itertools.accumulate(vertex_counts, initial=0),
+            ],
+            dtype=wp.int32,
+            device=device,
+        )
         _launch.launch(
             kernel_combine.offset_packed_faces,
             dim=total_indices,
-            inputs=[piece_starts, vertex_offsets, concatenated_faces],
+            inputs=[
+                odt.as_dense(offsets[: n_pieces + 1]),
+                odt.as_dense(offsets[n_pieces + 1 :]),
+                concatenated_faces,
+            ],
             device=device,
         )
-
     return concatenated_vertices, concatenated_faces
 
 
