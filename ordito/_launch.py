@@ -1059,6 +1059,40 @@ def fill_(arr: Any, value: Any) -> None:
     arr.fill_(value)
 
 
+def pattern(values: Sequence[Any], dtype: Any, device: Any) -> Any:
+    """
+    ``array(values, dtype, device)`` for a few host scalars: one native fill, no upload.
+
+    On a CUDA device outside capture the scalars are written by one ``wp_memtile_device`` of their
+    packed bytes (passed to the fill kernel by value, so nothing is staged from host memory) into a
+    stamped [`empty`][ordito._launch.empty] buffer; anything else -- the CPU device, a vector or
+    half dtype -- is [`array`][ordito._launch.array].
+    """
+    if type(device) is not _Device:
+        # ``_ctx.runtime`` is ``None`` until ``wp.init()``; Warp annotates it as always set.
+        device = None if _ctx.runtime is None else _ctx.runtime.get_device(device)  # pyright: ignore[reportUnnecessaryComparison]
+    runtime = _ctx.runtime
+    ctor: Any = getattr(dtype, "_type_", None)
+    if (
+        device is not None
+        and device.is_cuda
+        and values
+        and ctor in _SCALAR_CHARS
+        and dtype not in _HALF
+        and not issubclass(dtype, ctypes.Array)
+        and not runtime.captures
+        and runtime._apic_capture is None
+    ):
+        arr = empty(len(values), dtype=dtype, device=device)
+        if type(arr) is _ARRAY:
+            packed = (ctor * len(values))(*values)
+            runtime.core.wp_memtile_device(
+                device.context, arr.ptr, ctypes.byref(packed), ctypes.sizeof(packed), 1
+            )
+            return arr
+    return array(list(values), dtype=dtype, device=device)
+
+
 def zero_(arr: Any) -> None:
     """``arr.zero_()``, as one native memset for a contiguous CUDA array."""
     runtime = _ctx.runtime

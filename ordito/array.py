@@ -2035,7 +2035,7 @@ def isin(
     # buffer already holds, so launching it once per input yields the joint bounds for a single
     # readback, where two ``reduce.minmax`` calls allocate and read back once each.
     reduce_dtype = elements_flat.dtype
-    bounds = _launch.array(
+    bounds = _launch.pattern(
         [odt.dtype_max(reduce_dtype), odt.dtype_min(reduce_dtype)],
         dtype=reduce_dtype,
         device=device,
