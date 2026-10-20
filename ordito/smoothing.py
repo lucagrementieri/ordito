@@ -478,21 +478,23 @@ def inflate(
         _diffuse_pass(operator, coeff, wide, diffused)
         constraint.apply(diffused, out=positions)
 
+    # Without the pre-smoothing pass the first displacement reads the input itself.
+    current = vertices
     if pre_smooth:
         od.array.copyto(wide, vertices)
         relax(vertices)
-    else:
-        _launch.copy(positions, vertices)
+        current = positions
     for step in range(iterations):
         amount = pressure * (step + 1) / iterations if gradual else pressure
         _launch.launch(
             kernel_smoothing.inflate_displace,
             dim=n_vertices,
-            inputs=[positions, faces, vf_offsets, vf_indices, wp.float32(amount)],
+            inputs=[current, faces, vf_offsets, vf_indices, wp.float32(amount)],
             outputs=[displaced, wide],
             device=device,
         )
         relax(displaced)
+        current = positions
     return positions
 
 
@@ -3373,23 +3375,26 @@ def filter_scalar_laplacian(
             f"values must have one entry per vertex, got {values.size} for {n} vertices"
         )
 
-    out = _launch.clone(values)
-    if n == 0 or iterations == 0:
-        return out
+    if n == 0 or iterations <= 0:
+        return _launch.clone(values)
 
     operator = _resolved_operator(vertices, faces, laplacian_operator, symmetric=True)
-    nxt = _launch.empty(n, dtype=wp.float32, device=device)
     coeff = wp.float32(lamb)
-    for _ in range(iterations):
+    # The first pass reads ``values`` itself, so the input is never copied: the passes ping-pong two
+    # buffers of this call, the second only when there is a second pass.
+    buffers = [_launch.empty(n, dtype=wp.float32, device=device) for _ in range(min(2, iterations))]
+    field = values
+    for index in range(iterations):
+        out = buffers[index % 2]
         _launch.launch(
             kernel_smoothing.diffuse_scalar_pass,
             dim=n,
-            inputs=[operator.offsets, operator.columns, operator.values, out, coeff],
-            outputs=[nxt],
+            inputs=[operator.offsets, operator.columns, operator.values, field, coeff],
+            outputs=[out],
             device=device,
         )
-        out, nxt = nxt, out
-    return out
+        field = out
+    return field
 
 
 def filter_normals(
