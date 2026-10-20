@@ -8,6 +8,7 @@ from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
     binary_search_sorted_contains,
+    divide_if_positive,
     lowbias32,
     next_row_entry,
     pack_edge_key,
@@ -795,12 +796,25 @@ def density_split_wanted(
     )
 
 
+@wp.func
+def vertex_scale(
+    scale: wp.array[wp.float32], valence: wp.array[wp.float32], v: wp.int32
+) -> wp.float32:
+    # Vertex ``v``'s scale attribute: ``scale[v]`` itself, or, while ``valence`` is non-empty, the
+    # mean ``scatter_scale_attribute``'s sum and count make (``array.divide_if_positive``), formed
+    # where it is read so the first pass needs no division launch of its own.
+    if valence.shape[0] > 0:
+        return divide_if_positive(scale[v], valence[v])
+    return scale[v]
+
+
 @wp.kernel
 def mark_density_splits(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     region: wp.array[wp.bool],
     scale: wp.array[wp.float32],
+    valence: wp.array[wp.float32],
     alpha: wp.float32,
     out_split: wp.array[wp.int32],
 ) -> None:
@@ -817,7 +831,13 @@ def mark_density_splits(
         return
     i, j, k = corner_triple(faces, f)
     wanted = density_split_wanted(
-        vertices[i], vertices[j], vertices[k], scale[i], scale[j], scale[k], alpha
+        vertices[i],
+        vertices[j],
+        vertices[k],
+        vertex_scale(scale, valence, i),
+        vertex_scale(scale, valence, j),
+        vertex_scale(scale, valence, k),
+        alpha,
     )
     out_split[f + 1] = wp.where(wanted, wp.int32(1), wp.int32(0))
 
@@ -828,6 +848,7 @@ def emit_density_splits(
     faces: wp.array[wp.int32],
     region: wp.array[wp.bool],
     scale: wp.array[wp.float32],
+    valence: wp.array[wp.float32],
     split_offsets: wp.array[wp.int32],
     n_vertices: wp.int32,
     out_positions: wp.array[wp.vec3],
@@ -859,7 +880,7 @@ def emit_density_splits(
     f = wp.int32(wp.tid())
     if f < n_vertices:
         out_positions[f] = vertices[f]
-        out_scale[f] = scale[f]
+        out_scale[f] = vertex_scale(scale, valence, f)
     if f >= region.shape[0]:
         return
     i, j, k = corner_triple(faces, f)
@@ -880,7 +901,11 @@ def emit_density_splits(
 
     center = n_vertices + slot
     out_positions[center] = (vertices[i] + vertices[j] + vertices[k]) / wp.float32(3.0)
-    out_scale[center] = (scale[i] + scale[j] + scale[k]) / wp.float32(3.0)
+    out_scale[center] = (
+        vertex_scale(scale, valence, i)
+        + vertex_scale(scale, valence, j)
+        + vertex_scale(scale, valence, k)
+    ) / wp.float32(3.0)
     out_faces[base + 0] = i
     out_faces[base + 1] = j
     out_faces[base + 2] = center

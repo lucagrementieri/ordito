@@ -4158,7 +4158,10 @@ def refine_region_to_density(
     current_vertices = vertices
     current_faces = faces
     current_region = region
-    scale = _vertex_scale_attribute(vertices, faces, region)
+    # The attribute's sum and count; the first pass forms each mean where it reads it, and its
+    # emit writes the means into the grown table, so ``valence`` is spent after it.
+    scale, first_valence = _vertex_scale_attribute(vertices, faces, region)
+    valence: wp.array[wp.float32] | None = first_valence
 
     for _ in range(max_iter):
         n_faces = current_faces.size // 3
@@ -4168,7 +4171,7 @@ def refine_region_to_density(
         _launch.launch(
             kernel_remesh.mark_density_splits,
             dim=n_faces,
-            inputs=[current_vertices, current_faces, current_region, scale, alpha_f],
+            inputs=[current_vertices, current_faces, current_region, scale, valence, alpha_f],
             outputs=[split_offsets],
             device=device,
         )
@@ -4196,6 +4199,7 @@ def refine_region_to_density(
                 current_faces,
                 current_region,
                 scale,
+                valence,
                 split_offsets,
                 wp.int32(n_vertices),
             ],
@@ -4204,6 +4208,7 @@ def refine_region_to_density(
         )
         current_vertices = new_vertices
         scale = new_scale
+        valence = None
         current_faces = out_faces
         current_region = out_region
 
@@ -4225,9 +4230,12 @@ def refine_region_to_density(
 
 def _vertex_scale_attribute(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], region: wp.array[wp.bool]
-) -> wp.array[wp.float32]:
+) -> tuple[wp.array[wp.float32], wp.array[wp.float32]]:
     """
-    Liepa's per-vertex scale attribute: the mean incident edge length in the *surrounding* mesh.
+    Liepa's per-vertex scale attribute, as the ``(sum, count)`` its readers divide.
+
+    The attribute is the mean incident edge length in the *surrounding* mesh,
+    ``kernel_array.divide_if_positive(sum, count)``, formed where it is read.
 
     "Surrounding" is load-bearing, not a synonym for "whole": the edges counted are those of the
     faces **outside** ``region``. Including the region's own edges is the natural-looking mistake
@@ -4273,8 +4281,7 @@ def _vertex_scale_attribute(
         inputs=[vertices, keys, base, total, valence],
         device=device,
     )
-    _launch.map(kernel_array.divide_if_positive, total, valence, out=total)
-    return total
+    return total, valence
 
 
 def _ranks_from_flags(rank_buffer: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], int]:
