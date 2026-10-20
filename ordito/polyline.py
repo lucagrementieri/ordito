@@ -1244,11 +1244,35 @@ def polyline_radius(
     # one, and a ``closed=True`` loop ends at its first point by construction.
     if normal is None and n_segments == 2 and (closed or is_closed(polyline)):
         raise ValueError("polyline_normal requires at least three points")
+    # The midpoint sums only for a defaulted centre, the Newell sum only for a defaulted normal.
+    n_open = n - 1 if center is None else 0
+    wrap_open = int(closed) if center is None else 0
+    blocks = kernel_reduce.blocks_1d(n)
+    if reduction != "median" and blocks == 1:
+        # A polyline one block covers: the frame and the reduction in that one block
+        # (``kernels/polyline.radius_reduce_block``), the same sums as the two launches below.
+        result = _launch.empty(2, dtype=wp.float32, device=device)
+        _launch.launch_tiled(
+            kernel_polyline.radius_reduce_block,
+            dim=1,
+            inputs=[
+                polyline,
+                wp.int32(n_open),
+                wp.int32(wrap_open),
+                wp.vec3() if center is None else center,
+                wp.vec3() if normal is None else normal,
+                wp.int32(1 if center is None else 0),
+                wp.int32(1 if normal is None else 0),
+                wp.int32(closed),
+                _RADIUS_REDUCTIONS[reduction][0],
+                result,
+            ],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        return _radius_result(result, reduction)
     frame = None
     if center is None or normal is None:
-        # The midpoint sums only for a defaulted centre, the Newell sum only for a defaulted normal.
-        n_open = n - 1 if center is None else 0
-        wrap_open = int(closed) if center is None else 0
         frame = _accumulate_frame(polyline, n_open, wrap_open, with_normal=normal is None)
     plane = [
         polyline,
@@ -1272,7 +1296,6 @@ def polyline_radius(
     # (``kernels/polyline.radius_reduce``): no distance buffer, no reduction launch over it, and one
     # readback of the value and, for the mean, the segment count the kernel decided.
     kind, identity = _RADIUS_REDUCTIONS[reduction]
-    blocks = kernel_reduce.blocks_1d(n)
     stride = 0
     if reduction == "mean":
         # The sum and the segment count as fixed-order partials, so the mean repeats on CUDA.
@@ -1286,6 +1309,11 @@ def polyline_radius(
         block_dim=TILE_1D,
         device=device,
     )
+    return _radius_result(result, reduction)
+
+
+def _radius_result(result: wp.array[wp.float32], reduction: str) -> float:
+    """Read ``polyline_radius``'s folded answer: the value, or the mean from its sum and count."""
     if reduction != "mean":
         return float(read_scalar(result, 0))
     total, count = read_values(result, 0, 2)

@@ -1001,6 +1001,42 @@ def radius_segment_distances(
 RADIUS_FRAME_LENGTH = wp.constant(wp.int32(3))
 RADIUS_FRAME_NORMAL = wp.constant(wp.int32(4))
 RADIUS_FRAME_SIZE = 7
+RadiusFrame = wp.types.vector(length=RADIUS_FRAME_SIZE, dtype=wp.float32)
+
+
+@wp.func
+def radius_frame_terms(
+    polyline: wp.array[wp.vec3],
+    n_segments: wp.int32,
+    wrap_open: wp.int32,
+    with_normal: wp.int32,
+    chunk: wp.int32,
+    lane: wp.int32,
+) -> RadiusFrame:
+    # One lane's share of ``accumulate_radius_frame``'s seven sums over block ``chunk``'s chunk,
+    # in ``RADIUS_FRAME_SIZE``'s slot order: shared with ``radius_reduce_block``, which folds them
+    # in the same block, so the two frames are the same sums.
+    n = polyline.shape[0]
+    segments = n_segments + closing_segment_flag(polyline, wrap_open)
+    n_pairs = wp.where(
+        with_normal != 0, n - ring_closing_flag(polyline[0], polyline[n - 1]), wp.int32(0)
+    )
+    offset, count = block_chunk_1d(wp.max(segments, n_pairs), chunk)
+    weighted = wp.vec3(0.0, 0.0, 0.0)
+    total = wp.float32(0.0)
+    normal = wp.vec3(0.0, 0.0, 0.0)
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        start = polyline[i]
+        if i < segments:
+            midpoint, length = segment_midpoint_and_length(start, polyline[loop_point(i + 1, n)])
+            weighted += midpoint * length
+            total += length
+        if i < n_pairs:
+            normal += newell_term(start, polyline[loop_point(i + 1, n)], polyline[0])
+    return RadiusFrame(
+        weighted[0], weighted[1], weighted[2], total, normal[0], normal[1], normal[2]
+    )
 
 
 @wp.kernel
@@ -1038,28 +1074,10 @@ def accumulate_radius_frame(
     # Newell pairs are this input's ``n - ring_closing_flag`` either way, and its segments' ends
     # are ``loop_point``'s, so the sums are the copy's bit for bit.
     chunk, lane = wp.tid()
-    n = polyline.shape[0]
-    segments = n_segments + closing_segment_flag(polyline, wrap_open)
-    n_pairs = wp.where(
-        with_normal != 0, n - ring_closing_flag(polyline[0], polyline[n - 1]), wp.int32(0)
-    )
-    offset, count = block_chunk_1d(wp.max(segments, n_pairs), chunk)
-    weighted = wp.vec3(0.0, 0.0, 0.0)
-    total = wp.float32(0.0)
-    normal = wp.vec3(0.0, 0.0, 0.0)
-    for k in range(lane, count, wp.block_dim()):
-        i = offset + k
-        start = polyline[i]
-        if i < segments:
-            midpoint, length = segment_midpoint_and_length(start, polyline[loop_point(i + 1, n)])
-            weighted += midpoint * length
-            total += length
-        if i < n_pairs:
-            normal += newell_term(start, polyline[loop_point(i + 1, n)], polyline[0])
     store_block_sum(
         chunk,
         lane,
-        wp.vector(weighted[0], weighted[1], weighted[2], total, normal[0], normal[1], normal[2]),
+        radius_frame_terms(polyline, n_segments, wrap_open, with_normal, chunk, lane),
         out_frame,
         0,
         stride,
@@ -1068,11 +1086,7 @@ def accumulate_radius_frame(
 
 @wp.func
 def radius_plane(
-    frame: wp.array[wp.float32],
-    center: wp.vec3,
-    normal: wp.vec3,
-    frame_center: wp.int32,
-    frame_normal: wp.int32,
+    frame: Any, center: wp.vec3, normal: wp.vec3, frame_center: wp.int32, frame_normal: wp.int32
 ) -> tuple[wp.vec3, wp.vec3]:
     # ``polyline_radius``'s plane: the centre and the normal each taken either from the caller or,
     # where it left them to default, from ``accumulate_radius_frame``'s sums -- the centroid is the
@@ -1119,6 +1133,35 @@ RADIUS_MAX = wp.constant(wp.int32(1))
 RADIUS_SUM = wp.constant(wp.int32(2))
 
 
+@wp.func
+def radius_distance_terms(
+    polyline: wp.array[wp.vec3],
+    wrap_open: wp.int32,
+    plane_center: wp.vec3,
+    plane_normal: wp.vec3,
+    chunk: wp.int32,
+    lane: wp.int32,
+) -> tuple[wp.float32, wp.float32, wp.float32, wp.int32]:
+    # One lane's minimum, maximum and sum of ``radius_segment_distances`` over block ``chunk``'s
+    # chunk of the segments (the closing one wrapping its index), and the chunk's segment count:
+    # ``radius_reduce``'s and ``radius_reduce_block``'s shared pass.
+    n = polyline.shape[0]
+    n_segments = n - 1 + closing_segment_flag(polyline, wrap_open)
+    offset, count = block_chunk_1d(n_segments, chunk)
+    low = wp.float32(FLOAT32_INF_CONSTANT)
+    high = -low
+    total = wp.float32(0.0)
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        d = radius_segment_distances(
+            polyline[i], polyline[loop_point(i + 1, n)], plane_center, plane_normal
+        )
+        low = wp.min(low, d)
+        high = wp.max(high, d)
+        total += d
+    return low, high, total, count
+
+
 @wp.kernel
 def radius_reduce(
     polyline: wp.array[wp.vec3],
@@ -1145,21 +1188,10 @@ def radius_reduce(
     # storing one, added in a fixed order by the last block; the counts are whole numbers below
     # ``2 ** 24`` and add exactly.
     chunk, lane = wp.tid()
-    n = polyline.shape[0]
-    n_segments = n - 1 + closing_segment_flag(polyline, wrap_open)
-    offset, count = block_chunk_1d(n_segments, chunk)
     plane_center, plane_normal = radius_plane(frame, center, normal, frame_center, frame_normal)
-    low = wp.float32(FLOAT32_INF_CONSTANT)
-    high = -low
-    total = wp.float32(0.0)
-    for k in range(lane, count, wp.block_dim()):
-        i = offset + k
-        d = radius_segment_distances(
-            polyline[i], polyline[loop_point(i + 1, n)], plane_center, plane_normal
-        )
-        low = wp.min(low, d)
-        high = wp.max(high, d)
-        total += d
+    low, high, total, count = radius_distance_terms(
+        polyline, wrap_open, plane_center, plane_normal, chunk, lane
+    )
     if kind == RADIUS_MIN:
         block_low = block_min(low)
         if lane == 0:
@@ -1172,6 +1204,53 @@ def radius_reduce(
         # The chunk's count enters once, from lane 0, not once a lane.
         lane_count = wp.where(lane == 0, wp.float32(wp.max(count, 0)), wp.float32(0.0))
         store_block_sum(chunk, lane, wp.vec2(total, lane_count), out_result, 0, stride)
+
+
+@wp.kernel
+def radius_reduce_block(
+    polyline: wp.array[wp.vec3],
+    n_frame_segments: wp.int32,
+    frame_wrap_open: wp.int32,
+    center: wp.vec3,
+    normal: wp.vec3,
+    frame_center: wp.int32,
+    frame_normal: wp.int32,
+    wrap_open: wp.int32,
+    kind: wp.int32,
+    out_result: wp.array[wp.float32],
+) -> None:
+    # ``accumulate_radius_frame`` and ``radius_reduce`` as one block, for a polyline whose segments
+    # fit one block's chunk (``blocks_1d(n) == 1``), which is when both launches are a single
+    # block anyway: the frame's seven sums are folded in registers and read by every lane, so
+    # neither the frame buffer nor the second launch exists, and the result is written, not
+    # committed. ``0 +`` each fold is what the one-block commit it replaces stores (an atomic or
+    # fixed-order add into zeros), so the answers are the two launches' bit for bit, signed zeros
+    # included. Launched ``wp.launch_tiled(dim=1, block_dim=TILE_1D)``; ``n_frame_segments``,
+    # ``frame_wrap_open`` and the frame flags are ``_accumulate_frame``'s arguments.
+    _block, lane = wp.tid()
+    frame = RadiusFrame() + block_sum(
+        radius_frame_terms(
+            polyline, n_frame_segments, frame_wrap_open, frame_normal, wp.int32(0), lane
+        )
+    )
+    plane_center, plane_normal = radius_plane(frame, center, normal, frame_center, frame_normal)
+    low, high, total, count = radius_distance_terms(
+        polyline, wrap_open, plane_center, plane_normal, wp.int32(0), lane
+    )
+    if kind == RADIUS_MIN:
+        block_low = block_min(low)
+        if lane == 0:
+            out_result[0] = block_low
+    elif kind == RADIUS_MAX:
+        block_high = block_max(high)
+        if lane == 0:
+            out_result[0] = block_high
+    else:
+        lane_count = wp.where(lane == 0, wp.float32(wp.max(count, 0)), wp.float32(0.0))
+        sums = wp.vec2(0.0, 0.0) + block_sum(wp.vec2(total, lane_count))
+        if lane == 0:
+            out_result[0] = sums[0]
+            out_result[1] = sums[1]
 
 
 # --- polygon triangulation (parallel ear clipping); port of libigl ear_clipping.cpp ---
