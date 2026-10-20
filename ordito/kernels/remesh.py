@@ -2382,6 +2382,26 @@ def reproject_vertices(
     return vertex
 
 
+@wp.func
+def clamp_to_surface_band(
+    vertex: wp.vec3, mesh_id: wp.uint64, max_deviation: wp.float32, max_dist: wp.float32
+) -> wp.vec3:
+    # Pull a vertex back until it is within ``max_deviation`` of the original surface, along the
+    # line to its own closest point. Unlike ``reproject_vertices`` this applies to *every* vertex --
+    # a crease or corner is exactly the kind that drifts and that reprojection refuses to touch --
+    # and it moves the vertex only as far as the bound requires, so a vertex already inside the band
+    # is untouched and detail is not flattened onto the input surface.
+    query = wp.mesh_query_point_no_sign(mesh_id, vertex, max_dist)
+    if not query.result:
+        return vertex
+    closest = wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
+    offset = vertex - closest
+    distance = wp.length(offset)
+    if distance <= max_deviation:
+        return vertex
+    return closest + offset * (max_deviation / distance)
+
+
 @wp.kernel(enable_backward=False)
 def smooth_free_vertices(
     vertices: wp.array[wp.vec3],
@@ -2396,13 +2416,17 @@ def smooth_free_vertices(
     reproject: wp.int32,
     mesh_id: wp.uint64,
     max_dist: wp.float32,
+    clamp_mesh_id: wp.uint64,
+    max_deviation: wp.float32,
     out_positions: wp.array[wp.vec3],
 ) -> None:
     # One tangential relaxation step, vetoed per vertex by the same fold rule the two collapse
     # candidates run -- one decision rule, one spelling. With ``reproject`` (warp-uniform) the
     # vertex's new position is then snapped onto the surface ``mesh_id`` by ``reproject_vertices``,
     # the step ``isotropic_remesh`` runs next at the same vertex, so the two take one launch; ``0``
-    # leaves the relaxed position as it is and reads neither ``mesh_id`` nor ``max_dist``.
+    # leaves the relaxed position as it is and reads neither ``mesh_id`` nor ``max_dist``. A
+    # positive ``max_deviation`` then pulls the result into the band about ``clamp_mesh_id``
+    # (``clamp_to_surface_band``, the step after that, over every vertex), in the same launch.
     #
     # **It is insurance, and the reason to keep it is that it is free**, not that a fixture needs
     # it: veto against no-veto is within noise and the whole remesh suite passes either way. It
@@ -2431,27 +2455,9 @@ def smooth_free_vertices(
         proposed = vertices[v]
     if reproject != 0:
         proposed = reproject_vertices(proposed, feature_count[v], mesh_id, max_dist)
+    if max_deviation > 0.0:
+        proposed = clamp_to_surface_band(proposed, clamp_mesh_id, max_deviation, max_dist)
     out_positions[v] = proposed
-
-
-@wp.func
-def clamp_to_surface_band(
-    vertex: wp.vec3, mesh_id: wp.uint64, max_deviation: wp.float32, max_dist: wp.float32
-) -> wp.vec3:
-    # Pull a vertex back until it is within ``max_deviation`` of the original surface, along the
-    # line to its own closest point. Unlike ``reproject_vertices`` this applies to *every* vertex --
-    # a crease or corner is exactly the kind that drifts and that reprojection refuses to touch --
-    # and it moves the vertex only as far as the bound requires, so a vertex already inside the band
-    # is untouched and detail is not flattened onto the input surface.
-    query = wp.mesh_query_point_no_sign(mesh_id, vertex, max_dist)
-    if not query.result:
-        return vertex
-    closest = wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
-    offset = vertex - closest
-    distance = wp.length(offset)
-    if distance <= max_deviation:
-        return vertex
-    return closest + offset * (max_deviation / distance)
 
 
 @wp.kernel

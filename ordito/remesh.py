@@ -412,6 +412,8 @@ def isotropic_remesh(
                     feature=feature,
                     ring=smooth_ring,
                 )
+        # The deviation bound runs inside the smoothing launch whenever there is one.
+        clamped = False
         if smooth or reproject:
             # One topology build serves both the classification and the smoothing ring: the two read
             # the same faces, and the smooth step would otherwise hash and sort them a second time.
@@ -440,12 +442,20 @@ def isotropic_remesh(
                     ring=incidence.ring,
                     reproject_onto=reproject_mesh,
                     max_dist=query_radius,
+                    clamp_onto=original_mesh if max_deviation is not None else None,
+                    max_deviation=0.0 if max_deviation is None else max_deviation,
                 )
+                clamped = max_deviation is not None
             elif reproject_mesh is not None:
                 current_vertices = _reproject_pass(
                     current_vertices, feature_count, reproject_mesh, query_radius
                 )
-        if clamp_kernel is not None and original_mesh is not None and max_deviation is not None:
+        if (
+            not clamped
+            and clamp_kernel is not None
+            and original_mesh is not None
+            and max_deviation is not None
+        ):
             bounded = _launch.empty_like(current_vertices)
             _launch.launch(
                 clamp_kernel,
@@ -820,6 +830,8 @@ def _smooth_pass(
     ring: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
     reproject_onto: wp.Mesh | None = None,
     max_dist: float = 0.0,
+    clamp_onto: wp.Mesh | None = None,
+    max_deviation: float = 0.0,
 ) -> wp.array[wp.vec3]:
     """
     One area-equalizing tangential relaxation step over free vertices.
@@ -833,6 +845,8 @@ def _smooth_pass(
 
     ``reproject_onto``, when given, also snaps each free vertex's new position onto that surface
     within ``max_dist``, in the same launch: the answer ``_reproject_pass`` gives on this one's.
+    ``clamp_onto``, when given, then pulls every vertex to within ``max_deviation`` of that surface,
+    also in the same launch: ``isotropic_remesh``'s deviation bound.
     ``vertex_faces`` is the faces' vertex-face CSR when the caller holds it, in any row order, and
     ``ring`` their neighbour rows ``(columns, offsets)`` in any order, which the deterministic ring
     sorts in place.
@@ -911,6 +925,8 @@ def _smooth_pass(
             wp.int32(0 if reproject_onto is None else 1),
             wp.uint64(0 if reproject_onto is None else reproject_onto.id),
             wp.float32(max_dist),
+            wp.uint64(0 if clamp_onto is None else clamp_onto.id),
+            wp.float32(0.0 if clamp_onto is None else max_deviation),
             out_positions,
         ],
         device=device,
