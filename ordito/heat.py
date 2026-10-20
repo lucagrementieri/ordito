@@ -647,6 +647,9 @@ def _heat_signed_distance(
     # finding its own curve in the offsets on the device.
     source = _launch.zeros(n_vertices, dtype=wp.vec2d, device=device)
     invalid = _launch.zeros(1, dtype=wp.int32, device=device)
+    # The zero set's pinned vertices, marked by the splat's own threads.
+    zero_set = level_set_constraint == "zero_set"
+    fixed_mask = _launch.zeros(n_vertices if zero_set else 0, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_heat.splat_curve_normals,
         dim=curve_vertices.size,
@@ -660,7 +663,7 @@ def _heat_signed_distance(
             basis_x,
             basis_y,
         ],
-        outputs=[source, invalid],
+        outputs=[source, fixed_mask, invalid],
         device=device,
     )
     _require_indices_in_range(invalid, n_vertices, "heat_signed_distance", "curve_vertices")
@@ -688,9 +691,9 @@ def _heat_signed_distance(
     )
     _sum_corner_outputs(order, corner_divergence, divergence)
 
-    if level_set_constraint == "zero_set":
+    if zero_set:
         field = _solve_poisson_zero_set(
-            poisson_system, divergence, curve_vertices, vertices, solver.ill_conditioned
+            poisson_system, divergence, fixed_mask, vertices, solver.ill_conditioned
         )
     else:
         field = _solve_poisson_shifted(solver, divergence, curve_vertices, vertices)
@@ -701,12 +704,14 @@ def _heat_signed_distance(
 def _solve_poisson_zero_set(
     operator: odt.BsrMatrix[wp.float64],
     divergence: wp.array[wp.float64],
-    curve_vertices: wp.array[wp.int32],
+    fixed_mask: wp.array[wp.bool],
     vertices: wp.array[wp.vec3],
     factor: bool,
 ) -> wp.array[wp.float64]:
     """
-    Solve the Poisson problem with the curve pinned to zero; by a factorization when ``factor``.
+    Solve the Poisson problem with ``fixed_mask``'s vertices (the curve) pinned to zero.
+
+    By a factorization when ``factor``.
 
     ``linalg.min_quad_with_fixed`` minimizes ``0.5 x' Q x`` and has no place for a linear term, so
     the pieces underneath it are used directly: the free-free block comes from
@@ -715,7 +720,6 @@ def _solve_poisson_zero_set(
     """
     device = vertices.device
     n_vertices = vertices.size
-    fixed_mask = od.array.indices_to_mask(curve_vertices, n_vertices)
     free_map, n_free = twl.free_partition(fixed_mask)
     if n_free == 0:
         return _launch.zeros(n_vertices, dtype=wp.float64, device=device)

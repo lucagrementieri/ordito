@@ -379,6 +379,7 @@ def splat_curve_normals(
     basis_x: wp.array[wp.vec3],
     basis_y: wp.array[wp.vec3],
     out_field: wp.array[wp.vec2d],
+    out_fixed: wp.array[wp.bool],
     out_invalid: wp.array[wp.int32],
 ) -> None:
     # The signed heat method's source term: each curve segment contributes its own *normal* -- the
@@ -396,10 +397,16 @@ def splat_curve_normals(
     # Every entry is range-checked by its own thread before anything else (raising
     # ``out_invalid[0]``), and a segment's far end again before it is read, so an out-of-range
     # curve vertex reads and writes nothing.
+    #
+    # A non-empty ``out_fixed`` (pre-zeroed) also gets each curve vertex marked, the pinned set of
+    # the ``"zero_set"`` Poisson solve (``array.indices_to_mask``' membership mask), from the
+    # thread that range-checked it.
     k = wp.int32(wp.tid())
     n_vertices = out_field.shape[0]
     if flag_out_of_range(curve_vertices[k], n_vertices, out_invalid):
         return
+    if out_fixed.shape[0] > 0:
+        out_fixed[curve_vertices[k]] = True
     begin = wp.int32(0)
     end = curve_vertices.shape[0]
     if single_curve == 0:
