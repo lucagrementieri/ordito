@@ -1841,8 +1841,9 @@ class Trimesh:
         """
         ``(n_vertices,)`` orthonormal tangent frame per vertex as ``(basis_x, basis_y, normal)``.
 
-        The gauge every 2-D tangent quantity on this mesh is measured in. Built from the cached
-        `vertex_normals` and `vertex_one_rings`, and its third element **is** `vertex_normals`.
+        The gauge every 2-D tangent quantity on this mesh is measured in. Built over the cached
+        `vertex_one_rings`, and its third element **is** `vertex_normals`: the cached normals when
+        there are any, otherwise the frames form them and `vertex_normals` then serves those.
 
         Raises
         ------
@@ -1854,9 +1855,17 @@ class Trimesh:
         [`ordito.tangent_space.vertex_tangent_frames`][]
         [`vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators]
         """
-        return od.tangent_space.vertex_tangent_frames(
-            self._vertices, self._faces, normals=self.vertex_normals, rings=self.vertex_one_rings
+        # Without cached normals the frame kernel normalizes the angle-weighted sums itself
+        # (``vertex_normals``' arithmetic, bit for bit), which costs two launches where building
+        # `vertex_normals` first costs four and its face normal and corner angle tables.
+        frames = od.tangent_space.vertex_tangent_frames(
+            self._vertices,
+            self._faces,
+            normals=cast("wp.array[wp.vec3] | None", self._cache.get("vertex_normals")),
+            rings=self.vertex_one_rings,
         )
+        self._cache.setdefault("vertex_normals", frames[2])
+        return frames
 
     @_CachedProperty
     def heat_operators(self) -> od.heat.HeatOperators:
