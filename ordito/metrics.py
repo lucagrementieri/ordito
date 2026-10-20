@@ -46,6 +46,7 @@ from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import metrics as kernel_metrics
+from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import reduce as kernel_reduce
 
 _PointReduction = Literal["mean", "sum", "max"]
@@ -721,9 +722,7 @@ def chamfer_points_to_mesh_loss(
 
     # Non-differentiable closest-face and nearest-neighbor assignment (outside the tape). The
     # backward search is chosen from the forward one's own distances -- see `_backward_nearest`.
-    _, distance_forward, face_id = od.proximity.closest_point_on_mesh(
-        vertices, faces, points, mesh=mesh
-    )
+    distance_forward, face_id = _closest_on_mesh(points, vertices, faces, mesh)
     terms = [
         lambda: _launch_surface_term(
             points,
@@ -857,7 +856,10 @@ def chamfer_mesh_to_mesh_loss(
         return loss
 
     # Non-differentiable closest-face assignment for each direction (outside the tape).
-    face_id_ab = od.proximity.closest_point_on_mesh(vertices_b, faces_b, vertices_a, mesh=mesh_b)[2]
+    _distances, face_ids = _closest_both_ways(
+        vertices_a, faces_a, vertices_b, faces_b, single_directional, mesh_a, mesh_b
+    )
+    face_id_ab = odt.as_dense(face_ids[:va])
     terms = [
         lambda: _launch_surface_term(
             vertices_a,
@@ -870,9 +872,7 @@ def chamfer_mesh_to_mesh_loss(
         )
     ]
     if not single_directional:
-        face_id_ba = od.proximity.closest_point_on_mesh(
-            vertices_a, faces_a, vertices_b, mesh=mesh_a
-        )[2]
+        face_id_ba = odt.as_dense(face_ids[va:])
         terms.append(
             lambda: _launch_surface_term(
                 vertices_b,
@@ -1314,7 +1314,7 @@ def _distances_points_to_mesh(
     """Point-to-surface distances forward, cloud nearest-neighbour distances back."""
     if points.size == 0 or vertices.size == 0 or faces.size == 0:
         return None
-    _, d_forward, face_id = od.proximity.closest_point_on_mesh(vertices, faces, points, mesh=mesh)
+    d_forward, face_id = _closest_on_mesh(points, vertices, faces, mesh)
     if single_directional:
         return _Distances(d_forward, None, None)
     # The forward half is point-to-*surface*, a lower bound on the point-to-vertex answer the
@@ -1429,22 +1429,71 @@ def _distances_mesh_to_mesh(
     """
     Each mesh's vertices to the other's surface. Vertex-sampled, not a true surface metric.
 
-    The two ``closest_point_on_mesh`` calls below have no data dependency between them, and were
-    one of five such pairs across the tree measured against a two-``wp.Stream`` overlap (joined by
-    ``wait_stream``) instead of the sequential default-stream form -- indistinguishable from noise
-    on all five. The two structural reasons are host-launch-overhead
-    dominance and CG's periodic host-readback check). Kept sequential; do not reintroduce stream
-    overlap here without a call site whose own device share is much larger.
+    Both directions are one launch ([`_closest_both_ways`][ordito.metrics._closest_both_ways]);
+    the distances are views of its one buffer.
     """
     if vertices_a.size == 0 or vertices_b.size == 0 or faces_a.size == 0 or faces_b.size == 0:
         return None
-    d_forward = od.proximity.closest_point_on_mesh(vertices_b, faces_b, vertices_a, mesh=mesh_b)[1]
-    d_backward = None
-    if not single_directional:
-        d_backward = od.proximity.closest_point_on_mesh(
-            vertices_a, faces_a, vertices_b, mesh=mesh_a
-        )[1]
+    distances, _faces = _closest_both_ways(
+        vertices_a, faces_a, vertices_b, faces_b, single_directional, mesh_a, mesh_b
+    )
+    n_a = vertices_a.size
+    d_forward = odt.as_dense(distances[:n_a])
+    d_backward = None if single_directional else odt.as_dense(distances[n_a:])
     return _Distances(d_forward, d_backward, None)
+
+
+def _closest_both_ways(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    single_directional: bool,
+    mesh_a: wp.Mesh | None,
+    mesh_b: wp.Mesh | None,
+) -> tuple[odt.Array1dFloat32, odt.Array1dInt32]:
+    """
+    Each mesh's vertices to the other's surface: closest distances and faces, in one launch.
+
+    ``(n_a + n_b,)`` rows, ``vertices_a`` against B first and then ``vertices_b`` against A (only
+    the first ``n_a`` under ``single_directional``), each exactly what
+    [`closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh] returns for it. A mesh not
+    supplied is built over its non-empty buffers; it aliases them and is discarded, so it needs no
+    copy.
+    """
+    device = vertices_a.device
+    if mesh_b is None:
+        mesh_b = wp.Mesh(points=vertices_b, indices=faces_b)
+    n_rows = vertices_a.size
+    # A directed call launches over ``vertices_a`` alone, so the second pair is never read.
+    second_mesh, second_points = mesh_b, vertices_b
+    if not single_directional:
+        if mesh_a is None:
+            mesh_a = wp.Mesh(points=vertices_a, indices=faces_a)
+        second_mesh, second_points = mesh_a, vertices_b
+        n_rows += vertices_b.size
+    distances = odt.empty_1d(n_rows, wp.float32, device=device)
+    faces = odt.empty_1d(n_rows, wp.int32, device=device)
+    _launch.launch(
+        kernel_proximity.closest_faces_both_ways,
+        dim=n_rows,
+        inputs=[mesh_b.id, vertices_a, second_mesh.id, second_points],
+        outputs=[distances, faces],
+        device=device,
+    )
+    return distances, faces
+
+
+def _closest_on_mesh(
+    points: wp.array[wp.vec3],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mesh: wp.Mesh | None,
+) -> tuple[odt.Array1dFloat32, odt.Array1dInt32]:
+    """``closest_point_on_mesh``'s distances and faces for ``points``, without the points."""
+    # The directed form of the pair: ``points`` stand in for mesh A's vertices, whose faces it
+    # never reads.
+    return _closest_both_ways(points, faces, vertices, faces, True, None, mesh)
 
 
 def _validate_diff_reduction(point_reduction: _DiffReduction) -> None:
@@ -1513,7 +1562,7 @@ def _launch_surface_term(
     points: wp.array[wp.vec3],
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    face_id: wp.array[wp.int32],
+    face_id: odt.ArrayNdInt32,
     scale: float,
     loss: wp.array[wp.float32],
     *,

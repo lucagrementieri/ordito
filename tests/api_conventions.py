@@ -686,6 +686,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``out_triangles`` beside ``out_counts``.
     ("holes", "traceback_fill_triangles"): frozenset({"stack"}),
     ("visibility", "shape_diameter"): frozenset({"scratch"}),
+    # The shrink runs each seeded sphere to convergence in place: ``radii`` / ``centers`` hold the
+    # seed on entry and the answer on exit.
+    ("visibility", "shrink_tangent_spheres"): frozenset({"radii", "centers"}),
     # A multi-round vertex dilation grows one hop buffer in place, a launch per round: each round
     # reads the earlier rounds' values and lowers the newly reached ones.
     ("selection", "dilate_vertex_hops"): frozenset({"hops"}),

@@ -112,6 +112,34 @@ def closest_point_on_mesh(
 
 
 @wp.kernel
+def closest_faces_both_ways(
+    first_mesh: wp.uint64,
+    first_points: wp.array[wp.vec3],
+    second_mesh: wp.uint64,
+    second_points: wp.array[wp.vec3],
+    out_distance: wp.array[wp.float32],
+    out_face: wp.array[wp.int32],
+) -> None:
+    # Two unbounded ``closest_point_on_mesh`` queries in one launch, for a pair of meshes measured
+    # against each other (``metrics``' mesh-to-mesh distances): thread ``t`` below
+    # ``first_points``' length queries ``first_mesh`` and the rest query ``second_mesh``, writing
+    # one concatenated row of distances and closest faces. The closest point itself is not stored;
+    # the query is ``closest_point_query``'s, so the values are ``closest_point_on_mesh``'s.
+    tid = wp.int32(wp.tid())
+    n_first = first_points.shape[0]
+    mesh_id = first_mesh
+    p = wp.vec3()
+    if tid < n_first:
+        p = first_points[tid]
+    else:
+        mesh_id = second_mesh
+        p = second_points[tid - n_first]
+    _closest, distance, face = closest_point_query(mesh_id, p, wp.float32(wp.inf))
+    out_distance[tid] = distance
+    out_face[tid] = face
+
+
+@wp.kernel
 def closest_point_on_edges(
     vertices: wp.array[wp.vec3],
     edges: wp.array2d[wp.int32],
@@ -1947,23 +1975,39 @@ def face_containing_point_2d(
         out_face[tid] = face
 
 
+@wp.func
+def box_diagonal_d(corners: wp.array[wp.float32], box: wp.int32) -> wp.float64:
+    # Diagonal of packed box ``box`` of a ``minmax_vec3_chunked`` corner buffer (upper corner
+    # negated), in ``float64``: the differences and squares of ``float32`` corners are exact there.
+    base = 6 * box
+    total = wp.float64(0.0)
+    for axis in range(3):
+        extent = wp.float64(-corners[base + 3 + axis]) - wp.float64(corners[base + axis])
+        total += extent * extent
+    return wp.sqrt(total)
+
+
 @wp.kernel
 def contains_points_sign_parity(
     mesh_id: wp.uint64,
     points: wp.array[wp.vec3],
-    max_dist: wp.float32,
+    corners: wp.array[wp.float32],
     n_sample: wp.int32,
     perturbation_scale: wp.float32,
-    mesh_min: wp.vec3,
-    mesh_max: wp.vec3,
     out_contains: wp.array[wp.bool],
 ) -> None:
+    # ``corners`` is the mesh's box (``reduce.minmax_vec3_chunked``'s packing, upper corner
+    # negated), read here rather than on the host: a point outside it is outside the mesh, and its
+    # diagonal caps the parity query, which no point inside the box needs to search past.
     tid = wp.int32(wp.tid())
     p = points[tid]
+    mesh_min = wp.vec3(corners[0], corners[1], corners[2])
+    mesh_max = wp.vec3(-corners[3], -corners[4], -corners[5])
 
     if not is_strictly_inside_aabb(p, mesh_min, mesh_max):
         out_contains[tid] = False
         return
 
+    max_dist = wp.float32(box_diagonal_d(corners, wp.int32(0)))
     query = wp.mesh_query_point_sign_parity(mesh_id, p, max_dist, n_sample, perturbation_scale)
     out_contains[tid] = query.result and query.sign < wp.float32(0.0)

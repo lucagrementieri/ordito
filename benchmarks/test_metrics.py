@@ -144,6 +144,25 @@ def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
     assert loss.shape == (1,)
 
 
+@pytest.mark.benchmark(group="hausdorff_mesh_to_mesh")
+@pytest.mark.benchlibs("ordito")
+def test_hausdorff_mesh_to_mesh(bench_case: BenchCase) -> None:
+    """
+    Symmetric vertex-to-surface Hausdorff: both meshes' trees built, both directions queried.
+
+    ordito-only: it is the row for the plain (untaped) mesh-to-mesh distances, whose two directions
+    share one query launch, and ``igl.hausdorff`` is its oracle in ``tests/test_metrics.py`` rather
+    than a timed baseline here.
+    """
+    skip_larger_than(bench_case, "dragon")
+    cloud_a, cloud_b = _clouds_wp(bench_case)
+    faces = bench_case.faces_wp
+    hausdorff = bench_case.run(
+        lambda: od.metrics.hausdorff_mesh_to_mesh(cloud_a, faces, cloud_b, faces)
+    )
+    assert hausdorff > 0.0
+
+
 @pytest.mark.benchmark(group="chamfer_points_to_points")
 @pytest.mark.benchlibs("ordito", "open3d", "pytorch3d")
 @pytest.mark.parametrize("single_directional", [True, False], ids=["oneway", "symmetric"])

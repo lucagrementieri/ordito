@@ -136,6 +136,40 @@ def test_intersects_location_hollow_shell(sphere_irregular_hollow: tuple[tm.Trim
         assert np.isclose(p[2], all_loc_tm[all_ray_tm == r, 2].min(), atol=1e-4)
 
 
+def test_intersects_location_ascends_under_the_deterministic_setting(
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: the ordered (setting on) and the atomic-slot (off) forms agree.
+
+    The hits are the same rows either way; on, they come back in ascending ray order, and the
+    setting is what makes two CUDA runs list them identically. Each ray crosses the hollow shell
+    four times, so most rays hit and the order is not trivially sorted.
+    """
+    mesh_tm, mesh_wp = sphere_irregular_hollow
+    rng = np.random.default_rng(3)
+    n = 2000
+    center = mesh_tm.bounds.mean(axis=0)
+    directions_np = rng.normal(size=(n, 3)).astype(np.float32)
+    origins_np = center - 3.0 * directions_np / np.linalg.norm(directions_np, axis=1)[:, None]
+    origins_np = origins_np.astype(np.float32)
+    origins_wp = points_to_warp(origins_np, mesh_wp.device)
+    directions_wp = points_to_warp(directions_np, mesh_wp.device)
+
+    loc_wp, ray_wp, tri_wp = od.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
+    with od.config.deterministic(False):
+        loc_off_wp, ray_off_wp, tri_off_wp = od.ray.intersects_location(
+            mesh_wp, origins_wp, directions_wp
+        )
+    ray_np = ray_wp.numpy()
+    assert ray_np.size > n // 2
+    assert (np.diff(ray_np) > 0).all()
+    order = np.argsort(ray_off_wp.numpy(), kind="stable")
+    assert np.array_equal(ray_np, ray_off_wp.numpy()[order])
+    assert np.array_equal(tri_wp.numpy(), tri_off_wp.numpy()[order])
+    assert np.array_equal(loc_wp.numpy(), loc_off_wp.numpy()[order])
+
+
 def test_ray_queries_miss_together(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A on an all-miss answer, which is a claim here rather than a vacuous comparison.

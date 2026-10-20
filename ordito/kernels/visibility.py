@@ -5,7 +5,7 @@ import warp as wp
 from ordito.constants import TOLERANCE_PLANAR_CONSTANT
 from ordito.kernels.array import RegisterBlockedTable, morton_code_30, morton_frame, to_vec3d
 from ordito.kernels.predicates import point_triangle_offset
-from ordito.kernels.proximity import closest_point_query
+from ordito.kernels.proximity import box_diagonal_d, closest_point_query
 from ordito.kernels.ray import longest_ray_distance
 from ordito.kernels.reduce import block_sum
 from ordito.kernels.tangent_space import any_perpendicular
@@ -30,6 +30,21 @@ WEIGHT_UNIFORM = wp.constant(wp.int32(1))  # every direction counts once (libigl
 # ``wp.block_dim()`` reads 1: that lane covers every ray and the tile reductions return its own sum
 # (the ``kernels/holes.py::fill_dp_span_tiled`` convention).
 BUNDLE_BLOCK = 64
+
+
+@wp.func
+def bundle_limits(
+    corners: wp.array[wp.float32], caller_max_t: wp.float32, offset_scale: wp.float64
+) -> tuple[wp.float32, wp.float32]:
+    # A ray bundle's ``(max_t, offset)``: the diagonal of the box enclosing the mesh and the
+    # queries (``corners``, one packed box, upper corner negated), which bounds every hit and is
+    # the ray length unless the caller gave a cap (``caller_max_t`` is NaN when not), and the
+    # ray-origin offset, ``offset_scale`` of it. Formed in every block from the device buffer, so
+    # neither is read back.
+    diagonal = wp.float32(box_diagonal_d(corners, wp.int32(0)))
+    max_t = wp.where(wp.isnan(caller_max_t), diagonal, caller_max_t)
+    offset = wp.float32(offset_scale * wp.max(wp.float64(diagonal), wp.float64(1e-12)))
+    return max_t, offset
 
 
 @wp.func
@@ -107,8 +122,9 @@ def occlusion(
     normals: wp.array[wp.vec3],
     directions: wp.array[wp.vec3],
     weight_mode: wp.int32,
-    max_t: wp.float32,
-    offset: wp.float32,
+    corners: wp.array[wp.float32],
+    caller_max_t: wp.float32,
+    offset_scale: wp.float64,
     out_occlusion: wp.array[wp.float32],
 ) -> None:
     # Weighted fraction of an outward hemisphere bundle that is blocked: binary ambient occlusion,
@@ -120,6 +136,7 @@ def occlusion(
     # One block per point, lanes striding the bundle (see ``BUNDLE_BLOCK``); each lane accumulates
     # its rays and ``commit_blocked_fraction`` combines them.
     i, t = wp.tid()
+    max_t, offset = bundle_limits(corners, caller_max_t, offset_scale)
     axis, basis_x, basis_y, origin = hemisphere_frame(points, normals, i, offset, wp.float32(1.0))
     total_weight = wp.float32(0.0)
     total_blocked = wp.float32(0.0)
@@ -139,8 +156,9 @@ def obscurance(
     directions: wp.array[wp.vec3],
     tau: wp.float32,
     weight_mode: wp.int32,
-    max_t: wp.float32,
-    offset: wp.float32,
+    corners: wp.array[wp.float32],
+    caller_max_t: wp.float32,
+    offset_scale: wp.float64,
     out_occlusion: wp.array[wp.float32],
 ) -> None:
     # Iones et al.'s volumetric obscurance (``tau > 0``): an occluder at distance ``t`` contributes
@@ -148,6 +166,7 @@ def obscurance(
     # occlusion is the ``tau -> 0`` limit, which ``occlusion`` traces with an any-hit query; this
     # kernel needs the nearest hit's distance. Same bundle and block layout as ``occlusion``.
     i, t = wp.tid()
+    max_t, offset = bundle_limits(corners, caller_max_t, offset_scale)
     axis, basis_x, basis_y, origin = hemisphere_frame(points, normals, i, offset, wp.float32(1.0))
     total_weight = wp.float32(0.0)
     total_blocked = wp.float32(0.0)
@@ -203,8 +222,9 @@ def occlusion_point_major(
     order: wp.array[wp.int32],
     directions: wp.array[wp.vec3],
     weight_mode: wp.int32,
-    max_t: wp.float32,
-    offset: wp.float32,
+    corners: wp.array[wp.float32],
+    caller_max_t: wp.float32,
+    offset_scale: wp.float64,
     out_occlusion: wp.array[wp.float32],
 ) -> None:
     # ``occlusion`` in the point-major layout (see ``POINT_MAJOR_POINTS``): the same rays and the
@@ -212,6 +232,7 @@ def occlusion_point_major(
     # ``occlusion``'s in its last bits. Launched ``dim=(ceil(n / POINT_MAJOR_POINTS),)`` at
     # ``POINT_MAJOR_BLOCK`` lanes; ``order`` is the Morton permutation.
     block, t = wp.tid()
+    max_t, offset = bundle_limits(corners, caller_max_t, offset_scale)
     p = t % POINT_MAJOR_POINTS
     group = t // POINT_MAJOR_POINTS
     slot = block * POINT_MAJOR_POINTS + p
@@ -279,8 +300,9 @@ def shape_diameter(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     directions: wp.array[wp.vec3],
-    max_t: wp.float32,
-    offset: wp.float32,
+    corners: wp.array[wp.float32],
+    caller_max_t: wp.float32,
+    offset_scale: wp.float64,
     trim: wp.float32,
     scratch: wp.array2d[wp.float32],
     out_diameter: wp.array[wp.float32],
@@ -303,6 +325,7 @@ def shape_diameter(
     # and lucy at 64 and 256 rays. Each lane writes and rereads its own contiguous slots, which
     # the cache absorbs; the traced rays are the cost.
     i, t = wp.tid()
+    max_t, offset = bundle_limits(corners, caller_max_t, offset_scale)
     # Inward, so the bundle's axis is ``-normal`` and the origin steps *below* the surface.
     axis, basis_x, basis_y, origin = hemisphere_frame(points, normals, i, offset, wp.float32(-1.0))
 
@@ -400,58 +423,178 @@ def tangent_sphere_radius(point: Any, normal: Any, touch: Any) -> tuple[Any, wp.
 @wp.func
 def init_sphere_radii_finite(
     distance: wp.float32, point: wp.vec3, direction: wp.vec3
-) -> tuple[wp.float32, wp.bool, wp.bool, wp.vec3]:
+) -> tuple[wp.float32, wp.bool, wp.vec3]:
     # Finite longest-ray hits initialise directly; escaped rays (inf distance) are deferred to
-    # the tiled support-point passes below. Their slots default to the "no valid support"
-    # outcome so an empty support subset needs no fix-up. The initial centre is written here, at
-    # the radius just chosen, and the support pass rewrites it for the slots it resolves -- so no
-    # separate ``sphere_center`` map over the whole array is needed.
+    # the support-point passes below, which seed them from the vertex cloud's support point.
+    # Returns the radius, whether the query is deferred, and the centre.
     radius = wp.float32(wp.inf)
-    finite = wp.bool(False)
+    deferred = wp.bool(True)
     if not wp.isinf(distance):
         radius = distance * wp.float32(0.5)
-        finite = True
-    return radius, finite, not finite, sphere_center(point, direction, radius)
+        deferred = False
+    return radius, deferred, sphere_center(point, direction, radius)
+
+
+@wp.func
+def tangent_sphere_limits(
+    corners: wp.array[wp.float32], threshold: wp.float64
+) -> tuple[wp.float32, wp.float32]:
+    # ``max_tangent_sphere``'s two scalars from its twelve-slot corner buffer (box 0 the mesh,
+    # box 1 the queries): the query cap ``max_t``, the diagonal of the union of both boxes, and the
+    # convergence threshold, ``threshold`` of the mesh's own diagonal. Formed in every thread from
+    # the device buffer, so neither is read back; in ``float64`` and rounded once, as the host's
+    # ``math.dist`` formed them.
+    union_total = wp.float64(0.0)
+    for axis in range(3):
+        lower = wp.min(corners[axis], corners[6 + axis])
+        upper = wp.max(-corners[3 + axis], -corners[9 + axis])
+        extent = wp.float64(upper) - wp.float64(lower)
+        union_total += extent * extent
+    max_t = wp.float32(wp.sqrt(union_total))
+    return max_t, wp.float32(threshold * box_diagonal_d(corners, wp.int32(0)))
+
+
+@wp.func
+def sphere_shrink_step(
+    mesh_id: wp.uint64,
+    p: wp.vec3,
+    normal: wp.vec3,
+    radius: wp.float32,
+    center: wp.vec3,
+    max_t: wp.float32,
+    convergence_threshold: wp.float32,
+) -> tuple[wp.float32, wp.vec3, wp.bool]:
+    # One shrink of a sphere still shrinking: the closest point of its centre on the mesh, and the
+    # sphere tangent at ``p`` through it. Returns the new radius and centre and whether it is still
+    # shrinking; a sphere that stops -- touching the surface, or with no tangent sphere -- keeps
+    # its radius and centre. The query and its miss convention are
+    # ``proximity.closest_point_query``'s.
+    _nearest, distance, face = closest_point_query(mesh_id, center, max_t)
+    # Warp's query picks the face; everything after is ``float64``. The point Warp places on the
+    # face is up to ~2e-5 off, above the tolerance the gap is tested against, and the tangent
+    # radius divides by a dot product that cancels as the sphere closes in, so ``float32`` there
+    # moved the answer by more than the convergence threshold. A miss (the centre past ``max_t``)
+    # keeps the query's convention: the touch point is the centre itself, which halves the radius.
+    point_d = to_vec3d(p)
+    normal_d = to_vec3d(normal)
+    center_d = point_d + normal_d * wp.float64(radius)
+    touch = center_d
+    gap = wp.abs(wp.float64(distance) - wp.length(center_d - point_d))
+    if face >= 0:
+        mesh = wp.mesh_get(mesh_id)
+        offset = point_triangle_offset(
+            center_d,
+            to_vec3d(mesh.points[mesh.indices[3 * face]]),
+            to_vec3d(mesh.points[mesh.indices[3 * face + 1]]),
+            to_vec3d(mesh.points[mesh.indices[3 * face + 2]]),
+        )
+        touch = center_d - offset
+        gap = wp.abs(wp.length(offset) - wp.length(center_d - point_d))
+    new_radius = radius
+    new_center = center
+    still_shrinking = wp.bool(False)
+    if not (gap < wp.float64(TOLERANCE_PLANAR_CONSTANT)):
+        new_r, found = tangent_sphere_radius(point_d, normal_d, touch)
+        if found:
+            still_shrinking = wp.float64(radius) - new_r >= wp.float64(convergence_threshold)
+            new_radius = wp.float32(new_r)
+            new_center = sphere_center(p, normal, new_radius)
+    return new_radius, new_center, still_shrinking
+
+
+@wp.func
+def shrink_tangent_sphere(
+    mesh_id: wp.uint64,
+    p: wp.vec3,
+    normal: wp.vec3,
+    radius: wp.float32,
+    center: wp.vec3,
+    max_t: wp.float32,
+    convergence_threshold: wp.float32,
+    max_iter: wp.int32,
+) -> tuple[wp.float32, wp.vec3]:
+    # The shrinking-sphere iteration of one seeded sphere, to convergence or ``max_iter`` steps.
+    # Every sphere shrinks independently of every other, so the whole loop runs in the query's
+    # thread: no launch, convergence count or readback per round, and the state stays in
+    # registers. A step that stops leaves the sphere as it returned it, which is where a round
+    # launched over a converged lane left it.
+    r = radius
+    c = center
+    for _step in range(max_iter):
+        r, c, still_shrinking = sphere_shrink_step(
+            mesh_id, p, normal, r, c, max_t, convergence_threshold
+        )
+        if not still_shrinking:
+            break
+    return r, c
 
 
 @wp.kernel
-def init_tangent_spheres(
+def seed_tangent_spheres(
     mesh_id: wp.uint64,
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     sign: wp.float32,
-    max_t: wp.float32,
+    corners: wp.array[wp.float32],
+    threshold: wp.float64,
     planar_tol: wp.float32,
     out_ray_dirs: wp.array[wp.vec3],
     out_radii: wp.array[wp.float32],
-    out_not_converged: wp.array[wp.bool],
     out_centers: wp.array[wp.vec3],
-    out_n_not_converged: wp.array[wp.int32],
+    out_not_converged: wp.array[wp.bool],
     out_support_indices: wp.array[wp.int32],
     out_n_support: wp.array[wp.int32],
 ) -> None:
     # ``max_tangent_sphere``'s seed, one thread per query: the ray direction (``ray_direction``),
     # the longest ray along it (``ray.longest_ray``'s ``longest_ray_distance``) and the sphere it
-    # seeds (``init_sphere_radii_finite``), each read only at this thread's own index, so neither
-    # the direction nor the distance makes a round trip through memory before the seed reads it.
-    # The direction is still written: the support pass and every shrink step read it. A seeded
-    # sphere is counted into ``out_n_not_converged[0]``, the loop's first convergence test, and
-    # ``init_sphere_radii_support`` adds the deferred ones it seeds. A deferred query takes a slot
-    # of ``out_support_indices`` by an atomic on ``out_n_support[0]``: arrival order, which nothing
-    # observes, since the support passes resolve each query on its own and scatter by its index.
+    # seeds (``init_sphere_radii_finite``), each read only at this thread's own index. A deferred
+    # query (its ray escapes) takes a slot of ``out_support_indices`` by an atomic on
+    # ``out_n_support[0]``: arrival order, which nothing observes, since the support passes resolve
+    # each query on its own and scatter by its index.
+    #
+    # The shrink is ``shrink_tangent_spheres``, not this thread's continuation: run in one kernel
+    # with the ray walk it cost 1.1-1.6x device time on 10 k-160 k queries (the two walks' register
+    # demand is the kernel's), against this split.
     i = wp.int32(wp.tid())
+    max_t, _convergence_threshold = tangent_sphere_limits(corners, threshold)
     point = points[i]
     direction = ray_direction(normals[i], sign)
     distance = longest_ray_distance(mesh_id, point, direction, max_t, planar_tol)
-    radius, finite, needs_support, center = init_sphere_radii_finite(distance, point, direction)
+    radius, needs_support, center = init_sphere_radii_finite(distance, point, direction)
     out_ray_dirs[i] = direction
     out_radii[i] = radius
-    out_not_converged[i] = finite
     out_centers[i] = center
-    if finite:
-        wp.atomic_add(out_n_not_converged, 0, wp.int32(1))
+    out_not_converged[i] = not needs_support
     if needs_support:
         out_support_indices[wp.atomic_add(out_n_support, 0, wp.int32(1))] = i
+
+
+@wp.kernel
+def shrink_tangent_spheres(
+    mesh_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    corners: wp.array[wp.float32],
+    threshold: wp.float64,
+    max_iter: wp.int32,
+    radius_scale: wp.float32,
+    not_converged: wp.array[wp.bool],
+    radii: wp.array[wp.float32],
+    centers: wp.array[wp.vec3],
+) -> None:
+    # Every seeded sphere's shrink to convergence or ``max_iter`` steps (``shrink_tangent_sphere``),
+    # one thread per query and in place. ``radius_scale`` multiplies the radius as it is stored
+    # (``2`` for a thickness, exact).
+    i = wp.int32(wp.tid())
+    radius = radii[i]
+    center = centers[i]
+    if not_converged[i]:
+        max_t, convergence_threshold = tangent_sphere_limits(corners, threshold)
+        radius, center = shrink_tangent_sphere(
+            mesh_id, points[i], normals[i], radius, center, max_t, convergence_threshold, max_iter
+        )
+        centers[i] = center
+    radii[i] = radius * radius_scale
 
 
 @wp.func
@@ -542,28 +685,13 @@ SUPPORT_ARGMAX_SLICED = RegisterBlockedTable(
 )
 
 
-@wp.kernel
-def init_sphere_radii_support(
-    mesh_vertices: wp.array[wp.vec3],
-    points: wp.array[wp.vec3],
-    normals: wp.array[wp.vec3],
-    support_indices: wp.array[wp.int32],
-    packed_support: wp.array[wp.uint64],
-    out_radii: wp.array[wp.float32],
-    out_not_converged: wp.array[wp.bool],
-    out_centers: wp.array[wp.vec3],
-    out_n_not_converged: wp.array[wp.int32],
-) -> None:
-    # Tail pass over the deferred subset: decode the support point and derive the
-    # tangent-sphere radius, scattering it back into the full arrays. A seeded sphere is counted
-    # into ``out_n_not_converged[0]`` beside ``init_tangent_spheres``' own.
-    q = wp.int32(wp.tid())
-    tid = support_indices[q]
-    packed = packed_support[q]
-    p = points[tid]
-    n = normals[tid]
-    # No support point, or one not above the tangent plane: no finite sphere, and nothing to
-    # shrink.
+@wp.func
+def support_sphere_seed(
+    mesh_vertices: wp.array[wp.vec3], p: wp.vec3, n: wp.vec3, packed: wp.uint64
+) -> tuple[wp.float32, wp.bool]:
+    # The tangent sphere a deferred query starts from: through the support point ``packed`` names
+    # (``support_argmax_sliced``'s key), and whether there is one. No support point, or one not
+    # above the tangent plane: no finite sphere, and nothing to shrink.
     radius = wp.float32(wp.inf)
     found = wp.bool(False)
     if packed != wp.uint64(0):
@@ -578,81 +706,27 @@ def init_sphere_radii_support(
         if not (max_proj < TOLERANCE_PLANAR_CONSTANT):
             radius, found = tangent_sphere_radius(p, n, mesh_vertices[best])
             radius = wp.where(found, radius, wp.float32(wp.inf))
-    out_radii[tid] = radius
-    out_not_converged[tid] = found
-    out_centers[tid] = sphere_center(p, n, radius)
-    if found:
-        wp.atomic_add(out_n_not_converged, 0, wp.int32(1))
+    return radius, found
 
 
 @wp.kernel
-def step_sphere_shrink(
-    mesh_id: wp.uint64,
+def seed_support_spheres(
+    mesh_vertices: wp.array[wp.vec3],
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
-    centers: wp.array[wp.vec3],
-    old_radii: wp.array[wp.float32],
-    max_t: wp.float32,
-    convergence_threshold: wp.float32,
-    not_converged: wp.array[wp.bool],
-    round_slot: wp.int32,
+    support_indices: wp.array[wp.int32],
+    packed_support: wp.array[wp.uint64],
     out_radii: wp.array[wp.float32],
     out_centers: wp.array[wp.vec3],
     out_not_converged: wp.array[wp.bool],
-    out_n_not_converged: wp.array[wp.int32],
 ) -> None:
-    # Every lane writes all three outputs (converged lanes pass their state through), so the
-    # wrapper can ping-pong two preallocated buffer sets instead of cloning per iteration, and
-    # extra launches on a fully converged state are harmless no-ops.
-    #
-    # The closest-point query of the current centre runs *here*, after the convergence test, rather
-    # than as a ``closest_point_on_mesh`` launch ahead of this one: the step reads that query's
-    # answer only at its own index, so the fusion removes a launch per iteration and three
-    # ``m``-sized buffers the answer made a round trip through -- and a lane that has already
-    # converged no longer pays a BVH query whose answer it would ignore. The query and its miss
-    # convention are ``proximity.closest_point_query``'s, so the values are the ones the separate
-    # pass wrote.
-    #
-    # A lane that stops -- already converged, touching the surface, or with no tangent sphere --
-    # passes its radius and centre through unchanged; one publication serves every outcome.
-    tid = wp.int32(wp.tid())
+    # Tail pass over the deferred subset: the support-point seed (``support_sphere_seed``) in place
+    # of the longest ray's, scattered back into the full arrays by the query's index.
+    q = wp.int32(wp.tid())
+    tid = support_indices[q]
     p = points[tid]
-    radius = old_radii[tid]
-    center = centers[tid]
-    still_shrinking = wp.bool(False)
-    if not_converged[tid]:
-        _nearest, distance, face = closest_point_query(mesh_id, center, max_t)
-        # Warp's query picks the face; everything after is ``float64``. The point Warp places on
-        # the face is up to ~2e-5 off, above the tolerance the gap is tested against, and the
-        # tangent radius divides by a dot product that cancels as the sphere closes in, so
-        # ``float32`` there moved the answer by more than the convergence threshold. A miss (the
-        # centre past ``max_t``) keeps the query's convention: the touch point is the centre
-        # itself, which halves the radius.
-        point_d = to_vec3d(p)
-        normal_d = to_vec3d(normals[tid])
-        center_d = point_d + normal_d * wp.float64(radius)
-        touch = center_d
-        gap = wp.abs(wp.float64(distance) - wp.length(center_d - point_d))
-        if face >= 0:
-            mesh = wp.mesh_get(mesh_id)
-            offset = point_triangle_offset(
-                center_d,
-                to_vec3d(mesh.points[mesh.indices[3 * face]]),
-                to_vec3d(mesh.points[mesh.indices[3 * face + 1]]),
-                to_vec3d(mesh.points[mesh.indices[3 * face + 2]]),
-            )
-            touch = center_d - offset
-            gap = wp.abs(wp.length(offset) - wp.length(center_d - point_d))
-        if not (gap < wp.float64(TOLERANCE_PLANAR_CONSTANT)):
-            new_r, found = tangent_sphere_radius(point_d, normal_d, touch)
-            if found:
-                still_shrinking = wp.float64(radius) - new_r >= wp.float64(convergence_threshold)
-                radius = wp.float32(new_r)
-                center = sphere_center(p, normals[tid], radius)
+    n = normals[tid]
+    radius, found = support_sphere_seed(mesh_vertices, p, n, packed_support[q])
     out_radii[tid] = radius
-    out_centers[tid] = center
-    out_not_converged[tid] = still_shrinking
-    # The next round's convergence count, taken by the kernel that decides it rather than by a
-    # reduction launch over ``out_not_converged`` in the wrapper's loop.
-    if still_shrinking:
-        wp.atomic_add(out_n_not_converged, round_slot, wp.int32(1))
+    out_not_converged[tid] = found
+    out_centers[tid] = sphere_center(p, n, radius)

@@ -42,8 +42,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
-from ordito.bounds import enclosing_diagonal
+from ordito._device import read_scalar, require_same_device
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import visibility as kernel_visibility
@@ -284,9 +283,8 @@ def _occlusion_bundle(
     device = points.device
     m = points.size
     # Resolved before the empty-input early return: a mismatched ``normals`` length is a caller
-    # bug independent of how many points there are, and `_resolve_normals_and_radius` handles
-    # `m == 0` on its own (an empty `points` measures the mesh's own box alone).
-    normals, diagonal = _resolve_normals_and_radius(mesh, points, normals, name)
+    # bug independent of how many points there are.
+    normals = _resolve_normals(mesh, points, normals, name)
     # `wp.empty`, not `wp.zeros`: either bundle kernel writes `out_occlusion[i]` unconditionally
     # for every block, so nothing ever reads the zero-fill.
     out_occlusion = _launch.empty(m, dtype=wp.float32, device=device)
@@ -304,8 +302,7 @@ def _occlusion_bundle(
         normals,
         directions,
         _WEIGHT_MODES[weight],
-        wp.float32(max_t if max_t is not None else diagonal),
-        wp.float32(_SURFACE_OFFSET * max(diagonal, 1e-12)),
+        *_bundle_limits(mesh, points, max_t),
         out_occlusion,
     ]
     if tau > 0.0:
@@ -479,7 +476,7 @@ def shape_diameter(
     m = points.size
     # See `_occlusion_bundle`'s identical comment: resolved before the empty-input check so a
     # mismatched `normals` length is caught even when there is nothing to measure.
-    normals, diagonal = _resolve_normals_and_radius(mesh, points, normals, "shape_diameter")
+    normals = _resolve_normals(mesh, points, normals, "shape_diameter")
     if m == 0:
         return _launch.empty(0, dtype=wp.float32, device=device)
 
@@ -496,8 +493,7 @@ def shape_diameter(
             points,
             normals,
             directions,
-            wp.float32(max_t if max_t is not None else diagonal),
-            wp.float32(_SURFACE_OFFSET * max(diagonal, 1e-12)),
+            *_bundle_limits(mesh, points, max_t),
             wp.float32(trim),
             scratch,
             out_diameter,
@@ -588,9 +584,12 @@ def thickness(
         raise ValueError(f"method must be one of {sorted(_THICKNESS_METHODS)}, got {method!r}")
 
     if method == "max_sphere":
-        _centers, radii = max_tangent_sphere(mesh, points, inwards=not exterior, normals=normals)
-        _launch.map(wp.mul, radii, wp.float32(2.0), out=radii)
-        return radii
+        # ``max_tangent_sphere``'s defaults; the diameter is stored as the sphere's radius is
+        # formed, so it takes no pass of its own.
+        normals = _resolve_normals(mesh, points, normals, "max_tangent_sphere")
+        if points.size == 0:
+            return _launch.empty(0, dtype=wp.float32, device=points.device)
+        return _tangent_spheres(mesh, points, normals, not exterior, 1e-6, 100, 2.0)[1]
 
     # No ray length: an unbounded ``longest_ray`` finds the same first hit as one bounded by the
     # box enclosing the mesh and the points, and a miss is ``inf`` either way. The sign flip is
@@ -697,11 +696,31 @@ def max_tangent_sphere(
             _launch.empty(0, dtype=wp.vec3, device=device),
             _launch.empty(0, dtype=wp.float32, device=device),
         )
-    # ``max_t`` needs the box enclosing the mesh *and* the queries, while the convergence threshold
-    # is a fraction of the mesh's own diagonal. Both boxes reduce into one twelve-slot corner
-    # buffer (``minmax_vec3_chunked``'s packing, the mesh's first and the queries' second) in one
-    # launch, read back once; the union is then the componentwise extreme of the two, exact in any
-    # order.
+    return _tangent_spheres(mesh, points, normals, inwards, threshold, max_iter, 1.0)
+
+
+def _tangent_spheres(
+    mesh: wp.Mesh,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    inwards: bool,
+    threshold: float,
+    max_iter: int,
+    radius_scale: float,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.float32]]:
+    """
+    [`max_tangent_sphere`][ordito.visibility.max_tangent_sphere] on resolved, non-empty input.
+
+    Radii are stored multiplied by ``radius_scale`` (``2`` for
+    [`thickness`][ordito.visibility.thickness], exact), so a diameter needs no second pass.
+    """
+    device = points.device
+    m = points.size
+    # ``max_t`` is the diagonal of the box enclosing the mesh *and* the queries, while the
+    # convergence threshold is a fraction of the mesh's own diagonal. Both boxes reduce into one
+    # twelve-slot corner buffer (``minmax_vec3_chunked``'s packing, the mesh's first and the
+    # queries' second) in one launch, and the kernels form both scalars from it in the thread
+    # (``tangent_sphere_limits``), so neither is read back.
     #
     # ``max_t`` is part of the answer, not only a bound: the shrink step's closest-point query is
     # capped at it, and a centre farther than that from the mesh misses and stops the sphere where
@@ -714,65 +733,41 @@ def max_tangent_sphere(
         outputs=[corners],
         device=device,
     )
-    # Slots 3..5 and 9..11 hold the *negated* upper corners. ``math.dist`` on plain floats rather
-    # than ``wp.length`` of a Warp vector difference: a Warp operator or builtin at Python scope
-    # routes through builtin dispatch, several times dearer. It computes in float64 where
-    # ``wp.length`` is float32, i.e. the correctly-rounded answer for float32 corners.
-    c = read_values(corners, 0, 12)
-    mesh_lower, mesh_upper = c[0:3], [-x for x in c[3:6]]
-    union_lower = [min(a, b) for a, b in zip(mesh_lower, c[6:9], strict=True)]
-    union_upper = [max(a, -b) for a, b in zip(mesh_upper, c[9:12], strict=True)]
-    max_t = math.dist(union_lower, union_upper)
-    mesh_diagonal = math.dist(mesh_lower, mesh_upper)
-
     # Every ray-bundle measure in this module normalizes defensively per-thread (see
     # `hemisphere_frame`); this path shrinks a sphere along the ray direction directly with no such
     # guard, so a caller-supplied non-unit normal would silently scale `sphere_center`'s radius away
-    # from what `step_sphere_shrink`'s own convergence test expects. The seed kernel normalizes it
+    # from what the shrink step's own convergence test expects. The seed kernel normalizes it
     # (``ray_direction``, with the sign for ``inwards``, exact), casts the longest ray along it
     # (``ray.longest_ray``'s walk at its default ``planar_tol``) and seeds the sphere, writing the
     # direction for the passes below.
-    #
-    # Slot ``r`` of ``n_not_converged`` is the not-converged count after round ``r - 1``,
-    # accumulated by the step kernel itself, so each round's test is one 4-byte read with no
-    # reduction launch in front of it. Slot 0 is the seed's count, accumulated by the two seed
-    # kernels. ``n_not_converged`` is a view one slot into ``counts``, whose slot 0 counts the
-    # deferred queries the seed lists in ``support_indices``, so one read carries both.
-    counts = _launch.zeros(max_iter + 2, dtype=wp.int32, device=device)
-    n_not_converged = odt.as_dense(counts[1:])
     n_verts = mesh.points.size
+    n_support = _launch.zeros(1, dtype=wp.int32, device=device)
     ray_dirs = _launch.empty(m, dtype=wp.vec3, device=device)
     radii = _launch.empty(m, dtype=wp.float32, device=device)
+    centers = _launch.empty(m, dtype=wp.vec3, device=device)
     not_converged = _launch.empty(m, dtype=wp.bool, device=device)
     support_indices = _launch.empty(m, dtype=wp.int32, device=device)
-    centers = _launch.empty(m, dtype=wp.vec3, device=device)
+    limits = [corners, wp.float64(threshold)]
     _launch.launch(
-        kernel_visibility.init_tangent_spheres,
+        kernel_visibility.seed_tangent_spheres,
         dim=m,
         inputs=[
             wp.uint64(mesh.id),
             points,
             normals,
             wp.float32(-1.0 if inwards else 1.0),
-            wp.float32(max_t),
+            *limits,
             wp.float32(TOLERANCE_PLANAR),
-            ray_dirs,
-            radii,
-            not_converged,
-            centers,
-            n_not_converged,
-            support_indices,
-            counts,
         ],
+        outputs=[ray_dirs, radii, centers, not_converged, support_indices, n_support],
         device=device,
     )
-    # Escaped rays (typically exterior/reach queries) need the support point of the vertex
-    # cloud in the ray direction. The seed lists them -- interior queries usually leave the
-    # subset empty -- then one grid-stride packed-argmax pass runs over the vertices for just
-    # that subset instead of a serial all-vertices loop per query thread.
-    # Host readback: the deferred count sizes the support passes, and when it is zero the seed's
-    # not-converged count beside it is already the first round's test.
-    k, n_seeded = (int(value) for value in read_values(counts, 0, 2))
+    # Escaped rays (typically exterior/reach queries) need the support point of the vertex cloud
+    # in the ray direction. The seed lists them -- interior queries usually leave the subset empty
+    # -- then one grid-stride packed-argmax pass runs over the vertices for just that subset
+    # instead of a serial all-vertices loop per query thread.
+    # Host readback: the deferred count sizes the support passes.
+    k = int(read_scalar(n_support, 0))
     if k > 0:
         support_indices = odt.as_dense(support_indices[:k])
         n_vert_slices = max(1, (n_verts + ITEMS_PER_QUERY_SLICE - 1) // ITEMS_PER_QUERY_SLICE)
@@ -792,66 +787,30 @@ def max_tangent_sphere(
             device=device,
         )
         _launch.launch(
-            kernel_visibility.init_sphere_radii_support,
+            kernel_visibility.seed_support_spheres,
             dim=k,
-            inputs=[
-                mesh.points,
-                points,
-                ray_dirs,
-                support_indices,
-                packed_support,
-                radii,
-                not_converged,
-                centers,
-                n_not_converged,
-            ],
+            inputs=[mesh.points, points, ray_dirs, support_indices, packed_support],
+            outputs=[radii, centers, not_converged],
             device=device,
         )
-
-    convergence_threshold = wp.float32(threshold * mesh_diagonal)
-
-    # All per-iteration buffers are preallocated once and ping-ponged (the step kernel writes
-    # every lane, passing converged state through). The convergence count is checked every
-    # iteration on purpose: an extra iteration runs a BVH closest-point query for every point still
-    # shrinking, far more expensive than the 8-byte readback the check costs.
-    new_radii = _launch.empty(m, dtype=wp.float32, device=device)
-    new_centers = _launch.empty(m, dtype=wp.vec3, device=device)
-    new_nc = _launch.empty(m, dtype=wp.bool, device=device)
-
-    for round_index in range(max_iter):
-        # Host readback: whether any sphere is still shrinking decides whether to launch a round.
-        # The first round's count is already on the host unless the support pass added to it.
-        if round_index == 0 and k == 0:
-            still_shrinking = n_seeded
-        else:
-            still_shrinking = int(read_scalar(n_not_converged, round_index))
-        if still_shrinking == 0:
-            break
-
-        _launch.launch(
-            kernel_visibility.step_sphere_shrink,
-            dim=m,
-            inputs=[
-                mesh.id,
-                points,
-                ray_dirs,
-                centers,
-                radii,
-                wp.float32(max_t),
-                convergence_threshold,
-                not_converged,
-                wp.int32(round_index + 1),
-                new_radii,
-                new_centers,
-                new_nc,
-                n_not_converged,
-            ],
-            device=device,
-        )
-        radii, new_radii = new_radii, radii
-        centers, new_centers = new_centers, centers
-        not_converged, new_nc = new_nc, not_converged
-
+    # The spheres shrink independently of each other, so each runs its whole iteration in its own
+    # thread: no launch or convergence readback per round.
+    _launch.launch(
+        kernel_visibility.shrink_tangent_spheres,
+        dim=m,
+        inputs=[
+            wp.uint64(mesh.id),
+            points,
+            ray_dirs,
+            *limits,
+            wp.int32(max_iter),
+            wp.float32(radius_scale),
+            not_converged,
+            radii,
+            centers,
+        ],
+        device=device,
+    )
     return centers, radii
 
 
@@ -861,10 +820,7 @@ def _resolve_normals(
     """
     Per-point normals: ``normals`` itself when given (length-checked), else the closest face's.
 
-    Split out of [`_resolve_normals_and_radius`][ordito.visibility._resolve_normals_and_radius]
-    so [`max_tangent_sphere`][ordito.visibility.max_tangent_sphere] and ``thickness(method="ray")``
-    can share the validation and defaulting without also paying for the union-box diagonal: the
-    first derives its own from a reduction it performs anyway, and the second needs none.
+    Shared by every measure in this module, so the validation and defaulting are written once.
 
     Raises
     ------
@@ -881,35 +837,25 @@ def _resolve_normals(
     return normals
 
 
-def _resolve_normals_and_radius(
-    mesh: wp.Mesh, points: wp.array[wp.vec3], normals: wp.array[wp.vec3] | None, name: str
-) -> tuple[wp.array[wp.vec3], float]:
+def _bundle_limits(
+    mesh: wp.Mesh, points: wp.array[wp.vec3], max_t: float | None
+) -> tuple[wp.array[wp.float32], wp.float32, wp.float64]:
     """
-    Per-point normals and the search radius every measure in this module needs.
+    Form the ray-bundle kernels' ``(corners, caller_max_t, offset_scale)`` arguments.
 
-    ``normals`` defaults to the closest face's normal, which is right for points on the surface and
-    meaningless off it; the radius is the diagonal of the box enclosing both the mesh and the
-    queries, so no ray or sphere is cut short.
-
-    Parameters
-    ----------
-    mesh
-        Triangle mesh with a built BVH (``wp.Mesh``).
-    points
-        ``(m,)`` positions being measured at.
-    normals
-        ``(m,)`` outward unit normals, or ``None`` to take them from the closest face.
-    name
-        Calling function's name, used in the error message.
-
-    Returns
-    -------
-    tuple[wp.array[wp.vec3], float]
-        ``(normals, diagonal)``.
-
-    Raises
-    ------
-    ValueError
-        If ``normals`` has a different length from ``points``.
+    ``corners`` is the box enclosing the mesh and the non-empty ``points`` (one packed box,
+    reduced in one launch); the kernels form its diagonal -- the default ray length and the scale
+    of the ray-origin offset (``_SURFACE_OFFSET`` of it) -- in the thread, so no search radius is
+    read back. ``caller_max_t`` is NaN when ``max_t`` is ``None``.
     """
-    return _resolve_normals(mesh, points, normals, name), enclosing_diagonal(mesh.points, points)
+    device = points.device
+    corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_reduce.minmax_vec3_pair_chunked,
+        dim=kernel_reduce.chunks_1d(mesh.points.size) + kernel_reduce.chunks_1d(points.size),
+        inputs=[mesh.points, points, wp.int32(0)],
+        outputs=[corners],
+        device=device,
+    )
+    caller_max_t = math.nan if max_t is None else max_t
+    return corners, wp.float32(caller_max_t), wp.float64(_SURFACE_OFFSET)
