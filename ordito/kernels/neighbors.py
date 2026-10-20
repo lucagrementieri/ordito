@@ -1283,6 +1283,90 @@ def nearest_key_pair(
 
 
 @wp.kernel
+def directed_face_edge_keys(
+    faces: wp.array[wp.int32], base: wp.uint64, out_keys: wp.array[wp.uint64]
+) -> None:
+    # Both directions of face ``f``'s three corner edges, ``source * base + target``, at
+    # ``6f .. 6f + 5``: sorted, the keys are the rows of the vertex adjacency, each row's targets
+    # ascending (``directed_neighbor_slots``, ``emit_directed_neighbor_lists``). Written into the
+    # leading half of the sort's double-width buffer; the payload is never read.
+    f = wp.int32(wp.tid())
+    for k in range(3):
+        a = wp.uint64(faces[3 * f + k])
+        b = wp.uint64(faces[3 * f + (k + 1) % 3])
+        out_keys[6 * f + 2 * k] = a * base + b
+        out_keys[6 * f + 2 * k + 1] = b * base + a
+
+
+@wp.func
+def directed_neighbor_slot_count(
+    keys: wp.array[wp.uint64], base: wp.uint64, i: wp.int32
+) -> wp.int32:
+    # The neighbour-list slots sorted key ``i`` takes: none for a repeat of the key before it, two
+    # for a self-loop -- ``graph.edges_to_neighbor_lists`` lists the far end of an ``(a, a)`` edge
+    # once per endpoint -- and one otherwise. The one rule the count and the emit both apply.
+    key = keys[i]
+    if i > 0:
+        if keys[i - 1] == key:
+            return 0
+    if key // base == key % base:
+        return 2
+    return 1
+
+
+@wp.kernel
+def directed_neighbor_slots(
+    keys: wp.array[wp.uint64], base: wp.uint64, out_counts: wp.array[wp.int32]
+) -> None:
+    i = wp.int32(wp.tid())
+    out_counts[i] = directed_neighbor_slot_count(keys, base, i)
+
+
+@wp.kernel
+def emit_directed_neighbor_lists(
+    keys: wp.array[wp.uint64],
+    ranks: wp.array[wp.int32],
+    base: wp.uint64,
+    n_vertices: wp.int32,
+    out_columns: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+    out_reference: wp.array[wp.int32],
+) -> None:
+    # The CSR vertex adjacency of the sorted directed keys, ``ranks`` being the inclusive scan of
+    # ``directed_neighbor_slots``: every first occurrence writes its target at its rank, which is
+    # ``edges_unique`` + ``edges_to_neighbor_lists(sort_rows=True)``'s buffer entry for entry. A
+    # row's first key also writes the row bounds of every vertex from the previous key's source up
+    # to its own (isolated vertices own empty rows) and the row's reference neighbour, its lowest
+    # target -- ``geodesic_ball_reference_neighbors``' answer, a vertex with no edge referencing
+    # itself.
+    i = wp.int32(wp.tid())
+    key = keys[i]
+    source = wp.int32(key // base)
+    if i == keys.shape[0] - 1:
+        # The last key, a repeat or not, closes every row after its source.
+        for v in range(source + 1, n_vertices + 1):
+            out_offsets[v] = ranks[i]
+        for v in range(source + 1, n_vertices):
+            out_reference[v] = v
+    count = directed_neighbor_slot_count(keys, base, i)
+    if count == 0:
+        return
+    slot = ranks[i] - count
+    out_columns[slot] = wp.int32(key % base)
+    if count == 2:
+        out_columns[slot + 1] = source
+    previous = wp.int32(-1)
+    if i > 0:
+        previous = wp.int32(keys[i - 1] // base)
+    if previous != source:
+        for v in range(previous + 1, source + 1):
+            out_offsets[v] = slot
+        for v in range(previous + 1, source):
+            out_reference[v] = v
+        out_reference[source] = wp.int32(key % base)
+
+
+@wp.kernel
 def geodesic_ball_reference_neighbors(
     adj_offsets: wp.array[wp.int32],
     adj_columns: wp.array[wp.int32],
