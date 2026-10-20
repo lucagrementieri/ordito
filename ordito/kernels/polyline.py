@@ -446,12 +446,12 @@ def arc_segment_lengths(
 
 
 @wp.kernel
-def greedy_downsample_mask(
+def greedy_downsample_indices(
     cumulative_lengths: wp.array[wp.float32],
     step_size: wp.float32,
     polyline: wp.array[wp.vec3],
     wrap_open: wp.int32,
-    out_keep: wp.array[wp.int32],
+    out_indices: wp.array[wp.int32],
 ) -> None:
     # Single-thread greedy walk (dim == 1): the selection is sequential because each kept point
     # moves the reference the next one is measured from.
@@ -462,16 +462,33 @@ def greedy_downsample_mask(
     # the parallel form below costs (``graph.pointer_jump_schedule``); the crossover is on that
     # constant, measured at 0.89x serial-over-jumped at 1 024 points and 1.15x at 2 048.
     #
-    # ``out_keep`` is ``0`` / ``1`` flags rather than a mask, so the caller scans it in place for
-    # the kept count and the compaction (``gather_kept_points``). ``polyline`` is read only for the
-    # closure (``seam_repeats_first``); an open call passes ``wrap_open = 0`` and may pass ``None``.
+    # Being serial, the walk knows each kept point's rank as it keeps it, so it writes the kept
+    # entries' indices compacted from ``out_indices[1]`` and their count into ``out_indices[0]``
+    # (``out_indices`` is one longer than the table): no flags to zero, no scan, and the gather
+    # (``gather_walked_points``) reads the indices directly. Indices rather than the points
+    # themselves: a point copy is a load the single thread would wait on per kept point, which
+    # measured 1.5-3x slower in device time than the flag stores it replaced. ``polyline`` is read
+    # only for the closure (``seam_repeats_first``).
     n = cumulative_lengths.shape[0] - seam_repeats_first(polyline, wrap_open)
-    out_keep[0] = 1
+    out_indices[1] = 0
+    count = wp.int32(1)
     last = cumulative_lengths[0]
     for i in range(1, n):
         if cumulative_lengths[i] - last >= step_size:
-            out_keep[i] = 1
+            count += 1
+            out_indices[count] = i
             last = cumulative_lengths[i]
+    out_indices[0] = count
+
+
+@wp.kernel
+def gather_walked_points(
+    polyline: wp.array[wp.vec3], indices: wp.array[wp.int32], out_points: wp.array[wp.vec3]
+) -> None:
+    # The kept points of ``greedy_downsample_indices``, whose indices sit behind their count. Entry
+    # ``n`` of a ``closed=True`` table is the first point again (``loop_point``).
+    j = wp.int32(wp.tid())
+    out_points[j] = polyline[loop_point(indices[j + 1], polyline.shape[0])]
 
 
 @wp.kernel
@@ -823,6 +840,36 @@ def rdp_split_spans(
         state[LOOP_CONDITION] = 1
 
 
+@wp.func
+def compact_kept_block(
+    flags: wp.array[wp.int32],
+    polyline: wp.array[wp.vec3],
+    lane: wp.int32,
+    out_indices: wp.array[wp.int32],
+    out_points: wp.array[wp.vec3],
+) -> wp.int32:
+    # ``gather_kept_points`` run by one block over its own final ``0`` / ``1`` flags: a block-wide
+    # chunk at a time, each lane's flag ranked by an exclusive tile scan carried across chunks, so
+    # the kept entries land in input order -- the inclusive scan's order -- with no scan launch
+    # and no readback before the gather. Every lane must call it (the scans are block barriers);
+    # returns the kept count, block-uniform. Entry ``n`` of a ``closed=True`` table is the first
+    # point again (``loop_point``). ``out_indices`` may alias a row of the caller's scratch that
+    # the flags do not live in.
+    lanes = wp.block_dim()
+    carry = wp.int32(0)
+    for start in range(0, flags.shape[0], lanes):
+        i = start + lane
+        flag = wp.int32(0)
+        if i < flags.shape[0]:
+            flag = flags[i]
+        before = carry + wp.untile(wp.tile_scan_exclusive(wp.tile(flag)))
+        if flag != 0:
+            out_indices[before] = i
+            out_points[before] = polyline[loop_point(i, polyline.shape[0])]
+        carry += block_sum(flag)
+    return carry
+
+
 # Polylines up to this many points are simplified by ``rdp_simplify_block`` -- the whole round loop
 # as one block -- rather than by the captured four-launch round, on CUDA; the CPU device takes the
 # block form at every size, where a launch grid is a serial loop anyway (1.5-5.4x from 64 to 8 192
@@ -841,6 +888,7 @@ def rdp_simplify_block(
     squared_tolerance: wp.float32,
     out_spans: wp.array2d[wp.int32],
     out_span_values: wp.array2d[wp.float32],
+    out_points: wp.array[wp.vec3],
 ) -> None:
     # ``rdp_seed_spans`` plus every round of ``rdp_begin_round`` -> ``rdp_span_max`` ->
     # ``rdp_span_argmax`` -> ``rdp_split_spans``, as one block whose lanes stride the polyline by
@@ -852,8 +900,11 @@ def rdp_simplify_block(
     # points is most of the call; ``ear_clip_block`` is the same trade.
     #
     # ``out_spans`` is ``(4, n_entries)``: rows ``span_lo``, ``span_hi``, ``span_argmax`` and the
-    # kept flags, which the caller scans in place; ``out_span_values`` is ``(2, n_entries)``:
-    # ``span_max`` and the squared distances. Two allocations rather than six.
+    # kept flags; ``out_span_values`` is ``(2, n_entries)``: ``span_max`` and the squared
+    # distances. Two allocations rather than six. After the last round the same block compacts the
+    # kept entries (``compact_kept_block``): their indices into row 0, their points into
+    # ``out_points``, and the kept count into row 1's first slot -- the scan, its readback and the
+    # gather launch a mask would need, done by lanes that already hold the flags.
     _block, lane = wp.tid()
     span_lo = out_spans[0]
     span_hi = out_spans[1]
@@ -882,6 +933,11 @@ def rdp_simplify_block(
                 squared_tolerance, span_max, span_argmax, span_lo, span_hi, keep, i
             )
         open_points = block_sum(survivors)
+    # The last ``block_sum`` was a barrier, so every flag is final; ``span_lo`` and ``span_hi`` are
+    # not read again and take the compacted indices and the count.
+    n_kept = compact_kept_block(keep, polyline, lane, span_lo, out_points)
+    if lane == 0:
+        span_hi[0] = n_kept
 
 
 @wp.kernel

@@ -773,17 +773,29 @@ def polyline_downsample(
     # (``kernels/polyline.seam_repeats_first``) -- the closure is decided on the device.
     cumulative = _arc_length_table(polyline, closed=closed)
     n_table = cumulative.size
-    keep = _launch.zeros(n_table, dtype=wp.int32, device=device)
     if wp.get_device(device).is_cuda and n_table >= _DOWNSAMPLE_DOUBLING_FROM:
+        keep = _launch.zeros(n_table, dtype=wp.int32, device=device)
         _greedy_downsample_doubling(cumulative, step_size, polyline, closed, keep)
-    else:
-        _launch.launch(
-            kernel_polyline.greedy_downsample_mask,
-            dim=1,
-            inputs=[cumulative, wp.float32(step_size), polyline, wp.int32(closed), keep],
-            device=device,
-        )
-    out_points, _ = _gather_kept(keep, polyline, return_indices=False)
+        out_points, _ = _gather_kept(keep, polyline, return_indices=False)
+        return out_points
+    # The serial walk writes the kept points' indices compacted as it goes, behind their count, so
+    # the gather reads them as they are.
+    indices = _launch.empty(n_table + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_polyline.greedy_downsample_indices,
+        dim=1,
+        inputs=[cumulative, wp.float32(step_size), polyline, wp.int32(closed), indices],
+        device=device,
+    )
+    # Sizes the output: the one host readback.
+    n_kept = int(read_scalar(indices, 0))
+    out_points = _launch.empty(n_kept, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_polyline.gather_walked_points,
+        dim=n_kept,
+        inputs=[polyline, indices, out_points],
+        device=device,
+    )
     return out_points
 
 
@@ -923,20 +935,23 @@ def polyline_simplify(
     ):
         # The whole round loop as one block (``kernels/polyline.rdp_simplify_block``): at this size
         # a round is too little work to fill the device, and the launch form's cost is the
-        # conditional graph it records on every call.
+        # conditional graph it records on every call. The block also compacts what it kept: the
+        # indices into the span table's first row, the points into a buffer as long as the input,
+        # and the count after them, so the results are prefixes of the two.
         spans = odt.empty_2d((4, n_entries), wp.int32, device=device)
         span_values = odt.empty_2d((2, n_entries), wp.float32, device=device)
+        points = _launch.empty(n_entries, dtype=wp.vec3, device=device)
         _launch.launch_tiled(
             kernel_polyline.rdp_simplify_block,
             dim=[1],
             inputs=[polyline, wp.int32(wrap_open), squared_tolerance],
-            outputs=[spans, span_values],
+            outputs=[spans, span_values, points],
             block_dim=kernel_polyline.RDP_BLOCK_DIM,
             device=device,
         )
-        simplified, indices = _gather_kept(odt.as_dense(spans[3]), polyline, return_indices=True)
-        assert indices is not None
-        return simplified, indices
+        # Sizes the output: the one host readback.
+        n_kept = int(read_scalar(odt.as_dense(spans[1]), 0))
+        return (odt.as_dense(points[:n_kept]), odt.as_dense(odt.as_dense(spans[0])[:n_kept]))
     span_lo = _launch.empty(n_entries, dtype=wp.int32, device=device)
     span_hi = _launch.empty(n_entries, dtype=wp.int32, device=device)
     keep = _launch.empty(n_entries, dtype=wp.int32, device=device)
