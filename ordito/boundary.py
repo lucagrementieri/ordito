@@ -266,7 +266,10 @@ def boundary_loops(
     """
     require_same_device(vertices=vertices, faces=faces, mates=mates)
     flat_loops, offsets = boundary_loops_with_offsets(vertices, faces, mates=mates)
-    return od.array.split(flat_loops, offsets, copy=copy)
+    # The offsets' length is host metadata: with one loop they are ``[0, len(flat_loops)]``, and the
+    # split needs no readback of them.
+    host_offsets = [0, flat_loops.size] if offsets.size == 2 else offsets
+    return od.array.split(flat_loops, host_offsets, copy=copy)
 
 
 def boundary_loops_with_offsets(
@@ -1079,6 +1082,9 @@ def longest_boundary_loop(
     n_loops = offsets.size - 1
     if n_loops == 0:
         return _launch.empty(0, dtype=wp.int32, device=device)
+    if n_loops == 1:
+        # The one loop is the whole packed buffer, which nothing else holds.
+        return flat_loops
     # The sizes are the offsets' differences on the device, so the winner is an argmax there
     # rather than a Python scan: unpacking the loops first would read the offsets back, build one
     # array view per loop, and then recover the lengths from those views -- a cost linear in the

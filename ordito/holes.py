@@ -98,45 +98,92 @@ class _PackedLoops:
     every kernel here reads a loop's extent from). ``loop_id`` inverts that mapping so a
     ``dim=total`` kernel can find its own loop without a search, and ``dp_offsets`` is the exclusive
     scan of ``sizes ** 2`` — where each loop's ``B x B`` dynamic-programming block begins in the
-    ragged tables, and ``triangle_offsets`` where its fill triangles begin. The device tables are
-    uploaded once and shared by every stage of the fill.
+    ragged tables, and ``triangle_offsets`` where its fill triangles begin.
+
+    The device tables are uploaded once, on the first read of any of them, and shared by every
+    stage of the fill; a stage that reads none of them (the fan and the cone read only ``offsets``)
+    uploads nothing. ``offsets`` given is the device form the loops came with (the boundary walk's,
+    or the packing's), so the upload does not carry a second copy of it.
     """
 
-    def __init__(self, flat_loops: wp.array[wp.int32], sizes_np: np.ndarray) -> None:
+    def __init__(
+        self,
+        flat_loops: wp.array[wp.int32],
+        sizes_np: np.ndarray,
+        offsets: wp.array[wp.int32] | None = None,
+    ) -> None:
         device = flat_loops.device
         self.device = device
         self.flat_loops = flat_loops
         self.sizes_np = sizes_np.astype(np.int64)
         self.starts_np = np.concatenate([[0], np.cumsum(self.sizes_np)[:-1]]).astype(np.int64)
-        self.dp_offsets_np = np.concatenate(
-            [[0], np.cumsum(self.sizes_np * self.sizes_np)[:-1]]
-        ).astype(np.int64)
 
         self.n_loops = sizes_np.size
         self.total = int(self.sizes_np.sum())
         self.max_size = int(self.sizes_np.max())
         self.dp_total = int((self.sizes_np * self.sizes_np).sum())
+        self._offsets = offsets
+        self._tables: tuple[wp.array[wp.int32], ...] | None = None
 
-        triangle_sizes_np = np.maximum(self.sizes_np - 2, 0)
-        triangle_offsets_np = np.concatenate([[0], np.cumsum(triangle_sizes_np)[:-1]])
+    @property
+    def offsets(self) -> wp.array[wp.int32]:
+        """``(n_loops + 1,)`` total-terminated device offsets of the loops."""
+        if self._offsets is None:
+            self._offsets = self._upload()[0]
+        return self._offsets
 
-        # One upload for all four tables, each a view into it: the per-call cost of a
-        # ``wp.array`` construction is several times a slice's, and none of these is written.
-        tables_np = np.concatenate(
-            [
-                self.starts_np,
-                [self.total],
-                self.dp_offsets_np,
-                triangle_offsets_np,
-                np.repeat(np.arange(self.n_loops, dtype=np.int64), self.sizes_np),
-            ]
-        ).astype(np.int32)
-        tables = _launch.array(tables_np, dtype=wp.int32, device=device)
+    @property
+    def dp_offsets(self) -> wp.array[wp.int32]:
+        """``(n_loops,)`` start of each loop's ``B x B`` block in the ragged DP tables."""
+        return self._upload()[1]
+
+    @property
+    def triangle_offsets(self) -> wp.array[wp.int32]:
+        """``(n_loops,)`` start of each loop's fill triangles."""
+        return self._upload()[2]
+
+    @property
+    def loop_id(self) -> wp.array[wp.int32]:
+        """``(total,)`` the loop each packed position belongs to."""
+        return self._upload()[3]
+
+    def _upload(self) -> tuple[wp.array[wp.int32], ...]:
+        """
+        Upload the device tables once, each a view into one buffer.
+
+        One upload for all of them: the per-call cost of a ``wp.array`` construction is several
+        times a slice's, and none of these is written. The offsets ride along only when the loops
+        came without them.
+        """
+        if self._tables is not None:
+            return self._tables
         n = self.n_loops
-        self.offsets = _table_view(tables, 0, n + 1)
-        self.dp_offsets = _table_view(tables, n + 1, 2 * n + 1)
-        self.triangle_offsets = _table_view(tables, 2 * n + 1, 3 * n + 1)
-        self.loop_id = _table_view(tables, 3 * n + 1, 3 * n + 1 + self.total)
+        triangle_sizes_np = np.maximum(self.sizes_np - 2, 0)
+        parts = [
+            np.concatenate([[0], np.cumsum(self.sizes_np * self.sizes_np)[:-1]]),
+            np.concatenate([[0], np.cumsum(triangle_sizes_np)[:-1]]),
+            np.repeat(np.arange(n, dtype=np.int64), self.sizes_np),
+        ]
+        with_offsets = self._offsets is None
+        if with_offsets:
+            parts.insert(0, np.append(self.starts_np, self.total))
+        tables = _launch.array(
+            np.concatenate(parts).astype(np.int32), dtype=wp.int32, device=self.device
+        )
+        start = 0
+        if with_offsets:
+            offsets = _table_view(tables, 0, n + 1)
+            start = n + 1
+        else:
+            assert self._offsets is not None
+            offsets = self._offsets
+        self._tables = (
+            offsets,
+            _table_view(tables, start, start + n),
+            _table_view(tables, start + n, start + 2 * n),
+            _table_view(tables, start + 2 * n, start + 2 * n + self.total),
+        )
+        return self._tables
 
     def perimeters(self, vertices: wp.array[wp.vec3]) -> np.ndarray:
         """
@@ -1086,9 +1133,9 @@ def _run_hole_dp(
 def _pack_loops(loops: list[wp.array[wp.int32]]) -> _PackedLoops:
     """Concatenate a caller's per-loop arrays into the packed form the fill engine consumes."""
     # ``copy=False``: every kernel below takes ``flat_loops`` as an input and none writes it.
-    flat_loops, _offsets = od.array.pack_1d_arrays(loops, copy=False)
+    flat_loops, offsets = od.array.pack_1d_arrays(loops, copy=False)
     sizes_np = np.asarray([loop.size for loop in loops], dtype=np.int64)
-    return _PackedLoops(flat_loops, sizes_np)
+    return _PackedLoops(flat_loops, sizes_np, offsets)
 
 
 def fill_small(
@@ -3939,10 +3986,10 @@ def _hole_loops(
     if packed is None:
         return None
 
-    flat_loops, sizes_np = packed
+    flat_loops, sizes_np, offsets = packed
     keep_np = sizes_np >= 3
     if preserve_largest_hole and bool(keep_np.any()):
-        all_loops = _PackedLoops(flat_loops, sizes_np)
+        all_loops = _PackedLoops(flat_loops, sizes_np, offsets)
         perimeter_np = all_loops.perimeters(vertices)
         # Only a fillable loop can be the one preserved, matching the pre-filter order.
         candidates_np = np.flatnonzero(keep_np)
@@ -3950,7 +3997,7 @@ def _hole_loops(
     if not keep_np.any():
         return None
     if keep_np.all():
-        return _PackedLoops(flat_loops, sizes_np)
+        return _PackedLoops(flat_loops, sizes_np, offsets)
     return _compact_packed_loops(flat_loops, sizes_np, keep_np)
 
 
@@ -3973,18 +4020,24 @@ def _compact_packed_loops(
 
 def _boundary_loops_packed(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-) -> tuple[wp.array[wp.int32], np.ndarray] | None:
+) -> tuple[wp.array[wp.int32], np.ndarray, wp.array[wp.int32]] | None:
     """
-    Every boundary loop of a mesh as one packed buffer plus its host sizes, or ``None`` if none.
+    Every boundary loop of a mesh as one packed buffer, its host sizes and its device offsets.
+
+    ``None`` if there is none.
 
     The packed buffer is
     [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]' own, handed on
-    unsplit; the sizes come from the single offsets readback the ragged indexing needs anyway.
+    unsplit; the sizes come from the single offsets readback the ragged indexing needs anyway, or
+    with one loop from the buffer's own length.
     """
     flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
     if offsets.size == 1:
         return None
-    return flat_loops, np.diff(offsets.numpy().astype(np.int64))
+    if offsets.size == 2:
+        # One loop is the whole buffer: its size is host metadata, and nothing is read back.
+        return flat_loops, np.array([flat_loops.size], dtype=np.int64), offsets
+    return flat_loops, np.diff(offsets.numpy().astype(np.int64)), offsets
 
 
 def _packed_loop_argument(
