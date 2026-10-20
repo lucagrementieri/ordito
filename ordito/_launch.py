@@ -992,6 +992,48 @@ def copy(dest: Any, src: Any, dest_offset: int = 0, src_offset: int = 0, count: 
     wp.copy(dest, src, dest_offset=dest_offset, src_offset=src_offset, count=count)
 
 
+def copy_to_host(dest: Any, src: Any, src_offset: int, count: int) -> None:
+    """
+    ``wp.copy(dest, src, src_offset=src_offset, count=count)`` into a pageable host buffer.
+
+    The one native device-to-host copy for a contiguous CUDA ``src`` and a contiguous CPU ``dest``
+    of the same element size, outside any capture, on ``src``'s current stream -- what
+    ``wp.copy`` issues there, without its validation. A pageable destination makes the copy return
+    only once it has landed, which is what a readback relies on. Anything else, including every
+    input Warp would reject, goes to ``wp.copy``.
+    """
+    runtime = _ctx.runtime
+    if (
+        runtime is not None  # pyright: ignore[reportUnnecessaryComparison]
+        and runtime._apic_capture is None
+        and not runtime.captures
+        and type(src) is _ARRAY
+        and type(dest) is _ARRAY
+        and src.is_contiguous
+        and dest.is_contiguous
+        and type(src_offset) is int
+        and type(count) is int
+        and 0 <= src_offset
+        and 0 < count
+        and src_offset + count <= src.size
+        and count <= dest.size
+        and not dest.pinned
+    ):
+        device = src.device
+        itemsize = _type_size(src.dtype)
+        if device.is_cuda and dest.device.is_cpu and _type_size(dest.dtype) == itemsize:
+            if not runtime.core.wp_memcpy_d2h(
+                device.context,
+                dest.ptr,
+                src.ptr + src_offset * itemsize,
+                count * itemsize,
+                device._stream.cuda_stream,
+            ):
+                raise RuntimeError(f"Warp copy error: {runtime.get_error_string()}")
+            return
+    wp.copy(dest, src, src_offset=src_offset, count=count)
+
+
 def fill_(arr: Any, value: Any) -> None:
     """``arr.fill_(value)``, as one native memset or memtile for a contiguous CUDA scalar array."""
     runtime = _ctx.runtime
