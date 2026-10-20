@@ -1234,7 +1234,7 @@ def full(
     if _is_zero(value):
         return zeros(shape, dtype=dtype, device=device)
     arr = empty(shape, dtype=dtype, device=device)
-    arr.fill_(value)
+    fill_(arr, value)
     return arr
 
 
