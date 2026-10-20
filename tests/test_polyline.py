@@ -831,9 +831,10 @@ def test_downsample_polyline_branches_agree(device: str) -> None:
         step = 1.0 if spacing == "exact" else float(4.0 * steps_np.mean())
 
         # An open table: the polyline is read only for a ``closed=True`` seam, so none is passed.
-        serial_wp = wp.zeros(n, dtype=wp.int32, device=device)
+        # The serial walk writes the kept indices behind their count.
+        serial_wp = warp_empty(n + 1, wp.int32, device)
         wp.launch(
-            kernel_polyline.greedy_downsample_mask,
+            kernel_polyline.greedy_downsample_indices,
             dim=1,
             inputs=[cumulative_wp, wp.float32(step), None, 0, serial_wp],
             device=device,
@@ -841,8 +842,10 @@ def test_downsample_polyline_branches_agree(device: str) -> None:
         doubling_wp = wp.zeros(n, dtype=wp.int32, device=device)
         od.polyline._greedy_downsample_doubling(cumulative_wp, step, None, False, doubling_wp)  # pyright: ignore[reportPrivateUsage]
 
-        assert int(serial_wp.numpy().sum()) > 1, f"{spacing}: the walk kept only the first point"
-        assert np.array_equal(serial_wp.numpy(), doubling_wp.numpy()), spacing
+        n_serial = int(serial_wp.numpy()[0])
+        serial_np = serial_wp.numpy()[1 : n_serial + 1]
+        assert n_serial > 1, f"{spacing}: the walk kept only the first point"
+        assert np.array_equal(serial_np, np.flatnonzero(doubling_wp.numpy())), spacing
 
 
 def test_downsample_polyline_above_the_doubling_threshold(device: str) -> None:

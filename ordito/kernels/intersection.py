@@ -77,7 +77,7 @@ def plane_with_line(
 @wp.func
 def find_unique_sign_vertex(s0: wp.int32, s1: wp.int32, s2: wp.int32) -> wp.int32:
     # The corner whose sign differs from the other two -- shared by ``CASE_BASIC`` (this file's
-    # own sign convention), the split path's edge-to-edge cut (``face_level_set_signs``'
+    # own sign convention), the split path's edge-to-edge cut (``level_set_signs``'
     # convention) and ``marching_triangles_segments`` (a ``0`` / ``1`` side flag), which is what
     # makes the predicate itself convention-independent: it only compares the three inputs to each
     # other, never to a named sign value. Every caller has already established that exactly one of
@@ -693,39 +693,60 @@ def level_set_sign(value: wp.float32) -> wp.int32:
     # A vertex's side of the level set from its re-zeroed field value: ``SLICE_SIGN_INSIDE`` (-1)
     # for the ``>= isovalue`` side, so the tolerance sign is negated, and 0 within
     # ``TOLERANCE_MERGE_CONSTANT`` of the level. The one spelling of "on the level set": the face
-    # classifiers (``face_level_set_signs``) and the cap's section test (``on_level_set``) must
+    # classifiers (``level_set_signs``) and the cap's section test (``on_level_set``) must
     # agree, or a vertex the classifier kept as on the level set (no crossing point emitted) is
     # missing from the section and its loop is left open.
     return -kernel_array.sign_with_tolerance(value, TOLERANCE_MERGE_CONSTANT)
 
 
 @wp.func
-def face_level_set_signs(
+def vertex_level(
+    vertices: wp.array[wp.vec3],
+    vertex_dots: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    v: wp.int32,
+) -> wp.float32:
+    # Vertex ``v``'s re-zeroed field value: ``vertex_dots[v]``, or -- when the caller passes no
+    # field (an empty array) -- its plane dot, formed in the thread instead of tabulated by a pass
+    # of its own. Both are ``point_plane_dot``'s arithmetic for a plane, so the two agree bitwise.
+    if vertex_dots.shape[0] > 0:
+        return vertex_dots[v]
+    return point_plane_dot(vertices[v], plane_normal, plane_origin)
+
+
+@wp.func
+def level_set_signs_at(
+    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
     f: wp.int32,
-    out_signs: wp.array2d[wp.int32],
-) -> tuple[wp.int32, wp.int32]:
-    # One face's three level-set signs, stored, plus the two sums every classifier decides on.
-    #
-    # Each sign is ``level_set_sign``'s (-1 on the kept side, 0 on the level set). ``signs_sum``
-    # separates "all one side" from "cut"
-    # and ``signs_asum`` counts the corners strictly off the plane; between them they name every
-    # case both classifiers below distinguish.
-    #
-    # Shared by ``classify_faces_for_slice`` and ``classify_faces_for_split``, which differ only in
-    # the 3-way vs 4-way decision they map these two sums onto -- that is the genuine variation, and
-    # the nine statements above it were a copy. Kept here rather than in ``kernels/predicates.py``
-    # because it writes an output array: that module holds pure predicates, and both callers of this
-    # one are in this file.
+) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # One face's three level-set signs, ``level_set_sign``'s each (-1 on the kept side, 0 on the
+    # level set), of ``vertex_level``'s values. Every classifier and emitter of the clip and the
+    # split reads its corners' sides through this, so a face is never classified by one spelling
+    # and cut by another.
     i0, i1, i2 = kernel_triangles.corner_triple(faces, f)
-    s0 = level_set_sign(vertex_dots[i0])
-    s1 = level_set_sign(vertex_dots[i1])
-    s2 = level_set_sign(vertex_dots[i2])
-    out_signs[f, 0] = s0
-    out_signs[f, 1] = s1
-    out_signs[f, 2] = s2
-    return s0 + s1 + s2, wp.abs(s0) + wp.abs(s1) + wp.abs(s2)
+    return (
+        level_set_sign(vertex_level(vertices, vertex_dots, plane_normal, plane_origin, i0)),
+        level_set_sign(vertex_level(vertices, vertex_dots, plane_normal, plane_origin, i1)),
+        level_set_sign(vertex_level(vertices, vertex_dots, plane_normal, plane_origin, i2)),
+    )
+
+
+@wp.func
+def level_set_signs(
+    faces: wp.array[wp.int32], vertex_dots: wp.array[wp.float32], f: wp.int32
+) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # ``level_set_signs_at`` over a tabulated field, for the split's kernels (which hold one).
+    i0, i1, i2 = kernel_triangles.corner_triple(faces, f)
+    return (
+        level_set_sign(vertex_dots[i0]),
+        level_set_sign(vertex_dots[i1]),
+        level_set_sign(vertex_dots[i2]),
+    )
 
 
 @wp.func
@@ -750,19 +771,37 @@ def write_class_flags(
         out_flags[block * n_faces + f] = wp.where(face_class == block + 1, wp.int32(1), wp.int32(0))
 
 
-@wp.kernel
-def classify_faces_for_slice(
-    faces: wp.array[wp.int32],
-    vertex_dots: wp.array[wp.float32],
-    out_classes: wp.array[wp.int32],
-    out_signs: wp.array2d[wp.int32],
-    out_flags: wp.array[wp.int32],
-) -> None:
-    f = wp.int32(wp.tid())
-    signs_sum, signs_asum = face_level_set_signs(faces, vertex_dots, f, out_signs)
+@wp.func
+def on_plane_face_side(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], plane_normal: wp.vec3, f: wp.int32
+) -> tuple[wp.bool, wp.bool]:
+    # A face lying in the plane has no vertex-based tie-break, so its own normal decides which side
+    # it belongs to -- opposing the plane's normal (``dot < 0``) is the side both
+    # ``classify_clip_faces`` and ``label_faces_by_plane_side`` keep. The second return flags a
+    # degenerate (zero-area) face, which has no usable normal at all; each caller maps that onto its
+    # own answer rather than sharing one here, because the two operations disagree on it for a good
+    # reason -- a clip has a side to drop the face into, a split does not.
+    normal, area = kernel_triangles.face_normals_and_area(vertices, faces, f)
+    is_below = wp.dot(normal, plane_normal) < wp.float32(0.0)
+    return is_below, area <= TOLERANCE_ZERO_CONSTANT
 
-    # A face lying in the plane also satisfies the "wholly inside" test (both sums are zero), so
-    # it has to be tested first -- its side is decided from its normal, not from its vertices.
+
+# The clip's flag buffer: the three kept classes' blocks (``write_class_flags``), then a block of
+# each cut-to-triangle face's crossing-point count, then -- when the input vertices are compacted
+# -- one referenced flag per input vertex. One inclusive scan of it ranks every kept face within
+# its class, every crossing point among its class's and every kept vertex, so a single readback
+# (``clip_counts``) sizes the output and one launch (``emit_clip_faces``) writes it.
+CLIP_FLAG_BLOCKS = 4
+
+
+@wp.func
+def slice_face_class(s0: wp.int32, s1: wp.int32, s2: wp.int32) -> wp.int32:
+    # How a face meets the level set, from its three ``level_set_signs``. A face lying in the level
+    # set also satisfies the "wholly inside" test (both sums are zero), so it has to be tested
+    # first: its side is decided from its normal, not from its vertices, and only the plane clip
+    # has one (``ON_PLANE``, resolved by ``classify_clip_faces``).
+    signs_sum = s0 + s1 + s2
+    signs_asum = wp.abs(s0) + wp.abs(s1) + wp.abs(s2)
     face_class = SLICE_CLASS_DROP
     if signs_asum == wp.int32(0):
         face_class = SLICE_CLASS_ON_PLANE
@@ -773,74 +812,84 @@ def classify_faces_for_slice(
             face_class = SLICE_CLASS_CUT_QUAD
         else:
             face_class = SLICE_CLASS_CUT_TRI
-    out_classes[f] = face_class
-    write_class_flags(face_class, f, faces.shape[0] // 3, SLICE_CLASSES, out_flags)
+    return face_class
 
 
 @wp.func
-def on_plane_face_side(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], plane_normal: wp.vec3, f: wp.int32
-) -> tuple[wp.bool, wp.bool]:
-    # A face lying in the plane has no vertex-based tie-break, so its own normal decides which side
-    # it belongs to -- opposing the plane's normal (``dot < 0``) is the side both
-    # ``resolve_on_plane_faces`` and ``label_faces_by_plane_side`` keep. The second return flags a
-    # degenerate (zero-area) face, which has no usable normal at all; each caller maps that onto its
-    # own answer rather than sharing one here, because the two operations disagree on it for a good
-    # reason -- a clip has a side to drop the face into, a split does not.
-    normal, area = kernel_triangles.face_normals_and_area(vertices, faces, f)
-    is_below = wp.dot(normal, plane_normal) < wp.float32(0.0)
-    return is_below, area <= TOLERANCE_ZERO_CONSTANT
+def tri_cut_level_corner(s0: wp.int32, s1: wp.int32, s2: wp.int32) -> wp.int32:
+    # A ``CUT_TRI`` face's corner exactly on the level set, or -1. The class holds both a genuine
+    # two-crossing cut (both corners after the kept one strictly outside) and "one of them sits on
+    # the level set" -- they share ``signs_asum == 2`` -- and the second reuses that corner's vertex
+    # instead of interpolating a near-duplicate beside it, so it references one crossing, not two.
+    # At most one corner can be on it: two would make the face ``INSIDE``.
+    signs = wp.vec3i(s0, s1, s2)
+    inside = find_corner_with_sign(s0, s1, s2, SLICE_SIGN_INSIDE)
+    corner_a = (inside + wp.int32(1)) % wp.int32(3)
+    corner_b = (inside + wp.int32(2)) % wp.int32(3)
+    corner = wp.int32(-1)
+    if signs[corner_a] == SLICE_SIGN_ON_PLANE:
+        corner = corner_a
+    elif signs[corner_b] == SLICE_SIGN_ON_PLANE:
+        corner = corner_b
+    return corner
 
 
 @wp.kernel
-def resolve_on_plane_faces(
+def classify_clip_faces(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
+    vertex_dots: wp.array[wp.float32],
     plane_normal: wp.vec3,
-    out_classes: wp.array[wp.int32],
+    plane_origin: wp.vec3,
+    resolve_on_plane: wp.bool,
+    keep_all_crossings: wp.bool,
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # Runs after ``classify_faces_for_slice`` has written the classes *and* their flags, so a face
-    # it moves has to move its flag too. ``ON_PLANE`` is not a kept class and carries no flag, and
-    # ``DROP`` carries none either, so only a face resolved to ``INSIDE`` gains one -- in block 0,
-    # at ``f``, which is what ``write_class_flags`` would have written for it.
+    # One thread per face writes every flag the clip's single scan reads (``CLIP_FLAG_BLOCKS``):
+    # its class's, its crossing-point count when it is cut to a triangle -- two, or one when a
+    # corner on the level set stands in for the other (``tri_cut_level_corner``), unless
+    # ``keep_all_crossings`` keeps both for the cap's exact merge -- and, when ``out_flags`` carries
+    # the vertex block (zeroed by the caller), a 1 at every input vertex the kept face references:
+    # its corners on the kept side or on the level set, which is all three for a kept face and
+    # exactly the corners the cut triangles reuse. ``resolve_on_plane`` is the plane clip's
+    # tie-break for a face lying in the plane, kept when its own normal opposes ``plane_normal``;
+    # a field has no orientation to compare, so without it such a face is dropped.
     f = wp.int32(wp.tid())
-    if out_classes[f] != SLICE_CLASS_ON_PLANE:
-        return
-    is_below, degenerate = on_plane_face_side(vertices, faces, plane_normal, f)
-    if not degenerate and is_below:
-        out_classes[f] = SLICE_CLASS_INSIDE
-        out_flags[f] = wp.int32(1)
-    else:
-        out_classes[f] = SLICE_CLASS_DROP
-
-
-@wp.kernel
-def scatter_slice_class(
-    inclusive: wp.array[wp.int32],
-    n_faces: wp.int32,
-    out_indices: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
-) -> None:
-    # A flag-driven compaction over the blocked flag buffer, scanned in place, that writes the
-    # *face* index rather than the flag index, so each block comes out addressing faces. The last
-    # thread of each block also writes that block's count -- its running total minus the previous
-    # block's -- so the host reads the counts once, after this launch, and no pass of its own
-    # derives them.
-    t = wp.int32(wp.tid())
-    slot, flag = kernel_array.scanned_count(inclusive, t)
-    if flag != 0:
-        out_indices[slot] = t % n_faces
-    if (t + 1) % n_faces == 0:
-        previous = wp.int32(0)
-        if t >= n_faces:
-            previous = inclusive[t - n_faces]
-        out_counts[t // n_faces] = inclusive[t] - previous
+    n_faces = faces.shape[0] // 3
+    s0, s1, s2 = level_set_signs_at(vertices, faces, vertex_dots, plane_normal, plane_origin, f)
+    face_class = slice_face_class(s0, s1, s2)
+    if face_class == SLICE_CLASS_ON_PLANE:
+        face_class = SLICE_CLASS_DROP
+        if resolve_on_plane:
+            is_below, degenerate = on_plane_face_side(vertices, faces, plane_normal, f)
+            if is_below and not degenerate:
+                face_class = SLICE_CLASS_INSIDE
+    write_class_flags(face_class, f, n_faces, SLICE_CLASSES, out_flags)
+    crossings = wp.int32(0)
+    if face_class == SLICE_CLASS_CUT_TRI:
+        crossings = wp.int32(2)
+        if not keep_all_crossings and tri_cut_level_corner(s0, s1, s2) >= wp.int32(0):
+            crossings = wp.int32(1)
+    out_flags[SLICE_CLASSES * n_faces + f] = crossings
+    vertex_block = CLIP_FLAG_BLOCKS * n_faces
+    if face_class != SLICE_CLASS_DROP and out_flags.shape[0] > vertex_block:
+        i0, i1, i2 = kernel_triangles.corner_triple(faces, f)
+        if s0 <= SLICE_SIGN_ON_PLANE:
+            out_flags[vertex_block + i0] = wp.int32(1)
+        if s1 <= SLICE_SIGN_ON_PLANE:
+            out_flags[vertex_block + i1] = wp.int32(1)
+        if s2 <= SLICE_SIGN_ON_PLANE:
+            out_flags[vertex_block + i2] = wp.int32(1)
 
 
 @wp.func
-def canonical_edge_crossing(
-    vertices: wp.array[wp.vec3], values: wp.array[wp.float32], i: wp.int32, j: wp.int32
+def canonical_edge_crossing_at(
+    vertices: wp.array[wp.vec3],
+    values: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    i: wp.int32,
+    j: wp.int32,
 ) -> wp.vec3:
     # Always interpolate from the endpoint that comes first by *position* (lexicographic, the
     # index breaking a tie between coincident endpoints), so every face that sees an edge -- the two
@@ -859,7 +908,20 @@ def canonical_edge_crossing(
     if swap:
         a = j
         b = i
-    return edge_level_crossing(vertices[a], vertices[b], values[a], values[b])
+    return edge_level_crossing(
+        vertices[a],
+        vertices[b],
+        vertex_level(vertices, values, plane_normal, plane_origin, a),
+        vertex_level(vertices, values, plane_normal, plane_origin, b),
+    )
+
+
+@wp.func
+def canonical_edge_crossing(
+    vertices: wp.array[wp.vec3], values: wp.array[wp.float32], i: wp.int32, j: wp.int32
+) -> wp.vec3:
+    # ``canonical_edge_crossing_at`` over a tabulated field.
+    return canonical_edge_crossing_at(vertices, values, wp.vec3(), wp.vec3(), i, j)
 
 
 @wp.func
@@ -867,6 +929,8 @@ def face_edge_crossing(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_values: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
     face_index: wp.int32,
     edge: wp.int32,
 ) -> wp.vec3:
@@ -875,169 +939,240 @@ def face_edge_crossing(
     # Edge ``e`` joins corner ``e`` to corner ``e + 1``, which is the numbering the two emit
     # kernels' ``edge_a`` / ``edge_b`` are expressed in.
     base = face_index * wp.int32(3)
-    return canonical_edge_crossing(
-        vertices, vertex_values, faces[base + edge], faces[base + (edge + wp.int32(1)) % 3]
+    return canonical_edge_crossing_at(
+        vertices,
+        vertex_values,
+        plane_normal,
+        plane_origin,
+        faces[base + edge],
+        faces[base + (edge + wp.int32(1)) % 3],
     )
+
+
+@wp.kernel
+def clip_counts(
+    ranks: wp.array[wp.int32], n_faces: wp.int32, out_counts: wp.array[wp.int32]
+) -> None:
+    # The clip's sizes from its one scan, side by side for a single readback: the inside, quad-cut
+    # and triangle-cut face counts, the triangle cuts' crossing points, and the kept input vertices
+    # (0 when the scan carries no vertex block).
+    previous = wp.int32(0)
+    for block in range(CLIP_FLAG_BLOCKS):
+        total = ranks[(block + 1) * n_faces - 1]
+        out_counts[block] = total - previous
+        previous = total
+    out_counts[CLIP_FLAG_BLOCKS] = ranks[ranks.shape[0] - 1] - previous
 
 
 @wp.func
-def cut_face_context(
-    face_indices: wp.array[wp.int32], face_signs: wp.array2d[wp.int32], tid: wp.int32
-) -> tuple[wp.int32, wp.int32, wp.int32, wp.int32, wp.int32]:
-    # The cut face work item ``tid`` owns: its face index, the base of its corner triple in the
-    # flat face buffer, and its three corner signs.
-    #
-    # The prologue all four emit kernels below open with -- they differ in *which* corner the signs
-    # single out and in what they write, never in how they find the face. Shared rather than
-    # repeated so ``face_signs``' row layout and the ``3 * f`` corner convention have one
-    # statement each. Three of the four compile to byte-identical SASS and
-    # ``emit_split_cut_corner`` to 8 instructions fewer, so it is free or better.
-    face_index = face_indices[tid]
-    s0, s1, s2 = kernel_triangles.row_triple(face_signs, face_index)
-    return face_index, face_index * wp.int32(3), s0, s1, s2
+def clip_vertex_index(
+    ranks: wp.array[wp.int32], vertex_block: wp.int32, compact: wp.bool, v: wp.int32
+) -> wp.int32:
+    # Input vertex ``v``'s index in the clip's output: its rank among the referenced vertices when
+    # they are compacted, else ``v`` itself (the cap keeps every input vertex addressable).
+    if compact:
+        return ranks[vertex_block + v] - ranks[vertex_block - 1] - wp.int32(1)
+    return v
 
 
 @wp.func
-def emit_cut_vertices(
+def write_clip_crossing(
     vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    vertex_values: wp.array[wp.float32],
-    face_index: wp.int32,
-    cut: wp.int32,
-    edge_0: wp.int32,
-    edge_1: wp.int32,
-    vertex_base: wp.int32,
-    out_new_verts: wp.array[wp.vec3],
-) -> tuple[wp.int32, wp.int32]:
-    # Write the two new vertices cut face ``cut`` contributes, and return their indices in the
-    # *concatenated* buffer, where the new block starts at ``vertex_base``.
-    #
-    # Every cut face emits exactly two, whichever side is alone in sign: a quad cut splits into two
-    # triangles and a corner cut into one, but both are bounded by the same two edge crossings. So
-    # the slot is a function of the thread alone and neither kernel needs a counter -- which is the
-    # invariant this function exists to state, and the reason ``2 * cut`` is computed once rather
-    # than seventeen times across the two callers.
-    #
-    # The crossings are computed here rather than read from a table a previous launch filled. That
-    # table cost a launch, an ``(n_cut, 3)`` ``vec3`` allocation and a full round trip of it
-    # through global memory -- and it computed **three** crossings per cut face where every caller
-    # of this function uses exactly two, so the fused form does less arithmetic as well as less
-    # traffic. ``canonical_edge_crossing`` interpolates from a canonical endpoint, so a crossing is
-    # bitwise identical however many times and from whichever face it is evaluated; that is what
-    # lets ``clip_mesh_with_field(cap=True)`` merge the rim's copies exactly and what makes
-    # recomputing it here free of consequence.
-    #
-    # Measured, output byte-identical: 1.09x on ``clip_mesh_with_field``, 1.11x on
-    # ``slice_mesh_with_plane`` and 1.03x on ``split_mesh_with_plane``, two launches and two
-    # allocations fewer. Predicted from the launch count alone it looked like 2 %; the extra came
-    # from the arithmetic, since the tabulating pass computed three crossings per cut face to be
-    # read for two.
-    slot = wp.int32(2) * cut
-    out_new_verts[slot] = face_edge_crossing(vertices, faces, vertex_values, face_index, edge_0)
-    out_new_verts[slot + wp.int32(1)] = face_edge_crossing(
-        vertices, faces, vertex_values, face_index, edge_1
-    )
-    return vertex_base + slot, vertex_base + slot + wp.int32(1)
-
-
-@wp.kernel
-def emit_quad_cut(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    face_indices: wp.array[wp.int32],
-    face_signs: wp.array2d[wp.int32],
-    vertex_values: wp.array[wp.float32],
-    vertex_base: wp.int32,
-    out_new_verts: wp.array[wp.vec3],
-    out_new_faces: wp.array2d[wp.int32],
-) -> None:
-    tid = wp.int32(wp.tid())
-    face_index, base, s0, s1, s2 = cut_face_context(face_indices, face_signs, tid)
-    outside = find_corner_with_sign(s0, s1, s2, SLICE_SIGN_OUTSIDE)
-    inside_a = (outside + wp.int32(1)) % wp.int32(3)
-    inside_b = (outside + wp.int32(2)) % wp.int32(3)
-    v_a = faces[base + inside_a]
-    v_b = faces[base + inside_b]
-    edge_a = (outside + wp.int32(2)) % wp.int32(3)
-    edge_b = outside
-    new_i0, new_i1 = emit_cut_vertices(
-        vertices, faces, vertex_values, face_index, tid, edge_a, edge_b, vertex_base, out_new_verts
-    )
-    # The quad becomes two triangles, in the same pair of rows the two vertices went into.
-    row = wp.int32(2) * tid
-    out_new_faces[row, 0] = v_a
-    out_new_faces[row, 1] = v_b
-    out_new_faces[row, 2] = new_i0
-    out_new_faces[row + wp.int32(1), 0] = new_i0
-    out_new_faces[row + wp.int32(1), 1] = new_i1
-    out_new_faces[row + wp.int32(1), 2] = v_a
-
-
-@wp.kernel
-def emit_tri_cut(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    face_indices: wp.array[wp.int32],
-    face_signs: wp.array2d[wp.int32],
-    vertex_values: wp.array[wp.float32],
-    vertex_base: wp.int32,
-    out_new_verts: wp.array[wp.vec3],
-    out_new_faces: wp.array2d[wp.int32],
-) -> None:
-    tid = wp.int32(wp.tid())
-    face_index, base, s0, s1, s2 = cut_face_context(face_indices, face_signs, tid)
-    inside = find_corner_with_sign(s0, s1, s2, SLICE_SIGN_INSIDE)
-    v_inside = faces[base + inside]
-    corner_a = (inside + wp.int32(1)) % wp.int32(3)
-    corner_b = (inside + wp.int32(2)) % wp.int32(3)
-    edge_0 = inside
-    edge_1 = corner_b
-    new_i0, new_i1 = emit_cut_vertices(
-        vertices, faces, vertex_values, face_index, tid, edge_0, edge_1, vertex_base, out_new_verts
-    )
-    # The corner stays one triangle, so this kernel writes one face row per cut, not two.
-    out_new_faces[tid, 0] = v_inside
-    # ``classify_faces_for_slice`` routes both a genuine two-crossing cut (both neighbours
-    # strictly outside) and "one neighbour sits exactly on the level set" into this same class --
-    # they share ``signs_asum == 2`` and cannot be told apart there. An on-plane neighbour is not a
-    # real crossing: reuse its existing vertex directly rather than interpolating a near-duplicate a
-    # hair's breadth away from it. Whichever of ``new_i0`` / ``new_i1`` is unused in that case is
-    # simply left unreferenced -- the caller's ``remove_unreferenced_vertices`` sweeps it up, so no
-    # buffer accounting changes.
-    if face_signs[face_index, corner_a] == SLICE_SIGN_ON_PLANE:
-        out_new_faces[tid, 1] = faces[base + corner_a]
-        out_new_faces[tid, 2] = new_i1
-    elif face_signs[face_index, corner_b] == SLICE_SIGN_ON_PLANE:
-        out_new_faces[tid, 1] = new_i0
-        out_new_faces[tid, 2] = faces[base + corner_b]
-    else:
-        out_new_faces[tid, 1] = new_i0
-        out_new_faces[tid, 2] = new_i1
-
-
-# Face classes for the both-sides split. Numbered from 1 contiguously because
-# ``write_class_flags`` maps class ``c`` to block ``c - 1``; class 0 is "not selected", which this
-# taxonomy never needs since a split keeps every face.
-SPLIT_CLASS_POSITIVE = wp.constant(wp.int32(1))
-SPLIT_CLASS_NEGATIVE = wp.constant(wp.int32(2))
-SPLIT_CLASS_CUT_EDGES = wp.constant(wp.int32(3))
-SPLIT_CLASS_CUT_CORNER = wp.constant(wp.int32(4))
-SPLIT_CLASSES = 4
-
-
-@wp.kernel
-def classify_faces_for_split(
     faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
-    out_classes: wp.array[wp.int32],
-    out_signs: wp.array2d[wp.int32],
-    out_flags: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    f: wp.int32,
+    edge: wp.int32,
+    index: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+) -> wp.int32:
+    # Write the level set's crossing on edge ``edge`` of face ``f`` at output vertex ``index`` and
+    # return the index. Computed where the face is emitted rather than tabulated by a pass of its
+    # own: ``canonical_edge_crossing`` makes every evaluation of an edge bitwise equal.
+    out_vertices[index] = face_edge_crossing(
+        vertices, faces, vertex_dots, plane_normal, plane_origin, f, edge
+    )
+    return index
+
+
+@wp.kernel
+def emit_clip_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_dots: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    ranks: wp.array[wp.int32],
+    n_inside: wp.int32,
+    n_quad: wp.int32,
+    crossing_base: wp.int32,
+    compact: wp.bool,
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array2d[wp.int32],
 ) -> None:
+    # The whole clip output in one launch over ``max(n_faces, n_vertices)`` threads, from
+    # ``classify_clip_faces``' flags scanned in place: thread ``t`` writes input vertex ``t`` at its
+    # rank (``compact``) or at ``t``, and face ``t`` by its class -- an inside face at its rank, its
+    # corners renumbered; a quad cut as two triangles and a triangle cut as one after all inside
+    # faces, each with its crossing points after the input vertices (from ``crossing_base``), quads
+    # before triangles. Without ``compact`` every crossing is written and a triangle cut's corner
+    # on the level set leaves one unreferenced, for the cap's exact merge to compact.
+    # ``out_vertices`` is empty when the caller keeps the input buffer itself (the cap with
+    # nothing crossed).
+    t = wp.int32(wp.tid())
+    n_faces = faces.shape[0] // 3
+    vertex_block = CLIP_FLAG_BLOCKS * n_faces
+    if t < vertices.shape[0] and out_vertices.shape[0] > 0:
+        if compact:
+            slot, kept = kernel_array.scanned_count(ranks, vertex_block + t)
+            if kept != 0:
+                out_vertices[slot - ranks[vertex_block - 1]] = vertices[t]
+        else:
+            out_vertices[t] = vertices[t]
+    if t >= n_faces:
+        return
+    i0, i1, i2 = kernel_triangles.corner_triple(faces, t)
+    row, inside = kernel_array.scanned_count(ranks, t)
+    if inside != 0:
+        out_faces[row, 0] = clip_vertex_index(ranks, vertex_block, compact, i0)
+        out_faces[row, 1] = clip_vertex_index(ranks, vertex_block, compact, i1)
+        out_faces[row, 2] = clip_vertex_index(ranks, vertex_block, compact, i2)
+        return
+    base = t * wp.int32(3)
+    s0, s1, s2 = level_set_signs_at(vertices, faces, vertex_dots, plane_normal, plane_origin, t)
+    rank, quad = kernel_array.scanned_count(ranks, n_faces + t)
+    if quad != 0:
+        q = rank - ranks[n_faces - 1]
+        outside = find_corner_with_sign(s0, s1, s2, SLICE_SIGN_OUTSIDE)
+        corner_a = (outside + wp.int32(1)) % wp.int32(3)
+        corner_b = (outside + wp.int32(2)) % wp.int32(3)
+        v_a = clip_vertex_index(ranks, vertex_block, compact, faces[base + corner_a])
+        v_b = clip_vertex_index(ranks, vertex_block, compact, faces[base + corner_b])
+        slot = crossing_base + wp.int32(2) * q
+        new_0 = write_clip_crossing(
+            vertices,
+            faces,
+            vertex_dots,
+            plane_normal,
+            plane_origin,
+            t,
+            corner_b,
+            slot,
+            out_vertices,
+        )
+        new_1 = write_clip_crossing(
+            vertices,
+            faces,
+            vertex_dots,
+            plane_normal,
+            plane_origin,
+            t,
+            outside,
+            slot + wp.int32(1),
+            out_vertices,
+        )
+        # The quad becomes two triangles, in the same pair of rows its two points went into.
+        out_row = n_inside + wp.int32(2) * q
+        out_faces[out_row, 0] = v_a
+        out_faces[out_row, 1] = v_b
+        out_faces[out_row, 2] = new_0
+        out_faces[out_row + wp.int32(1), 0] = new_0
+        out_faces[out_row + wp.int32(1), 1] = new_1
+        out_faces[out_row + wp.int32(1), 2] = v_a
+        return
+    rank, tri = kernel_array.scanned_count(ranks, 2 * n_faces + t)
+    if tri == 0:
+        return
+    k = rank - ranks[2 * n_faces - 1]
+    start, _count = kernel_array.scanned_count(ranks, SLICE_CLASSES * n_faces + t)
+    slot = crossing_base + wp.int32(2) * n_quad + start - ranks[SLICE_CLASSES * n_faces - 1]
+    inside_corner = find_corner_with_sign(s0, s1, s2, SLICE_SIGN_INSIDE)
+    corner_b = (inside_corner + wp.int32(2)) % wp.int32(3)
+    level_corner = tri_cut_level_corner(s0, s1, s2)
+    # The corner stays one triangle, so a triangle cut writes one row. A corner on the level set is
+    # reused as it is, and the crossing on its edge is written only when every crossing is kept.
+    out_row = n_inside + wp.int32(2) * n_quad + k
+    out_faces[out_row, 0] = clip_vertex_index(
+        ranks, vertex_block, compact, faces[base + inside_corner]
+    )
+    if level_corner < wp.int32(0) or not compact:
+        new_0 = write_clip_crossing(
+            vertices,
+            faces,
+            vertex_dots,
+            plane_normal,
+            plane_origin,
+            t,
+            inside_corner,
+            slot,
+            out_vertices,
+        )
+        new_1 = write_clip_crossing(
+            vertices,
+            faces,
+            vertex_dots,
+            plane_normal,
+            plane_origin,
+            t,
+            corner_b,
+            slot + wp.int32(1),
+            out_vertices,
+        )
+        out_faces[out_row, 1] = new_0
+        out_faces[out_row, 2] = new_1
+        if level_corner == corner_b:
+            out_faces[out_row, 2] = faces[base + corner_b]
+        elif level_corner >= wp.int32(0):
+            out_faces[out_row, 1] = faces[base + level_corner]
+    elif level_corner == corner_b:
+        out_faces[out_row, 1] = write_clip_crossing(
+            vertices,
+            faces,
+            vertex_dots,
+            plane_normal,
+            plane_origin,
+            t,
+            inside_corner,
+            slot,
+            out_vertices,
+        )
+        out_faces[out_row, 2] = clip_vertex_index(
+            ranks, vertex_block, compact, faces[base + corner_b]
+        )
+    else:
+        out_faces[out_row, 1] = clip_vertex_index(
+            ranks, vertex_block, compact, faces[base + level_corner]
+        )
+        out_faces[out_row, 2] = write_clip_crossing(
+            vertices,
+            faces,
+            vertex_dots,
+            plane_normal,
+            plane_origin,
+            t,
+            corner_b,
+            slot,
+            out_vertices,
+        )
+
+
+# Face classes for the both-sides split, numbered as the components of the one-hot ``wp.vec4i``
+# each face's class is written as: one inclusive scan of those ranks every face within its class
+# and ends in the four class counts, adjacent, so a single read sizes everything.
+SPLIT_CLASS_POSITIVE = wp.constant(wp.int32(0))
+SPLIT_CLASS_NEGATIVE = wp.constant(wp.int32(1))
+SPLIT_CLASS_CUT_EDGES = wp.constant(wp.int32(2))
+SPLIT_CLASS_CUT_CORNER = wp.constant(wp.int32(3))
+
+
+@wp.func
+def split_face_class(s0: wp.int32, s1: wp.int32, s2: wp.int32) -> wp.int32:
     # Four classes rather than the clip's three, because a split keeps both sides and so has to
     # tell the two *uncut* sides apart -- and because a face with one corner exactly on the level
-    # set splits into two triangles, not three. The sign convention is ``face_level_set_signs``'.
-    f = wp.int32(wp.tid())
-    signs_sum, signs_asum = face_level_set_signs(faces, vertex_dots, f, out_signs)
+    # set splits into two triangles, not three. The signs are ``level_set_signs``'.
+    signs_sum = s0 + s1 + s2
+    signs_asum = wp.abs(s0) + wp.abs(s1) + wp.abs(s2)
     face_class = SPLIT_CLASS_CUT_CORNER
     if signs_sum == -signs_asum:
         # Every corner on the positive side, or all three exactly on the level set -- which counts
@@ -1049,27 +1184,47 @@ def classify_faces_for_split(
         face_class = SPLIT_CLASS_CUT_EDGES
     # Otherwise one corner is exactly on the level set and the other two on opposite sides: a
     # single edge crossing, joined to that corner -- the ``CUT_CORNER`` default above.
-    out_classes[f] = face_class
-    write_class_flags(face_class, f, faces.shape[0] // 3, SPLIT_CLASSES, out_flags)
+    return face_class
+
+
+@wp.kernel
+def classify_faces_for_split(
+    faces: wp.array[wp.int32], vertex_dots: wp.array[wp.float32], out_ranks: wp.array[wp.vec4i]
+) -> None:
+    # Each face's class as a one-hot ``wp.vec4i``, which the caller scans in place: the scan is the
+    # whole partition (``split_face_rank``), with no index compaction and no counts pass.
+    f = wp.int32(wp.tid())
+    s0, s1, s2 = level_set_signs(faces, vertex_dots, f)
+    one_hot = wp.vec4i(0, 0, 0, 0)
+    one_hot[split_face_class(s0, s1, s2)] = 1
+    out_ranks[f] = one_hot
 
 
 @wp.func
-def emit_split_uncut_face(
-    faces: wp.array[wp.int32],
-    uncut_indices: wp.array[wp.int32],
-    n_positive: wp.int32,
-    k: wp.int32,
-    out_new_faces: wp.array2d[wp.int32],
-    out_positive: wp.array[wp.bool],
-) -> None:
-    # A face no cut touches, copied through with its side label. ``uncut_indices`` is the
-    # partition's index buffer, whose first two blocks are the positive and then the negative
-    # faces, so row ``k`` belongs to the positive side exactly when ``k < n_positive``.
-    i0, i1, i2 = kernel_triangles.corner_triple(faces, uncut_indices[k])
-    out_new_faces[k, 0] = i0
-    out_new_faces[k, 1] = i1
-    out_new_faces[k, 2] = i2
-    out_positive[k] = k < n_positive
+def split_face_rank(ranks: wp.array[wp.vec4i], f: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # Face ``f``'s class and its rank within the class, read off the scanned one-hot classes: the
+    # component that steps at ``f`` is the class, and its value before the step the rank.
+    current = ranks[f]
+    previous = wp.vec4i(0, 0, 0, 0)
+    if f > 0:
+        previous = ranks[f - 1]
+    face_class = wp.int32(0)
+    for c in range(4):
+        if current[c] != previous[c]:
+            face_class = wp.int32(c)
+    return face_class, previous[face_class]
+
+
+@wp.func
+def split_cut_slot(face_class: wp.int32, rank: wp.int32, n_edges: wp.int32) -> wp.int32:
+    # A cut face's slot among the cut faces -- the edge cuts, then the corner cuts, each ascending
+    # -- or -1 for an uncut face.
+    slot = wp.int32(-1)
+    if face_class == SPLIT_CLASS_CUT_EDGES:
+        slot = rank
+    elif face_class == SPLIT_CLASS_CUT_CORNER:
+        slot = n_edges + rank
+    return slot
 
 
 @wp.func
@@ -1082,8 +1237,9 @@ def unique_edge_order_key(a: wp.int64, b: wp.int64, base: wp.int64) -> wp.int64:
 @wp.kernel
 def split_crossed_halfedge_keys(
     faces: wp.array[wp.int32],
-    cut_indices: wp.array[wp.int32],
-    face_signs: wp.array2d[wp.int32],
+    vertex_dots: wp.array[wp.float32],
+    ranks: wp.array[wp.vec4i],
+    n_edges: wp.int32,
     key_base: wp.int64,
     out_keys: wp.array[wp.int64],
     out_halfedges: wp.array[wp.int32],
@@ -1093,13 +1249,19 @@ def split_crossed_halfedge_keys(
     # ``key_base ** 2``, above every edge key. Written straight into a radix sort's double-width
     # buffer with the cut-local halfedge ``3 j + k`` as payload, so equal keys -- the two faces
     # sharing a crossed edge -- land next to each other, in the order a mesh-wide unique-edge
-    # table lists the edges.
-    j, k = wp.tid()
-    face_index = cut_indices[j]
+    # table lists the edges. Launched over every face, ``(n_faces, 3)``: an uncut face returns,
+    # and cut face ``j`` (``split_cut_slot``) writes its three halfedges at ``3 j``.
+    face_index, k = wp.tid()
+    face_class, rank = split_face_rank(ranks, face_index)
+    j = split_cut_slot(face_class, rank, n_edges)
+    if j < 0:
+        return
     a = faces[3 * face_index + k]
     b = faces[3 * face_index + (k + 1) % 3]
     key = key_base * key_base
-    if face_signs[face_index, k] * face_signs[face_index, (k + 1) % 3] < 0:
+    s0, s1, s2 = level_set_signs(faces, vertex_dots, face_index)
+    signs = wp.vec3i(s0, s1, s2)
+    if signs[k] * signs[(k + 1) % 3] < 0:
         key = unique_edge_order_key(wp.int64(a), wp.int64(b), key_base)
     out_keys[3 * j + k] = key
     out_halfedges[3 * j + k] = 3 * j + k
@@ -1153,10 +1315,11 @@ def split_crossed_edge_vertices(
 @wp.func
 def emit_split_cut_edges(
     faces: wp.array[wp.int32],
-    face_indices: wp.array[wp.int32],
-    face_signs: wp.array2d[wp.int32],
+    face_index: wp.int32,
+    s0: wp.int32,
+    s1: wp.int32,
+    s2: wp.int32,
     cut_vertices: wp.array[wp.int32],
-    tid: wp.int32,
     cut: wp.int32,
     row: wp.int32,
     out_new_faces: wp.array2d[wp.int32],
@@ -1165,9 +1328,10 @@ def emit_split_cut_edges(
     # The generic cut: the level set enters through one edge and leaves through another, so the face
     # becomes a corner triangle plus a quad -- three triangles sharing the two crossing vertices.
     # Windings match ``emit_tri_cut`` and ``emit_quad_cut``, which emit these same triangles one
-    # side at a time; the difference is that both sides are kept here. ``tid`` is the face's slot
-    # in the partition, ``cut`` its rank among the cut faces and ``row`` its first output row.
-    face_index, base, s0, s1, s2 = cut_face_context(face_indices, face_signs, tid)
+    # side at a time; the difference is that both sides are kept here. ``cut`` is the face's rank
+    # among the cut faces and ``row`` its first output row.
+    base = face_index * wp.int32(3)
+    signs = wp.vec3i(s0, s1, s2)
     lone = find_unique_sign_vertex(s0, s1, s2)
     next_corner = (lone + wp.int32(1)) % wp.int32(3)
     last_corner = (lone + wp.int32(2)) % wp.int32(3)
@@ -1189,7 +1353,7 @@ def emit_split_cut_edges(
     out_new_faces[row + wp.int32(2), 1] = p0
     out_new_faces[row + wp.int32(2), 2] = v_next
 
-    lone_is_positive = face_signs[face_index, lone] == SLICE_SIGN_INSIDE
+    lone_is_positive = signs[lone] == SLICE_SIGN_INSIDE
     out_positive[row] = lone_is_positive
     out_positive[row + wp.int32(1)] = not lone_is_positive
     out_positive[row + wp.int32(2)] = not lone_is_positive
@@ -1198,10 +1362,11 @@ def emit_split_cut_edges(
 @wp.func
 def emit_split_cut_corner(
     faces: wp.array[wp.int32],
-    face_indices: wp.array[wp.int32],
-    face_signs: wp.array2d[wp.int32],
+    face_index: wp.int32,
+    s0: wp.int32,
+    s1: wp.int32,
+    s2: wp.int32,
     cut_vertices: wp.array[wp.int32],
-    tid: wp.int32,
     cut: wp.int32,
     row: wp.int32,
     out_new_faces: wp.array2d[wp.int32],
@@ -1210,7 +1375,8 @@ def emit_split_cut_corner(
     # One corner sits exactly on the level set, so the cut runs from it to the single crossing on
     # the opposite edge: two triangles, no quad. Emitting three the other kernel's way would put a
     # zero-area sliver in the output, which is the only reason this class exists separately.
-    face_index, base, s0, s1, s2 = cut_face_context(face_indices, face_signs, tid)
+    base = face_index * wp.int32(3)
+    signs = wp.vec3i(s0, s1, s2)
     # Exactly one of the three corners is on the level set here, which is the precondition
     # ``find_corner_with_sign`` states: it tests corners 0 and 1 and falls through to 2, which
     # agrees with the by-elimination chain this replaces on every input that satisfies it. One
@@ -1226,15 +1392,15 @@ def emit_split_cut_corner(
     out_new_faces[row + wp.int32(1), 0] = faces[base + on_level]
     out_new_faces[row + wp.int32(1), 1] = crossing
     out_new_faces[row + wp.int32(1), 2] = faces[base + last_corner]
-    out_positive[row] = face_signs[face_index, next_corner] == SLICE_SIGN_INSIDE
-    out_positive[row + wp.int32(1)] = face_signs[face_index, last_corner] == SLICE_SIGN_INSIDE
+    out_positive[row] = signs[next_corner] == SLICE_SIGN_INSIDE
+    out_positive[row + wp.int32(1)] = signs[last_corner] == SLICE_SIGN_INSIDE
 
 
 @wp.kernel
 def emit_split_faces(
     faces: wp.array[wp.int32],
-    class_indices: wp.array[wp.int32],
-    face_signs: wp.array2d[wp.int32],
+    vertex_dots: wp.array[wp.float32],
+    ranks: wp.array[wp.vec4i],
     cut_vertices: wp.array[wp.int32],
     n_positive: wp.int32,
     n_uncut: wp.int32,
@@ -1242,40 +1408,37 @@ def emit_split_faces(
     out_new_faces: wp.array2d[wp.int32],
     out_positive: wp.array[wp.bool],
 ) -> None:
-    # Every face's output rows in one launch, one thread per partition slot. The partition lists
-    # the uncut faces (positive, then negative), then the edge cuts, then the corner cuts, and the
-    # output rows follow the same order -- one row per uncut face, three per edge cut, two per
-    # corner cut -- so each class's rows start where the previous class's end, and cut face ``j``'s
-    # crossing vertices sit at ``3 j``. Replaces one launch per class and the views they took.
-    k = wp.int32(wp.tid())
-    if k < n_uncut:
-        emit_split_uncut_face(faces, class_indices, n_positive, k, out_new_faces, out_positive)
+    # Every face's output rows in one launch, one thread per face, placed by its class and rank
+    # (``split_face_rank``): the uncut faces (positive, then negative) one row each, then the edge
+    # cuts three rows each, then the corner cuts two, so each class's rows start where the previous
+    # class's end, and cut face ``j``'s crossing vertices sit at ``3 j``. Without crossed edges
+    # (``n_uncut`` the face count) it writes the side labels alone, the faces being unchanged.
+    f = wp.int32(wp.tid())
+    face_class, rank = split_face_rank(ranks, f)
+    if face_class == SPLIT_CLASS_POSITIVE or face_class == SPLIT_CLASS_NEGATIVE:
+        row = rank
+        if face_class == SPLIT_CLASS_NEGATIVE:
+            row = n_positive + rank
+        if out_new_faces.shape[0] == 0:
+            out_positive[f] = face_class == SPLIT_CLASS_POSITIVE
+            return
+        i0, i1, i2 = kernel_triangles.corner_triple(faces, f)
+        out_new_faces[row, 0] = i0
+        out_new_faces[row, 1] = i1
+        out_new_faces[row, 2] = i2
+        out_positive[row] = face_class == SPLIT_CLASS_POSITIVE
         return
-    cut = k - n_uncut
-    if cut < n_edges:
+    s0, s1, s2 = level_set_signs(faces, vertex_dots, f)
+    if face_class == SPLIT_CLASS_CUT_EDGES:
         emit_split_cut_edges(
-            faces,
-            class_indices,
-            face_signs,
-            cut_vertices,
-            k,
-            cut,
-            n_uncut + 3 * cut,
-            out_new_faces,
+            faces, f, s0, s1, s2, cut_vertices, rank, n_uncut + 3 * rank, out_new_faces,
             out_positive,
-        )
+        )  # fmt: skip
         return
     emit_split_cut_corner(
-        faces,
-        class_indices,
-        face_signs,
-        cut_vertices,
-        k,
-        cut,
-        n_uncut + 3 * n_edges + 2 * (cut - n_edges),
-        out_new_faces,
-        out_positive,
-    )
+        faces, f, s0, s1, s2, cut_vertices, n_edges + rank,
+        n_uncut + 3 * n_edges + 2 * rank, out_new_faces, out_positive,
+    )  # fmt: skip
 
 
 @wp.func
@@ -1884,12 +2047,6 @@ _register_overloads()
 def shift_to_float32(value: wp.float64, isovalue: wp.float64) -> wp.float32:
     """Re-zero a ``float64`` field value at ``isovalue`` in its own precision, then narrow it."""
     return wp.float32(value - isovalue)
-
-
-@wp.func
-def is_positive_split_class(face_class: wp.int32) -> wp.bool:
-    """Side label for an *uncut* face, so the no-crossing path needs no second classifier."""
-    return face_class == SPLIT_CLASS_POSITIVE
 
 
 def _declare_map_kernels() -> None:

@@ -178,17 +178,26 @@ def compact_submesh(
     face_mask: wp.array[wp.bool],
     keep_masked: wp.bool,
     ranks: wp.array[wp.int32],
+    key_base: wp.uint64,
     out_faces: wp.array[wp.int32],
     out_vertices: wp.array[wp.vec3],
     out_vertex_index: wp.array[wp.int32],
+    out_dropped_keys: wp.array[wp.uint64],
 ) -> None:
     # Both halves of the extraction in one launch over ``max(n_faces, n_vertices)`` threads: thread
     # ``t`` compacts face ``t`` and vertex ``t`` where each exists. The two halves read the same
     # finished scan and write disjoint outputs, so nothing orders them.
     # ``out_vertex_index`` is optional (``None``), as in ``compact_indexed_submesh``.
+    #
+    # ``out_dropped_keys`` is optional too: when passed, a face that is *not* kept writes its three
+    # undirected edge keys (against ``key_base``) at three times its rank among the dropped faces
+    # -- ``t - ranks[t]`` of them precede it -- the dropped region's edge table
+    # ``delete_region_keep_boundary`` sorts, written where the faces are visited anyway.
     t = wp.int32(wp.tid())
     n_faces = face_mask.shape[0]
     offset = ranks[n_faces - 1] + 1
+    if t < n_faces and face_mask[t] != keep_masked and out_dropped_keys.shape[0] > 0:
+        write_face_edge_keys(faces, t, 3 * (t - ranks[t]), key_base, out_dropped_keys)
     if t < n_faces and face_mask[t] == keep_masked:
         # A kept face lands at its rank, its corners at their vertices' ranks.
         a, b, c = corner_triple(faces, t)
@@ -583,25 +592,6 @@ def hook_dual(
     _along_contour, twin = open_dual_twin(faces, twins, contour_keys_sorted, base, h)
     if twin >= 0:
         ecl_hook_pair(parents, h // 3, twin // 3)
-
-
-@wp.kernel
-def deleted_face_edge_keys(
-    faces: wp.array[wp.int32],
-    face_mask: wp.array[wp.bool],
-    kept_ranks: wp.array[wp.int32],
-    base: wp.uint64,
-    out_keys: wp.array[wp.uint64],
-) -> None:
-    # The undirected edge keys of the *masked* faces only, three per face at the face's compact
-    # rank among the masked faces, so the deleted region's edge table costs three keys per deleted
-    # face rather than per mesh face. ``kept_ranks`` is the inclusive scan of the *unmasked* faces
-    # (the submesh extraction's face half), so a masked face has ``f - kept_ranks[f]`` masked
-    # faces before it.
-    f = wp.int32(wp.tid())
-    if not face_mask[f]:
-        return
-    write_face_edge_keys(faces, f, 3 * (f - kept_ranks[f]), base, out_keys)
 
 
 @wp.kernel

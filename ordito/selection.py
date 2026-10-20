@@ -988,8 +988,11 @@ def _delete_region_loops(
             f"face_mask must have one entry per face, got {face_mask.size} for {n_faces}"
         )
 
-    kept_vertices, kept_faces, vertex_index, kept_ranks = _submesh_from_mask(
-        vertices, faces, face_mask, keep_masked=False
+    # The extraction also writes the deleted faces' edge keys (the classification below sorts them)
+    # into the leading half of a radix sort's double-width scratch, in the pass that visits them.
+    base = wp.uint64(vertices.size)
+    kept_vertices, kept_faces, vertex_index, key_buffer = _submesh_from_mask(
+        vertices, faces, face_mask, keep_masked=False, dropped_key_base=base
     )
 
     def no_loops() -> tuple[
@@ -1026,21 +1029,8 @@ def _delete_region_loops(
     #
     # Done on the host this was a readback per loop plus a Python membership test per rim edge, so
     # its cost grew with the *loop count* as much as with the mesh.
-    n_kept = kept_faces.size // 3
-    # The deleted count is the face count's complement, and a deleted face's rank among the
-    # deleted ones follows from the extraction's kept-face ranks, so the region needs neither a
-    # readback nor a scan of its own.
-    base = wp.uint64(vertices.size)
-    n_deleted_keys = 3 * (n_faces - n_kept)
-    # The keys are written into the leading half of the radix sort's double-width scratch, and the
-    # payload is never read, so neither is seeded: only the sorted keys are wanted.
-    key_buffer = _launch.empty(2 * n_deleted_keys, dtype=wp.uint64, device=device)
-    _launch.launch(
-        kernel_selection.deleted_face_edge_keys,
-        dim=n_faces,
-        inputs=[faces, face_mask, kept_ranks, base, key_buffer],
-        device=device,
-    )
+    assert key_buffer is not None
+    n_deleted_keys = 3 * (n_faces - kept_faces.size // 3)
     payload = _launch.empty(2 * n_deleted_keys, dtype=wp.int32, device=device)
     # A key is ``min + max * n_vertices``, below ``n_vertices ** 2``: only those bits are sorted.
     n_vertices = vertices.size
@@ -1093,23 +1083,26 @@ def _submesh_from_mask(
     *,
     keep_masked: bool,
     with_index: bool = True,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    dropped_key_base: wp.uint64 | None = None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.uint64] | None]:
     """
     Extract the faces whose mask entry equals ``keep_masked``, reindexed from zero.
 
-    Returns ``(sub_vertices, sub_faces, vertex_index, ranks)``, the first three as
-    [`submesh_from_face_indices`][ordito.selection.submesh_from_face_indices] returns them, and
-    ``ranks`` the ``(n_faces + n_vertices,)`` inclusive scan whose leading ``n_faces`` entries rank
-    the kept faces. One scan orders the kept faces and the vertices they reference, and a single
-    two-value readback sizes both outputs. Without ``with_index`` the ``vertex_index`` returned is
-    empty and none is written.
+    Returns ``(sub_vertices, sub_faces, vertex_index, dropped_keys)``, the first three as
+    [`submesh_from_face_indices`][ordito.selection.submesh_from_face_indices] returns them. One
+    scan orders the kept faces and the vertices they reference, and a single two-value readback
+    sizes both outputs. Without ``with_index`` the ``vertex_index`` returned is empty and none is
+    written. With ``dropped_key_base``, ``dropped_keys`` is a ``(6 * n_dropped,)`` buffer whose
+    first half holds the dropped faces' undirected edge keys, three a face in face order -- a
+    radix sort's double-width scratch -- written by the compaction itself; it is ``None`` without
+    it, or when no face is kept or none dropped.
     """
     device = vertices.device
     n_faces = face_mask.size
     n_vertices = vertices.size
     if n_faces == 0:
         empty_index = _launch.empty(0, dtype=wp.int32, device=device)
-        return _launch.empty(0, dtype=wp.vec3, device=device), empty_index, empty_index, empty_index
+        return _launch.empty(0, dtype=wp.vec3, device=device), empty_index, empty_index, None
 
     ranks = _launch.zeros(n_faces + n_vertices, dtype=wp.int32, device=device)
     _launch.launch(
@@ -1118,61 +1111,9 @@ def _submesh_from_mask(
         inputs=[faces, face_mask, keep_masked, ranks],
         device=device,
     )
-    return _compact_marked_submesh(
-        vertices, faces, face_mask, ranks, keep_masked=keep_masked, with_index=with_index
+    return _compact_submesh_core(
+        vertices, faces, face_mask, ranks, keep_masked, with_index, dropped_key_base
     )
-
-
-def _compact_marked_submesh(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    face_mask: wp.array[wp.bool],
-    ranks: wp.array[wp.int32],
-    *,
-    keep_masked: bool,
-    with_index: bool = True,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
-    """
-    Scan, size and compact a submesh whose rank buffer is already marked.
-
-    The second half of ``_submesh_from_mask``, for a caller
-    whose own kernel wrote the face mask and the ``(n_faces + n_vertices,)`` 0/1 flags (with
-    ``kernels/selection.mark_submesh_face``) in the pass that decided them. Returns what
-    ``_submesh_from_mask`` returns, ``with_index`` included; ``n_faces`` must be positive.
-    """
-    device = vertices.device
-    n_faces = face_mask.size
-    n_vertices = vertices.size
-    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
-    counts = _launch.empty(2, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_selection.submesh_counts, dim=1, inputs=[ranks, n_faces, counts], device=device
-    )
-    # One readback sizes both outputs.
-    n_kept_faces, n_kept_vertices = read_values(counts, 0, 2)
-
-    sub_vertices = _launch.empty(n_kept_vertices, dtype=wp.vec3, device=device)
-    sub_faces = _launch.empty(3 * n_kept_faces, dtype=wp.int32, device=device)
-    vertex_index = _launch.empty(
-        n_kept_vertices if with_index else 0, dtype=wp.int32, device=device
-    )
-    if n_kept_faces > 0:
-        _launch.launch(
-            kernel_selection.compact_submesh,
-            dim=max(n_faces, n_vertices),
-            inputs=[
-                vertices,
-                faces,
-                face_mask,
-                keep_masked,
-                ranks,
-                sub_faces,
-                sub_vertices,
-                vertex_index if with_index else None,
-            ],
-            device=device,
-        )
-    return sub_vertices, sub_faces, vertex_index, ranks
 
 
 def submesh_from_vertex_indices(
@@ -1353,6 +1294,79 @@ def _submesh_from_vertex_mask(
         vertices, faces, face_mask, ranks, keep_masked=True, with_index=False
     )
     return sub_vertices, sub_faces
+
+
+def _compact_marked_submesh(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    ranks: wp.array[wp.int32],
+    *,
+    keep_masked: bool,
+    with_index: bool = True,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Scan, size and compact a submesh whose rank buffer is already marked.
+
+    The second half of ``_submesh_from_mask``, for a caller
+    whose own kernel wrote the face mask and the ``(n_faces + n_vertices,)`` 0/1 flags (with
+    ``kernels/selection.mark_submesh_face``) in the pass that decided them. Returns what
+    ``_submesh_from_mask`` returns, ``with_index`` included; ``n_faces`` must be positive.
+    """
+    sub_vertices, sub_faces, vertex_index, _ = _compact_submesh_core(
+        vertices, faces, face_mask, ranks, keep_masked, with_index, None
+    )
+    return sub_vertices, sub_faces, vertex_index, ranks
+
+
+def _compact_submesh_core(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    ranks: wp.array[wp.int32],
+    keep_masked: bool,
+    with_index: bool,
+    dropped_key_base: wp.uint64 | None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.uint64] | None]:
+    """``_compact_marked_submesh``'s body, returning ``_submesh_from_mask``'s four values."""
+    device = vertices.device
+    n_faces = face_mask.size
+    n_vertices = vertices.size
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    counts = _launch.empty(2, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_selection.submesh_counts, dim=1, inputs=[ranks, n_faces, counts], device=device
+    )
+    # One readback sizes both outputs.
+    n_kept_faces, n_kept_vertices = read_values(counts, 0, 2)
+
+    sub_vertices = _launch.empty(n_kept_vertices, dtype=wp.vec3, device=device)
+    sub_faces = _launch.empty(3 * n_kept_faces, dtype=wp.int32, device=device)
+    vertex_index = _launch.empty(
+        n_kept_vertices if with_index else 0, dtype=wp.int32, device=device
+    )
+    dropped_keys = None
+    if dropped_key_base is not None and 0 < n_kept_faces < n_faces:
+        dropped_keys = _launch.empty(6 * (n_faces - n_kept_faces), dtype=wp.uint64, device=device)
+    if n_kept_faces > 0:
+        _launch.launch(
+            kernel_selection.compact_submesh,
+            dim=max(n_faces, n_vertices),
+            inputs=[
+                vertices,
+                faces,
+                face_mask,
+                keep_masked,
+                ranks,
+                wp.uint64(0) if dropped_key_base is None else dropped_key_base,
+                sub_faces,
+                sub_vertices,
+                vertex_index if with_index else None,
+                dropped_keys,
+            ],
+            device=device,
+        )
+    return sub_vertices, sub_faces, vertex_index, dropped_keys
 
 
 def expand_vertex_mask(

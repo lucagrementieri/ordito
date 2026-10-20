@@ -773,17 +773,29 @@ def polyline_downsample(
     # (``kernels/polyline.seam_repeats_first``) -- the closure is decided on the device.
     cumulative = _arc_length_table(polyline, closed=closed)
     n_table = cumulative.size
-    keep = _launch.zeros(n_table, dtype=wp.int32, device=device)
     if wp.get_device(device).is_cuda and n_table >= _DOWNSAMPLE_DOUBLING_FROM:
+        keep = _launch.zeros(n_table, dtype=wp.int32, device=device)
         _greedy_downsample_doubling(cumulative, step_size, polyline, closed, keep)
-    else:
-        _launch.launch(
-            kernel_polyline.greedy_downsample_mask,
-            dim=1,
-            inputs=[cumulative, wp.float32(step_size), polyline, wp.int32(closed), keep],
-            device=device,
-        )
-    out_points, _ = _gather_kept(keep, polyline, return_indices=False)
+        out_points, _ = _gather_kept(keep, polyline, return_indices=False)
+        return out_points
+    # The serial walk writes the kept points' indices compacted as it goes, behind their count, so
+    # the gather reads them as they are.
+    indices = _launch.empty(n_table + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_polyline.greedy_downsample_indices,
+        dim=1,
+        inputs=[cumulative, wp.float32(step_size), polyline, wp.int32(closed), indices],
+        device=device,
+    )
+    # Sizes the output: the one host readback.
+    n_kept = int(read_scalar(indices, 0))
+    out_points = _launch.empty(n_kept, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_polyline.gather_walked_points,
+        dim=n_kept,
+        inputs=[polyline, indices, out_points],
+        device=device,
+    )
     return out_points
 
 
@@ -923,20 +935,23 @@ def polyline_simplify(
     ):
         # The whole round loop as one block (``kernels/polyline.rdp_simplify_block``): at this size
         # a round is too little work to fill the device, and the launch form's cost is the
-        # conditional graph it records on every call.
+        # conditional graph it records on every call. The block also compacts what it kept: the
+        # indices into the span table's first row, the points into a buffer as long as the input,
+        # and the count after them, so the results are prefixes of the two.
         spans = odt.empty_2d((4, n_entries), wp.int32, device=device)
         span_values = odt.empty_2d((2, n_entries), wp.float32, device=device)
+        points = _launch.empty(n_entries, dtype=wp.vec3, device=device)
         _launch.launch_tiled(
             kernel_polyline.rdp_simplify_block,
             dim=[1],
             inputs=[polyline, wp.int32(wrap_open), squared_tolerance],
-            outputs=[spans, span_values],
+            outputs=[spans, span_values, points],
             block_dim=kernel_polyline.RDP_BLOCK_DIM,
             device=device,
         )
-        simplified, indices = _gather_kept(odt.as_dense(spans[3]), polyline, return_indices=True)
-        assert indices is not None
-        return simplified, indices
+        # Sizes the output: the one host readback.
+        n_kept = int(read_scalar(odt.as_dense(spans[1]), 0))
+        return (odt.as_dense(points[:n_kept]), odt.as_dense(odt.as_dense(spans[0])[:n_kept]))
     span_lo = _launch.empty(n_entries, dtype=wp.int32, device=device)
     span_hi = _launch.empty(n_entries, dtype=wp.int32, device=device)
     keep = _launch.empty(n_entries, dtype=wp.int32, device=device)
@@ -1229,11 +1244,35 @@ def polyline_radius(
     # one, and a ``closed=True`` loop ends at its first point by construction.
     if normal is None and n_segments == 2 and (closed or is_closed(polyline)):
         raise ValueError("polyline_normal requires at least three points")
+    # The midpoint sums only for a defaulted centre, the Newell sum only for a defaulted normal.
+    n_open = n - 1 if center is None else 0
+    wrap_open = int(closed) if center is None else 0
+    blocks = kernel_reduce.blocks_1d(n)
+    if reduction != "median" and blocks == 1:
+        # A polyline one block covers: the frame and the reduction in that one block
+        # (``kernels/polyline.radius_reduce_block``), the same sums as the two launches below.
+        result = _launch.empty(2, dtype=wp.float32, device=device)
+        _launch.launch_tiled(
+            kernel_polyline.radius_reduce_block,
+            dim=1,
+            inputs=[
+                polyline,
+                wp.int32(n_open),
+                wp.int32(wrap_open),
+                wp.vec3() if center is None else center,
+                wp.vec3() if normal is None else normal,
+                wp.int32(1 if center is None else 0),
+                wp.int32(1 if normal is None else 0),
+                wp.int32(closed),
+                _RADIUS_REDUCTIONS[reduction][0],
+                result,
+            ],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        return _radius_result(result, reduction)
     frame = None
     if center is None or normal is None:
-        # The midpoint sums only for a defaulted centre, the Newell sum only for a defaulted normal.
-        n_open = n - 1 if center is None else 0
-        wrap_open = int(closed) if center is None else 0
         frame = _accumulate_frame(polyline, n_open, wrap_open, with_normal=normal is None)
     plane = [
         polyline,
@@ -1257,7 +1296,6 @@ def polyline_radius(
     # (``kernels/polyline.radius_reduce``): no distance buffer, no reduction launch over it, and one
     # readback of the value and, for the mean, the segment count the kernel decided.
     kind, identity = _RADIUS_REDUCTIONS[reduction]
-    blocks = kernel_reduce.blocks_1d(n)
     stride = 0
     if reduction == "mean":
         # The sum and the segment count as fixed-order partials, so the mean repeats on CUDA.
@@ -1271,6 +1309,11 @@ def polyline_radius(
         block_dim=TILE_1D,
         device=device,
     )
+    return _radius_result(result, reduction)
+
+
+def _radius_result(result: wp.array[wp.float32], reduction: str) -> float:
+    """Read ``polyline_radius``'s folded answer: the value, or the mean from its sum and count."""
     if reduction != "mean":
         return float(read_scalar(result, 0))
     total, count = read_values(result, 0, 2)

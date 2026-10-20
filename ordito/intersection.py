@@ -1505,12 +1505,10 @@ def slice_mesh_with_plane(
     vertices.
 
     Every face falls into exactly one of three kept classes — wholly inside, cut into a quad, cut
-    into a triangle — and the three are compacted by a *single* scan over one blocked flag buffer,
-    so the call makes one host readback (the three class counts) rather than one per class. Those
-    counts then size the output buffers for their final use, and the two cut kernels write their
-    triangles and their intersection points straight into them, so nothing is concatenated
-    afterwards. The cost barely tracks the face count, since the plane still meets only
-    ``O(sqrt(n_faces))`` triangles.
+    into a triangle — and the classes, the crossing points and the vertices the kept faces
+    reference are all ranked by a *single* scan, so the call makes one host readback (the counts
+    that size the output) and writes the compacted mesh in one pass, with nothing concatenated or
+    compacted afterwards.
 
     See Also
     --------
@@ -1546,11 +1544,12 @@ def slice_mesh_with_plane(
             0, dtype=wp.int32, device=device
         )
 
+    # No field: the kernels form each vertex's plane dot where they read it.
     return _clip_with_vertex_field(
         vertices,
         faces,
-        _plane_dots(vertices, plane_normal, plane_origin),
-        plane_normal=plane_normal,
+        _launch.empty(0, dtype=wp.float32, device=device),
+        plane=(plane_normal, plane_origin),
     )
 
 
@@ -2185,38 +2184,52 @@ def _plane_dots(
 def _split_with_vertex_field(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], vertex_dots: wp.array[wp.float32]
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
-    """Cut along ``vertex_dots == 0``, keeping both sides; the engine behind the public split."""
+    """
+    Cut along ``vertex_dots == 0``, keeping both sides; the engine behind the public split.
+
+    Each face's class is a one-hot ``wp.vec4i`` scanned in place, which ranks every face within
+    its class and ends in the four class counts, read together; every later launch runs over the
+    faces and places each by its class and rank, so no index partition is built.
+    """
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
 
-    face_classes = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    face_signs = odt.empty_2d((n_faces, 3), wp.int32, device=device)
-    class_flags = _launch.empty(
-        kernel_intersections.SPLIT_CLASSES * n_faces, dtype=wp.int32, device=device
-    )
+    ranks = _launch.empty(n_faces, dtype=wp.vec4i, device=device)
     _launch.launch(
         kernel_intersections.classify_faces_for_split,
         dim=n_faces,
-        inputs=[faces, vertex_dots, face_classes, face_signs, class_flags],
+        inputs=[faces, vertex_dots, ranks],
         device=device,
     )
-    # The one emit launch reads the partition's index buffer whole, so no per-class view is built.
-    _, counts, class_indices = _slice_class_partition(
-        class_flags, n_faces, kernel_intersections.SPLIT_CLASSES, views=False
-    )
-    n_positive, n_negative, n_edges, n_corner = counts
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    # The class counts size every buffer downstream: one readback.
+    n_positive, n_negative, n_edges, n_corner = (int(c) for c in read_scalar(ranks))
     if n_edges + n_corner == 0:
         # Nothing crossed, so the mesh is untouched and only the side labels are new.
         positive = _launch.empty(n_faces, dtype=wp.bool, device=device)
-        _launch.map(kernel_intersections.is_positive_split_class, face_classes, out=positive)
+        _launch.launch(
+            kernel_intersections.emit_split_faces,
+            dim=n_faces,
+            inputs=[
+                faces,
+                vertex_dots,
+                ranks,
+                None,
+                n_positive,
+                n_faces,
+                0,
+                odt.empty_2d((0, 3), wp.int32, device=device),
+                positive,
+            ],
+            device=device,
+        )
         return _launch.clone(vertices), _launch.clone(faces), positive
 
     # One new vertex per crossed *edge*: both faces sharing it address the same index, which is
     # what makes the cut watertight rather than a seam of coincident pairs. Only a cut face has a
     # crossed edge, so the edges are numbered by sorting the cut faces' crossed halfedges alone --
-    # in the order ``edges.edges_unique`` would list them -- and the crossing test reads the
-    # classifier's own corner signs.
+    # in the order ``edges.edges_unique`` would list them.
     n_uncut = n_positive + n_negative
     n_cut = n_edges + n_corner
     n_emitted = n_uncut + 3 * n_edges + 2 * n_corner
@@ -2226,8 +2239,8 @@ def _split_with_vertex_field(
     halfedges = _launch.empty(2 * n_halfedges, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_intersections.split_crossed_halfedge_keys,
-        dim=(n_cut, 3),
-        inputs=[faces, class_indices[n_uncut:], face_signs, key_base, keys, halfedges],
+        dim=(n_faces, 3),
+        inputs=[faces, vertex_dots, ranks, n_edges, key_base, keys, halfedges],
         device=device,
     )
     # Every key is below ``n_vertices ** 2`` or the not-crossed marker equal to it.
@@ -2269,8 +2282,8 @@ def _split_with_vertex_field(
         dim=n_faces,
         inputs=[
             faces,
-            class_indices,
-            face_signs,
+            vertex_dots,
+            ranks,
             cut_vertices,
             wp.int32(n_positive),
             wp.int32(n_uncut),
@@ -2288,16 +2301,17 @@ def _clip_with_vertex_field(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
-    plane_normal: wp.vec3 | None = None,
+    plane: tuple[wp.vec3, wp.vec3] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Keep the ``vertex_dots >= 0`` region, the engine behind both public clippers.
 
-    ``plane_normal`` is the plane clip's tie-break for a face lying in the level set, and its
-    presence is the *only* difference between the two: a general field has no orientation to
-    compare, so such a face is left in the ``ON_PLANE`` class, which no kept block claims.
+    ``plane`` is the plane clip's ``(normal, origin)``: the field is then its signed distance,
+    formed in the kernels where an empty ``vertex_dots`` leaves it to them, and the normal is the
+    tie-break for a face lying in the level set -- the *only* other difference between the two: a
+    general field has no orientation to compare, so such a face is dropped.
     """
-    new_vertices, new_faces, _ = _clip_with_sources(vertices, faces, vertex_dots, plane_normal)
+    new_vertices, new_faces, _ = _clip_with_sources(vertices, faces, vertex_dots, plane)
     return new_vertices, new_faces
 
 
@@ -2305,7 +2319,7 @@ def _clip_with_sources(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
-    plane_normal: wp.vec3 | None = None,
+    plane: tuple[wp.vec3, wp.vec3] | None = None,
     *,
     merge_crossings: bool = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]:
@@ -2317,105 +2331,92 @@ def _clip_with_sources(
     one vertex, while the input vertices are left exactly as given; and the third return maps every
     output vertex to its input vertex, or to an index ``>= vertices.size`` for a crossing point.
     Without it the third return is ``None``.
+
+    One classifying launch writes every flag one inclusive scan needs to rank the kept faces within
+    their class, the crossing points and the referenced input vertices
+    (``kernels/intersection.classify_clip_faces``); one small readback sizes the output, and one
+    launch writes it whole (``emit_clip_faces``). The cap keeps every input vertex and every
+    crossing addressable instead, so that its exact merge numbers them as the uncompacted cut did.
     """
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
-
-    face_classes = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    face_signs = odt.empty_2d((n_faces, 3), wp.int32, device=device)
-    class_flags = _launch.empty(
-        kernel_intersections.SLICE_CLASSES * n_faces, dtype=wp.int32, device=device
-    )
+    blocks = kernel_intersections.CLIP_FLAG_BLOCKS
+    plane_normal, plane_origin = (wp.vec3(), wp.vec3()) if plane is None else plane
+    # The vertex block's flags are marks into zeros; the face blocks are written whole.
+    if merge_crossings:
+        ranks = _launch.empty(blocks * n_faces, dtype=wp.int32, device=device)
+    else:
+        ranks = _launch.zeros(blocks * n_faces + n_vertices, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_intersections.classify_faces_for_slice,
+        kernel_intersections.classify_clip_faces,
         dim=n_faces,
-        inputs=[faces, vertex_dots, face_classes, face_signs, class_flags],
+        inputs=[
+            vertices,
+            faces,
+            vertex_dots,
+            plane_normal,
+            plane_origin,
+            plane is not None,
+            merge_crossings,
+            ranks,
+        ],
         device=device,
     )
-    # Folding this into ``classify_faces_for_slice`` above is declined for the same reason as the
-    # cut pair below: it is one launch of the handful in ``slice_mesh_with_plane``, and it runs only
-    # on the plane path, so a merged kernel would carry a sentinel for the field path that has no
-    # plane to tie-break against. It patches the class flags as well as the classes, so the
-    # partition below reads the resolved ones.
-    if plane_normal is not None:
-        _launch.launch(
-            kernel_intersections.resolve_on_plane_faces,
-            dim=n_faces,
-            inputs=[vertices, faces, plane_normal, face_classes, class_flags],
-            device=device,
-        )
-    (inside_idx, quad_idx, tri_idx), (n_in, n_quad, n_tri), _ = _slice_class_partition(
-        class_flags, n_faces, kernel_intersections.SLICE_CLASSES
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    counts = _launch.empty(blocks + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_intersections.clip_counts, dim=1, inputs=[ranks, n_faces, counts], device=device
     )
-
-    if n_quad + n_tri == 0:
-        if n_in == 0:
-            return (
-                _launch.empty(0, dtype=wp.vec3, device=device),
-                _launch.empty(0, dtype=wp.int32, device=device),
-                _launch.empty(0, dtype=wp.int32, device=device) if merge_crossings else None,
-            )
-        if not merge_crossings:
-            return (*od.selection.submesh_from_face_indices(vertices, faces, inside_idx), None)
-        kept_faces = od.array.gather(faces.reshape((-1, 3)), inside_idx).reshape(-1)
+    # The one host synchronization in the clip: these counts size every buffer.
+    n_in, n_quad, n_tri, n_tri_crossings, n_kept = read_values(counts, 0, blocks + 1)
+    n_rows = n_in + 2 * n_quad + n_tri
+    if n_rows == 0:
+        return (
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device) if merge_crossings else None,
+        )
+    n_crossings = 2 * n_quad + n_tri_crossings
+    if merge_crossings:
+        n_kept = n_vertices
+    out_faces = _launch.empty(3 * n_rows, dtype=wp.int32, device=device)
+    # With nothing crossed the cap compacts the input buffer itself, so none is copied here.
+    out_vertices = _launch.empty(
+        0 if merge_crossings and n_crossings == 0 else n_kept + n_crossings,
+        dtype=wp.vec3,
+        device=device,
+    )
+    _launch.launch(
+        kernel_intersections.emit_clip_faces,
+        dim=max(n_faces, n_vertices),
+        inputs=[
+            vertices,
+            faces,
+            vertex_dots,
+            plane_normal,
+            plane_origin,
+            ranks,
+            n_in,
+            n_quad,
+            n_kept,
+            not merge_crossings,
+            out_vertices,
+            out_faces.reshape((n_rows, 3)),
+        ],
+        device=device,
+    )
+    if not merge_crossings:
+        return out_vertices, out_faces, None
+    if n_crossings == 0:
         new_vertices, new_faces, _, source = od.repair.remove_unreferenced_vertices(
-            vertices, kept_faces, return_inverse=True
+            vertices, out_faces, return_inverse=True
         )
         return new_vertices, new_faces, source
-
-    # Both cuts contribute two intersection points and keep the original vertices addressable, so
-    # the un-compacted output is exactly this long -- allocated once, written in place.
-    all_vertices = _launch.empty(n_vertices + 2 * (n_quad + n_tri), dtype=wp.vec3, device=device)
-    _launch.copy(all_vertices[:n_vertices], vertices)
-    all_faces = _launch.empty(3 * (n_in + 2 * n_quad + n_tri), dtype=wp.int32, device=device)
-    if n_in > 0:
-        # Not ``od.array.gather``: the destination is a *slice* of a larger buffer, and ``gather``
-        # allocates its own.
-        _launch.copy(
-            odt.as_dense(all_faces[: 3 * n_in]).reshape((n_in, 3)),
-            faces.reshape((-1, 3))[inside_idx],
-        )
-
-    vertex_base, face_base = n_vertices, 3 * n_in
-    for face_indices, n_cut, emit, faces_per_cut in (
-        (quad_idx, n_quad, kernel_intersections.emit_quad_cut, 2),
-        (tri_idx, n_tri, kernel_intersections.emit_tri_cut, 1),
-    ):
-        if n_cut == 0:
-            continue
-        # One launch per class: each cut face's emit thread evaluates the two edge crossings it
-        # needs from ``vertex_dots`` directly. A separate pass used to tabulate all three into an
-        # ``(n_cut, 3)`` buffer for this one to read two of back -- see ``emit_cut_vertices``.
-        n_emitted = faces_per_cut * n_cut
-        _launch.launch(
-            emit,
-            dim=n_cut,
-            inputs=[
-                vertices,
-                faces,
-                face_indices,
-                face_signs,
-                vertex_dots,
-                wp.int32(vertex_base),
-                all_vertices[vertex_base : vertex_base + 2 * n_cut],
-                odt.as_dense(all_faces[face_base : face_base + 3 * n_emitted]).reshape(
-                    (n_emitted, 3)
-                ),
-            ],
-            device=device,
-        )
-        vertex_base += 2 * n_cut
-        face_base += 3 * n_emitted
-
-    if not merge_crossings:
-        new_vertices, new_faces, _ = od.repair.remove_unreferenced_vertices(all_vertices, all_faces)
-        return new_vertices, new_faces, None
     # Each crossing's class is found among the crossings alone (an exact-equality table, the
     # ``points.point_duplicate_mask`` one) and every face index into the crossings is pointed at
     # its class's first member; the copies are then unreferenced and the compaction drops them.
-    n_crossings = vertex_base - n_vertices
-    crossings = odt.as_dense(all_vertices[n_vertices:vertex_base])
+    crossings = odt.as_dense(out_vertices[n_vertices:])
     slot_mask = kernel_grouping.hash_table_mask(n_crossings)
     first = _launch.full(slot_mask + 1, -1, dtype=wp.int32, device=device)
     slot = _launch.empty(n_crossings, dtype=wp.int32, device=device)
@@ -2428,59 +2429,14 @@ def _clip_with_sources(
     )
     _launch.launch(
         kernel_intersections.remap_to_first_crossing,
-        dim=all_faces.size,
-        inputs=[first, slot, wp.int32(n_vertices), all_faces],
+        dim=out_faces.size,
+        inputs=[first, slot, wp.int32(n_vertices), out_faces],
         device=device,
     )
     new_vertices, new_faces, _, source = od.repair.remove_unreferenced_vertices(
-        all_vertices, all_faces, return_inverse=True
+        out_vertices, out_faces, return_inverse=True
     )
     return new_vertices, new_faces, source
-
-
-def _slice_class_partition(
-    flags: wp.array[wp.int32], n_faces: int, n_classes: int, *, views: bool = True
-) -> tuple[list[wp.array[wp.int32]], list[int], wp.array[wp.int32]]:
-    """
-    Split the classified faces into one index array per kept class.
-
-    The classes are disjoint, so their selection flags live as ``n_classes`` blocks of one buffer,
-    which the classifier writes alongside the classes themselves, and one inclusive scan -- in
-    place, so ``flags`` is consumed -- compacts all of them: block ``b``'s indices land
-    contiguously, and the running totals at the block ends give the counts in a single small
-    readback. Each returned array is a contiguous view of one ``n_faces`` buffer, ascending in face
-    index like the [`flatnonzero`][ordito.array.flatnonzero] calls it replaces; that buffer is
-    returned too, for a caller that wants several leading blocks at once -- or, with
-    ``views=False``, instead of them (the block list is then empty).
-    """
-    device = flags.device
-    blocked = n_classes * n_faces
-    inclusive = flags
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
-    # The classes are disjoint, so their indices fit one ``n_faces`` buffer whatever the split,
-    # and the compaction can run before the counts are known.
-    indices = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    counts = _launch.empty(n_classes, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_intersections.scatter_slice_class,
-        dim=blocked,
-        inputs=[inclusive, wp.int32(n_faces), indices, counts],
-        device=device,
-    )
-    # The one host synchronization in the slice: these counts size every buffer downstream.
-    class_counts = read_values(counts, 0, n_classes)
-
-    def block(start: int, count: int) -> wp.array[wp.int32]:
-        # Warp rejects a zero-length slice outright, so an empty class gets its own empty buffer.
-        if count == 0:
-            return _launch.empty(0, dtype=wp.int32, device=device)
-        return odt.as_dense(indices[start : start + count])
-
-    if not views:
-        return [], class_counts, indices
-    starts = [sum(class_counts[:block_index]) for block_index in range(n_classes)]
-    blocks = [block(start, count) for start, count in zip(starts, class_counts, strict=True)]
-    return blocks, class_counts, indices
 
 
 def _compact_cut_segments(
