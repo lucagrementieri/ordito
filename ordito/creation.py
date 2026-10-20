@@ -2977,24 +2977,18 @@ def _parametric_surface(
         raise ValueError(f"v_resolution must be at least 3 on a wrapped axis, got {n_v}")
 
     gluing = _parametric_gluing(spec)
-    meta, dead_np, n_vertices, n_dead = _parametric_layout(gluing, n_u, n_v)
+    head_np, dead_np, n_vertices, n_dead = _parametric_tables(spec, gluing, n_u, n_v)
     amplitude, x_variance, y_variance, centers_np = (
         (0.0, 1.0, 1.0, np.empty((0, 2))) if hills is None else hills
     )
-    # The parameter tables are built here rather than in the kernel so that both ends of the domain
-    # are hit exactly: several of these maps are singular one ulp outside their rectangle.
-    floats_np = np.concatenate(
-        (
-            np.linspace(*spec.u_range, n_u),
-            np.linspace(*spec.v_range, n_v),
-            np.asarray(centers_np, dtype=np.float64).reshape(-1),
+    if hills is None:
+        layout_np = np.concatenate((head_np, dead_np))
+    else:
+        centers_bits_np = (
+            np.asarray(centers_np, dtype=np.float64).reshape(-1).astype(np.float32).view(np.int32)
         )
-    ).astype(np.float32)
-    layout = _launch.array(
-        np.concatenate((np.array(meta, dtype=np.int32), floats_np.view(np.int32), dead_np)),
-        dtype=wp.int32,
-        device=device,
-    )
+        layout_np = np.concatenate((head_np, centers_bits_np, dead_np))
+    layout = _launch.array(layout_np, dtype=wp.int32, device=device)
     n_triangles = 2 * (n_u - 1) * (n_v - 1)
     vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=layout.device)
     faces = _launch.empty(3 * (n_triangles - n_dead), dtype=wp.int32, device=layout.device)
@@ -3019,6 +3013,30 @@ def _parametric_surface(
         device=layout.device,
     )
     return vertices, faces
+
+
+@functools.lru_cache(maxsize=64)
+def _parametric_tables(
+    spec: _ParametricSpec, gluing: int, n_u: int, n_v: int
+) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """
+    ``(head, dead, n_vertices, n_dead)``: the resolution-dependent half of one surface's upload.
+
+    ``head`` is ``parametric_mesh``'s meta slots then the ``u`` and ``v`` parameter tables as
+    ``float32`` bits, ``dead`` its explicit dead-triangle list (see ``_parametric_layout``). Both
+    depend only on the surface and the two resolutions, so a repeated build reuses them; they are
+    returned read-only. The parameter tables are built here rather than in the kernel so that both
+    ends of the domain are hit exactly: several of these maps are singular one ulp outside their
+    rectangle.
+    """
+    meta, dead_np, n_vertices, n_dead = _parametric_layout(gluing, n_u, n_v)
+    floats_np = np.concatenate(
+        (np.linspace(*spec.u_range, n_u), np.linspace(*spec.v_range, n_v))
+    ).astype(np.float32)
+    head_np = np.concatenate((np.array(meta, dtype=np.int32), floats_np.view(np.int32)))
+    head_np.flags.writeable = False
+    dead_np.flags.writeable = False
+    return head_np, dead_np, n_vertices, n_dead
 
 
 def _parametric_gluing(spec: _ParametricSpec) -> int:
