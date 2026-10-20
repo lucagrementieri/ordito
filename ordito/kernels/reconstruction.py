@@ -37,7 +37,7 @@ from ordito.kernels.predicates import (
     triangle_aspect_ratio,
     vector_angle,
 )
-from ordito.kernels.reduce import block_chunk_1d, block_sum, store_sum_and_count
+from ordito.kernels.reduce import block_chunk_1d, block_sum, store_sum_and_count, term_sum_1d
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1182,6 +1182,19 @@ def poisson_mg_residual(
     out_r[idx] = b[idx] - screened_laplacian_row(lap, x, weights, screen, res, i, j, k)
 
 
+@wp.func
+def sample_field_at_point(
+    field: wp.array[wp.float32],
+    res: wp.int32,
+    cube_lower: wp.vec3,
+    inv_cell: wp.float32,
+    point: wp.vec3,
+) -> wp.float32:
+    # The ``res**3`` node field at a world-space point: its grid coordinate, trilinearly.
+    g = (point - cube_lower) * inv_cell
+    return poisson_sample_grid(field, res, g[0], g[1], g[2])
+
+
 @wp.kernel(enable_backward=False)
 def sample_field_trilinear(
     field: wp.array[wp.float32],
@@ -1191,6 +1204,31 @@ def sample_field_trilinear(
     points: wp.array[wp.vec3],
     out_values: wp.array[wp.float32],
 ) -> None:
+    # The field at every sample, for the confidence-weighted iso-value; the uniform one sums
+    # ``sample_field_at_point`` without storing it (``FIELD_SAMPLE_SUM``).
     s = wp.int32(wp.tid())
-    g = (points[s] - cube_lower) * inv_cell
-    out_values[s] = poisson_sample_grid(field, res, g[0], g[1], g[2])
+    out_values[s] = sample_field_at_point(field, res, cube_lower, inv_cell, points[s])
+
+
+@wp.struct
+class FieldSampleTerms:
+    """The samples and the node field ``FIELD_SAMPLE_SUM`` sums ``sample_field_at_point`` over."""
+
+    n: wp.int32
+    field: wp.array[wp.float32]
+    res: wp.int32
+    cube_lower: wp.vec3
+    inv_cell: wp.float32
+    points: wp.array[wp.vec3]
+
+
+@wp.func
+def field_sample_term(local: wp.int32, offset: wp.int32, terms: FieldSampleTerms) -> wp.float32:
+    # The field at sample ``offset + local``, the term of the Poisson iso-value's mean.
+    return sample_field_at_point(
+        terms.field, terms.res, terms.cube_lower, terms.inv_cell, terms.points[offset + local]
+    )
+
+
+# The uniform iso-value's sum, bit for bit ``reduce.sum`` of what ``sample_field_trilinear`` writes.
+FIELD_SAMPLE_SUM = term_sum_1d(field_sample_term, FieldSampleTerms, "poisson_field_sample_sum")
