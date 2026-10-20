@@ -316,19 +316,87 @@ def hessian_face_terms(
     add_or_store_corner_triple(out_mass, out_corner_mass, faces, f, quad0, quad1, quad2)
 
 
+@wp.func
+def corner_multiplicity(faces: wp.array[wp.int32], face: wp.int32, vertex: wp.int32) -> wp.int32:
+    # How many of ``face``'s corners are ``vertex``: how many times a vertex-face row lists it.
+    r = wp.int32(0)
+    for k in range(3):
+        if faces[3 * face + k] == vertex:
+            r += 1
+    return r
+
+
+@wp.func
+def row_edge_weight(
+    faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
+    vertex: wp.int32,
+    lo: wp.int32,
+    hi: wp.int32,
+) -> wp.int32:
+    # Six times the number of halfedges spanning the undirected edge ``(lo, hi)``, counted over
+    # ``vertex``'s vertex-face row, which holds every face with a halfedge at ``vertex``. A face
+    # the row lists once per corner at ``vertex`` weighs ``6 / multiplicity`` a listing, so each
+    # face counts once in whole numbers.
+    weight = wp.int32(0)
+    for t in range(vf_offsets[vertex], vf_offsets[vertex + 1]):
+        g = vf_indices[t]
+        matches = wp.int32(0)
+        for q in range(3):
+            c = faces[3 * g + q]
+            d = faces[3 * g + (q + 1) % 3]
+            if wp.min(c, d) == lo and wp.max(c, d) == hi:
+                matches += 1
+        if matches > 0:
+            weight += matches * (6 // corner_multiplicity(faces, g, vertex))
+    return weight
+
+
+@wp.func
+def row_vertex_on_boundary(
+    faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
+    vertex: wp.int32,
+) -> wp.bool:
+    # Whether a halfedge at ``vertex`` spans its undirected edge alone -- the boundary code of
+    # ``halfedge.halfedge_mates``, the rule ``kernels/boundary.zero_at_boundary_vertices`` zeroes
+    # by -- read off ``vertex``'s own vertex-face row instead of a mesh-wide pairing: every
+    # halfedge on an edge at ``vertex`` belongs to a face in that row. Quadratic in the row's
+    # length, as the Hessian rows it gates are.
+    for s in range(vf_offsets[vertex], vf_offsets[vertex + 1]):
+        f = vf_indices[s]
+        for k in range(3):
+            a = faces[3 * f + k]
+            b = faces[3 * f + (k + 1) % 3]
+            if a == vertex or b == vertex:
+                weight = row_edge_weight(
+                    faces, vf_offsets, vf_indices, vertex, wp.min(a, b), wp.max(a, b)
+                )
+                if weight == 6:
+                    return True
+    return False
+
+
 @wp.kernel
 def hessian_energy_counts(
+    faces: wp.array[wp.int32],
     vf_offsets: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
     mass: wp.array[wp.float64],
     out_inverse_mass: wp.array[wp.float64],
     out_counts: wp.array[wp.int32],
 ) -> None:
     # Vertex ``k`` couples every ordered pair of its incident faces, 3 x 3 corners each; a killed
-    # degree of freedom (boundary vertex, zeroed mass) emits nothing. The mass inversion rides in
-    # the same launch: the gate reads the inverse it has just written, which is the value
-    # ``hessian_energy_triplets`` gates on.
+    # degree of freedom (boundary vertex, zeroed mass) emits nothing. The mass is defined only at
+    # interior vertices, so a boundary vertex (``row_vertex_on_boundary``) inverts as a zero mass.
+    # The mass inversion rides in the same launch: the gate reads the inverse it has just written,
+    # which is the value ``hessian_energy_triplets`` gates on.
     k = wp.int32(wp.tid())
-    inverse = reciprocal_or_zero(mass[k])
+    inverse = wp.float64(0.0)
+    if not row_vertex_on_boundary(faces, vf_offsets, vf_indices, k):
+        inverse = reciprocal_or_zero(mass[k])
     out_inverse_mass[k] = inverse
     if inverse > wp.float64(0.0):
         degree = vf_offsets[k + 1] - vf_offsets[k]
@@ -402,7 +470,7 @@ def zero_at_boundary_edges(
 ) -> None:
     # Zero ``out_values`` at both endpoints of every unique edge with one halfedge -- every
     # boundary vertex, read off the halfedge counts ``internal_angles_and_sums`` leaves rather
-    # than a second pass over the halfedge mates (``energies._zero_at_boundary``'s route). An edge
+    # than a pass over the halfedge mates. An edge
     # with three or more halfedges sets ``out_nonmanifold[0]``, the edge-manifold validation
     # ``curved_hessian_energy`` raises on, read off the same counts in the same pass.
     #

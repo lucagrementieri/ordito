@@ -53,7 +53,6 @@ from ordito import _launch
 from ordito._device import read_scalar, require_same_device
 from ordito.config import is_deterministic
 from ordito.edges import edges_unique, edges_unique_length
-from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import energies as kernel_energies
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
@@ -631,8 +630,6 @@ def hessian_energy(
         mass, sorted_rows = _sorted_vertex_corner_sums(
             faces, corner_mass, n_vertices, with_rows=vertex_faces is None
         )
-    # The mass diagonal is defined only at interior vertices; the count kernel below inverts it.
-    _zero_at_boundary(vertices, faces, mass)
 
     if vertex_faces is not None:
         vf_indices, vf_offsets = vertex_faces
@@ -645,7 +642,7 @@ def hessian_energy(
     _launch.launch(
         kernel_energies.hessian_energy_counts,
         dim=n_vertices,
-        inputs=[vf_offsets, mass, inverse_mass, counts],
+        inputs=[faces, vf_offsets, vf_indices, mass, inverse_mass, counts],
         device=device,
     )
     # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
@@ -1332,24 +1329,3 @@ def _sorted_vertex_corner_sums(
         device=device,
     )
     return sums, ((vertex_faces, offsets) if with_rows else None)
-
-
-def _zero_at_boundary(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], values: wp.array[wp.float64]
-) -> None:
-    """
-    Zero ``values`` in place at every boundary vertex.
-
-    Both quantities these energies build on -- a mass diagonal and an angle defect -- are defined
-    only at interior vertices, so each is zeroed on the boundary before being inverted or scaled.
-    Cleared straight off the halfedge mates: no index list, scan or readback, and a closed mesh
-    pays one launch that writes nothing.
-    """
-    mates = od.halfedge.halfedge_mates(faces, vertices.size)
-    _launch.launch(
-        kernel_boundary.zero_at_boundary_vertices,
-        dim=mates.size,
-        inputs=[mates, faces],
-        outputs=[values],
-        device=values.device,
-    )
