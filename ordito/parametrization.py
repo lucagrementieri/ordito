@@ -834,16 +834,18 @@ def arap(
     rest_edges = _launch.empty((n_faces, 3), dtype=wp.vec2d, device=device)
     # Pre-loop buffers (no allocation inside the loop). ``sol`` (2, n_interior) holds the
     # warm-started CG solution per column; the same launch seeds it from ``uv_init``'s interior
-    # values and writes the working ``out_uv`` with the constraints enforced for iteration 1. Every
-    # row of ``sol`` is seeded, so it is allocated uninitialised.
+    # values. The loop reads the working UV field off ``sol`` and the constraints, so it is
+    # scattered into ``out_uv`` once, after the last step. Every row of ``sol`` is seeded, so it is
+    # allocated uninitialised.
     sol = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
     _launch.launch(
         kernel_parametrization.arap_setup,
         dim=max(n_faces, n_vertices),
-        inputs=[vertices, faces, cot_entries, fixed_mask, interior_map, uv_init, fixed_values_2d],
-        outputs=[rest_edges, sol, out_uv],
+        inputs=[vertices, faces, cot_entries, fixed_mask, interior_map, uv_init],
+        outputs=[rest_edges, sol],
         device=device,
     )
+    # Zero for the first local step; ``arap_interior_rhs`` clears them for every later one.
     rhs_rot_x = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     rhs_rot_y = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     b = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
@@ -864,16 +866,16 @@ def arap(
     )
 
     for _ in range(max_iterations):
-        _launch.zero_(rhs_rot_x)
-        _launch.zero_(rhs_rot_y)
-        # Local step: fit per-face rotations from ``out_uv`` and scatter the rotation RHS.
+        # Local step: fit per-face rotations to the current solution and scatter the rotation RHS.
         _launch.launch(
             kernel_parametrization.arap_local_step,
             dim=n_faces,
-            inputs=[faces, out_uv, rest_edges, rhs_rot_x, rhs_rot_y],
+            inputs=[faces, fixed_mask, interior_map, sol, fixed_values_2d, rest_edges],
+            outputs=[rhs_rot_x, rhs_rot_y],
             device=device,
         )
-        # Global step RHS: constant boundary term + rotation term, restricted to interior rows.
+        # Global step RHS: constant boundary term + rotation term, restricted to interior rows;
+        # clears the rotation RHS for the next local step.
         _launch.launch(
             kernel_parametrization.arap_interior_rhs,
             dim=n_vertices,
@@ -882,13 +884,13 @@ def arap(
         )
         # Both UV columns in one batched symmetric-PD solve, warm-started from the previous ``sol``.
         solver()
-        # Reconstruct the full UV field, re-enforcing the pinned constraints for the next iteration.
-        _launch.launch(
-            kernel_parametrization.scatter_solution,
-            dim=n_vertices,
-            inputs=[fixed_mask, interior_map, sol, fixed_values_2d, out_uv],
-            device=device,
-        )
+    # The full UV field, the pinned rows at their constraints.
+    _launch.launch(
+        kernel_parametrization.scatter_solution,
+        dim=n_vertices,
+        inputs=[fixed_mask, interior_map, sol, fixed_values_2d, out_uv],
+        device=device,
+    )
     return out_uv
 
 

@@ -71,99 +71,12 @@ def _face_pixel_window(
     uv: wp.array[wp.vec2], faces: wp.array[wp.int32], f: wp.int32, resolution: wp.int32
 ) -> tuple[wp.vec2, wp.vec2, wp.vec2, wp.int32, wp.int32, wp.int32, wp.int32]:
     """Compute the face's three pixel-space corners and the raster window to scan for them."""
-    # The two always travel together -- all three rasterization kernels below open with this pair
-    # and then loop over exactly that window -- and pairing them here is what keeps the owner pass
-    # and the two write passes scanning the *same* pixels, which is what makes ``owner`` a valid
-    # per-pixel filter for both.
+    # The owner pass scans exactly this window; the per-pixel write passes recompute the same
+    # corners (``_face_pixels``) for the face that owns their pixel, so a pixel's value is formed
+    # from the very coordinates its coverage was decided on.
     q0, q1, q2 = _face_pixels(uv, faces, f, resolution)
     row_lo, row_hi, col_lo, col_hi = _pixel_bounds(q0, q1, q2, resolution)
     return q0, q1, q2, row_lo, row_hi, col_lo, col_hi
-
-
-@wp.kernel
-def rasterize_owner(
-    uv: wp.array[wp.vec2],
-    faces: wp.array[wp.int32],
-    resolution: wp.int32,
-    out_owner: wp.array2d[wp.int32],
-) -> None:
-    """Resolve per-pixel triangle ownership: the lowest face index covering each pixel wins."""
-    f = wp.int32(wp.tid())
-    q0, q1, q2, row_lo, row_hi, col_lo, col_hi = _face_pixel_window(uv, faces, f, resolution)
-
-    for row in range(row_lo, row_hi + 1):
-        for col in range(col_lo, col_hi + 1):
-            bary = barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
-            if _covered(bary):
-                wp.atomic_min(out_owner, row, col, f)
-
-
-@wp.kernel
-def rasterize_scatter(
-    uv: wp.array[wp.vec2],
-    faces: wp.array[wp.int32],
-    attribute: wp.array2d[wp.float32],
-    n_channels: wp.int32,
-    owner: wp.array2d[wp.int32],
-    out_image: wp.array3d[wp.float32],
-) -> None:
-    """Write the barycentric-interpolated attribute at every pixel this face owns."""
-    f = wp.int32(wp.tid())
-    i0, i1, i2 = corner_triple(faces, f)
-    resolution = out_image.shape[0]
-    q0, q1, q2, row_lo, row_hi, col_lo, col_hi = _face_pixel_window(uv, faces, f, resolution)
-
-    for row in range(row_lo, row_hi + 1):
-        for col in range(col_lo, col_hi + 1):
-            if owner[row, col] != f:
-                continue
-            bary = barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
-            for k in range(n_channels):
-                out_image[row, col, k] = (
-                    bary[0] * attribute[i0, k]
-                    + bary[1] * attribute[i1, k]
-                    + bary[2] * attribute[i2, k]
-                )
-
-
-@wp.kernel(enable_backward=False)
-def rasterize_labels(
-    uv: wp.array[wp.vec2],
-    faces: wp.array[wp.int32],
-    labels: wp.array[wp.int32],
-    owner: wp.array2d[wp.int32],
-    out_labels: wp.array2d[wp.int32],
-) -> None:
-    """
-    Write the argmax-of-barycentric-weight label at every pixel this face owns.
-
-    Equivalent to one-hot encoding the vertex labels, barycentrically interpolating, and taking
-    the per-pixel argmax: label weights of shared vertices sum, and ties resolve to the lowest
-    label value (matching ``numpy.argmax`` over one-hot columns).
-    """
-    f = wp.int32(wp.tid())
-    i0, i1, i2 = corner_triple(faces, f)
-    resolution = out_labels.shape[0]
-    q0, q1, q2, row_lo, row_hi, col_lo, col_hi = _face_pixel_window(uv, faces, f, resolution)
-
-    l0 = labels[i0]
-    l1 = labels[i1]
-    l2 = labels[i2]
-
-    for row in range(row_lo, row_hi + 1):
-        for col in range(col_lo, col_hi + 1):
-            if owner[row, col] != f:
-                continue
-            bary = barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
-            # Per-class weight = sum of barycentric weights of vertices sharing that class.
-            s0 = bary[0] + wp.where(l1 == l0, bary[1], 0.0) + wp.where(l2 == l0, bary[2], 0.0)
-            s1 = bary[1] + wp.where(l0 == l1, bary[0], 0.0) + wp.where(l2 == l1, bary[2], 0.0)
-            s2 = bary[2] + wp.where(l0 == l2, bary[0], 0.0) + wp.where(l1 == l2, bary[1], 0.0)
-            best_label = l0
-            best_weight = s0
-            update_argmax_lowest_index(best_weight, best_label, s1, l1)
-            update_argmax_lowest_index(best_weight, best_label, s2, l2)
-            out_labels[row, col] = best_label
 
 
 @wp.func
@@ -176,30 +89,126 @@ def _uv_out_of_range(uv: wp.vec2) -> wp.bool:
     return False
 
 
-@wp.kernel
-def check_uv_range(uv: wp.array[wp.vec2], out_flag: wp.array[wp.int32]) -> None:
-    """Set ``out_flag[0] = 1`` if any finite UV lies outside ``[0, 1]``."""
-    v = wp.int32(wp.tid())
-    if _uv_out_of_range(uv[v]):
-        wp.atomic_max(out_flag, 0, wp.int32(1))
+@wp.func
+def flag_uv_out_of_range(uv: wp.vec2, out_flags: wp.array[wp.int32]) -> None:
+    """Set ``out_flags[0] = 1`` when ``uv`` is finite and outside ``[0, 1]``: the shared check."""
+    if _uv_out_of_range(uv):
+        wp.atomic_max(out_flags, 0, wp.int32(1))
+
+
+@wp.func
+def _pixel_barycentric(
+    uv: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    resolution: wp.int32,
+    row: wp.int32,
+    col: wp.int32,
+) -> wp.vec3:
+    """Barycentric coordinates of pixel ``(row, col)``'s center in face ``f``'s pixel image."""
+    q0, q1, q2 = _face_pixels(uv, faces, f, resolution)
+    return barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
 
 
 @wp.kernel
-def check_uv_range_and_labels(
-    uv: wp.array[wp.vec2], labels: wp.array[wp.int32], out_flags: wp.array[wp.int32]
+def rasterize_owner(
+    uv: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    resolution: wp.int32,
+    out_owner: wp.array2d[wp.int32],
+    out_flags: wp.array[wp.int32],
 ) -> None:
     """
-    Set ``out_flags[0] = 1`` for an out-of-range finite UV and ``out_flags[1] = 1`` for a label < 0.
+    Resolve per-pixel triangle ownership, and validate the vertices, over ``max(n_faces, n_uv)``.
 
-    ``check_uv_range`` plus the discrete rasterizer's own label test, over the same vertices: the
-    two validations share a launch and, more to the point, one two-slot readback, where running
-    them apart cost a device reduction and a readback each.
+    A face thread takes the pixels its triangle covers with ``wp.atomic_min``, so the lowest face
+    index covering each pixel wins. A vertex thread is the rasterizers' input check:
+    ``out_flags[0] = 1`` for an out-of-range finite UV and, given ``labels`` (empty for the
+    continuous rasterizer), ``out_flags[1] = 1`` for a label below 0. The two halves share a
+    launch because neither reads what the other writes: an out-of-range UV only lands its pixel
+    window on the clamped image border, and the wrapper reads the flags before anything reads the
+    owners.
     """
-    v = wp.int32(wp.tid())
-    if _uv_out_of_range(uv[v]):
-        wp.atomic_max(out_flags, 0, wp.int32(1))
-    if labels[v] < 0:
-        wp.atomic_max(out_flags, 1, wp.int32(1))
+    t = wp.int32(wp.tid())
+    if t < faces.shape[0] // 3:
+        q0, q1, q2, row_lo, row_hi, col_lo, col_hi = _face_pixel_window(uv, faces, t, resolution)
+        for row in range(row_lo, row_hi + 1):
+            for col in range(col_lo, col_hi + 1):
+                bary = barycentric_2d(q0, q1, q2, wp.vec2(wp.float32(col), wp.float32(row)))
+                if _covered(bary):
+                    wp.atomic_min(out_owner, row, col, t)
+    if t < uv.shape[0]:
+        flag_uv_out_of_range(uv[t], out_flags)
+        if labels.shape[0] > 0:
+            if labels[t] < 0:
+                wp.atomic_max(out_flags, 1, wp.int32(1))
+
+
+@wp.kernel
+def rasterize_pixels(
+    uv: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    attribute: wp.array2d[wp.float32],
+    n_channels: wp.int32,
+    owner: wp.array2d[wp.int32],
+    out_image: wp.array3d[wp.float32],
+) -> None:
+    """
+    Write every pixel: its owner's barycentric-interpolated attribute, or ``0`` where uncovered.
+
+    One thread per pixel, after ``rasterize_owner``: an uncovered pixel's owner is the sentinel,
+    past every face index. Writing the uncovered pixels here is what lets the image be allocated
+    uninitialized; ``rasterize_label_pixels`` is the same pass resolving a label vote instead.
+    """
+    row, col = wp.tid()
+    f = owner[row, col]
+    if f >= faces.shape[0] // 3:
+        for k in range(n_channels):
+            out_image[row, col, k] = wp.float32(0.0)
+        return
+    i0, i1, i2 = corner_triple(faces, f)
+    bary = _pixel_barycentric(uv, faces, f, out_image.shape[0], row, col)
+    for k in range(n_channels):
+        out_image[row, col, k] = (
+            bary[0] * attribute[i0, k] + bary[1] * attribute[i1, k] + bary[2] * attribute[i2, k]
+        )
+
+
+@wp.kernel(enable_backward=False)
+def rasterize_label_pixels(
+    uv: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    owner: wp.array2d[wp.int32],
+    out_labels: wp.array2d[wp.int32],
+) -> None:
+    """
+    Write every pixel: the argmax-of-barycentric-weight label of its owner, or ``-1``.
+
+    Equivalent to one-hot encoding the vertex labels, barycentrically interpolating, and taking
+    the per-pixel argmax: label weights of shared vertices sum, and ties resolve to the lowest
+    label value (matching ``numpy.argmax`` over one-hot columns).
+    """
+    row, col = wp.tid()
+    f = owner[row, col]
+    if f >= faces.shape[0] // 3:
+        out_labels[row, col] = wp.int32(-1)
+        return
+    i0, i1, i2 = corner_triple(faces, f)
+    l0 = labels[i0]
+    l1 = labels[i1]
+    l2 = labels[i2]
+    bary = _pixel_barycentric(uv, faces, f, out_labels.shape[0], row, col)
+    # Per-class weight = sum of barycentric weights of vertices sharing that class.
+    s0 = bary[0] + wp.where(l1 == l0, bary[1], 0.0) + wp.where(l2 == l0, bary[2], 0.0)
+    s1 = bary[1] + wp.where(l0 == l1, bary[0], 0.0) + wp.where(l2 == l1, bary[2], 0.0)
+    s2 = bary[2] + wp.where(l0 == l2, bary[0], 0.0) + wp.where(l1 == l2, bary[1], 0.0)
+    best_label = l0
+    best_weight = s0
+    update_argmax_lowest_index(best_weight, best_label, s1, l1)
+    update_argmax_lowest_index(best_weight, best_label, s2, l2)
+    out_labels[row, col] = best_label
 
 
 SAMPLE_NEAREST = wp.constant(wp.int32(0))
@@ -231,9 +240,16 @@ def sample_texture(
     n_channels: wp.int32,
     mode: wp.int32,
     out_values: wp.array2d[wp.float32],
+    out_flag: wp.array[wp.int32],
 ) -> None:
-    """Sample the texture at each vertex UV (edge-clamped), nearest or bilinear per ``mode``."""
+    """
+    Sample the texture at each vertex UV (edge-clamped), nearest or bilinear per ``mode``.
+
+    ``out_flag[0]`` is set to 1 where a finite UV lies outside ``[0, 1]``, for the wrapper to raise
+    on: the range check rides the sampling launch.
+    """
     v = wp.int32(wp.tid())
+    flag_uv_out_of_range(uv[v], out_flag)
     u = uv[v][0]
     w = uv[v][1]
     height = image.shape[0]
@@ -264,16 +280,21 @@ def sample_texture(
 
 @wp.kernel
 def sample_class_image(
-    uv: wp.array[wp.vec2], class_image: wp.array2d[wp.int32], out_labels: wp.array[wp.int32]
+    uv: wp.array[wp.vec2],
+    class_image: wp.array2d[wp.int32],
+    out_labels: wp.array[wp.int32],
+    out_flag: wp.array[wp.int32],
 ) -> None:
     """
     Read an ``int32`` class image nearest-neighbour at each vertex UV; ``-1`` for an Inf / NaN UV.
 
     ``sample_texture``'s ``SAMPLE_NEAREST`` branch over integer storage, sharing its texel helpers,
     so the labels are read as they are rather than through a ``float32`` copy of the whole image
-    and a rounding pass back -- which also keeps a label above ``2**24`` exact.
+    and a rounding pass back -- which also keeps a label above ``2**24`` exact. Flags an
+    out-of-range UV as ``sample_texture`` does.
     """
     v = wp.int32(wp.tid())
+    flag_uv_out_of_range(uv[v], out_flag)
     u = uv[v][0]
     w = uv[v][1]
     if not wp.isfinite(u) or not wp.isfinite(w):

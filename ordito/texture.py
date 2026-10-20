@@ -24,7 +24,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import INT32_MAX
 from ordito.kernels import texture as kernel_texture
 
@@ -105,15 +105,12 @@ def rasterize_attribute(
     _check_rasterize_inputs(uv, int(attribute.shape[0]), resolution)
 
     device = uv.device
-    image = _launch.zeros((resolution, resolution, n_channels), dtype=wp.float32, device=device)
-    n_faces = faces.size // 3
-    if n_faces == 0:
-        return odt.as_array3d(image, wp.float32)
-
-    owner = _rasterize_owner(uv, faces, resolution)
+    owner = _rasterize_owner(uv, faces, resolution, _launch.empty(0, dtype=wp.int32, device=device))
+    # Every pixel is written by the resolve pass, covered or not.
+    image = _launch.empty((resolution, resolution, n_channels), dtype=wp.float32, device=device)
     _launch.launch(
-        kernel_texture.rasterize_scatter,
-        dim=n_faces,
+        kernel_texture.rasterize_pixels,
+        dim=(resolution, resolution),
         inputs=[uv, faces, attribute, n_channels, owner, image],
         device=device,
     )
@@ -184,108 +181,89 @@ def rasterize_discrete_attribute(
     require_same_device(uv=uv, faces=faces, attribute=attribute)
     odt.ensure_ndim(attribute, 1, dtype=wp.int32)
     n_vertices = attribute.size
-    _check_rasterize_inputs(uv, n_vertices, resolution, labels=attribute)
+    _check_rasterize_inputs(uv, n_vertices, resolution)
 
     device = uv.device
-    labels_image = _launch.full((resolution, resolution), -1, dtype=wp.int32, device=device)
-    n_faces = faces.size // 3
-    if n_faces == 0:
-        return odt.as_array2d(labels_image, wp.int32)
-
-    owner = _rasterize_owner(uv, faces, resolution)
+    owner = _rasterize_owner(uv, faces, resolution, attribute)
+    # Every pixel is written by the resolve pass, covered or not.
+    labels_image = _launch.empty((resolution, resolution), dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_texture.rasterize_labels,
-        dim=n_faces,
+        kernel_texture.rasterize_label_pixels,
+        dim=(resolution, resolution),
         inputs=[uv, faces, attribute, owner, labels_image],
         device=device,
     )
     return odt.as_array2d(labels_image, wp.int32)
 
 
-def _check_rasterize_inputs(
-    uv: wp.array[wp.vec2],
-    n_vertices: int,
-    resolution: int,
-    *,
-    labels: wp.array[wp.int32] | None = None,
-) -> None:
+def _check_rasterize_inputs(uv: wp.array[wp.vec2], n_vertices: int, resolution: int) -> None:
     """
-    Validate the arguments both rasterizers share: resolution, row count and UV range.
+    Validate the host-side arguments both rasterizers share: resolution and row count.
 
-    Parameters
-    ----------
-    uv
-        ``(n_vertices,)`` per-vertex UV coordinates.
-    n_vertices
-        Row count of the attribute being rasterized.
-    resolution
-        Output image size in pixels.
-    labels
-        The discrete rasterizer's ``(n_vertices,)`` labels, checked non-negative in the same pass
-        and the same readback as the UV range; ``None`` for the continuous one.
+    The device-side checks (UV range, labels) run in the owner pass, ``_rasterize_owner``.
 
     Raises
     ------
     ValueError
-        If ``resolution`` is not positive, ``uv`` and the attribute disagree on their row count,
-        any finite UV lies outside ``[0, 1]``, or any of ``labels`` is negative.
+        If ``resolution`` is not positive or ``uv`` and the attribute disagree on their row count.
     """
     if resolution <= 0:
         raise ValueError("Resolution must be positive")
     if uv.size != n_vertices:
         raise ValueError(f"uv and attribute row count mismatch: {uv.size} vs {n_vertices}")
-    if labels is None:
-        _check_uv_in_range(uv)
-        return
-    if n_vertices == 0:
-        return
-    flags = _launch.zeros(2, dtype=wp.int32, device=uv.device)
-    _launch.launch(
-        kernel_texture.check_uv_range_and_labels,
-        dim=n_vertices,
-        inputs=[uv, labels, flags],
-        device=uv.device,
-    )
-    # One readback of both flags: nothing can raise without bringing them to the host.
-    uv_flag, label_flag = (int(flag) for flag in flags.numpy())
-    if uv_flag != 0:
-        raise ValueError("UV coordinates must be in the range [0, 1]")
-    if label_flag != 0:
-        raise ValueError("Attribute values must be greater than or equal to 0")
 
 
 def _rasterize_owner(
-    uv: wp.array[wp.vec2], faces: wp.array[wp.int32], resolution: int
+    uv: wp.array[wp.vec2], faces: wp.array[wp.int32], resolution: int, labels: wp.array[wp.int32]
 ) -> odt.Array2dInt32:
     """
-    Resolve which face owns each pixel: the lowest-index triangle covering it.
+    Resolve which face owns each pixel -- the lowest-index triangle covering it -- and validate.
 
-    Both rasterizers run this first so their scatter pass can write exactly one face's contribution
+    Both rasterizers run this first so their per-pixel pass writes exactly one face's contribution
     per pixel. Overlap is degenerate for a valid parameterization; where it happens the lowest face
-    index wins, which ``wp.atomic_min`` against the sentinel gives for free.
+    index wins, which ``wp.atomic_min`` against the sentinel gives for free. The same launch tests
+    the vertices (``kernels/texture.rasterize_owner``): one readback of both flags, after it.
 
     Parameters
     ----------
     uv
         ``(n_vertices,)`` per-vertex UV coordinates.
     faces
-        Flat length-``3 * n_faces`` ``wp.int32`` triangle index buffer, non-empty.
+        ``(3 * n_faces,)`` triangle index buffer.
     resolution
         Output image size in pixels.
+    labels
+        The discrete rasterizer's ``(n_vertices,)`` labels, checked non-negative; empty for the
+        continuous one.
 
     Returns
     -------
     odt.Array2dInt32
         ``(resolution, resolution)`` owning face index, ``_OWNER_SENTINEL`` where uncovered.
+
+    Raises
+    ------
+    ValueError
+        If any finite UV lies outside ``[0, 1]``, or any of ``labels`` is negative.
     """
     device = uv.device
     owner = _launch.full((resolution, resolution), _OWNER_SENTINEL, dtype=wp.int32, device=device)
+    n_threads = max(faces.size // 3, uv.size)
+    if n_threads == 0:
+        return odt.as_array2d(owner, wp.int32)
+    flags = _launch.zeros(2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_texture.rasterize_owner,
-        dim=faces.size // 3,
-        inputs=[uv, faces, resolution, owner],
+        dim=n_threads,
+        inputs=[uv, faces, labels, resolution, owner, flags],
         device=device,
     )
+    # One readback of both flags: nothing can raise without bringing them to the host.
+    uv_flag, label_flag = (int(flag) for flag in read_values(flags, 0, 2))
+    if uv_flag != 0:
+        raise ValueError("UV coordinates must be in the range [0, 1]")
+    if label_flag != 0:
+        raise ValueError("Attribute values must be greater than or equal to 0")
     return odt.as_array2d(owner, wp.int32)
 
 
@@ -365,7 +343,6 @@ def remap_attribute_from_uv(
     else:
         raise TypeError(f"image must be (H, W) or (H, W, C), got ndim={image.ndim}")
     odt.ensure_ndim(image3d, 3, dtype=wp.float32)
-    _check_uv_in_range(uv)
 
     device = uv.device
     n_vertices = uv.size
@@ -375,12 +352,14 @@ def remap_attribute_from_uv(
         # sampled nearest-neighbour for every off-menu value, so a caller whose interpolation
         # order arrived through a variable got a plausible image and no error.
         mode = kernel_texture.SAMPLE_BILINEAR if order == 1 else kernel_texture.SAMPLE_NEAREST
+        flag = _launch.zeros(1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_texture.sample_texture,
             dim=n_vertices,
-            inputs=[uv, image3d, n_channels, mode, out_values],
+            inputs=[uv, image3d, n_channels, mode, out_values, flag],
             device=device,
         )
+        _raise_on_uv_flag(flag)
     return odt.as_array2d(out_values, wp.float32)
 
 
@@ -440,44 +419,40 @@ def remap_discrete_attribute_from_uv(
     """
     require_same_device(uv=uv, class_image=class_image)
     odt.ensure_ndim(class_image, 2, dtype=wp.int32)
-    _check_uv_in_range(uv)
 
     device = uv.device
     n_vertices = uv.size
     out_labels = odt.empty_1d(n_vertices, wp.int32, device=device)
     if n_vertices > 0:
+        flag = _launch.zeros(1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_texture.sample_class_image,
             dim=n_vertices,
-            inputs=[uv, class_image, out_labels],
+            inputs=[uv, class_image, out_labels, flag],
             device=device,
         )
+        _raise_on_uv_flag(flag)
     return out_labels
 
 
-def _check_uv_in_range(uv: wp.array[wp.vec2]) -> None:
+def _raise_on_uv_flag(flag: wp.array[wp.int32]) -> None:
     """
-    Raise if any finite UV lies outside ``[0, 1]`` (non-finite UVs are ignored).
+    Raise if the sampling pass flagged a finite UV outside ``[0, 1]`` (non-finite UVs never are).
 
-    The readback is unavoidable: nothing can raise without bringing the flag back to the host.
-    It is also the dominant cost of the two samplers rather than a rounding error on them --
-    measured at over half the call, and **flat** in the mesh size, both halves being launch-bound.
-    Kept anyway, and the flatness is the reason: an out-of-range UV is not rejected downstream but
-    silently *clamped* to the nearest edge pixel, so dropping the guard trades a raised public-API
-    error for a plausible wrong
-    answer -- the same trade ``_device.require_same_device`` is argued from. If a caller ever
-    samples in a loop, the shape to add is a ``validate=False`` keyword
-    **with** an in-repo caller passing it, not an unconditional removal; the rasterizers reach
-    this (or, for the discrete one, the same test fused with its label check) through
-    ``_check_rasterize_inputs`` and pay a far smaller share, since their own work
-    scales with ``resolution ** 2``.
+    The sampling kernels test every UV as they read it and set the one-slot flag, so the check
+    costs no launch of its own; the samples written meanwhile are discarded with the raise. The
+    readback is unavoidable: nothing can raise without bringing the flag back to the host. Kept
+    for the samplers although it is a fixed share of a launch-bound call, because an out-of-range
+    UV is not rejected downstream but silently *clamped* to the nearest edge pixel: dropping the
+    guard trades a raised public-API error for a plausible wrong answer -- the same trade
+    ``_device.require_same_device`` is argued from. If a caller ever samples in a loop, the shape
+    to add is a ``validate=False`` keyword **with** an in-repo caller passing it, not an
+    unconditional removal.
+
+    Raises
+    ------
+    ValueError
+        If the flag is set.
     """
-    n_vertices = uv.size
-    if n_vertices == 0:
-        return
-    flag = _launch.zeros(1, dtype=wp.int32, device=uv.device)
-    _launch.launch(
-        kernel_texture.check_uv_range, dim=n_vertices, inputs=[uv, flag], device=uv.device
-    )
     if int(read_scalar(flag, 0)) != 0:
         raise ValueError("UV coordinates must be in the range [0, 1]")

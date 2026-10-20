@@ -241,6 +241,17 @@ def find_local_maxima(
 
 
 @wp.kernel
+def mark_ranked_flagged(
+    flagged: wp.array[wp.int32], order: wp.array[wp.int32], out_flags: wp.array[wp.int32]
+) -> None:
+    # One thread per kept rank ``k < excess``: flag the pool point the weight sort put at rank
+    # ``k`` among the ``flagged`` ones. The gather of the chosen indices, their bool mask and its
+    # ``int32`` cast in one launch over a zeroed ``out_flags``.
+    k = wp.int32(wp.tid())
+    out_flags[flagged[order[k]]] = wp.int32(1)
+
+
+@wp.kernel
 def apply_deletions(
     deleted_mask: wp.array[wp.int32],
     nbr_indices: wp.array[wp.int32],

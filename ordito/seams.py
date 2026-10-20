@@ -282,7 +282,7 @@ def cut_along_edges(
     # smallest corner.
     key_base = wp.uint64(n_vertices)
     union_inputs = [faces, twins, marked_keys, key_base]
-    parents = od.array.arange(n_halfedges, device=device)
+    parents = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     for kernel in (kernel_seams.corner_union_prehook, kernel_seams.corner_union_hook):
         _launch.launch(kernel, dim=n_halfedges, inputs=[*union_inputs, parents], device=device)
     roots = _launch.empty(n_halfedges, dtype=wp.int32, device=device)

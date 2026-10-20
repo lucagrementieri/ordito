@@ -680,6 +680,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The Poisson-disk elimination round's carried state: the deletions clear ``alive`` and take
     # their contributions off ``weights`` in the same pass, both rewritten in place every round.
     ("sample", "apply_deletions"): frozenset({"alive", "weights"}),
+    # ARAP's rotation right-hand side, scattered by the local step and cleared by the global
+    # step's right-hand-side pass as it reads it, so the loop needs no memset per iteration.
+    ("parametrization", "arap_interior_rhs"): frozenset({"rhs_rot_x", "rhs_rot_y"}),
     # The min-weight fill's traceback walks each rim's predecessor table with an explicit stack of
     # pending intervals -- caller-allocated because the walk is one thread over a ``B``-deep
     # problem, so it cannot be a kernel local. Neither an input nor the answer, which is

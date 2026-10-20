@@ -130,6 +130,23 @@ def free_mass_roots(
     out_roots[ri] = wp.where(mass[i] > wp.float64(0.0), wp.sqrt(mass[i]), wp.float64(1.0))
 
 
+@wp.func
+def solved_uv(
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    sol: wp.array2d[wp.float64],
+    fixed_values: wp.array2d[wp.float64],
+    i: wp.int32,
+) -> wp.vec2:
+    # Vertex ``i``'s UV in a reduced solution: its prescribed position when fixed, else the solved
+    # value at its compact index, narrowed to ``float32``. ``scatter_solution`` writes it; ARAP's
+    # local step reads it in place of a scattered UV field.
+    if fixed_mask[i]:
+        return fixed_uv(fixed_values, i)
+    ri = free_map[i]
+    return wp.vec2(wp.float32(sol[0, ri]), wp.float32(sol[1, ri]))
+
+
 @wp.kernel
 def scatter_solution(
     fixed_mask: wp.array[wp.bool],
@@ -143,11 +160,7 @@ def scatter_solution(
     # compact index (``sol`` is ``(2, n_free)``). Handles the all-fixed case (``n_free == 0``): the
     # free branch is then never taken, so the empty ``sol`` is never indexed.
     i = wp.int32(wp.tid())
-    if fixed_mask[i]:
-        out_uv[i] = fixed_uv(fixed_values, i)
-    else:
-        ri = free_map[i]
-        out_uv[i] = wp.vec2(wp.float32(sol[0, ri]), wp.float32(sol[1, ri]))
+    out_uv[i] = solved_uv(fixed_mask, free_map, sol, fixed_values, i)
 
 
 @wp.kernel
@@ -296,21 +309,26 @@ def scatter_arap_edge(
 @wp.kernel
 def arap_local_step(
     faces: wp.array[wp.int32],
-    uv: wp.array[wp.vec2],
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    sol: wp.array2d[wp.float64],
+    fixed_values: wp.array2d[wp.float64],
     rest_edges: wp.array2d[wp.vec2d],
     out_rhs_x: wp.array[wp.float64],
     out_rhs_y: wp.array[wp.float64],
 ) -> None:
     # Per face (dim = n_faces, once per iteration): fit the closest 2D rotation to the current UV
     # and scatter the rotation right-hand side, fused so no per-face rotation buffer is needed.
-    # ``out_rhs_x`` / ``out_rhs_y`` are the two rows of the (2, n_vertices) rotation RHS and must be
-    # zeroed before launch. Degenerate faces have zero rest edges, so S = 0, atan2(0, 0) = 0, and
-    # the identity rotation scatters nothing.
+    # The current UV is read straight off the reduced solution (``solved_uv``: the value
+    # ``scatter_solution`` stores), so the loop scatters the full field only once, after its last
+    # step. ``out_rhs_x`` / ``out_rhs_y`` are the two rows of the (2, n_vertices) rotation RHS and
+    # must be zero at launch (``arap_interior_rhs`` clears them as it reads them). Degenerate faces
+    # have zero rest edges, so S = 0, atan2(0, 0) = 0, and the identity rotation scatters nothing.
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
-    uv0 = uv[i0]
-    uv1 = uv[i1]
-    uv2 = uv[i2]
+    uv0 = solved_uv(fixed_mask, free_map, sol, fixed_values, i0)
+    uv1 = solved_uv(fixed_mask, free_map, sol, fixed_values, i1)
+    uv2 = solved_uv(fixed_mask, free_map, sol, fixed_values, i2)
     # UV edges in igl order e0:(1,2), e1:(2,0), e2:(0,1), promoted to float64.
     u0 = to_vec2d(uv1) - to_vec2d(uv2)
     u1 = to_vec2d(uv2) - to_vec2d(uv0)
@@ -343,16 +361,16 @@ def arap_interior_rhs(
     # rows carry no unknown and are skipped. ``rhs_const`` / ``out_b`` are (2, n_interior) (rows
     # u, v); ``rhs_rot_*`` are (n_vertices,).
     #
-    # Zeroing ``rhs_rot_*`` here after reading them, in place of the wrapper's two ``zero_`` per
-    # iteration, is legal (the scatter that fills them runs before, and each slot is read only by
-    # its own thread) and declined: the two memsets are ~0.15 % of an ARAP iteration, which the CG
-    # solve dominates, against turning two read-only inputs into in-place state.
+    # ``rhs_rot_*`` are cleared here, every row, as they are read: the next iteration's local
+    # step scatters into them, and each slot is read only by its own thread, after the scatter
+    # that filled it, so the loop issues no memset.
     i = wp.int32(wp.tid())
     ri = free_row(fixed_mask, free_map, i)
-    if ri < 0:
-        return
-    out_b[0, ri] = rhs_const[0, ri] + rhs_rot_x[i]
-    out_b[1, ri] = rhs_const[1, ri] + rhs_rot_y[i]
+    if ri >= 0:
+        out_b[0, ri] = rhs_const[0, ri] + rhs_rot_x[i]
+        out_b[1, ri] = rhs_const[1, ri] + rhs_rot_y[i]
+    rhs_rot_x[i] = wp.float64(0.0)
+    rhs_rot_y[i] = wp.float64(0.0)
 
 
 @wp.func
@@ -360,28 +378,21 @@ def gather_interior_uv(
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
     uv: wp.array[wp.vec2],
-    fixed_values: wp.array2d[wp.float64],
     i: wp.int32,
     out_sol: wp.array2d[wp.float64],
-    out_uv: wp.array[wp.vec2],
 ) -> None:
     # Seed the conjugate-gradient warm start with the current interior UV at vertex ``i``:
     # interior vertex ``i`` writes its UV into the two rows (u, v) of ``out_sol`` at the compact
     # free index. ``out_sol`` is (2, n_interior), and every row is written, because ``free_map`` is
-    # a bijection of the free vertices onto it.
-    #
-    # It also writes the first working UV field, which is ``scatter_solution`` of the seed it just
-    # wrote: a fixed vertex takes its prescribed position, a free one reads back its own seed --
-    # ``uv[i]`` itself, since a ``float32`` widened to ``float64`` and narrowed again is exact. So
-    # the thread never reads a row another thread wrote, and the separate launch is not needed.
+    # a bijection of the free vertices onto it. The first local step reads the working UV field
+    # off this seed (``solved_uv``), which gives a free vertex ``uv[i]`` itself: a ``float32``
+    # widened to ``float64`` and narrowed again is exact.
     ri = free_row(fixed_mask, free_map, i)
     if ri < 0:
-        out_uv[i] = fixed_uv(fixed_values, i)
         return
     p = uv[i]
     out_sol[0, ri] = wp.float64(p[0])
     out_sol[1, ri] = wp.float64(p[1])
-    out_uv[i] = p
 
 
 @wp.kernel
@@ -392,10 +403,8 @@ def arap_setup(
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
     uv: wp.array[wp.vec2],
-    fixed_values: wp.array2d[wp.float64],
     out_rest_edges: wp.array2d[wp.vec2d],
     out_sol: wp.array2d[wp.float64],
-    out_uv: wp.array[wp.vec2],
 ) -> None:
     # The ARAP loop's two one-time inputs in one launch over ``max(n_faces, n_vertices)`` threads:
     # the rest edges per face (``arap_rest_edges``) and the warm start per vertex
@@ -404,4 +413,4 @@ def arap_setup(
     if t < faces.shape[0] // 3:
         arap_rest_edges(vertices, faces, cot_entries, t, out_rest_edges)
     if t < vertices.shape[0]:
-        gather_interior_uv(fixed_mask, free_map, uv, fixed_values, t, out_sol, out_uv)
+        gather_interior_uv(fixed_mask, free_map, uv, t, out_sol)
