@@ -1289,4 +1289,10 @@ def shorten_loop_advance(
 def seed_graph_sources(sources: wp.array[wp.int32], out_distance: wp.array[wp.float32]) -> None:
     # ``geodesic_path``'s edge-graph distance seed: zero at every source vertex (the rest of
     # ``out_distance`` holds the "unreached" value it was allocated with).
+    #
+    # Declined: building the graph off the walk's vertex-face table in one launch with this seed
+    # (each incidence's two other corners, offsets twice the table's: no sort, no readback, and the
+    # same distances bit for bit). It lists every interior edge twice per endpoint, so each
+    # relaxation pass reads twice the deduplicated graph's entries: build plus relaxation 1.4x at
+    # 5 k faces, level at 82 k and 0.5x at 328 k against ``edges_unique`` + ``edges_to_csr``.
     out_distance[sources[wp.int32(wp.tid())]] = wp.float32(0.0)
