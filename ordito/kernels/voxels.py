@@ -837,6 +837,12 @@ def fill_axis_span(
     # the three axis passes write one lattice and need no separate intersection pass between them.
     # That read is race-free: every cell lies on exactly one line per axis, so the thread that
     # reads a cell here is the only one writing it in this launch.
+    #
+    # Declined, measured (device time, 50**3 to 400**3 cells): the first pass probing the grid
+    # instead of reading ``dense_occupancy``'s lattice, 0.39-0.69x, and the last pass writing the
+    # grid-build candidates instead of ``occupied_cells`` reading ``out_filled``, 0.44-0.85x. A
+    # thread per *line* walks its cells in sequence and writes them strided, where the passes they
+    # would replace are a thread per cell, coalesced.
     a, b = wp.tid()
     first = wp.int32(-1)
     last = wp.int32(-1)
@@ -857,27 +863,6 @@ def fill_axis_span(
 @wp.func
 def flat_cell_index(i: wp.int32, j: wp.int32, k: wp.int32, ny: wp.int32, nz: wp.int32) -> wp.int32:
     return ravel_index(i, j, k, ny, nz)
-
-
-@wp.kernel
-def flood_init_parent(occupancy: wp.array3d[wp.bool], out_parents: wp.array[wp.int32]) -> None:
-    # ECL-CC initialisation over the *empty* complement, with the 6-neighbour stencil implicit:
-    # three backward probes, no edge list. An occupied cell is its own singleton and never unions.
-    i, j, k = wp.tid()
-    ny = occupancy.shape[1]
-    nz = occupancy.shape[2]
-    v = flat_cell_index(i, j, k, ny, nz)
-    out_parents[v] = v
-    if occupancy[i, j, k]:
-        return
-    if i > 0 and not occupancy[i - 1, j, k]:
-        out_parents[v] = flat_cell_index(i - 1, j, k, ny, nz)
-        return
-    if j > 0 and not occupancy[i, j - 1, k]:
-        out_parents[v] = flat_cell_index(i, j - 1, k, ny, nz)
-        return
-    if k > 0 and not occupancy[i, j, k - 1]:
-        out_parents[v] = flat_cell_index(i, j, k - 1, ny, nz)
 
 
 @wp.kernel
@@ -981,6 +966,37 @@ def cell_is_occupied(
 def dense_occupancy(volume: wp.uint64, base: wp.vec3i, out_occupancy: wp.array3d[wp.bool]) -> None:
     i, j, k = wp.tid()
     out_occupancy[i, j, k] = cell_is_occupied(volume, base, i, j, k)
+
+
+@wp.kernel
+def flood_init_parent(
+    volume: wp.uint64,
+    base: wp.vec3i,
+    out_occupancy: wp.array3d[wp.bool],
+    out_parents: wp.array[wp.int32],
+) -> None:
+    # The flood fill's dense occupancy (``dense_occupancy``'s probe) and its ECL-CC initialisation
+    # over the *empty* complement in one pass, with the 6-neighbour stencil implicit: three
+    # backward probes, no edge list. The backward neighbours' occupancy is probed from the grid
+    # rather than read from ``out_occupancy``, which other threads of this launch are writing. An
+    # occupied cell is its own singleton and never unions.
+    i, j, k = wp.tid()
+    ny = out_occupancy.shape[1]
+    nz = out_occupancy.shape[2]
+    v = flat_cell_index(i, j, k, ny, nz)
+    occupied = cell_is_occupied(volume, base, i, j, k)
+    out_occupancy[i, j, k] = occupied
+    out_parents[v] = v
+    if occupied:
+        return
+    if i > 0 and not cell_is_occupied(volume, base, i - 1, j, k):
+        out_parents[v] = flat_cell_index(i - 1, j, k, ny, nz)
+        return
+    if j > 0 and not cell_is_occupied(volume, base, i, j - 1, k):
+        out_parents[v] = flat_cell_index(i, j - 1, k, ny, nz)
+        return
+    if k > 0 and not cell_is_occupied(volume, base, i, j, k - 1):
+        out_parents[v] = flat_cell_index(i, j, k - 1, ny, nz)
 
 
 @wp.kernel

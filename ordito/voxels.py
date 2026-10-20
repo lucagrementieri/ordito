@@ -2045,15 +2045,18 @@ def fill_cavities(grid: wp.Volume, *, max_cells: int = 1 << 28) -> wp.Volume:
     if _voxel_count(grid) == 0:
         return _empty_grid(voxel_size, origin, device)
 
-    occupancy, origin_cell = _to_dense_padded(
-        grid, pad=1, max_cells=max_cells, caller="fill_cavities"
-    )
-    dims = (int(occupancy.shape[0]), int(occupancy.shape[1]), int(occupancy.shape[2]))
+    origin_cell, dims = _padded_box(grid, pad=1, max_cells=max_cells, caller="fill_cavities")
     n_nodes = dims[0] * dims[1] * dims[2]
-
+    # The occupancy is probed from the grid in the flood's initialisation pass, so no densifying
+    # pass runs first.
+    occupancy = odt.empty_3d(dims, wp.bool, device=device)
     parents = _launch.empty(n_nodes, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_voxels.flood_init_parent, dim=dims, inputs=[occupancy, parents], device=device
+        kernel_voxels.flood_init_parent,
+        dim=dims,
+        inputs=[grid.id, wp.vec3i(*origin_cell)],
+        outputs=[occupancy, parents],
+        device=device,
     )
     _launch.launch(kernel_voxels.flood_hook, dim=dims, inputs=[occupancy, parents], device=device)
     labels = _launch.empty(n_nodes, dtype=wp.int32, device=device)
@@ -3108,6 +3111,20 @@ def _to_dense_padded(
     whatever their separation cubed happens to be. Each caller then allocates several more lattices
     over the same box, so this count is the one that decides the footprint.
     """
+    base, shape = _padded_box(grid, pad=pad, max_cells=max_cells, caller=caller)
+    return to_dense(grid, origin_cell=base, shape=shape)
+
+
+def _padded_box(
+    grid: wp.Volume, *, pad: int, max_cells: int, caller: str
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """
+    Return the tight cell box grown by ``pad`` cells, checked against ``max_cells``.
+
+    The box [`_to_dense_padded`][ordito.voxels._to_dense_padded] densifies, as ``(base, shape)``,
+    for [`fill_cavities`][ordito.voxels.fill_cavities], which probes the grid over it in its first
+    pass instead of densifying it.
+    """
     lower_cell, extent = _cell_bounds(grid)
     base = (lower_cell[0] - pad, lower_cell[1] - pad, lower_cell[2] - pad)
     shape = (extent[0] + 2 * pad, extent[1] + 2 * pad, extent[2] + 2 * pad)
@@ -3118,7 +3135,7 @@ def _to_dense_padded(
             f"is {shape[0]}x{shape[1]}x{shape[2]} cells, which is set by how far apart the voxels "
             "are and not by how many there are"
         )
-    return to_dense(grid, origin_cell=base, shape=shape)
+    return base, shape
 
 
 def _check_iterations(connectivity: int, iterations: int) -> None:
