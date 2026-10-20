@@ -5025,6 +5025,17 @@ _MULTIGRID_JACOBI_FACTOR = 4.0 / 3.0
 _MULTIGRID_POWER_STEPS = 8
 _MULTIGRID_MIS_ROUNDS = 32
 
+# Rounds of the independent set issued before the host first reads its undecided count, and between
+# later reads, on CUDA. A round after the set is complete changes nothing (every node is decided and
+# keeps its state and flag), so reading less often only costs the idle rounds after the last
+# decision, where each read drains the queue. The benchmark operators' levels (cotangent and heat
+# systems, ``sphere_small`` to ``dragon``) decide in 5-12 rounds, most in 6-10: reading after round
+# 7 and every second round after it reads 1-3 times a level instead of 5-12, for at most one idle
+# round past the seventh (two below it). The CPU, whose read is free and whose idle round is not,
+# reads every round.
+_MULTIGRID_MIS_FIRST_CHECK = 7
+_MULTIGRID_MIS_CHECK_EVERY = 2
+
 # Strength-of-connection threshold for the aggregation: an off-diagonal counts as an edge only when
 # ``|A_ij| >= theta sqrt(A_ii A_jj)``. ``0.0`` keeps every off-diagonal, which is the aggregation
 # this package shipped first and is bit-exactly what a zero threshold reduces to.
@@ -5098,17 +5109,15 @@ def _multigrid_hierarchy(
         levels.append(level)
         if level.n <= _MULTIGRID_MAX_COARSE or len(levels) >= _MULTIGRID_MAX_LEVELS:
             break
-        # One extraction per level, read by both consumers: the aggregation's strength test wants
-        # ``sqrt(|A_ii|)`` and the smoother wants ``1 / A_ii``. ``wps.bsr_get_diag`` is an
-        # allocation *and* a launch, so extracting it once here rather than once per consumer saves
-        # a redundant diagonal extraction per level.
-        diag = odt.bsr_get_diag(operator)
-        label, sizes, n_aggregates = _multigrid_aggregate(operator, diag, seed)
+        # The diagonal, read by the aggregation's strength test (``sqrt(|A_ii|)``) and the smoother
+        # (``1 / A_ii``), and the power iteration's first step are formed by the aggregation's own
+        # setup launch.
+        diag, power, label, sizes, n_aggregates = _multigrid_aggregate(operator, seed)
         if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
         # ``omega D^-1``, the damping already folded in, so the smoother and the prolongator read
         # one scaled diagonal and no level reads its spectral radius back to the host.
-        level.inverse_diagonal = _multigrid_damped_diagonal(operator, diag, seed)
+        level.inverse_diagonal = _multigrid_damped_diagonal(operator, diag, power, seed)
         level.prolongator = _multigrid_prolongator(
             operator, label, sizes, n_aggregates, level.inverse_diagonal, stored
         )
@@ -5122,13 +5131,16 @@ def _multigrid_hierarchy(
 
 
 def _multigrid_aggregate(
-    matrix: odt.BsrMatrix[wp.float64], diagonal: wp.array[wp.float64], seed: int
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int]:
+    matrix: odt.BsrMatrix[wp.float64], seed: int
+) -> tuple[wp.array[wp.float64], wp.array[wp.float64], wp.array[wp.int32], wp.array[wp.int32], int]:
     """
     Aggregate label per row, from a distance-2 maximal independent set on the off-diagonal graph.
 
-    Returns ``(label, sizes, n_aggregates)``, ``sizes`` being each aggregate's row count, counted
-    by the spread's final hop.
+    Returns ``(diagonal, power, label, sizes, n_aggregates)``: ``matrix``'s diagonal, which the
+    setup launch extracts for the strength test and hands on to the smoother; the first step of the
+    smoother's power iteration (``_multigrid_damped_diagonal``), which needs only the row and so
+    rides on the same launch; and ``sizes`` each aggregate's row count, counted by the spread's
+    final hop.
 
     The selection is the randomized-priority pattern ``sample.dart_select_minima`` runs, lifted to
     distance 2 by propagating the packed ``(state, priority, index)`` maximum over one-hop
@@ -5138,25 +5150,28 @@ def _multigrid_aggregate(
     Both walks are over the operator's **strong** off-diagonal graph
     (``|A_ij| >= _MULTIGRID_THETA sqrt(A_ii A_jj)``), tested per edge rather than materialized, so
     that a level pays no extra allocation for the filter and ``theta = 0`` is bit-exactly the
-    unfiltered aggregation. ``diagonal`` is ``matrix``'s, passed in because the caller has already
-    extracted it for the smoother.
+    unfiltered aggregation.
     """
     device = matrix.device
     n = int(matrix.nrow)
     offsets, columns, values = matrix.offsets, matrix.columns, matrix.values
     theta = wp.float64(_MULTIGRID_THETA)
-    # ``sqrt(|A_ii|)`` per row, so the strength test below is a product rather than a square root
-    # per edge, read by both walks; the priority order; and the undecided start state -- one
-    # launch. The ``diagonal`` argument is the caller's, because the hierarchy needs the same
-    # extraction for the smoother and must not repeat it here.
+    # The diagonal; ``sqrt(|A_ii|)`` per row, so the strength test below is a product rather than
+    # a square root per edge, read by both walks; the priority order; the undecided start state;
+    # and the power iteration's first step -- one launch.
+    diagonal = _launch.empty(n, dtype=wp.float64, device=device)
     scaled_diagonal = _launch.empty(n, dtype=wp.float64, device=device)
     priority = _launch.empty(n, dtype=wp.uint32, device=device)
     state = _launch.empty(n, dtype=wp.int32, device=device)
+    power = _launch.empty(n, dtype=wp.float64, device=device)
+    # The undecided count (cleared by every round's first launch) and the roots so far (cleared
+    # by the setup launch), read together.
+    counts = _launch.empty(2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_mg.mis_level_setup,
         dim=n,
-        inputs=[wp.int32(seed), diagonal],
-        outputs=[scaled_diagonal, priority, state],
+        inputs=[wp.int32(seed), offsets, columns, values],
+        outputs=[diagonal, scaled_diagonal, priority, state, power, counts],
         device=device,
     )
     next_state = _launch.empty(n, dtype=wp.int32, device=device)
@@ -5164,35 +5179,46 @@ def _multigrid_aggregate(
     # Every node's root flag, written by the round that decides it (and every round it is still
     # undecided), so the scan below needs no map over the final state.
     flags = _launch.empty(n, dtype=wp.int32, device=device)
-    # Cleared by every round's first launch.
-    undecided = _launch.empty(1, dtype=wp.int32, device=device)
-    for _ in range(_MULTIGRID_MIS_ROUNDS):
+    first_check, check_every = (
+        (_MULTIGRID_MIS_FIRST_CHECK, _MULTIGRID_MIS_CHECK_EVERY) if device.is_cuda else (1, 1)
+    )
+    undecided = roots = None
+    for round_index in range(1, _MULTIGRID_MIS_ROUNDS + 1):
         # Two launches a round: the first hop forms every key from the state as it reads it, the
         # second hop decides as it reduces.
         _launch.launch(
             kernel_mg.mis_propagate_states,
             dim=n,
             inputs=[state, priority, offsets, columns, values, scaled_diagonal, theta],
-            outputs=[key, undecided],
+            outputs=[key, counts],
             device=device,
         )
         _launch.launch(
             kernel_mg.mis_propagate_decide,
             dim=n,
             inputs=[key, priority, offsets, columns, values, scaled_diagonal, theta, state],
-            outputs=[next_state, flags, undecided],
+            outputs=[next_state, flags, counts],
             device=device,
         )
         state, next_state = next_state, state
-        # One 4-byte read per round, and there are a handful of rounds: the loop cannot be a
-        # device-side one because the *number of aggregates* sizes every buffer downstream.
-        if int(read_scalar(undecided, 0)) == 0:
+        # An 8-byte read every few rounds (``_MULTIGRID_MIS_CHECK_EVERY``), and the last round
+        # read whatever the schedule: the loop cannot be a device-side one because the *number of
+        # aggregates* sizes every buffer downstream.
+        last = round_index == _MULTIGRID_MIS_ROUNDS
+        if not last and (round_index < first_check or (round_index - first_check) % check_every):
+            continue
+        undecided, roots = read_values(counts, 0, 2)
+        if undecided == 0 or last:
             break
+    # Every node not excluded claims an aggregate: the roots and any node the round cap left
+    # undecided, which is what the flags' scan below numbers.
+    assert undecided is not None
+    assert roots is not None
+    n_aggregates = int(roots) + int(undecided)
 
     # The root flags are scanned in place: only their scan is read from here on.
     scan_pos = flags
     _launch.array_scan(flags, scan_pos, inclusive=True)
-    n_aggregates = int(read_scalar(scan_pos))
 
     # Two hops of the spread. The first reads each label straight from ``(state, scan_pos)`` (its
     # ``label`` argument is not read); the second reads the first's output.
@@ -5215,17 +5241,22 @@ def _multigrid_aggregate(
         outputs=[label, sizes],
         device=device,
     )
-    return label, sizes, n_aggregates
+    return diagonal, power, label, sizes, n_aggregates
 
 
 def _multigrid_damped_diagonal(
-    matrix: odt.BsrMatrix[wp.float64], diagonal: wp.array[wp.float64], seed: int
+    matrix: odt.BsrMatrix[wp.float64],
+    diagonal: wp.array[wp.float64],
+    first_step: wp.array[wp.float64],
+    seed: int,
 ) -> wp.array[wp.float64]:
     """
     ``omega D^-1``, with ``omega = 4/3 / rho`` and ``rho`` the spectral radius of ``D^-1 A``.
 
     ``diagonal`` is ``matrix``'s own; ``D^-1`` is ``array.inverse_or_one`` of it, which the kernels
-    apply as they read it.
+    apply as they read it. ``first_step`` is the power iteration's first iterate, ``D^-1 A s`` of
+    the sign vector, which the aggregation's setup launch forms (``_multigrid_aggregate``); this
+    buffer is spent by the iteration.
 
     ``rho`` comes from an unnormalized power iteration. Normalizing every step would cost a host
     readback per step; leaving the iterate to grow and taking the geometric mean of the growth over
@@ -5243,15 +5274,15 @@ def _multigrid_damped_diagonal(
     """
     device = matrix.device
     n = int(matrix.nrow)
-    x = _launch.empty(n, dtype=wp.float64, device=device)
+    x = first_step
     y = _launch.empty(n, dtype=wp.float64, device=device)
-    for step in range(_MULTIGRID_POWER_STEPS - 1):
+    for _ in range(1, _MULTIGRID_POWER_STEPS - 1):
         _launch.launch(
             kernel_mg.power_step,
             dim=n,
             inputs=[
                 wp.int32(seed),
-                wp.int32(step == 0),
+                wp.int32(0),
                 diagonal,
                 matrix.offsets,
                 matrix.columns,
@@ -5396,6 +5427,7 @@ def _multigrid_galerkin(
         kernel_mg.product_triplets,
         [matrix.offsets, matrix.columns, matrix.values, p.offsets, p.columns, p.values],
         budget=budget,
+        synced=False,
     )
     if product is None:
         product = odt.bsr_mm(matrix, p)
@@ -5411,7 +5443,9 @@ def _multigrid_galerkin(
         out_rows=n_coarse,
     )
     if galerkin is None:
-        # ``bsr_mm``'s structural zeros are what ``bsr_compress`` drops here.
+        # ``bsr_mm``'s structural zeros are what ``bsr_compress`` drops here; it reads the
+        # product's ``nnz``, which a triplet-assembled product leaves unsynced.
+        product.nnz_sync()
         galerkin = _synced(
             odt.bsr_compress(
                 odt.bsr_mm(od.array.csr_transpose(p), product), prune_numerical_zeros=True
@@ -5431,15 +5465,17 @@ def _row_triplet_assembly(
     *,
     budget: int,
     out_rows: int | None = None,
+    synced: bool = True,
 ) -> odt.BsrMatrix[wp.float64] | None:
     """
-    Sum the triplets ``n`` fine rows emit into a pruned, ``nnz``-synced CSR.
+    Sum the triplets ``n`` fine rows emit into a pruned CSR, ``nnz``-synced when ``synced``.
 
     Each row's thread counts its triplets (``count_kernel`` writes ``counts[i + 1]`` and a leading
     zero, in ``int64``), the counts are scanned in place into starts, and ``triplet_kernel`` writes
     row ``i``'s triplets from ``starts[i]``. The result has ``out_rows`` rows (``n`` by default)
     and ``n_cols`` columns. ``None``, with nothing allocated past the counts, when the triplets
-    would number more than ``budget``.
+    would number more than ``budget``. An unsynced result's ``nnz`` is the triplet count, a
+    capacity: for a consumer that reads only the offsets and the entries they bound.
     """
     # Counted and scanned in 64 bits: the budget test must see the true total, which an ``int32``
     # scan wraps on a dense level.
@@ -5461,9 +5497,10 @@ def _row_triplet_assembly(
         device=device,
     )
     n_out = n if out_rows is None else out_rows
-    return _synced(
-        od.array.csr_from_triplets(n_out, n_cols, rows, cols, values, prune_numerical_zeros=True)
+    assembled = od.array.csr_from_triplets(
+        n_out, n_cols, rows, cols, values, prune_numerical_zeros=True
     )
+    return _synced(assembled) if synced else assembled
 
 
 def _synced(matrix: odt.BsrMatrix[wp.float64]) -> odt.BsrMatrix[wp.float64]:

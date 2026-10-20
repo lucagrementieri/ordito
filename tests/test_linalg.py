@@ -1543,6 +1543,29 @@ def test_multigrid_galerkin_fallback_builds_the_same_hierarchy(
         assert level_triplet.operator.nnz_sync() == level_fallback.operator.nnz_sync()
 
 
+def test_multigrid_aggregation_counts_the_aggregates_it_labels(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the aggregate count read with the round counters numbers the labels.
+
+    No reference aggregates this way. The count is the roots plus the nodes the round cap left
+    undecided (each its own aggregate), so the capped arm, which leaves some undecided, fails a
+    count of the roots alone; every label must index ``sizes`` and every aggregate be non-empty.
+    """
+    matrix_wp, _rhs, _dense_np, _rhs_np = _grid_laplacian_system(device, k=24)
+    counts = {}
+    for cap in (1, od.linalg._MULTIGRID_MIS_ROUNDS):
+        monkeypatch.setattr(od.linalg, "_MULTIGRID_MIS_ROUNDS", cap)
+        _diag, _power, label, sizes, n_aggregates = od.linalg._multigrid_aggregate(matrix_wp, 0)
+        label_np, sizes_np = label.numpy(), sizes.numpy()
+        assert sizes_np.shape == (n_aggregates,)
+        assert np.array_equal(np.unique(label_np), np.arange(n_aggregates))
+        assert np.array_equal(np.bincount(label_np, minlength=n_aggregates), sizes_np)
+        counts[cap] = n_aggregates
+    assert counts[1] > counts[od.linalg._MULTIGRID_MIS_ROUNDS] > 1
+
+
 @pytest.mark.parametrize(("preconditioner", "factor"), [("multigrid", 2), ("chebyshev", 4)])
 def test_preconditioners_need_fewer_iterations_than_jacobi(
     device: str, preconditioner: str, factor: int
