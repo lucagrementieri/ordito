@@ -774,11 +774,13 @@ def curved_hessian_energy(
     # Each unique edge's two halfedges are recorded by the same face pass.
     edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
     cursor = _launch.zeros(n_edges, dtype=wp.int32, device=device)
+    # ``_cr_mass_diagonal``'s edge mass, summed by the same face pass.
+    mass = _launch.zeros(n_edges, dtype=wp.float64, device=device)
     _launch.launch(
         kernel_energies.internal_angles_and_sums,
         dim=n_faces,
         inputs=[vertices, faces, inverse, cursor],
-        outputs=[angles, angle_sums, edge_halfedges],
+        outputs=[angles, angle_sums, edge_halfedges, mass],
         device=device,
     )
     if deterministic:
@@ -805,11 +807,10 @@ def curved_hessian_energy(
             "Crouzeix-Raviart discretization curved_hessian_energy is built on is undefined "
             "otherwise, like igl::curved_hessian_energy, which asserts it"
         )
-    mass = _cr_mass_diagonal(vertices, faces, inverse, n_edges, wp.float64)
 
-    vertex_slots = _launch.full((n_edges, 4), -1, dtype=wp.int32, device=device)
-    par = _launch.zeros((n_edges, 4), dtype=wp.float64, device=device)
-    perp = _launch.zeros((n_edges, 4), dtype=wp.float64, device=device)
+    vertex_slots = _launch.empty((n_edges, 4), dtype=wp.int32, device=device)
+    par = _launch.empty((n_edges, 4), dtype=wp.float64, device=device)
+    perp = _launch.empty((n_edges, 4), dtype=wp.float64, device=device)
     _launch.launch(
         kernel_energies.cr_gradient_rows,
         dim=n_edges,

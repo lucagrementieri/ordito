@@ -486,6 +486,17 @@ def zero_at_boundary_edges(
         out_nonmanifold[0] = 1
 
 
+@wp.func
+def cr_face_mass_third(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32
+) -> wp.float64:
+    # The third of face ``f``'s area it gives each of its edges' lumped Crouzeix-Raviart mass: the
+    # one per-face term of ``crouzeix_raviart_mass_diag`` and of ``internal_angles_and_sums``' mass,
+    # so ``crouzeix_raviart_massmatrix`` and ``curved_hessian_energy`` share one mass.
+    v0, v1, v2 = face_vertices_vec3d(vertices, faces, f)
+    return triangle_double_area(v0, v1, v2) / wp.float64(6.0)
+
+
 @wp.kernel
 def internal_angles_and_sums(
     vertices: wp.array[wp.vec3],
@@ -495,6 +506,7 @@ def internal_angles_and_sums(
     out_angles: wp.array2d[wp.float64],
     out_angle_sums: wp.array[wp.float64],
     out_edge_halfedges: wp.array2d[wp.int32],
+    out_edge_mass: wp.array[wp.float64],
 ) -> None:
     # Interior angle at each corner (law of cosines, float64), plus the per-vertex angle sum the
     # curvature correction normalizes by, added atomically into ``out_angle_sums`` when the caller
@@ -511,11 +523,15 @@ def internal_angles_and_sums(
     # ``curved_hessian_energy``'s setup, riding the face pass it already pays for. The cursor counts
     # every halfedge, so that caller validates edge-manifoldness from it afterwards (a count above
     # two); ``scatter.append_to_pair``'s two-slot bound keeps a third halfedge from writing out of
-    # ``out_edge_halfedges``' row width before the check raises.
+    # ``out_edge_halfedges``' row width before the check raises. The lumped Crouzeix-Raviart edge
+    # mass rides the same pass (``cr_face_mass_third``, the scatter of
+    # ``crouzeix_raviart_mass_diag``) into a zeroed ``out_edge_mass``.
     f = wp.int32(wp.tid())
     for k in range(3):
         h = 3 * f + k
         append_to_pair(inverse[h], h, edge_cursor, out_edge_halfedges)
+    third = cr_face_mass_third(vertices, faces, f)
+    add_corner_triple(out_edge_mass, inverse, f, third, third, third)
     l2_0, l2_1, l2_2, dbl_area = triangle_geometry_f64(vertices, faces, f)
     zero = wp.float64(0.0)
     if dbl_area <= zero:
@@ -555,11 +571,17 @@ def cr_gradient_rows(
     # perpendicular components of the CR gradient operator, supported on at most 4 vertices (the
     # edge's endpoints in slots 0/1, each incident face's apex in slot 2/3, ``-1`` when absent).
     # The edge's positive orientation is min-vertex-first, matching ``unique_edges``' sorted rows;
-    # the assembled energy is invariant to that gauge choice.
+    # the assembled energy is invariant to that gauge choice. The thread clears its own row first,
+    # so the three tables need no fill.
     u = wp.int32(wp.tid())
     a = unique_edges[u, 0]
     out_vertex_slots[u, 0] = a
     out_vertex_slots[u, 1] = unique_edges[u, 1]
+    out_vertex_slots[u, 2] = -1
+    out_vertex_slots[u, 3] = -1
+    for slot in range(4):
+        out_par[u, slot] = wp.float64(0.0)
+        out_perp[u, slot] = wp.float64(0.0)
     for t in range(2):
         h = edge_halfedges[u, t]
         if h < 0:
@@ -892,8 +914,7 @@ def crouzeix_raviart_mass_diag(
     # ``igl::crouzeix_raviart_massmatrix``'s diagonal and (per parallel/perpendicular component)
     # ``igl::cr_vector_mass``'s.
     f = wp.int32(wp.tid())
-    v0, v1, v2 = face_vertices_vec3d(vertices, faces, f)
-    third = type(out_mass[0])(triangle_double_area(v0, v1, v2) / wp.float64(6.0))
+    third = type(out_mass[0])(cr_face_mass_third(vertices, faces, f))
     add_corner_triple(out_mass, inverse, f, third, third, third)
 
 
