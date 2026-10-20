@@ -72,9 +72,9 @@ from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.grouping import (
     _unique_keys_core,  # pyright: ignore[reportPrivateUsage]
     hash_vector_rows,
-    unique_faces,
 )
 from ordito.kernels import array as kernel_array
+from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import polyline as kernel_polyline
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import repair as kernel_repair
@@ -577,7 +577,7 @@ def _vertex_classes(
 
 
 def resolve_duplicated_faces(
-    faces: wp.array[wp.int32],
+    faces: wp.array[wp.int32], *, n_vertices: int | None = None
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Resolve duplicated triangles by orientation-aware cancellation rules.
@@ -592,6 +592,10 @@ def resolve_duplicated_faces(
     ----------
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    n_vertices
+        Optional exclusive bound on the vertex indices, typically the vertex count. Trusted, not
+        checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
+        bound, and its host readback.
 
     Returns
     -------
@@ -604,7 +608,8 @@ def resolve_duplicated_faces(
     ------
     ValueError
         If a duplicate group's signed count is not orientable, i.e. its positive and negative
-        copies differ by more than one.
+        copies differ by more than one, or if ``n_vertices`` is ``None`` and a face index is
+        negative.
 
     Examples
     --------
@@ -633,73 +638,82 @@ def resolve_duplicated_faces(
         empty = _launch.empty(0, dtype=wp.int32, device=device)
         return empty, empty
 
-    unique_faces_wp, inverse = unique_faces(faces, return_inverse=True)
-    num_unique = unique_faces_wp.size // 3
-
-    # Every per-group table is one slice of a single zeroed buffer: the keep flags with the error
-    # word right behind them (so one readback takes the kept count and the error together), the
-    # member and signed counts, the smallest member of each sign class, and the decided face.
-    u = num_unique
-    tables = _launch.zeros(7 * u + 1, dtype=wp.int32, device=device)
-    keep_flags = odt.as_dense(tables[:u])
-    error_group = odt.as_dense(tables[u : u + 1])
-    member_count, signed_count, first_member, first_positive, first_negative, keep = (
-        odt.as_dense(tables[u + 1 + k * u : u + 1 + (k + 1) * u]) for k in range(6)
-    )
+    if n_vertices is None:
+        # The range check and the key radix ``grouping.unique_faces`` takes without a bound.
+        min_index, max_value = od.reduce.minmax(faces)
+        if min_index < 0:
+            raise ValueError(f"faces must be non-negative, got a minimum of {min_index}")
+        n_vertices = max_value + 1
+    # ``unique_faces``' orientation-free keys and identity payload, sorted, and then each run of
+    # equal keys -- one duplicate group, its faces in ascending index -- decided by the thread at
+    # its start: no unique table, inverse or per-group statistics are written between the sort and
+    # the decision. Three sorted indices below ``n_vertices`` pack below ``n_vertices ** 3``.
+    keys = _launch.empty(2 * n_faces, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_repair.scatter_duplicate_face_stats,
+        kernel_grouping.pack_sorted_face_keys_and_order,
         dim=n_faces,
-        inputs=[
-            faces,
-            unique_faces_wp,
-            inverse,
-            member_count,
-            signed_count,
-            first_member,
-            first_positive,
-            first_negative,
-        ],
+        inputs=[faces, wp.uint64(n_vertices), keys, order],
         device=device,
     )
+    end_bit = max(1, (min(n_vertices**3, 1 << 64) - 1).bit_length())
+    _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
+    # The keep flags at the sorted positions with the error word right behind them, so one readback
+    # takes the kept count and the error together; the decided face of each run start beside them.
+    flags = _launch.zeros(n_faces + 1, dtype=wp.int32, device=device)
+    keep = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_repair.resolve_duplicate_groups,
-        dim=u,
-        inputs=[
-            member_count,
-            signed_count,
-            first_member,
-            first_positive,
-            first_negative,
-            n_faces,
-            keep,
-            keep_flags,
-            error_group,
-        ],
+        kernel_repair.resolve_duplicate_runs,
+        dim=n_faces,
+        inputs=[faces, keys, order, n_faces],
+        outputs=[keep, flags],
         device=device,
     )
-    # Scanned in place, a kept group's flag becomes its output row plus one, in ascending group
-    # order (the reference's emission order); the last entry is the kept total. That and the error
-    # word are read back together: the raise and the output size both need them on the host.
-    _launch.array_scan(keep_flags, out_array=keep_flags, inclusive=True)
-    n_kept, error_word = read_values(tables, u - 1, 2)
+    # Scanned in place, a kept group's flag becomes its output row plus one, in ascending key order
+    # (the reference's emission order); the last entry is the kept total.
+    ranks = odt.as_dense(flags[:n_faces])
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    n_kept, error_word = read_values(flags, n_faces - 1, 2)
     if error_word != 0:
-        first_error = u - error_word
-        count = int(read_scalar(signed_count, first_error))
-        raise ValueError(
-            f"resolve_duplicated_faces: non-orientable duplicate face group {first_error} "
-            f"with signed count {count}"
-        )
+        _raise_duplicate_group(faces, keys, order, n_faces - error_word)
 
     resolved = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
     kept_wp = _launch.empty(n_kept, dtype=wp.int32, device=device)
     if n_kept > 0:
         _launch.launch(
-            kernel_repair.compact_kept_duplicate_faces,
-            dim=u,
-            inputs=[faces, keep, keep_flags, resolved, kept_wp],
+            kernel_repair.compact_kept_duplicate_runs,
+            dim=n_faces,
+            inputs=[faces, keep, ranks],
+            outputs=[resolved, kept_wp],
             device=device,
         )
     return resolved, kept_wp
+
+
+def _raise_duplicate_group(
+    faces: wp.array[wp.int32], keys: wp.array[wp.uint64], order: wp.array[wp.int32], start: int
+) -> None:
+    """
+    Raise ``resolve_duplicated_faces``' error for the group whose run starts at sorted ``start``.
+
+    The group is numbered as ``grouping.unique_faces`` numbers it, by its rank in key order, and its
+    signed count is the run's, both recovered on the host: readbacks paid only on the way to the
+    raise.
+    """
+    n_faces = faces.size // 3
+    # Readbacks on the error path only: the group's rank and its members.
+    keys_np = keys.numpy()[:n_faces]
+    order_np = order.numpy()[:n_faces]
+    rows_np = faces.numpy().reshape(-1, 3)
+    group = int(np.count_nonzero(keys_np[1 : start + 1] != keys_np[:start]))
+    stop = start + int(np.count_nonzero(keys_np[start:] == keys_np[start]))
+    representative = rows_np[order_np[start]].tolist()
+    rotations = [representative[k:] + representative[:k] for k in range(3)]
+    signs = [1 if rows_np[f].tolist() in rotations else -1 for f in order_np[start:stop]]
+    raise ValueError(
+        f"resolve_duplicated_faces: non-orientable duplicate face group {group} "
+        f"with signed count {sum(signs)}"
+    )
 
 
 def remove_degenerate_faces(

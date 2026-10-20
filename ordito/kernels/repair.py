@@ -102,100 +102,101 @@ def cyclic_match(
     )
 
 
-@wp.kernel
-def scatter_duplicate_face_stats(
-    faces: wp.array[wp.int32],
-    unique_faces: wp.array[wp.int32],
-    inverse: wp.array[wp.int32],
-    out_member_count: wp.array[wp.int32],
-    out_signed_count: wp.array[wp.int32],
-    out_first_member: wp.array[wp.int32],
-    out_first_positive: wp.array[wp.int32],
-    out_first_negative: wp.array[wp.int32],
-) -> None:
-    # Per input face: orientation sign against its group representative (the first-occurring
-    # face, gathered via ``inverse``) scattered into per-group stats. Every table arrives zeroed,
-    # so a ``first_*`` slot holds the smallest face index of its sign class *reflected* as
-    # ``n_faces - f`` (an ``atomic_max``), and zero means no member; ``first_member_index``
-    # reads it back.
-    f = wp.int32(wp.tid())
-    reflected = faces.shape[0] // 3 - f
-    ui = inverse[f]
-    consistent = cyclic_match(
-        faces[f * 3],
-        faces[f * 3 + 1],
-        faces[f * 3 + 2],
-        unique_faces[ui * 3],
-        unique_faces[ui * 3 + 1],
-        unique_faces[ui * 3 + 2],
-    )
-    wp.atomic_add(out_member_count, ui, wp.int32(1))
-    wp.atomic_max(out_first_member, ui, reflected)
-    if consistent:
-        wp.atomic_add(out_signed_count, ui, wp.int32(1))
-        wp.atomic_max(out_first_positive, ui, reflected)
-    else:
-        wp.atomic_add(out_signed_count, ui, wp.int32(-1))
-        wp.atomic_max(out_first_negative, ui, reflected)
-
-
 @wp.func
-def first_member_index(reflected: wp.array[wp.int32], n_faces: wp.int32, ui: wp.int32) -> wp.int32:
-    # The smallest face index ``scatter_duplicate_face_stats`` reflected into slot ``ui``.
-    return n_faces - reflected[ui]
+def duplicate_group_keep(
+    member_count: wp.int32,
+    signed_count: wp.int32,
+    first_member: wp.int32,
+    first_positive: wp.int32,
+    first_negative: wp.int32,
+) -> wp.int32:
+    # The keep decision of one duplicate group (igl::resolve_duplicated_faces): a singleton stays; a
+    # net +1/-1 orientation keeps the first member of the majority sign; a cancelling group drops
+    # (``-1``); anything else is non-orientable (``-2``).
+    if member_count == 1:
+        return first_member
+    if signed_count == 1:
+        return first_positive
+    if signed_count == -1:
+        return first_negative
+    if signed_count != 0:
+        return wp.int32(-2)
+    return wp.int32(-1)
 
 
 @wp.kernel
-def resolve_duplicate_groups(
-    member_count: wp.array[wp.int32],
-    signed_count: wp.array[wp.int32],
-    first_member: wp.array[wp.int32],
-    first_positive: wp.array[wp.int32],
-    first_negative: wp.array[wp.int32],
+def resolve_duplicate_runs(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
     n_faces: wp.int32,
     out_keep: wp.array[wp.int32],
-    out_keep_flags: wp.array[wp.int32],
-    out_error_group: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
 ) -> None:
-    # Keep-decision per duplicate group (igl::resolve_duplicated_faces): singletons stay; a net
-    # +1/-1 orientation keeps the first member of the majority sign; a cancelling group drops;
-    # anything else is non-orientable. The smallest offending group index is reported reflected,
-    # as ``n_groups - ui`` into a zeroed word, so zero means none.
-    #
-    # ``out_keep_flags`` is ``out_keep >= 0`` as a 0/1 ``int32``, written by the thread that
-    # decided it, so the caller scans it in place to number the kept groups without a second pass
-    # re-reading ``out_keep`` for the sign.
-    ui = wp.int32(wp.tid())
-    count = signed_count[ui]
-    keep = wp.int32(-1)
-    if member_count[ui] == 1:
-        keep = first_member_index(first_member, n_faces, ui)
-    elif count == 1:
-        keep = first_member_index(first_positive, n_faces, ui)
-    elif count == -1:
-        keep = first_member_index(first_negative, n_faces, ui)
-    elif count != 0:
-        wp.atomic_max(out_error_group, 0, member_count.shape[0] - ui)
-    out_keep[ui] = keep
-    out_keep_flags[ui] = wp.where(keep >= 0, wp.int32(1), wp.int32(0))
+    # One duplicate group per run of equal orientation-free keys, decided by the thread at the run's
+    # first sorted position, which walks the run: ``order`` is the stable sort of the identity, so
+    # the run lists the group's faces in ascending index and its first is the group's
+    # representative, the first occurrence ``grouping.unique_faces`` keeps. A member's sign is
+    # whether it is a cyclic rotation of the representative, and the first member of each sign is
+    # the first one the walk meets, so no per-group table is scattered by atomics and read back by
+    # a second pass. ``out_flags`` (the first ``n_faces`` entries of a zeroed buffer whose next
+    # entry is the error word) is ``1`` at a kept group's run start and ``0`` everywhere else, the
+    # flag the caller scans in place, so kept groups number in ascending key order. A
+    # non-orientable group reports its run start reflected, ``n_faces - i``, by ``atomic_max`` into
+    # the error word, so the smallest such group wins and zero means none. Launched over the sorted
+    # positions; ``out_keep`` is written at run starts only.
+    i = wp.int32(wp.tid())
+    if i > 0:
+        if sorted_keys[i] == sorted_keys[i - 1]:
+            out_flags[i] = 0
+            return
+    representative = order[i]
+    r0, r1, r2 = corner_triple(faces, representative)
+    member_count = wp.int32(0)
+    signed_count = wp.int32(0)
+    first_positive = wp.int32(-1)
+    first_negative = wp.int32(-1)
+    j = i
+    while j < n_faces:
+        if sorted_keys[j] != sorted_keys[i]:
+            break
+        f = order[j]
+        a, b, c = corner_triple(faces, f)
+        member_count += 1
+        if cyclic_match(a, b, c, r0, r1, r2):
+            signed_count += 1
+            if first_positive < 0:
+                first_positive = f
+        else:
+            signed_count -= 1
+            if first_negative < 0:
+                first_negative = f
+        j += 1
+    keep = duplicate_group_keep(
+        member_count, signed_count, representative, first_positive, first_negative
+    )
+    if keep == -2:
+        wp.atomic_max(out_flags, n_faces, n_faces - i)
+    out_keep[i] = keep
+    out_flags[i] = wp.where(keep >= 0, wp.int32(1), wp.int32(0))
 
 
 @wp.kernel
-def compact_kept_duplicate_faces(
+def compact_kept_duplicate_runs(
     faces: wp.array[wp.int32],
     keep: wp.array[wp.int32],
-    keep_ranks: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
     out_kept: wp.array[wp.int32],
 ) -> None:
-    # Each kept group's face, in ascending group order: ``keep_ranks`` is
-    # ``resolve_duplicate_groups``' keep flags scanned in place (inclusive), so a kept group's entry
-    # less one is its output row.
-    ui = wp.int32(wp.tid())
-    f = keep[ui]
-    if f < 0:
+    # Each kept group's face, at its row in ascending key order: ``ranks`` is
+    # ``resolve_duplicate_runs``' flags scanned in place (inclusive), so a run start whose flag was
+    # set is the one whose scan rose, and its exclusive scan is its output row.
+    i = wp.int32(wp.tid())
+    row, kept = scanned_count(ranks, i)
+    if kept == 0:
         return
-    row = keep_ranks[ui] - 1
+    f = keep[i]
     out_kept[row] = f
     for k in range(3):
         out_faces[3 * row + k] = faces[3 * f + k]
