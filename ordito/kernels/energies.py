@@ -2,6 +2,7 @@ import warp as wp
 
 from ordito.kernels.array import OverloadTable, to_vec3d
 from ordito.kernels.halfedge import halfedge_endpoints
+from ordito.kernels.laplacian import store_half_cotangents
 from ordito.kernels.predicates import (
     angle_defect,
     corner_cosines_from_l2,
@@ -773,23 +774,33 @@ CR_NO_COLUMN = wp.int32(2147483647)
 
 
 @wp.kernel
-def crouzeix_raviart_edge_faces(
+def crouzeix_raviart_face_terms(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
+    write_cot: wp.int32,
     out_face_counts: wp.array[wp.int32],
     out_edge_faces: wp.array[wp.int32],
     out_nonmanifold: wp.array[wp.int32],
+    out_cot: wp.array2d[wp.float32],
 ) -> None:
-    # One pass over the face corners that both tests edge-manifoldness and records each edge's
-    # (at most two) incident faces: corner ``k`` claims a slot of its edge, slots ``2 e`` and
+    # One pass over the faces that both tests edge-manifoldness and records each edge's (at most
+    # two) incident faces: each corner ``k`` claims a slot of its edge, slots ``2 e`` and
     # ``2 e + 1`` hold the faces, and a third claim flags the mesh. A degenerate face naming one
-    # edge twice claims two slots with the same face.
-    k = wp.int32(wp.tid())
-    e = inverse[k]
-    slot = wp.atomic_add(out_face_counts, e, 1)
-    if slot < 2:
-        out_edge_faces[2 * e + slot] = k // 3
-    else:
-        out_nonmanifold[0] = 1
+    # edge twice claims two slots with the same face. With ``write_cot`` set the same pass writes
+    # the face's ``float32`` half-cotangents (``laplacian.cotmatrix_entries``' row), which
+    # ``crouzeix_raviart_entry`` casts to the matrix precision as it reads them.
+    f = wp.int32(wp.tid())
+    for c in range(3):
+        k = 3 * f + c
+        e = inverse[k]
+        slot = wp.atomic_add(out_face_counts, e, 1)
+        if slot < 2:
+            out_edge_faces[2 * e + slot] = f
+        else:
+            out_nonmanifold[0] = 1
+    if write_cot != 0:
+        store_half_cotangents(vertices, faces, f, out_cot)
 
 
 @wp.func

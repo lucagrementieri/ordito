@@ -57,7 +57,7 @@ from ordito.kernels import energies as kernel_energies
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
-from ordito.laplacian import MeshOperatorPattern, cotmatrix, cotmatrix_entries
+from ordito.laplacian import MeshOperatorPattern, cotmatrix
 
 
 def edge_length_loss(
@@ -870,8 +870,7 @@ def crouzeix_raviart_cotmatrix(
         ``(3 * n_faces,)`` triangle index buffer.
     cot_entries
         ``(n_faces, 3)`` optional precomputed weights from
-        [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries]; computed in ``dtype`` when
-        ``None``.
+        [`cotmatrix_entries`][ordito.laplacian.cotmatrix_entries]; computed when ``None``.
     dtype
         Scalar block type of the assembled matrix: ``wp.float32`` (default) or ``wp.float64``.
     unique_edges, edge_map
@@ -938,15 +937,19 @@ def crouzeix_raviart_cotmatrix(
     if n_faces == 0:
         return od.array.empty_square_bsr(n_edges, dtype, device)
 
-    # One pass over the corners records each edge's incident faces and flags a third one.
+    # One pass over the faces records each edge's incident faces and flags a third one, and writes
+    # the half-cotangents when the caller has none.
     face_counts = _launch.zeros(n_edges, dtype=wp.int32, device=device)
     edge_faces = _launch.full(2 * n_edges, -1, dtype=wp.int32, device=device)
     nonmanifold = _launch.zeros(1, dtype=wp.int32, device=device)
+    computed_cot = odt.empty_2d(
+        (n_faces if cot_entries is None else 0, 3), wp.float32, device=device
+    )
     _launch.launch(
-        kernel_energies.crouzeix_raviart_edge_faces,
-        dim=3 * n_faces,
-        inputs=[edge_map],
-        outputs=[face_counts, edge_faces, nonmanifold],
+        kernel_energies.crouzeix_raviart_face_terms,
+        dim=n_faces,
+        inputs=[vertices, faces, edge_map, wp.int32(cot_entries is None)],
+        outputs=[face_counts, edge_faces, nonmanifold, computed_cot],
         device=device,
     )
     # The validation raises on the host, so its flag is read back.
@@ -958,7 +961,7 @@ def crouzeix_raviart_cotmatrix(
         )
 
     if cot_entries is None:
-        cot_entries = cotmatrix_entries(vertices, faces, dtype=dtype)
+        cot_entries = computed_cot
 
     # The pattern follows from the incidence: a row holds its diagonal and the other edges of its
     # (at most two) faces, so at most five entries, and the count pass and a scan give the offsets.
