@@ -447,9 +447,15 @@ def min_quad_with_fixed(
             f'min_quad_with_fixed: unknown solver {solver!r}, expected "iterative" or "direct".'
         )
     _require_preconditioner_name(preconditioner, "min_quad_with_fixed")
-    system = MinQuadWithFixedData(q, fixed_mask, coordinates, factor=solver == "direct")
-    return system.solve(
-        fixed_values, tol=tol, check_every=check_every, preconditioner=preconditioner
+    return MinQuadWithFixedData._solved_once(  # pyright: ignore[reportPrivateUsage]
+        q,
+        fixed_mask,
+        coordinates,
+        odt.as_array2d(fixed_values, wp.float64),
+        factor=solver == "direct",
+        tol=tol,
+        check_every=check_every,
+        preconditioner=preconditioner,
     )
 
 
@@ -605,33 +611,85 @@ class MinQuadWithFixedData:
             If ``q``, ``fixed_mask`` and ``coordinates`` are not all on one device.
         """
         require_same_device(q=q, fixed_mask=fixed_mask, coordinates=coordinates)
+        device = fixed_mask.device
+        self._extract(q, _launch.clone(fixed_mask), coordinates, None, factor=factor)
+        if self.factorization is not None:
+            # The right-hand side's extraction pass also counts each free row's kept entries,
+            # which only the system's assembly needed: scratch every solve rewrites.
+            self._row_counts = _launch.empty(self.n_free, dtype=wp.int32, device=device)
+
+    def _extract(
+        self,
+        q: odt.SparseMatrix,
+        fixed_mask: wp.array[wp.bool],
+        coordinates: wp.array[wp.vec3] | None,
+        fixed_values: odt.Array2dFloat | None,
+        *,
+        factor: bool,
+    ) -> odt.Array2dFloat | None:
+        """
+        Hold ``fixed_mask`` and extract the reduced system, with ``fixed_values``' right-hand side.
+
+        The extraction forms the right-hand side of ``fixed_values``' rows as it counts the rows,
+        and returns it; ``None`` (no values) extracts the operator alone, for later solves. Nothing
+        is extracted, and ``None`` returned, when nothing is free or ``fixed_values`` has no row.
+        """
         if int(q.nrow) != fixed_mask.size or int(q.ncol) != fixed_mask.size:
             raise ValueError(
                 f"min_quad_with_fixed: q is {int(q.nrow)} x {int(q.ncol)} but fixed_mask has "
                 f"{fixed_mask.size} entries"
             )
         self.q = q
-        self.fixed_mask = _launch.clone(fixed_mask)
-        self.free_map, self.n_free = free_partition(self.fixed_mask)
+        self.fixed_mask = fixed_mask
+        self.free_map, self.n_free = free_partition(fixed_mask)
         self.factorization: OperatorFactorization | None = None
         self._match_flag: wp.array[wp.int32] | None = None
-        if self.n_free == 0:
-            return
-        device = fixed_mask.device
-        no_values = odt.as_array2d(
-            _launch.empty((0, fixed_mask.size), dtype=wp.float64, device=device), wp.float64
-        )
-        q_uu, _ = assemble_interior_system(
-            q, self.fixed_mask, self.free_map, no_values, self.n_free
-        )
-        # The right-hand side's extraction pass also counts each free row's kept entries, which
-        # only the system's assembly above needed: scratch every solve rewrites.
-        self._row_counts = _launch.empty(self.n_free, dtype=wp.int32, device=device)
+        if self.n_free == 0 or (fixed_values is not None and int(fixed_values.shape[0]) == 0):
+            return None
+        values = fixed_values
+        if values is None:
+            values = odt.as_array2d(
+                _launch.empty((0, fixed_mask.size), dtype=wp.float64, device=fixed_mask.device),
+                wp.float64,
+            )
+        q_uu, rhs = assemble_interior_system(q, fixed_mask, self.free_map, values, self.n_free)
         self.factorization = OperatorFactorization(
-            q_uu, free_coordinates(coordinates, self.fixed_mask, self.free_map, self.n_free)
+            q_uu, free_coordinates(coordinates, fixed_mask, self.free_map, self.n_free)
         )
         if factor:
             self.factorization.factor()
+        return None if fixed_values is None else rhs
+
+    @classmethod
+    def _solved_once(
+        cls,
+        q: odt.SparseMatrix,
+        fixed_mask: wp.array[wp.bool],
+        coordinates: wp.array[wp.vec3] | None,
+        fixed_values: odt.Array2dFloat,
+        *,
+        factor: bool,
+        tol: float,
+        check_every: int,
+        preconditioner: str,
+    ) -> tuple[odt.Array2dFloat, wp.array[wp.int32], int]:
+        """
+        ``min_quad_with_fixed``'s one-shot solve, its inputs already validated.
+
+        The system lives only for the call, so it holds ``fixed_mask`` itself rather than a copy,
+        and the right-hand side is formed by the extraction's own counting pass.
+        """
+        system = cls.__new__(cls)
+        n_rhs = int(fixed_values.shape[0])
+        rhs = system._extract(q, fixed_mask, coordinates, fixed_values, factor=factor)
+        solution = odt.as_array2d(
+            _launch.zeros((n_rhs, system.n_free), dtype=wp.float64, device=fixed_mask.device),
+            wp.float64,
+        )
+        if rhs is None:
+            return solution, system.free_map, system.n_free
+        system._solve_formed(rhs, solution, tol, check_every, preconditioner)
+        return solution, system.free_map, system.n_free
 
     @property
     def factored(self) -> bool:
@@ -770,20 +828,34 @@ class MinQuadWithFixedData:
             ],
             device=device,
         )
-        if self.factorization.factorization is not None:
+        self._solve_formed(rhs, solution, tol, check_every, preconditioner)
+        return solution, self.free_map, self.n_free
+
+    def _solve_formed(
+        self,
+        rhs: odt.Array2dFloat,
+        solution: odt.Array2dFloat,
+        tol: float,
+        check_every: int,
+        preconditioner: str | SquaredLaplacianPreconditioner,
+    ) -> None:
+        """Solve the reduced system for a formed, non-empty ``rhs`` into ``solution``."""
+        factorization = self.factorization
+        assert factorization is not None
+        if factorization.factorization is not None:
             # Factored: ``solve_spd_columns``' first branch, without its report.
-            self.factorization.solve(rhs, solution, tol=tol)
-            return solution, self.free_map, self.n_free
-        solve_spd_columns(
-            cast("odt.BsrMatrix[wp.float64]", self.factorization.matrix),
+            factorization.solve(rhs, solution, tol=tol)
+            return
+        _solve_columns_verified(
+            cast("odt.BsrMatrix[wp.float64]", factorization.matrix),
             rhs,
             solution,
+            factorization,
             tol=tol,
+            maxiter=None,
             check_every=check_every,
             preconditioner=preconditioner,
-            factorization=self.factorization,
         )
-        return solution, self.free_map, self.n_free
 
     def release(self) -> None:
         """Drop the factorization; later solves iterate, verified, until it is built again."""
