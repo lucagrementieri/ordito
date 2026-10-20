@@ -604,16 +604,29 @@ def edges_unique_length(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, unique_edges=unique_edges)
-    if unique_edges is None:
-        # ``vertices.shape[0]`` when the caller gave no count: ``edges_unique`` would otherwise
-        # infer it from ``faces`` with ``array.index_bound``, a device reduction plus a host
-        # readback, for a number every caller of *this* function already holds in the array it
-        # passed. It is also the bound ``validate`` is documented against.
-        if n_vertices is None:
-            n_vertices = vertices.size
-        unique_edges, _ = edges_unique(faces, n_vertices=n_vertices, validate=validate)
-
-    return _edge_lengths(vertices, unique_edges, "unique_edges")
+    if unique_edges is not None:
+        return _edge_lengths(vertices, unique_edges, "unique_edges")
+    # ``vertices.shape[0]`` when the caller gave no count: ``edges_unique`` would otherwise infer it
+    # from ``faces`` with ``array.index_bound``, a device reduction plus a host readback, for a
+    # number every caller of *this* function already holds in the array it passed. It is also the
+    # bound ``validate`` is documented against.
+    if n_vertices is None:
+        n_vertices = vertices.size
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        return _launch.empty(0, dtype=wp.float32, device=vertices.device)
+    # ``edges_unique``'s sort and run scan, then the lengths written at each run's rank: the edge
+    # table and the corner inverse it would emit are never built.
+    radix, check = _face_edge_radix(faces, n_faces, n_vertices, validate)
+    keys, order, ranks, n_edges = _sorted_edge_run_ranks(faces, n_faces, radix, check)
+    lengths = _launch.empty(n_edges, dtype=wp.float32, device=vertices.device)
+    _launch.launch(
+        kernel_edges.emit_sorted_unique_edge_lengths,
+        dim=3 * n_faces,
+        inputs=[vertices, faces, keys, order, ranks, lengths],
+        device=vertices.device,
+    )
+    return lengths
 
 
 def edges_length(
