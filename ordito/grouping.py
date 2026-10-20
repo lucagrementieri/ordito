@@ -174,7 +174,7 @@ def _group_sorted(
     # The emit reads each flag back as a step in the scan, so it compacts and writes in one launch.
     # The flags live in the sort payload's upper half, which is free scratch once the sort has run
     # (``adjacency``'s pair grouping does the same), and are scanned there in place.
-    inclusive = odt.as_dense(indices_buffer[n:])
+    inclusive = _launch.view(indices_buffer, n, 2 * n)
     _launch.launch(
         kernel_grouping.MARK_GROUP_STARTS[values_buffer.dtype],
         dim=n,
@@ -439,7 +439,7 @@ def _unique_hash(
         # The sorted prefix of the sort's own scratch, handed back as a view rather than copied out:
         # nothing else holds that buffer, so the view is the answer's sole owner, and a copy would
         # be an allocation and a full pass to move bytes already where the caller wants them.
-        unique_values = odt.as_dense(keys_buf[:n_unique])
+        unique_values = _launch.view(keys_buf, 0, n_unique)
     else:
         # A dtype narrower than 32 bits was widened to be sortable; narrow it back.
         unique_values = bitcast_from_int(
@@ -450,7 +450,7 @@ def _unique_hash(
     if counts_compact is not None:
         # A contiguous prefix slice, not a gather-unsafe strided view -- no copy
         # needed before handing it to ``gather`` as the index array.
-        unique_counts = gather(counts_compact, odt.as_dense(perm_buf[:n_unique]))
+        unique_counts = gather(counts_compact, _launch.view(perm_buf, 0, n_unique))
 
     unique_inverse = None
     if return_inverse:
@@ -537,8 +537,8 @@ def _hash_insert(
     device = keys.device
     slot_key = _launch.zeros(cap, dtype=keys.dtype, device=device)
     counts_and_occupied = _launch.zeros(2 * cap, dtype=wp.int32, device=device)
-    slot_counts = odt.as_dense(counts_and_occupied[:cap])
-    occupied = odt.as_dense(counts_and_occupied[cap:])
+    slot_counts = _launch.view(counts_and_occupied, 0, cap)
+    occupied = _launch.view(counts_and_occupied, cap, 2 * cap)
     _launch.launch(
         kernel_grouping.HASH_INSERT[keys.dtype],
         dim=n,
@@ -925,7 +925,7 @@ def _sorted_run_ranks(
     there in place. The distinct count comes back with it, since it sizes every output. ``n > 0``.
     """
     _launch.radix_sort_pairs(keys, order, count=n, end_bit=end_bit)
-    ranks = odt.as_dense(order[n:])
+    ranks = _launch.view(order, n, 2 * n)
     _launch.launch(
         kernel_grouping.MARK_SORTED_RUN_STARTS[keys.dtype],
         dim=n,
@@ -1423,7 +1423,7 @@ def sorted_undirected_edge_keys(edges: odt.Array2dInt32, n_vertices: int) -> wp.
         count=n_edges,
         end_bit=max(1, (n_vertices * n_vertices - 1).bit_length()),
     )
-    return odt.as_dense(keys[:n_edges])
+    return _launch.view(keys, 0, n_edges)
 
 
 def _pack_unique_result(

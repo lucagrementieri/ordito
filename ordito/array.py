@@ -1063,7 +1063,7 @@ def sort_and_argsort_in_place(
     if n == 0:
         return keys_buffer, order_buffer
     _launch.radix_sort_pairs(keys_buffer, order_buffer, count=n, end_bit=end_bit)
-    return cast(_SortableArrayT, odt.as_dense(keys_buffer[:n])), odt.as_dense(order_buffer[:n])
+    return _launch.view(keys_buffer, 0, n), _launch.view(order_buffer, 0, n)
 
 
 def sort_rows(data: odt.Array2dInt32 | odt.Array2dFloat32) -> None:
@@ -1464,7 +1464,7 @@ def csr_from_keys(
     sentinel = n_rows * n_cols
     _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
     # The run flags and their scan live in the payload buffer's upper half, which is sort scratch.
-    inclusive = order[count:]
+    inclusive = _launch.view(order, count, 2 * count)
     _launch.launch(
         kernel_array.csr_run_flags,
         dim=count,
@@ -1784,7 +1784,7 @@ def _csr_from_coo_keys(
     # One pass flags the entries (pruning on each run's sum), one scan numbers the kept ones, and
     # one pass places them, summing each run where it lands; the flags and their scan live in the
     # payload buffer's upper half, which is sort scratch.
-    flags = order[count:]
+    flags = _launch.view(order, count, 2 * count)
     if prune_numerical_zeros:
         _launch.launch(
             kernel_array.CSR_NONZERO_RUN_FLAGS[values.dtype],
@@ -2669,8 +2669,8 @@ def mask_to_compact_ranks(
     _launch.launch(
         kernel_array.mask_rank_flags, dim=n, inputs=[mask, bool(invert), buffer], device=device
     )
-    flags = odt.as_dense(buffer[1:])
-    return odt.as_dense(buffer[:n]), _scan_into_tail(buffer, flags, flags)
+    flags = _launch.view(buffer, 1, n + 1)
+    return _launch.view(buffer, 0, n), _scan_into_tail(buffer, flags, flags)
 
 
 def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], int]:
@@ -2735,7 +2735,7 @@ def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], i
     # The leading zero from ``wp.zeros`` is the first exclusive offset; the inclusive scan fills the
     # rest, so ``buffer[n]`` is the total and ``buffer[:n]`` the exclusive offsets.
     buffer = _launch.zeros(n + 1, dtype=wp.int32, device=device)
-    return buffer, _scan_into_tail(buffer, counts, odt.as_dense(buffer[1:]))
+    return buffer, _scan_into_tail(buffer, counts, _launch.view(buffer, 1, n + 1))
 
 
 def _scan_into_tail(

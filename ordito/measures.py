@@ -30,7 +30,6 @@ import numpy as np
 import warp as wp
 
 import ordito as od
-import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import TILE_1D
@@ -398,7 +397,7 @@ def euler_characteristic(faces: wp.array[wp.int32], *, n_vertices: int | None = 
         count=n,
         end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length())),
     )
-    sorted_keys = odt.as_dense(keys[:n])
+    sorted_keys = _launch.view(keys, 0, n)
     # The unique edges are the sorted halfedge keys' runs, so only their count is formed: no run
     # scan and no emitted edge table. Both counts fold in one launch and come back in one read.
     counts = _launch.zeros(2, dtype=wp.int32, device=device)

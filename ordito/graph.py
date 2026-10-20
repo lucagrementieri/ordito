@@ -304,7 +304,8 @@ def edges_to_neighbor_lists_from_counts(
     # Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is 2 * m, known on the host). The same decline
     # ``adjacency.vertex_face_adjacency`` and ``halfedge.vertex_one_rings`` already write down.
-    _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
+    tail = _launch.view(offsets, 1, node_count + 1)
+    _launch.array_scan(counts, out_array=tail, inclusive=True)
     # ``counts`` has done its job and becomes the fill's write cursor, counting each row's free
     # slots down to zero -- which saves an allocation and a fill, and is why the scatter takes both
     # it and ``offsets``.
@@ -835,7 +836,7 @@ def successor_cycles(
     # The sizes land in the tail of the ``n_cycles + 1`` offsets buffer and are scanned there in
     # place, behind the leading zero, so no separate sizes buffer is allocated.
     offsets = _launch.zeros(n_cycles + 1, dtype=wp.int32, device=device)
-    sizes = odt.as_dense(offsets[1:])
+    sizes = _launch.view(offsets, 1, n_cycles + 1)
     _launch.launch(
         kernel_graph.compact_cycle_sizes,
         dim=node_count,

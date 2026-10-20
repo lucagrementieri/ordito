@@ -456,7 +456,7 @@ def _sorted_run_ranks(
     once the sort has run. With a ``bound`` the key pass left its range code in the slot after the
     payload, read in the same copy as the count and raised on before any emit.
     """
-    ranks = odt.as_dense(order[n : 2 * n])
+    ranks = _launch.view(order, n, 2 * n)
     _launch.launch(
         kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
         dim=n,
