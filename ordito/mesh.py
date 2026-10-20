@@ -16,6 +16,7 @@ from ordito import _launch
 from ordito._device import read_scalar, require_nonempty_mesh
 from ordito.config import is_deterministic
 from ordito.kernels import mesh as kernel_mesh
+from ordito.kernels import transform as kernel_transform
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
 _R = TypeVar("_R")
@@ -29,6 +30,8 @@ _LOGGER = logging.getLogger(__name__)
 # 0.87 M to 28 M faces and at 230-2 150 on 16-69 k faces, which this pair of constants follows.
 _TRACED_MESH_FIXED_RAYS = 8_000_000
 _TRACED_MESH_RAYS_PER_FACE = 160
+# The normal matrix ``Trimesh.transform``'s launch receives when it carries no direction (unread).
+_ZERO_MAT33 = wp.mat33()
 
 # Cached quantities that depend only on `faces` (topology), not on vertex positions. A
 # functional update that keeps the same faces and the same vertex count (`with_vertices`)
@@ -896,12 +899,14 @@ class Trimesh:
         [`vertices.vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``
         [`trimesh.Trimesh.vertex_normals`][]
         """
+        # Only tables already held are passed: a missing one is formed inside the scatter, bit for
+        # bit the property's own, rather than written to a cache slot just to be read back once.
         return od.vertices.vertex_normals(
             self._vertices,
             self._faces,
             weighting="angle",
-            face_normals=self.face_normals,
-            face_weights=self.face_angles,
+            face_normals=cast("wp.array[wp.vec3] | None", self._cache.get("face_normals")),
+            face_weights=cast("odt.Array2dFloat32 | None", self._cache.get("face_angles")),
         )
 
     @_CachedProperty
@@ -2255,32 +2260,32 @@ class Trimesh:
         # floats into exactly one.
         matrix_host = od.transform.as_mat44(matrix)
         carry = _TRANSFORM_CARRY[kind]
-        if od.transform.reverses_orientation(matrix_host):
-            new_vertices, new_faces = od.transform.transform_mesh(
-                self._vertices, self._faces, matrix_host
-            )
+        reverse = od.transform.reverses_orientation(matrix_host)
+        if reverse:
             carry = carry - _ORIENTATION_DEPENDENT_KEYS
-        else:
-            # Connectivity is untouched, so the face buffer is shared rather than copied, as
-            # `invert` shares the vertices: neither mesh can mutate it.
-            new_vertices = od.transform.transform_points(self._vertices, matrix_host)
-            new_faces = self._faces
         survived = {key: value for key, value in self._cache.items() if key in carry}
-        self._carry_directions(kind, matrix_host, survived)
+        new_vertices, new_faces = self._carry_directions(kind, matrix_host, reverse, survived)
         self._carry_box(kind, matrix_host, survived)
         return Trimesh(new_vertices, new_faces, initial_cache=survived)
 
     def _carry_directions(
-        self, kind: str, matrix: wp.mat44 | wp.array[wp.mat44], survived: dict[str, object]
-    ) -> None:
+        self, kind: str, matrix: wp.mat44, reverse: bool, survived: dict[str, object]
+    ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
         """
-        Rotate the cached direction quantities into ``survived`` instead of dropping them.
+        Transform the buffers, and rotate the cached direction quantities into ``survived``.
 
-        Only for a similarity or stronger, where a direction's image is determined by the
-        transform alone. A translation moves no direction at all and carries these verbatim
-        through `_TRANSLATION_CARRY`; an affine map tilts them by an amount that depends on the
-        surface, so there they are recomputed -- and recomputing `face_normals` yields
-        `face_areas` with it, which an affine map does not preserve anyway.
+        Returns the new ``(vertices, faces)``: the positions placed by ``matrix`` and, when
+        ``reverse`` (a mirror), the faces corner-reversed as
+        [`transform_mesh`][ordito.transform.transform_mesh] writes them; otherwise connectivity is
+        untouched, so the face buffer is shared rather than copied, as `invert` shares the
+        vertices: neither mesh can mutate it. Positions, faces and every carried direction are one
+        ``kernels/mesh.transform_mesh_and_directions`` launch.
+
+        The directions are rotated rather than dropped only for a similarity or stronger, where a
+        direction's image is determined by the transform alone. A translation moves no direction
+        at all and carries these verbatim through `_TRANSLATION_CARRY`; an affine map tilts them
+        by an amount that depends on the surface, so there they are recomputed -- and recomputing
+        `face_normals` yields `face_areas` with it, which an affine map does not preserve anyway.
 
         [`transform_normals`][ordito.transform.transform_normals] is the right map for the frame's
         tangents too, not just for its normal: for a similarity ``M = sR`` the inverse transpose is
@@ -2297,36 +2302,51 @@ class Trimesh:
         `test_transform_rotates_the_tangent_frames_where_it_can` on every fixture, closed and open
         alike, with "carried a frame it does not preserve".
         """
-        if kind not in ("rigid", "reflection", "similarity"):
-            return
         device = self._vertices.device
-        none = _launch.empty(0, dtype=wp.vec3, device=device)
-        # Every cached direction maps through one launch: up to four arrays, an absent one passed
-        # as ``none``. Each output is allocated only for an input that is present.
-        face_normals = cast("wp.array[wp.vec3] | None", self._cache.get("face_normals"))
-        basis_x = basis_y = None
-        frames = self._cache.get("vertex_tangent_frames")
-        if frames is not None and "vertex_tangent_frames" in survived:
-            basis_x, basis_y, vertex_normals = cast(
-                "tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]", frames
-            )
-        else:
-            vertex_normals = cast("wp.array[wp.vec3] | None", self._cache.get("vertex_normals"))
+        # Every cached direction maps through the same launch: up to four arrays, an absent one
+        # passed as a null array its guard skips. Each output is allocated only for an input that
+        # is present.
+        face_normals = vertex_normals = basis_x = basis_y = None
+        if kind in ("rigid", "reflection", "similarity"):
+            face_normals = cast("wp.array[wp.vec3] | None", self._cache.get("face_normals"))
+            frames = self._cache.get("vertex_tangent_frames")
+            if frames is not None and "vertex_tangent_frames" in survived:
+                basis_x, basis_y, vertex_normals = cast(
+                    "tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]", frames
+                )
+            else:
+                vertex_normals = cast("wp.array[wp.vec3] | None", self._cache.get("vertex_normals"))
         inputs = [face_normals, basis_x, basis_y, vertex_normals]
-        if all(array is None for array in inputs):
-            return
         outputs = [
-            none if array is None else _launch.empty(array.size, dtype=wp.vec3, device=device)
+            None if array is None else _launch.empty(array.size, dtype=wp.vec3, device=device)
             for array in inputs
         ]
-        n = max(0 if array is None else array.size for array in inputs)
+        new_vertices = _launch.empty(self.n_vertices, dtype=wp.vec3, device=device)
+        new_faces = self._faces
+        face_mode = kernel_transform.FACES_KEEP
+        if reverse:
+            new_faces = _launch.empty(self._faces.size, dtype=wp.int32, device=device)
+            face_mode = kernel_transform.FACES_REVERSE
+        directed = any(array is not None for array in inputs)
+        n = max(
+            self.n_vertices,
+            self.n_faces if reverse else 0,
+            *(0 if array is None else array.size for array in inputs),
+        )
         if n > 0:
             _launch.launch(
-                kernel_mesh.transform_cached_directions,
+                kernel_mesh.transform_mesh_and_directions,
                 dim=n,
                 inputs=[
-                    od.transform.normal_matrix(matrix),
-                    *(none if array is None else array for array in inputs),
+                    self._vertices,
+                    self._faces,
+                    matrix,
+                    face_mode,
+                    # A normal matrix is a host inverse; it is formed only when a direction maps.
+                    od.transform.normal_matrix(matrix) if directed else _ZERO_MAT33,
+                    *inputs,
+                    new_vertices,
+                    new_faces,
                     *outputs,
                 ],
                 device=device,
@@ -2340,6 +2360,7 @@ class Trimesh:
             survived["vertex_tangent_frames"] = (out_x, out_y, out_normal)
         if vertex_normals is not None:
             survived["vertex_normals"] = out_normal
+        return new_vertices, new_faces
 
     def _carry_box(
         self, kind: str, matrix: wp.mat44 | wp.array[wp.mat44], survived: dict[str, object]

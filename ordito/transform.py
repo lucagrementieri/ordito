@@ -428,6 +428,8 @@ def transform_mesh(
         out_vertices=out_vertices,
         out_faces=out_faces,
     )
+    if not isinstance(matrix, wp.array):
+        return _transform_mesh_host_matrix(vertices, faces, matrix, out_vertices, out_faces)
     new_vertices = transform_points(vertices, matrix, out=out_vertices)
     new_faces = _alloc_or_out(out_faces, faces.size, wp.int32, faces.device)
     if new_faces.size != faces.size:
@@ -445,6 +447,47 @@ def transform_mesh(
             )
     elif new_faces.ptr != faces.ptr:
         _launch.copy(new_faces, faces)
+    return new_vertices, new_faces
+
+
+def _transform_mesh_host_matrix(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    matrix: wp.mat44,
+    out_vertices: wp.array[wp.vec3] | None,
+    out_faces: wp.array[wp.int32] | None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    [`transform_mesh`][ordito.transform.transform_mesh] for a host matrix, in one launch.
+
+    The points and the (copied or reversed) faces are written by one
+    ``kernels/transform.transform_mesh_buffers`` launch; a device matrix keeps the two-pass form.
+    """
+    new_vertices = _alloc_or_out(out_vertices, vertices.size, wp.vec3, vertices.device)
+    if new_vertices.size != vertices.size:
+        raise ValueError(
+            f"transform_points: out must have length {vertices.size}, got {new_vertices.size}"
+        )
+    new_faces = _alloc_or_out(out_faces, faces.size, wp.int32, faces.device)
+    if new_faces.size != faces.size:
+        raise ValueError(
+            f"transform_mesh: out_faces must have length {faces.size}, got {new_faces.size}"
+        )
+    if reverses_orientation(matrix):
+        face_mode = kernel_transform.FACES_REVERSE
+    elif new_faces.ptr != faces.ptr:
+        face_mode = kernel_transform.FACES_COPY
+    else:
+        face_mode = kernel_transform.FACES_KEEP
+    n = max(vertices.size, faces.size // 3)
+    if n > 0:
+        _launch.launch(
+            kernel_transform.transform_mesh_buffers,
+            dim=n,
+            inputs=[vertices, faces, matrix, face_mode],
+            outputs=[new_vertices, new_faces],
+            device=vertices.device,
+        )
     return new_vertices, new_faces
 
 

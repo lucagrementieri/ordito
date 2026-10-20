@@ -1,6 +1,6 @@
 import warp as wp
 
-from ordito.kernels.transform import transform_normal_mat33
+from ordito.kernels.transform import transform_mesh_row, transform_normal_mat33
 
 wp.set_module_options({"enable_backward": False})
 
@@ -16,21 +16,29 @@ def transform_normal_at(
 
 
 @wp.kernel
-def transform_cached_directions(
+def transform_mesh_and_directions(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    matrix: wp.mat44,
+    face_mode: wp.int32,
     normal_matrix: wp.mat33,
     face_normals: wp.array[wp.vec3],
     basis_x: wp.array[wp.vec3],
     basis_y: wp.array[wp.vec3],
     vertex_normals: wp.array[wp.vec3],
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
     out_face_normals: wp.array[wp.vec3],
     out_basis_x: wp.array[wp.vec3],
     out_basis_y: wp.array[wp.vec3],
     out_vertex_normals: wp.array[wp.vec3],
 ) -> None:
-    # ``Trimesh._carry_directions``' up to four ``transform_normals`` maps in one launch over the
-    # longest of them; an absent quantity is a zero-length array its guard skips. Same map, same
-    # bits, as one ``transform_normals`` call per array.
+    # ``Trimesh.transform`` in one launch over the longest buffer: the positions and faces
+    # (``transform.transform_mesh``'s row) and up to four cached directions
+    # (``transform.transform_normals``' map), so a transformed mesh carrying its normals costs one
+    # launch.
     i = wp.int32(wp.tid())
+    transform_mesh_row(vertices, faces, matrix, face_mode, i, out_vertices, out_faces)
     transform_normal_at(face_normals, normal_matrix, i, out_face_normals)
     transform_normal_at(basis_x, normal_matrix, i, out_basis_x)
     transform_normal_at(basis_y, normal_matrix, i, out_basis_y)
