@@ -1544,11 +1544,12 @@ def slice_mesh_with_plane(
             0, dtype=wp.int32, device=device
         )
 
+    # No field: the kernels form each vertex's plane dot where they read it.
     return _clip_with_vertex_field(
         vertices,
         faces,
-        _plane_dots(vertices, plane_normal, plane_origin),
-        plane_normal=plane_normal,
+        _launch.empty(0, dtype=wp.float32, device=device),
+        plane=(plane_normal, plane_origin),
     )
 
 
@@ -2300,16 +2301,17 @@ def _clip_with_vertex_field(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
-    plane_normal: wp.vec3 | None = None,
+    plane: tuple[wp.vec3, wp.vec3] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Keep the ``vertex_dots >= 0`` region, the engine behind both public clippers.
 
-    ``plane_normal`` is the plane clip's tie-break for a face lying in the level set, and its
-    presence is the *only* difference between the two: a general field has no orientation to
-    compare, so such a face is left in the ``ON_PLANE`` class, which no kept block claims.
+    ``plane`` is the plane clip's ``(normal, origin)``: the field is then its signed distance,
+    formed in the kernels where an empty ``vertex_dots`` leaves it to them, and the normal is the
+    tie-break for a face lying in the level set -- the *only* other difference between the two: a
+    general field has no orientation to compare, so such a face is dropped.
     """
-    new_vertices, new_faces, _ = _clip_with_sources(vertices, faces, vertex_dots, plane_normal)
+    new_vertices, new_faces, _ = _clip_with_sources(vertices, faces, vertex_dots, plane)
     return new_vertices, new_faces
 
 
@@ -2317,7 +2319,7 @@ def _clip_with_sources(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
-    plane_normal: wp.vec3 | None = None,
+    plane: tuple[wp.vec3, wp.vec3] | None = None,
     *,
     merge_crossings: bool = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]:
@@ -2340,6 +2342,7 @@ def _clip_with_sources(
     n_vertices = vertices.size
     n_faces = faces.size // 3
     blocks = kernel_intersections.CLIP_FLAG_BLOCKS
+    plane_normal, plane_origin = (wp.vec3(), wp.vec3()) if plane is None else plane
     # The vertex block's flags are marks into zeros; the face blocks are written whole.
     if merge_crossings:
         ranks = _launch.empty(blocks * n_faces, dtype=wp.int32, device=device)
@@ -2352,8 +2355,9 @@ def _clip_with_sources(
             vertices,
             faces,
             vertex_dots,
-            wp.vec3() if plane_normal is None else plane_normal,
-            plane_normal is not None,
+            plane_normal,
+            plane_origin,
+            plane is not None,
             merge_crossings,
             ranks,
         ],
@@ -2390,6 +2394,8 @@ def _clip_with_sources(
             vertices,
             faces,
             vertex_dots,
+            plane_normal,
+            plane_origin,
             ranks,
             n_in,
             n_quad,
