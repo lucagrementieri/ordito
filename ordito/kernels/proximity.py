@@ -1947,23 +1947,39 @@ def face_containing_point_2d(
         out_face[tid] = face
 
 
+@wp.func
+def box_diagonal_d(corners: wp.array[wp.float32], box: wp.int32) -> wp.float64:
+    # Diagonal of packed box ``box`` of a ``minmax_vec3_chunked`` corner buffer (upper corner
+    # negated), in ``float64``: the differences and squares of ``float32`` corners are exact there.
+    base = 6 * box
+    total = wp.float64(0.0)
+    for axis in range(3):
+        extent = wp.float64(-corners[base + 3 + axis]) - wp.float64(corners[base + axis])
+        total += extent * extent
+    return wp.sqrt(total)
+
+
 @wp.kernel
 def contains_points_sign_parity(
     mesh_id: wp.uint64,
     points: wp.array[wp.vec3],
-    max_dist: wp.float32,
+    corners: wp.array[wp.float32],
     n_sample: wp.int32,
     perturbation_scale: wp.float32,
-    mesh_min: wp.vec3,
-    mesh_max: wp.vec3,
     out_contains: wp.array[wp.bool],
 ) -> None:
+    # ``corners`` is the mesh's box (``reduce.minmax_vec3_chunked``'s packing, upper corner
+    # negated), read here rather than on the host: a point outside it is outside the mesh, and its
+    # diagonal caps the parity query, which no point inside the box needs to search past.
     tid = wp.int32(wp.tid())
     p = points[tid]
+    mesh_min = wp.vec3(corners[0], corners[1], corners[2])
+    mesh_max = wp.vec3(-corners[3], -corners[4], -corners[5])
 
     if not is_strictly_inside_aabb(p, mesh_min, mesh_max):
         out_contains[tid] = False
         return
 
+    max_dist = wp.float32(box_diagonal_d(corners, wp.int32(0)))
     query = wp.mesh_query_point_sign_parity(mesh_id, p, max_dist, n_sample, perturbation_scale)
     out_contains[tid] = query.result and query.sign < wp.float32(0.0)

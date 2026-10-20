@@ -9,10 +9,10 @@ import warp as wp
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
-from ordito.bounds import aabb
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import ray as kernel_ray
+from ordito.kernels import reduce as kernel_reduce
 
 
 def intersects_location(
@@ -462,15 +462,15 @@ def contains_points(
     n = points.size
     if n == 0:
         return _launch.empty(0, dtype=wp.bool, device=points.device)
-    # One reduction, not two: ``enclosing_diagonal(mesh.points)`` would recompute exactly these
-    # corners, and the parity kernel needs both them and the diagonal, so compute the AABB once
-    # and derive the diagonal from it directly.
-    mesh_min, mesh_max = aabb(mesh.points)
-    # ``math.dist`` rather than ``float(wp.length(upper - lower))``: a Warp operator and a
-    # Warp builtin at Python scope each route through builtin dispatch, several times dearer. It
-    # computes in float64 where ``wp.length`` is float32, i.e. the correctly-rounded answer for
-    # float32 corners.
-    max_dist = math.dist(mesh_min, mesh_max)
+    # The mesh's box stays on the device: the kernel reads it for the box rejection and for the
+    # query cap, its diagonal, so the call reads nothing back.
+    corners = _launch.full(6, math.inf, dtype=wp.float32, device=points.device)
+    _launch.launch(
+        kernel_reduce.minmax_vec3_chunked,
+        dim=kernel_reduce.chunks_1d(mesh.points.size),
+        inputs=[mesh.points, corners],
+        device=points.device,
+    )
     out_contains = _launch.empty(n, dtype=wp.bool, device=points.device)
     _launch.launch(
         kernel_proximity.contains_points_sign_parity,
@@ -478,11 +478,9 @@ def contains_points(
         inputs=[
             mesh.id,
             points,
-            wp.float32(max_dist),
+            corners,
             wp.int32(n_sample),
             wp.float32(perturbation_scale),
-            mesh_min,
-            mesh_max,
             out_contains,
         ],
         device=points.device,
