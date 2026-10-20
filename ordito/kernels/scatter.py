@@ -490,6 +490,19 @@ def append_to_pair(
 
 
 @wp.func
+def append_to_pair_slot(
+    row: wp.int32, value: wp.int32, out_count: wp.array[wp.int32], out_pairs: wp.array2d[wp.int32]
+) -> wp.int32:
+    # ``append_to_pair`` returning the arrival slot it drew, for a caller that acts once per row
+    # (slot 0 is drawn by exactly one arrival): ``remesh.count_edge_topology`` counts each unique
+    # edge onto its endpoints' degrees there.
+    slot = wp.atomic_add(out_count, row, 1)
+    if slot < 2:
+        out_pairs[row, slot] = value
+    return slot
+
+
+@wp.func
 def record_edge_incidence(
     e: wp.int32,
     corner: wp.int32,

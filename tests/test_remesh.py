@@ -323,7 +323,10 @@ def test_smooth_pass_is_the_area_weighted_centroid(device: str) -> None:
     faces_wp = wp.array(
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    codes_wp, _boundary = od.remesh._classify(vertices_wp, faces_wp, wp.float32(math.radians(30.0)))
+    codes_wp = od.remesh._edge_incidence(
+        faces_wp, vertices_wp.size, vertices=vertices_wp, feature=wp.float32(math.radians(30.0))
+    ).feature_count
+    assert codes_wp is not None
     relaxed_np = od.remesh._smooth_pass(vertices_wp, faces_wp, codes_wp).numpy().astype(np.float64)
 
     positions_np = vertices_wp.numpy().astype(np.float64)
@@ -382,7 +385,10 @@ def test_smooth_pass_vetoes_a_move_that_would_fold_a_face(device: str) -> None:
     faces_wp = wp.array(
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    codes_wp, _boundary = od.remesh._classify(vertices_wp, faces_wp, wp.float32(math.radians(30.0)))
+    codes_wp = od.remesh._edge_incidence(
+        faces_wp, vertices_wp.size, vertices=vertices_wp, feature=wp.float32(math.radians(30.0))
+    ).feature_count
+    assert codes_wp is not None
     assert codes_wp.numpy()[0] == 0  # the centre is FREE, so only the veto can hold it still
 
     # Non-vacuity: the proposal this pass would otherwise commit really does invert incident faces.

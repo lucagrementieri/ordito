@@ -542,6 +542,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``quadric_decimate``'s provenance column, folded one pass at a time: the array is the previous
     # pass's answer *and* this pass's, so it is in place and ``out_`` would read as write-only.
     ("remesh", "compact_decimation_pass"): frozenset({"index"}),
+    # ``isotropic_remesh``'s fused topology fill: ``cursor`` is the spent count buffer counting each
+    # CSR row's free slots down, ``graph.scatter_neighbor_lists``' argument of that name.
+    ("remesh", "fill_edge_topology"): frozenset({"cursor"}),
     # The decimation pass's boundary-plane table: ``count_pass_edges`` accumulates into it and this
     # kernel folds each entry into its vertex's quadric and re-zeroes it for the next pass, so it is
     # persistent scratch whose zero state is the invariant, not an output.

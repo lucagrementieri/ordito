@@ -67,7 +67,7 @@ class _EdgeIncidence(NamedTuple):
     """
     The unique undirected edges of one triangulation, and which faces meet along each of them.
 
-    Everything the collapse passes and ``_classify`` need about edge topology, grouped once:
+    Everything the collapse passes and the smoothing stage need about edge topology, grouped once:
     ``unique_edges`` comes straight from [`edges_unique`][ordito.edges.edges_unique], and one
     scatter over that call's corner -> unique-edge map fills both ``face_count`` (1 on a boundary
     edge, 2 on an interior one) and ``faces``. The map itself is not carried: it is scratch for
@@ -82,8 +82,18 @@ class _EdgeIncidence(NamedTuple):
     """``(m, 2)`` incident face indices, the second column unwritten where ``face_count`` is 1."""
     vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None
     """
-    The same faces' [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency], when the
-    grouping was asked for it: its corner counts come from the incidence scatter itself.
+    ``(columns, offsets)`` of the same faces' vertex-face rows, in arrival order, when the topology
+    build was asked for (``_edge_incidence(vertices=)``).
+    """
+    ring: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None
+    """``(columns, offsets)`` of each vertex's neighbour row, in arrival order, when asked for."""
+    feature_count: wp.array[wp.int32] | None = None
+    """
+    ``(n_vertices,)`` incident feature-edge counts, with the topology build: a boundary edge or an
+    interior edge sharper than the feature angle counts as one, and a vertex with zero is FREE,
+    exactly two CREASE (a smooth feature or boundary line) and anything else a frozen CORNER. The
+    counts are kept rather than the codes: every reader applies
+    ``kernel_remesh.finalize_vertex_codes`` as it loads one, so no pass rewrites the table.
     """
 
 
@@ -360,7 +370,11 @@ def isotropic_remesh(
         else:
             grouping = None
         # The edge grouping of ``current_faces`` whenever a stage leaves one behind, so the next
-        # stage that classifies the same faces need not regroup them.
+        # stage that classifies the same faces need not regroup them. A grouping the smoothing
+        # stage will read carries the whole topology it reads -- the feature counts, the
+        # vertex-face rows and, for the deterministic ring, the neighbour rows -- from one build.
+        smooth_ring = smooth and is_deterministic()
+        topology_vertices = current_vertices if smooth or reproject else None
         incidence: _EdgeIncidence | None = None
         if collapse:
             low, high = _length_bands(
@@ -374,16 +388,19 @@ def isotropic_remesh(
             )
         elif grouping is not None:
             incidence = _edge_incidence(
-                current_faces, current_vertices.size, grouping, vertex_faces=smooth
+                current_faces,
+                current_vertices.size,
+                grouping,
+                vertices=topology_vertices,
+                feature=feature,
+                ring=smooth_ring,
             )
         if current_faces.size == 0:
             break
         if swap:
             if current_faces is faces:
                 current_faces = _launch.clone(faces)
-            flips, topology = _valence_flip_pass(
-                current_vertices, current_faces, feature, incidence=incidence
-            )
+            flips, topology = _valence_flip_pass(current_vertices, current_faces, feature)
             if flips:
                 # A flip rewrote the faces in place, so the grouping is stale; the flip loop's own
                 # key sort regroups them without re-packing every corner's key.
@@ -391,30 +408,27 @@ def isotropic_remesh(
                     current_faces,
                     current_vertices.size,
                     topology.edges_unique(),
-                    vertex_faces=smooth,
+                    vertices=current_vertices if smooth or reproject else None,
+                    feature=feature,
+                    ring=smooth_ring,
                 )
+        # The deviation bound runs inside the smoothing launch whenever there is one.
+        clamped = False
         if smooth or reproject:
-            # One edge grouping serves both the classification and the smoothing ring: the two read
+            # One topology build serves both the classification and the smoothing ring: the two read
             # the same faces, and the smooth step would otherwise hash and sort them a second time.
-            if incidence is None:
+            # A collapse pass that stopped hands over its own last build, whose feature counts are
+            # these vertices' (it committed nothing).
+            if incidence is None or incidence.feature_count is None:
                 incidence = _edge_incidence(
-                    current_faces, current_vertices.size, vertex_faces=smooth
+                    current_faces,
+                    current_vertices.size,
+                    vertices=current_vertices,
+                    feature=feature,
+                    ring=smooth_ring,
                 )
-            # The deterministic smoothing ring is built from vertex degrees, counted in the
-            # classification launch that reads every unique edge anyway.
-            ring_degree = (
-                _launch.zeros(current_vertices.size, dtype=wp.int32, device=device)
-                if smooth and is_deterministic()
-                else None
-            )
-            feature_count, _boundary = _classify(
-                current_vertices,
-                current_faces,
-                feature,
-                incidence,
-                boundary=False,
-                degree=ring_degree,
-            )
+            feature_count = incidence.feature_count
+            assert feature_count is not None
             # Reprojection reads each vertex where the smoothing wrote it, so with both on it runs
             # inside the smoothing launch.
             reproject_mesh = original_mesh if reproject else None
@@ -425,15 +439,23 @@ def isotropic_remesh(
                     feature_count,
                     incidence.unique_edges,
                     vertex_faces=incidence.vertex_faces,
-                    ring_degree=ring_degree,
+                    ring=incidence.ring,
                     reproject_onto=reproject_mesh,
                     max_dist=query_radius,
+                    clamp_onto=original_mesh if max_deviation is not None else None,
+                    max_deviation=0.0 if max_deviation is None else max_deviation,
                 )
+                clamped = max_deviation is not None
             elif reproject_mesh is not None:
                 current_vertices = _reproject_pass(
                     current_vertices, feature_count, reproject_mesh, query_radius
                 )
-        if clamp_kernel is not None and original_mesh is not None and max_deviation is not None:
+        if (
+            not clamped
+            and clamp_kernel is not None
+            and original_mesh is not None
+            and max_deviation is not None
+        ):
             bounded = _launch.empty_like(current_vertices)
             _launch.launch(
                 clamp_kernel,
@@ -496,61 +518,29 @@ def _length_bands(
     return low, high
 
 
-def _classify(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    feature: wp.float32,
-    incidence: _EdgeIncidence | None = None,
-    *,
-    boundary: bool = True,
-    degree: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.int32], wp.array[wp.bool] | None]:
-    """
-    Per-vertex incident feature-edge counts plus a boundary-vertex mask.
-
-    A boundary edge or an interior edge sharper than ``feature`` counts as one incident feature
-    edge; a vertex with zero is FREE, exactly two is CREASE (a smooth feature/boundary line), and
-    anything else (a feature endpoint or a junction) is a frozen CORNER. The counts are returned
-    rather than the codes: every reader applies ``kernel_remesh.finalize_vertex_codes`` as it loads
-    one, so no pass rewrites the table (a count of zero is a FREE vertex either way).
-
-    Both questions are answered by **one launch** over ``incidence``, which the collapse passes
-    have already built for their own scoring and pass in. That matters because computing the
-    answer from ``boundary.boundary_edges`` plus ``adjacency.face_adjacency`` would hash, sort and
-    group the same ``3 * n_faces`` edge rows the incidence was already grouped from — sharing the
-    grouping avoids that repeated work whenever a caller has it in hand.
-
-    ``boundary=False`` returns ``None`` for the mask and neither allocates nor writes it, for the
-    stages that read only the counts. ``degree``, a zeroed per-vertex buffer when given, receives
-    each vertex's unique-edge count in the same launch.
-    """
-    device = vertices.device
-    n_vertices = vertices.size
-    boundary_vertex = _launch.zeros(n_vertices, dtype=wp.bool, device=device) if boundary else None
-    feature_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
-    _scatter_feature_edges(
-        vertices, faces, feature, incidence, feature_count, boundary_vertex, degree
-    )
-    return feature_count, boundary_vertex
-
-
 def _edge_incidence(
     faces: wp.array[wp.int32],
     n_vertices: int,
     grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None,
     *,
-    vertex_faces: bool = False,
+    vertices: wp.array[wp.vec3] | None = None,
+    feature: wp.float32 | None = None,
+    ring: bool = False,
 ) -> _EdgeIncidence:
     """
     Group a triangulation's edge rows once, into unique edges and their incident faces.
 
     The face table costs one scatter over the corners on top of the ``edges_unique`` the collapse
     passes run anyway -- and it replaces the ``scatter.count_occurrences`` launch they used to make
-    for the count alone, so it is very nearly free. It is what lets ``_classify`` skip a second and
-    third grouping of the same rows; see ``scatter_edge_incidence`` in ``kernels/scatter.py``.
-    ``grouping``, when given, is ``edges_unique``'s ``(unique_edges, inverse)`` for ``faces``,
-    already in hand from the stage that produced them. ``vertex_faces`` also builds the faces'
-    vertex-face CSR, its corner counts taken by the same scatter.
+    for the count alone, so it is very nearly free. ``grouping``, when given, is ``edges_unique``'s
+    ``(unique_edges, inverse)`` for ``faces``, already in hand from the stage that produced them.
+
+    ``vertices`` asks for the whole topology a collapse or smoothing pass reads, in the same count
+    launch, one scan and one fill (``kernels/remesh.count_edge_topology``): the vertex-face rows,
+    the neighbour rows with ``ring``, and with ``feature`` too the incident feature-edge counts
+    (``_EdgeIncidence.feature_count``). One launch over the grouping answers what
+    ``boundary.boundary_edges`` plus ``adjacency.face_adjacency`` would answer by hashing, sorting
+    and grouping the same ``3 * n_faces`` edge rows again.
     """
     device = faces.device
     unique_edges, inverse = (
@@ -559,9 +549,9 @@ def _edge_incidence(
         else od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     )
     m = int(unique_edges.shape[0])
-    face_count = _launch.zeros(m, dtype=wp.int32, device=device)
-    edge_faces = odt.empty_2d((m, 2), wp.int32, device=device)
-    if not vertex_faces or m == 0:
+    edge_faces = odt.as_array2d(odt.empty_2d((m, 2), wp.int32, device=device), wp.int32)
+    if vertices is None or m == 0:
+        face_count = _launch.zeros(m, dtype=wp.int32, device=device)
         if m > 0:
             _launch.launch(
                 kernel_scatter.scatter_edge_incidence,
@@ -569,19 +559,50 @@ def _edge_incidence(
                 inputs=[inverse, face_count, edge_faces],
                 device=device,
             )
-        return _EdgeIncidence(unique_edges, face_count, odt.as_array2d(edge_faces, wp.int32))
-    corner_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+        return _EdgeIncidence(unique_edges, face_count, edge_faces)
+    n_faces = faces.size // 3
+    # One zeroed buffer: the two CSRs' counts, the edge face counts and the feature counts.
+    n_features = 0 if feature is None else n_vertices
+    zeroed = _launch.zeros(2 * n_vertices + m + n_features, dtype=wp.int32, device=device)
+    counts = odt.as_dense(zeroed[: 2 * n_vertices])
+    face_count = odt.as_dense(zeroed[2 * n_vertices : 2 * n_vertices + m])
+    feature_count = odt.as_dense(zeroed[2 * n_vertices + m :]) if feature is not None else None
+    offsets = _launch.empty(2 * n_vertices + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty((2 * m if ring else 0) + 3 * n_faces, dtype=wp.int32, device=device)
+    ring_flag = wp.int32(1 if ring else 0)
     _launch.launch(
-        kernel_remesh.scatter_edge_incidence_and_corner_counts,
+        kernel_remesh.count_edge_topology,
         dim=inverse.size,
-        inputs=[inverse, faces, face_count, edge_faces, corner_count],
+        inputs=[inverse, faces, unique_edges, ring_flag],
+        outputs=[face_count, edge_faces, counts, offsets],
+        device=device,
+    )
+    # Deliberately no readback: both totals (``2 m`` and ``3 n_faces``) are known on the host.
+    _launch.array_scan(counts, out_array=odt.as_dense(offsets[1:]), inclusive=True)
+    _launch.launch(
+        kernel_remesh.fill_edge_topology,
+        dim=max(m, n_faces),
+        inputs=[
+            vertices,
+            faces,
+            unique_edges,
+            face_count,
+            edge_faces,
+            offsets,
+            wp.float32(0.0) if feature is None else feature,
+            ring_flag,
+            counts,
+        ],
+        outputs=[columns, feature_count],
         device=device,
     )
     return _EdgeIncidence(
         unique_edges,
         face_count,
-        odt.as_array2d(edge_faces, wp.int32),
-        od.adjacency.vertex_face_adjacency_from_counts(faces, corner_count),
+        edge_faces,
+        (columns, odt.as_dense(offsets[n_vertices:])),
+        (columns, odt.as_dense(offsets[: n_vertices + 1])) if ring else None,
+        feature_count,
     )
 
 
@@ -628,33 +649,29 @@ def _collapse_pass(
         if n_faces == 0:
             break
 
-        # One edge grouping per pass, shared by the candidate scoring and ``_classify``; the first
-        # pass's may come from the stage before (``grouping``).
+        # One edge grouping per pass, and the whole topology the candidate scoring reads built from
+        # it in one count, one scan and one fill; the first pass's grouping may come from the stage
+        # before (``grouping``).
         #
-        # The vertex-face CSR it also builds exists only for ``collapse_candidates``' fold veto,
-        # which needs the faces incident to a vertex where the rings below have only its
-        # neighbours. It is about a percent of the collapse stage, and the veto's own per-candidate
-        # work does not show above run-to-run noise -- see the veto itself in
-        # ``kernels/remesh.collapse_candidates``. Its corner counts come from the incidence scatter.
-        incidence = _edge_incidence(faces, n_vertices, grouping, vertex_faces=True)
+        # The vertex-face rows exist only for ``collapse_candidates``' fold veto, which needs the
+        # faces incident to a vertex where the rings have only its neighbours. Only the neighbour
+        # *sets* are read -- the link condition counts shared neighbours, the band walks and the
+        # ring locks exit or take a minimum over a whole row, the veto exits on a fold -- so neither
+        # CSR needs an order.
+        incidence = _edge_incidence(
+            faces, n_vertices, grouping, vertices=vertices, feature=feature, ring=True
+        )
         grouping = None
         unique_edges = incidence.unique_edges
         m = int(unique_edges.shape[0])
         if m == 0:
             break
         assert incidence.vertex_faces is not None
+        assert incidence.ring is not None
+        assert incidence.feature_count is not None
         vertex_faces, face_offsets = incidence.vertex_faces
-        degree = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
-        feature_count, _boundary = _classify(
-            vertices, faces, feature, incidence, boundary=False, degree=degree
-        )
-        # Only the neighbour *sets* are read -- the link condition counts shared neighbours, the
-        # band walks and the ring locks exit or take a minimum over a whole row -- so the rows need
-        # no order, and the degrees the classification counted and a cursor fill build them with
-        # no sort. The unique edges came from this very face buffer, so they are in range.
-        ring_neighbors, ring_offsets = od.graph.edges_to_neighbor_lists_from_counts(
-            unique_edges, degree
-        )
+        ring_neighbors, ring_offsets = incidence.ring
+        feature_count = incidence.feature_count
 
         survivor = _launch.empty(m, dtype=wp.int32, device=device)
         removed = _launch.empty(m, dtype=wp.int32, device=device)
@@ -711,60 +728,51 @@ def _collapse_pass(
             device=device,
         )
         # Drop the faces the collapses degenerated and the vertices no face names any more, in one
-        # scan: the positions and both length bands are compacted together, so neither band is
-        # re-sampled. Issued before the commit count is read, so one copy carries the loop's
-        # decision and the sizes; a pass that committed nothing discards a compaction of an
-        # identity remap.
-        ranks, compacted = _compact_remapped_faces(
-            faces, remap, n_vertices, odt.as_dense(state[1:])
+        # scan and one compaction: the positions and both length bands are compacted together, so
+        # neither band is re-sampled. Issued before the commit count is read, so one copy carries
+        # the loop's decision and the sizes, and the outputs are sized for every input and kept as
+        # their live prefixes; a pass that committed nothing discards a compaction of an identity
+        # remap.
+        compacted, kept_positions, kept_low, kept_high = _compact_remapped_faces(
+            faces, remap, positions, low_bands, high_bands, odt.as_dense(state[1:])
         )
         total, n_kept, n_surviving = (int(value) for value in read_values(state, 0, 3))
         if total == committed:
             current = incidence
             break
         committed = total
-        faces = (
-            odt.as_dense(compacted[: 3 * n_surviving])
-            if n_surviving > 0
-            else _launch.empty(0, dtype=wp.int32, device=device)
-        )
-        vertices = _launch.empty(n_kept, dtype=wp.vec3, device=device)
-        kept_low = (
-            None if low_bands is None else _launch.empty(n_kept, dtype=wp.float32, device=device)
-        )
-        kept_high = (
-            None if high_bands is None else _launch.empty(n_kept, dtype=wp.float32, device=device)
-        )
-        if n_kept > 0:
-            _launch.launch(
-                kernel_remesh.compact_collapse_vertices,
-                dim=n_vertices,
-                inputs=[positions, low_bands, high_bands, ranks, vertices, kept_low, kept_high],
-                device=device,
-            )
-        low_bands, high_bands = kept_low, kept_high
+        faces = _live_prefix(compacted, 3 * n_surviving)
+        vertices = _live_prefix(kept_positions, n_kept)
+        low_bands = None if kept_low is None else _live_prefix(kept_low, n_kept)
+        high_bands = None if kept_high is None else _live_prefix(kept_high, n_kept)
 
     return vertices, faces, current
 
 
+def _live_prefix(buffer: wp.array[odt.DType], count: int) -> wp.array[odt.DType]:
+    """Return the first ``count`` entries of ``buffer`` as a dense view (a fresh empty at 0)."""
+    if count == 0:
+        return cast(
+            "wp.array[odt.DType]", _launch.empty(0, dtype=buffer.dtype, device=buffer.device)
+        )
+    return odt.as_dense(buffer[:count])
+
+
 def _valence_flip_pass(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    feature: wp.float32,
-    max_iter: int = 10,
-    incidence: _EdgeIncidence | None = None,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], feature: wp.float32, max_iter: int = 10
 ) -> tuple[int, _FlipTopology]:
     """
     Flip interior edges toward ideal valence (6 interior, 4 boundary); mutates ``faces``.
 
-    ``incidence``, when given, is the edge grouping of ``faces`` as they are on entry; the boundary
-    classification reads it rather than grouping the rows again. Returns the number of flips, so a
-    caller holding that grouping knows whether it still describes ``faces``, and the flip topology,
-    whose ``edges_unique`` regroups the flipped faces from the loop's own key sort.
+    Returns the number of flips, so a caller holding a grouping of ``faces`` knows whether it still
+    describes them, and the flip topology, whose ``edges_unique`` regroups the flipped faces from
+    the loop's own key sort.
     """
     device = faces.device
     n_vertices = vertices.size
-    boundary_vertex = _boundary_vertex_mask(vertices, faces, incidence)
+    # The boundary vertices, read off the loop's opening build: the runs of one in its sorted edge
+    # keys. A flip only ever replaces an interior edge, so the mask holds for every round after.
+    boundary_vertex = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
 
     # Valence is the loop's own: seeded by its one build, from the keys that build radix-sorts,
     # and kept current by every committed flip (a flip moves one edge from ``a``, ``c`` to ``b``,
@@ -805,61 +813,11 @@ def _valence_flip_pass(
         )
 
     topology = _FlipTopology(faces, n_vertices)
+    topology.boundary_vertex = boundary_vertex
     flips = _flip_interior_edges(
         faces, n_vertices, launch, max_iter, topology=topology, valence=valence
     )
     return flips, topology
-
-
-def _boundary_vertex_mask(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], incidence: _EdgeIncidence | None
-) -> wp.array[wp.bool]:
-    """``_classify``'s boundary-vertex mask alone, with no feature counts allocated or tested."""
-    boundary_vertex = _launch.zeros(vertices.size, dtype=wp.bool, device=vertices.device)
-    _scatter_feature_edges(vertices, faces, wp.float32(0.0), incidence, None, boundary_vertex, None)
-    return boundary_vertex
-
-
-def _scatter_feature_edges(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    feature: wp.float32,
-    incidence: _EdgeIncidence | None,
-    feature_count: wp.array[wp.int32] | None,
-    boundary_vertex: wp.array[wp.bool] | None,
-    degree: wp.array[wp.int32] | None,
-) -> None:
-    """
-    Write ``_classify``'s two tables into the zeroed buffers given, in one launch over the edges.
-
-    Either table may be ``None``, and is then neither written nor, for the counts, tested for:
-    ``kernels/remesh.scatter_feature_edge_counts`` skips the dihedral test without them.
-    ``degree``, when given, receives each vertex's unique-edge count.
-    """
-    n_faces = faces.size // 3
-    if n_faces == 0:
-        return
-    if incidence is None:
-        incidence = _edge_incidence(faces, vertices.size)
-    m = int(incidence.unique_edges.shape[0])
-    if m == 0:
-        return
-    _launch.launch(
-        kernel_remesh.scatter_feature_edge_counts,
-        dim=m,
-        inputs=[
-            vertices,
-            faces,
-            incidence.unique_edges,
-            incidence.face_count,
-            incidence.faces,
-            feature,
-            feature_count,
-            boundary_vertex,
-            degree,
-        ],
-        device=vertices.device,
-    )
 
 
 def _smooth_pass(
@@ -869,9 +827,11 @@ def _smooth_pass(
     unique_edges: odt.Array2dInt32 | None = None,
     *,
     vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
-    ring_degree: wp.array[wp.int32] | None = None,
+    ring: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
     reproject_onto: wp.Mesh | None = None,
     max_dist: float = 0.0,
+    clamp_onto: wp.Mesh | None = None,
+    max_deviation: float = 0.0,
 ) -> wp.array[wp.vec3]:
     """
     One area-equalizing tangential relaxation step over free vertices.
@@ -885,15 +845,29 @@ def _smooth_pass(
 
     ``reproject_onto``, when given, also snaps each free vertex's new position onto that surface
     within ``max_dist``, in the same launch: the answer ``_reproject_pass`` gives on this one's.
-    ``vertex_faces`` is the faces' vertex-face CSR when the caller holds it, and ``ring_degree``
-    each vertex's count of ``unique_edges`` (consumed), which the deterministic ring is built from.
+    ``clamp_onto``, when given, then pulls every vertex to within ``max_deviation`` of that surface,
+    also in the same launch: ``isotropic_remesh``'s deviation bound.
+    ``vertex_faces`` is the faces' vertex-face CSR when the caller holds it, in any row order, and
+    ``ring`` their neighbour rows ``(columns, offsets)`` in any order, which the deterministic ring
+    sorts in place.
     """
     device = vertices.device
     n_vertices = vertices.size
-    normals = od.vertices.vertex_normals(vertices, faces)
     if unique_edges is None:
         unique_edges, _ = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
-    vertex_areas = od.laplacian.mass_matrix_entries(vertices, faces)
+    # ``vertices.vertex_normals`` and ``laplacian.mass_matrix_entries`` from one pass over the
+    # faces, into one zeroed ``float64`` buffer: the normals' rows, then the exact area sums. Each
+    # reader finishes them where it reads them, so neither table is narrowed by a launch of its own.
+    face_sums = _launch.zeros(4 * n_vertices, dtype=wp.float64, device=device)
+    normal_sums = odt.as_dense(face_sums[: 3 * n_vertices]).reshape((n_vertices, 3))
+    area_sums = odt.as_dense(face_sums[3 * n_vertices :])
+    _launch.launch(
+        kernel_remesh.scatter_normal_and_area_sums,
+        dim=faces.size // 3,
+        inputs=[vertices, faces],
+        outputs=[normal_sums, area_sums],
+        device=device,
+    )
     # The same vertex-face CSR the collapse stage builds for its own fold veto, and for the same
     # reason: ``unique_edges`` above carries a vertex's *neighbours*, never its faces.
     incident_faces, face_offsets = (
@@ -905,19 +879,24 @@ def _smooth_pass(
     if is_deterministic():
         # Each vertex sums its ring over its neighbour row sorted ascending, in one fixed order, so
         # the pass returns the same bits on every run; the atomic scatter below does not on CUDA.
-        ring_neighbors, ring_offsets = (
-            od.graph.edges_to_neighbor_lists_from_counts(unique_edges, ring_degree, sort_rows=True)
-            if ring_degree is not None
-            else od.graph.edges_to_neighbor_lists(
+        if ring is not None:
+            ring_neighbors, ring_offsets = ring
+            _launch.launch(
+                kernel_array.sort_segments,
+                dim=n_vertices,
+                inputs=[ring_offsets, ring_neighbors],
+                device=device,
+            )
+        else:
+            ring_neighbors, ring_offsets = od.graph.edges_to_neighbor_lists(
                 n_vertices, unique_edges, validate=False, sort_rows=True
             )
-        )
         ring_sum = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
         ring_weight = _launch.empty(n_vertices, dtype=wp.float32, device=device)
         _launch.launch(
             kernel_remesh.gather_one_ring,
             dim=n_vertices,
-            inputs=[ring_offsets, ring_neighbors, vertices, vertex_areas, ring_sum, ring_weight],
+            inputs=[ring_offsets, ring_neighbors, vertices, area_sums, ring_sum, ring_weight],
             device=device,
         )
     else:
@@ -926,7 +905,7 @@ def _smooth_pass(
         _launch.launch(
             kernel_remesh.accumulate_one_ring,
             dim=int(unique_edges.shape[0]),
-            inputs=[unique_edges, vertices, vertex_areas, ring_sum, ring_weight],
+            inputs=[unique_edges, vertices, area_sums, ring_sum, ring_weight],
             device=device,
         )
     out_positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
@@ -937,7 +916,7 @@ def _smooth_pass(
             vertices,
             faces,
             feature_count,
-            normals,
+            normal_sums,
             ring_sum,
             ring_weight,
             face_offsets,
@@ -946,6 +925,8 @@ def _smooth_pass(
             wp.int32(0 if reproject_onto is None else 1),
             wp.uint64(0 if reproject_onto is None else reproject_onto.id),
             wp.float32(max_dist),
+            wp.uint64(0 if clamp_onto is None else clamp_onto.id),
+            wp.float32(0.0 if clamp_onto is None else max_deviation),
             out_positions,
         ],
         device=device,
@@ -1110,9 +1091,17 @@ def _flip_interior_edges(
     graph = None
     capturable = wp.get_device(device).is_cuda
     total = 0
-    for round_index in range(max_iter):
+    round_index = 0
+    while round_index < max_iter:
         if graph is not None:
-            wp.capture_launch(graph)
+            # Several replays a readback, as many as the key set's headroom allows: a round flips
+            # at most one edge per two faces, so this many rounds cannot overfill it before the
+            # rebuild ``flipped`` decides on. A replay past the fixpoint flips nothing and changes
+            # nothing, so the faces and the total are the per-round loop's.
+            batch = min(max_iter - round_index, topology.replay_headroom())
+            for _ in range(batch):
+                wp.capture_launch(graph)
+            round_index += batch
         elif capturable and round_index >= _FLIP_CAPTURE_FROM_ROUND:
             # Every round is the same launch sequence over the same buffers -- only the face
             # buffer's contents change -- so a long call records one round and replays it, and a
@@ -1127,10 +1116,12 @@ def _flip_interior_edges(
             graph = capture.graph
             assert graph is not None
             wp.capture_launch(graph)
+            round_index += 1
         else:
             # An issued round reads its count before refreshing, so a round that flipped nothing --
             # the common last round, and the only one a call at the fixpoint runs -- skips it.
             flip_round(count, refresh=False)
+            round_index += 1
             n = int(read_scalar(count, 0)) - total
             total += n
             if n == 0:
@@ -1229,6 +1220,9 @@ class _FlipTopology:
     valence : wp.array[wp.int32] | None
         Per-vertex unique-edge count a build seeds and ``commit_flips`` keeps current, when the
         loop's caller asked for one.
+    boundary_vertex : wp.array[wp.bool] | None
+        Zeroed per-vertex mask in which a build marks every endpoint of a boundary edge, when the
+        loop's caller asked for one. No flip changes a boundary edge.
     """
 
     def __init__(self, faces: wp.array[wp.int32], n_vertices: int) -> None:
@@ -1275,6 +1269,8 @@ class _FlipTopology:
         self._flips_since_build = 0
         self._sorted_stale = False
         self.valence: wp.array[wp.int32] | None = None
+        # A zeroed per-vertex mask a build marks the boundary vertices in, when the caller asked.
+        self.boundary_vertex: wp.array[wp.bool] | None = None
         self._rows = -1
         self._allocate_rows(0)
         self.built = False
@@ -1326,7 +1322,7 @@ class _FlipTopology:
                 self._radix,
                 self.edge_set,
             ],
-            outputs=[self._starts, self.halfedge_row, self.valence],
+            outputs=[self._starts, self.halfedge_row, self.valence, self.boundary_vertex],
             device=self._device,
         )
         # Inclusive, so the row count is one 4-byte tail read and the emit kernel's row is
@@ -1410,6 +1406,18 @@ class _FlipTopology:
     def active_edge_set_mask(self) -> int:
         """``edge_set_mask`` once an incremental build seeded the key set, else ``-1``."""
         return self.edge_set_mask if self.incremental else -1
+
+    def replay_headroom(self) -> int:
+        """
+        Count the rounds that may run before the next ``flipped`` with the key set still safe.
+
+        ``flipped`` rebuilds once the flips since the last build pass the budget, so a round may
+        start anywhere up to it; a round flips at most one edge per two faces (each flip claims
+        both of its own), so this many back-to-back rounds end no further past the budget than
+        one round can.
+        """
+        per_round = max(1, self._n_faces // 2)
+        return max(1, (self._flip_budget - self._flips_since_build) // per_round + 1)
 
     def flipped(self, count: int) -> None:
         """
@@ -1658,100 +1666,37 @@ def cluster_decimate(
     _launch.launch(
         kernel_remesh.cluster_rank_cells, dim=n_kept, inputs=[kept_cells, cell_rank], device=device
     )
-    kept_vertices = _cluster_positions(
-        vertices, vertex_cell, cell_rank, origin, voxel_size, contraction, n_kept
-    )
-    return kept_vertices, _cluster_faces(
-        faces,
-        vertex_cell,
-        cell_rank,
-        face_table,
-        face_slots,
-        n_kept,
-        n_unique,
-        sort_keys,
-        kept_cells,
-    )
-
-
-def _cluster_positions(
-    vertices: wp.array[wp.vec3],
-    vertex_cell: wp.array[wp.int32],
-    cell_rank: wp.array[wp.int32],
-    origin: wp.vec3,
-    voxel_size: float,
-    contraction: Literal["average", "closest"],
-    n_kept: int,
-) -> wp.array[wp.vec3]:
-    """One representative position per kept cluster, by cell mean or by nearest-to-centre."""
-    device = vertices.device
-    n_vertices = vertices.size
-    if contraction == "average":
-        sums = _launch.zeros(n_kept, dtype=wp.vec3, device=device)
-        counts = _launch.zeros(n_kept, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_remesh.cluster_accumulate,
-            dim=n_vertices,
-            inputs=[vertex_cell, cell_rank, vertices],
-            outputs=[sums, counts],
-            device=device,
-        )
-        out = _launch.empty(n_kept, dtype=wp.vec3, device=device)
-        _launch.launch(
-            kernel_remesh.cluster_means,
-            dim=n_kept,
-            inputs=[sums, counts],
-            outputs=[out],
-            device=device,
-        )
-        return out
-
-    closest = _launch.full(n_kept, UINT64_MAX, dtype=wp.uint64, device=device)
-    _launch.launch(
-        kernel_remesh.cluster_pick_closest,
-        dim=n_vertices,
-        inputs=[vertex_cell, cell_rank, vertices, origin, wp.float32(voxel_size)],
-        outputs=[closest],
-        device=device,
-    )
-    out = _launch.empty(n_kept, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_remesh.cluster_gather_representatives,
-        dim=n_kept,
-        inputs=[vertices, closest],
-        outputs=[out],
-        device=device,
-    )
-    return out
-
-
-def _cluster_faces(
-    faces: wp.array[wp.int32],
-    vertex_cell: wp.array[wp.int32],
-    cell_rank: wp.array[wp.int32],
-    face_table: wp.array[wp.int32],
-    face_slots: wp.array[wp.int32],
-    n_kept: int,
-    n_unique: int,
-    sort_keys: wp.array[wp.uint64],
-    kept_cells: wp.array[wp.int32],
-) -> wp.array[wp.int32]:
-    """
-    Distinct surviving faces over the kept clusters, in ``grouping.unique_faces``' order.
-
-    That is the order of the sorted output-vertex triple packed in radix ``n_kept``, each face in
-    its first occurrence's winding. The kept-cluster sort's buffers are free by now and serve the
-    face sort whenever they are wide enough, which they are unless almost nothing merged.
-    """
-    device = faces.device
+    # From here two launches and a sort: the representatives' gather and the faces' keys over the
+    # same ranks in one, the sort, and the output vertices and faces in the other.
+    average = contraction == "average"
+    sums = _launch.zeros(n_kept if average else 0, dtype=wp.vec3, device=device)
+    counts = _launch.zeros(n_kept if average else 0, dtype=wp.int32, device=device)
+    closest = _launch.full(0 if average else n_kept, UINT64_MAX, dtype=wp.uint64, device=device)
+    mode = kernel_remesh.CLUSTER_AVERAGE if average else kernel_remesh.CLUSTER_CLOSEST
+    # The distinct surviving faces come out in ``grouping.unique_faces``' order: the order of the
+    # sorted output-vertex triple packed in radix ``n_kept``, each face in its first occurrence's
+    # winding. The kept-cluster sort's buffers are free by now and serve the face sort whenever they
+    # are wide enough, which they are unless almost nothing merged.
     if 2 * n_unique > sort_keys.size:
         sort_keys = _launch.empty(2 * n_unique, dtype=wp.uint64, device=device)
         kept_cells = _launch.empty(2 * n_unique, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_remesh.cluster_face_keys,
-        dim=n_unique,
-        inputs=[faces, vertex_cell, cell_rank, face_table, face_slots, wp.uint64(n_kept)],
-        outputs=[sort_keys, kept_cells],
+        kernel_remesh.cluster_gather_and_face_keys,
+        dim=max(n_vertices, n_unique),
+        inputs=[
+            faces,
+            vertex_cell,
+            cell_rank,
+            vertices,
+            origin,
+            wp.float32(voxel_size),
+            mode,
+            face_table,
+            face_slots,
+            wp.int32(n_unique),
+            wp.uint64(n_kept),
+        ],
+        outputs=[sums, counts, closest, sort_keys, kept_cells],
         device=device,
     )
     # Three sorted indices below ``n_kept`` pack below ``n_kept ** 3``.
@@ -1761,37 +1706,56 @@ def _cluster_faces(
         count=n_unique,
         end_bit=max(1, (min(n_kept**3, 1 << 64) - 1).bit_length()),
     )
-    out = _launch.empty(3 * n_unique, dtype=wp.int32, device=device)
+    kept_vertices = _launch.empty(n_kept, dtype=wp.vec3, device=device)
+    out_faces = _launch.empty(3 * n_unique, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_remesh.cluster_emit_faces,
-        dim=n_unique,
-        inputs=[faces, vertex_cell, cell_rank, kept_cells],
-        outputs=[out],
+        kernel_remesh.cluster_emit,
+        dim=max(n_kept, n_unique),
+        inputs=[
+            faces,
+            vertex_cell,
+            cell_rank,
+            odt.as_dense(kept_cells[:n_unique]),
+            vertices,
+            mode,
+            sums,
+            counts,
+            closest,
+        ],
+        outputs=[kept_vertices, out_faces],
         device=device,
     )
-    return out
+    return kept_vertices, out_faces
 
 
 def _compact_remapped_faces(
-    faces: wp.array[wp.int32], remap: wp.array[wp.int32], n_targets: int, totals: wp.array[wp.int32]
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    faces: wp.array[wp.int32],
+    remap: wp.array[wp.int32],
+    positions: wp.array[wp.vec3],
+    low: wp.array[wp.float32] | None,
+    high: wp.array[wp.float32] | None,
+    totals: wp.array[wp.int32],
+) -> tuple[
+    wp.array[wp.int32], wp.array[wp.vec3], wp.array[wp.float32] | None, wp.array[wp.float32] | None
+]:
     """
     Faces pushed through a vertex remap, with the collapsed ones dropped and the targets compacted.
 
-    Returns ``(ranks, compacted_faces)`` and writes ``totals = [n_kept, n_surviving]`` on the
-    device: the caller reads them with whatever else it reads. A face survives when its three
-    remapped corners are distinct; the targets kept are those a surviving face names, in target
-    order, and the first ``3 * n_surviving`` entries of ``compacted_faces`` hold the surviving
-    faces in input order renumbered onto them -- a face-mask ``submesh`` followed by
-    ``repair.remove_unreferenced_vertices``. ``ranks`` is the ``n_targets + 1`` scan
-    ``kernels/array.scanned_slot`` reads each target's slot from.
+    Returns ``(compacted_faces, positions, low, high)`` and writes ``totals = [n_kept,
+    n_surviving]`` on the device: the caller reads them with whatever else it reads. A face
+    survives when its three remapped corners are distinct; the targets kept are those a surviving
+    face names, in target order, and the first ``3 * n_surviving`` entries of ``compacted_faces``
+    hold the surviving faces in input order renumbered onto them -- a face-mask ``submesh``
+    followed by ``repair.remove_unreferenced_vertices`` -- while the first ``n_kept`` of the other
+    three hold the kept targets' ``positions`` and bands (``None`` in, ``None`` out).
 
     One marking launch, one scan over the face flags and the target marks together, and one
-    compaction that also publishes both counts. The compacted buffer is sized for every face so
-    that launch can publish the counts before the host knows them.
+    compaction that moves faces and targets and publishes both counts. Every output is sized for
+    every input so that launch can publish the counts before the host knows them.
     """
     device = faces.device
     n_faces = faces.size // 3
+    n_targets = positions.size
     # Behind a leading zero: the face flags, then the target marks, so one inclusive scan of the
     # tail makes each half an exclusive scan ending in its running total.
     scan = _launch.zeros(1 + n_faces + n_targets, dtype=wp.int32, device=device)
@@ -1800,15 +1764,18 @@ def _compact_remapped_faces(
         kernel_remesh.mark_surviving_faces, dim=n_faces, inputs=[faces, remap, marks], device=device
     )
     _launch.array_scan(marks, marks, inclusive=True)
-    ranks = odt.as_dense(scan[n_faces:])
     compacted = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    kept_positions = _launch.empty(n_targets, dtype=wp.vec3, device=device)
+    kept_low = None if low is None else _launch.empty(n_targets, dtype=wp.float32, device=device)
+    kept_high = None if high is None else _launch.empty(n_targets, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_remesh.compact_surviving_faces,
-        dim=n_faces,
-        inputs=[faces, remap, scan[: n_faces + 1], ranks, compacted, totals],
+        dim=max(n_faces, n_targets),
+        inputs=[faces, remap, scan[: n_faces + 1], scan[n_faces:], positions, low, high],
+        outputs=[compacted, totals, kept_positions, kept_low, kept_high],
         device=device,
     )
-    return ranks, compacted
+    return compacted, kept_positions, kept_low, kept_high
 
 
 @overload
@@ -2092,10 +2059,11 @@ class _DecimationBuffers:
         # edges, commits, removed faces]``: the last two are the pass's collapse and removed-face
         # counts, which the pass kernels reach through the ``_count`` view, so the one readback a
         # pass ends with answers both "did it commit anything" and the next pass's size test.
-        self.state = _launch.array(
-            [self.n_faces, self.n_vertices, 0, 0, 0], dtype=wp.int32, device=device
-        )
-        self._host_state = None
+        seed = [self.n_faces, self.n_vertices, 0, 0, 0]
+        self.state = _launch.array(seed, dtype=wp.int32, device=device)
+        # The host's copy of ``state`` as of the last pass, and before the first its seed, so the
+        # first pass reads nothing back to learn what it uploaded.
+        self._host_state: list[int] = seed
         self._count = self.state[3:5]
 
         n = self.n_corners
@@ -2230,7 +2198,7 @@ class _DecimationBuffers:
         every pass instead and the pass is issued: that keeps the CPU path tracking the live mesh
         rather than paying the pass-0 width forever.
         """
-        counts = self._host_state if self._host_state is not None else self.state.numpy()
+        counts = self._host_state
         if int(counts[0]) <= self._target or int(counts[1]) == 0:
             return False
         live = int(counts[0])
@@ -2256,8 +2224,8 @@ class _DecimationBuffers:
             else:
                 self._issue_pass()
         self._passes += 1
-        self._host_state = self.state.numpy()
-        return int(self._host_state[3]) != 0
+        self._host_state = [int(value) for value in read_values(self.state, 0, 5)]
+        return self._host_state[3] != 0
 
     def _tighten(self, faces: int, edges: int) -> None:
         """
@@ -2275,7 +2243,7 @@ class _DecimationBuffers:
 
     def result(self) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
         """Copy the live prefixes out of the fixed buffers, which is the only place a size leaks."""
-        counts = self._host_state if self._host_state is not None else self.state.numpy()
+        counts = self._host_state
         n_faces, n_vertices = int(counts[0]), int(counts[1])
         vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=self._device)
         faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=self._device)
@@ -3235,39 +3203,19 @@ def subdivide(
     n_unique = int(unique_edges.shape[0])
 
     # One buffer sized for its final use: the originals copied into the prefix and one midpoint per
-    # unique edge written straight into the tail, which is the layout ``_split_faces_four`` indexes.
+    # unique edge written straight into the tail -- new vertex ``n_vertices + e`` belongs to unique
+    # edge ``e``, so shifting the corner -> edge map by ``n_vertices`` is the whole index
+    # translation the face table needs. Both are written by one launch.
     new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
+    new_faces = _launch.empty(n_faces * 12, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_remesh.vertices_with_midpoints,
-        dim=n_vertices + n_unique,
-        inputs=[vertices, unique_edges],
-        outputs=[new_vertices],
+        kernel_remesh.subdivide_mesh,
+        dim=max(n_vertices + n_unique, n_faces),
+        inputs=[vertices, faces, unique_edges, inverse],
+        outputs=[new_vertices, new_faces],
         device=device,
     )
-    return new_vertices, _split_faces_four(faces, inverse, n_vertices)
-
-
-def _split_faces_four(
-    faces: wp.array[wp.int32], inverse: wp.array[wp.int32], n_vertices: int
-) -> wp.array[wp.int32]:
-    """
-    Build [`subdivide`][ordito.remesh.subdivide]'s 1-to-4 face table from the per-corner edge map.
-
-    New vertex ``n_vertices + e`` belongs to unique edge ``e``, and corner ``j`` of face ``f`` spans
-    ``(fv[j], fv[j + 1])``, so shifting ``inverse`` by ``n_vertices`` is the whole index translation
-    the split needs. [`subdivide_loop`][ordito.remesh.subdivide_loop] writes the same table
-    (``kernel_remesh.write_four_children``) inside its pass over the faces.
-    """
-    device = faces.device
-    n_faces = faces.size // 3
-    out_new_faces = _launch.empty(n_faces * 12, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_remesh.subdivide_faces,
-        dim=n_faces,
-        inputs=[faces, inverse, wp.int32(n_vertices), out_new_faces],
-        device=device,
-    )
-    return out_new_faces
+    return new_vertices, new_faces
 
 
 @overload
@@ -3418,7 +3366,7 @@ def subdivide_loop(
     sums = _launch.zeros(bounds[-1], dtype=wp.vec3, device=device)
     edge_face_count, valence, boundary_count = od.array.split(counts, bounds)
     edge_opposite_sum, ring_sum, boundary_sum = od.array.split(sums, bounds)
-    # The 1-to-4 face table is written by the same pass over the faces, in ``_split_faces_four``'s
+    # The 1-to-4 face table is written by the same pass over the faces, in ``subdivide``'s
     # layout.
     new_faces = _launch.empty(n_faces * 12, dtype=wp.int32, device=device)
     _launch.launch(
@@ -3430,7 +3378,7 @@ def subdivide_loop(
     )
 
     # One buffer sized for its final use, written through two views: the relocated originals in the
-    # prefix and the new edge vertices after them, which is the index layout `_split_faces_four`
+    # prefix and the new edge vertices after them, which is the index layout ``subdivide``
     # assumes and the one ``igl.loop`` returns. The edge vertices are written by the ring pass,
     # which has their endpoints in hand.
     new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
@@ -3965,14 +3913,11 @@ def subdivide_region_to_size(
                 break
             if n_long > remaining:
                 # It keeps exactly ``remaining`` of the flagged edges, by construction, so the
-                # new count needs no second reduction.
-                # The lengths are measured only here, on the pass the budget actually trims:
-                # the flagging above computes each one where it tests it.
-                lengths = od.edges.edges_unique_length(
-                    current_vertices, current_faces, unique_edges=unique_edges
+                # new count needs no readback.
+                offsets = _keep_longest_edges(
+                    current_vertices, unique_edges, long_mask, rank_buffer, n_long, remaining
                 )
-                long_mask = _keep_longest_edges(long_mask, lengths, remaining, m, device)
-                offsets, n_long = od.array.mask_to_compact_ranks(long_mask)
+                n_long = remaining
 
         # The crack-free split itself is [`split_edges`][ordito.remesh.split_edges], which is
         # exactly what this loop contributes nothing new to: all this function decides is *which*
@@ -4030,44 +3975,55 @@ def subdivide_region_to_size(
 
 
 def _keep_longest_edges(
+    vertices: wp.array[wp.vec3],
+    unique_edges: odt.Array2dInt32,
     long_mask: wp.array[wp.bool],
-    lengths: wp.array[wp.float32],
+    ranks: wp.array[wp.int32],
+    n_long: int,
     remaining: int,
-    m: int,
-    device: wp.DeviceLike,
-) -> wp.array[wp.bool]:
+) -> wp.array[wp.int32]:
     """
-    Keep only the ``remaining`` longest edges currently flagged in ``long_mask``.
+    Keep only the ``remaining`` longest edges flagged in ``long_mask``, in place, and rank them.
 
-    Sorts the eligible lengths on the device rather than reading ``long_mask`` and ``lengths`` back
-    to pick the top ``remaining`` with ``numpy.argsort``, the same spelling
-    [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk]'s final round uses.
-    ``m`` is the unique-edge count and grows with the mesh, which is what makes a host readback here
-    the wrong side of the trade at scale.
+    ``ranks`` is the ``n_edges + 1`` exclusive scan of the flags, ending in their count ``n_long``.
+    The flagged edges are sorted by length on the device rather than read back to pick the top
+    ``remaining`` with ``numpy.argsort``, the spelling
+    [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk]'s final round uses:
+    one launch writes each flagged edge's negated length and index at its rank, straight into the
+    sort's buffers, with the length measured there -- only on the pass the budget actually trims --
+    and one launch over the sorted edges clears all but the first ``remaining``. The returned ranks
+    are the trimmed mask's ``array.mask_to_compact_ranks``, without its count readback.
 
     Ties are not ordered by contract on either path -- ``numpy.argsort``'s introsort is unstable and
-    ``sort_and_argsort`` is a stable radix sort, and the budget is documented as soft and as keeping
-    "the longest eligible edges", which every tie-break satisfies equally.
+    the radix sort is stable, and the budget is documented as soft and as keeping "the longest
+    eligible edges", which every tie-break satisfies equally.
     """
-    eligible = od.array.flatnonzero(long_mask)
-    n_eligible = eligible.size
-    # Ascending on the negated length is descending on the length; one launch writes those keys and
-    # the identity payload straight into the radix sort's double-width buffers.
-    # ``order[:remaining]`` is a contiguous *prefix* slice, which is the case a gather may index
-    # through directly -- it is a column (``arr[:, k]``) or a step slice whose stride Warp ignores.
-    # Cloning it dense first is a measurable loss on the gather for byte-identical output.
-    keys_buffer = _launch.empty(2 * n_eligible, dtype=wp.float32, device=device)
-    order_buffer = _launch.empty(2 * n_eligible, dtype=wp.int32, device=device)
+    device = vertices.device
+    m = int(unique_edges.shape[0])
+    keys_buffer = _launch.empty(2 * n_long, dtype=wp.float32, device=device)
+    edges_buffer = _launch.empty(2 * n_long, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_array.negated_gather_keys_and_identity,
-        dim=n_eligible,
-        inputs=[lengths, eligible],
-        outputs=[keys_buffer, order_buffer],
+        kernel_remesh.longest_edge_sort_keys,
+        dim=m,
+        inputs=[vertices, unique_edges, ranks],
+        outputs=[keys_buffer, edges_buffer],
         device=device,
     )
-    _sorted, order = od.array.sort_and_argsort_in_place(keys_buffer, order_buffer)
-    keep = od.array.gather(eligible, odt.as_dense(order[:remaining]))
-    return od.array.indices_to_mask(keep, m, device=device)
+    _sorted, sorted_edges = od.array.sort_and_argsort_in_place(keys_buffer, edges_buffer)
+    _launch.launch(
+        kernel_remesh.keep_longest_edges,
+        dim=n_long,
+        inputs=[sorted_edges, wp.int32(remaining)],
+        outputs=[long_mask],
+        device=device,
+    )
+    kept_ranks = _launch.empty(m + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_array.mask_rank_flags, dim=m, inputs=[long_mask, False, kept_ranks], device=device
+    )
+    flags = odt.as_dense(kept_ranks[1:])
+    _launch.array_scan(flags, flags, inclusive=True)
+    return odt.as_dense(kept_ranks[:m])
 
 
 def refine_region_to_density(
@@ -4202,7 +4158,10 @@ def refine_region_to_density(
     current_vertices = vertices
     current_faces = faces
     current_region = region
-    scale = _vertex_scale_attribute(vertices, faces, region)
+    # The attribute's sum and count; the first pass forms each mean where it reads it, and its
+    # emit writes the means into the grown table, so ``valence`` is spent after it.
+    scale, first_valence = _vertex_scale_attribute(vertices, faces, region)
+    valence: wp.array[wp.float32] | None = first_valence
 
     for _ in range(max_iter):
         n_faces = current_faces.size // 3
@@ -4212,7 +4171,7 @@ def refine_region_to_density(
         _launch.launch(
             kernel_remesh.mark_density_splits,
             dim=n_faces,
-            inputs=[current_vertices, current_faces, current_region, scale, alpha_f],
+            inputs=[current_vertices, current_faces, current_region, scale, valence, alpha_f],
             outputs=[split_offsets],
             device=device,
         )
@@ -4240,6 +4199,7 @@ def refine_region_to_density(
                 current_faces,
                 current_region,
                 scale,
+                valence,
                 split_offsets,
                 wp.int32(n_vertices),
             ],
@@ -4248,6 +4208,7 @@ def refine_region_to_density(
         )
         current_vertices = new_vertices
         scale = new_scale
+        valence = None
         current_faces = out_faces
         current_region = out_region
 
@@ -4269,9 +4230,12 @@ def refine_region_to_density(
 
 def _vertex_scale_attribute(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], region: wp.array[wp.bool]
-) -> wp.array[wp.float32]:
+) -> tuple[wp.array[wp.float32], wp.array[wp.float32]]:
     """
-    Liepa's per-vertex scale attribute: the mean incident edge length in the *surrounding* mesh.
+    Liepa's per-vertex scale attribute, as the ``(sum, count)`` its readers divide.
+
+    The attribute is the mean incident edge length in the *surrounding* mesh,
+    ``kernel_array.divide_if_positive(sum, count)``, formed where it is read.
 
     "Surrounding" is load-bearing, not a synonym for "whole": the edges counted are those of the
     faces **outside** ``region``. Including the region's own edges is the natural-looking mistake
@@ -4317,8 +4281,7 @@ def _vertex_scale_attribute(
         inputs=[vertices, keys, base, total, valence],
         device=device,
     )
-    _launch.map(kernel_array.divide_if_positive, total, valence, out=total)
-    return total
+    return total, valence
 
 
 def _ranks_from_flags(rank_buffer: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], int]:

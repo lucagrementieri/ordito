@@ -8,6 +8,7 @@ from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
     binary_search_sorted_contains,
+    divide_if_positive,
     lowbias32,
     next_row_entry,
     pack_edge_key,
@@ -43,7 +44,9 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.scatter import (
     accumulate_endpoint_value,
+    add_corner_triple,
     add_edge_valence,
+    append_to_pair_slot,
     endpoints_hold,
     lock_two_rings,
     mark_corners,
@@ -61,6 +64,7 @@ from ordito.kernels.triangles import (
     write_corner_triple,
     write_row_triple,
 )
+from ordito.kernels.vertices import add_to_face_corners, normalized_accumulated_row
 from ordito.kernels.voxels import squared_distance_to_own_cell_center, voxel_cell
 
 wp.set_module_options({"enable_backward": False})
@@ -107,20 +111,6 @@ def edge_midpoint(
     return wp.lerp(v0, v1, wp.float32(0.5))
 
 
-@wp.kernel
-def vertices_with_midpoints(
-    vertices: wp.array[wp.vec3], unique_edges: wp.array2d[wp.int32], out_vertices: wp.array[wp.vec3]
-) -> None:
-    # The originals followed by one midpoint per unique edge, over ``n_vertices + n_edges`` threads:
-    # the prefix copy and the midpoint tail in one launch.
-    t = wp.int32(wp.tid())
-    n_vertices = vertices.shape[0]
-    if t < n_vertices:
-        out_vertices[t] = vertices[t]
-    else:
-        out_vertices[t] = edge_midpoint(vertices, unique_edges, t - n_vertices)
-
-
 @wp.func
 def split_face_four(fv: wp.vec3i, mv: wp.vec3i) -> tuple[wp.vec3i, wp.vec3i, wp.vec3i, wp.vec3i]:
     # 1 -> 4 loop-subdivision template: three corner triangles, then the central triangle.
@@ -143,7 +133,7 @@ def write_four_children(
     # ``k``'s edge is ``corner_edge[3f + k]`` and every edge is split, so its new vertex is
     # ``vertex_offset`` plus the edge id -- the shift is applied here rather than materialised as a
     # ``3 * n_faces`` index buffer by a separate pass that the split would read straight back.
-    # Shared by ``subdivide_faces`` (``subdivide``) and ``loop_edge_opposites``
+    # Shared by ``subdivide_mesh`` (``subdivide``) and ``loop_edge_opposites``
     # (``subdivide_loop``), which writes the faces in its own pass over them.
     fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
     mv = wp.vec3i(
@@ -168,15 +158,26 @@ def write_four_children(
 
 
 @wp.kernel
-def subdivide_faces(
+def subdivide_mesh(
+    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
     corner_edge: wp.array[wp.int32],
-    vertex_offset: wp.int32,
+    out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # The uniform split's face table alone; ``loop_edge_opposites`` writes the same table in its
-    # pass over the faces.
-    write_four_children(faces, corner_edge, vertex_offset, wp.int32(wp.tid()), out_faces)
+    # The uniform 1 -> 4 split whole, over ``max(n_vertices + n_edges, n_faces)`` threads: the
+    # originals followed by one midpoint per unique edge, and each face's four children
+    # (``write_four_children``; ``loop_edge_opposites`` writes the same table in its pass over the
+    # faces).
+    t = wp.int32(wp.tid())
+    n_vertices = vertices.shape[0]
+    if t < n_vertices:
+        out_vertices[t] = vertices[t]
+    elif t < out_vertices.shape[0]:
+        out_vertices[t] = edge_midpoint(vertices, unique_edges, t - n_vertices)
+    if t < faces.shape[0] // 3:
+        write_four_children(faces, corner_edge, n_vertices, t, out_faces)
 
 
 @wp.kernel
@@ -524,6 +525,13 @@ def mark_long_edges(
     # mask the split reads, and as the ``int32`` flag the caller scans in place into its ranks.
     # ``out_flags`` is that ``n_edges + 1`` rank buffer whole: edge ``e``'s flag goes to entry
     # ``e + 1``, behind the leading zero thread 0 writes, so the buffer needs no zero-fill.
+    #
+    # **Declined: marking per face instead**, counting each face's children in the same launch
+    # (a slot counter beside the flags) so the split and face counts come back in one copy and the
+    # child-count launch goes. Measured on a jittered 82 k-face sphere, device time: the per-face
+    # mark (three gathered edges, scattered duplicate flag stores) plus an emit that also writes
+    # the vertices took the whole pass 1.24x (``subdivide_to_size``) and 1.19x (``split_edges``)
+    # of this per-edge form, and the zeroed counter adds a memset to the pass that splits nothing.
     e = wp.int32(wp.tid())
     target = max_edge
     if use_sizing:
@@ -682,6 +690,35 @@ def mark_long_region_edges(
             out_flags[e] = wp.int32(1)
 
 
+@wp.kernel
+def longest_edge_sort_keys(
+    vertices: wp.array[wp.vec3],
+    unique_edges: wp.array2d[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_keys: wp.array[wp.float32],
+    out_edges: wp.array[wp.int32],
+) -> None:
+    # A budget-trimmed refinement pass's sort input, one thread per unique edge: each flagged edge
+    # (``offsets`` is the ``n_edges + 1`` scan of the flags, so it steps there) writes its negated
+    # length -- ascending on it is descending on the length -- and its own index at its rank, the
+    # flagged edges in ascending order, straight into the radix sort's double-width buffers.
+    e = wp.int32(wp.tid())
+    slot, flagged = scanned_slot(offsets, e)
+    if flagged:
+        out_keys[slot] = -unique_edge_length(vertices, unique_edges, e)
+        out_edges[slot] = e
+
+
+@wp.kernel
+def keep_longest_edges(
+    sorted_edges: wp.array[wp.int32], remaining: wp.int32, out_mask: wp.array[wp.bool]
+) -> None:
+    # One thread per flagged edge in descending length order: the first ``remaining`` stay flagged
+    # in ``out_mask`` and the rest are cleared, in place (every unflagged edge is already clear).
+    i = wp.int32(wp.tid())
+    out_mask[sorted_edges[i]] = i < remaining
+
+
 # ---------------------------------------------------------------------------
 # Region-restricted density refinement (Liepa 2003, section 3)
 # ---------------------------------------------------------------------------
@@ -766,12 +803,25 @@ def density_split_wanted(
     )
 
 
+@wp.func
+def vertex_scale(
+    scale: wp.array[wp.float32], valence: wp.array[wp.float32], v: wp.int32
+) -> wp.float32:
+    # Vertex ``v``'s scale attribute: ``scale[v]`` itself, or, while ``valence`` is non-empty, the
+    # mean ``scatter_scale_attribute``'s sum and count make (``array.divide_if_positive``), formed
+    # where it is read so the first pass needs no division launch of its own.
+    if valence.shape[0] > 0:
+        return divide_if_positive(scale[v], valence[v])
+    return scale[v]
+
+
 @wp.kernel
 def mark_density_splits(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     region: wp.array[wp.bool],
     scale: wp.array[wp.float32],
+    valence: wp.array[wp.float32],
     alpha: wp.float32,
     out_split: wp.array[wp.int32],
 ) -> None:
@@ -788,7 +838,13 @@ def mark_density_splits(
         return
     i, j, k = corner_triple(faces, f)
     wanted = density_split_wanted(
-        vertices[i], vertices[j], vertices[k], scale[i], scale[j], scale[k], alpha
+        vertices[i],
+        vertices[j],
+        vertices[k],
+        vertex_scale(scale, valence, i),
+        vertex_scale(scale, valence, j),
+        vertex_scale(scale, valence, k),
+        alpha,
     )
     out_split[f + 1] = wp.where(wanted, wp.int32(1), wp.int32(0))
 
@@ -799,6 +855,7 @@ def emit_density_splits(
     faces: wp.array[wp.int32],
     region: wp.array[wp.bool],
     scale: wp.array[wp.float32],
+    valence: wp.array[wp.float32],
     split_offsets: wp.array[wp.int32],
     n_vertices: wp.int32,
     out_positions: wp.array[wp.vec3],
@@ -830,7 +887,7 @@ def emit_density_splits(
     f = wp.int32(wp.tid())
     if f < n_vertices:
         out_positions[f] = vertices[f]
-        out_scale[f] = scale[f]
+        out_scale[f] = vertex_scale(scale, valence, f)
     if f >= region.shape[0]:
         return
     i, j, k = corner_triple(faces, f)
@@ -851,7 +908,11 @@ def emit_density_splits(
 
     center = n_vertices + slot
     out_positions[center] = (vertices[i] + vertices[j] + vertices[k]) / wp.float32(3.0)
-    out_scale[center] = (scale[i] + scale[j] + scale[k]) / wp.float32(3.0)
+    out_scale[center] = (
+        vertex_scale(scale, valence, i)
+        + vertex_scale(scale, valence, j)
+        + vertex_scale(scale, valence, k)
+    ) / wp.float32(3.0)
     out_faces[base + 0] = i
     out_faces[base + 1] = j
     out_faces[base + 2] = center
@@ -986,6 +1047,7 @@ def mark_edge_pair_starts(
     out_starts: wp.array[wp.int32],
     out_halfedge_row: wp.array[wp.int32],
     out_valence: wp.array[wp.int32],
+    out_boundary_vertex: wp.array[wp.bool],
 ) -> None:
     # ``grouping.mark_group_starts`` at ``length=2`` (the same ``sorted_run_of_length`` rule). Both
     # emit ``int32`` for the same reason: the flag feeds ``warp.utils.array_scan``, which has no
@@ -1001,8 +1063,15 @@ def mark_edge_pair_starts(
     # (``emit_flip_topology`` then writes the interior ones), and every run -- every undirected
     # edge, whatever its multiplicity -- goes into the zeroed duplicate-edge set. A non-empty
     # ``out_valence`` (zeroed by the caller) gets every vertex's degree from the same runs
-    # (``scatter.add_edge_valence``), which the valence flip objective reads.
+    # (``scatter.add_edge_valence``), which the valence flip objective reads, and a non-empty
+    # ``out_boundary_vertex`` (zeroed) both endpoints of every run of exactly one -- a boundary
+    # edge, the feature counts' rule (one incident face) read off the sort, by plain stores of one
+    # value.
     i = wp.int32(wp.tid())
+    if out_boundary_vertex.shape[0] > 0 and sorted_run_of_length(sorted_keys, n, i, 1):
+        lo, hi = unpack_edge_key(sorted_keys[i], base)
+        out_boundary_vertex[lo] = True
+        out_boundary_vertex[hi] = True
     if out_halfedge_row.shape[0] > 0:
         out_halfedge_row[order[i]] = -1
     if sorted_run_start(sorted_keys, i):
@@ -1568,7 +1637,7 @@ COLLAPSE_FREE = wp.constant(wp.int32(2))  # the caller places it -- midpoint, or
 
 @wp.func
 def finalize_vertex_codes(feature_count: wp.int32) -> wp.int32:
-    # A vertex's code from its incident feature-edge count. ``scatter_feature_edge_counts`` stores
+    # A vertex's code from its incident feature-edge count. ``fill_edge_topology`` stores
     # only the counts, and every reader applies this as it loads one, so no pass rewrites the table.
     # 0 feature edges -> FREE; exactly 2 -> CREASE (on a smooth feature/boundary line);
     # anything else (1 = feature endpoint, >=3 = junction) -> CORNER (frozen).
@@ -1631,7 +1700,7 @@ def is_feature_edge(
 ) -> wp.bool:
     # Is unique edge ``e`` a feature edge: a boundary edge, or an interior one whose two faces meet
     # at more than ``feature_angle``? The decision rule behind every FREE / CREASE / CORNER code,
-    # shared by ``scatter_feature_edge_counts`` and the quadric pass's ``count_pass_edges``.
+    # shared by ``fill_edge_topology`` and the quadric pass's ``count_pass_edges``.
     count = edge_face_count[e]
     feature = count == 1
     if count == 2:
@@ -1641,62 +1710,84 @@ def is_feature_edge(
     return feature
 
 
+# ``isotropic_remesh``'s per-grouping topology, in one count, one scan and one fill
+# (``remesh._edge_incidence``): the edge incidence, the vertex rings, the vertex-face rows and the
+# feature counts every collapse pass and every smoothing pass read, which were three separately
+# counted, scanned and filled builds (``graph.edges_to_neighbor_lists_from_counts``,
+# ``adjacency.vertex_face_adjacency_from_counts`` and a feature-count scatter). The two
+# CSRs share one count buffer ``[degree (n_vertices) | corners (n_vertices)]``, one inclusive scan
+# behind a leading zero and one column buffer ``[ring entries (2 m) | face entries (3 n_faces)]``,
+# so the vertex-face offsets are the scan's upper half read straight into the shared columns --
+# the layout ``_DecimationBuffers`` builds for the quadric pass. Rows are in arrival order: every
+# reader counts, exits on a hit or takes a minimum over a whole row (the link condition, the band
+# walks, the ring locks, both fold vetoes), and the deterministic smoothing ring sorts its rows.
+
+
 @wp.kernel
-def scatter_feature_edge_counts(
+def count_edge_topology(
+    inverse: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    ring: wp.int32,
+    out_edge_face_count: wp.array[wp.int32],
+    out_edge_faces: wp.array2d[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # One thread per corner, over zeroed counts: the corner's face onto its unique edge
+    # (``scatter.append_to_pair_slot``), the corner onto its vertex's face count, and -- with
+    # ``ring`` (warp-uniform) -- the edge onto both endpoints' degrees, by the one corner that drew
+    # the edge's first slot. Thread 0 writes the scan's leading zero.
+    c = wp.int32(wp.tid())
+    n_vertices = out_counts.shape[0] // 2
+    e = inverse[c]
+    slot = append_to_pair_slot(e, c // 3, out_edge_face_count, out_edge_faces)
+    if ring != 0 and slot == 0:
+        wp.atomic_add(out_counts, unique_edges[e, 0], 1)
+        wp.atomic_add(out_counts, unique_edges[e, 1], 1)
+    wp.atomic_add(out_counts, n_vertices + faces[c], 1)
+    if c == 0:
+        out_offsets[0] = 0
+
+
+@wp.kernel
+def fill_edge_topology(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     unique_edges: wp.array2d[wp.int32],
     edge_face_count: wp.array[wp.int32],
     edge_faces: wp.array2d[wp.int32],
+    offsets: wp.array[wp.int32],
     feature_angle: wp.float32,
+    ring: wp.int32,
+    cursor: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
     out_feature_count: wp.array[wp.int32],
-    out_boundary_vertex: wp.array[wp.bool],
-    out_degree: wp.array[wp.int32],
 ) -> None:
-    # Add 1 to both endpoints of every feature edge: a boundary edge, or an interior edge whose two
-    # faces meet at more than ``feature_angle``. One launch over the unique edges answers both
-    # questions from the incidence table, where ``_classify`` used to re-group the same 3 * n_faces
-    # rows twice (once as boundary edges, once as face adjacency) to ask them separately. An empty
-    # output (``None`` at launch) is not written, and without the counts no dihedral is measured: a
-    # boundary edge is a feature edge by definition, so the mask needs only the face count.
-    #
-    # ``out_degree``, when given (zeroed), also counts every unique edge onto both endpoints: the
-    # vertex degrees ``graph.edges_to_neighbor_lists_from_counts`` builds the rings from, in the
-    # launch that already reads each edge's endpoints.
-    e = wp.int32(wp.tid())
-    v0 = unique_edges[e, 0]
-    v1 = unique_edges[e, 1]
-    if out_degree.shape[0] > 0:
-        wp.atomic_add(out_degree, v0, 1)
-        wp.atomic_add(out_degree, v1, 1)
-    if out_boundary_vertex.shape[0] > 0 and edge_face_count[e] == 1:
-        # Every writer stores the same value, so the mask needs no atomic.
-        out_boundary_vertex[v0] = True
-        out_boundary_vertex[v1] = True
-    if out_feature_count.shape[0] > 0 and is_feature_edge(
-        vertices, faces, edge_face_count, edge_faces, e, feature_angle
-    ):
-        wp.atomic_add(out_feature_count, v0, 1)
-        wp.atomic_add(out_feature_count, v1, 1)
-
-
-@wp.kernel
-def scatter_edge_incidence_and_corner_counts(
-    inverse: wp.array[wp.int32],
-    faces: wp.array[wp.int32],
-    out_edge_face_count: wp.array[wp.int32],
-    out_edge_faces: wp.array2d[wp.int32],
-    out_corner_count: wp.array[wp.int32],
-) -> None:
-    # ``scatter.scatter_edge_incidence`` plus each vertex's corner count, which is its
-    # incident-face count: corner ``c`` names vertex ``faces[c]``, and the launch already visits
-    # every corner once.
-    # The counts are what ``adjacency.vertex_face_adjacency_from_counts`` builds the collapse fold
-    # veto's vertex-face CSR from, so that CSR costs no histogram launch of its own. Launch over
-    # ``inverse.shape[0]`` with both counts zeroed.
-    c = wp.int32(wp.tid())
-    record_edge_incidence(inverse[c], c, out_edge_face_count, out_edge_faces)
-    wp.atomic_add(out_corner_count, faces[c], 1)
+    # Over ``max(m, n_faces)`` threads, after the scan of ``count_edge_topology``'s counts: edge
+    # ``t`` writes both directed ring entries (with ``ring``) and adds one to both endpoints'
+    # feature counts when it is a feature edge (``is_feature_edge``; an empty
+    # ``out_feature_count`` skips it), and face
+    # ``t`` writes itself into its three
+    # vertices' face rows. ``cursor`` is the spent count buffer, counting each row's free slots down
+    # as in ``graph.scatter_neighbor_lists`` and ``adjacency.scatter_vertex_faces``.
+    t = wp.int32(wp.tid())
+    n_vertices = cursor.shape[0] // 2
+    if t < unique_edges.shape[0]:
+        u = unique_edges[t, 0]
+        v = unique_edges[t, 1]
+        if ring != 0:
+            out_columns[offsets[u + 1] - wp.atomic_add(cursor, u, -1)] = v
+            out_columns[offsets[v + 1] - wp.atomic_add(cursor, v, -1)] = u
+        if out_feature_count.shape[0] > 0 and is_feature_edge(
+            vertices, faces, edge_face_count, edge_faces, t, feature_angle
+        ):
+            wp.atomic_add(out_feature_count, u, 1)
+            wp.atomic_add(out_feature_count, v, 1)
+    if t < faces.shape[0] // 3:
+        for k in range(3):
+            row = n_vertices + faces[t * 3 + k]
+            out_columns[offsets[row + 1] - wp.atomic_add(cursor, row, -1)] = t
 
 
 @wp.func
@@ -2208,10 +2299,37 @@ def valence_flip_candidates(
 
 
 @wp.kernel
+def scatter_normal_and_area_sums(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_normal_sums: wp.array2d[wp.float64],
+    out_area_sums: wp.array[wp.float64],
+) -> None:
+    # The smoothing pass's two per-vertex face sums from one evaluation of each face, over zeroed
+    # ``float64`` sums: ``vertices.scatter_area_weighted_normals``' area-weighted normal and
+    # ``scatter.scatter_face_areas_exact``'s area, each added exactly as those kernels add it. Their
+    # readers finish them where they read them -- ``normalized_accumulated_row`` for the normal,
+    # ``vertex_mass`` for the barycentric mass -- so neither is narrowed by a pass of its own.
+    f = wp.int32(wp.tid())
+    normal, area = face_normals_and_area(vertices, faces, f)
+    value = normal * area
+    add_to_face_corners(out_normal_sums, faces, f, value, value, value)
+    exact = wp.float64(area)
+    add_corner_triple(out_area_sums, faces, f, exact, exact, exact)
+
+
+@wp.func
+def vertex_mass(area_sums: wp.array[wp.float64], v: wp.int32) -> wp.float32:
+    # Vertex ``v``'s barycentric mass from its exact incident-area sum: one rounding of a third,
+    # ``scatter.scale_face_sums``' arithmetic and so ``laplacian.mass_matrix_entries``' bits.
+    return wp.float32(area_sums[v] / wp.float64(3.0))
+
+
+@wp.kernel
 def accumulate_one_ring(
     unique_edges: wp.array2d[wp.int32],
     vertices: wp.array[wp.vec3],
-    vertex_areas: wp.array[wp.float32],
+    area_sums: wp.array[wp.float64],
     out_sum: wp.array[wp.vec3],
     out_weight: wp.array[wp.float32],
 ) -> None:
@@ -2226,8 +2344,8 @@ def accumulate_one_ring(
     e = wp.int32(wp.tid())
     u = unique_edges[e, 0]
     v = unique_edges[e, 1]
-    area_u = vertex_areas[u]
-    area_v = vertex_areas[v]
+    area_u = vertex_mass(area_sums, u)
+    area_v = vertex_mass(area_sums, v)
     wp.atomic_add(out_sum, u, area_v * vertices[v])
     wp.atomic_add(out_weight, u, area_v)
     wp.atomic_add(out_sum, v, area_u * vertices[u])
@@ -2239,7 +2357,7 @@ def gather_one_ring(
     ring_offsets: wp.array[wp.int32],
     ring_neighbors: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
-    vertex_areas: wp.array[wp.float32],
+    area_sums: wp.array[wp.float64],
     out_sum: wp.array[wp.vec3],
     out_weight: wp.array[wp.float32],
 ) -> None:
@@ -2254,7 +2372,7 @@ def gather_one_ring(
     ring_weight = wp.float32(0.0)
     for slot in range(ring_offsets[v], ring_offsets[v + 1]):
         w = ring_neighbors[slot]
-        area = vertex_areas[w]
+        area = vertex_mass(area_sums, w)
         ring_sum += area * vertices[w]
         ring_weight += area
     out_sum[v] = ring_sum
@@ -2296,12 +2414,32 @@ def reproject_vertices(
     return vertex
 
 
+@wp.func
+def clamp_to_surface_band(
+    vertex: wp.vec3, mesh_id: wp.uint64, max_deviation: wp.float32, max_dist: wp.float32
+) -> wp.vec3:
+    # Pull a vertex back until it is within ``max_deviation`` of the original surface, along the
+    # line to its own closest point. Unlike ``reproject_vertices`` this applies to *every* vertex --
+    # a crease or corner is exactly the kind that drifts and that reprojection refuses to touch --
+    # and it moves the vertex only as far as the bound requires, so a vertex already inside the band
+    # is untouched and detail is not flattened onto the input surface.
+    query = wp.mesh_query_point_no_sign(mesh_id, vertex, max_dist)
+    if not query.result:
+        return vertex
+    closest = wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
+    offset = vertex - closest
+    distance = wp.length(offset)
+    if distance <= max_deviation:
+        return vertex
+    return closest + offset * (max_deviation / distance)
+
+
 @wp.kernel(enable_backward=False)
 def smooth_free_vertices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     feature_count: wp.array[wp.int32],
-    normals: wp.array[wp.vec3],
+    normal_sums: wp.array2d[wp.float64],
     ring_sum: wp.array[wp.vec3],
     ring_weight: wp.array[wp.float32],
     vertex_face_offsets: wp.array[wp.int32],
@@ -2310,13 +2448,17 @@ def smooth_free_vertices(
     reproject: wp.int32,
     mesh_id: wp.uint64,
     max_dist: wp.float32,
+    clamp_mesh_id: wp.uint64,
+    max_deviation: wp.float32,
     out_positions: wp.array[wp.vec3],
 ) -> None:
     # One tangential relaxation step, vetoed per vertex by the same fold rule the two collapse
     # candidates run -- one decision rule, one spelling. With ``reproject`` (warp-uniform) the
     # vertex's new position is then snapped onto the surface ``mesh_id`` by ``reproject_vertices``,
     # the step ``isotropic_remesh`` runs next at the same vertex, so the two take one launch; ``0``
-    # leaves the relaxed position as it is and reads neither ``mesh_id`` nor ``max_dist``.
+    # leaves the relaxed position as it is and reads neither ``mesh_id`` nor ``max_dist``. A
+    # positive ``max_deviation`` then pulls the result into the band about ``clamp_mesh_id``
+    # (``clamp_to_surface_band``, the step after that, over every vertex), in the same launch.
     #
     # **It is insurance, and the reason to keep it is that it is free**, not that a fixture needs
     # it: veto against no-veto is within noise and the whole remesh suite passes either way. It
@@ -2336,7 +2478,7 @@ def smooth_free_vertices(
     proposed = tangential_smooth_step(
         vertices[v],
         finalize_vertex_codes(feature_count[v]),
-        normals[v],
+        normalized_accumulated_row(normal_sums, v),
         ring_sum[v],
         ring_weight[v],
         lam,
@@ -2345,27 +2487,9 @@ def smooth_free_vertices(
         proposed = vertices[v]
     if reproject != 0:
         proposed = reproject_vertices(proposed, feature_count[v], mesh_id, max_dist)
+    if max_deviation > 0.0:
+        proposed = clamp_to_surface_band(proposed, clamp_mesh_id, max_deviation, max_dist)
     out_positions[v] = proposed
-
-
-@wp.func
-def clamp_to_surface_band(
-    vertex: wp.vec3, mesh_id: wp.uint64, max_deviation: wp.float32, max_dist: wp.float32
-) -> wp.vec3:
-    # Pull a vertex back until it is within ``max_deviation`` of the original surface, along the
-    # line to its own closest point. Unlike ``reproject_vertices`` this applies to *every* vertex --
-    # a crease or corner is exactly the kind that drifts and that reprojection refuses to touch --
-    # and it moves the vertex only as far as the bound requires, so a vertex already inside the band
-    # is untouched and detail is not flattened onto the input surface.
-    query = wp.mesh_query_point_no_sign(mesh_id, vertex, max_dist)
-    if not query.result:
-        return vertex
-    closest = wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
-    offset = vertex - closest
-    distance = wp.length(offset)
-    if distance <= max_deviation:
-        return vertex
-    return closest + offset * (max_deviation / distance)
 
 
 @wp.kernel
@@ -2856,17 +2980,23 @@ def vertex_cluster_rank(
     return cell_rank[vertex_cell[v]]
 
 
-@wp.kernel
-def cluster_accumulate(
+# How ``cluster_decimate`` places each output vertex: a warp-uniform selector for the two kernels
+# below, which differ by it only in the per-vertex half of their work.
+CLUSTER_AVERAGE = wp.constant(wp.int32(0))
+CLUSTER_CLOSEST = wp.constant(wp.int32(1))
+
+
+@wp.func
+def accumulate_cluster_vertex(
     vertex_cell: wp.array[wp.int32],
     cell_rank: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
+    v: wp.int32,
     out_sum: wp.array[wp.vec3],
     out_count: wp.array[wp.int32],
 ) -> None:
-    # Sum and count of every kept cluster's vertices, indexed by output vertex. A cluster no face
-    # keeps has no output slot and contributes nothing.
-    v = wp.int32(wp.tid())
+    # Vertex ``v`` into the sum and count of its kept cluster, indexed by output vertex. A cluster
+    # no face keeps has no output slot and contributes nothing.
     r = vertex_cluster_rank(vertex_cell, cell_rank, v)
     if r >= 0:
         wp.atomic_add(out_sum, r, vertices[v])
@@ -2875,51 +3005,32 @@ def cluster_accumulate(
 
 @wp.func
 def mean_from_sum(total: wp.vec3, count: wp.int32) -> wp.vec3:
-    # A cluster's mean position from ``cluster_accumulate``'s sum and count, dividing by the count
-    # converted in place rather than by a separately materialised ``float32`` copy of the counts.
+    # A cluster's mean position from ``accumulate_cluster_vertex``'s sum and count, dividing by the
+    # count converted in place rather than by a separately materialised ``float32`` copy of the
+    # counts.
     return total / wp.float32(count)
 
 
-@wp.kernel
-def cluster_means(
-    sums: wp.array[wp.vec3], counts: wp.array[wp.int32], out_vertices: wp.array[wp.vec3]
-) -> None:
-    # Each output vertex's mean. Not in place over ``sums``: that would save one allocation at the
-    # price of an in-place allowlist entry for the naming check.
-    r = wp.int32(wp.tid())
-    out_vertices[r] = mean_from_sum(sums[r], counts[r])
-
-
-@wp.kernel
-def cluster_pick_closest(
+@wp.func
+def pick_closest_cluster_vertex(
     vertex_cell: wp.array[wp.int32],
     cell_rank: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     voxel_size: wp.float32,
+    v: wp.int32,
     out_closest: wp.array[wp.uint64],
 ) -> None:
-    # The "closest to the cell centre" representative of every kept cluster, in one ``uint64``
-    # ``atomic_min``: the squared distance's bits above the vertex index. A non-negative
-    # ``float32`` orders as its bit pattern does, so the minimum is the winning distance and, among
-    # the vertices tying for it, the lowest index -- a deterministic pick whatever the arrival
-    # order. ``out_closest`` arrives holding ``UINT64_MAX``.
-    v = wp.int32(wp.tid())
+    # Vertex ``v`` as a candidate for the "closest to the cell centre" representative of its kept
+    # cluster, in one ``uint64`` ``atomic_min``: the squared distance's bits above the vertex index.
+    # A non-negative ``float32`` orders as its bit pattern does, so the minimum is the winning
+    # distance and, among the vertices tying for it, the lowest index -- a deterministic pick
+    # whatever the arrival order. ``out_closest`` arrives holding ``UINT64_MAX``.
     r = vertex_cluster_rank(vertex_cell, cell_rank, v)
     if r >= 0:
         d = squared_distance_to_own_cell_center(vertices[v], origin, voxel_size)
         key = (wp.uint64(wp.cast(d, wp.uint32)) << wp.uint64(32)) | wp.uint64(wp.uint32(v))
         wp.atomic_min(out_closest, r, key)
-
-
-@wp.kernel
-def cluster_gather_representatives(
-    vertices: wp.array[wp.vec3], closest: wp.array[wp.uint64], out_vertices: wp.array[wp.vec3]
-) -> None:
-    # ``cluster_means``' sibling for the closest-to-centre contraction: the representative
-    # vertex's own position, its index the low half of ``cluster_pick_closest``'s key.
-    r = wp.int32(wp.tid())
-    out_vertices[r] = vertices[wp.int32(closest[r] & wp.uint64(0xFFFFFFFF))]
 
 
 @wp.func
@@ -2939,40 +3050,77 @@ def ranked_face_corners(
 
 
 @wp.kernel
-def cluster_face_keys(
+def cluster_gather_and_face_keys(
     faces: wp.array[wp.int32],
     vertex_cell: wp.array[wp.int32],
     cell_rank: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    origin: wp.vec3,
+    voxel_size: wp.float32,
+    contraction: wp.int32,
     face_table: wp.array[wp.int32],
     face_slots: wp.array[wp.int32],
+    n_unique: wp.int32,
     n_kept: wp.uint64,
+    out_sum: wp.array[wp.vec3],
+    out_count: wp.array[wp.int32],
+    out_closest: wp.array[wp.uint64],
     out_keys: wp.array[wp.uint64],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # One unique face per thread: its class representative (the smallest face index,
-    # ``cluster_mark_faces``) and the key ``grouping.unique_faces`` orders faces by -- the sorted
-    # output-vertex triple packed in radix ``n_kept`` -- so the sort that follows reproduces that
-    # function's output order.
-    i = wp.int32(wp.tid())
-    g = face_table[face_slots[i]]
-    r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, g)
-    s0, s1, s2 = sort3(r0, r1, r2)
-    out_keys[i] = pack_index_triple(s0, s1, s2, n_kept)
-    out_faces[i] = g
+    # Two independent halves of the pass after the clusters are ranked, over ``max(n_vertices,
+    # n_unique)`` threads:
+    #
+    # - vertex ``t`` into its cluster's representative: ``accumulate_cluster_vertex`` under
+    #   ``CLUSTER_AVERAGE`` (``out_sum`` / ``out_count`` zeroed) or ``pick_closest_cluster_vertex``
+    #   under ``CLUSTER_CLOSEST``; the other contraction's outputs are empty;
+    # - unique face ``t < n_unique``: its class representative (the smallest face index,
+    #   ``cluster_mark_faces``) and the key ``grouping.unique_faces`` orders faces by -- the sorted
+    #   output-vertex triple packed in radix ``n_kept`` -- so the sort that follows reproduces that
+    #   function's output order.
+    t = wp.int32(wp.tid())
+    if t < vertices.shape[0]:
+        if contraction == CLUSTER_AVERAGE:
+            accumulate_cluster_vertex(vertex_cell, cell_rank, vertices, t, out_sum, out_count)
+        else:
+            pick_closest_cluster_vertex(
+                vertex_cell, cell_rank, vertices, origin, voxel_size, t, out_closest
+            )
+    if t < n_unique:
+        g = face_table[face_slots[t]]
+        r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, g)
+        s0, s1, s2 = sort3(r0, r1, r2)
+        out_keys[t] = pack_index_triple(s0, s1, s2, n_kept)
+        out_faces[t] = g
 
 
 @wp.kernel
-def cluster_emit_faces(
+def cluster_emit(
     faces: wp.array[wp.int32],
     vertex_cell: wp.array[wp.int32],
     cell_rank: wp.array[wp.int32],
     sorted_faces: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    contraction: wp.int32,
+    sums: wp.array[wp.vec3],
+    counts: wp.array[wp.int32],
+    closest: wp.array[wp.uint64],
+    out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # The unique faces in key order, each in its representative's winding.
-    j = wp.int32(wp.tid())
-    r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, sorted_faces[j])
-    write_corner_triple(out_faces, j, r0, r1, r2)
+    # The output mesh, over ``max(n_kept, n_unique)`` threads: output vertex ``t`` -- its cluster's
+    # mean (``mean_from_sum``) or its representative vertex's own position, the index the low half
+    # of ``pick_closest_cluster_vertex``'s key -- and unique face ``t`` in key order, in its
+    # representative's winding.
+    t = wp.int32(wp.tid())
+    if t < out_vertices.shape[0]:
+        if contraction == CLUSTER_AVERAGE:
+            out_vertices[t] = mean_from_sum(sums[t], counts[t])
+        else:
+            out_vertices[t] = vertices[wp.int32(closest[t] & wp.uint64(0xFFFFFFFF))]
+    if t < sorted_faces.shape[0]:
+        r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, sorted_faces[t])
+        write_corner_triple(out_faces, t, r0, r1, r2)
 
 
 @wp.func
@@ -3008,55 +3156,53 @@ def compact_surviving_faces(
     remap: wp.array[wp.int32],
     face_offsets: wp.array[wp.int32],
     ranks: wp.array[wp.int32],
-    out_faces: wp.array[wp.int32],
-    out_totals: wp.array[wp.int32],
-) -> None:
-    # Launched over every input face. ``face_offsets`` and ``ranks`` are the two halves of one
-    # inclusive scan over ``mark_surviving_faces``' face flags followed by its target marks, behind
-    # a leading zero, each read as an exclusive scan with its total at the end (``scanned_slot``).
-    # A surviving face is written at its dense row, so the rows keep the input's face order -- what
-    # a face-mask ``submesh`` of the remapped faces returns -- with every corner renumbered onto
-    # the compacted targets, which keep their order too. The last thread publishes both totals
-    # (kept targets, surviving faces) side by side, so the host reads them in one copy.
-    f = wp.int32(wp.tid())
-    n_faces = face_offsets.shape[0] - 1
-    if f == n_faces - 1:
-        out_totals[0] = ranks[ranks.shape[0] - 1] - ranks[0]
-        out_totals[1] = face_offsets[n_faces]
-    row, survived = scanned_slot(face_offsets, f)
-    if not survived:
-        return
-    i0, i1, i2, _distinct = remapped_corner_triple(faces, remap, f)
-    s0, _k0 = scanned_slot(ranks, i0)
-    s1, _k1 = scanned_slot(ranks, i1)
-    s2, _k2 = scanned_slot(ranks, i2)
-    write_corner_triple(out_faces, row, s0, s1, s2)
-
-
-@wp.kernel
-def compact_collapse_vertices(
     positions: wp.array[wp.vec3],
     low: wp.array[wp.float32],
     high: wp.array[wp.float32],
-    ranks: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_totals: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
     out_low: wp.array[wp.float32],
     out_high: wp.array[wp.float32],
 ) -> None:
-    # A collapse pass's surviving vertices and their two length bands, written into their compacted
-    # slots in one pass. ``ranks`` is ``compact_surviving_faces``' scan of the referenced marks, so
-    # a vertex is kept exactly where it steps -- the order ``repair.remove_unreferenced_vertices``
-    # keeps and gathering the bands by its inverse reproduces. Empty bands (a uniform target,
-    # ``None`` at launch) are not written.
-    v = wp.int32(wp.tid())
-    slot, kept = scanned_slot(ranks, v)
-    if not kept:
+    # A collapse pass's whole compaction, over ``max(n_faces, n_targets)`` threads. ``face_offsets``
+    # and ``ranks`` are the two halves of one inclusive scan over ``mark_surviving_faces``' face
+    # flags followed by its target marks, behind a leading zero, each read as an exclusive scan with
+    # its total at the end (``scanned_slot``).
+    #
+    # - Face ``t``, when it survives, is written at its dense row, so the rows keep the input's
+    #   face order -- what a face-mask ``submesh`` of the remapped faces returns -- with every
+    #   corner renumbered onto the compacted targets, which keep their order too. The last face
+    #   thread publishes both totals (kept targets, surviving faces) side by side, so the host
+    #   reads them in one copy.
+    # - Target ``t``, when a surviving face names it, is written with its two length bands at its
+    #   compacted slot -- the order ``repair.remove_unreferenced_vertices`` keeps and gathering the
+    #   bands by its inverse reproduces. Empty bands (a uniform target, ``None`` at launch) are not
+    #   written. The outputs are sized for every target, so this runs before the host knows the
+    #   count; the caller keeps their live prefix.
+    t = wp.int32(wp.tid())
+    n_faces = face_offsets.shape[0] - 1
+    if t < ranks.shape[0] - 1:
+        slot, kept = scanned_slot(ranks, t)
+        if kept:
+            out_positions[slot] = positions[t]
+            if out_low.shape[0] > 0:
+                out_low[slot] = low[t]
+            if out_high.shape[0] > 0:
+                out_high[slot] = high[t]
+    if t >= n_faces:
         return
-    out_positions[slot] = positions[v]
-    if out_low.shape[0] > 0:
-        out_low[slot] = low[v]
-    if out_high.shape[0] > 0:
-        out_high[slot] = high[v]
+    if t == n_faces - 1:
+        out_totals[0] = ranks[ranks.shape[0] - 1] - ranks[0]
+        out_totals[1] = face_offsets[n_faces]
+    row, survived = scanned_slot(face_offsets, t)
+    if not survived:
+        return
+    i0, i1, i2, _distinct = remapped_corner_triple(faces, remap, t)
+    s0, _k0 = scanned_slot(ranks, i0)
+    s1, _k1 = scanned_slot(ranks, i1)
+    s2, _k2 = scanned_slot(ranks, i2)
+    write_corner_triple(out_faces, row, s0, s1, s2)
 
 
 # Objective for ``objective_flip_candidates``. A warp-uniform kernel argument rather than a
@@ -3598,7 +3744,7 @@ def count_pass_edges(
     out_boundary_quadrics: wp.array[SymmetricQuadric],
     out_boundary_flags: wp.array[wp.int32],
 ) -> None:
-    # Per live unique edge, once the incidence is complete: its feature vote (``_classify``'s
+    # Per live unique edge, once the incidence is complete: its feature vote (the topology fill's
     # count, ``is_feature_edge``), its two entries' slots in the vertex-vertex CSR rows, and a
     # boundary edge's constraint plane (``boundary_quadric``), added to both endpoints' entries of
     # a separate table and flagged there for ``gather_vertex_quadrics``, which folds the table into
