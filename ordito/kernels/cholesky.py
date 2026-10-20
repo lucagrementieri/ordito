@@ -891,6 +891,11 @@ def null_space_shift(
     solution[r] = solution[r] - means[column * component_label.shape[0] + component]
 
 
+# ``backward_error_exceeds``' verdicts, past ``0`` (verified).
+BACKWARD_ERROR_FAILED = wp.int32(1)
+BACKWARD_ERROR_UNCONVERGED = wp.int32(2)
+
+
 @wp.kernel
 def backward_error_exceeds(
     offsets: wp.array[wp.int32],
@@ -902,6 +907,7 @@ def backward_error_exceeds(
     tolerance: wp.float64,
     residual: wp.array[wp.float64],
     threshold: wp.array[wp.float64],
+    base: wp.int32,
     out_flag: wp.array[wp.int32],
 ) -> None:
     # The componentwise backward error of a solution (Oettli and Prager): ``|b - A x|_i`` against
@@ -909,15 +915,24 @@ def backward_error_exceeds(
     # within its own entries' size, whatever its residual norm says. Given a conjugate-gradient
     # result's per-column ``residual`` and ``threshold`` (or ``None``), row 0 of each column also
     # flags a column that did not converge, so one four-byte read answers both questions. Both
-    # tests are spelled "not within", so a NaN anywhere flags.
+    # tests are spelled "not within", so a NaN anywhere flags. The flag is raised to ``base`` plus
+    # the worst verdict: ``BACKWARD_ERROR_FAILED`` for an entry over the bar,
+    # ``BACKWARD_ERROR_UNCONVERGED`` for a column outside its threshold, which takes precedence (a
+    # maximum, so the read is the same whatever order the rows land in; the plain read first
+    # spares the atomic once it is set). A word left at or below ``base`` reads as verified, so the
+    # caller reuses it with a higher ``base`` instead of clearing it (``linalg._VerdictFlag``).
     i, column = wp.tid()
     offset = column * n
     total, scale = residual_and_scale(offsets, columns, values, solution, rhs, offset, i)
     if not (wp.abs(total) <= tolerance * scale):
-        out_flag[0] = 1
+        failed = base + BACKWARD_ERROR_FAILED
+        if out_flag[0] < failed:
+            wp.atomic_max(out_flag, 0, failed)
     if i == 0 and residual.shape[0] > 0:
         if not (residual[column] <= threshold[column]):
-            out_flag[0] = 1
+            unconverged = base + BACKWARD_ERROR_UNCONVERGED
+            if out_flag[0] < unconverged:
+                wp.atomic_max(out_flag, 0, unconverged)
 
 
 # --------------------------------------------------------------------------------------

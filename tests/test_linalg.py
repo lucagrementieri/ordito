@@ -18,6 +18,7 @@ from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
 
 import ordito as od
 import ordito.typing as odt
+from ordito.kernels import cholesky as kernel_cholesky
 from tests.comparisons import assert_nonconstant
 from tests.conversions import bsr_to_dense, scipy_to_bsr, trimesh_to_pymeshlab
 
@@ -880,8 +881,27 @@ def test_verified_solve_rejects_a_nan_iterate(device: str) -> None:
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
     # The convergence half alone: the exact solution passes the backward-error half, so only a
     # ``NaN`` residual read as outside its threshold rejects it.
-    assert od.linalg._verified(matrix_wp, rhs_wp, solution_wp, (1, 0.0, 1.0), 1e-10, held)
-    assert not od.linalg._verified(matrix_wp, rhs_wp, solution_wp, (1, np.nan, 1.0), 1e-10, held)
+    assert od.linalg._verdict(matrix_wp, rhs_wp, solution_wp, (1, 0.0, 1.0), 1e-10, held) == 0
+    assert od.linalg._verdict(matrix_wp, rhs_wp, solution_wp, (1, np.nan, 1.0), 1e-10, held) != 0
+    # The device form tells an unconverged column from a converged one failing the backward-error
+    # half (the adaptive probe escalates on the first only), on one reused flag.
+    n_columns = int(rhs_wp.shape[0])
+    inside = wp.zeros(n_columns, dtype=wp.float64, device=device)
+    bound = wp.ones(n_columns, dtype=wp.float64, device=device)
+    outside = wp.full(n_columns, 2.0, dtype=wp.float64, device=device)
+    perturbed_wp = odt.as_array2d(
+        wp.array(expected_np + 1e-3, dtype=wp.float64, device=device), wp.float64
+    )
+    unconverged = int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED)
+    failed = int(kernel_cholesky.BACKWARD_ERROR_FAILED)
+    for result, answer, verdict in (
+        ((1, inside, bound), solution_wp, 0),
+        ((1, outside, bound), solution_wp, unconverged),
+        ((1, inside, bound), perturbed_wp, failed),
+        ((1, outside, bound), perturbed_wp, unconverged),
+        ((1, inside, bound), solution_wp, 0),
+    ):
+        assert od.linalg._verdict(matrix_wp, rhs_wp, answer, result, 1e-10, held) == verdict
 
 
 def test_solve_spd_columns_warns_on_a_nan_iterate(device: str) -> None:

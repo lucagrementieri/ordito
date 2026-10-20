@@ -1738,18 +1738,39 @@ def _solve_columns_verified(
         factorization.solve(rhs, solution, tol=tol)
         return _direct_result(factorization, tol, check_every, rhs.device)
     rent = min(cap, CG_FACTOR_AFTER_ROUNDS)
-    result = _cg_columns(
-        matrix,
-        rhs,
-        solution,
-        tol=tol,
-        maxiter=rent,
-        check_every=check_every,
-        preconditioner=preconditioner,
-        run=True,
-        caller="solve_spd_columns",
-    )
-    if _verified(matrix, rhs, solution, result, tol, factorization):
+    verdict: int | None = None
+    if preconditioner == "adaptive":
+        # The probe's escalation test and the verification share one read: the verification's
+        # flag also says whether a column stayed outside its threshold, which is the probe's own
+        # question, so a solve that settles inside the probe is decided by a single readback.
+        adaptive = _AdaptiveCg(
+            matrix,
+            rhs,
+            solution,
+            tol=tol,
+            maxiter=rent,
+            check_every=_supported_check_every(check_every),
+            cached=True,
+        )
+        result = adaptive(
+            verify=lambda probe: _verdict(matrix, rhs, solution, probe, tol, factorization)
+        )
+        verdict = adaptive.verdict
+    else:
+        result = _cg_columns(
+            matrix,
+            rhs,
+            solution,
+            tol=tol,
+            maxiter=rent,
+            check_every=check_every,
+            preconditioner=preconditioner,
+            run=True,
+            caller="solve_spd_columns",
+        )
+    if verdict is None:
+        verdict = _verdict(matrix, rhs, solution, result, tol, factorization)
+    if verdict == 0:
         return result
     if factorization.factor():
         # From zero, not from the rejected iterate: refinement corrects an initial guess through
@@ -1773,7 +1794,7 @@ def _solve_columns_verified(
             run=True,
             caller="solve_spd_columns",
         )
-        if _verified(matrix, rhs, solution, result, tol, factorization):
+        if _verdict(matrix, rhs, solution, result, tol, factorization) == 0:
             return result
     warnings.warn(
         "solve_spd_columns: conjugate gradient did not reach a verified solution in "
@@ -1785,40 +1806,43 @@ def _solve_columns_verified(
     return result
 
 
-def _verified(
+def _verdict(
     matrix: odt.BsrMatrix[wp.float64],
     rhs: odt.Array2dFloat,
     solution: odt.Array2dFloat,
     result: tuple[Any, Any, Any],
     tol: float,
     factorization: OperatorFactorization,
-) -> bool:
+) -> int:
     """
     Whether a conjugate-gradient result converged and its solution passes the backward-error test.
 
-    The convergence half reads the solver's own residual against its threshold; the other half
-    recomputes the residual from ``matrix``, entry by entry against ``(|A| |x| + |b|)_i``, which a
-    recurrence residual drifting from the true one -- an operator ill-conditioned in places --
-    cannot fool. Both write one device flag, held by ``factorization``, read back once.
+    ``0`` when both hold, ``kernels/cholesky.BACKWARD_ERROR_UNCONVERGED`` when the result did not
+    converge, else ``BACKWARD_ERROR_FAILED``. The convergence half reads the solver's own residual
+    against its threshold; the other half recomputes the residual from ``matrix``, entry by entry
+    against ``(|A| |x| + |b|)_i``, which a recurrence residual drifting from the true one -- an
+    operator ill-conditioned in places -- cannot fool. Both write one device flag, held by
+    ``factorization``, read back once.
     """
     _iterations, residual, threshold = result
     # Spelled as the negation of "inside": a ``NaN`` residual is outside every threshold.
     if not isinstance(residual, wp.array) and not float(residual) <= float(threshold):
-        return False
+        return int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED)
     device = rhs.device
     n_columns, n = int(rhs.shape[0]), int(rhs.shape[1])
-    flag = factorization._flag = _cleared_flag(factorization._flag, device)  # pyright: ignore[reportPrivateUsage]
+    flag = factorization._flag = _VerdictFlag.reused(factorization._flag, device)  # pyright: ignore[reportPrivateUsage]
     on_device = isinstance(residual, wp.array)
     _launch.launch(
         kernel_cholesky.backward_error_exceeds,
         dim=(n, n_columns),
         inputs=[matrix.offsets, matrix.columns, matrix.values, solution.flatten(), rhs.flatten(),
                 wp.int32(n), wp.float64(max(VERIFIED_BACKWARD_ERROR, 100.0 * tol)),
-                residual if on_device else None, threshold if on_device else None],
-        outputs=[flag],
+                residual if on_device else None, threshold if on_device else None,
+                wp.int32(flag.base)],
+        outputs=[flag.word],
         device=device,
     )  # fmt: skip
-    return read_scalar(flag, 0) == 0
+    return flag.verdict()
 
 
 def spd_column_solver(
@@ -2076,8 +2100,8 @@ class OperatorFactorization:
         # A factored solve's device report per tolerance (``_direct_result``), built once: three
         # one-element arrays a call is three allocations on a path that costs a few launches.
         self._reports: dict[float, tuple[Any, Any, Any]] = {}
-        # The verified solve's one-word backward-error flag (``_verified``), kept across solves.
-        self._flag: wp.array[wp.int32] | None = None
+        # The verified solve's backward-error flag (``_verdict``), kept across solves.
+        self._flag: _VerdictFlag | None = None
 
     @property
     def matrix(self) -> odt.SparseMatrix:
@@ -2365,16 +2389,17 @@ def solve_spd_settled(
     # exactly (a settled solve sits orders of magnitude below the bar, a failed one at 1), and the
     # direct factorization -- which reaches every entry with its own relative precision -- takes
     # over. One four-byte read: the decision to factor is the host's.
-    flag = solver.flag = _cleared_flag(solver.flag, rhs.device)
+    flag = solver.flag = _VerdictFlag.reused(solver.flag, rhs.device)
     _launch.launch(
         kernel_cholesky.backward_error_exceeds,
         dim=(int(scalar.nrow), n_columns),
         inputs=[scalar.offsets, scalar.columns, scalar.values, solution_flat, rhs_flat,
-                wp.int32(int(scalar.nrow)), wp.float64(SETTLE_BACKWARD_ERROR), None, None],
-        outputs=[flag],
+                wp.int32(int(scalar.nrow)), wp.float64(SETTLE_BACKWARD_ERROR), None, None,
+                wp.int32(flag.base)],
+        outputs=[flag.word],
         device=rhs.device,
     )  # fmt: skip
-    if read_scalar(flag, 0) == 0:
+    if flag.verdict() == 0:
         return solver.iterations
     fallback = factorization if factorization is not None else OperatorFactorization(matrix)
     if not fallback.factor():
@@ -2393,12 +2418,41 @@ def solve_spd_settled(
     return solver.iterations
 
 
-def _cleared_flag(flag: wp.array[wp.int32] | None, device: wp.DeviceLike) -> wp.array[wp.int32]:
-    """Return ``flag`` cleared, or a new cleared one-word flag on ``device`` when there is none."""
-    if flag is None:
-        return _launch.zeros(1, dtype=wp.int32, device=device)
-    _launch.zero_(flag)
-    return flag
+class _VerdictFlag:
+    """
+    The device word ``kernels/cholesky.backward_error_exceeds`` raises to its verdict, reused.
+
+    Each verification raises the word to ``base`` plus its verdict code, by a maximum, and the next
+    one runs from a ``base`` above anything the last could have written, so the word is reused
+    with no clear (a memset) per verification. Zeroed again only when ``base`` nears the
+    ``int32`` range.
+    """
+
+    __slots__ = ("base", "word")
+
+    # Above every verdict code, so one verification's values all sit below the next one's base.
+    _STRIDE = 4
+    _LIMIT = 1 << 30
+
+    def __init__(self, device: wp.DeviceLike) -> None:
+        self.word = _launch.zeros(1, dtype=wp.int32, device=device)
+        self.base = 0
+
+    @classmethod
+    def reused(cls, flag: _VerdictFlag | None, device: wp.DeviceLike) -> _VerdictFlag:
+        """Return ``flag`` advanced to a fresh base, or a new flag on ``device`` when it is none."""
+        if flag is None:
+            return cls(device)
+        flag.base += cls._STRIDE
+        if flag.base >= cls._LIMIT:
+            _launch.zero_(flag.word)
+            flag.base = 0
+        return flag
+
+    def verdict(self) -> int:
+        """Read the verification's verdict back: ``0`` (verified) or its code past the base."""
+        value = int(read_scalar(self.word, 0))
+        return value - self.base if value > self.base else 0
 
 
 def _direct_result(
@@ -2882,8 +2936,11 @@ class _AdaptiveCg:
         self._probe_cap = min(maxiter, CG_CHEBYSHEV_PROBE_ITERATIONS)
         self._probe = self._state("diag", self._probe_cap)
         # Built on the first escalation: a solve that never escalates never pays the polynomial's
-        # setup, which reads a bound back.
+        # setup (its bound's launches and buffers).
         self._escalation: _BatchedCg | None = None
+        # The last call's verdict on the probe, when a ``verify`` decided it and the probe's
+        # result is what that call returned; ``None`` otherwise.
+        self.verdict: int | None = None
 
     def _state(self, preconditioner: str, maxiter: int) -> _BatchedCg:
         if self._cached:
@@ -2910,16 +2967,29 @@ class _AdaptiveCg:
             return state()
         return state.solve(self._rhs.flatten(), self._solution.flatten())
 
-    def __call__(self):
-        """Run the probe, and the escalation if the probe did not converge."""
+    def __call__(self, verify: Callable[[tuple[Any, Any, Any]], int] | None = None):
+        """
+        Run the probe, and the escalation if the probe did not converge.
+
+        ``verify``, when given, judges the probe's result in place of reading its residual back
+        (``_verdict``'s codes); the escalation runs on ``BACKWARD_ERROR_UNCONVERGED``, and any
+        other verdict is kept in ``verdict`` with the probe's result returned.
+        """
+        self.verdict = None
         result = self._run(self._probe)
         if self._probe_cap >= self._maxiter:
             return result
-        # One readback: the probe's residual against its tolerance. It is the price of deciding,
-        # and a solve short enough to finish inside the probe pays nothing else.
-        residual, tolerance = _cg_residual_and_tolerance(result)
-        if residual <= tolerance:
-            return result
+        if verify is not None:
+            verdict = verify(result)
+            if verdict != int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED):
+                self.verdict = verdict
+                return result
+        else:
+            # One readback: the probe's residual against its tolerance. It is the price of
+            # deciding, and a solve short enough to finish inside the probe pays nothing else.
+            residual, tolerance = _cg_residual_and_tolerance(result)
+            if residual <= tolerance:
+                return result
         if self._escalation is None:
             self._escalation = self._state("chebyshev", self._maxiter - self._probe_cap)
         iterations, residual, tolerance = self._run(self._escalation)
@@ -3157,8 +3227,8 @@ class _BatchedCg:
         # every launch in the body, plus the graph instantiation, for an identical graph. Only
         # ``_initialize``, which reads the caller's operands, is issued per call.
         self._graph = None
-        # ``solve_spd_settled``'s one-word backward-error flag, kept across its solves.
-        self.flag: wp.array[wp.int32] | None = None
+        # ``solve_spd_settled``'s backward-error flag, kept across its solves.
+        self.flag: _VerdictFlag | None = None
 
         # The settle monitor ``solve_spd_settled`` runs (``check_rounds``, ``change_tolerance``,
         # ``settle_rounds``): every ``check_rounds`` rounds ``cg_settle_change`` compares the
