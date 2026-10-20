@@ -2446,7 +2446,7 @@ class HeatSolver:
             kept = self._systems[role] = _KeptSystem(
                 _StackedFactorization(
                     stack,
-                    _stacked_positions(self._bound_mesh().vertices, n_scalars),
+                    self._bound_mesh().vertices,
                     self._slot("vector", vector_system).factorization,
                     self._slot("heat", scalar[0]).factorization,
                     n_scalars,
@@ -2601,13 +2601,16 @@ class _StackedFactorization(twl.OperatorFactorization):
     def __init__(
         self,
         stack: odt.SparseMatrix,
-        positions: wp.array[wp.vec3],
+        vertices: wp.array[wp.vec3],
         vector: twl.OperatorFactorization,
         heat: twl.OperatorFactorization,
         n_scalars: int,
     ) -> None:
-        """Hold ``stack`` (rows at ``positions``) and its two distinct blocks' slots."""
-        super().__init__(stack, positions)
+        """Hold ``stack`` over the mesh's ``vertices`` and its two distinct blocks' slots."""
+        # The stack's row positions order only a whole factorization, which most stacks never
+        # take (they settle, or factor by blocks): ``factor`` forms them when it does.
+        super().__init__(stack)
+        self._vertices: wp.array[wp.vec3] | None = vertices
         self._vector = vector
         self._heat = heat
         self._n_scalars = n_scalars
@@ -2647,6 +2650,9 @@ class _StackedFactorization(twl.OperatorFactorization):
             or self._heat.factorization is not None
         )
         if not blocks:
+            if self._vertices is not None:
+                self._coordinates = _stacked_positions(self._vertices, self._n_scalars)
+                self._vertices = None
             return super().factor()
         vector = self._vector.factor()
         heat = self._heat.factor()
