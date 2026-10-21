@@ -55,6 +55,10 @@ deterministic either way):
 - the positions of [`isotropic_remesh`][ordito.remesh.isotropic_remesh], whose tangential
   smoothing adds each vertex's area-weighted one ring over its neighbours in ascending order when
   on, and so the splits, collapses and flips that follow and the face count;
+- the quadrics of [`quadric_decimate`][ordito.remesh.quadric_decimate] at a vertex with more than
+  64 incident faces or where three or more boundary edges meet (summed in a fixed order when on,
+  so on the CPU device too their last bits can differ from those with it off; every other vertex
+  is summed in a fixed order either way), and so its collapses;
 - the values of the differentiable Chamfer losses
   [`chamfer_points_to_points_loss`][ordito.metrics.chamfer_points_to_points_loss],
   [`chamfer_points_to_mesh_loss`][ordito.metrics.chamfer_points_to_mesh_loss] and
