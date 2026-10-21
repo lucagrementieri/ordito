@@ -111,6 +111,50 @@ def test_launch_matches_wp_launch_on_every_argument_kind(
         assert np.array_equal(got[1], expected[1])
 
 
+@wp.struct
+class _Bundle:
+    """A struct argument: an array, a scalar of each width and a vector."""
+
+    values: wp.array[wp.float32]
+    count: wp.int32
+    scale: wp.float64
+    offset: wp.vec3
+
+
+@wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]  # wp.kernel has no return annotation
+def _struct_argument(
+    bundle: _Bundle,  # pyright: ignore[reportGeneralTypeIssues]  # ``@wp.struct`` binds a value
+    shift: wp.int32,
+    out: wp.array[wp.float32],
+) -> None:
+    i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
+    value = bundle.values[i % bundle.count] * wp.float32(bundle.scale) + bundle.offset[i % 3]
+    out[i] = value + wp.float32(shift)  # pyright: ignore[reportIndexIssue, reportArgumentType]
+
+
+def test_launch_packs_a_struct_argument(device: str) -> None:
+    """
+    A ``@wp.struct`` argument takes the packed block and matches ``wp.launch``, field by field.
+
+    The fields change between launches of the same instance (as a group sum's ``phase`` does), so
+    a block that kept a stale image of the struct would fail on the second set.
+    """
+    assert _launch._Block.build(_struct_argument, 1) is not None  # pyright: ignore[reportPrivateUsage]
+    n = 97
+    bundle = _Bundle()
+    bundle.values = wp.array(np.arange(5, dtype=np.float32), device=device)
+    for count, scale, shift in [(5, 1.5, 2), (3, -0.25, -7), (1, 2.0**-30, 0)]:
+        bundle.count = count
+        bundle.scale = scale
+        bundle.offset = wp.vec3(float(count), 0.5, -1.0)
+        expected = wp.zeros(n, dtype=wp.float32, device=device)
+        wp.launch(_struct_argument, dim=n, inputs=[bundle, shift, expected], device=device)
+        for _ in range(3):
+            got = wp.zeros(n, dtype=wp.float32, device=device)
+            _launch.launch(_struct_argument, dim=n, inputs=[bundle, shift, got], device=device)
+            assert np.array_equal(got.numpy(), expected.numpy())
+
+
 @pytest.mark.parametrize("dim", [(5, 7), (5,), (2, 3, 4)])
 def test_launch_extent_matches_wp_launch(device: str, dim: tuple[int, ...]) -> None:
     """A shorter ``dim`` pads with 1, a longer one folds into the kernel's last index, like Warp."""

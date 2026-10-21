@@ -122,7 +122,7 @@ _SCALAR_CHARS = {
     ctypes.c_double: "d",
     ctypes.c_bool: "?",
 }
-_KIND_ARRAY, _KIND_SCALAR, _KIND_VALUE = 0, 1, 2
+_KIND_ARRAY, _KIND_SCALAR, _KIND_VALUE, _KIND_STRUCT = 0, 1, 2, 3
 
 
 class _Block:
@@ -161,6 +161,12 @@ class _Block:
                 fmt.append(f"{size}s")
                 kinds.append((_KIND_VALUE, 0, {arg_type}, arg_type))
                 offset += size
+            elif isinstance(arg_type, _codegen.Struct) and ctypes.alignment(arg_type.ctype) <= 8:
+                # A ``@wp.struct`` is its ctypes image, the bytes Warp's own launch hands over.
+                size = ctypes.sizeof(arg_type.ctype)
+                fmt.append(f"{size}s")
+                kinds.append((_KIND_STRUCT, 0, None, arg_type))
+                offset += size
             elif (
                 isinstance(arg_type, type)
                 and arg_type not in _HALF
@@ -187,7 +193,9 @@ class _Block:
         Python call, one ``pack_into`` and the native call. It returns ``False`` without launching
         when an argument has no packed form: not exactly the parameter's array class and rank, a
         gradient-carrying array, a dtype or value type that is not Warp-equal to the parameter's,
-        an array on another device under a strict access mode, or a value outside its C type.
+        an instance of another struct, an array on another device under a strict access mode, or
+        a value outside its C type. A struct's own array members are not checked, as in Warp's
+        launch.
         """
         kernel_dim = kernel.adj.kernel_dim
         env: dict[str, Any] = {
@@ -250,12 +258,19 @@ class _Block:
                     f"    x{j} = v",
                 ]
                 values.append(f"x{j}")
-            else:
+            elif kind == _KIND_VALUE:
                 body += [
                     "    t = type(v)",
                     f"    if t not in A{j} and not _accept(A{j}, t, D{j}):",
                     "        return False",
                     f"    x{j} = bytes(v)",
+                ]
+                values.append(f"x{j}")
+            else:
+                body += [
+                    f"    if getattr(v, '_cls', None) is not D{j}:",
+                    "        return False",
+                    f"    x{j} = bytes(v._ctype)",
                 ]
                 values.append(f"x{j}")
         body += [
@@ -924,7 +939,8 @@ class GroupSums(NamedTuple):
     `finish_group_sums`. ``launch_pass`` is the ``kernels/reduce.GroupSumPass`` the scattering
     kernel takes, launched once per entry of ``phases``: ``(0,)`` when off, ``(1,)`` when a bound
     makes the field pass unnecessary, else ``(0, 1)`` (pass 0 raises the group fields, pass 1 adds
-    the words). ``words`` is the fields-and-words buffer, ``None`` when off.
+    the words). ``words`` is the fields-and-words buffer, ``None`` when off. ``out`` is ``None``
+    with the setting on for ``group_sums(fused=True)``, whose consumer reads the words itself.
     """
 
     out: Any
@@ -945,6 +961,7 @@ def group_sums(
     *,
     bound: float | None = None,
     shared_scale: bool = False,
+    fused: bool = False,
 ) -> GroupSums:
     """
     Allocate a per-group sum of ``dtype`` over ``n_groups`` groups, per the deterministic setting.
@@ -960,18 +977,17 @@ def group_sums(
     from it and pass 0 is skipped (a term that breaks the promise makes every group NaN).
     ``shared_scale`` keeps pass 0 but finds one field for every group: no gathered field read in
     either pass, at the cost of setting every group's precision from the largest term overall.
-    """
-    global _kernel_reduce, _off_pass
-    kernel_reduce = _kernel_reduce
-    if kernel_reduce is None:
-        # Imported on first use, so that ``_launch`` stays kernel-free at import.
-        from ordito.kernels import reduce as kernel_reduce
 
-        _kernel_reduce = kernel_reduce
+    ``fused`` is the consumer-fused finish, for a scalar sum: the kernel that reads the sums takes
+    ``out`` and ``launch_pass`` and reads each group through ``kernels/reduce.read_group_sum``, so
+    with the setting on no result is allocated (``out`` is ``None``) and `finish_group_sums` is
+    not called. Off, it changes nothing.
+    """
     if not is_deterministic():
-        if _off_pass is None:
-            _off_pass = kernel_reduce.GroupSumPass()
-        return GroupSums(zeros(n_groups, dtype=dtype, device=device), _off_pass, (0,), None)
+        return GroupSums(
+            zeros(n_groups, dtype=dtype, device=device), empty_group_sum_pass(), (0,), None
+        )
+    kernel_reduce = _group_sum_kernels()
     two_words, size = kernel_reduce.GROUP_SUM_LAYOUTS[dtype]
     n_slots = n_groups * size
     headroom = max(max_terms - 1, 0).bit_length()
@@ -990,7 +1006,32 @@ def group_sums(
     launch_pass.base_field = base_field
     launch_pass.headroom = headroom
     phases = (1,) if bound is not None else (0, 1)
-    return GroupSums(empty(n_groups, dtype=dtype, device=device), launch_pass, phases, words)
+    out = None if fused else empty(n_groups, dtype=dtype, device=device)
+    return GroupSums(out, launch_pass, phases, words)
+
+
+def empty_group_sum_pass() -> Any:
+    """
+    Return the ``kernels/reduce.GroupSumPass`` holding no words: a group sum's off-mode pass.
+
+    ``kernels/scatter.scatter_add`` then adds atomically and ``kernels/reduce.read_group_sum``
+    reads the accumulator. A kernel taking a pass it never reads (a branch of a selector that sums
+    nothing) is handed this one, shared by every call.
+    """
+    global _off_pass
+    if _off_pass is None:
+        _off_pass = _group_sum_kernels().GroupSumPass()
+    return _off_pass
+
+
+def _group_sum_kernels() -> Any:
+    """Return ``kernels/reduce``, imported on first use so ``_launch`` stays kernel-free."""
+    global _kernel_reduce
+    if _kernel_reduce is None:
+        from ordito.kernels import reduce as kernel_reduce
+
+        _kernel_reduce = kernel_reduce
+    return _kernel_reduce
 
 
 def launch_group_sums(

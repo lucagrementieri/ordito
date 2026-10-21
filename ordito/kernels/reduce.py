@@ -508,8 +508,9 @@ def store_sum_and_count(
 #   (``add_group_sum_term``).
 #
 # The finish (``group_sum_value``) reads a slot's words back as one ``float64``; a consumer kernel
-# may call it instead of the finish launch. ``kernels/scatter.scatter_add`` and its vector and
-# matrix siblings are the entry points, and ``_launch.group_sums`` allocates the buffer.
+# may call it instead of the finish launch (``read_group_sum``, a scalar sum in either mode).
+# ``kernels/scatter.scatter_add`` and its vector and matrix siblings are the entry points, and
+# ``_launch.group_sums`` allocates the buffer.
 #
 # **The scale.** With ``h = headroom`` the caller's bound ``ceil(log2(terms per slot))``
 # (``h <= 31``), a term of a group whose field is ``F`` is scaled to ``x = v * 2^k`` with
@@ -665,13 +666,13 @@ def group_sum_words(
     return wp.vec2l(signed_high, signed_low)
 
 
-# A warp's words summed before the atomic when every active lane holds the same slot (one shuffle
-# and a vote decide): the total to the lowest active lane, 0 to the others; otherwise each lane's
-# own ``value``. The CPU device runs one lane at a time and returns ``value``.
+# A warp's words summed before the atomic when every active lane holds the same ``key`` (one
+# shuffle and a vote decide): the total to the lowest active lane, 0 to the others; otherwise each
+# lane's own ``value``. The CPU device runs one lane at a time and returns ``value``.
 _WARP_UNIFORM_SUM = """
 #if defined(__CUDA_ARCH__)
 const unsigned active = __activemask();
-if (!__all_sync(active, __shfl_sync(active, slot, __ffs(active) - 1) == slot)) {
+if (!__all_sync(active, __shfl_sync(active, key, __ffs(active) - 1) == key)) {
     return value;
 }
 const unsigned lane = threadIdx.x & 31u;
@@ -694,15 +695,15 @@ return value;
 
 
 @wp.func_native(_WARP_UNIFORM_SUM)
-def warp_uniform_sum(slot: wp.int32, value: wp.int64) -> wp.int64: ...
+def warp_uniform_sum(key: wp.int32, value: wp.int64) -> wp.int64: ...
 
 
 @wp.func
-def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, slot: wp.int32, word: wp.int64):
-    # One word of a term into ``sums.words[index]`` (slot ``slot``'s high or low word): summed
-    # across the warp first where the warp shares the slot (``warp_uniform_sum``), committed only
-    # where non-zero.
-    total = warp_uniform_sum(slot, word)
+def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, word: wp.int64):
+    # One word of a term into ``sums.words[index]`` (a slot's high or low word): summed across the
+    # warp first where the warp shares the word (``warp_uniform_sum``, keyed on ``index`` so lanes
+    # converged on a high and a low word of one slot never pool), committed only where non-zero.
+    total = warp_uniform_sum(index, word)
     if total != wp.int64(0):
         wp.atomic_add(sums.words, index, total)
 
@@ -727,9 +728,9 @@ def add_group_sum_term(
         return
     two_words = group_sum_two_words(sums)
     words = group_sum_words(value, field, sums.headroom, two_words)
-    commit_group_sum_word(sums, sums.n_fields + slot, slot, words[0])
+    commit_group_sum_word(sums, sums.n_fields + slot, words[0])
     if two_words != 0:
-        commit_group_sum_word(sums, sums.n_fields + sums.n_slots + slot, slot, words[1])
+        commit_group_sum_word(sums, sums.n_fields + sums.n_slots + slot, words[1])
 
 
 @wp.func
@@ -765,6 +766,20 @@ def group_sum_value(sums: GroupSumPass, group: wp.int32, slot: wp.int32) -> wp.f
     undo = wp.max(field, 1) + headroom - 1084
     first = undo >> 1
     return total * group_sum_power(first) * group_sum_power(undo - first)
+
+
+@wp.func
+def read_group_sum(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32):
+    # Group ``group``'s scalar sum in ``out_sums``' dtype, whatever the deterministic setting: the
+    # accumulator ``out_sums[group]`` the arrival-order scatter added into when ``sums`` holds no
+    # words, else ``group_sum_value`` rounded as the finish rounds it (bit for bit the finished
+    # value). The consumer-fused finish: a kernel that reads each group's sum takes ``out_sums``
+    # and ``sums`` from ``_launch.group_sums(fused=True)`` and calls this, so the setting on skips
+    # the finish launch, its pass over the words and the result buffer (``out_sums`` is then
+    # ``None`` and never read). The branch is uniform over a launch.
+    if sums.words.shape[0] == 0:
+        return out_sums[group]
+    return out_sums.dtype(group_sum_value(sums, group, group))
 
 
 @wp.func
