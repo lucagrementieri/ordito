@@ -450,6 +450,14 @@ own output.
 
     [Convex-hull points and half-space tests](points.md#pc7)
 
+-   [![Exact convex hull](../assets/examples/pc8-thumb.webp)](points.md#pc8)
+
+    [Exact convex hull](points.md#pc8)
+
+-   [![Convex hulls of degenerate clouds](../assets/examples/pc9-thumb.webp)](points.md#pc9)
+
+    [Convex hulls of degenerate clouds](points.md#pc9)
+
 </div>
 
 ## [Reconstruction and registration](reconstruction.md)
@@ -483,5 +491,19 @@ own output.
 -   [![From a bare scan: normals, then Poisson or ball pivoting](../assets/examples/rr7-thumb.webp)](reconstruction.md#rr7)
 
     [From a bare scan: normals, then Poisson or ball pivoting](reconstruction.md#rr7)
+
+</div>
+
+## [Reproducible results](reproducibility.md)
+
+<div class="grid cards ordito-gallery" markdown>
+
+-   [![A seeded sampler, called twice](../assets/examples/rp1-thumb.webp)](reproducibility.md#rp1)
+
+    [A seeded sampler, called twice](reproducibility.md#rp1)
+
+-   [![Sums that repeat bit for bit](../assets/examples/rp2-thumb.webp)](reproducibility.md#rp2)
+
+    [Sums that repeat bit for bit](reproducibility.md#rp2)
 
 </div>

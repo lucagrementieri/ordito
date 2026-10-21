@@ -106,5 +106,7 @@ number.
 ## Where to next
 
 - **[Examples](examples/index.md)**: these four ideas applied to real tasks.
+- **[Reproducible results](reproducibility.md)**: why a GPU sum can change its last bits
+  from call to call, and the one setting that stops it.
 - **[Migrating from another library](migrating-from/index.md)**: how these conventions map onto
   the API you already know.

@@ -1,0 +1,3 @@
+lattice: 729 points, 8 hull vertices, same as qhull: True
+octahedron: 2006 points, 6 hull vertices, same as qhull: True
+slab: 4750 points, 179 hull vertices, same as qhull: True

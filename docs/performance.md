@@ -52,7 +52,8 @@ The GPU wins as soon as there is enough work to fill it, from tens of thousands 
   on every iteration.
 - **The same code runs on Warp's CPU backend when no GPU is present.** The test suite runs on
   both devices, so correctness does not depend on which one you use, only speed does. (Results can
-  differ in the last bits: floating-point sums on a GPU may add terms in a different order.)
+  differ in the last bits: floating-point sums on a GPU may add terms in a different order. See
+  [Reproducible results](reproducibility.md) for the setting that makes them repeat.)
 
 ## How to reproduce a number
 

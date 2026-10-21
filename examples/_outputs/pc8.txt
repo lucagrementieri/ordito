@@ -1,0 +1,2 @@
+bunny cloud: 30000 points, hull of 1564 vertices and 3124 triangles, same vertices as qhull: True
+dragon scan: 437645 points, hull of 2536 vertices and 5068 triangles, same vertices as qhull: True

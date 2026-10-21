@@ -1,6 +1,7 @@
 # Point clouds
 
-Down-sampling, surface sampling, normal estimation, outlier removal and interpolation.
+Down-sampling, surface sampling, normal estimation, outlier removal, interpolation and exact
+convex hulls.
 
 ## Down-sampling: voxel grid, farthest point and blue noise {#pc1}
 
@@ -247,8 +248,9 @@ along some sampled direction: every one is on the hull, and more directions find
 them. [`convex_superset_mask`][ordito.points.convex_superset_mask] answers the other way
 round, discarding only points provably inside, so every hull vertex survives.
 [`half_space_mask`][ordito.points.half_space_mask] is the building block: the points strictly
-on one side of a plane. ordito selects hull *points* only; it does not build the hull's
-triangle mesh.
+on one side of a plane. Both masks approximate the vertex set without building a surface; the
+hull's triangles, exactly, come from [`convex_hull`][ordito.points.convex_hull]
+([next example](#pc8)).
 
 ```python
 import warp as wp
@@ -277,7 +279,149 @@ print(f"{upper.sum()} points above the plane")
 
 Checked against an exact hull (`scipy.spatial.ConvexHull`, 1564 vertices on this cloud): all
 1104 points of the subset are hull vertices, and every hull vertex is among the superset's
-candidates. Convex-hull meshing is not part of ordito.
+candidates.
 
 Modelled on: [Open3D: convex hull](https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html) · [trimesh: convex](https://trimesh.org/trimesh.convex.html)
+{: .ordito-credits }
+
+## Exact convex hull {#pc8}
+
+[`convex_hull`][ordito.points.convex_hull] returns the convex hull of a cloud as triangles
+that index the input points, the layout of [`scipy.spatial.ConvexHull`][]'s `simplices`. Each
+triangle is wound counter-clockwise seen from outside, and a hull of `V` vertices has `2V - 4`
+of them. Every decision the algorithm takes is an exact orientation sign, with the same answer
+on the CPU and the CUDA device and no tolerance to tune, so the hull is the true hull of the
+`float32` points: its vertex set equals qhull's on both clouds below, the bunny sampled at
+30 000 points and the dragon scan's 437 645 vertices.
+[`remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices] turns the
+triangles into a compact mesh, outward-facing and ready for a [`Trimesh`][ordito.mesh.Trimesh].
+
+```python
+import numpy as np
+import scipy.spatial
+
+import ordito as od
+from examples import data
+
+clouds = {"bunny cloud": data.load_points("bunny_cloud", device)}
+clouds["dragon scan"], _ = data.load("dragon", device)
+hulls = {}
+for name, points in clouds.items():
+    faces = od.points.convex_hull(points)
+    hull_vertices = np.unique(faces.numpy())
+    qhull = scipy.spatial.ConvexHull(points.numpy())
+    print(
+        f"{name}: {points.shape[0]} points, hull of {hull_vertices.size} vertices "
+        f"and {faces.shape[0] // 3} triangles, same vertices as qhull: "
+        f"{np.array_equal(hull_vertices, np.sort(qhull.vertices))}"
+    )
+    hulls[name] = od.repair.remove_unreferenced_vertices(points, faces)[:2]
+```
+
+```text title="Output"
+bunny cloud: 30000 points, hull of 1564 vertices and 3124 triangles, same vertices as qhull: True
+dragon scan: 437645 points, hull of 2536 vertices and 5068 triangles, same vertices as qhull: True
+```
+
+![Exact convex hull](../assets/examples/pc8.webp)
+
+**How it works.** The algorithm is ffHull (Gao, Cao, Tan and Huang, *Flip-Flop: Convex Hull
+Construction via Star-Shaped Polyhedron in 3D*, I3D 2013). Incremental algorithms such as
+quickhull add one point at a time. ffHull keeps the surface *star-shaped* instead of convex,
+every face seeing one fixed kernel point inside, and that weaker invariant can be kept by
+thousands of local edits at once. The surface starts as a tetrahedron. Each round, every face
+with points beyond it splits into three at the farthest of them, all at once, and the points
+the new surface encloses leave the computation for good, so the cost follows the points near
+the hull rather than the size of the cloud. The figure runs the same growth in the plane (the
+cross is the kernel point; blue points are still outside, grey ones dropped):
+
+![ffHull's growth in the plane](../assets/examples/pc8-growth.svg)
+
+In the plane the growth ends convex. In space it ends with *reflex* edges, dents where two faces
+meet inward. Flip-Flop removes them with edge flips, again in parallel: a 2-2 flip swaps the
+shared diagonal of two triangles (red) for the other one (blue) and only grows the volume;
+where a dent cannot be flipped away, one of its vertices is provably not extreme and a 3-1 flip
+deletes it. ordito also flips during growth, which drops the points under the dents early (2.4x
+fewer flip rounds on the dragon, 3x on the bunny).
+
+![A reflex edge before and after a 2-2 flip](../assets/examples/pc8-flip.webp)
+
+**Speed.** qhull, behind SciPy, trimesh, Open3D and MeshLab, is single-threaded on the host.
+On the dragon's 437 645 points:
+
+![Benchmark](../assets/benchmarks/convex_hull-dragon-light.png#only-light)
+![Benchmark](../assets/benchmarks/convex_hull-dragon-dark.png#only-dark)
+
+The gap is about 5x on the bunny's 35 947 points and 22x on the dragon. A GPU call has a floor
+of a couple of milliseconds, so below a few thousand points qhull is as fast or faster.
+
+Modelled on: [Open3D: convex hull](https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html) · [trimesh: convex](https://trimesh.org/trimesh.convex.html)
+{: .ordito-credits }
+
+## Convex hulls of degenerate clouds {#pc9}
+
+The clouds a tolerance-based hull gets wrong are the ones made of exact coincidences. A
+9 x 9 x 9 lattice has every point of a face in one plane and every point of an edge on one
+line: [`convex_hull`][ordito.points.convex_hull] keeps the 8 corners and nothing else. An
+octahedron's 6 corners, with 2 000 more points placed *exactly* on its faces (multiples of
+1/64, which `float32` stores without rounding), keep the corners alone. A disc 2e-6 thick, six
+orders of magnitude thinner than it is wide, is still a solid: its hull runs round the rim and
+over the few interior points that stand proud of their neighbours by a fraction of a micron.
+Each hull's vertex set is checked against `scipy.spatial.ConvexHull`.
+
+```python
+import numpy as np
+import scipy.spatial
+import warp as wp
+
+import ordito as od
+
+rng = np.random.default_rng(0)
+axis = np.linspace(-1.0, 1.0, 9)
+lattice = np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), axis=-1).reshape(-1, 3)
+
+# Points on the octahedron |x| + |y| + |z| = 1 with coordinates in multiples of 1/64.
+steps = rng.integers(0, 65, size=(4000, 2))
+steps = steps[steps.sum(axis=1) <= 64][:2000]
+signs = rng.choice([-1.0, 1.0], size=(steps.shape[0], 3))
+on_faces = signs * np.column_stack([steps, 64 - steps.sum(axis=1)]) / 64.0
+octahedron = np.vstack([np.eye(3), -np.eye(3), on_faces])
+
+disc = rng.uniform(-1.0, 1.0, size=(6000, 2))
+disc = disc[np.hypot(disc[:, 0], disc[:, 1]) < 1.0]
+slab = np.column_stack([disc, rng.uniform(-1e-6, 1e-6, size=disc.shape[0])])
+
+clouds = {"lattice": lattice, "octahedron": octahedron, "slab": slab}
+hulls = {}
+for name, cloud in clouds.items():
+    points = wp.array(cloud, dtype=wp.vec3, device=device)
+    faces = od.points.convex_hull(points)
+    hull_vertices = np.unique(faces.numpy())
+    qhull = scipy.spatial.ConvexHull(points.numpy())
+    print(
+        f"{name}: {points.shape[0]} points, {hull_vertices.size} hull vertices, "
+        f"same as qhull: {np.array_equal(hull_vertices, np.sort(qhull.vertices))}"
+    )
+    hulls[name] = (points.numpy(), faces.numpy().reshape(-1, 3))
+```
+
+```text title="Output"
+lattice: 729 points, 8 hull vertices, same as qhull: True
+octahedron: 2006 points, 6 hull vertices, same as qhull: True
+slab: 4750 points, 179 hull vertices, same as qhull: True
+```
+
+![Convex hulls of degenerate clouds](../assets/examples/pc9.webp)
+
+The rules for degenerate input:
+
+- **Coplanar points on a facet** (the lattice's faces): the facet is triangulated arbitrarily,
+  and the points inside it are not vertices.
+- **Collinear points along a hull edge**: only the two ends are vertices.
+- **Coincident points**: one of them is kept as the vertex.
+- **A cloud a fraction of a micron thick**: still a solid, hulled like any other.
+- **Fewer than 4 points, or no 4 spanning a tetrahedron** (an exactly flat cloud): `ValueError`,
+  as there is no volume to bound.
+
+Modelled on: [trimesh: convex](https://trimesh.org/trimesh.convex.html)
 {: .ordito-credits }

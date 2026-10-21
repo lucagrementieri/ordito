@@ -49,6 +49,11 @@ and falls back to CPU otherwise, with the same code.
 - **Optional `Trimesh` object.** A frozen mesh class with lazily cached derived quantities
   (normals, adjacency, boundary loops, manifoldness and watertightness predicates, BVH) for when
   an object API is more convenient than free functions.
+- **Exact where it matters.** [Convex hulls](examples/points.md#pc8) and other topological
+  decisions take exact orientation signs, so the answer does not depend on a tolerance or on the
+  device.
+- **Reproducible on demand.** One switch, `od.set_deterministic(True)`, makes results repeat bit
+  for bit on CUDA; see [Reproducible results](reproducibility.md).
 - **Fully typed** (`py.typed`) and validated function-by-function against eleven reference
   implementations — nine established geometry-processing libraries plus SciPy and NumPy, all
   listed below.

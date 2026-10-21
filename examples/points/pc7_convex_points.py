@@ -18,8 +18,9 @@ META = Meta(
     them. [`convex_superset_mask`][ordito.points.convex_superset_mask] answers the other way
     round, discarding only points provably inside, so every hull vertex survives.
     [`half_space_mask`][ordito.points.half_space_mask] is the building block: the points strictly
-    on one side of a plane. ordito selects hull *points* only; it does not build the hull's
-    triangle mesh.
+    on one side of a plane. Both masks approximate the vertex set without building a surface; the
+    hull's triangles, exactly, come from [`convex_hull`][ordito.points.convex_hull]
+    ([next example](#pc8)).
     """,
     credits=(
         (
@@ -31,7 +32,7 @@ META = Meta(
     notes="""
     Checked against an exact hull (`scipy.spatial.ConvexHull`, 1564 vertices on this cloud): all
     1104 points of the subset are hull vertices, and every hull vertex is among the superset's
-    candidates. Convex-hull meshing is not part of ordito.
+    candidates.
     """,
 )
 

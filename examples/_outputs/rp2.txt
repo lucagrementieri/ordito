@@ -1,0 +1,3 @@
+deterministic=False: 13 distinct volumes
+deterministic=True: 1 distinct volumes
+CPU and CUDA group sums identical: True

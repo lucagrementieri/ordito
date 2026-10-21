@@ -1,0 +1,2 @@
+deterministic=False: 329 of 100000 samples moved
+deterministic=True: 0 of 100000 samples moved
