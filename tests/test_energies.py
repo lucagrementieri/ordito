@@ -26,6 +26,7 @@ import warp as wp
 
 import ordito as od
 from tests.comparisons import sparse_allclose
+from tests.conftest import BOUNDARY_MESHES
 from tests.conversions import (
     bsr_to_csr,
     mesh_igl,
@@ -451,8 +452,14 @@ def _lscm_q_igl(mesh_tm: tm.Trimesh) -> sp.csr_matrix:
     return hessian_igl.tocsr()
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
-def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
+@pytest.mark.parametrize("pattern_build", ["directed", "undirected"])
+def test_lscm_hessian_matches_igl(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    mesh_name: str,
+    pattern_build: str,
+) -> None:
     """
     Class B: igl exposes the Hessian only as ``igl.lscm``'s second return, so it comes from there.
 
@@ -460,10 +467,17 @@ def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str
     ``-repdiag(L, 2) - 2A``, the same matrix ordito assembles, compared over the union of the two
     sparsity patterns because the two builds order their CSR entries differently. This builds the
     Hessian only, no conjugate-gradient solve. The Hessian from a mesh's cached ``cot_entries``
-    and ``pattern`` is compared too.
+    and ``pattern`` is compared too. The boundary term is read off the Laplacian's pattern, so
+    both of its builds are run (the undirected one by lowering its face-count switch), on one rim
+    and on four.
     """
+    if pattern_build == "undirected":
+        monkeypatch.setattr(od.laplacian, "_UNDIRECTED_PATTERN_FROM_FACES", 0)
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     hessian_igl = _lscm_q_igl(mesh_tm)
+    # The boundary term is not vacuous here: ``-2A`` holds cross-quadrant entries.
+    n_vertices = mesh_wp.points.shape[0]
+    assert hessian_igl[:n_vertices, n_vertices:].count_nonzero() > 0
     hessian_wp = bsr_to_csr(od.energies.lscm_hessian(mesh_wp.points, mesh_wp.indices))
     assert sparse_allclose(hessian_wp, hessian_igl, rtol=1e-5, atol=1e-5)
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
