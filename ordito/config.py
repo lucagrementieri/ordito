@@ -35,7 +35,10 @@ deterministic either way):
   [`face_orientation_bits`][ordito.validation.face_orientation_bits] on a non-orientable mesh,
   and so the seam [`make_winding_consistent`][ordito.repair.make_winding_consistent] leaves;
 - the positions of [`subdivide_loop`][ordito.remesh.subdivide_loop], whose 1-ring sums are
-  added in a fixed order.
+  added in a fixed order;
+- the positions of [`cluster_decimate`][ordito.remesh.cluster_decimate] with
+  ``contraction="average"``, whose cell means are added in a fixed order (on the CPU device the
+  same order as with the setting off, so the bits do not change);
 - the order of the hits [`intersects_location`][ordito.ray.intersects_location] returns
   (ascending ray order when on).
 

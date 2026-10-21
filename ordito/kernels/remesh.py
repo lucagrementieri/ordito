@@ -7,6 +7,7 @@ from ordito.kernels.adjacency import edge_pair_topology, write_edge_row, write_f
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
+    binary_search_index_left,
     binary_search_sorted_contains,
     divide_if_positive,
     lowbias32,
@@ -42,6 +43,7 @@ from ordito.kernels.predicates import (
     triangle_normal,
     vector_angle,
 )
+from ordito.kernels.reduce import block_sum
 from ordito.kernels.scatter import (
     accumulate_endpoint_value,
     add_corner_triple,
@@ -2981,9 +2983,14 @@ def vertex_cluster_rank(
 
 
 # How ``cluster_decimate`` places each output vertex: a warp-uniform selector for the two kernels
-# below, which differ by it only in the per-vertex half of their work.
+# below, which differ by it only in the per-vertex half of their work. ``CLUSTER_AVERAGE_SORTED``
+# is the mean under the deterministic setting: the vertices are staged for a stable sort by cluster
+# (``stage_cluster_vertex``) and each cluster's run is added in one fixed order
+# (``cluster_sorted_means`` and ``cluster_heavy_means``, which write the output positions), where
+# ``CLUSTER_AVERAGE``'s atomics add them in arrival order.
 CLUSTER_AVERAGE = wp.constant(wp.int32(0))
 CLUSTER_CLOSEST = wp.constant(wp.int32(1))
+CLUSTER_AVERAGE_SORTED = wp.constant(wp.int32(2))
 
 
 @wp.func
@@ -3001,6 +3008,23 @@ def accumulate_cluster_vertex(
     if r >= 0:
         wp.atomic_add(out_sum, r, vertices[v])
         wp.atomic_add(out_count, r, 1)
+
+
+@wp.func
+def stage_cluster_vertex(
+    vertex_cell: wp.array[wp.int32],
+    cell_rank: wp.array[wp.int32],
+    v: wp.int32,
+    n_kept: wp.int32,
+    out_staged: wp.array[wp.int32],
+) -> None:
+    # Vertex ``v`` as a key and payload of the stable sort ``cluster_sorted_means`` reads: its kept
+    # cluster's output vertex (``n_kept``, past every kept one, when none keeps it) at ``v`` and
+    # ``v`` itself at ``half + v``, the two halves of ``out_staged`` being the sort's double-width
+    # keys and payload.
+    r = vertex_cluster_rank(vertex_cell, cell_rank, v)
+    out_staged[v] = wp.where(r >= 0, r, n_kept)
+    out_staged[out_staged.shape[0] // 2 + v] = v
 
 
 @wp.func
@@ -3082,6 +3106,8 @@ def cluster_gather_and_face_keys(
     if t < vertices.shape[0]:
         if contraction == CLUSTER_AVERAGE:
             accumulate_cluster_vertex(vertex_cell, cell_rank, vertices, t, out_sum, out_count)
+        elif contraction == CLUSTER_AVERAGE_SORTED:
+            stage_cluster_vertex(vertex_cell, cell_rank, t, wp.int32(n_kept), out_count)
         else:
             pick_closest_cluster_vertex(
                 vertex_cell, cell_rank, vertices, origin, voxel_size, t, out_closest
@@ -3111,16 +3137,110 @@ def cluster_emit(
     # The output mesh, over ``max(n_kept, n_unique)`` threads: output vertex ``t`` -- its cluster's
     # mean (``mean_from_sum``) or its representative vertex's own position, the index the low half
     # of ``pick_closest_cluster_vertex``'s key -- and unique face ``t`` in key order, in its
-    # representative's winding.
+    # representative's winding. Under ``CLUSTER_AVERAGE_SORTED`` the vertices are
+    # ``cluster_sorted_means``' and only the faces are written here.
     t = wp.int32(wp.tid())
     if t < out_vertices.shape[0]:
         if contraction == CLUSTER_AVERAGE:
             out_vertices[t] = mean_from_sum(sums[t], counts[t])
-        else:
+        elif contraction == CLUSTER_CLOSEST:
             out_vertices[t] = vertices[wp.int32(closest[t] & wp.uint64(0xFFFFFFFF))]
     if t < sorted_faces.shape[0]:
         r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, sorted_faces[t])
         write_corner_triple(out_faces, t, r0, r1, r2)
+
+
+# How ``cluster_decimate``'s ordered mean splits its runs: a run of at most ``CLUSTER_SERIAL_MAX``
+# vertices is added by one thread, a longer one by a block of ``CLUSTER_HEAVY_BLOCK_DIM`` lanes, at
+# most ``CLUSTER_HEAVY_BLOCKS`` blocks striding the list of long runs. Swept on CUDA over cells of
+# 2 and 6 mean edges and of 10 % and 30 % of the diagonal on ``dragon`` and ``lucy``: a block per
+# cluster at every size cost 1.6-3.3x the atomic scatter on fine cells (32-256 lanes, mostly idle
+# over a few vertices), a thread per cluster up to 40x on coarse ones (one serial walk over most of
+# the mesh); split at 128 the ordered mean costs 1.05-1.17x the scatter on fine cells and 0.1-0.7x
+# on coarse ones, where the scatter's atomics pile onto a few addresses. Serial bounds of 16-32
+# handed too many short runs to blocks (up to 2.3x at ``lucy`` / 6 edges); 64-256 measured alike.
+# The split decides each run's summation order, so it is a fixed constant, not a device query.
+CLUSTER_SERIAL_MAX = 128
+CLUSTER_HEAVY_BLOCK_DIM = 256
+CLUSTER_HEAVY_BLOCKS = 4096
+
+
+@wp.func
+def cluster_run(sorted_clusters: wp.array[wp.int32], r: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # Output vertex ``r``'s run ``[start, stop)`` in ``stage_cluster_vertex``'s keys once stably
+    # sorted. Every kept cluster holds a vertex, so the run is never empty.
+    return binary_search_index_left(sorted_clusters, r), binary_search_index_left(
+        sorted_clusters, r + 1
+    )
+
+
+@wp.func
+def strided_run_sum(
+    vertices: wp.array[wp.vec3],
+    sorted_vertices: wp.array[wp.int32],
+    first: wp.int32,
+    stop: wp.int32,
+    stride: wp.int32,
+) -> wp.vec3:
+    # Every ``stride``-th vertex of a sorted run from ``first``, added in ascending vertex order
+    # from zero: the whole run at stride one, one lane's share of it at the block's width.
+    total = wp.vec3(0.0)
+    for i in range(first, stop, stride):
+        total += vertices[sorted_vertices[i]]
+    return total
+
+
+@wp.kernel
+def cluster_sorted_means(
+    vertices: wp.array[wp.vec3],
+    sorted_clusters: wp.array[wp.int32],
+    sorted_vertices: wp.array[wp.int32],
+    serial_max: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+    out_heavy_count: wp.array[wp.int32],
+    out_heavy: wp.array[wp.int32],
+) -> None:
+    # ``CLUSTER_AVERAGE_SORTED``'s output positions, a thread per kept cluster: a run of at most
+    # ``serial_max`` vertices is added here, in ascending vertex order, and a longer one is appended
+    # to ``out_heavy`` (``out_heavy_count`` caller-zeroed) for ``cluster_heavy_means``. A cluster
+    # can hold most of the mesh at a coarse voxel size, which one thread would walk serially. The
+    # list's arrival order reaches no sum: each heavy run is added by one block in its own fixed
+    # order, whichever block takes it. On the CPU device that order is the ascending one too, the
+    # order its atomics commit ``accumulate_cluster_vertex`` in, so the CPU bits are
+    # ``CLUSTER_AVERAGE``'s.
+    r = wp.int32(wp.tid())
+    start, stop = cluster_run(sorted_clusters, r)
+    if stop - start > serial_max:
+        out_heavy[wp.atomic_add(out_heavy_count, 0, wp.int32(1))] = r
+        return
+    total = strided_run_sum(vertices, sorted_vertices, start, stop, wp.int32(1))
+    out_vertices[r] = mean_from_sum(total, stop - start)
+
+
+@wp.kernel
+def cluster_heavy_means(
+    vertices: wp.array[wp.vec3],
+    sorted_clusters: wp.array[wp.int32],
+    sorted_vertices: wp.array[wp.int32],
+    heavy_count: wp.array[wp.int32],
+    heavy: wp.array[wp.int32],
+    n_blocks: wp.int32,
+    out_vertices: wp.array[wp.vec3],
+) -> None:
+    # The runs ``cluster_sorted_means`` left, a block per run over ``n_blocks`` blocks striding the
+    # list: each lane adds every ``wp.block_dim()``-th vertex of the run in ascending order, and the
+    # block folds the lanes' sums in its fixed tree. The CPU device runs one lane per block, which
+    # adds the run in ascending vertex order like the serial path. The list's length is uniform
+    # over a block, so every lane reaches the fold.
+    b, lane = wp.tid()
+    for k in range(b, heavy_count[0], n_blocks):
+        r = heavy[k]
+        start, stop = cluster_run(sorted_clusters, r)
+        total = block_sum(
+            strided_run_sum(vertices, sorted_vertices, start + lane, stop, wp.block_dim())
+        )
+        if lane == 0:
+            out_vertices[r] = mean_from_sum(total, stop - start)
 
 
 @wp.func

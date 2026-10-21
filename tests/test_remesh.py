@@ -1304,6 +1304,47 @@ def test_cluster_decimate_decimates_monotonically(device: str) -> None:
     assert counts[-1] < counts[0]
 
 
+@pytest.mark.parametrize("voxel_fraction", [0.05, 0.35])
+def test_cluster_decimate_average_is_reproducible_when_deterministic(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], voxel_fraction: float
+) -> None:
+    """
+    Not a parity assert: under the deterministic setting repeated calls agree bit for bit.
+
+    Each cell's mean is added in one fixed order; the off mode's arrival-order atomics agree to
+    ``float32`` round-off and, on the CPU device, bit for bit, since the fixed order there is the
+    ascending vertex order its atomics commit in. Without it every CUDA call returned different
+    positions. The fine cells hold up to 23 vertices, each added by one thread; the coarsest cell
+    holds 139, past ``kernels/remesh.CLUSTER_SERIAL_MAX``, so a block's strided lanes and fold add
+    it.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    voxel_size = voxel_fraction * float(np.linalg.norm(mesh_tm.extents))
+    vertices_np, faces_np = (
+        array_wp.numpy()
+        for array_wp in od.remesh.cluster_decimate(
+            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, contraction="average"
+        )
+    )
+    assert 0 < len(vertices_np) < len(mesh_tm.vertices) // 2
+    for _ in range(4):
+        again_vertices_wp, again_faces_wp = od.remesh.cluster_decimate(
+            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, contraction="average"
+        )
+        assert np.array_equal(again_vertices_wp.numpy(), vertices_np)
+        assert np.array_equal(again_faces_wp.numpy(), faces_np)
+    with od.config.deterministic(False):
+        arrival_vertices_wp, arrival_faces_wp = od.remesh.cluster_decimate(
+            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, contraction="average"
+        )
+    assert np.array_equal(arrival_faces_wp.numpy(), faces_np)
+    if device == "cpu" and not wp.config.enable_cpu_blocks:
+        # One lane per block, so the fixed order is the atomics' ascending one.
+        assert np.array_equal(arrival_vertices_wp.numpy(), vertices_np)
+    else:
+        assert np.allclose(arrival_vertices_wp.numpy(), vertices_np, rtol=1e-5, atol=1e-5)
+
+
 def test_cluster_decimate_default_voxel_size(device: str) -> None:
     """The default is 1% of the bounding-box diagonal, matching MeshLab's ``threshold``."""
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
