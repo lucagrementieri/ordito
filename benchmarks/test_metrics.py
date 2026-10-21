@@ -126,6 +126,7 @@ def _grad_inputs(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.
 
 @pytest.mark.benchmark(group="chamfer_mesh_to_mesh_loss")
 @pytest.mark.benchlibs("ordito")
+@pytest.mark.censusmeshes("sphere_small")
 def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
     skip_larger_than(bench_case, "dragon")
     vertices_a, vertices_b = _grad_inputs(bench_case)
@@ -146,6 +147,7 @@ def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="hausdorff_mesh_to_mesh")
 @pytest.mark.benchlibs("ordito")
+@pytest.mark.censusmeshes("sphere_small")
 def test_hausdorff_mesh_to_mesh(bench_case: BenchCase) -> None:
     """
     Symmetric vertex-to-surface Hausdorff: both meshes' trees built, both directions queried.
@@ -165,6 +167,7 @@ def test_hausdorff_mesh_to_mesh(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="chamfer_points_to_points")
 @pytest.mark.benchlibs("ordito", "open3d", "pytorch3d")
+@pytest.mark.censusmeshes("sphere_small")
 @pytest.mark.parametrize("single_directional", [True, False], ids=["oneway", "symmetric"])
 def test_chamfer_points_to_points(bench_case: BenchCase, single_directional: bool) -> None:
     """
@@ -244,6 +247,7 @@ def _jittered_clouds_wp(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.ar
 
 @pytest.mark.benchmark(group="chamfer_points_to_points_coincident")
 @pytest.mark.benchlibs("ordito")
+@pytest.mark.censusmeshes("sphere_small")
 def test_chamfer_points_to_points_coincident(bench_case: BenchCase) -> None:
     """
     Symmetric point-cloud Chamfer on a coincident pair, the other end of the displacement axis.
@@ -282,6 +286,7 @@ def _clouds_meshset_pml(bench_case: BenchCase) -> tuple[ml.MeshSet, int]:
 
 @pytest.mark.benchmark(group="hausdorff_points_to_points")
 @pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
+@pytest.mark.censusmeshes("sphere_small")
 def test_hausdorff_points_to_points(bench_case: BenchCase) -> None:
     """Symmetric point-cloud Hausdorff: the same two searches, reduced with ``max`` instead."""
     skip_larger_than(bench_case, "dragon")
@@ -319,6 +324,7 @@ def test_hausdorff_points_to_points(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="chamfer_points_to_mesh")
 @pytest.mark.benchlibs("ordito", "igl", "meshlib", "pytorch3d")
+@pytest.mark.censusmeshes("sphere_small")
 def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
     """
     Cloud-to-surface Chamfer: an exact mesh query forward, a ``k=1`` cloud search backward.

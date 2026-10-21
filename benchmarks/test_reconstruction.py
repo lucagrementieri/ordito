@@ -96,6 +96,7 @@ import pytest
 import pyvista as pv
 import trimesh as tm
 import warp as wp
+from meshes import MESHES_BY_NAME
 from meshlib import mrmeshpy as mm
 
 import ordito as od
@@ -375,6 +376,7 @@ def test_ball_pivoting(bench_case: BenchCase) -> None:
 )
 @pytest.mark.benchmark(group="screened_poisson")
 @pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.censusmeshes("sphere_small")
 @pytest.mark.parametrize("depth", _POISSON_DEPTHS)
 @pytest.mark.parametrize("method", ["dense", "adaptive"])
 def test_screened_poisson(
@@ -392,6 +394,8 @@ def test_screened_poisson(
     skip_larger_than(
         bench_case, "bunny", "screened Poisson above bunny dominates the suite (93 min at dragon)"
     )
+    if bench_case.mesh_name not in MESHES_BY_NAME and depth != _POISSON_DEPTHS[0]:
+        pytest.skip("the census row on a feature mesh counts the smallest depth only")
     if depth > 9 and (method == "dense" or bench_case.kind == "meshlib"):
         pytest.skip("the dense 2^10 lattice does not fit the device; only the band backend runs")
     if bench_case.kind == "meshlib":

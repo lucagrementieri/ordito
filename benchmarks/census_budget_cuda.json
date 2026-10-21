@@ -2121,6 +2121,27 @@
    "memset": 2
   }
  },
+ "benchmarks/test_intersection.py::test_clip_mesh_with_field[sphere_small-ordito-cuda-False]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_clip_mesh_with_field[sphere_small-ordito-cuda-True]": {
+  "counts": {
+   "launch": 34,
+   "alloc": 56,
+   "memset": 13,
+   "d2d": 2,
+   "h2d": 2,
+   "d2h": 14,
+   "scan": 9,
+   "sort": 1
+  }
+ },
  "benchmarks/test_intersection.py::test_marching_triangles[sphere_large-ordito-cuda]": {
   "counts": {
    "launch": 8,
@@ -2204,6 +2225,42 @@
    "alloc": 14,
    "memset": 1,
    "h2d": 1,
+   "d2h": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_mesh_with_plane[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 3,
+   "d2h": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_slice_mesh_with_plane[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 4,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_split_faces_along_field[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "d2h": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_intersection.py::test_split_mesh_with_plane[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 10,
+   "memset": 1,
    "d2h": 2,
    "scan": 2,
    "sort": 1
@@ -2509,6 +2566,57 @@
  },
  "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_small-ordito-cuda-warm]": {
   "counts": {}
+ },
+ "benchmarks/test_metrics.py::test_chamfer_mesh_to_mesh_loss[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 4,
+   "memset": 6
+  }
+ },
+ "benchmarks/test_metrics.py::test_chamfer_points_to_mesh[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 8,
+   "d2h": 1
+  }
+ },
+ "benchmarks/test_metrics.py::test_chamfer_points_to_points[sphere_small-ordito-cuda-oneway]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 5,
+   "d2h": 1
+  }
+ },
+ "benchmarks/test_metrics.py::test_chamfer_points_to_points[sphere_small-ordito-cuda-symmetric]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 9,
+   "d2h": 1
+  }
+ },
+ "benchmarks/test_metrics.py::test_chamfer_points_to_points_coincident[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 9,
+   "d2h": 1
+  }
+ },
+ "benchmarks/test_metrics.py::test_hausdorff_mesh_to_mesh[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "memset": 1,
+   "d2h": 1
+  }
+ },
+ "benchmarks/test_metrics.py::test_hausdorff_points_to_points[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "memset": 1,
+   "d2h": 1
+  }
  },
  "benchmarks/test_neighbors.py::test_closest_pair[sphere_large-ordito-cuda]": {
   "counts": {
@@ -3401,6 +3509,43 @@
    "sort": 3
   }
  },
+ "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cuda-adaptive-7]": {
+  "counts": {
+   "launch": 155,
+   "alloc": 158,
+   "memset": 20,
+   "d2d": 7,
+   "d2h": 8,
+   "scan": 7,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cuda-dense-7]": {
+  "counts": {
+   "launch": 188,
+   "alloc": 157,
+   "memset": 8,
+   "d2h": 6,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_reduce.py::test_scatter_sum[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "memset": 2,
+   "d2h": 1
+  }
+ },
+ "benchmarks/test_reduce.py::test_segment_sum[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "memset": 1,
+   "d2h": 1
+  }
+ },
  "benchmarks/test_registration.py::test_icp_convergence[sphere_large-ordito-cuda-far45deg]": {
   "counts": {
    "launch": 10,
@@ -4269,6 +4414,17 @@
    "scan": 1,
    "sort": 1
   }
+ },
+ "benchmarks/test_sample.py::test_sample_surface_poisson_disk[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 102,
+   "alloc": 14,
+   "memset": 37,
+   "d2h": 35,
+   "scan": 3,
+   "sort": 32
+  },
+  "exempt": "its elimination round count varies with the deterministic setting off, so its counts are not stable"
  },
  "benchmarks/test_sample.py::test_sample_volume[sphere_large-ordito-cuda-n100k]": {
   "counts": {
