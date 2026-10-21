@@ -1096,12 +1096,11 @@ def _launch_global_scalar_tiled(
     array: odt.ArrayNdScalar, spec: _ScalarReduceSpec
 ) -> float | int | tuple[float, float] | tuple[int, int]:
     flat = _flattened_for_global(array)
-    if (
-        flat is not None
-        and spec.name == "sum"
-        and array.dtype in (wp.float32, wp.float64)
-        and is_deterministic()
-    ):
+    if spec.name == "sum" and array.dtype in (wp.float32, wp.float64) and is_deterministic():
+        if flat is None:
+            # A strided view has only the rank-2 kernel's arrival-order commit, so the
+            # reproducible sum takes a contiguous copy and the fixed-order 1-D sum.
+            flat = cast(odt.Array1dScalar, _launch.clone(array).flatten())
         total = _sum_in_fixed_order(
             kernel_reduce.SUM1D_PARTIALS[array.dtype], [flat], flat.size, array.dtype, flat.device
         )

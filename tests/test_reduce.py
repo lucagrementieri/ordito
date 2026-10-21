@@ -865,6 +865,24 @@ def test_group_sums_of_nothing(device: str) -> None:
     assert od_reduce.segment_sum(empty_values, offsets).numpy().tolist() == [0.0, 0.0]
 
 
+def test_float_sum_of_a_strided_view_is_reproducible(device: str) -> None:
+    """
+    Ordito against ordito: a non-contiguous rank-2 float sum repeats and equals the dense one.
+
+    A column slice cannot flatten, and its rank-2 kernel commits in arrival order; under the
+    setting it takes the fixed-order sum of a dense copy, so it equals the sum of the same values
+    held densely, bit for bit, on every call. NumPy holds the value.
+    """
+    table_np = np.random.default_rng(19).random((300_000, 4), dtype=np.float32)
+    table_wp = wp.array(table_np, dtype=wp.float32, device=device)
+    view_wp = table_wp[:, 1:3]
+    assert not view_wp.is_contiguous
+    dense_wp = wp.array(np.ascontiguousarray(table_np[:, 1:3]), dtype=wp.float32, device=device)
+    sums = {_SUM(view_wp) for _ in range(4)}
+    assert sums == {_SUM(dense_wp)}
+    assert np.isclose(sums.pop(), table_np[:, 1:3].astype(np.float64).sum(), rtol=1e-5)
+
+
 @pytest.mark.parametrize("n", [7, 8])
 @pytest.mark.parametrize(
     ("dtype_wp", "dtype_np"),

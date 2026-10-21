@@ -18,6 +18,7 @@ from ordito.kernels.predicates import point_plane_dot, triangle_normal
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
+    block_last_ticket,
     block_max,
     block_sum,
     fold_block_totals,
@@ -29,8 +30,8 @@ from ordito.kernels.reduce import (
     store_block_total,
     store_block_total_divided,
     store_sum_and_count,
-    take_ticket,
     thread_fence,
+    write_block_value,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -244,11 +245,9 @@ def centered_covariance(
     folded = block_sum(m)
     zero = wp.mat33()
     if ticket.shape[0] > 0:
-        last = wp.int32(0)
         if lane == 0:
             wp.atomic_add(out_cov, 0, folded)
-            last = last_ticket(take_ticket(ticket, 0, wp.int32(0)), n_blocks)
-        if block_max(last) != 0:
+        if block_last_ticket(lane, ticket, 0, wp.int32(0), n_blocks, last_ticket) != 0:
             thread_fence()
             if lane == 0:
                 write_scatter_fit(finish, out_cov[0], center, center_divisor, out_frame)
@@ -258,9 +257,8 @@ def centered_covariance(
         != 0
     ):
         grand = fold_block_totals(lane, out_cov, 0, stride, n_blocks, zero) / divisor
+        write_block_value(lane, out_cov, 0, stride, grand)
         if lane == 0:
-            out_cov[0] = grand
-            out_cov[stride] = zero
             write_scatter_fit(finish, grand, center, center_divisor, out_frame)
 
 
