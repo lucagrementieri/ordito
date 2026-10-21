@@ -1566,6 +1566,11 @@ def cluster_decimate(
     NanoVDB grid's leaf-major order, and the faces come out in
     [`ordito.grouping.unique_faces`][ordito.grouping.unique_faces]' order over them.
 
+    The cell means of ``contraction="average"`` follow the
+    [`deterministic`][ordito.config.deterministic] setting: with it on they are added in one fixed
+    order and repeat bit for bit on CUDA; with it off they are added in arrival order, which can
+    move their last bits from one call to the next. ``"closest"`` repeats either way.
+
     Examples
     --------
     Welding a sphere's vertices into cells of width 0.25 leaves far fewer faces:
@@ -1615,7 +1620,12 @@ def cluster_decimate(
     face_slots = odt.as_dense(scratch[3 * n_vertices :])
     # The kept clusters' cell keys, at the sort's double width.
     sort_keys = _launch.empty(2 * n_vertices, dtype=wp.uint64, device=device)
-    counters = _launch.zeros(2, dtype=wp.int32, device=device)
+    average = contraction == "average"
+    # Under the deterministic setting the mean is not scattered: each vertex is staged with its
+    # output vertex for a stable sort, and every cell's run is added in one fixed order
+    # (``_cluster_sorted_means``, whose count of long runs rides behind the two counts).
+    ordered = average and is_deterministic()
+    counters = _launch.zeros(3 if ordered else 2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.cluster_insert_vertices,
         dim=n_vertices,
@@ -1667,12 +1677,23 @@ def cluster_decimate(
         kernel_remesh.cluster_rank_cells, dim=n_kept, inputs=[kept_cells, cell_rank], device=device
     )
     # From here two launches and a sort: the representatives' gather and the faces' keys over the
-    # same ranks in one, the sort, and the output vertices and faces in the other.
-    average = contraction == "average"
-    sums = _launch.zeros(n_kept if average else 0, dtype=wp.vec3, device=device)
-    counts = _launch.zeros(n_kept if average else 0, dtype=wp.int32, device=device)
+    # same ranks in one, the sort, and the output vertices and faces in the other. The ordered mean
+    # stages its own sort in ``counts`` and writes the output vertices before the second.
+    scattered = average and not ordered
+    sums = _launch.zeros(n_kept if scattered else 0, dtype=wp.vec3, device=device)
+    counts = (
+        _launch.empty(4 * n_vertices, dtype=wp.int32, device=device)
+        if ordered
+        else _launch.zeros(n_kept if average else 0, dtype=wp.int32, device=device)
+    )
     closest = _launch.full(0 if average else n_kept, UINT64_MAX, dtype=wp.uint64, device=device)
-    mode = kernel_remesh.CLUSTER_AVERAGE if average else kernel_remesh.CLUSTER_CLOSEST
+    mode = (
+        kernel_remesh.CLUSTER_AVERAGE_SORTED
+        if ordered
+        else kernel_remesh.CLUSTER_AVERAGE
+        if average
+        else kernel_remesh.CLUSTER_CLOSEST
+    )
     # The distinct surviving faces come out in ``grouping.unique_faces``' order: the order of the
     # sorted output-vertex triple packed in radix ``n_kept``, each face in its first occurrence's
     # winding. The kept-cluster sort's buffers are free by now and serve the face sort whenever they
@@ -1708,6 +1729,8 @@ def cluster_decimate(
     )
     kept_vertices = _launch.empty(n_kept, dtype=wp.vec3, device=device)
     out_faces = _launch.empty(3 * n_unique, dtype=wp.int32, device=device)
+    if ordered:
+        _cluster_sorted_means(vertices, counts, counters, n_kept, kept_vertices)
     _launch.launch(
         kernel_remesh.cluster_emit,
         dim=max(n_kept, n_unique),
@@ -1726,6 +1749,59 @@ def cluster_decimate(
         device=device,
     )
     return kept_vertices, out_faces
+
+
+def _cluster_sorted_means(
+    vertices: wp.array[wp.vec3],
+    staged: wp.array[wp.int32],
+    counters: wp.array[wp.int32],
+    n_kept: int,
+    out_vertices: wp.array[wp.vec3],
+) -> None:
+    """
+    ``cluster_decimate``'s cell means added in one fixed order, into ``out_vertices``.
+
+    ``staged`` is ``(4 * n_vertices,)``: each vertex's output vertex (``n_kept`` when no face keeps
+    its cell) and then, from ``2 * n_vertices``, its own index, the stable sort's double-width keys
+    and payload. The sort lists every cell's vertices in ascending order; a short run is added by
+    one thread and a long one by a block (``kernel_remesh.cluster_sorted_means``), whose list is
+    kept in the sort's free second half of the keys and counted at ``counters[2]``.
+    """
+    device = vertices.device
+    n_vertices = vertices.size
+    # Keys run to ``n_kept``, the unreferenced vertices' sentinel.
+    _launch.radix_sort_pairs(
+        odt.as_dense(staged[: 2 * n_vertices]),
+        odt.as_dense(staged[2 * n_vertices :]),
+        count=n_vertices,
+        end_bit=max(1, n_kept.bit_length()),
+    )
+    sorted_clusters = odt.as_dense(staged[:n_vertices])
+    sorted_vertices = odt.as_dense(staged[2 * n_vertices : 3 * n_vertices])
+    heavy_count = odt.as_dense(counters[2:])
+    heavy = odt.as_dense(staged[n_vertices : 2 * n_vertices])
+    _launch.launch(
+        kernel_remesh.cluster_sorted_means,
+        dim=n_kept,
+        inputs=[vertices, sorted_clusters, sorted_vertices, kernel_remesh.CLUSTER_SERIAL_MAX],
+        outputs=[out_vertices, heavy_count, heavy],
+        device=device,
+    )
+    # At most this many runs are longer than the serial bound, and a grid this wide strides them.
+    n_blocks = min(
+        n_kept,
+        n_vertices // (kernel_remesh.CLUSTER_SERIAL_MAX + 1),
+        kernel_remesh.CLUSTER_HEAVY_BLOCKS,
+    )
+    if n_blocks > 0:
+        _launch.launch_tiled(
+            kernel_remesh.cluster_heavy_means,
+            dim=n_blocks,
+            inputs=[vertices, sorted_clusters, sorted_vertices, heavy_count, heavy, n_blocks],
+            outputs=[out_vertices],
+            device=device,
+            block_dim=kernel_remesh.CLUSTER_HEAVY_BLOCK_DIM,
+        )
 
 
 def _compact_remapped_faces(
