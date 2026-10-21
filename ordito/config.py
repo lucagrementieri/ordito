@@ -52,6 +52,9 @@ deterministic either way):
 - the positions of [`cluster_decimate`][ordito.remesh.cluster_decimate] with
   ``contraction="average"``, whose cell means are added in a fixed order (on the CPU device the
   same order as with the setting off, so the bits do not change);
+- the positions of [`isotropic_remesh`][ordito.remesh.isotropic_remesh], whose tangential
+  smoothing adds each vertex's area-weighted one ring over its neighbours in ascending order when
+  on, and so the splits, collapses and flips that follow and the face count;
 - the values of the differentiable Chamfer losses
   [`chamfer_points_to_points_loss`][ordito.metrics.chamfer_points_to_points_loss],
   [`chamfer_points_to_mesh_loss`][ordito.metrics.chamfer_points_to_mesh_loss] and
