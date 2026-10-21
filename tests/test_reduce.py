@@ -774,6 +774,95 @@ def test_read_group_sum_equals_the_finish(device: str, deterministic: bool) -> N
         assert np.allclose(read_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
 
 
+def _scatter_sum_matrices(dtype: Any) -> Any:
+    """Build a kernel adding each ``dtype`` matrix into its group (``scatter_add_matrix``)."""
+
+    def _k(values: Any, indices: Any, sums: Any, out_sums: Any) -> None:
+        i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
+        kernel_scatter.scatter_add_matrix(out_sums, sums, indices[i], values[i])
+
+    _k.__annotations__.update(
+        values=wp.array[dtype],
+        indices=wp.array[wp.int32],
+        sums=kernel_reduce.GroupSumPass,
+        out_sums=wp.array[dtype],
+        **{"return": None},
+    )
+    return wp.kernel(_k, name=f"test_scatter_sum_matrices_{dtype.__name__}")
+
+
+_SCATTER_SUM_MATRICES = {dtype: _scatter_sum_matrices(dtype) for dtype in (wp.mat33, wp.mat33d)}
+
+
+def _matrix_group_sums(
+    values_np: np.ndarray, indices_np: np.ndarray, n_groups: int, dtype_wp: type, device: str
+) -> np.ndarray:
+    """``(n_groups, 3, 3)`` group sums of ``values_np`` through the matrix scatter and finish."""
+    values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
+    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
+    sums = _launch.group_sums(n_groups, dtype_wp, values_np.shape[0], device)
+    _launch.launch_group_sums(
+        _SCATTER_SUM_MATRICES[dtype_wp],
+        values_np.shape[0],
+        [values_wp, indices_wp],
+        sums,
+        device=device,
+    )
+    return _launch.finish_group_sums(sums).numpy()
+
+
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize(
+    ("dtype_wp", "dtype_np"), [(wp.mat33, np.float32), (wp.mat33d, np.float64)]
+)
+def test_matrix_group_sums_are_exact_and_repeat(
+    device: str, dtype_wp: type, dtype_np: type, deterministic: bool
+) -> None:
+    """
+    Not a library comparison: matrix group sums against each entry's exact rational sum.
+
+    No public entry sums matrices, so the scatter (``kernels/scatter.scatter_add_matrix``) and the
+    matrix finish (``FINISH_GROUP_SUMS[mat33 / mat33d]``) are driven directly. Entries span 80
+    binades with both signs, one group holds a third of the terms (the warp-summed commit) and one
+    receives nothing. Under the setting each entry must sit within the documented bound of its
+    ``fractions.Fraction`` sum (``test_scatter_sum_is_exact_to_its_bound``'s, with the group's
+    largest entry over all nine components, since they share one field), the sums must repeat bit
+    for bit and equal the CPU's; off, they are ``numpy.add.at`` to ``1e-5``. A transposed slot
+    (``(group * rows + c) * cols + r``) fails the comparison on every off-diagonal entry.
+    """
+    n, n_groups = 6_000, 40
+    rng = np.random.default_rng(19)
+    values_np = rng.standard_normal((n, 3, 3)) * np.exp2(rng.integers(-40, 40, (n, 3, 3)))
+    values_np = values_np.astype(dtype_np)
+    indices_np = rng.integers(0, n_groups - 1, n).astype(np.int32)
+    indices_np[: n // 3] = 5
+    sums_np = _matrix_group_sums(values_np, indices_np, n_groups, dtype_wp, device)
+    assert sums_np.shape == (n_groups, 3, 3)
+    assert np.all(sums_np[n_groups - 1] == 0.0)
+    if not deterministic:
+        expected_np = np.zeros((n_groups, 3, 3))
+        np.add.at(expected_np, indices_np, values_np.astype(np.float64))
+        scale_np = np.abs(values_np).max() * 1e-5
+        assert np.allclose(sums_np, expected_np, rtol=1e-5, atol=float(scale_np))
+        return
+    headroom = (n - 1).bit_length()
+    unit = 2.0 ** -(124 - 2 * headroom) if dtype_np is np.float64 else 2.0 ** -(62 - headroom)
+    for g in range(n_groups - 1):
+        members_np = values_np[indices_np == g]
+        largest = float(np.abs(members_np).max())
+        for r in range(3):
+            for c in range(3):
+                exact = sum((Fraction(float(v)) for v in members_np[:, r, c]), Fraction(0))
+                allowed = members_np.shape[0] * unit * 2.0 * largest
+                allowed += 2.0 * float(np.spacing(dtype_np(abs(exact))))
+                error = abs(Fraction(float(sums_np[g, r, c])) - exact)
+                assert error <= Fraction(allowed), (g, r, c)
+    again_np = _matrix_group_sums(values_np, indices_np, n_groups, dtype_wp, device)
+    on_cpu_np = _matrix_group_sums(values_np, indices_np, n_groups, dtype_wp, "cpu")
+    assert np.array_equal(again_np.view(np.uint8), sums_np.view(np.uint8))
+    assert np.array_equal(on_cpu_np.view(np.uint8), sums_np.view(np.uint8))
+
+
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 @pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES[::3])
 @pytest.mark.parity("segment_sum", "numpy")
