@@ -10353,15 +10353,15 @@ shape operator is frame-dependent, so reproducing its principal values (
 <a class="autorefs autorefs-internal" title="principal_curvature" href="../curvature/#ordito.curvature.principal_curvature"><code>principal_curvature</code></a> with <code>frame_independent=False</code>)
 requires this exact frame; the default frame-independent computation does not depend on it.
 Isolated vertices reference themselves.</p>
-<p>The traversal runs entirely on device. Vertex adjacency is built as a CSR graph via
-<a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> +
-<a class="autorefs autorefs-internal" title="edges_to_neighbor_lists" href="../graph/#ordito.graph.edges_to_neighbor_lists"><code>edges_to_neighbor_lists</code></a> with sorted rows, then a
-single-pass BFS collects each ball into its per-source queue row (the queue prefix <em>is</em> the
-result) and a scan + gather compacts the rows into the CSR neighbor buffer. Each source uses
-fixed-capacity scratch of <code>PER_SOURCE_MAX_NEIGHBORS</code> neighbors
-(<code>ordito.kernels.algorithms.bfs</code>, currently 512);
-if a vertex collects more than that the surplus is dropped and a warning reports how many
-vertices' neighborhoods were clipped.</p>
+<p>The traversal runs entirely on device. Vertex adjacency is built as a CSR graph with sorted
+rows -- the buffer <a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> +
+<a class="autorefs autorefs-internal" title="edges_to_neighbor_lists" href="../graph/#ordito.graph.edges_to_neighbor_lists"><code>edges_to_neighbor_lists</code></a> would give -- from one radix
+sort of both directions of every face edge, then a single-pass BFS collects each ball into its
+per-source queue row (the queue prefix <em>is</em> the result) and a scan + gather compacts the rows
+into the CSR neighbor buffer. Each source uses fixed-capacity scratch of
+<code>PER_SOURCE_MAX_NEIGHBORS</code> neighbors (<code>ordito.kernels.algorithms.bfs</code>, currently 512); if a
+vertex collects more than that the surplus is dropped and a warning reports how many vertices'
+neighborhoods were clipped.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Distances and tie-breaking are computed in <code>float32</code> (set-equivalent to the libigl
@@ -10722,18 +10722,7 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 <span class="normal">2258</span>
 <span class="normal">2259</span>
 <span class="normal">2260</span>
-<span class="normal">2261</span>
-<span class="normal">2262</span>
-<span class="normal">2263</span>
-<span class="normal">2264</span>
-<span class="normal">2265</span>
-<span class="normal">2266</span>
-<span class="normal">2267</span>
-<span class="normal">2268</span>
-<span class="normal">2269</span>
-<span class="normal">2270</span>
-<span class="normal">2271</span>
-<span class="normal">2272</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
+<span class="normal">2261</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">min_count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10754,15 +10743,15 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 <span class="sd">    requires this exact frame; the default frame-independent computation does not depend on it.</span>
 <span class="sd">    Isolated vertices reference themselves.</span>
 
-<span class="sd">    The traversal runs entirely on device. Vertex adjacency is built as a CSR graph via</span>
-<span class="sd">    [`edges_unique`][ordito.edges.edges_unique] +</span>
-<span class="sd">    [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists] with sorted rows, then a</span>
-<span class="sd">    single-pass BFS collects each ball into its per-source queue row (the queue prefix *is* the</span>
-<span class="sd">    result) and a scan + gather compacts the rows into the CSR neighbor buffer. Each source uses</span>
-<span class="sd">    fixed-capacity scratch of ``PER_SOURCE_MAX_NEIGHBORS`` neighbors</span>
-<span class="sd">    (``ordito.kernels.algorithms.bfs``, currently 512);</span>
-<span class="sd">    if a vertex collects more than that the surplus is dropped and a warning reports how many</span>
-<span class="sd">    vertices' neighborhoods were clipped.</span>
+<span class="sd">    The traversal runs entirely on device. Vertex adjacency is built as a CSR graph with sorted</span>
+<span class="sd">    rows -- the buffer [`edges_unique`][ordito.edges.edges_unique] +</span>
+<span class="sd">    [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists] would give -- from one radix</span>
+<span class="sd">    sort of both directions of every face edge, then a single-pass BFS collects each ball into its</span>
+<span class="sd">    per-source queue row (the queue prefix *is* the result) and a scan + gather compacts the rows</span>
+<span class="sd">    into the CSR neighbor buffer. Each source uses fixed-capacity scratch of</span>
+<span class="sd">    ``PER_SOURCE_MAX_NEIGHBORS`` neighbors (``ordito.kernels.algorithms.bfs``, currently 512); if a</span>
+<span class="sd">    vertex collects more than that the surplus is dropped and a warning reports how many vertices'</span>
+<span class="sd">    neighborhoods were clipped.</span>
 
 <span class="sd">    !!! note</span>
 
@@ -10829,18 +10818,7 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
     <span class="c1"># moves its answer at the near-flat vertices where the fit is ill conditioned. Sorted rows make</span>
     <span class="c1"># this builder's output identical to ``graph.edges_to_csr``'s, for a fraction of its cost; a</span>
     <span class="c1"># mesh vertex's valence is far below the degree where the per-row sort stops paying.</span>
-    <span class="n">unique_edges</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">edges</span><span class="o">.</span><span class="n">edges_unique</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-    <span class="n">adj_columns</span><span class="p">,</span> <span class="n">adj_offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">edges_to_neighbor_lists</span><span class="p">(</span>
-        <span class="n">n</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">sort_rows</span><span class="o">=</span><span class="kc">True</span>
-    <span class="p">)</span>
-
-    <span class="n">reference_neighbors</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">geodesic_ball_reference_neighbors</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">adj_offsets</span><span class="p">,</span> <span class="n">adj_columns</span><span class="p">,</span> <span class="n">reference_neighbors</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
+    <span class="n">adj_columns</span><span class="p">,</span> <span class="n">adj_offsets</span><span class="p">,</span> <span class="n">reference_neighbors</span> <span class="o">=</span> <span class="n">_sorted_vertex_adjacency</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
 
     <span class="c1"># Per-source scratch lives in shared global-memory pools sized for one chunk of sources</span>
     <span class="c1"># (queue rows, an open-addressing visited row pre-filled with -1 per launch, and a small</span>

@@ -4376,8 +4376,7 @@ is the sum of the two means:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">128</span>
-<span class="normal">129</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">129</span>
 <span class="normal">130</span>
 <span class="normal">131</span>
 <span class="normal">132</span>
@@ -4455,7 +4454,8 @@ is the sum of the two means:</p>
 <span class="normal">204</span>
 <span class="normal">205</span>
 <span class="normal">206</span>
-<span class="normal">207</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_points</span><span class="p">(</span>
+<span class="normal">207</span>
+<span class="normal">208</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_points</span><span class="p">(</span>
     <span class="n">x</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">y</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -4841,8 +4841,7 @@ term adds the mean distance from the cube's corners to the cloud, <code>sqrt(3) 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">254</span>
-<span class="normal">255</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">255</span>
 <span class="normal">256</span>
 <span class="normal">257</span>
 <span class="normal">258</span>
@@ -4927,7 +4926,8 @@ term adds the mean distance from the cube's corners to the cloud, <code>sqrt(3) 
 <span class="normal">337</span>
 <span class="normal">338</span>
 <span class="normal">339</span>
-<span class="normal">340</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_mesh</span><span class="p">(</span>
+<span class="normal">340</span>
+<span class="normal">341</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_mesh</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -5363,8 +5363,7 @@ outer corner <code>sqrt(3) / 2</code> from the inner one:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">395</span>
-<span class="normal">396</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">396</span>
 <span class="normal">397</span>
 <span class="normal">398</span>
 <span class="normal">399</span>
@@ -5458,7 +5457,8 @@ outer corner <code>sqrt(3) / 2</code> from the inner one:</p>
 <span class="normal">487</span>
 <span class="normal">488</span>
 <span class="normal">489</span>
-<span class="normal">490</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_mesh_to_mesh</span><span class="p">(</span>
+<span class="normal">490</span>
+<span class="normal">491</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_mesh_to_mesh</span><span class="p">(</span>
     <span class="n">vertices_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">vertices_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -5800,8 +5800,7 @@ inputs yield a length-1 zero array.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">520</span>
-<span class="normal">521</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">521</span>
 <span class="normal">522</span>
 <span class="normal">523</span>
 <span class="normal">524</span>
@@ -5906,7 +5905,8 @@ inputs yield a length-1 zero array.</p>
 <span class="normal">623</span>
 <span class="normal">624</span>
 <span class="normal">625</span>
-<span class="normal">626</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_points_loss</span><span class="p">(</span>
+<span class="normal">626</span>
+<span class="normal">627</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_points_loss</span><span class="p">(</span>
     <span class="n">x</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">y</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6291,8 +6291,7 @@ away from the face:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">629</span>
-<span class="normal">630</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">630</span>
 <span class="normal">631</span>
 <span class="normal">632</span>
 <span class="normal">633</span>
@@ -6413,8 +6412,7 @@ away from the face:</p>
 <span class="normal">748</span>
 <span class="normal">749</span>
 <span class="normal">750</span>
-<span class="normal">751</span>
-<span class="normal">752</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_mesh_loss</span><span class="p">(</span>
+<span class="normal">751</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chamfer_points_to_mesh_loss</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -6509,9 +6507,7 @@ away from the face:</p>
 
     <span class="c1"># Non-differentiable closest-face and nearest-neighbor assignment (outside the tape). The</span>
     <span class="c1"># backward search is chosen from the forward one's own distances -- see `_backward_nearest`.</span>
-    <span class="n">_</span><span class="p">,</span> <span class="n">distance_forward</span><span class="p">,</span> <span class="n">face_id</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">proximity</span><span class="o">.</span><span class="n">closest_point_on_mesh</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">mesh</span>
-    <span class="p">)</span>
+    <span class="n">distance_forward</span><span class="p">,</span> <span class="n">face_id</span> <span class="o">=</span> <span class="n">_closest_on_mesh</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">mesh</span><span class="p">)</span>
     <span class="n">terms</span> <span class="o">=</span> <span class="p">[</span>
         <span class="k">lambda</span><span class="p">:</span> <span class="n">_launch_surface_term</span><span class="p">(</span>
             <span class="n">points</span><span class="p">,</span>
@@ -6854,7 +6850,8 @@ weight <code>1 / 8</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/metrics.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">755</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">754</span>
+<span class="normal">755</span>
 <span class="normal">756</span>
 <span class="normal">757</span>
 <span class="normal">758</span>
@@ -7093,7 +7090,10 @@ weight <code>1 / 8</code>:</p>
         <span class="k">return</span> <span class="n">loss</span>
 
     <span class="c1"># Non-differentiable closest-face assignment for each direction (outside the tape).</span>
-    <span class="n">face_id_ab</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">proximity</span><span class="o">.</span><span class="n">closest_point_on_mesh</span><span class="p">(</span><span class="n">vertices_b</span><span class="p">,</span> <span class="n">faces_b</span><span class="p">,</span> <span class="n">vertices_a</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">mesh_b</span><span class="p">)[</span><span class="mi">2</span><span class="p">]</span>
+    <span class="n">_distances</span><span class="p">,</span> <span class="n">face_ids</span> <span class="o">=</span> <span class="n">_closest_both_ways</span><span class="p">(</span>
+        <span class="n">vertices_a</span><span class="p">,</span> <span class="n">faces_a</span><span class="p">,</span> <span class="n">vertices_b</span><span class="p">,</span> <span class="n">faces_b</span><span class="p">,</span> <span class="n">single_directional</span><span class="p">,</span> <span class="n">mesh_a</span><span class="p">,</span> <span class="n">mesh_b</span>
+    <span class="p">)</span>
+    <span class="n">face_id_ab</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">face_ids</span><span class="p">[:</span><span class="n">va</span><span class="p">])</span>
     <span class="n">terms</span> <span class="o">=</span> <span class="p">[</span>
         <span class="k">lambda</span><span class="p">:</span> <span class="n">_launch_surface_term</span><span class="p">(</span>
             <span class="n">vertices_a</span><span class="p">,</span>
@@ -7106,9 +7106,7 @@ weight <code>1 / 8</code>:</p>
         <span class="p">)</span>
     <span class="p">]</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">single_directional</span><span class="p">:</span>
-        <span class="n">face_id_ba</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">proximity</span><span class="o">.</span><span class="n">closest_point_on_mesh</span><span class="p">(</span>
-            <span class="n">vertices_a</span><span class="p">,</span> <span class="n">faces_a</span><span class="p">,</span> <span class="n">vertices_b</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">mesh_a</span>
-        <span class="p">)[</span><span class="mi">2</span><span class="p">]</span>
+        <span class="n">face_id_ba</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">face_ids</span><span class="p">[</span><span class="n">va</span><span class="p">:])</span>
         <span class="n">terms</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
             <span class="k">lambda</span><span class="p">:</span> <span class="n">_launch_surface_term</span><span class="p">(</span>
                 <span class="n">vertices_b</span><span class="p">,</span>

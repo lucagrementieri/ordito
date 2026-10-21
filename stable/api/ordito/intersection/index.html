@@ -7784,12 +7784,10 @@ each keep two in the table and two in the overflow tail, 24 + 12 slots:</p>
 face lying <em>in</em> the plane, whose side is decided from its own normal rather than from its
 vertices.</p>
 <p>Every face falls into exactly one of three kept classes — wholly inside, cut into a quad, cut
-into a triangle — and the three are compacted by a <em>single</em> scan over one blocked flag buffer,
-so the call makes one host readback (the three class counts) rather than one per class. Those
-counts then size the output buffers for their final use, and the two cut kernels write their
-triangles and their intersection points straight into them, so nothing is concatenated
-afterwards. The cost barely tracks the face count, since the plane still meets only
-<code>O(sqrt(n_faces))</code> triangles.</p>
+into a triangle — and the classes, the crossing points and the vertices the kept faces
+reference are all ranked by a <em>single</em> scan, so the call makes one host readback (the counts
+that size the output) and writes the compacted mesh in one pass, with nothing concatenated or
+compacted afterwards.</p>
 </details>
 
 <details class="see-also" open>
@@ -7914,8 +7912,7 @@ open along the cut:</p>
 <span class="normal">1550</span>
 <span class="normal">1551</span>
 <span class="normal">1552</span>
-<span class="normal">1553</span>
-<span class="normal">1554</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">slice_mesh_with_plane</span><span class="p">(</span>
+<span class="normal">1553</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">slice_mesh_with_plane</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">plane_normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -7960,12 +7957,10 @@ open along the cut:</p>
 <span class="sd">    vertices.</span>
 
 <span class="sd">    Every face falls into exactly one of three kept classes — wholly inside, cut into a quad, cut</span>
-<span class="sd">    into a triangle — and the three are compacted by a *single* scan over one blocked flag buffer,</span>
-<span class="sd">    so the call makes one host readback (the three class counts) rather than one per class. Those</span>
-<span class="sd">    counts then size the output buffers for their final use, and the two cut kernels write their</span>
-<span class="sd">    triangles and their intersection points straight into them, so nothing is concatenated</span>
-<span class="sd">    afterwards. The cost barely tracks the face count, since the plane still meets only</span>
-<span class="sd">    ``O(sqrt(n_faces))`` triangles.</span>
+<span class="sd">    into a triangle — and the classes, the crossing points and the vertices the kept faces</span>
+<span class="sd">    reference are all ranked by a *single* scan, so the call makes one host readback (the counts</span>
+<span class="sd">    that size the output) and writes the compacted mesh in one pass, with nothing concatenated or</span>
+<span class="sd">    compacted afterwards.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -8001,11 +7996,12 @@ open along the cut:</p>
             <span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
         <span class="p">)</span>
 
+    <span class="c1"># No field: the kernels form each vertex's plane dot where they read it.</span>
     <span class="k">return</span> <span class="n">_clip_with_vertex_field</span><span class="p">(</span>
         <span class="n">vertices</span><span class="p">,</span>
         <span class="n">faces</span><span class="p">,</span>
-        <span class="n">_plane_dots</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">plane_normal</span><span class="p">,</span> <span class="n">plane_origin</span><span class="p">),</span>
-        <span class="n">plane_normal</span><span class="o">=</span><span class="n">plane_normal</span><span class="p">,</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+        <span class="n">plane</span><span class="o">=</span><span class="p">(</span><span class="n">plane_normal</span><span class="p">,</span> <span class="n">plane_origin</span><span class="p">),</span>
     <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -8297,7 +8293,8 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1557</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1556</span>
+<span class="normal">1557</span>
 <span class="normal">1558</span>
 <span class="normal">1559</span>
 <span class="normal">1560</span>
@@ -8510,8 +8507,7 @@ sides, adding eight vertices; the refined cube stays watertight, with both halve
 <span class="normal">1767</span>
 <span class="normal">1768</span>
 <span class="normal">1769</span>
-<span class="normal">1770</span>
-<span class="normal">1771</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_mesh_with_plane</span><span class="p">(</span>
+<span class="normal">1770</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_mesh_with_plane</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">plane_normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -8994,7 +8990,8 @@ the <em>near</em> side, so the field enters negated:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1774</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1773</span>
+<span class="normal">1774</span>
 <span class="normal">1775</span>
 <span class="normal">1776</span>
 <span class="normal">1777</span>
@@ -9195,8 +9192,7 @@ the <em>near</em> side, so the field enters negated:</p>
 <span class="normal">1972</span>
 <span class="normal">1973</span>
 <span class="normal">1974</span>
-<span class="normal">1975</span>
-<span class="normal">1976</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
+<span class="normal">1975</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">clip_mesh_with_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -9633,7 +9629,8 @@ result is as watertight as the input:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/intersection.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2050</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2049</span>
+<span class="normal">2050</span>
 <span class="normal">2051</span>
 <span class="normal">2052</span>
 <span class="normal">2053</span>
@@ -9727,8 +9724,7 @@ result is as watertight as the input:</p>
 <span class="normal">2141</span>
 <span class="normal">2142</span>
 <span class="normal">2143</span>
-<span class="normal">2144</span>
-<span class="normal">2145</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_faces_along_field</span><span class="p">(</span>
+<span class="normal">2144</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_faces_along_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>

@@ -4248,10 +4248,7 @@ pixel centre sits at <code>u = 7.5 / 8</code>:</p>
 <span class="normal">114</span>
 <span class="normal">115</span>
 <span class="normal">116</span>
-<span class="normal">117</span>
-<span class="normal">118</span>
-<span class="normal">119</span>
-<span class="normal">120</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_attribute</span><span class="p">(</span>
+<span class="normal">117</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_attribute</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">attribute</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat32</span><span class="p">,</span> <span class="n">resolution</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -4320,15 +4317,12 @@ pixel centre sits at <code>u = 7.5 / 8</code>:</p>
     <span class="n">_check_rasterize_inputs</span><span class="p">(</span><span class="n">uv</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">attribute</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">resolution</span><span class="p">)</span>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">uv</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">image</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">resolution</span><span class="p">,</span> <span class="n">resolution</span><span class="p">,</span> <span class="n">n_channels</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">n_faces</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
-    <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array3d</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-
-    <span class="n">owner</span> <span class="o">=</span> <span class="n">_rasterize_owner</span><span class="p">(</span><span class="n">uv</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">resolution</span><span class="p">)</span>
+    <span class="n">owner</span> <span class="o">=</span> <span class="n">_rasterize_owner</span><span class="p">(</span><span class="n">uv</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">resolution</span><span class="p">,</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">))</span>
+    <span class="c1"># Every pixel is written by the resolve pass, covered or not.</span>
+    <span class="n">image</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">((</span><span class="n">resolution</span><span class="p">,</span> <span class="n">resolution</span><span class="p">,</span> <span class="n">n_channels</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_texture</span><span class="o">.</span><span class="n">rasterize_scatter</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
+        <span class="n">kernel_texture</span><span class="o">.</span><span class="n">rasterize_pixels</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">resolution</span><span class="p">,</span> <span class="n">resolution</span><span class="p">),</span>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">uv</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">attribute</span><span class="p">,</span> <span class="n">n_channels</span><span class="p">,</span> <span class="n">owner</span><span class="p">,</span> <span class="n">image</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
@@ -4534,7 +4528,10 @@ with the greater interpolated weight:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">123</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">120</span>
+<span class="normal">121</span>
+<span class="normal">122</span>
+<span class="normal">123</span>
 <span class="normal">124</span>
 <span class="normal">125</span>
 <span class="normal">126</span>
@@ -4607,13 +4604,7 @@ with the greater interpolated weight:</p>
 <span class="normal">193</span>
 <span class="normal">194</span>
 <span class="normal">195</span>
-<span class="normal">196</span>
-<span class="normal">197</span>
-<span class="normal">198</span>
-<span class="normal">199</span>
-<span class="normal">200</span>
-<span class="normal">201</span>
-<span class="normal">202</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_discrete_attribute</span><span class="p">(</span>
+<span class="normal">196</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rasterize_discrete_attribute</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">attribute</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">resolution</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -4677,18 +4668,15 @@ with the greater interpolated weight:</p>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">uv</span><span class="o">=</span><span class="n">uv</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">attribute</span><span class="o">=</span><span class="n">attribute</span><span class="p">)</span>
     <span class="n">odt</span><span class="o">.</span><span class="n">ensure_ndim</span><span class="p">(</span><span class="n">attribute</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">attribute</span><span class="o">.</span><span class="n">size</span>
-    <span class="n">_check_rasterize_inputs</span><span class="p">(</span><span class="n">uv</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">resolution</span><span class="p">,</span> <span class="n">labels</span><span class="o">=</span><span class="n">attribute</span><span class="p">)</span>
+    <span class="n">_check_rasterize_inputs</span><span class="p">(</span><span class="n">uv</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">resolution</span><span class="p">)</span>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">uv</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">labels_image</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">resolution</span><span class="p">,</span> <span class="n">resolution</span><span class="p">),</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">n_faces</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
-    <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">labels_image</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
-
-    <span class="n">owner</span> <span class="o">=</span> <span class="n">_rasterize_owner</span><span class="p">(</span><span class="n">uv</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">resolution</span><span class="p">)</span>
+    <span class="n">owner</span> <span class="o">=</span> <span class="n">_rasterize_owner</span><span class="p">(</span><span class="n">uv</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">resolution</span><span class="p">,</span> <span class="n">attribute</span><span class="p">)</span>
+    <span class="c1"># Every pixel is written by the resolve pass, covered or not.</span>
+    <span class="n">labels_image</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">((</span><span class="n">resolution</span><span class="p">,</span> <span class="n">resolution</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_texture</span><span class="o">.</span><span class="n">rasterize_labels</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
+        <span class="n">kernel_texture</span><span class="o">.</span><span class="n">rasterize_label_pixels</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">resolution</span><span class="p">,</span> <span class="n">resolution</span><span class="p">),</span>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">uv</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">attribute</span><span class="p">,</span> <span class="n">owner</span><span class="p">,</span> <span class="n">labels_image</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
@@ -4899,7 +4887,29 @@ image). Non-finite-UV rows are <code>NaN</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">292</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">270</span>
+<span class="normal">271</span>
+<span class="normal">272</span>
+<span class="normal">273</span>
+<span class="normal">274</span>
+<span class="normal">275</span>
+<span class="normal">276</span>
+<span class="normal">277</span>
+<span class="normal">278</span>
+<span class="normal">279</span>
+<span class="normal">280</span>
+<span class="normal">281</span>
+<span class="normal">282</span>
+<span class="normal">283</span>
+<span class="normal">284</span>
+<span class="normal">285</span>
+<span class="normal">286</span>
+<span class="normal">287</span>
+<span class="normal">288</span>
+<span class="normal">289</span>
+<span class="normal">290</span>
+<span class="normal">291</span>
+<span class="normal">292</span>
 <span class="normal">293</span>
 <span class="normal">294</span>
 <span class="normal">295</span>
@@ -4970,28 +4980,7 @@ image). Non-finite-UV rows are <code>NaN</code>.</p>
 <span class="normal">360</span>
 <span class="normal">361</span>
 <span class="normal">362</span>
-<span class="normal">363</span>
-<span class="normal">364</span>
-<span class="normal">365</span>
-<span class="normal">366</span>
-<span class="normal">367</span>
-<span class="normal">368</span>
-<span class="normal">369</span>
-<span class="normal">370</span>
-<span class="normal">371</span>
-<span class="normal">372</span>
-<span class="normal">373</span>
-<span class="normal">374</span>
-<span class="normal">375</span>
-<span class="normal">376</span>
-<span class="normal">377</span>
-<span class="normal">378</span>
-<span class="normal">379</span>
-<span class="normal">380</span>
-<span class="normal">381</span>
-<span class="normal">382</span>
-<span class="normal">383</span>
-<span class="normal">384</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_attribute_from_uv</span><span class="p">(</span>
+<span class="normal">363</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_attribute_from_uv</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">image</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span> <span class="o">|</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -5067,7 +5056,6 @@ image). Non-finite-UV rows are <code>NaN</code>.</p>
     <span class="k">else</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"image must be (H, W) or (H, W, C), got ndim=</span><span class="si">{</span><span class="n">image</span><span class="o">.</span><span class="n">ndim</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="n">odt</span><span class="o">.</span><span class="n">ensure_ndim</span><span class="p">(</span><span class="n">image3d</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-    <span class="n">_check_uv_in_range</span><span class="p">(</span><span class="n">uv</span><span class="p">)</span>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">uv</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">uv</span><span class="o">.</span><span class="n">size</span>
@@ -5077,12 +5065,14 @@ image). Non-finite-UV rows are <code>NaN</code>.</p>
         <span class="c1"># sampled nearest-neighbour for every off-menu value, so a caller whose interpolation</span>
         <span class="c1"># order arrived through a variable got a plausible image and no error.</span>
         <span class="n">mode</span> <span class="o">=</span> <span class="n">kernel_texture</span><span class="o">.</span><span class="n">SAMPLE_BILINEAR</span> <span class="k">if</span> <span class="n">order</span> <span class="o">==</span> <span class="mi">1</span> <span class="k">else</span> <span class="n">kernel_texture</span><span class="o">.</span><span class="n">SAMPLE_NEAREST</span>
+        <span class="n">flag</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_texture</span><span class="o">.</span><span class="n">sample_texture</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">uv</span><span class="p">,</span> <span class="n">image3d</span><span class="p">,</span> <span class="n">n_channels</span><span class="p">,</span> <span class="n">mode</span><span class="p">,</span> <span class="n">out_values</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">uv</span><span class="p">,</span> <span class="n">image3d</span><span class="p">,</span> <span class="n">n_channels</span><span class="p">,</span> <span class="n">mode</span><span class="p">,</span> <span class="n">out_values</span><span class="p">,</span> <span class="n">flag</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
+        <span class="n">_raise_on_uv_flag</span><span class="p">(</span><span class="n">flag</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">out_values</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -5252,7 +5242,28 @@ are <code>-1</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/texture.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">387</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">366</span>
+<span class="normal">367</span>
+<span class="normal">368</span>
+<span class="normal">369</span>
+<span class="normal">370</span>
+<span class="normal">371</span>
+<span class="normal">372</span>
+<span class="normal">373</span>
+<span class="normal">374</span>
+<span class="normal">375</span>
+<span class="normal">376</span>
+<span class="normal">377</span>
+<span class="normal">378</span>
+<span class="normal">379</span>
+<span class="normal">380</span>
+<span class="normal">381</span>
+<span class="normal">382</span>
+<span class="normal">383</span>
+<span class="normal">384</span>
+<span class="normal">385</span>
+<span class="normal">386</span>
+<span class="normal">387</span>
 <span class="normal">388</span>
 <span class="normal">389</span>
 <span class="normal">390</span>
@@ -5300,27 +5311,7 @@ are <code>-1</code>.</p>
 <span class="normal">432</span>
 <span class="normal">433</span>
 <span class="normal">434</span>
-<span class="normal">435</span>
-<span class="normal">436</span>
-<span class="normal">437</span>
-<span class="normal">438</span>
-<span class="normal">439</span>
-<span class="normal">440</span>
-<span class="normal">441</span>
-<span class="normal">442</span>
-<span class="normal">443</span>
-<span class="normal">444</span>
-<span class="normal">445</span>
-<span class="normal">446</span>
-<span class="normal">447</span>
-<span class="normal">448</span>
-<span class="normal">449</span>
-<span class="normal">450</span>
-<span class="normal">451</span>
-<span class="normal">452</span>
-<span class="normal">453</span>
-<span class="normal">454</span>
-<span class="normal">455</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_discrete_attribute_from_uv</span><span class="p">(</span>
+<span class="normal">435</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_discrete_attribute_from_uv</span><span class="p">(</span>
     <span class="n">uv</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">class_image</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array1dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -5376,18 +5367,19 @@ are <code>-1</code>.</p>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">uv</span><span class="o">=</span><span class="n">uv</span><span class="p">,</span> <span class="n">class_image</span><span class="o">=</span><span class="n">class_image</span><span class="p">)</span>
     <span class="n">odt</span><span class="o">.</span><span class="n">ensure_ndim</span><span class="p">(</span><span class="n">class_image</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
-    <span class="n">_check_uv_in_range</span><span class="p">(</span><span class="n">uv</span><span class="p">)</span>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">uv</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">uv</span><span class="o">.</span><span class="n">size</span>
     <span class="n">out_labels</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_1d</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">flag</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_texture</span><span class="o">.</span><span class="n">sample_class_image</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">uv</span><span class="p">,</span> <span class="n">class_image</span><span class="p">,</span> <span class="n">out_labels</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">uv</span><span class="p">,</span> <span class="n">class_image</span><span class="p">,</span> <span class="n">out_labels</span><span class="p">,</span> <span class="n">flag</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
+        <span class="n">_raise_on_uv_flag</span><span class="p">(</span><span class="n">flag</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">out_labels</span>
 </code></pre></div></td></tr></table></div>
             </details>

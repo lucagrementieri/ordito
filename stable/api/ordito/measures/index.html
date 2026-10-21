@@ -5113,6 +5113,30 @@ readback that otherwise derive it. Trusted, not checked: it must exceed every in
     </table>
 
 
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>n_vertices</code> is given and not positive, or, when it is inferred, if <code>faces</code> holds a
+negative index.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
 <details class="see-also" open>
   <summary>See Also</summary>
   <p><a class="autorefs autorefs-internal" title="unique_edge_count" href="../edges/#ordito.edges.unique_edge_count"><code>unique_edge_count</code></a>
@@ -5209,7 +5233,32 @@ readback that otherwise derive it. Trusted, not checked: it must exceed every in
 <span class="normal">385</span>
 <span class="normal">386</span>
 <span class="normal">387</span>
-<span class="normal">388</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">euler_characteristic</span><span class="p">(</span><span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="normal">388</span>
+<span class="normal">389</span>
+<span class="normal">390</span>
+<span class="normal">391</span>
+<span class="normal">392</span>
+<span class="normal">393</span>
+<span class="normal">394</span>
+<span class="normal">395</span>
+<span class="normal">396</span>
+<span class="normal">397</span>
+<span class="normal">398</span>
+<span class="normal">399</span>
+<span class="normal">400</span>
+<span class="normal">401</span>
+<span class="normal">402</span>
+<span class="normal">403</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span>
+<span class="normal">408</span>
+<span class="normal">409</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">euler_characteristic</span><span class="p">(</span><span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Euler characteristic ``V - E + F`` of the mesh (topological invariant).</span>
 
@@ -5230,6 +5279,12 @@ readback that otherwise derive it. Trusted, not checked: it must exceed every in
 <span class="sd">    -------</span>
 <span class="sd">    int</span>
 <span class="sd">        ``(#distinct referenced vertices) - (#unique edges) + (#faces)``. ``0`` for an empty mesh.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``n_vertices`` is given and not positive, or, when it is inferred, if ``faces`` holds a</span>
+<span class="sd">        negative index.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -5259,20 +5314,39 @@ readback that otherwise derive it. Trusted, not checked: it must exceed every in
     <span class="c1"># give, and costs nothing -- both ends come out of the one reduction.</span>
     <span class="k">if</span> <span class="n">n_vertices</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">index_bound</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">require_non_negative</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="n">n_vertices</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"n_vertices must be positive, got </span><span class="si">{</span><span class="n">n_vertices</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">n</span> <span class="o">=</span> <span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span>
     <span class="c1"># The referenced-vertex count is a membership mask's popcount rather than the length of</span>
     <span class="c1"># ``unique_1d(faces)``: the indices are bounded by ``n_vertices``, so the mask is the same set</span>
-    <span class="c1"># without the hash table, compaction and sort, and the count is one read instead of two.</span>
-    <span class="n">referenced</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">indices_to_mask</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
+    <span class="c1"># without the hash table, compaction and sort, and the count is one read instead of two. The</span>
+    <span class="c1"># mask is marked in the pass that packs the halfedge keys into the sort's buffer, over the</span>
+    <span class="c1"># bits a key below ``n_vertices ** 2`` can set; the sort's payload is never read.</span>
+    <span class="n">referenced</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">keys</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_measures</span><span class="o">.</span><span class="n">face_edge_keys_and_referenced</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span> <span class="n">keys</span><span class="p">,</span> <span class="n">referenced</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span>
+        <span class="n">keys</span><span class="p">,</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+        <span class="n">count</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
+        <span class="n">end_bit</span><span class="o">=</span><span class="nb">min</span><span class="p">(</span><span class="mi">64</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">(</span><span class="n">n_vertices</span> <span class="o">*</span> <span class="n">n_vertices</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">bit_length</span><span class="p">())),</span>
+    <span class="p">)</span>
+    <span class="n">sorted_keys</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
     <span class="c1"># The unique edges are the sorted halfedge keys' runs, so only their count is formed: no run</span>
     <span class="c1"># scan and no emitted edge table. Both counts fold in one launch and come back in one read.</span>
-    <span class="n">sorted_keys</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">sorted_face_edge_keys</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">)</span>
-    <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
         <span class="n">kernel_measures</span><span class="o">.</span><span class="n">referenced_vertex_and_unique_edge_counts</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">sorted_keys</span><span class="o">.</span><span class="n">size</span><span class="p">))],</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">referenced</span><span class="p">,</span> <span class="n">sorted_keys</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">sorted_keys</span><span class="o">.</span><span class="n">size</span><span class="p">),</span> <span class="n">counts</span><span class="p">],</span>
+        <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n</span><span class="p">))],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">referenced</span><span class="p">,</span> <span class="n">sorted_keys</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n</span><span class="p">),</span> <span class="n">counts</span><span class="p">],</span>
         <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="c1"># The two counts are the answer.</span>
     <span class="n">n_referenced</span><span class="p">,</span> <span class="n">n_edges</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
