@@ -7,6 +7,7 @@ from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
     binary_search_index,
+    binary_search_index_left,
     cross2,
     is_close_vec3,
     lift_vec2,
@@ -1617,6 +1618,17 @@ def projected_ring_point(source: Any, sums: wp.array[wp.float32], i: wp.int32) -
 
 
 @wp.func
+def block_ring_box(above: wp.vec2, below: wp.vec2) -> wp.vec4:
+    # The block's ring box ``(above x, above y, below x, below y)`` from each lane's running
+    # ``max(p - p0)`` / ``max(p0 - p)``, the ``RING_EXTENT`` layout. Shared by ``ring_turning_pass``
+    # and ``seed_long_rings``, so a packed loop's grid is sized from the
+    # very maxima its alone call reads back: a maximum is exact in any order.
+    return wp.vec4(
+        block_max(above[0]), block_max(above[1]), block_max(below[0]), block_max(below[1])
+    )
+
+
+@wp.func
 def ring_turning_pass(
     chunk: wp.int32,
     lane: wp.int32,
@@ -1660,9 +1672,7 @@ def ring_turning_pass(
     # The ring's box relative to its first point, for the ear grid: ``max(p - p0)`` then
     # ``max(p0 - p)``, both non-negative, so the zeroed slots are a correct seed for the
     # ``atomic_max`` commit.
-    extent = wp.vec4(
-        block_max(above[0]), block_max(above[1]), block_max(below[0]), block_max(below[1])
-    )
+    extent = block_ring_box(above, below)
     if lane == 0:
         for c in range(4):
             wp.atomic_max(out_sums, RING_EXTENT + c, extent[c])
@@ -1796,12 +1806,13 @@ def ear_grid_cell(p: wp.vec2, origin: wp.vec2, inv_cell: wp.float32, dims: wp.ve
 
 
 @wp.func
-def ear_grid_origin(points2d: wp.array[wp.vec2], shift: wp.vec2) -> wp.vec2:
-    # The grid's lower corner: the ring's first point less its extent below it
-    # (``accumulate_turning_angle``'s ``RING_EXTENT`` slots, which the host passes as ``shift``),
-    # formed on the device so the first point never crosses to the host. Every thread evaluates
-    # the same expression, so all hold the one origin.
-    return points2d[0] - shift
+def ear_grid_origin(points2d: wp.array[wp.vec2], start: wp.int32, shift: wp.vec2) -> wp.vec2:
+    # The grid's lower corner: the first point of the ring at ``start`` less its extent below it
+    # (``accumulate_turning_angle``'s ``RING_EXTENT`` slots, which the host passes as ``shift``;
+    # ``seed_long_rings`` stores it per loop for the packed round loop), formed on the device so
+    # the first point never crosses to the host. Every thread evaluates the same expression, so all
+    # hold the one origin.
+    return points2d[start] - shift
 
 
 @wp.kernel
@@ -1816,7 +1827,7 @@ def ear_grid_cells(
     # dim == n_ring: each ring point's row-major cell key and its own index, written into the
     # radix sort's double-width buffers.
     i = wp.int32(wp.tid())
-    cell = ear_grid_cell(points2d[i], ear_grid_origin(points2d, shift), inv_cell, dims)
+    cell = ear_grid_cell(points2d[i], ear_grid_origin(points2d, 0, shift), inv_cell, dims)
     out_keys[i] = cell[1] * dims[0] + cell[0]
     out_order[i] = i
 
@@ -1897,7 +1908,9 @@ def ear_grade_grid(
     i: wp.int32,
     mirror: wp.int32,
     check_thin: wp.int32,
+    start: wp.int32,
     cell_starts: wp.array[wp.int32],
+    cell_base: wp.int32,
     cell_points: wp.array[wp.int32],
     shift: wp.vec2,
     inv_cell: wp.float32,
@@ -1908,7 +1921,9 @@ def ear_grade_grid(
     # same grade. Row by row it walks only the cells the triangle crosses -- the triangle's x
     # extent over the row's slab, grown by the ``EAR_GRID_PAD_ULPS`` margin in both axes and by a
     # hundredth of a cell in y against the rounding of the slab's bounds -- so a long thin ear
-    # across the polygon costs its area in cells, not its bounding box's.
+    # across the polygon costs its area in cells, not its bounding box's. The ring starts at
+    # ``points2d[start]`` and its grid's cells at ``cell_starts[cell_base]``: both are 0 for the
+    # one ring of ``compute_ears``, a packed loop's own for ``ring_compute_ears``.
     corner = ear_corner(points2d, left, right, i, mirror, check_thin)
     if corner < EAR_TEST_THIN:
         return corner
@@ -1926,7 +1941,7 @@ def ear_grade_grid(
     hi = wp.max(ra, wp.max(ri, rb))
     scale = wp.max(wp.max(wp.abs(lo[0]), wp.abs(lo[1])), wp.max(wp.abs(hi[0]), wp.abs(hi[1])))
     pad = EAR_GRID_PAD_ULPS * FLOAT32_EPS * scale
-    origin = ear_grid_origin(points2d, shift)
+    origin = ear_grid_origin(points2d, start, shift)
     cell_size = wp.float32(1.0) / inv_cell
     slack = pad + wp.float32(0.01) * cell_size
     row_lo = ear_grid_cell(lo - wp.vec2(pad, pad), origin, inv_cell, dims)[1]
@@ -1941,7 +1956,7 @@ def ear_grade_grid(
         if x_range[0] <= x_range[1]:
             c0 = ear_grid_cell(wp.vec2(x_range[0] - pad, y0), origin, inv_cell, dims)[0]
             c1 = ear_grid_cell(wp.vec2(x_range[1] + pad, y0), origin, inv_cell, dims)[0]
-            row = cy * dims[0]
+            row = cell_base + cy * dims[0]
             for k in range(cell_starts[row + c0], cell_starts[row + c1 + 1]):
                 j = cell_points[k]
                 if (
@@ -2005,7 +2020,9 @@ def compute_ears(
             i,
             mirror,
             state[EAR_CHECK_THIN],
+            0,
             cell_starts,
+            0,
             cell_points,
             shift,
             inv_cell,
@@ -2242,6 +2259,164 @@ def ear_clip_block(
     ear_clip_ring(points2d, 0, out_ring.shape[1], mirror, lane, out_faces, out_ring, out_count, 0)
 
 
+# The packed round loop (``ring_compute_ears`` and its siblings below), which clips every loop of a
+# ``polyline_triangulate_from_offsets`` call longer than ``EAR_ONE_BLOCK_MAX`` together: one
+# captured loop whose round runs each such loop's round of ``compute_ears`` ->
+# ``select_independent`` -> ``clip_selected`` -> ``ear_loop_continue`` side by side, so the call
+# waits for the most rounds any loop needs rather than for their sum. The two loops differ only in
+# where a ring's parameters live: the one-ring kernels take them as launch arguments from the
+# host's readback, the packed ones read each loop's from ``rounds`` (an int row per loop after the
+# ``RINGS_HEADER`` slots, whose ``LOOP_CONDITION`` drives the capture) and ``grid`` (a float row
+# per loop), both seeded on the device by ``seed_long_rings``. Every per-ring decision of the
+# one-ring loop is taken per loop on the same values, and a loop's rounds stop where its own loop
+# stops, so each loop gets the faces, in the order, that its alone call gives.
+RINGS_HEADER = 2
+RING_ROUND = wp.constant(wp.int32(0))
+RING_ANY_GOOD = wp.constant(wp.int32(1))
+RING_CHECK_THIN = wp.constant(wp.int32(2))
+RING_LIVE = wp.constant(wp.int32(3))
+RING_MIRROR = wp.constant(wp.int32(4))
+RING_N_RING = wp.constant(wp.int32(5))
+RING_DIMS = wp.constant(wp.int32(6))
+RING_FACE_BASE = wp.constant(wp.int32(8))
+RING_FACE_END = wp.constant(wp.int32(9))
+RING_STATE_SIZE = 10
+# The ``grid`` row: the grid's ``shift`` (two slots), then ``inv_cell``.
+RING_GRID_SIZE = 3
+# Row ``RING_LOOP_ROW`` of the ``(RING_SCRATCH_ROWS, n_points)`` ring scratch holds each point's
+# round-loop loop (``-1`` for a point no round-loop loop owns); rows 0-4 are ``ear_clip_ring``'s.
+RING_LOOP_ROW = wp.constant(wp.int32(5))
+RING_SCRATCH_ROWS = 6
+# Cells a loop's grid may take, per point and per loop: ``ear_grid_shape``'s two dimensions are
+# each at most ``target = EAR_GRID_CELLS_PER_POINT * n_ring`` and multiply to at most
+# ``3 * target + 1`` (their product exceeds ``target`` by at most their sum plus one), so loop
+# ``r`` starting at packed point ``start`` owns the cells from ``ring_cell_base`` on and no two
+# loops' cells overlap.
+RING_CELLS_PER_POINT = 3 * EAR_GRID_CELLS_PER_POINT
+RING_CELLS_PER_LOOP = 2
+
+
+@wp.func
+def ring_cell_base(start: wp.int32, ring_id: wp.int32) -> wp.int32:
+    # The first cell of loop ``ring_id``'s grid in the packed round loop's shared cell table.
+    return RING_CELLS_PER_POINT * start + RING_CELLS_PER_LOOP * ring_id
+
+
+@wp.func
+def ring_state_row(ring_id: wp.int32) -> wp.int32:
+    # Loop ``ring_id``'s first slot in the packed round loop's ``rounds`` table.
+    return RINGS_HEADER + ring_id * RING_STATE_SIZE
+
+
+@wp.func
+def host_max(a: wp.float64, b: wp.float64) -> wp.float64:
+    # Python's ``max(a, b)``: ``b`` only when it is strictly greater, so a NaN first argument
+    # survives where ``wp.max`` would drop it.
+    return wp.where(b > a, b, a)
+
+
+@wp.func
+def ear_grid_shape(extent: wp.vec4, n_ring: wp.int32) -> tuple[wp.float32, wp.vec2i]:
+    # ``(inv_cell, dims)`` of a ring's ear grid from its ``RING_EXTENT`` box: the device twin of
+    # ``polyline._triangulate_ring``'s host sizing, operation for operation in ``float64`` (Python's
+    # float), so a packed loop's grid is the one its alone call builds. No product here feeds a
+    # sum, so FMA contraction cannot make the two differ, and the square root and divisions are
+    # correctly rounded on both devices. A change to either sizing must change both.
+    width = host_max(wp.float64(extent[0]) + wp.float64(extent[2]), wp.float64(0.0))
+    height = host_max(wp.float64(extent[1]) + wp.float64(extent[3]), wp.float64(0.0))
+    target_cells = EAR_GRID_CELLS_PER_POINT * n_ring
+    target = wp.float64(target_cells)
+    cell = host_max(wp.sqrt(width * height / target), host_max(width, height) / target)
+    if not (cell > wp.float64(0.0)) or not wp.isfinite(cell):
+        cell = wp.float64(1.0)
+    dims = wp.vec2i(
+        wp.min(wp.max(wp.int32(1), wp.int32(wp.ceil(width / cell))), target_cells),
+        wp.min(wp.max(wp.int32(1), wp.int32(wp.ceil(height / cell))), target_cells),
+    )
+    return wp.float32(wp.float64(1.0) / cell), dims
+
+
+@wp.func
+def seed_ring_round_loop(
+    ring_id: wp.int32,
+    n_ring: wp.int32,
+    mirror: wp.int32,
+    extent: wp.vec4,
+    face_base: wp.int32,
+    out_rounds: wp.array[wp.int32],
+    out_grid: wp.array[wp.float32],
+) -> None:
+    # Loop ``ring_id``'s state and grid rows for the packed round loop, from its orientation and
+    # ring box, raising the loop condition: the zeroed ``out_rounds`` holds round 0 and no good
+    # ear yet, as ``init_ear_clip`` seeds the one-ring loop. The grid's ``shift`` is the box below
+    # the first point, as the host passes it to the one-ring kernels. The loop's clips append from
+    # its face base through ``RING_FACE_END``, the counter beside the rest of its state.
+    inv_cell, dims = ear_grid_shape(extent, n_ring)
+    row = ring_state_row(ring_id)
+    out_rounds[row + RING_LIVE] = wp.int32(1)
+    out_rounds[row + RING_MIRROR] = mirror
+    out_rounds[row + RING_N_RING] = n_ring
+    out_rounds[row + RING_DIMS] = dims[0]
+    out_rounds[row + RING_DIMS + 1] = dims[1]
+    out_rounds[row + RING_FACE_BASE] = face_base
+    out_rounds[row + RING_FACE_END] = face_base
+    out_grid[RING_GRID_SIZE * ring_id] = extent[2]
+    out_grid[RING_GRID_SIZE * ring_id + 1] = extent[3]
+    out_grid[RING_GRID_SIZE * ring_id + 2] = inv_cell
+    out_rounds[LOOP_CONDITION] = wp.int32(1)
+
+
+@wp.func
+def project_ring(
+    polylines: wp.array[wp.vec3],
+    sums: wp.array[wp.float32],
+    base: wp.int32,
+    start: wp.int32,
+    n: wp.int32,
+    lane: wp.int32,
+    out_points2d: wp.array[wp.vec2],
+) -> None:
+    # Every point of the packed loop ``polylines[start : start + n]`` into its plane frame (the
+    # ``accumulate_loop_frames`` row at ``sums[base:]``), then a block barrier. Shared by
+    # ``triangulate_rings`` and ``seed_long_rings``, so a loop's 2D points are the same whichever
+    # clips it.
+    for k in range(lane, n, wp.block_dim()):
+        out_points2d[start + k] = project_to_frame(polylines[start + k], sums, base)
+    block_barrier()
+
+
+@wp.func
+def ring_orientation(
+    points2d: wp.array[wp.vec2], start: wp.int32, n_ring: wp.int32, lane: wp.int32
+) -> tuple[wp.int32, wp.float32]:
+    # ``(mirror, reflex count)`` of the projected ring at ``start``, block-reduced: mirror when it
+    # turns clockwise, and the reflex count of the oriented ring, which is zero exactly when the
+    # fan triangulates it. Shared by ``triangulate_rings`` and ``seed_long_rings``.
+    local = wp.vec3()
+    for k in range(lane, n_ring, wp.block_dim()):
+        local += corner_turn(points2d, start, k, n_ring)
+    turn = block_sum(local)
+    mirror = wp.where(turn[0] < wp.float32(0.0), wp.int32(1), wp.int32(0))
+    return mirror, wp.where(mirror != 0, turn[2], turn[1])
+
+
+@wp.func
+def write_ring_fan(
+    face_base: wp.int32,
+    start: wp.int32,
+    n_ring: wp.int32,
+    lane: wp.int32,
+    out_faces: wp.array2d[wp.int32],
+) -> None:
+    # ``fan_triangulate``'s fan from the loop's first point, as packed indices from row
+    # ``face_base``. Shared by ``triangulate_rings`` and ``seed_long_rings``.
+    for k in range(lane, n_ring - 2, wp.block_dim()):
+        a, b, c = fan_face(k)
+        out_faces[face_base + k, 0] = start + a
+        out_faces[face_base + k, 1] = start + b
+        out_faces[face_base + k, 2] = start + c
+
+
 @wp.kernel(enable_backward=False)
 def triangulate_rings(
     polylines: wp.array[wp.vec3],
@@ -2257,16 +2432,17 @@ def triangulate_rings(
 ) -> None:
     # ``polyline_triangulate`` of every packed loop ``polylines[offsets[r] : offsets[r + 1]]`` at
     # once, one block per loop (``dim=(n_loops,)`` at ``EAR_BLOCK_DIM``), each loop's
-    # ``accumulate_loop_frames`` row read from ``sums``: the projection (``project_to_frame``), the
-    # orientation and reflex count (``corner_turn``), then the convex fan or ``ear_clip_ring``,
-    # with the decisions the single-loop wrapper takes on the host taken here on the same values.
-    # Each loop gets the triangles it would alone (as packed indices into ``polylines``); only its
-    # reflex count and turning sum are reduced in another order, which no decision reads beyond
-    # their sign and an exact zero test of whole numbers. Loop ``r``'s faces go to
-    # ``out_faces[face_bases[r]:]`` (the caller reserves ``n - 2`` rows for an ``n``-point loop)
-    # and ``out_count[r]`` ends holding that base plus its face count. A loop of fewer than three
-    # points or more than ``max_ring`` (left to the round loop) gets no faces here.
-    # ``out_points2d`` and ``out_ring`` (``(5, offsets[-1])``) are scratch indexed like
+    # ``accumulate_loop_frames`` row read from ``sums``: the projection (``project_ring``), the
+    # orientation and reflex count (``ring_orientation``), then the convex fan or
+    # ``ear_clip_ring``, with the decisions the single-loop wrapper takes on the host taken here on
+    # the same values. Each loop gets the triangles it would alone (as packed indices into
+    # ``polylines``); only its reflex count and turning sum are reduced in another order, which no
+    # decision reads beyond their sign and an exact zero test of whole numbers. Loop ``r``'s faces
+    # go to ``out_faces[face_bases[r]:]`` (the caller reserves ``n - 2`` rows for an ``n``-point
+    # loop) and ``out_count[r]`` ends holding that base plus its face count. A loop of fewer than
+    # three points or more than ``max_ring`` (``seed_long_rings``' and the packed round loop's)
+    # gets no faces here. ``out_points2d`` and ``out_ring`` (``(5, offsets[-1])``, or
+    # ``(RING_SCRATCH_ROWS, offsets[-1])`` with a round loop) are scratch indexed like
     # ``polylines``. Unless null, the zeroed ``(n_loops + 1,)`` ``out_face_counts`` gets loop
     # ``r``'s face count in slot ``r + 1``, ready for an in-place scan into face offsets.
     ring_id, lane = wp.tid()
@@ -2279,25 +2455,13 @@ def triangulate_rings(
         return
     base = ring_id * RING_SUMS_SIZE
     n_ring = n - wp.int32(sums[base + RING_CLOSING])
-    for k in range(lane, n, wp.block_dim()):
-        out_points2d[start + k] = project_to_frame(polylines[start + k], sums, base)
-    block_barrier()
+    project_ring(polylines, sums, base, start, n, lane, out_points2d)
     if n_ring < 3:
         return
-    local = wp.vec3()
-    for k in range(lane, n_ring, wp.block_dim()):
-        local += corner_turn(out_points2d, start, k, n_ring)
-    turn = block_sum(local)
-    mirror = wp.where(turn[0] < wp.float32(0.0), wp.int32(1), wp.int32(0))
-    reflex = wp.where(mirror != 0, turn[2], turn[1])
+    mirror, reflex = ring_orientation(out_points2d, start, n_ring, lane)
     n_clipped = n_ring - 2
     if reflex == wp.float32(0.0):
-        # ``fan_triangulate``'s fan from the loop's first point.
-        for k in range(lane, n_ring - 2, wp.block_dim()):
-            a, b, c = fan_face(k)
-            out_faces[face_base + k, 0] = start + a
-            out_faces[face_base + k, 1] = start + b
-            out_faces[face_base + k, 2] = start + c
+        write_ring_fan(face_base, start, n_ring, lane, out_faces)
         if lane == 0:
             out_count[ring_id] = face_base + n_ring - 2
     else:
@@ -2306,6 +2470,257 @@ def triangulate_rings(
         )
     if lane == 0 and out_face_counts.shape[0] > 0:
         out_face_counts[ring_id + 1] = n_clipped
+
+
+# Lanes of ``seed_long_rings``' blocks: ``EAR_BLOCK_DIM`` asks for more registers a block than the
+# ``float64`` grid sizing leaves, and no decision there depends on the lane count (a sign, an exact
+# zero test of whole numbers, and maxima).
+LONG_RING_BLOCK_DIM = 256
+
+
+@wp.kernel(enable_backward=False)
+def seed_long_rings(
+    polylines: wp.array[wp.vec3],
+    offsets: wp.array[wp.int32],
+    face_bases: wp.array[wp.int32],
+    max_ring: wp.int32,
+    sums: wp.array[wp.float32],
+    out_points2d: wp.array[wp.vec2],
+    out_faces: wp.array2d[wp.int32],
+    out_count: wp.array[wp.int32],
+    out_face_counts: wp.array[wp.int32],
+    out_rounds: wp.array[wp.int32],
+    out_grid: wp.array[wp.float32],
+) -> None:
+    # ``triangulate_rings``' prologue for the loops it leaves, those of more than ``max_ring``
+    # points, launched after it one block per loop: each is projected and oriented as there and,
+    # when convex, fanned with its face count written; any other is left to the packed round loop
+    # (``ring_compute_ears``), its ring box (``block_ring_box``) sizing its grid
+    # (``ear_grid_shape``) and its state and grid rows going to the zeroed ``out_rounds`` and to
+    # ``out_grid``, raising the loop condition. The round loop writes its face count. A kernel of
+    # its own, so the block launch's arguments and code stay those of a call with no long loop.
+    ring_id, lane = wp.tid()
+    start = offsets[ring_id]
+    n = offsets[ring_id + 1] - start
+    if n < 3 or n <= max_ring:
+        return
+    face_base = face_bases[ring_id]
+    base = ring_id * RING_SUMS_SIZE
+    n_ring = n - wp.int32(sums[base + RING_CLOSING])
+    project_ring(polylines, sums, base, start, n, lane, out_points2d)
+    if n_ring < 3:
+        return
+    mirror, reflex = ring_orientation(out_points2d, start, n_ring, lane)
+    if reflex == wp.float32(0.0):
+        write_ring_fan(face_base, start, n_ring, lane, out_faces)
+        if lane == 0:
+            out_count[ring_id] = face_base + n_ring - 2
+            out_face_counts[ring_id + 1] = n_ring - 2
+        return
+    origin = out_points2d[start]
+    above = wp.vec2()
+    below = wp.vec2()
+    for k in range(lane, n_ring, wp.block_dim()):
+        current = out_points2d[start + k]
+        above = wp.max(above, current - origin)
+        below = wp.max(below, origin - current)
+    extent = block_ring_box(above, below)
+    if lane == 0:
+        seed_ring_round_loop(ring_id, n_ring, mirror, extent, face_base, out_rounds, out_grid)
+
+
+@wp.func
+def ring_grid(
+    rounds: wp.array[wp.int32], grid: wp.array[wp.float32], ring_id: wp.int32
+) -> tuple[wp.vec2, wp.float32, wp.vec2i]:
+    # Loop ``ring_id``'s ``(shift, inv_cell, dims)``, as ``seed_ring_round_loop`` stored them.
+    g = RING_GRID_SIZE * ring_id
+    row = ring_state_row(ring_id)
+    return (
+        wp.vec2(grid[g], grid[g + 1]),
+        grid[g + 2],
+        wp.vec2i(rounds[row + RING_DIMS], rounds[row + RING_DIMS + 1]),
+    )
+
+
+@wp.kernel
+def ring_ear_grid_cells(
+    points2d: wp.array[wp.vec2],
+    offsets: wp.array[wp.int32],
+    rounds: wp.array[wp.int32],
+    grid: wp.array[wp.float32],
+    n_cells: wp.int32,
+    ring: wp.array2d[wp.int32],
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``ear_grid_cells`` of every round-loop loop at once, dim == the packed point count: each
+    # ring point's cell key, offset by its loop's ``ring_cell_base``, and its own index, so one
+    # radix sort orders every loop's points by cell as its alone sort does (a stable sort of the
+    # same keys in the same index order). A point no round-loop loop owns (a shorter loop's, a
+    # repeated closing point) takes the key ``n_cells``, past every cell, and ``-1`` in
+    # ``ring[RING_LOOP_ROW]``, which the round kernels read for the point's loop. ``ring`` is
+    # carried scratch, so it is not an ``out_`` argument.
+    i = wp.int32(wp.tid())
+    loop = wp.int32(-1)
+    key = n_cells
+    r = binary_search_index(offsets, i) - 1
+    if r >= 0 and r < offsets.shape[0] - 1:
+        start = offsets[r]
+        row = ring_state_row(r)
+        if rounds[row + RING_LIVE] != 0 and i - start < rounds[row + RING_N_RING]:
+            loop = r
+            shift, inv_cell, dims = ring_grid(rounds, grid, r)
+            cell = ear_grid_cell(
+                points2d[i], ear_grid_origin(points2d, start, shift), inv_cell, dims
+            )
+            key = ring_cell_base(start, r) + cell[1] * dims[0] + cell[0]
+    ring[RING_LOOP_ROW, i] = loop
+    out_keys[i] = key
+    out_order[i] = i
+
+
+@wp.kernel
+def init_ring_ear_clips(
+    sorted_keys: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    rounds: wp.array[wp.int32],
+    ring: wp.array2d[wp.int32],
+    out_starts: wp.array[wp.int32],
+) -> None:
+    # ``init_ear_clip`` of every round-loop loop at once, dim == the shared cell table's length
+    # (``n_cells + 1``, more than the packed point count): cell ``c``'s start is the first sorted
+    # position whose key reaches it, so a loop's cells are a range of the table and the cells
+    # between two loops' ranges are empty; and each ring point (the first ``n_points`` threads) is
+    # linked within its loop (``init_ring_slot``). ``seed_ring_round_loop`` seeded the state rows.
+    # The search, not ``write_cell_starts``' fill from the sorted side: the bound leaves runs of
+    # several thousand empty cells between loops, which that fill writes from one thread.
+    c = wp.int32(wp.tid())
+    out_starts[c] = binary_search_index_left(sorted_keys, c)
+    if c < sorted_keys.shape[0]:
+        r = ring[RING_LOOP_ROW, c]
+        if r >= 0:
+            start = offsets[r]
+            init_ring_slot(
+                ring[0], ring[1], ring[2], start, c - start, rounds[ring_state_row(r) + RING_N_RING]
+            )
+
+
+@wp.kernel
+def ring_compute_ears(
+    points2d: wp.array[wp.vec2],
+    offsets: wp.array[wp.int32],
+    cell_starts: wp.array[wp.int32],
+    cell_points: wp.array[wp.int32],
+    grid: wp.array[wp.float32],
+    ring: wp.array2d[wp.int32],
+    rounds: wp.array[wp.int32],
+) -> None:
+    # ``compute_ears`` over every round-loop loop, each with its own mirror, grid and thin flag. It
+    # also lowers the loop condition, which ``ring_ear_loop_continue`` raises again while some loop
+    # is live. ``ring`` rows and ``rounds`` are the loop's carried scratch, not ``out_``.
+    #
+    # The rounds are latency-bound, so the loads that the one-ring kernel gets as launch arguments
+    # are issued before any branch, side by side with the point's own (a point of no round-loop
+    # loop reads loop 0's, unused), and only ``ring_clip_selected`` asks whether the loop is still
+    # live: grading and selecting the ears of a finished loop changes nothing read again (its faces
+    # are all clipped, or its round cap stops its clips).
+    i = wp.int32(wp.tid())
+    if i == 0:
+        rounds[LOOP_CONDITION] = wp.int32(0)
+    r = ring[RING_LOOP_ROW, i]
+    active = ring[2, i]
+    if r < 0:
+        return
+    row = ring_state_row(r)
+    grade = EAR_NONE
+    if active != 0:
+        start = offsets[r]
+        mirror = rounds[row + RING_MIRROR]
+        check_thin = rounds[row + RING_CHECK_THIN]
+        shift, inv_cell, dims = ring_grid(rounds, grid, r)
+        grade = ear_grade_grid(
+            points2d,
+            ring[0],
+            ring[1],
+            ring[2],
+            i,
+            mirror,
+            check_thin,
+            start,
+            cell_starts,
+            ring_cell_base(start, r),
+            cell_points,
+            shift,
+            inv_cell,
+            dims,
+        )
+    ring[3, i] = grade
+    if grade == EAR_GOOD:
+        rounds[row + RING_ANY_GOOD] = wp.int32(1)
+
+
+@wp.kernel
+def ring_select_independent(
+    offsets: wp.array[wp.int32], rounds: wp.array[wp.int32], ring: wp.array2d[wp.int32]
+) -> None:
+    # ``select_independent`` over every round-loop loop, ranking by the index within it, its
+    # loads issued as in ``ring_compute_ears``.
+    i = wp.int32(wp.tid())
+    r = ring[RING_LOOP_ROW, i]
+    loop = wp.max(r, 0)
+    any_good = rounds[ring_state_row(loop) + RING_ANY_GOOD]
+    start = offsets[loop]
+    if r < 0:
+        return
+    ring[4, i] = ear_selected(ring[3], ring[0], ring[1], i, any_good, start)
+
+
+@wp.kernel
+def ring_clip_selected(
+    rounds: wp.array[wp.int32], ring: wp.array2d[wp.int32], out_faces: wp.array2d[wp.int32]
+) -> None:
+    # ``clip_selected`` over every live round-loop loop, each appending through its own
+    # ``RING_FACE_END`` counter. The one round kernel that skips a finished loop: a loop stopped by
+    # its round cap may still hold ears.
+    i = wp.int32(wp.tid())
+    r = ring[RING_LOOP_ROW, i]
+    selected = ring[4, i]
+    row = ring_state_row(wp.max(r, 0))
+    live = rounds[row + RING_LIVE]
+    if r >= 0 and selected != 0 and live != 0:
+        clip_ear(ring[0], ring[1], ring[2], i, rounds, row + RING_FACE_END, out_faces)
+
+
+@wp.kernel
+def ring_ear_loop_continue(
+    rounds: wp.array[wp.int32], out_ends: wp.array[wp.int32], out_face_counts: wp.array[wp.int32]
+) -> None:
+    # ``ear_loop_continue`` per live round-loop loop, dim == n_loops: its round count and thin
+    # flag advance, its face end and face count go to ``out_ends[r]`` and
+    # ``out_face_counts[r + 1]`` (``triangulate_rings``' outputs for every other loop), and it
+    # stays live on its own loop's test (fewer faces than ``n_ring - 2`` and fewer rounds than
+    # ``n_ring``), raising the loop condition while it does. Its state is one row, loaded whole
+    # before the first branch: the launch is one dependent chain a round.
+    r = wp.int32(wp.tid())
+    row = ring_state_row(r)
+    live = rounds[row + RING_LIVE]
+    round_next = rounds[row + RING_ROUND] + 1
+    any_good = rounds[row + RING_ANY_GOOD]
+    n_ring = rounds[row + RING_N_RING]
+    end = rounds[row + RING_FACE_END]
+    clipped = end - rounds[row + RING_FACE_BASE]
+    if live == 0:
+        return
+    rounds[row + RING_ROUND] = round_next
+    rounds[row + RING_CHECK_THIN] = wp.where(any_good == 0, wp.int32(1), wp.int32(0))
+    rounds[row + RING_ANY_GOOD] = wp.int32(0)
+    out_ends[r] = end
+    out_face_counts[r + 1] = clipped
+    if clipped < n_ring - 2 and round_next < n_ring:
+        rounds[LOOP_CONDITION] = wp.int32(1)
+    else:
+        rounds[row + RING_LIVE] = wp.int32(0)
 
 
 @wp.kernel

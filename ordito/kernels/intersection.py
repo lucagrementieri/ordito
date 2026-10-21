@@ -13,6 +13,7 @@ from ordito.kernels.array import (
     map_probe_single,
 )
 from ordito.kernels.predicates import point_plane_dot, triangles_intersect
+from ordito.kernels.reduce import block_sum
 from ordito.kernels.remesh import write_split_children
 
 wp.set_module_options({"enable_backward": False})
@@ -1665,6 +1666,57 @@ def emit_section_faces(
     if rank != previous:
         for k in range(3):
             out_faces[3 * (rank - 1) + k] = faces[3 * f + k]
+
+
+@wp.func
+def holds_first_ring_edge(
+    loop_faces: wp.array2d[wp.int32], row: wp.int32, start: wp.int32
+) -> wp.int32:
+    # 1 when triangulation row ``row`` of the loop at packed point ``start`` runs along the loop's
+    # first edge, from its point 0 to its point 1, else 0.
+    held = wp.int32(0)
+    for c in range(3):
+        if loop_faces[row, c] - start == 0 and loop_faces[row, (c + 1) % 3] - start == 1:
+            held = wp.int32(1)
+    return held
+
+
+@wp.kernel
+def emit_cap_faces(
+    loop_faces: wp.array2d[wp.int32],
+    offsets: wp.array[wp.int32],
+    face_offsets: wp.array[wp.int32],
+    cycles: wp.array[wp.int32],
+    cap_rows: wp.array[wp.int32],
+    face_base: wp.int32,
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # One block per section loop (``launch_tiled``, ``dim=(n_loops,)``): the loop's triangulation
+    # rows (``polyline_triangulate_from_offsets``' faces, packed indices into the loop points
+    # ``cycles`` lists) as mesh faces from cap row ``cap_rows[r]`` on, after ``face_base`` flat
+    # entries, or nothing when ``cap_rows[r]`` is ``-1``. The loop runs the way its boundary edges
+    # do, so the cap must hold each ring edge the other way round: a triangulation that holds the
+    # edge from point 0 to point 1 (``holds_first_ring_edge``, any row of the loop) is written
+    # reversed. Rows keep their order, loop after loop.
+    loop, lane = wp.tid()
+    row_base = cap_rows[loop]
+    if row_base < 0:
+        return
+    start = offsets[loop]
+    first = face_offsets[loop]
+    count = face_offsets[loop + 1] - first
+    held = wp.int32(0)
+    for k in range(lane, count, wp.block_dim()):
+        held = wp.max(held, holds_first_ring_edge(loop_faces, first + k, start))
+    flip = block_sum(held) > 0
+    for k in range(lane, count, wp.block_dim()):
+        a = cycles[loop_faces[first + k, 0]]
+        b = cycles[loop_faces[first + k, 1]]
+        c = cycles[loop_faces[first + k, 2]]
+        slot = face_base + 3 * (row_base + k)
+        out_faces[slot] = wp.where(flip, c, a)
+        out_faces[slot + 1] = b
+        out_faces[slot + 2] = wp.where(flip, a, c)
 
 
 @wp.kernel

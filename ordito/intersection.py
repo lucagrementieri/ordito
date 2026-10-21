@@ -32,7 +32,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
-from ordito.constants import TOLERANCE_MERGE
+from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import intersection as kernel_intersections
@@ -1992,46 +1992,58 @@ def _cap_section_loops(
     the non-planar loops.
     """
     device = vertices.device
-    gathered = cast("wp.array[wp.vec3]", od.array.gather(vertices, cycles))
-    # Every loop is ear-clipped, all short ones in one launch, while the host tests which are
-    # planar; a non-planar loop's triangulation is then discarded.
+    n_loops = offsets.size - 1
+    n_points = cycles.size
+    # The loop offsets, the loops' face offsets and their points share one byte buffer, so the host
+    # reads everything it decides on in one copy: offsets first, then face offsets (both 4-byte
+    # aligned), then the points' ``float32`` words.
+    offsets_bytes = 4 * (n_loops + 1)
+    packed = _launch.empty(2 * offsets_bytes + 12 * n_points, dtype=wp.uint8, device=device)
+    gathered = _byte_view(packed, 2 * offsets_bytes, wp.vec3, n_points)
+    _launch.copy(gathered, vertices[cycles])
+    _launch.copy(_byte_view(packed, 0, wp.int32, n_loops + 1), offsets)
+    # Every loop is ear-clipped, all of them together, while the host tests which are planar; a
+    # non-planar loop's triangulation is then discarded.
     triangulated, face_offsets = od.polyline.polyline_triangulate_from_offsets(gathered, offsets)
-    # Host bookkeeping over the section alone: the loops, their points and their caps cross in
-    # small copies.
-    cycles_np = cycles.numpy()
-    offsets_np = offsets.numpy()
-    points_np = gathered.numpy().astype(np.float64)
-    tri_np = triangulated.numpy()
-    face_offsets_np = face_offsets.numpy()
+    _launch.copy(_byte_view(packed, offsets_bytes, wp.int32, n_loops + 1), face_offsets)
+    # Readback: the planarity test and the loop sizes, over the section alone.
+    packed_np = packed.numpy()
+    offsets_np = packed_np[:offsets_bytes].view(np.int32)
+    face_offsets_np = packed_np[offsets_bytes : 2 * offsets_bytes].view(np.int32)
+    points_np = packed_np[2 * offsets_bytes :].view(np.float32).reshape(-1, 3).astype(np.float64)
 
-    caps: list[np.ndarray] = []
+    cap_rows_np = np.full(n_loops, -1, dtype=np.int32)
+    n_cap_rows = 0
     fallback: list[wp.array[wp.int32]] = []
     for r, (start, stop) in enumerate(
         zip(offsets_np[:-1].tolist(), offsets_np[1:].tolist(), strict=True)
     ):
         size = stop - start
-        local = tri_np[face_offsets_np[r] : face_offsets_np[r + 1]] - start
-        if size >= 3 and local.shape[0] == size - 2 and _is_planar_loop(points_np[start:stop]):
-            # The loop runs the way its boundary edges do, so the cap must hold each ring edge
-            # the other way round: flip a triangulation that holds ring edge 0 -> 1.
-            following = np.roll(local, -1, axis=1)
-            if np.any((local == 0) & (following == 1)):
-                local = local[:, ::-1]
-            caps.append(cycles_np[start:stop][local])
+        n_rows = int(face_offsets_np[r + 1] - face_offsets_np[r])
+        if size >= 3 and n_rows == size - 2 and _is_planar_loop(points_np[start:stop]):
+            cap_rows_np[r] = n_cap_rows
+            n_cap_rows += n_rows
             continue
         fallback.append(odt.as_dense(cycles[start:stop]))
     if fallback:
         faces = od.holes.fill_loops_min_weight(vertices, faces, fallback, "plane_normalized", True)
-    if not caps:
+    if n_cap_rows == 0:
         return faces
-    cap_faces = _launch.array(
-        np.ascontiguousarray(np.concatenate(caps).reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
+    # With every loop capped by its ear clip, its rows land where they sit in the triangulation,
+    # so the face offsets already place them; otherwise the kept loops' rows go up packed.
+    cap_rows = (
+        face_offsets if not fallback else _launch.array(cap_rows_np, dtype=wp.int32, device=device)
+    )
+    out = _launch.empty(faces.size + 3 * n_cap_rows, dtype=wp.int32, device=device)
+    _launch.copy(out, faces, count=faces.size)
+    _launch.launch_tiled(
+        kernel_intersections.emit_cap_faces,
+        dim=(n_loops,),
+        inputs=[triangulated, offsets, face_offsets, cycles, cap_rows, wp.int32(faces.size)],
+        outputs=[out],
+        block_dim=TILE_1D,
         device=device,
     )
-    out = _launch.empty(faces.size + cap_faces.size, dtype=wp.int32, device=device)
-    wp.copy(out, faces, count=faces.size)
-    wp.copy(out, cap_faces, dest_offset=faces.size, count=cap_faces.size)
     return out
 
 

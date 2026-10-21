@@ -1371,11 +1371,14 @@ def test_triangulate_from_offsets_matches_each_loop(
     Ordito against ordito: the packed triangulation against one call per loop.
 
     `polyline_triangulate` carries the oracle for each loop (its meshlib and pyvista comparisons);
-    the packed form must give every loop the same triangle set, offset to packed indices. The
-    loops cover the block path's convex fan, a clockwise L, a star in a tilted plane, a loop
-    repeating its first point, one of two points (no faces) and a random star longer than the
-    one-block cap, which takes the round loop; ``one_block_max = 0`` sends every loop there, and
-    ``1024`` keeps every loop on the block launch, the path with no host assembly.
+    the packed form must give every loop the same rows in the same order (the setting is on, so
+    both list a loop's rows by tip), offset to packed indices. The loops cover the block path's
+    convex fan, a clockwise L, a star in a tilted plane, a loop repeating its first point, one of
+    two points (no faces) and two random stars longer than the one-block cap (one clockwise and
+    tilted, needing more rounds than the other), which share the packed round loop;
+    ``one_block_max = 0`` sends every loop there, and ``1024`` keeps every loop on the block
+    launch. A loop whose rounds ran past its own stop, or read another loop's grid, state or
+    orientation, changes its rows.
     """
     monkeypatch.setattr(kernel_polyline, "EAR_ONE_BLOCK_MAX", one_block_max)
     rng = np.random.default_rng(7)
@@ -1392,6 +1395,7 @@ def test_triangulate_from_offsets_matches_each_loop(
         _closed_from(_star(5)),
         np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
         long_np,
+        (long_np[::-1] * np.array([2.0, 0.5, 1.0])) @ tilt_np.T + 5.0,
     ]
     offsets_np = np.concatenate(([0], np.cumsum([loop.shape[0] for loop in loops_np])))
     faces_wp, face_offsets_wp = od.polyline.polyline_triangulate_from_offsets(
@@ -1405,9 +1409,10 @@ def test_triangulate_from_offsets_matches_each_loop(
     for r, loop_np in enumerate(loops_np):
         alone_np = od.polyline.polyline_triangulate(points_to_warp(loop_np, device)).numpy()
         packed_np = faces_np[face_offsets_np[r] : face_offsets_np[r + 1]] - offsets_np[r]
-        assert np.array_equal(lexsort_rows(packed_np), lexsort_rows(alone_np))
+        assert np.array_equal(packed_np, alone_np)
     assert face_offsets_np[5] - face_offsets_np[4] == 0
     assert face_offsets_np[6] - face_offsets_np[5] == 698
+    assert face_offsets_np[7] - face_offsets_np[6] == 698
 
 
 def test_triangulate_from_offsets_without_loops(device: str) -> None:
@@ -2150,8 +2155,8 @@ def test_triangulate_row_order_is_reproducible_when_deterministic(
     order; with the setting on they are listed by ascending tip (the middle index), loop after
     loop for the packed form. Random stars are not convex, so the rows are clipped ears, not the
     fan, which is in tip order already. Both clipping paths are forced; for the packed form the
-    round loop sends every loop through the host-assembled path and the block cap keeps every loop
-    on the shared block launch. Without the sort the tip assert fails on both devices (the CPU
+    round loop cap sends every loop through the packed round loop and the block cap keeps every
+    loop on the shared block launch. Without the sort the tip assert fails on both devices (the CPU
     device appends round by round) and the repeat assert on CUDA.
     """
     monkeypatch.setattr(kernel_polyline, "EAR_ONE_BLOCK_MAX", cap)
