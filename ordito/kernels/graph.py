@@ -160,85 +160,50 @@ def shortest_path_envelope_pass(
         out_state[kernel_array.LOOP_PROGRESS] = 1
 
 
+# ---------------------------------------------------------------------------------------------
+# Successor-cycle ranking
+#
+# ``graph.successor_cycles`` and every boundary walk rank a successor graph given as a node-sized
+# successor table plus its *tails*, the nodes with an edge out. Where each node also has at most
+# one edge in, every component is a cycle or a chain, so the cycle a node belongs to is named by
+# its smallest node, and that node is also where the cycle is cut to rank it -- one quantity, which
+# pointer jumping finds on its own. A node's *window* of length ``W`` is itself and its next
+# ``W - 1`` successors; the table holds, per node, ``(successor^W, smallest node in the window,
+# hops to its first occurrence)``. Merging two adjacent windows keeps the earlier minimum on a tie,
+# and once ``W`` covers the cycle the minimum is the cycle's and the hop count is the distance to
+# it. No union-find and no cut: the start is the smallest node of the cycle's connected component,
+# the label a component labelling gives it.
+#
+# A chain is a walk that reaches a node with no edge out, which the table holds as ``-1``: the end
+# of an open chain handed to ``successor_cycles``, a vertex where a boundary rim runs into a
+# three-faced edge, a halfedge whose rotation dead-ends on one that is not a boundary halfedge.
+# Such a successor makes the window's successor ``-1``: the node is on a chain, not a cycle, and is
+# dropped with its whole chain. Where no two tails share a successor the cycles that remain are
+# exact; where some do (malformed input, which the boundary walks never build) every write stays
+# in range.
+
+# What a ranked node is written out as, before the optional ``node_values`` gather.
+CYCLE_NODES = 0  # the node itself
+CYCLE_PAIRED = 1  # node ``2 * v + s`` -> ``v``; keep only cycles starting at an even node
+
+
 @wp.kernel
-def scatter_successor(
+def scatter_successor_tails(
     directed_edges: wp.array2d[wp.int32],
     out_next: wp.array[wp.int32],
-    out_node_mask: wp.array[wp.bool],
+    out_tails: wp.array[wp.int32],
 ) -> None:
-    # The successor table and the endpoint membership mask in one pass over the edges: both are
-    # per-edge scatters of the same two endpoints. The mask needs no range test of its own
-    # (``scatter.mark_membership_mask`` carries one) because ``out_next`` is indexed by the same
-    # raw endpoint unguarded -- the wrapper's range check before this launch is what both rely on.
-    tid = wp.int32(wp.tid())
-    a = directed_edges[tid, 0]
-    b = directed_edges[tid, 1]
-    out_next[a] = b
-    out_node_mask[a] = wp.bool(True)
-    out_node_mask[b] = wp.bool(True)
-
-
-@wp.kernel
-def scatter_cycle_min_and_count(
-    node_mask: wp.array[wp.bool],
-    next_node: wp.array[wp.int32],
-    labels: wp.array[wp.int32],
-    out_label_min: wp.array[wp.int32],
-    out_label_count: wp.array[wp.int32],
-    out_is_chain: wp.array[wp.int32],
-) -> None:
-    # One thread per node, the endpoints selected by the mask: every update is an order-free
-    # atomic, so this is the per-endpoint launch over the mask's ``flatnonzero`` without the
-    # compaction (its scan, readback and two buffers).
-    v = wp.int32(wp.tid())
-    if not node_mask[v]:
-        return
-    label = labels[v]
-    wp.atomic_min(out_label_min, label, v)
-    wp.atomic_add(out_label_count, label, wp.int32(1))
-    # A node with no outgoing edge is a chain terminus, not a cycle: mark the whole
-    # (undirected-connectivity) component so its nodes can be excluded before ranking.
-    if next_node[v] < 0:
-        wp.atomic_max(out_is_chain, label, wp.int32(1))
-
-
-@wp.kernel
-def chain_node_mask(
-    labels: wp.array[wp.int32], is_chain: wp.array[wp.int32], out_node_mask: wp.array[wp.bool]
-) -> None:
-    # Clear the node-space endpoint mask at every node of a chain component, one thread per node
-    # reading and writing only its own slot. Its ``flatnonzero`` afterwards is the kept nodes in
-    # ascending order -- the same list a keep flag per endpoint plus a gather through its
-    # ``flatnonzero`` produced, without the flag buffer or the gather.
-    v = wp.int32(wp.tid())
-    if not out_node_mask[v]:
-        return
-    out_node_mask[v] = is_chain[labels[v]] == 0
-
-
-@wp.kernel
-def init_rank_arrays(
-    cycle_nodes: wp.array[wp.int32],
-    next_node: wp.array[wp.int32],
-    labels: wp.array[wp.int32],
-    label_min: wp.array[wp.int32],
-    out_successor: wp.array[wp.int32],
-    out_steps: wp.array[wp.int32],
-) -> None:
-    # Pointer-jumping list ranking, step 1: cut each cycle at its canonical start (the smallest
-    # node index, label_min) so cycles become chains ending in a fixed point (successor ==
-    # self, steps == 0). Broken chains (-1 sentinel where a node has no out-edge) also terminate
-    # at a fixed point, so the whole ranking finishes in a fixed round count on any input.
-    tid = wp.int32(wp.tid())
-    v = cycle_nodes[tid]
-    start = label_min[labels[v]]
-    nxt = next_node[v]
-    if v == start or nxt < 0:
-        out_successor[v] = v
-        out_steps[v] = wp.int32(0)
-    else:
-        out_successor[v] = nxt
-        out_steps[v] = wp.int32(1)
+    # ``successor_cycles``' successor table and its tails in one pass over the edges, both
+    # node-sized and seeded ``-1``. The tails are listed in node space -- entry ``a`` is ``a`` when
+    # ``a`` has an edge out, ``-1`` (skipped by the ranking) otherwise -- so the ranking's threads
+    # walk the nodes in ascending order, which keeps a mesh-ordered graph's reads and writes local
+    # (listed in edge order, a shuffled edge list made the ranking 4x slower at 3 M nodes), and a
+    # node with several edges out (malformed input) is listed once. Indexed by the raw endpoint
+    # unguarded: the wrapper's range check before this launch is what this relies on.
+    e = wp.int32(wp.tid())
+    a = directed_edges[e, 0]
+    out_next[a] = directed_edges[e, 1]
+    out_tails[a] = a
 
 
 # The widest pointer jump one launch takes. A launch chasing ``h`` pointers through the previous
@@ -268,85 +233,131 @@ def pointer_jump_schedule(n: int) -> tuple[int, int]:
     return hops, rounds
 
 
+@wp.func
+def closed_cycle_is_kept(successor: wp.int32, start: wp.int32, mode: wp.int32) -> wp.bool:
+    # A node is ranked when its window closed (no chain end reached) and, for paired nodes, when
+    # its cycle is the even-starting one of its mirror pair
+    # (``boundary._unoriented_boundary_cycles``).
+    return successor >= 0 and (mode != CYCLE_PAIRED or start % 2 == 0)
+
+
+@wp.func
+def count_closed_cycle_node(
+    out_cycle_counts: wp.array[wp.vec2i],
+    v: wp.int32,
+    successor: wp.int32,
+    start: wp.int32,
+    mode: wp.int32,
+) -> None:
+    # Last round only (``out_cycle_counts`` is ``None`` before it): per cycle start, ``(1, length)``
+    # accumulated as ``(v == start, 1)`` per ranked node, for the caller's inclusive scan.
+    if out_cycle_counts.shape[0] > 0 and closed_cycle_is_kept(successor, start, mode):
+        wp.atomic_add(out_cycle_counts, start, wp.vec2i(wp.where(v == start, 1, 0), wp.int32(1)))
+
+
 @wp.kernel
-def jump_rank(
-    cycle_nodes: wp.array[wp.int32],
-    successor_in: wp.array[wp.int32],
-    steps_in: wp.array[wp.int32],
+def closed_cycle_windows(
+    tails: wp.array[wp.int32],
+    next_node: wp.array[wp.int32],
     hops: wp.int32,
-    out_successor: wp.array[wp.int32],
-    out_steps: wp.array[wp.int32],
+    mode: wp.int32,
+    out_windows: wp.array[wp.vec3i],
+    out_cycle_counts: wp.array[wp.vec2i],
 ) -> None:
-    # Pointer jumping (Wyllie), ``hops`` pointers a round: each node chases its window-``W``
-    # successor ``hops`` times through the previous round's table, so after ``k`` rounds it knows
-    # its ``hops^k``-th successor and the exact hop count to it. The fixed point at the cycle start
-    # contributes zero, so steps converges to the hop distance to the start once the window covers
-    # the chain. Ping-ponged: the chase reads only the previous round's table.
-    #
-    # ``init_rank_arrays`` and ``finalize_rank_positions`` stay launches of their own. Forming the
-    # initial entry as the first round reads it costs three loads where a table entry is two, on
-    # every hop of a dependent chase (0.96x on ``successor_cycles`` over 200 000 nodes in 20 000
-    # cycles and in three); folding the finalize into the last round measured 0.98-0.995x there,
-    # two launches of about forty.
-    tid = wp.int32(wp.tid())
-    v = cycle_nodes[tid]
-    s = successor_in[v]
-    total = steps_in[v]
+    # Round one: every window of length ``hops``, straight off the successor table. A successor is
+    # a tail exactly when its own successor is set: ``next_node`` is ``-1`` off the tails wherever
+    # a walk can reach a non-tail, and a tail whose successor is ``-1`` ends its chain at once. A
+    # ``-1`` tail is a skipped edge (``scatter_successor_tails``).
+    v = tails[wp.tid()]
+    if v < 0:
+        return
+    start = v
+    dist = wp.int32(0)
+    current = v
+    following = next_node[v]
+    for k in range(1, hops + 1):
+        if current >= 0:
+            after = wp.int32(-1)
+            if following >= 0:
+                after = next_node[following]
+            if after < 0:
+                current = -1
+            else:
+                current = following
+                if k < hops and current < start:
+                    start = current
+                    dist = k
+                following = after
+    out_windows[v] = wp.vec3i(current, start, dist)
+    count_closed_cycle_node(out_cycle_counts, v, current, start, mode)
+
+
+@wp.kernel
+def closed_cycle_jump(
+    tails: wp.array[wp.int32],
+    windows: wp.array[wp.vec3i],
+    window: wp.int32,
+    hops: wp.int32,
+    mode: wp.int32,
+    out_windows: wp.array[wp.vec3i],
+    out_cycle_counts: wp.array[wp.vec2i],
+) -> None:
+    # One further round: ``hops`` adjacent windows of length ``window`` merged into one, chased
+    # through the previous round's table (ping-ponged, so no thread reads a window merged this
+    # round), under ``array.merge_window_minimum``'s first-occurrence rule.
+    v = tails[wp.tid()]
+    if v < 0:
+        return
+    own = windows[v]
+    current = own[0]
+    start = own[1]
+    dist = own[2]
+    offset = window
     for _ in range(hops - 1):
-        total += steps_in[s]
-        s = successor_in[s]
-    out_steps[v] = total
-    out_successor[v] = s
+        if current >= 0:
+            other = windows[current]
+            start, dist = kernel_array.merge_window_minimum(start, dist, other[1], other[2], offset)
+            offset += window
+            current = other[0]
+    out_windows[v] = wp.vec3i(current, start, dist)
+    count_closed_cycle_node(out_cycle_counts, v, current, start, mode)
 
 
 @wp.kernel
-def finalize_rank_positions(
-    cycle_nodes: wp.array[wp.int32],
-    labels: wp.array[wp.int32],
-    label_count: wp.array[wp.int32],
-    steps: wp.array[wp.int32],
-    out_position: wp.array[wp.int32],
-    out_label_mask: wp.array[wp.bool],
+def scatter_closed_cycles(
+    tails: wp.array[wp.int32],
+    windows: wp.array[wp.vec3i],
+    cycle_counts: wp.array[wp.vec2i],
+    mode: wp.int32,
+    node_values: wp.array[wp.int32],
+    out_flat: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
 ) -> None:
-    # position = (cycle_length - hops to start) mod cycle_length; the positive modulo keeps
-    # malformed chains (steps beyond cycle_length when in-edges collide) in range.
-    #
-    # ``out_label_mask`` marks every label that owns a cycle, written here because this thread has
-    # already loaded the label to find the cycle length. Labels are node indices, so the mask's
-    # compact ranks are the sorted distinct labels' inverse -- what ``unique_1d`` with
-    # ``return_inverse=True`` over the per-node labels returned, without its hash table, radix
-    # sort and second readback.
-    tid = wp.int32(wp.tid())
-    v = cycle_nodes[tid]
-    label = labels[v]
-    cycle_length = label_count[label]
-    out_position[tid] = kernel_array.wrap_index(cycle_length - steps[v], cycle_length)
-    out_label_mask[label] = True
-
-
-@wp.kernel
-def compact_cycle_sizes(
-    label_mask: wp.array[wp.bool],
-    label_ranks: wp.array[wp.int32],
-    label_count: wp.array[wp.int32],
-    out_sizes: wp.array[wp.int32],
-) -> None:
-    # Each cycle's length, at its compact rank: the gather ``label_count[unique_labels]`` without
-    # materialising ``unique_labels``.
-    label = wp.int32(wp.tid())
-    if label_mask[label]:
-        out_sizes[label_ranks[label]] = label_count[label]
-
-
-@wp.kernel
-def scatter_cycle_slot(
-    cycle_nodes: wp.array[wp.int32],
-    labels: wp.array[wp.int32],
-    label_ranks: wp.array[wp.int32],
-    position: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    out_cycles: wp.array[wp.int32],
-) -> None:
-    tid = wp.int32(wp.tid())
-    v = cycle_nodes[tid]
-    out_cycles[offsets[label_ranks[labels[v]]] + position[tid]] = v
+    # ``cycle_counts`` is scanned inclusively in place over node space, so the entry below a cycle's
+    # start is ``(its rank, its offset)`` and the difference is ``(1, its length)``: every cycle is
+    # placed in ascending start order with no rank table and no second scan. The start writes the
+    # cycle's own offset and its end into the total-terminated ``out_offsets``; the end is the next
+    # cycle's offset, so every interior entry is written twice with the same value and the last
+    # entry (the total) is written by the last cycle. ``node_values``, when not empty, maps what is
+    # written (the halfedge walk's origin vertices).
+    v = tails[wp.tid()]
+    if v < 0:
+        return
+    own = windows[v]
+    start = own[1]
+    if not closed_cycle_is_kept(own[0], start, mode):
+        return
+    inclusive = cycle_counts[start]
+    exclusive = wp.vec2i(0, 0)
+    if start > 0:
+        exclusive = cycle_counts[start - 1]
+    length = inclusive[1] - exclusive[1]
+    node = v
+    if mode == CYCLE_PAIRED:
+        node = v // 2
+    if node_values.shape[0] > 0:
+        node = node_values[node]
+    out_flat[exclusive[1] + kernel_array.wrap_index(length - own[2], length)] = node
+    if v == start:
+        out_offsets[exclusive[0]] = exclusive[1]
+        out_offsets[inclusive[0]] = inclusive[1]

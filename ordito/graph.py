@@ -674,10 +674,10 @@ def successor_cycles(
     The edges of a **successor graph** — one in which each node has at most one outgoing edge —
     decompose into node-disjoint cycles and chains. This orders every node along its cycle,
     following the edge direction from the cycle's smallest node index, with no per-cycle Python
-    and no per-cycle allocation. The ranking is pointer-jumping (Wyllie's list ranking), so the
-    work is ``O(k log L)`` over ``k`` cycle nodes with longest cycle ``L`` rather than the
-    quadratic per-node successor walk. A mesh boundary's oriented edges are the motivating input
-    (see [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]).
+    and no per-cycle allocation. The ranking is pointer jumping (Wyllie's list ranking), so the
+    work is ``O(m log m)`` over ``m`` edges rather than the quadratic per-node successor walk. A
+    mesh boundary's oriented edges are the motivating input (see
+    [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]).
 
     Parameters
     ----------
@@ -689,7 +689,8 @@ def successor_cycles(
         Number of nodes ``0 .. node_count - 1``.
     validate
         When ``False``, skip the range check on ``edges`` and the device synchronization it
-        costs; forwarded to [`connected_component_labels_from_edges`]
+        costs. An out-of-range endpoint then writes past a ``node_count``-element buffer, as in
+        [`connected_component_labels_from_edges`]
         [ordito.graph.connected_component_labels_from_edges] — see the warning there.
 
     Returns
@@ -715,11 +716,13 @@ def successor_cycles(
     On malformed input — a node with several in-edges, so two chains merge — the cycle ranks can
     collide. Colliding nodes overwrite one slot and leave another at ``0``, which is a valid node
     index, so the result stays in-range rather than returning uninitialized garbage; it is the
-    caller's job to pass a true successor graph if exact cycles are required.
+    caller's job to pass a true successor graph if exact cycles are required. A node with several
+    out-edges keeps one of them.
 
     See Also
     --------
-    [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
+    [`successor_cycles_from_table`][ordito.graph.successor_cycles_from_table]
+        The same cycles from a successor table and its tails.
     [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]
 
     Examples
@@ -737,125 +740,179 @@ def successor_cycles(
     print(offsets.numpy().tolist())  # [0, 3, 5]
     ```
     """
-    # The range check must run BEFORE ``scatter_successor`` below, not be deferred to the
-    # ``connected_component_labels_from_edges`` call: that kernel indexes ``next_node`` by the raw
-    # edge endpoints, so an out-of-range endpoint writes past a ``node_count``-element buffer. On
-    # the CPU device that is a host-heap overwrite, silent at the point of the write and surfacing
-    # later as a glibc abort somewhere unrelated.
+    # The range check must run BEFORE ``scatter_successor_tails`` below: that kernel indexes
+    # ``next_node`` by the raw edge endpoints, so an out-of-range endpoint writes past a
+    # ``node_count``-element buffer. On the CPU device that is a host-heap overwrite, silent at the
+    # point of the write and surfacing later as a glibc abort somewhere unrelated.
     node_count = _validate_edge_list(edges, node_count, validate=validate)
 
     device = edges.device
     m = int(edges.shape[0])
     if m == 0 or node_count == 0:
-        return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
-            1, dtype=wp.int32, device=device
-        )
+        return _launch.empty_packed(wp.int32, device)
 
-    # The successor table and the distinct-endpoint mask come out of one pass over the edges. The
-    # distinct endpoints, ascending, are then the mask's ``flatnonzero`` rather than ``unique_1d``
-    # over the flattened pairs: both return the sorted distinct values, and the range check above
-    # has already guaranteed every endpoint indexes the mask, but this one is a zeroed buffer and a
-    # scan where that one is a hash table, a compaction, a radix sort and two host readbacks.
+    # The successor table and its tails in one pass over the edges, the tails in node space so the
+    # ranking walks the nodes in ascending order; a node with several out-edges (malformed input)
+    # is listed once, so the ranking places every node at most once.
     next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
-    node_mask = _launch.zeros(node_count, dtype=wp.bool, device=device)
+    tails = _launch.full(node_count, -1, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_graph.scatter_successor, dim=m, inputs=[edges, next_node, node_mask], device=device
+        kernel_graph.scatter_successor_tails, dim=m, inputs=[edges, next_node, tails], device=device
+    )
+    # Zero-initialised: colliding ranks on malformed input (see Notes) can leave slots unwritten,
+    # and zero is a valid node index.
+    # A cycle has at most ``m`` nodes, which bounds the pointer-jumping rounds.
+    return _ranked_successor_cycles(
+        tails, next_node, kernel_graph.CYCLE_NODES, None, min(m, node_count), zero_unwritten=True
     )
 
-    # Already range-checked above, so the downstream call skips the second reduction and host sync.
-    labels = connected_component_labels_from_edges(edges, node_count=node_count, validate=False)
 
-    label_min = _launch.full(node_count, node_count, dtype=wp.int32, device=device)
-    label_count = _launch.zeros(node_count, dtype=wp.int32, device=device)
-    is_chain = _launch.zeros(node_count, dtype=wp.int32, device=device)
+def successor_cycles_from_table(
+    tails: wp.array[wp.int32],
+    next_node: wp.array[wp.int32],
+    *,
+    paired: bool = False,
+    node_values: wp.array[wp.int32] | None = None,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Every cycle of a successor graph given as a successor table, packed flat plus offsets.
+
+    [`successor_cycles`][ordito.graph.successor_cycles]' answer — each cycle from its smallest
+    node in edge direction, the cycles in ascending order of it — for a caller that already holds
+    the successor table and the list of nodes with an edge out (its *tails*), so no edge list is
+    scattered. Chains, walks that reach a node with no successor, are dropped. The boundary walks
+    of [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets] rank their
+    vertices, halfedges and darts through it.
+
+    Parameters
+    ----------
+    tails
+        ``(m,)`` distinct nodes that have a successor, in any order. An entry of ``-1`` is
+        skipped.
+    next_node
+        ``(node_count,)`` successor of every node, ``-1`` where a node has none. Every successor
+        must be ``-1`` or below ``node_count``, and no two tails may share a successor.
+    paired
+        Nodes ``2 * v`` and ``2 * v + 1`` are the two directions through ``v``, so every cycle
+        has a mirror over the partner nodes: keep the one of each pair whose start is even, and
+        write node ``2 * v + s`` out as ``v``.
+    node_values
+        ``(node_count,)`` value written for each ranked node in place of the node (after the
+        ``paired`` halving), as the origin vertex of a halfedge. ``None`` writes the nodes.
+
+    Returns
+    -------
+    flat_cycles : wp.array[wp.int32]
+        ``(n_cycle_nodes,)`` concatenated ordered nodes (or their values) of every cycle, on
+        ``tails.device``.
+    offsets : wp.array[wp.int32]
+        ``(n_cycles + 1,)`` total-terminated offsets: cycle ``i`` occupies
+        ``flat_cycles[offsets[i] : offsets[i + 1]]``; ``[0]`` when there is no cycle.
+
+    Raises
+    ------
+    RuntimeError
+        If ``tails``, ``next_node`` and ``node_values`` are not all on one device.
+
+    See Also
+    --------
+    [`successor_cycles`][ordito.graph.successor_cycles]
+        The same cycles from an edge list.
+
+    Examples
+    --------
+    The cycles ``0 -> 2 -> 1 -> 0`` and ``3 -> 4 -> 3``; node ``5`` has no successor:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    tails = wp.array([4, 0, 1, 2, 3], dtype=wp.int32)
+    next_node = wp.array([2, 0, 1, 4, 3, -1], dtype=wp.int32)
+    flat_cycles, offsets = od.graph.successor_cycles_from_table(tails, next_node)
+    print(flat_cycles.numpy().tolist())  # [0, 2, 1, 3, 4]
+    print(offsets.numpy().tolist())  # [0, 3, 5]
+    ```
+    """
+    require_same_device(tails=tails, next_node=next_node, node_values=node_values)
+    if tails.size == 0 or next_node.size == 0:
+        return _launch.empty_packed(wp.int32, tails.device)
+    mode = kernel_graph.CYCLE_PAIRED if paired else kernel_graph.CYCLE_NODES
+    return _ranked_successor_cycles(
+        tails, next_node, mode, node_values, tails.size, zero_unwritten=False
+    )
+
+
+def _ranked_successor_cycles(
+    tails: wp.array[wp.int32],
+    next_node: wp.array[wp.int32],
+    mode: int,
+    node_values: wp.array[wp.int32] | None,
+    max_length: int,
+    *,
+    zero_unwritten: bool,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Rank the cycles through ``tails``, the one implementation behind both successor-cycle forms.
+
+    Pointer jumping finds each node's cycle start (its smallest node) and its distance to it
+    together, several pointers a launch (``kernels/graph.pointer_jump_schedule``), and one
+    inclusive scan over the cycle starts places every cycle. One readback, of the cycle and node
+    counts. ``mode`` (``kernels/graph.CYCLE_*``) says which cycles are kept and what each ranked
+    node is written out as; ``max_length`` bounds the longest cycle, which sets the round count;
+    ``zero_unwritten`` zeroes the packed buffer for input on which ranks can collide.
+    """
+    device = tails.device
+    m = tails.size
+    node_count = next_node.size
+    hops, rounds = kernel_graph.pointer_jump_schedule(max_length)
+    windows = _launch.empty(node_count, dtype=wp.vec3i, device=device)
+    # Per cycle start, ``(1, length)``, accumulated by the last round and scanned in place.
+    cycle_counts = _launch.zeros(node_count, dtype=wp.vec2i, device=device)
     _launch.launch(
-        kernel_graph.scatter_cycle_min_and_count,
-        dim=node_count,
-        inputs=[node_mask, next_node, labels, label_min, label_count, is_chain],
+        kernel_graph.closed_cycle_windows,
+        dim=m,
+        inputs=[tails, next_node, hops, mode, windows, cycle_counts if rounds == 1 else None],
         device=device,
     )
-
-    # A successor graph decomposes into node-disjoint cycles *and* chains (see the docstring). A
-    # chain component contains a node with no outgoing edge (``next_node[v] < 0``), which
-    # ``init_rank_arrays`` below treats as a fixed point identical to a genuine cycle's cut at
-    # ``label_min`` -- two fixed points in one component collide onto rank slot 0 and fabricate a
-    # bogus "cycle" out of whatever the collision leaves there, including node ids that never
-    # appeared in the input. Excluding a chain's nodes here keeps that collision scoped to the
-    # malformed input the Notes above already describe (an in-degree collision), rather than
-    # firing on an ordinary chain.
+    if rounds > 1:
+        spare = _launch.empty(node_count, dtype=wp.vec3i, device=device)
+        window = hops
+        for r in range(1, rounds):
+            _launch.launch(
+                kernel_graph.closed_cycle_jump,
+                dim=m,
+                inputs=[
+                    tails,
+                    windows,
+                    window,
+                    hops,
+                    mode,
+                    spare,
+                    cycle_counts if r == rounds - 1 else None,
+                ],
+                device=device,
+            )
+            windows, spare = spare, windows
+            window *= hops
+    _launch.array_scan(cycle_counts, out_array=cycle_counts, inclusive=True)
+    # Sizes both outputs: the cycle count and the ranked node count, in one read.
+    total = read_scalar(cycle_counts)
+    n_cycles, n_ranked = int(total[0]), int(total[1])
+    allocate = _launch.zeros if zero_unwritten else _launch.empty
+    flat = allocate(n_ranked, dtype=wp.int32, device=device)
+    if n_cycles == 0:
+        return flat, _launch.zeros(1, dtype=wp.int32, device=device)
+    # Every entry, the leading zero and the total included, is written by the cycle it bounds.
+    offsets = _launch.empty(n_cycles + 1, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_graph.chain_node_mask,
-        dim=node_count,
-        inputs=[labels, is_chain, node_mask],
+        kernel_graph.scatter_closed_cycles,
+        dim=m,
+        inputs=[tails, windows, cycle_counts, mode, node_values, flat, offsets],
         device=device,
     )
-    cycle_nodes = od.array.flatnonzero(node_mask)
-    n_nodes = cycle_nodes.size
-    if n_nodes == 0:
-        return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
-            1, dtype=wp.int32, device=device
-        )
-
-    # Pointer-jumping list ranking (Wyllie): O(log L) rounds of pointer jumping replace the
-    # per-node successor walk, whose total work was quadratic in the cycle length. Each round
-    # chases several pointers (``pointer_jump_schedule``), so the round count is a logarithm to a
-    # base above two.
-    successor = _launch.empty(node_count, dtype=wp.int32, device=device)
-    steps = _launch.empty(node_count, dtype=wp.int32, device=device)
-    successor_next = _launch.empty(node_count, dtype=wp.int32, device=device)
-    steps_next = _launch.empty(node_count, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_graph.init_rank_arrays,
-        dim=n_nodes,
-        inputs=[cycle_nodes, next_node, labels, label_min, successor, steps],
-        device=device,
-    )
-    hops, rounds = kernel_graph.pointer_jump_schedule(n_nodes)
-    for _ in range(rounds):
-        _launch.launch(
-            kernel_graph.jump_rank,
-            dim=n_nodes,
-            inputs=[cycle_nodes, successor, steps, hops, successor_next, steps_next],
-            device=device,
-        )
-        successor, successor_next = successor_next, successor
-        steps, steps_next = steps_next, steps
-
-    position = _launch.empty(n_nodes, dtype=wp.int32, device=device)
-    label_mask = _launch.zeros(node_count, dtype=wp.bool, device=device)
-    _launch.launch(
-        kernel_graph.finalize_rank_positions,
-        dim=n_nodes,
-        inputs=[cycle_nodes, labels, label_count, steps, position, label_mask],
-        device=device,
-    )
-
-    # The cycles are grouped by label, and a label is a node index, so the mask's compact ranks
-    # number them in ascending label order -- the order ``unique_1d`` over the labels gave.
-    label_ranks, n_cycles = od.array.mask_to_compact_ranks(label_mask)
-    # The sizes land in the tail of the ``n_cycles + 1`` offsets buffer and are scanned there in
-    # place, behind the leading zero, so no separate sizes buffer is allocated.
-    offsets = _launch.zeros(n_cycles + 1, dtype=wp.int32, device=device)
-    sizes = _launch.view(offsets, 1, n_cycles + 1)
-    _launch.launch(
-        kernel_graph.compact_cycle_sizes,
-        dim=node_count,
-        inputs=[label_mask, label_ranks, label_count, sizes],
-        device=device,
-    )
-    _launch.array_scan(sizes, out_array=sizes, inclusive=True)
-
-    # Zero-initialised (not wp.empty): colliding ranks on malformed input (see Notes) can leave
-    # slots unwritten by scatter_cycle_slot, and zero is a valid node index.
-    flat_cycles = _launch.zeros(n_nodes, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_graph.scatter_cycle_slot,
-        dim=n_nodes,
-        inputs=[cycle_nodes, labels, label_ranks, position, offsets, flat_cycles],
-        device=device,
-    )
-
-    return flat_cycles, offsets
+    return flat, offsets
 
 
 def shortest_path_envelope(

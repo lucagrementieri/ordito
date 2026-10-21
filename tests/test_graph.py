@@ -769,6 +769,83 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
     assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
 
+@pytest.mark.parametrize("length", [1, 17, 300])
+def test_successor_cycles_from_table_matches_the_walk(device: str, length: int) -> None:
+    """
+    Not a library comparison: no reference ranks a successor table, so the oracle is the walk.
+
+    Cycles of one to ``length`` nodes and chains over shuffled ids, handed over as a table plus
+    shuffled tails: each cycle must come back from its smallest node in successor order, the cycles
+    in ascending order of it, the chains dropped -- the order the edge form returns too. With
+    ``node_values`` every node is written as its value, in the same places.
+    """
+    rng = np.random.default_rng(length)
+    sizes = rng.integers(1, length + 1, size=12)
+    ids = rng.permutation(2 * int(sizes.sum()) + 5).astype(np.int32)
+    next_np = np.full(ids.size, -1, dtype=np.int32)
+    cycles: list[np.ndarray] = []
+    cursor = 0
+    for k, size in enumerate(sizes.tolist()):
+        part = ids[cursor : cursor + size]
+        cursor += size
+        if k % 3 == 2:
+            next_np[part[:-1]] = part[1:]  # a chain: its last node has no successor
+        else:
+            next_np[part] = np.roll(part, -1)
+            cycles.append(np.roll(part, -int(np.argmin(part))))
+    cycles.sort(key=lambda cycle: int(cycle[0]))
+    expected_np = np.concatenate(cycles)
+    tails_np = rng.permutation(np.flatnonzero(next_np >= 0)).astype(np.int32)
+    tails_wp = wp.array(tails_np, dtype=wp.int32, device=device)
+    next_wp = wp.array(next_np, dtype=wp.int32, device=device)
+    offsets_np = np.cumsum([0] + [cycle.size for cycle in cycles])
+
+    flat_wp, offsets_wp = od.graph.successor_cycles_from_table(tails_wp, next_wp)
+    assert np.array_equal(flat_wp.numpy(), expected_np)
+    assert np.array_equal(offsets_wp.numpy(), offsets_np)
+
+    edges_np = np.stack((tails_np, next_np[tails_np]), axis=1)
+    flat_wp, offsets_wp = od.graph.successor_cycles(_edges_wp(edges_np, device), ids.size)
+    assert np.array_equal(flat_wp.numpy(), expected_np)
+    assert np.array_equal(offsets_wp.numpy(), offsets_np)
+
+    values_np = rng.permutation(ids.size).astype(np.int32)
+    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
+    flat_wp, offsets_wp = od.graph.successor_cycles_from_table(
+        tails_wp, next_wp, node_values=values_wp
+    )
+    assert np.array_equal(flat_wp.numpy(), values_np[expected_np])
+    assert np.array_equal(offsets_wp.numpy(), offsets_np)
+
+
+def test_successor_cycles_from_table_paired_keeps_one_mirror(device: str) -> None:
+    """
+    Not a library comparison: the paired mode is ordito's own dart encoding, so the oracle is built.
+
+    Every undirected cycle over vertices becomes two dart cycles, forward over the even darts
+    ``2 * v`` and backward over the odd darts ``2 * v + 1``. The paired mode must return each
+    undirected cycle once, as vertices, in the forward direction from its smallest vertex.
+    """
+    rng = np.random.default_rng(5)
+    vertex_ids = rng.permutation(40).astype(np.int32)
+    loops = [vertex_ids[:3], vertex_ids[3:20], vertex_ids[20:39]]
+    next_np = np.full(2 * vertex_ids.size, -1, dtype=np.int32)
+    for loop in loops:
+        next_np[2 * loop] = 2 * np.roll(loop, -1)
+        next_np[2 * loop + 1] = 2 * np.roll(loop, 1) + 1
+    tails_np = rng.permutation(np.flatnonzero(next_np >= 0)).astype(np.int32)
+    loops.sort(key=lambda loop: int(loop.min()))
+    expected_np = np.concatenate([np.roll(loop, -int(np.argmin(loop))) for loop in loops])
+
+    flat_wp, offsets_wp = od.graph.successor_cycles_from_table(
+        wp.array(tails_np, dtype=wp.int32, device=device),
+        wp.array(next_np, dtype=wp.int32, device=device),
+        paired=True,
+    )
+    assert np.array_equal(flat_wp.numpy(), expected_np)
+    assert np.array_equal(offsets_wp.numpy(), np.cumsum([0] + [loop.size for loop in loops]))
+
+
 def _mesh_vertex_edges(mesh_wp: wp.Mesh) -> tuple[odt.Array2dInt32, int]:
     """Return the unique undirected vertex edges and vertex count for a Warp mesh."""
     n = mesh_wp.points.size
