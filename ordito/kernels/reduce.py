@@ -665,13 +665,13 @@ def group_sum_words(
     return wp.vec2l(signed_high, signed_low)
 
 
-# A warp's words summed before the atomic when every active lane holds the same slot (one shuffle
-# and a vote decide): the total to the lowest active lane, 0 to the others; otherwise each lane's
-# own ``value``. The CPU device runs one lane at a time and returns ``value``.
+# A warp's words summed before the atomic when every active lane holds the same ``key`` (one
+# shuffle and a vote decide): the total to the lowest active lane, 0 to the others; otherwise each
+# lane's own ``value``. The CPU device runs one lane at a time and returns ``value``.
 _WARP_UNIFORM_SUM = """
 #if defined(__CUDA_ARCH__)
 const unsigned active = __activemask();
-if (!__all_sync(active, __shfl_sync(active, slot, __ffs(active) - 1) == slot)) {
+if (!__all_sync(active, __shfl_sync(active, key, __ffs(active) - 1) == key)) {
     return value;
 }
 const unsigned lane = threadIdx.x & 31u;
@@ -694,15 +694,15 @@ return value;
 
 
 @wp.func_native(_WARP_UNIFORM_SUM)
-def warp_uniform_sum(slot: wp.int32, value: wp.int64) -> wp.int64: ...
+def warp_uniform_sum(key: wp.int32, value: wp.int64) -> wp.int64: ...
 
 
 @wp.func
-def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, slot: wp.int32, word: wp.int64):
-    # One word of a term into ``sums.words[index]`` (slot ``slot``'s high or low word): summed
-    # across the warp first where the warp shares the slot (``warp_uniform_sum``), committed only
-    # where non-zero.
-    total = warp_uniform_sum(slot, word)
+def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, word: wp.int64):
+    # One word of a term into ``sums.words[index]`` (a slot's high or low word): summed across the
+    # warp first where the warp shares the word (``warp_uniform_sum``, keyed on ``index`` so lanes
+    # converged on a high and a low word of one slot never pool), committed only where non-zero.
+    total = warp_uniform_sum(index, word)
     if total != wp.int64(0):
         wp.atomic_add(sums.words, index, total)
 
@@ -727,9 +727,9 @@ def add_group_sum_term(
         return
     two_words = group_sum_two_words(sums)
     words = group_sum_words(value, field, sums.headroom, two_words)
-    commit_group_sum_word(sums, sums.n_fields + slot, slot, words[0])
+    commit_group_sum_word(sums, sums.n_fields + slot, words[0])
     if two_words != 0:
-        commit_group_sum_word(sums, sums.n_fields + sums.n_slots + slot, slot, words[1])
+        commit_group_sum_word(sums, sums.n_fields + sums.n_slots + slot, words[1])
 
 
 @wp.func
