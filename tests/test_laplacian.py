@@ -930,6 +930,37 @@ def test_robust_laplacian_warns_where_lengths_do_not_determine_it(
     assert movement > 1e-5 if warns else movement < 1e-6
 
 
+def test_robust_laplacian_warning_repeats_run_to_run(
+    sphere_irregular: tuple[object, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: under the deterministic setting the rounding check repeats bit for bit.
+
+    ``sphere_irregular`` without the Delaunay flips warns, its bound at 3.9e-4 of a row's scale.
+    Summed by ``float64`` atomics in arrival order, the largest ratio took two distinct values in
+    50 CUDA calls; the fixed-point rows give one, and so one warning text, on every call.
+    """
+    _, mesh_wp = sphere_irregular
+    lengths, _ = od.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)
+    ratios: set[bytes] = set()
+    for _ in range(50):
+        worst = od.laplacian._intrinsic_rounding_ratio(  # pyright: ignore[reportPrivateUsage]
+            mesh_wp.points.size, mesh_wp.indices, lengths
+        )
+        assert worst is not None
+        ratios.add(worst.numpy().tobytes())
+    assert len(ratios) == 1
+    messages: set[str] = set()
+    for _ in range(3):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            od.laplacian.robust_laplacian(
+                mesh_wp.points, mesh_wp.indices, use_intrinsic_delaunay=False
+            )
+        messages.update(str(w.message) for w in caught if "robust_laplacian:" in str(w.message))
+    assert len(messages) == 1
+
+
 def test_mollify_intrinsic_is_a_no_op_on_a_clean_mesh(
     sphere_irregular: tuple[object, wp.Mesh],
 ) -> None:

@@ -5,7 +5,8 @@ import warp as wp
 from ordito.kernels.array import OverloadTable, csr_key, csr_run_start, sorted_run_end
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import doublearea_from_lengths, triangle_double_area
-from ordito.kernels.scatter import add_corner_triple
+from ordito.kernels.reduce import GroupSumPass
+from ordito.kernels.scatter import add_corner_triple, scatter_add_vector
 from ordito.kernels.triangles import face_normals_and_area, face_vertices, row_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -182,6 +183,15 @@ def half_cotangent_rounding(
     return bound, wp.vec3d(wp.abs(c0), wp.abs(c1), wp.abs(c2))
 
 
+@wp.func
+def half_cotangent_row(
+    faces: wp.array[wp.int32], f: wp.int32, k: wp.int32, end: wp.int32
+) -> wp.int32:
+    # The row half-cotangent ``k`` of face ``f`` adds to, for ``end`` 1 and 2: it weights the edge
+    # opposite corner ``k``, whose endpoints are the other two corners.
+    return faces[f * 3 + (k + end) % 3]
+
+
 @wp.kernel
 def intrinsic_rounding_rows(
     faces: wp.array[wp.int32],
@@ -193,14 +203,64 @@ def intrinsic_rounding_rows(
     # the row's sum of ``|weight|``. Bound by its ``float64`` arithmetic, not by the atomics: a
     # first pass marking the rows that can exceed the limit (a row's ratio is a mediant of its
     # terms') measured slower, since the faces it keeps evaluate the bound twice.
+    #
+    # The ``float64`` atomics commit in arrival order, so on CUDA a row's last bits, and so a
+    # borderline warning, move from call to call: the form for ``ordito.config``'s deterministic
+    # setting off. ``intrinsic_rounding_rows_exact`` is the form for it on.
     f = wp.int32(wp.tid())
     bound, weight = half_cotangent_rounding(edge_lengths, f)
     for k in range(3):
-        # Half-cotangent ``k`` weights the edge opposite corner ``k``.
         for end in range(1, 3):
-            v = faces[f * 3 + (k + end) % 3]
+            v = half_cotangent_row(faces, f, k, end)
             wp.atomic_add(out_error, v, bound[k])
             wp.atomic_add(out_scale, v, weight[k])
+
+
+@wp.kernel
+def intrinsic_rounding_rows_exact(
+    faces: wp.array[wp.int32],
+    edge_lengths: wp.array2d[wp.float32],
+    terms: wp.array2d[wp.vec3d],
+    sums: GroupSumPass,
+    out_rows: wp.array[wp.vec2d],
+) -> None:
+    # ``intrinsic_rounding_rows``' sums as ``(error, scale)`` rows of the exact group sum
+    # (``scatter.scatter_add_vector``), launched once per pass, so the rows, the largest ratio and
+    # the warning repeat bit for bit on CUDA. The first pass keeps each face's terms in ``terms``
+    # (``(n_faces, 2)``: bounds, then weights) for the second to read. Against the arrival-order
+    # call's device time at 1.3 M faces that is 1.5x, where evaluating the ``float64`` bound in
+    # both passes measured 2.0x; ``float32`` rows (one word a component) measured 1.3x and were
+    # declined, the off form's rows being ``float64``. Not the off form as well, although
+    # ``scatter_add_vector`` is an ``atomic_add`` with the setting off: the ``GroupSumPass``
+    # argument and an empty table tripled that launch's host cost, a fifth of the whole check on
+    # a small mesh.
+    f = wp.int32(wp.tid())
+    bound = wp.vec3d()
+    weight = wp.vec3d()
+    if sums.phase == 0:
+        bound, weight = half_cotangent_rounding(edge_lengths, f)
+        terms[f, 0] = bound
+        terms[f, 1] = weight
+    else:
+        bound = terms[f, 0]
+        weight = terms[f, 1]
+    for k in range(3):
+        for end in range(1, 3):
+            v = half_cotangent_row(faces, f, k, end)
+            scatter_add_vector(out_rows, sums, v, wp.vec2d(bound[k], weight[k]))
+
+
+@wp.func
+def commit_row_ratio(
+    error: wp.float64, scale: wp.float64, limit: wp.float64, out_max: wp.array[wp.float64]
+) -> None:
+    # Raise ``out_max`` to the row's ``error / scale`` where the row carries any weight and its
+    # ratio exceeds ``limit``: only a row past the limit takes the one-address atomic, and a
+    # maximum is exact in any order.
+    if scale > wp.float64(0.0):
+        ratio = error / scale
+        if ratio > limit:
+            wp.atomic_max(out_max, 0, ratio)
 
 
 @wp.kernel
@@ -210,13 +270,19 @@ def max_row_ratio(
     limit: wp.float64,
     out_max: wp.array[wp.float64],
 ) -> None:
-    # The largest ``error / scale`` over the rows that carry any weight, where it exceeds
-    # ``limit`` (``0`` when none does): only a row past the limit takes the one-address atomic.
+    # The largest ``error / scale`` over the rows, where it exceeds ``limit`` (``0`` when none
+    # does). ``max_row_ratio_pairs`` reads ``intrinsic_rounding_rows_exact``'s paired rows.
     v = wp.int32(wp.tid())
-    if scale[v] > wp.float64(0.0):
-        ratio = error[v] / scale[v]
-        if ratio > limit:
-            wp.atomic_max(out_max, 0, ratio)
+    commit_row_ratio(error[v], scale[v], limit, out_max)
+
+
+@wp.kernel
+def max_row_ratio_pairs(
+    rows: wp.array[wp.vec2d], limit: wp.float64, out_max: wp.array[wp.float64]
+) -> None:
+    v = wp.int32(wp.tid())
+    row = rows[v]
+    commit_row_ratio(row[0], row[1], limit, out_max)
 
 
 @wp.func

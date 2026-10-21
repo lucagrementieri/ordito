@@ -22,6 +22,8 @@ deterministic either way):
 - the lumped masses of [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries] and
   [`mass_matrix`][ordito.laplacian.mass_matrix] given ``float64`` face areas (summed in ascending
   face order when on; ``float32`` or computed areas sum exactly and repeat either way);
+- the rounding check of [`robust_laplacian`][ordito.laplacian.robust_laplacian], and so whether it
+  warns and the ratio it reports (each row summed exactly when on);
 - the per-vertex sums of [`hessian_energy`][ordito.energies.hessian_energy],
   [`curved_hessian_energy`][ordito.energies.curved_hessian_energy] and
   [`vertex_defects`][ordito.vertices.vertex_defects];
