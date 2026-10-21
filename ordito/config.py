@@ -16,6 +16,9 @@ deterministic either way):
 - floating-point block reductions (sums, means, moments, fits, the reductions inside the energies,
   metrics, measures, registration and solver loops) and ``float32`` scans (the CDF behind every
   sampler, arc lengths, resampling);
+- the per-group sums of [`scatter_sum`][ordito.reduce.scatter_sum] and
+  [`segment_sum`][ordito.reduce.segment_sum] (summed exactly when on, so the CPU and CUDA devices
+  agree bit for bit too);
 - the lumped masses of [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries] and
   [`mass_matrix`][ordito.laplacian.mass_matrix] given ``float64`` face areas (summed in ascending
   face order when on; ``float32`` or computed areas sum exactly and repeat either way);

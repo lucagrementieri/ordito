@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from fractions import Fraction
 from typing import Any, Literal
 
 import numpy as np
@@ -12,8 +13,10 @@ import warp as wp
 
 import ordito.reduce as od_reduce
 import ordito.typing as odt
+from ordito import _launch
 from ordito.kernels import energies as kernel_energies
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import scatter as kernel_scatter
 from tests.conversions import points_to_torch, points_to_warp, trimesh_to_pyvista, warp_empty
 
 # Bound once as untyped callables: the tests below pass ``axis`` as a ``Literal[0, 1] | None``
@@ -539,6 +542,327 @@ def test_sum_of_terms_is_the_sum(device: str, n: int, deterministic: bool) -> No
         assert np.array_equal(alone_wp.numpy(), expected_np[:1])
     else:
         assert np.allclose(totals_wp.numpy(), expected_np, rtol=1e-5, atol=0.0)
+
+
+_GROUP_SUM_DTYPES = [
+    pytest.param(wp.float32, np.float32, 1, id="float32"),
+    pytest.param(wp.float64, np.float64, 1, id="float64"),
+    pytest.param(wp.vec2, np.float32, 2, id="vec2"),
+    pytest.param(wp.vec3, np.float32, 3, id="vec3"),
+    pytest.param(wp.vec4, np.float32, 4, id="vec4"),
+    pytest.param(wp.vec2d, np.float64, 2, id="vec2d"),
+    pytest.param(wp.vec3d, np.float64, 3, id="vec3d"),
+    pytest.param(wp.vec4d, np.float64, 4, id="vec4d"),
+]
+
+
+def _group_values(n: int, width: int, dtype_np: type, seed: int) -> np.ndarray:
+    """``(n,)`` or ``(n, width)`` standard normals of ``dtype_np``, from a fixed seed."""
+    shape = (n,) if width == 1 else (n, width)
+    return np.random.default_rng(seed).standard_normal(shape).astype(dtype_np)
+
+
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES)
+@pytest.mark.parity("scatter_sum", "numpy")
+def test_scatter_sum_matches_numpy(
+    device: str, dtype_wp: type, dtype_np: type, width: int, deterministic: bool
+) -> None:
+    """
+    Class A: per-group sums against ``numpy.bincount`` in ``float64``, on both settings.
+
+    50 000 values into 3 000 groups, a group no index names included (it sums to zero), with
+    ``n_groups`` passed and with it inferred from the largest index. Vectors are compared per
+    component (``bincount`` of each column).
+    """
+    n, n_groups = 50_000, 3_000
+    values_np = _group_values(n, width, dtype_np, seed=12)
+    rng = np.random.default_rng(13)
+    indices_np = rng.integers(0, n_groups - 1, n).astype(np.int32)
+    indices_np[indices_np == 7] = 8  # group 7 receives nothing
+    columns_np = values_np.reshape(n, width).astype(np.float64)
+    expected_np = np.stack(
+        [np.bincount(indices_np, columns_np[:, c], minlength=n_groups) for c in range(width)], 1
+    ).reshape((n_groups,) if width == 1 else (n_groups, width))
+    assert np.ptp(expected_np) > 1.0
+    values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
+    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
+    sums_wp = od_reduce.scatter_sum(values_wp, indices_wp, n_groups)
+    inferred_wp = od_reduce.scatter_sum(values_wp, indices_wp)
+    assert sums_wp.dtype == dtype_wp
+    assert sums_wp.shape == (n_groups,)
+    assert inferred_wp.shape == (n_groups - 1,)
+    assert np.allclose(sums_wp.numpy(), expected_np, rtol=1e-5, atol=1e-4)
+    assert np.allclose(inferred_wp.numpy(), expected_np[:-1], rtol=1e-5, atol=1e-4)
+    assert np.all(sums_wp.numpy()[7] == 0.0)
+    if deterministic:
+        # Each group's sum depends on its own terms alone, not on how many groups there are.
+        assert np.array_equal(inferred_wp.numpy(), sums_wp.numpy()[:-1])
+
+
+@pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES)
+def test_scatter_sum_repeats_bit_for_bit_on_both_devices(
+    device: str, dtype_wp: type, dtype_np: type, width: int
+) -> None:
+    """
+    Ordito against ordito: under the setting the sums repeat bit for bit and equal the CPU's.
+
+    One group holds a third of the values (every lane of a warp adds to one slot, the warp-summed
+    commit), the rest spread over many; float atomics in arrival order moved the last bits of such
+    sums from call to call on CUDA. ``test_scatter_sum_matches_numpy`` holds the value's oracle.
+    """
+    n = 200_000
+    values_np = _group_values(n, width, dtype_np, seed=14)
+    indices_np = np.random.default_rng(15).integers(0, 5_000, n).astype(np.int32)
+    indices_np[: n // 3] = 0
+    sums = [
+        od_reduce.scatter_sum(
+            wp.array(values_np, dtype=dtype_wp, device=device),
+            wp.array(indices_np, dtype=wp.int32, device=device),
+        ).numpy()
+        for _ in range(4)
+    ]
+    on_cpu = od_reduce.scatter_sum(
+        wp.array(values_np, dtype=dtype_wp, device="cpu"),
+        wp.array(indices_np, dtype=wp.int32, device="cpu"),
+    ).numpy()
+    for repeat in [*sums[1:], on_cpu]:
+        assert np.array_equal(repeat.view(np.uint8), sums[0].view(np.uint8))
+
+
+@pytest.mark.parametrize(
+    ("dtype_wp", "dtype_np"), [(wp.float32, np.float32), (wp.float64, np.float64)]
+)
+def test_scatter_sum_is_exact_to_its_bound(device: str, dtype_wp: type, dtype_np: type) -> None:
+    """
+    Not a library comparison: each group's sum against its exact rational sum.
+
+    Values spanning 120 binades with both signs, and a group of exactly cancelling pairs; NumPy's
+    ``float64`` sum has no such guarantee, so the oracle is ``fractions.Fraction``. The documented
+    bound is each term rounded to ``2^-(124 - 2h)`` of its group's largest magnitude (two words,
+    ``float64``) or ``2^-(62 - h)`` (one word, ``float32``), then the result's own rounding: the
+    sums must sit within it, and the cancelling group must be exactly zero.
+    """
+    n, n_groups = 4_000, 20
+    rng = np.random.default_rng(16)
+    values_np = (rng.standard_normal(n) * np.exp2(rng.integers(-60, 60, n))).astype(dtype_np)
+    indices_np = rng.integers(1, n_groups, n).astype(np.int32)
+    pairs_np = rng.standard_normal(200).astype(dtype_np) * dtype_np(1e20)
+    values_np = np.concatenate([values_np, pairs_np, -pairs_np])
+    indices_np = np.concatenate([indices_np, np.zeros(400, np.int32)])
+    sums_np = od_reduce.scatter_sum(
+        wp.array(values_np, dtype=dtype_wp, device=device),
+        wp.array(indices_np, dtype=wp.int32, device=device),
+    ).numpy()
+    assert sums_np[0] == 0.0
+    headroom = (values_np.size - 1).bit_length()
+    unit = 2.0 ** -(124 - 2 * headroom) if dtype_np is np.float64 else 2.0 ** -(62 - headroom)
+    for g in range(1, n_groups):
+        members_np = values_np[indices_np == g]
+        exact = sum((Fraction(float(v)) for v in members_np), Fraction(0))
+        largest = float(np.abs(members_np).max())
+        allowed = members_np.size * unit * 2.0 * largest + 2.0 * np.spacing(dtype_np(abs(exact)))
+        assert abs(Fraction(float(sums_np[g])) - exact) <= Fraction(float(allowed))
+
+
+@pytest.mark.parametrize(
+    ("dtype_wp", "dtype_np"), [(wp.float32, np.float32), (wp.float64, np.float64)]
+)
+def test_scatter_sum_edge_values(device: str, dtype_wp: type, dtype_np: type) -> None:
+    """
+    Not a library comparison: zeros, subnormals, equal values, extremes and non-finite groups.
+
+    Group 0 holds zeros, group 1 subnormals (summed exactly: ``float(sum)`` of the integer
+    multiples of the smallest subnormal), group 2 a thousand equal values, group 3 the largest
+    finite value twice and its negation once (no overflow in the words), group 4 a NaN and group 5
+    an infinity (both NaN under the setting, ``inf`` stays out of the words).
+    """
+    tiny = np.finfo(dtype_np).smallest_subnormal
+    big = np.finfo(dtype_np).max
+    multiples_np = np.arange(1, 101)
+    values_np = np.concatenate(
+        [
+            np.zeros(5),
+            multiples_np * tiny,
+            np.full(1_000, 0.1),
+            [big, big, -big],
+            [1.0, np.nan],
+            [1.0, np.inf],
+        ]
+    ).astype(dtype_np)
+    indices_np = np.repeat(np.arange(6, dtype=np.int32), [5, 100, 1_000, 3, 2, 2])
+    sums_np = od_reduce.scatter_sum(
+        wp.array(values_np, dtype=dtype_wp, device=device),
+        wp.array(indices_np, dtype=wp.int32, device=device),
+    ).numpy()
+    equal_exact = float(sum((Fraction(float(dtype_np(0.1))) for _ in range(1_000)), Fraction(0)))
+    assert sums_np[0] == 0.0
+    assert sums_np[1] == dtype_np(int(multiples_np.sum()) * tiny)
+    assert sums_np[2] == dtype_np(equal_exact)
+    assert sums_np[3] == big
+    assert np.isnan(sums_np[4])
+    assert np.isnan(sums_np[5])
+
+
+def test_group_sum_headroom_limits(device: str) -> None:
+    """
+    Not a library comparison: the largest headroom sums exactly, and one more term raises.
+
+    ``max_terms = 2**31`` is the most a slot can take with both words' sums inside ``int64``; a
+    sum at that headroom must still be exact for well-scaled values, and ``2**31 + 1`` must be
+    refused rather than wrap.
+    """
+    values_np = np.array([1.5, -0.25, 3.0, 2.0**-30], dtype=np.float64)
+    values_wp = wp.array(values_np, dtype=wp.float64, device=device)
+    indices_wp = wp.array([0, 0, 1, 1], dtype=wp.int32, device=device)
+    sums = _launch.group_sums(2, wp.float64, 2**31, device)
+    _launch.launch_group_sums(
+        kernel_scatter.SCATTER_SUM_SCALARS[wp.float64],
+        4,
+        [values_wp, indices_wp],
+        sums,
+        device=device,
+    )
+    assert _launch.finish_group_sums(sums).numpy().tolist() == [1.25, 3.0 + 2.0**-30]
+    with pytest.raises(ValueError, match="2\\*\\*31"):
+        _launch.group_sums(2, wp.float64, 2**31 + 1, device)
+
+
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES[::3])
+@pytest.mark.parity("segment_sum", "numpy")
+def test_segment_sum_matches_numpy(
+    device: str, dtype_wp: type, dtype_np: type, width: int, deterministic: bool
+) -> None:
+    """
+    Class B: per-segment sums against ``numpy.add.reduceat``, with empty segments set to zero.
+
+    ``reduceat`` repeats the value at an empty segment's start where ``segment_sum`` returns zero,
+    so the transform is to zero the reference at the empty segments (asserted present). Segment
+    lengths run from 0 to 2 000, so a long segment's warps share one slot.
+    """
+    rng = np.random.default_rng(17)
+    lengths_np = rng.integers(0, 40, 300)
+    lengths_np[::25] = 0
+    lengths_np[5] = 2_000
+    offsets_np = np.concatenate([[0], np.cumsum(lengths_np)]).astype(np.int32)
+    n = int(offsets_np[-1])
+    values_np = _group_values(n, width, dtype_np, seed=18)
+    expected_np = np.add.reduceat(values_np.astype(np.float64), offsets_np[:-1].clip(max=n - 1))
+    expected_np[lengths_np == 0] = 0.0
+    assert np.count_nonzero(lengths_np == 0) >= 12
+    values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
+    offsets_wp = wp.array(offsets_np, dtype=wp.int32, device=device)
+    sums_wp = od_reduce.segment_sum(values_wp, offsets_wp)
+    assert sums_wp.shape == (lengths_np.size,)
+    assert np.allclose(sums_wp.numpy(), expected_np, rtol=1e-5, atol=1e-4)
+    if deterministic:
+        assert np.array_equal(od_reduce.segment_sum(values_wp, offsets_wp).numpy(), sums_wp.numpy())
+
+
+_REJECTED_GROUP_SUMS: list[tuple[str, Callable[[str], object], type, str]] = [
+    (
+        "rank-2 values",
+        lambda device: od_reduce.scatter_sum(
+            warp_empty((3, 2), wp.float32, device), warp_empty(3, wp.int32, device)
+        ),
+        ValueError,
+        "rank-1 values",
+    ),
+    (
+        "length mismatch",
+        lambda device: od_reduce.scatter_sum(
+            wp.zeros(3, dtype=wp.float32, device=device), wp.zeros(4, dtype=wp.int32, device=device)
+        ),
+        ValueError,
+        "one index per value",
+    ),
+    (
+        "index past n_groups",
+        lambda device: od_reduce.scatter_sum(
+            wp.zeros(2, dtype=wp.float32, device=device),
+            wp.array([0, 2], dtype=wp.int32, device=device),
+            2,
+        ),
+        ValueError,
+        "outside",
+    ),
+    (
+        "negative index",
+        lambda device: od_reduce.scatter_sum(
+            wp.zeros(2, dtype=wp.float32, device=device),
+            wp.array([-1, 0], dtype=wp.int32, device=device),
+        ),
+        ValueError,
+        "outside",
+    ),
+    (
+        "negative n_groups",
+        lambda device: od_reduce.scatter_sum(
+            wp.zeros(0, dtype=wp.float32, device=device), warp_empty(0, wp.int32, device), -1
+        ),
+        ValueError,
+        "n_groups >= 0",
+    ),
+    (
+        "integer values",
+        lambda device: od_reduce.scatter_sum(
+            wp.zeros(2, dtype=wp.int32, device=device), wp.zeros(2, dtype=wp.int32, device=device)
+        ),
+        TypeError,
+        "sums wp.float32",
+    ),
+    (
+        "int64 indices",
+        lambda device: od_reduce.scatter_sum(
+            wp.zeros(2, dtype=wp.float32, device=device), wp.zeros(2, dtype=wp.int64, device=device)
+        ),
+        TypeError,
+        "int32 indices",
+    ),
+    (
+        "offsets not closed by n",
+        lambda device: od_reduce.segment_sum(
+            wp.zeros(3, dtype=wp.float32, device=device),
+            wp.array([0, 2], dtype=wp.int32, device=device),
+        ),
+        ValueError,
+        "not at the 3 values",
+    ),
+    (
+        "empty offsets",
+        lambda device: od_reduce.segment_sum(
+            wp.zeros(0, dtype=wp.float32, device=device), warp_empty(0, wp.int32, device)
+        ),
+        ValueError,
+        "non-empty rank-1 offsets",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "error", "match"),
+    [
+        pytest.param(call, error, match, id=name)
+        for name, call, error, match in _REJECTED_GROUP_SUMS
+    ],
+)
+def test_invalid_group_sums_raise(
+    device: str, call: Callable[[str], object], error: type[Exception], match: str
+) -> None:
+    """Each rejected argument of ``scatter_sum`` / ``segment_sum`` raises its documented error."""
+    with pytest.raises(error, match=match):
+        call(device)
+
+
+def test_group_sums_of_nothing(device: str) -> None:
+    """Not a library comparison: no values give zero groups, or zero sums in the groups asked."""
+    empty_values = wp.zeros(0, dtype=wp.float32, device=device)
+    empty_indices = warp_empty(0, wp.int32, device)
+    assert od_reduce.scatter_sum(empty_values, empty_indices).shape == (0,)
+    assert od_reduce.scatter_sum(empty_values, empty_indices, 3).numpy().tolist() == [0.0] * 3
+    offsets = wp.zeros(3, dtype=wp.int32, device=device)
+    assert od_reduce.segment_sum(empty_values, offsets).numpy().tolist() == [0.0, 0.0]
 
 
 @pytest.mark.parametrize("n", [7, 8])

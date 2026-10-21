@@ -81,6 +81,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | **Arrays** | |
 | NumPy-like `unique`, `sort`, `isin`, `searchsorted`-style helpers | [`grouping`][ordito.grouping], [`array`][ordito.array] |
 | reductions (`min`, `max`, `sum`, `mean`) without a host round trip | [`reduce`][ordito.reduce] |
+| per-group sums (`bincount` with weights, `add.reduceat`), reproducible under the deterministic setting | [`reduce.scatter_sum`][ordito.reduce.scatter_sum], [`reduce.segment_sum`][ordito.reduce.segment_sum] |
 
 ## Modules
 
@@ -184,7 +185,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | Module | Contents |
 |---|---|
 | [array](api/ordito/array.md) | NumPy-style structural and elementwise operations on Warp arrays, and sparse assembly. |
-| [reduce](api/ordito/reduce.md) | Global reductions on Warp arrays: min, max, sum, mean, any, all, median. |
+| [reduce](api/ordito/reduce.md) | Global reductions on Warp arrays: min, max, sum, mean, any, all, median, and per-group sums. |
 | [grouping](api/ordito/grouping.md) | Grouping and deduplication of values and rows. |
 | [graph](api/ordito/graph.md) | Graph algorithms on sparse adjacency matrices and edge lists. |
 | [typing](api/ordito/typing.md) | Array type aliases and runtime rank checks. |

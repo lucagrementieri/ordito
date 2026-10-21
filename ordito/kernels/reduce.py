@@ -1,5 +1,6 @@
 """Global reductions: tiled ``wp.tile_load`` reductions generated from a shared template."""
 
+import math
 from typing import Any, NamedTuple
 
 import warp as wp
@@ -422,6 +423,361 @@ def store_sum_and_count(
     # ``points.neighbor_distance_moments``, ``reconstruction.positive_finite_sum_and_count`` and
     # ``registration.residual_moment``, which differ only in what qualifies.
     store_block_sum(block, lane, wp.vec2d(total, count), out_sum_and_count, 0, stride)
+
+
+# ---------------------------------------------------------------------------
+# Exact group sums: fixed point per group, committed by integer atomics.
+#
+# The reproducible form of a per-group float sum (a scatter into vertices, components, cells,
+# lattice nodes). Integer additions are exact, so integer atomics give the same total in any
+# commit order, on either device. A group has one slot per component (a scalar one, a vector or
+# matrix ``n``, slot ``group * n + c``). Each term is converted to ``float64`` (exact for a
+# ``float32``) and then to a count of a power-of-two unit fixed per group, in two passes over the
+# terms (``GroupSumPass.phase``):
+#
+# - pass 0 raises the group's exponent field to the largest ``float64`` biased exponent among its
+#   terms' components (``raise_group_sum_field``; 0 at allocation, ``GROUP_SUM_NONFINITE`` for a
+#   non-finite component, which makes the group NaN);
+# - pass 1 adds every component to its slot's words at the scale that field sets
+#   (``add_group_sum_term``).
+#
+# The finish (``group_sum_value``) reads a slot's words back as one ``float64``; a consumer kernel
+# may call it instead of the finish launch. ``kernels/scatter.scatter_add`` and its vector and
+# matrix siblings are the entry points, and ``_launch.group_sums`` allocates the buffer.
+#
+# **The scale.** With ``h = headroom`` the caller's bound ``ceil(log2(terms per slot))``
+# (``h <= 31``), a term of a group whose field is ``F`` is scaled to ``x = v * 2^k`` with
+# ``k = 1084 - h - max(F, 1)``, so ``|x| < 2^(62 - h)`` and ``2^h`` terms sum below ``2^62``. The
+# scale is applied in integer arithmetic on the term's mantissa (``group_sum_words``), never as a
+# ``float64`` product: no ``float64`` arithmetic runs per term, and on this hardware ``float64``
+# throughput was the cost (the ``float64``-multiply form ran 2x the integer one on coherent
+# scatters). Scales are built from exponent bits (``group_sum_power``), never ``log2`` / ``pow``,
+# whose rounding is device-dependent.
+#
+# **Width.** One ``int64`` word holds ``rint(x)``: a unit of ``2^-(62 - h) * P``, ``P`` the power
+# of two above the group's largest component magnitude ``M`` (``P <= 2M``) -- the width for
+# ``float32`` results, below ``float32`` precision of ``M`` for ``h <= 30``. Two words hold
+# ``rint(x * 2^(62 - h))`` split at ``2^(62 - h)``, a unit of ``2^-(124 - 2h) * P``: the width for
+# ``float64`` results. A word a term leaves zero is not committed, so a ``float32`` term costs one
+# atomic at either width unless it lies more than ``38 - h`` binades below ``P``.
+#
+# **Bound.** For ``n <= 2^h`` terms of exact sum ``S``, the words hold ``S`` within
+# ``n * unit / 2``; exact when every term is a multiple of the unit, which a ``float32`` term
+# within ``38 - h`` (one word) or ``100 - 2h`` (two words) binades of ``P`` is. The finish reads
+# two words with an absolute error below ``2^-(114 - h) * P`` and a relative one below ``2^-52``
+# of the result, and one word with the relative one alone; a ``float32`` result is rounded once
+# more. Identical on CPU and CUDA (integer words, then the same IEEE roundings).
+#
+# **The field.** One field per group, or one shared by every group (``n_fields == 1``): the shared
+# form needs no gathered field read in either pass and sets every group's unit from the largest
+# term overall, so a group far below it loses the accuracy above. ``base_field`` floors every
+# field: a caller that knows a bound on every term's magnitude sets it and skips pass 0
+# (``_launch.group_sums(bound=)``), and a loop whose terms cannot outgrow its first round's fields
+# keeps them (``GroupSums.add_only``). A term whose exponent exceeds its group's field makes the
+# group NaN (``GROUP_SUM_NONFINITE``) rather than wrapping its words, so a broken bound is loud.
+# Fields are per group rather than per component: a ``wp.vec4`` splat lattice kept four ``int64``
+# fields a node and ran 1.9x the device time of one.
+#
+# **Hot slots.** Where every active lane of a warp adds to one slot (a single group, a long sorted
+# run), the words are summed across the warp first and one lane commits (``warp_uniform_sum``):
+# 10 M terms into one slot ran 0.011x the time of the per-term ``float32`` atomic. Declined:
+# matching any subset of lanes (``__match_any_sync``), 1.5x the plain commit on coherent runs of
+# six and no gain on few randomly ordered groups (512 cells, 2 M terms), whose collisions are
+# across warps, not within one.
+#
+# **Cost against the forms it may replace** (CUDA, deterministic setting on; small = 20 k faces or
+# 100 k points, large = 5.2 M faces or 2 M points). It wins against ``repair``'s single-word
+# fixed point (0.1-0.8x device time large, at par small) and against the sort-based forms on small
+# inputs (Poisson splat 0.5x, cluster means 0.5x wall), and loses where one pass of float
+# atomics or a sort with an amortized run walk was already reproducible enough: the exact
+# ``float32``-in-``float64`` vertex scatters (1.2-1.9x with a caller bound, 2.5-3x with pass 0),
+# the ARAP run walk over a sort made once per call (2x on a scrambled large mesh, 0.8x on an
+# ordered one), and the large-lattice splat and fine cluster means (1.5-1.8x: twice the bytes of
+# ``float32`` accumulators to clear, scatter into and read back). Those sites keep their forms.
+#
+# With ``words`` empty the pass is the arrival-order float form: ``kernels/scatter.scatter_add``
+# then does the plain ``atomic_add`` into the caller's float accumulator.
+GROUP_SUM_NONFINITE = wp.int32(2047)
+
+
+@wp.struct
+class GroupSumPass:
+    """One launch's view of a group sum: its buffer's layout, the headroom and the pass."""
+
+    # ``n_fields`` exponent fields (1, shared by every group, or one per group), then ``n_slots``
+    # high words, then ``n_slots`` low words for a two-word sum; empty with the setting off.
+    words: wp.array[wp.int64]
+    n_fields: wp.int32
+    n_slots: wp.int32
+    # A floor under every field: a caller's bound on every term (0 when there is none).
+    base_field: wp.int32
+    headroom: wp.int32
+    phase: wp.int32
+
+
+@wp.func
+def group_sum_field(value: wp.float64) -> wp.int32:
+    # The biased exponent field of ``value``: ``|value| < 2^(max(field, 1) - 1022)``, subnormals
+    # and zero (field 0) included; ``GROUP_SUM_NONFINITE`` for an infinity or NaN.
+    return wp.int32((wp.cast(value, wp.int64) >> wp.int64(52)) & wp.int64(2047))
+
+
+@wp.func
+def group_sum_power(exponent: wp.int32) -> wp.float64:
+    # ``2^exponent`` from its bits, for ``-1022 <= exponent <= 1023``.
+    return wp.cast(wp.int64(exponent + 1023) << wp.int64(52), wp.float64)
+
+
+@wp.func
+def group_sum_field_index(sums: GroupSumPass, group: wp.int32) -> wp.int32:
+    # Where ``group``'s field lives: its own word, or the one shared by every group.
+    return wp.where(sums.n_fields == 1, 0, group)
+
+
+@wp.func
+def group_sum_group_field(sums: GroupSumPass, group: wp.int32) -> wp.int32:
+    # ``group``'s field: the larger of its stored field and the caller's floor.
+    return wp.max(sums.base_field, wp.int32(sums.words[group_sum_field_index(sums, group)]))
+
+
+@wp.func
+def raise_group_sum_field(sums: GroupSumPass, group: wp.int32, field: wp.int32) -> None:
+    # Pass 0: raise ``group``'s field to ``field`` (``group_sum_field`` of a term, or the largest
+    # over a vector's components). The read first skips the atomic for most terms of a large
+    # group, whose field settles early; a stale read only costs an atomic.
+    s = group_sum_field_index(sums, group)
+    if wp.int64(field) > sums.words[s]:
+        wp.atomic_max(sums.words, s, wp.int64(field))
+
+
+@wp.func
+def round_shift_right(mantissa: wp.uint64, shift: wp.int32) -> wp.uint64:
+    # ``rint(mantissa / 2^shift)``, ties to even, for ``shift >= 1`` and ``mantissa < 2^53``; a
+    # shift past 63 is clamped (the quotient is 0 and the remainder below half either way).
+    s = wp.min(shift, 63)
+    quotient = mantissa >> wp.uint64(s)
+    remainder = mantissa & ((wp.uint64(1) << wp.uint64(s)) - wp.uint64(1))
+    half = wp.uint64(1) << wp.uint64(s - 1)
+    if remainder > half or (remainder == half and (quotient & wp.uint64(1)) != wp.uint64(0)):
+        quotient += wp.uint64(1)
+    return quotient
+
+
+@wp.func
+def group_sum_words(
+    value: wp.float64, field: wp.int32, headroom: wp.int32, two_words: wp.int32
+) -> wp.vec2l:
+    # ``value``'s fixed-point words at the scale ``field`` sets (the note above), in integer
+    # arithmetic on its mantissa: ``(rint(x), 0)`` for one word, the split of
+    # ``rint(x * 2^(62 - h))`` at ``2^(62 - h)`` for two, both words carrying ``value``'s sign.
+    # Requires ``group_sum_field(value) <= field < GROUP_SUM_NONFINITE``.
+    bits = wp.cast(value, wp.int64)
+    exponent = wp.int32((bits >> wp.int64(52)) & wp.int64(2047))
+    mantissa = wp.uint64(bits) & wp.uint64(0xFFFFFFFFFFFFF)
+    if exponent != 0:
+        mantissa = mantissa | wp.uint64(0x10000000000000)
+    width = wp.where(two_words != 0, 62 - headroom, 0)
+    # ``rint(x * 2^width) = rint(mantissa * 2^shift)``.
+    shift = wp.max(exponent, 1) - wp.max(field, 1) + 9 - headroom + width
+    high = wp.uint64(0)
+    low = wp.uint64(0)
+    mask = (wp.uint64(1) << wp.uint64(width)) - wp.uint64(1)
+    if shift >= width:
+        high = mantissa << wp.uint64(shift - width)
+    elif shift >= 0:
+        high = mantissa >> wp.uint64(width - shift)
+        low = (mantissa << wp.uint64(shift)) & mask
+    else:
+        rounded = round_shift_right(mantissa, -shift)
+        high = rounded >> wp.uint64(width)
+        low = rounded & mask
+    signed_high = wp.int64(high)
+    signed_low = wp.int64(low)
+    if bits < wp.int64(0):
+        signed_high = -signed_high
+        signed_low = -signed_low
+    return wp.vec2l(signed_high, signed_low)
+
+
+# A warp's words summed before the atomic when every active lane holds the same slot (one shuffle
+# and a vote decide): the total to the lowest active lane, 0 to the others; otherwise each lane's
+# own ``value``. The CPU device runs one lane at a time and returns ``value``.
+_WARP_UNIFORM_SUM = """
+#if defined(__CUDA_ARCH__)
+const unsigned active = __activemask();
+if (!__all_sync(active, __shfl_sync(active, slot, __ffs(active) - 1) == slot)) {
+    return value;
+}
+const unsigned lane = threadIdx.x & 31u;
+const unsigned rank = __popc(active & ((1u << lane) - 1u));
+const unsigned count = __popc(active);
+long long total = value;
+for (unsigned offset = 1u; offset < count; offset <<= 1) {
+    const bool has = rank + offset < count;
+    const int source = has ? (int)__fns(active, 0u, (int)(rank + offset + 1u)) : (int)lane;
+    const long long other = __shfl_sync(active, total, source);
+    if (has) {
+        total += other;
+    }
+}
+return rank == 0u ? total : 0ll;
+#else
+return value;
+#endif
+"""
+
+
+@wp.func_native(_WARP_UNIFORM_SUM)
+def warp_uniform_sum(slot: wp.int32, value: wp.int64) -> wp.int64: ...
+
+
+@wp.func
+def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, slot: wp.int32, word: wp.int64):
+    # One word of a term into ``sums.words[index]`` (slot ``slot``'s high or low word): summed
+    # across the warp first where the warp shares the slot (``warp_uniform_sum``), committed only
+    # where non-zero.
+    total = warp_uniform_sum(slot, word)
+    if total != wp.int64(0):
+        wp.atomic_add(sums.words, index, total)
+
+
+@wp.func
+def group_sum_two_words(sums: GroupSumPass) -> wp.int32:
+    # 1 when the buffer holds low words.
+    return wp.where(sums.words.shape[0] > sums.n_fields + sums.n_slots, 1, 0)
+
+
+@wp.func
+def add_group_sum_term(
+    sums: GroupSumPass, group: wp.int32, slot: wp.int32, field: wp.int32, value: wp.float64
+) -> None:
+    # Pass 1: ``value``'s words added into slot ``slot``'s (zeroed) words at the scale of its
+    # group's ``field`` (``group_sum_group_field``, read once for all of a vector's components). A
+    # term above the field -- a caller's bound broken -- makes the group read NaN.
+    if field == GROUP_SUM_NONFINITE:
+        return
+    if group_sum_field(value) > field:
+        sums.words[group_sum_field_index(sums, group)] = wp.int64(GROUP_SUM_NONFINITE)
+        return
+    two_words = group_sum_two_words(sums)
+    words = group_sum_words(value, field, sums.headroom, two_words)
+    commit_group_sum_word(sums, sums.n_fields + slot, slot, words[0])
+    if two_words != 0:
+        commit_group_sum_word(sums, sums.n_fields + sums.n_slots + slot, slot, words[1])
+
+
+@wp.func
+def group_sum_term(sums: GroupSumPass, slot: wp.int32, value: wp.float64) -> None:
+    # A scalar term's part in the pass ``sums.phase`` names: its bound (0) or its words (1).
+    if sums.phase == 0:
+        raise_group_sum_field(sums, slot, group_sum_field(value))
+    else:
+        add_group_sum_term(sums, slot, slot, group_sum_group_field(sums, slot), value)
+
+
+@wp.func
+def group_sum_value(sums: GroupSumPass, group: wp.int32, slot: wp.int32) -> wp.float64:
+    # Slot ``slot``'s sum (of group ``group``) once pass 1 has added every term: the carry
+    # normalized (``lo`` to ``[0, 2^(62 - h))``, flooring for a negative total), the words read as
+    # one ``float64``, and the scale undone in two power-of-two factors (``k`` spans
+    # ``[-993, 1083]``). NaN for a non-finite group. A consumer kernel may call this itself instead
+    # of launching the finish.
+    field = group_sum_group_field(sums, group)
+    if field == GROUP_SUM_NONFINITE:
+        return wp.float64(wp.nan)
+    headroom = sums.headroom
+    high = sums.words[sums.n_fields + slot]
+    total = wp.float64(0.0)
+    if group_sum_two_words(sums) != 0:
+        width = 62 - headroom
+        low = sums.words[sums.n_fields + sums.n_slots + slot]
+        high += low >> wp.int64(width)
+        low = low & ((wp.int64(1) << wp.int64(width)) - wp.int64(1))
+        total = wp.float64(high) + wp.float64(low) * group_sum_power(-width)
+    else:
+        total = wp.float64(high)
+    undo = wp.max(field, 1) + headroom - 1084
+    first = undo >> 1
+    return total * group_sum_power(first) * group_sum_power(undo - first)
+
+
+@wp.func
+def take_group_sum(
+    sums: GroupSumPass, group: wp.int32, slot: wp.int32, clear: wp.int32
+) -> wp.float64:
+    # ``group_sum_value``, leaving the slot's words zeroed when ``clear`` is set, so the same
+    # buffer serves a loop's next round with no clearing launch (its fields stay: a valid bound
+    # while no term outgrows them).
+    value = group_sum_value(sums, group, slot)
+    if clear != 0:
+        sums.words[sums.n_fields + slot] = wp.int64(0)
+        if group_sum_two_words(sums) != 0:
+            sums.words[sums.n_fields + sums.n_slots + slot] = wp.int64(0)
+    return value
+
+
+def _finish_group_sums(name, dtype, scalar, shape):
+    """
+    Build the finish kernel for one result dtype: each group's sums written as ``dtype``.
+
+    ``shape`` is ``()`` for a scalar, ``(n,)`` for a vector and ``(rows, cols)`` for a matrix; a
+    group's components are its slots ``group * size + c`` in row-major order, ``scalar`` the
+    component dtype. ``clear`` zeroes the words read (``take_group_sum``).
+    """
+    size = 1
+    for extent in shape:
+        size *= extent
+    rank = len(shape)
+    rows = shape[0] if rank == 2 else 1
+    cols = shape[1] if rank == 2 else 1
+
+    def _k(sums: GroupSumPass, clear: wp.int32, out_sums: Any) -> None:
+        g = wp.int32(wp.tid())
+        if wp.static(rank == 0):
+            out_sums[g] = scalar(take_group_sum(sums, g, g, clear))
+        elif wp.static(rank == 1):
+            v = dtype()
+            for c in range(wp.static(size)):
+                v[c] = scalar(take_group_sum(sums, g, g * size + c, clear))
+            out_sums[g] = v
+        else:
+            m = dtype()
+            for r in range(wp.static(rows)):
+                for c in range(wp.static(cols)):
+                    m[r, c] = scalar(take_group_sum(sums, g, g * size + r * cols + c, clear))
+            out_sums[g] = m
+
+    _k.__annotations__["out_sums"] = wp.array[dtype]
+    return wp.kernel(_k, name=name)
+
+
+# The dtypes a group sum can produce, with their component dtype and shape; a ``float64``
+# component takes two words.
+GROUP_SUM_DTYPES = {
+    wp.float32: (wp.float32, ()),
+    wp.float64: (wp.float64, ()),
+    wp.vec2: (wp.float32, (2,)),
+    wp.vec3: (wp.float32, (3,)),
+    wp.vec4: (wp.float32, (4,)),
+    wp.vec2d: (wp.float64, (2,)),
+    wp.vec3d: (wp.float64, (3,)),
+    wp.vec4d: (wp.float64, (4,)),
+    wp.mat33: (wp.float32, (3, 3)),
+    wp.mat33d: (wp.float64, (3, 3)),
+}
+
+# Each dtype's word count and slots per group, for ``_launch.group_sums``.
+GROUP_SUM_LAYOUTS = {
+    d: (scalar is wp.float64, math.prod(shape)) for d, (scalar, shape) in GROUP_SUM_DTYPES.items()
+}
+
+FINISH_GROUP_SUMS = KernelTable(
+    "finish_group_sums",
+    {
+        d: _finish_group_sums(f"finish_group_sums_{d.__name__}", d, scalar, shape)
+        for d, (scalar, shape) in GROUP_SUM_DTYPES.items()
+    },
+)
 
 
 def blocks_1d(n: int) -> int:

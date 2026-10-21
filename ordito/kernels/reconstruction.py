@@ -883,7 +883,10 @@ def sum_splat_chunks(
     # repeat bit for bit where ``splat_normals``' atomics commit in arrival order. A node no term
     # reaches keeps its zero. The chunks split a long run of one node's terms (a coarse level's
     # node sees thousands of samples) across threads: one thread a run serialised it, at 37x the
-    # atomic splat's time on ``dragon`` at ``res = 9``.
+    # atomic splat's time on ``dragon`` at ``res = 9``. The exact group sum (``kernels/reduce.py``,
+    # no sort) was priced against this: 0.5x the wall time at 100 k points (``res = 64``) and
+    # 0.6x on a coarse ``res = 16`` lattice, but 1.5-1.8x at 2 M points on ``res = 256``, whose
+    # ``int64`` words are twice the bytes to clear, scatter into and read back, so this form stays.
     k = wp.int32(wp.tid())
     start = k * chunk
     end = wp.min(start + chunk, count)

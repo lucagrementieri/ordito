@@ -3207,7 +3207,10 @@ def cluster_sorted_means(
     # list's arrival order reaches no sum: each heavy run is added by one block in its own fixed
     # order, whichever block takes it. On the CPU device that order is the ascending one too, the
     # order its atomics commit ``accumulate_cluster_vertex`` in, so the CPU bits are
-    # ``CLUSTER_AVERAGE``'s.
+    # ``CLUSTER_AVERAGE``'s. The exact group sum (``kernels/reduce.py``, no sort) was priced
+    # against the sort and these two kernels: 0.5x the wall time at 100 k vertices, at par on
+    # 512 coarse cells of 2 M vertices, and 1.3-1.6x on 1.8 M fine cells of 2 M vertices, so
+    # this form stays.
     r = wp.int32(wp.tid())
     start, stop = cluster_run(sorted_clusters, r)
     if stop - start > serial_max:

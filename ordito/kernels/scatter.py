@@ -13,9 +13,140 @@ from ordito.kernels.array import (
     trilinear_weight,
     unpack_edge_key,
 )
+from ordito.kernels.reduce import (
+    GroupSumPass,
+    add_group_sum_term,
+    group_sum_field,
+    group_sum_group_field,
+    group_sum_term,
+    raise_group_sum_field,
+)
 from ordito.kernels.triangles import face_normals_and_area
 
 wp.set_module_options({"enable_backward": False})
+
+
+# The one per-group scatter, whatever the deterministic setting: ``out_sums[group] += value``. The
+# mode is the buffer ``sums`` holds (``_launch.group_sums``), as ``reduce.store_block_sum`` reads
+# its mode off its buffer's size: with no words it is the float ``atomic_add`` into the caller's
+# accumulator ``out_sums``, in arrival order; with them it is pass ``sums.phase`` of the exact
+# group sum (``kernels/reduce.py``), and ``out_sums`` is not touched until the finish. So a kernel
+# has one body calling it, launched once with the setting off and once per pass with it on
+# (``_launch.launch_group_sums``), and the finish writes ``out_sums``
+# (``_launch.finish_group_sums``). A kernel that calls it takes the ``GroupSumPass`` and then
+# ``out_sums``, after its inputs.
+#
+# ``scatter_add_vector`` and ``scatter_add_matrix`` are the componentwise siblings: component ``c``
+# of group ``g`` is slot ``g * n_components + c`` (row-major for a matrix), and the group's
+# components share one field, raised by their largest.
+
+
+@wp.func
+def scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float):
+    # ``out_sums[group] += value`` for a scalar.
+    if sums.words.shape[0] == 0:
+        wp.atomic_add(out_sums, group, value)
+    else:
+        group_sum_term(sums, group, wp.float64(value))
+
+
+@wp.func
+def scatter_add_vector(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
+    # ``out_sums[group] += value`` for a vector, componentwise.
+    if sums.words.shape[0] == 0:
+        wp.atomic_add(out_sums, group, value)
+        return
+    n = len(value)
+    if sums.phase == 0:
+        field = wp.int32(0)
+        for c in range(n):
+            field = wp.max(field, group_sum_field(wp.float64(value[c])))
+        raise_group_sum_field(sums, group, field)
+    else:
+        field = group_sum_group_field(sums, group)
+        for c in range(n):
+            add_group_sum_term(sums, group, group * n + c, field, wp.float64(value[c]))
+
+
+@wp.func
+def scatter_add_matrix(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
+    # ``out_sums[group] += value`` for a matrix, componentwise.
+    if sums.words.shape[0] == 0:
+        wp.atomic_add(out_sums, group, value)
+        return
+    rows = len(value)
+    cols = len(value[0])
+    if sums.phase == 0:
+        field = wp.int32(0)
+        for r in range(rows):
+            for c in range(cols):
+                field = wp.max(field, group_sum_field(wp.float64(value[r, c])))
+        raise_group_sum_field(sums, group, field)
+    else:
+        field = group_sum_group_field(sums, group)
+        for r in range(rows):
+            for c in range(cols):
+                slot = (group * rows + r) * cols + c
+                add_group_sum_term(sums, group, slot, field, wp.float64(value[r, c]))
+
+
+@wp.kernel
+def scatter_sum_scalars(
+    values: wp.array[wp.Float],
+    indices: wp.array[wp.int32],
+    sums: GroupSumPass,
+    out_sums: wp.array[wp.Float],
+) -> None:
+    # ``reduce.scatter_sum`` of scalars: each value into its group. Also the second pass of a
+    # producer that stores its values in the bound pass rather than computing them twice.
+    i = wp.int32(wp.tid())
+    scatter_add(out_sums, sums, indices[i], values[i])
+
+
+@wp.kernel
+def scatter_sum_vectors(
+    values: wp.array[Any], indices: wp.array[wp.int32], sums: GroupSumPass, out_sums: wp.array[Any]
+) -> None:
+    # ``scatter_sum_scalars`` for vectors.
+    i = wp.int32(wp.tid())
+    scatter_add_vector(out_sums, sums, indices[i], values[i])
+
+
+@wp.func
+def segment_of(offsets: wp.array[wp.int32], i: wp.int32) -> wp.int32:
+    # The segment holding item ``i`` of a CSR packing: the last ``s`` with ``offsets[s] <= i``,
+    # which skips empty segments (``n + 1`` total-terminated offsets, ``i < offsets[n]``).
+    lo = wp.int32(0)
+    hi = offsets.shape[0] - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if offsets[mid] <= i:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+@wp.kernel
+def segment_sum_scalars(
+    values: wp.array[wp.Float],
+    offsets: wp.array[wp.int32],
+    sums: GroupSumPass,
+    out_sums: wp.array[wp.Float],
+) -> None:
+    # ``reduce.segment_sum`` of scalars: one thread per item, into its segment. Consecutive items
+    # share a segment, so a long segment's warps commit once each (``warp_uniform_sum``).
+    i = wp.int32(wp.tid())
+    scatter_add(out_sums, sums, segment_of(offsets, i), values[i])
+
+
+@wp.kernel
+def segment_sum_vectors(
+    values: wp.array[Any], offsets: wp.array[wp.int32], sums: GroupSumPass, out_sums: wp.array[Any]
+) -> None:
+    # ``segment_sum_scalars`` for vectors.
+    i = wp.int32(wp.tid())
+    scatter_add_vector(out_sums, sums, segment_of(offsets, i), values[i])
 
 
 @wp.func
@@ -200,7 +331,10 @@ def scatter_face_areas_exact(
     # areas span less than ``2^(29 - log2(faces at it))``, so the atomic commit order changes no
     # bit: the result is reproducible on CUDA, where a sum of rounded thirds was not. The area is
     # the caller's ``areas[f]``, or, given ``None``, ``face_normals_and_area``'s, bit for bit;
-    # ``scale_face_sums`` divides by three afterwards.
+    # ``scale_face_sums`` divides by three afterwards. The exact group sum (``kernels/reduce.py``)
+    # drops the span condition but was declined here and in ``scatter_sum_exact``: one pass of
+    # ``float64`` atomics beat it at every size priced, 1.2-1.9x with a caller's bound skipping its
+    # bound pass and 2.5-3x without (20 k to 5.2 M faces, ordered and scrambled).
     f = wp.int32(wp.tid())
     area = wp.float32(0.0)
     if areas.shape[0] > 0:
@@ -320,8 +454,12 @@ def sum_sorted_corner_values(
     # ``sorted_vertices`` / ``corner_order`` are the face buffer's stable sort and its permutation,
     # so a vertex's run lists its corners in ascending order. The same bits on every run, where
     # ``add_corner_triple``'s atomics commit in arrival order -- the deterministic form of that
-    # scatter for ``float64`` values, which have no exact atomic sum, and for vectors, whose
-    # components no exact sum covers either (``SUM_SORTED_CORNER_VALUES``' dtypes).
+    # scatter for ``float64`` values, which have no exact float atomic sum, and for vectors
+    # (``SUM_SORTED_CORNER_VALUES``' dtypes). The exact group sum (``kernels/reduce.py``,
+    # ``scatter_add_vector``) covers both and was priced against it as ``parametrization.arap``
+    # uses it, one sort a call and a walk a round: with its bound pass skipped (``|R w| = |w|``
+    # bounds every term) it ran 2x the walk's device time on a scrambled 5 M-face mesh and 0.8x on
+    # an ordered one, so the walk stays.
     #
     # A "corner" is a slot of the flat buffer ``sorted_vertices`` was sorted from, and
     # ``corner_values`` has one row per row of that buffer: three slots a face here, two an edge
@@ -725,6 +863,14 @@ _GRID_DTYPES = (wp.float32, wp.vec3)
 # The concrete handles keyed by the caller's value dtype -- see
 # [`OverloadTable`][ordito.kernels.array.OverloadTable]. This module's kernels are one launch of a
 # short wrapper each, which is where a generic launch's host-side resolution is worth the most.
+# ``reduce.scatter_sum`` / ``segment_sum``'s value dtypes: the scalars and the vectors it documents.
+_GROUP_SUM_SCALARS = (wp.float32, wp.float64)
+_GROUP_SUM_VECTORS = (wp.vec2, wp.vec3, wp.vec4, wp.vec2d, wp.vec3d, wp.vec4d)
+
+SCATTER_SUM_SCALARS: OverloadTable
+SCATTER_SUM_VECTORS: OverloadTable
+SEGMENT_SUM_SCALARS: OverloadTable
+SEGMENT_SUM_VECTORS: OverloadTable
 DIVIDE_BY_DENSITY: OverloadTable
 SPLAT_GRID_TRILINEAR: OverloadTable
 SCATTER_FACE_THIRDS: OverloadTable
@@ -738,6 +884,35 @@ SCATTER_WEIGHTED_SUM_VEC: OverloadTable
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global DIVIDE_BY_DENSITY, SPLAT_GRID_TRILINEAR
+    global SCATTER_SUM_SCALARS, SCATTER_SUM_VECTORS, SEGMENT_SUM_SCALARS, SEGMENT_SUM_VECTORS
+    SCATTER_SUM_SCALARS = OverloadTable(
+        scatter_sum_scalars,
+        {
+            d: [wp.array[d], wp.array[wp.int32], GroupSumPass, wp.array[d]]
+            for d in _GROUP_SUM_SCALARS
+        },
+    )
+    SCATTER_SUM_VECTORS = OverloadTable(
+        scatter_sum_vectors,
+        {
+            d: [wp.array[d], wp.array[wp.int32], GroupSumPass, wp.array[d]]
+            for d in _GROUP_SUM_VECTORS
+        },
+    )
+    SEGMENT_SUM_SCALARS = OverloadTable(
+        segment_sum_scalars,
+        {
+            d: [wp.array[d], wp.array[wp.int32], GroupSumPass, wp.array[d]]
+            for d in _GROUP_SUM_SCALARS
+        },
+    )
+    SEGMENT_SUM_VECTORS = OverloadTable(
+        segment_sum_vectors,
+        {
+            d: [wp.array[d], wp.array[wp.int32], GroupSumPass, wp.array[d]]
+            for d in _GROUP_SUM_VECTORS
+        },
+    )
     global SCALE_FACE_SUMS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR, SUM_SORTED_FACE_THIRDS
     global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC, SUM_SORTED_CORNER_VALUES
     DIVIDE_BY_DENSITY = OverloadTable(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, NamedTuple, cast, overload
+from typing import Any, Literal, NamedTuple, TypeVar, cast, overload
 
 import numpy as np
 import warp as wp
@@ -17,6 +17,10 @@ from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TILE_2D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import scatter as kernel_scatter
+
+DType = TypeVar("DType")
+"""Element type of a per-group sum: ``wp.float32``, ``wp.float64`` or a vector of either."""
 
 
 # The global overloads take the rank-agnostic ``ArrayNd*`` aliases so a caller holding this
@@ -615,6 +619,181 @@ def sum_of_terms(
         device=device,
     )
     return out
+
+
+def scatter_sum(
+    values: wp.array[DType], indices: wp.array[wp.int32], n_groups: int | None = None
+) -> wp.array[DType]:
+    """
+    Per-group sums: ``out[g]`` is the sum of the ``values[i]`` whose ``indices[i] == g``.
+
+    ``numpy.bincount(indices, weights=values, minlength=n_groups)`` for scalars, and
+    ``numpy.add.at(out, indices, values)`` into zeros for vectors, componentwise. Under
+    [`is_deterministic`][ordito.config.is_deterministic] every group is summed exactly in fixed
+    point and rounded once, so the result repeats bit for bit from call to call and is the same on
+    the CPU and the CUDA device; otherwise the values are added in arrival order, which on the CUDA
+    device can move a group's last bits from one call to the next. A group holding a non-finite
+    value sums to NaN under the setting.
+
+    Parameters
+    ----------
+    values
+        ``(n,)`` values: ``wp.float32``, ``wp.float64``, or a ``wp.vec2`` / ``wp.vec3`` /
+        ``wp.vec4`` vector of either precision.
+    indices
+        ``(n,)`` ``wp.int32`` group of each value, in ``[0, n_groups)``.
+    n_groups
+        Number of groups. ``None`` takes ``max(indices) + 1`` (0 for no values).
+
+    Returns
+    -------
+    wp.array
+        ``(n_groups,)`` sums, of ``values``' dtype; a group no index names sums to zero.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` or ``indices`` is not rank-1, their lengths differ, ``n_groups`` is
+        negative, or an index lies outside ``[0, n_groups)``.
+    TypeError
+        If ``values`` has another dtype, or ``indices`` is not ``wp.int32``.
+    RuntimeError
+        If ``values`` and ``indices`` are not on one device.
+
+    See Also
+    --------
+    [`segment_sum`][ordito.reduce.segment_sum]
+        The same sums over contiguous segments given by offsets.
+
+    Examples
+    --------
+    Like [`numpy.bincount`][] with weights:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([1.0, 2.0, 3.0, 4.0], dtype=wp.float32)
+    groups = wp.array([0, 2, 0, 2], dtype=wp.int32)
+    print(od.reduce.scatter_sum(values, groups).numpy().tolist())  # [4.0, 0.0, 6.0]
+    print(od.reduce.scatter_sum(values, groups, 4).numpy().tolist())  # [4.0, 0.0, 6.0, 0.0]
+    ```
+    """
+    require_same_device(values=values, indices=indices)
+    kernels = _group_sum_kernels(values, "scatter_sum")
+    if indices.ndim != 1:
+        raise ValueError("scatter_sum requires rank-1 indices.")
+    if indices.dtype != wp.int32:
+        raise TypeError(f"scatter_sum requires wp.int32 indices, got {indices.dtype.__name__}.")
+    n = values.size
+    if indices.size != n:
+        raise ValueError(f"scatter_sum requires one index per value: {indices.size} for {n}.")
+    if n_groups is not None and n_groups < 0:
+        raise ValueError(f"scatter_sum requires n_groups >= 0, got {n_groups}.")
+    if n > 0:
+        # One read of the index range: it sizes the result when ``n_groups`` is not given, and an
+        # index outside it would scatter out of bounds.
+        lowest, highest = minmax(indices)
+        if n_groups is None:
+            n_groups = highest + 1
+        if lowest < 0 or highest >= n_groups:
+            raise ValueError(
+                f"scatter_sum indices span [{lowest}, {highest}], outside [0, {n_groups})."
+            )
+    return _scatter_groups(kernels[0], values, indices, n_groups or 0)
+
+
+def segment_sum(values: wp.array[DType], offsets: wp.array[wp.int32]) -> wp.array[DType]:
+    """
+    Per-segment sums of ``values`` over the contiguous segments ``offsets`` delimits.
+
+    Segment ``s`` is ``values[offsets[s]:offsets[s + 1]]``, so ``offsets`` is the
+    ``n_segments + 1`` total-terminated form (``offsets[0] == 0``, non-decreasing, ending at
+    ``n``); an empty segment sums to zero, where ``numpy.add.reduceat`` would repeat a value.
+    Obeys [`is_deterministic`][ordito.config.is_deterministic] as
+    [`scatter_sum`][ordito.reduce.scatter_sum] does.
+
+    Parameters
+    ----------
+    values
+        ``(n,)`` values: ``wp.float32``, ``wp.float64``, or a ``wp.vec2`` / ``wp.vec3`` /
+        ``wp.vec4`` vector of either precision.
+    offsets
+        ``(n_segments + 1,)`` ``wp.int32`` segment starts, closed by ``n``.
+
+    Returns
+    -------
+    wp.array
+        ``(n_segments,)`` sums, of ``values``' dtype.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` or ``offsets`` is not rank-1, ``offsets`` is empty, or its last entry is not
+        ``n``.
+    TypeError
+        If ``values`` has another dtype, or ``offsets`` is not ``wp.int32``.
+    RuntimeError
+        If ``values`` and ``offsets`` are not on one device.
+
+    See Also
+    --------
+    [`scatter_sum`][ordito.reduce.scatter_sum]
+        The same sums for groups in any order.
+
+    Examples
+    --------
+    Three segments of a packed buffer, the middle one empty:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([1.0, 2.0, 3.0, 4.0], dtype=wp.float64)
+    offsets = wp.array([0, 3, 3, 4], dtype=wp.int32)
+    print(od.reduce.segment_sum(values, offsets).numpy().tolist())  # [6.0, 0.0, 4.0]
+    ```
+    """
+    require_same_device(values=values, offsets=offsets)
+    kernels = _group_sum_kernels(values, "segment_sum")
+    if offsets.ndim != 1 or offsets.size == 0:
+        raise ValueError("segment_sum requires non-empty rank-1 offsets.")
+    if offsets.dtype != wp.int32:
+        raise TypeError(f"segment_sum requires wp.int32 offsets, got {offsets.dtype.__name__}.")
+    n = values.size
+    # The closing offset, read back: a packing that does not end at ``n`` would assign the tail
+    # of ``values`` to the wrong segment.
+    total = int(read_scalar(offsets, -1))
+    if total != n:
+        raise ValueError(f"segment_sum offsets end at {total}, not at the {n} values.")
+    return _scatter_groups(kernels[1], values, offsets, offsets.size - 1)
+
+
+def _group_sum_kernels(values: wp.array[Any], name: str) -> tuple[odt.Kernel, odt.Kernel]:
+    """Return the scatter and segment kernels for ``values``' dtype, after validating it."""
+    if values.ndim != 1:
+        raise ValueError(f"{name} requires rank-1 values.")
+    dtype = values.dtype
+    if dtype in kernel_scatter.SCATTER_SUM_SCALARS:
+        return kernel_scatter.SCATTER_SUM_SCALARS[dtype], kernel_scatter.SEGMENT_SUM_SCALARS[dtype]
+    if dtype in kernel_scatter.SCATTER_SUM_VECTORS:
+        return kernel_scatter.SCATTER_SUM_VECTORS[dtype], kernel_scatter.SEGMENT_SUM_VECTORS[dtype]
+    raise TypeError(
+        f"{name} sums wp.float32, wp.float64 or a vec2/vec3/vec4 of either, not {dtype.__name__}."
+    )
+
+
+def _scatter_groups(
+    kernel: odt.Kernel, values: wp.array[DType], groups: wp.array[wp.int32], n_groups: int
+) -> wp.array[DType]:
+    """Each value into its group through ``kernel``, per the deterministic setting."""
+    device = values.device
+    sums = _launch.group_sums(n_groups, values.dtype, values.size or 1, device)
+    if values.size > 0 and n_groups > 0:
+        _launch.launch_group_sums(kernel, values.size, [values, groups], sums, device=device)
+    return cast("wp.array[DType]", _launch.finish_group_sums(sums))
 
 
 @overload

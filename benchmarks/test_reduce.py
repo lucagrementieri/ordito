@@ -351,6 +351,90 @@ def test_weighted_sum(bench_case: BenchCase) -> None:
     assert np.isfinite(total)
 
 
+_corner_cache: dict[tuple[str, str], tuple[wp.array[wp.float32], wp.array[wp.int32]]] = {}
+_corner_np_cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+
+
+def _corners_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Each face's value at its three corners, with the corner vertex, and the same sorted by vertex.
+
+    ``(values, vertices, sorted_values, offsets)``: the scatter's input, and the segment form of
+    the same sums (the corners in ascending vertex order and the ``n_vertices + 1`` offsets).
+    """
+    if bench_case.mesh_name not in _corner_np_cache:
+        values_np = np.repeat(_face_values_np(bench_case), 3)
+        vertices_np = np.ascontiguousarray(bench_case.faces_np.ravel(), dtype=np.int32)
+        order_np = np.argsort(vertices_np, kind="stable")
+        counts_np = np.bincount(vertices_np, minlength=bench_case.n_vertices)
+        offsets_np = np.concatenate([[0], np.cumsum(counts_np)]).astype(np.int32)
+        _corner_np_cache[bench_case.mesh_name] = (
+            values_np,
+            vertices_np,
+            np.ascontiguousarray(values_np[order_np]),
+            offsets_np,
+        )
+    return _corner_np_cache[bench_case.mesh_name]
+
+
+def _corners_wp(
+    bench_case: BenchCase, sorted_form: bool
+) -> tuple[wp.array[wp.float32], wp.array[wp.int32]]:
+    """``_corners_np`` on device: ``(values, vertices)``, or ``(sorted_values, offsets)``."""
+    key = ("sorted" if sorted_form else "scatter", bench_case.mesh_name + str(bench_case.device))
+    if key not in _corner_cache:
+        values_np, vertices_np, sorted_np, offsets_np = _corners_np(bench_case)
+        first, second = (sorted_np, offsets_np) if sorted_form else (values_np, vertices_np)
+        _corner_cache[key] = (
+            wp.array(first, dtype=wp.float32, device=bench_case.device),
+            wp.array(second, dtype=wp.int32, device=bench_case.device),
+        )
+    return _corner_cache[key]
+
+
+@pytest.mark.benchmark(group="scatter_sum")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_scatter_sum(bench_case: BenchCase) -> None:
+    """
+    Each face's value summed into its three corners' vertices: the per-vertex scatter shape.
+
+    ``numpy.bincount`` with weights is the host reference. The ordito call includes the readback
+    of the index range that bounds and checks the groups, and runs with the deterministic setting
+    off, as every benchmark does (one float ``atomic_add`` per value).
+    """
+    if bench_case.kind == "numpy":
+        values_np, vertices_np, _, _ = _corners_np(bench_case)
+        sums_np = bench_case.run(
+            lambda: np.bincount(vertices_np, weights=values_np, minlength=bench_case.n_vertices)
+        )
+        assert sums_np.shape[0] == bench_case.n_vertices
+        return
+    values, vertices = _corners_wp(bench_case, sorted_form=False)
+    sums = bench_case.run(lambda: od.reduce.scatter_sum(values, vertices, bench_case.n_vertices))
+    assert sums.shape[0] == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="segment_sum")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_segment_sum(bench_case: BenchCase) -> None:
+    """
+    The same per-vertex sums from the corners sorted by vertex and their offsets.
+
+    ``numpy.add.reduceat`` is the host reference. It rejects a start equal to the length, which an
+    unreferenced trailing vertex would produce, so its starts are clipped to the last corner: the
+    same work, and only an isolated vertex's (timed, not compared) sum changes.
+    """
+    if bench_case.kind == "numpy":
+        _, _, sorted_np, offsets_np = _corners_np(bench_case)
+        starts_np = np.minimum(offsets_np[:-1], sorted_np.size - 1)
+        sums_np = bench_case.run(lambda: np.add.reduceat(sorted_np, starts_np))
+        assert sums_np.shape[0] == bench_case.n_vertices
+        return
+    values, offsets = _corners_wp(bench_case, sorted_form=True)
+    sums = bench_case.run(lambda: od.reduce.segment_sum(values, offsets))
+    assert sums.shape[0] == bench_case.n_vertices
+
+
 @pytest.mark.benchmark(group="minmax_scalar")
 @pytest.mark.benchlibs("ordito", "numpy")
 def test_minmax_scalar(bench_case: BenchCase) -> None:

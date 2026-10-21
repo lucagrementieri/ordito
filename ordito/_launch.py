@@ -28,7 +28,7 @@ from __future__ import annotations
 import ctypes
 import struct
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast, overload
 
 import numpy as np
 import warp as wp
@@ -906,6 +906,138 @@ def block_partials(n_blocks: int, width: int, dtype: Any, device: Any) -> tuple[
     if not is_deterministic():
         return zeros(width, dtype=dtype, device=device), width
     return zeros((n_blocks + 1) * width + 1, dtype=dtype, device=device), width
+
+
+_kernel_reduce: Any = None
+_off_pass: Any = None
+# Above this many terms per slot no headroom keeps two words' sums inside ``int64``.
+_MAX_GROUP_SUM_HEADROOM = 31
+
+
+class GroupSums(NamedTuple):
+    """
+    The buffers of one per-group sum (``kernels/reduce.py``'s exact group sums), from `group_sums`.
+
+    ``out`` is the ``(n_groups,)`` result in the caller's dtype: with
+    [`ordito.config.is_deterministic`][ordito.config.is_deterministic] off it is the zeroed float
+    accumulator the scatter adds into in arrival order, and on it is written by
+    `finish_group_sums`. ``launch_pass`` is the ``kernels/reduce.GroupSumPass`` the scattering
+    kernel takes, launched once per entry of ``phases``: ``(0,)`` when off, ``(1,)`` when a bound
+    makes the field pass unnecessary, else ``(0, 1)`` (pass 0 raises the group fields, pass 1 adds
+    the words). ``words`` is the fields-and-words buffer, ``None`` when off.
+    """
+
+    out: Any
+    launch_pass: Any
+    phases: tuple[int, ...]
+    words: Any
+
+    def add_only(self) -> GroupSums:
+        """Return these sums with pass 1 alone: a loop's rounds once its fields bound every term."""
+        return self._replace(phases=self.phases[-1:])
+
+
+def group_sums(
+    n_groups: int,
+    dtype: Any,
+    max_terms: int,
+    device: Any,
+    *,
+    bound: float | None = None,
+    shared_scale: bool = False,
+) -> GroupSums:
+    """
+    Allocate a per-group sum of ``dtype`` over ``n_groups`` groups, per the deterministic setting.
+
+    Off: the zeroed ``(n_groups,)`` accumulator alone, the arrival-order scatter's own allocation,
+    and a pass whose empty buffer makes ``kernels/scatter.scatter_add`` an ``atomic_add``. On: the
+    result and one zeroed ``int64`` buffer holding the group fields and the fixed-point words, one
+    word per component for a ``float32`` component and two for a ``float64`` one. ``max_terms``
+    bounds the terms any one component of a group receives (the total term count is always safe)
+    and sets the headroom: the smaller, the finer the words.
+
+    ``bound`` promises that no term's magnitude exceeds it: one field shared by every group is set
+    from it and pass 0 is skipped (a term that breaks the promise makes every group NaN).
+    ``shared_scale`` keeps pass 0 but finds one field for every group: no gathered field read in
+    either pass, at the cost of setting every group's precision from the largest term overall.
+    """
+    global _kernel_reduce, _off_pass
+    kernel_reduce = _kernel_reduce
+    if kernel_reduce is None:
+        # Imported on first use, so that ``_launch`` stays kernel-free at import.
+        from ordito.kernels import reduce as kernel_reduce
+
+        _kernel_reduce = kernel_reduce
+    if not is_deterministic():
+        if _off_pass is None:
+            _off_pass = kernel_reduce.GroupSumPass()
+        return GroupSums(zeros(n_groups, dtype=dtype, device=device), _off_pass, (0,), None)
+    two_words, size = kernel_reduce.GROUP_SUM_LAYOUTS[dtype]
+    n_slots = n_groups * size
+    headroom = max(max_terms - 1, 0).bit_length()
+    if headroom > _MAX_GROUP_SUM_HEADROOM:
+        raise ValueError(f"a group sum takes at most 2**31 terms per slot, not {max_terms}.")
+    base_field = 0
+    if bound is not None:
+        (bits,) = struct.unpack("<q", struct.pack("<d", abs(float(bound))))
+        base_field = (bits >> 52) & 2047
+    n_fields = 1 if shared_scale or bound is not None else n_groups
+    words = zeros(n_fields + (2 if two_words else 1) * n_slots, dtype=_types.int64, device=device)
+    launch_pass = kernel_reduce.GroupSumPass()
+    launch_pass.words = words
+    launch_pass.n_fields = n_fields
+    launch_pass.n_slots = n_slots
+    launch_pass.base_field = base_field
+    launch_pass.headroom = headroom
+    phases = (1,) if bound is not None else (0, 1)
+    return GroupSums(empty(n_groups, dtype=dtype, device=device), launch_pass, phases, words)
+
+
+def launch_group_sums(
+    kernel: Any,
+    dim: Any,
+    inputs: Sequence[Any],
+    sums: GroupSums,
+    outputs: Sequence[Any] = (),
+    device: Any = None,
+) -> None:
+    """
+    Launch a scattering kernel once per pass of ``sums``.
+
+    The kernel takes ``inputs``, then the ``GroupSumPass``, then ``sums.out``, then ``outputs``
+    (``kernels/scatter.scatter_add``'s caller convention), so with the setting off this is the one
+    launch the arrival-order scatter issued. The pass is set before each launch, which copies it
+    (a graph capture records each launch's copy).
+    """
+    launch_pass = sums.launch_pass
+    for phase in sums.phases:
+        if sums.words is not None:
+            launch_pass.phase = phase
+        launch(
+            kernel,
+            dim=dim,
+            inputs=[*inputs, launch_pass],
+            outputs=[sums.out, *outputs],
+            device=device,
+        )
+
+
+def finish_group_sums(sums: GroupSums, *, clear: bool = False) -> Any:
+    """
+    Write the sums into ``sums.out`` (setting on; nothing to do off) and return it.
+
+    ``clear`` leaves the words zeroed for a loop's next round over the same ``sums``.
+    """
+    if sums.words is not None:
+        out = sums.out
+        launch(
+            _kernel_reduce.FINISH_GROUP_SUMS[out.dtype],
+            dim=out.shape[0],
+            inputs=[sums.launch_pass, 1 if clear else 0],
+            outputs=[out],
+            device=out.device,
+        )
+    return sums.out
 
 
 def _float_scan_fixed_order(in_array: Any, out_array: Any, size: int) -> None:
