@@ -1172,6 +1172,49 @@ def test_poisson_adaptive_confidence_runs(device: str):
     assert warp_to_trimesh(vertices_wp, faces_wp).euler_number == 2
 
 
+@pytest.mark.parametrize("confidence", [False, True])
+@pytest.mark.parametrize("method", ["dense", "adaptive"])
+def test_poisson_is_reproducible(
+    device: str, method: Literal["dense", "adaptive"], confidence: bool
+) -> None:
+    """
+    Ordito against ordito: the identical call, four times, must return identical buffers.
+
+    No reference library can carry this -- it is a claim about this implementation's summation
+    order; the surfaces themselves are compared with open3d and pymeshlab above. The splat of the
+    normals onto the lattice and the adaptive backend's restriction down its levels were float
+    atomics, whose CUDA commit order moved the right-hand side's last bits and through the solve
+    the output vertices, so these four calls failed it on CUDA for both methods and both
+    weightings. With the deterministic setting on (``tests/conftest.py``) the splat sums each
+    node's terms in one fixed order and the restriction gathers in ascending fine-node order, so
+    the outputs repeat byte for byte. The CPU device repeats either way. A jittered cloud with
+    normals of varying length, so ``confidence=True`` weights unequally.
+    """
+    points_np, normals_np = _sphere_cloud(4)
+    rng = np.random.default_rng(0)
+    points_np = points_np + rng.normal(scale=0.01, size=points_np.shape)
+    normals_np = normals_np * rng.uniform(0.5, 1.5, (points_np.shape[0], 1))
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+
+    runs = [
+        od.reconstruction.screened_poisson(
+            points_wp,
+            normals_wp,
+            depth=_poisson_depth(device),
+            full_depth=4,
+            confidence=confidence,
+            method=method,
+        )
+        for _ in range(4)
+    ]
+    (vertices_wp, faces_wp), *repeats = runs
+    vertices_np, faces_np = vertices_wp.numpy(), faces_wp.numpy()
+    assert faces_np.size > 0
+    for vertices_wp, faces_wp in repeats:
+        assert np.array_equal(vertices_wp.numpy(), vertices_np)
+        assert np.array_equal(faces_wp.numpy(), faces_np)
+
+
 # ---------------------------------------------------------------------------
 # Marching cubes and uniform resampling (analytic + pymeshlab / skimage)
 # ---------------------------------------------------------------------------

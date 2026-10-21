@@ -68,6 +68,9 @@ from ordito.kernels.reconstruction import (
     poisson_prolong_node,
     screened_laplacian_row,
     screened_laplacian_scaled_inverse_diagonal,
+    splat_cell,
+    splat_corner_offset,
+    splat_sample,
 )
 from ordito.kernels.reduce import block_sum, term_sum_1d
 
@@ -260,16 +263,11 @@ def band_splat(
 ) -> None:
     # ``kernels/reconstruction.splat_normals`` into the band's storage: the same unit direction,
     # confidence weight and trilinear corners. Every corner is in the band (``mark_sample_bricks``).
+    # The deterministic setting's form on CUDA is ``band_splat_keys`` and ``sum_splat_chunks``.
     s = wp.int32(wp.tid())
-    n = normals[s]
-    length = wp.length(n)
-    weight = wp.float32(1.0)
-    if confidence != 0:
-        weight = length
-    if length > 0.0:
-        n = n / length
-    g = (points[s] - lower) * inv_cell
-    base, next_corner, fractions = trilinear_cell(g, wp.vec3i(res, res, res))
+    base, next_corner, fractions, n, weight = splat_sample(
+        points, normals, lower, inv_cell, res, confidence, s
+    )
     for di in range(2):
         for dj in range(2):
             for dk in range(2):
@@ -280,6 +278,30 @@ def band_splat(
                 wp.atomic_add(out_vy, idx, w * n[1])
                 wp.atomic_add(out_vz, idx, w * n[2])
                 wp.atomic_add(out_w, idx, w)
+
+
+@wp.kernel
+def band_splat_keys(
+    points: wp.array[wp.vec3],
+    lower: wp.vec3,
+    inv_cell: wp.float32,
+    res: wp.int32,
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    n_nodes: wp.int32,
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``kernels/reconstruction.splat_corner_keys`` into the band's storage, for
+    # ``sum_splat_chunks``: they differ only in the node index. A corner off the band (none, by
+    # ``mark_sample_bricks``) takes the sentinel ``n_nodes``.
+    s = wp.int32(wp.tid())
+    base, next_corner, _fractions = splat_cell(points, lower, inv_cell, res, s)
+    for c in range(8):
+        corner = trilinear_corner(base, next_corner, splat_corner_offset(c))
+        idx = band_node(brick_map, nbk, corner[0], corner[1], corner[2])
+        out_keys[8 * s + c] = wp.where(idx < 0, n_nodes, idx)
+        out_order[8 * s + c] = 8 * s + c
 
 
 @wp.func
@@ -352,6 +374,62 @@ def restrict_axis(i: wp.int32, t: wp.int32) -> wp.vec2i:
     return wp.vec2i((i >> 1) + t, 1)
 
 
+@wp.func
+def restriction_source(
+    brick_coords: wp.array[wp.vec3i],
+    res: wp.int32,
+    b: wp.array[wp.float32],
+    weights: wp.array[wp.float32],
+    n: wp.int32,
+) -> wp.bool:
+    # Whether band node ``n`` restricts anything: it is on the lattice and carries data.
+    return node_live(band_coordinates(brick_coords, n), res) and not (
+        b[n] == 0.0 and weights[n] == 0.0
+    )
+
+
+@wp.func
+def restrict_target(
+    g: wp.vec3i, t: wp.int32, coarse_map: wp.array[wp.int32], nbk_c: wp.int32, res_c: wp.int32
+) -> wp.vec2i:
+    # The ``t``-th of fine node ``g``'s eight ``P^T`` targets, ``t = 4 ti + 2 tj + tk``
+    # (``restrict_axis`` per axis): its index in the coarse band, or the dense ``res_c**3`` grid
+    # when ``coarse_map`` is empty (``-1`` when the band lacks it), and its weight in halves (``0``:
+    # no target).
+    a = restrict_axis(g[0], t >> 2)
+    c = restrict_axis(g[1], (t >> 1) & 1)
+    e = restrict_axis(g[2], t & 1)
+    halves = a[1] * c[1] * e[1]
+    if halves == 0:
+        return wp.vec2i(-1, 0)
+    if coarse_map.shape[0] > 0:
+        return wp.vec2i(band_node(coarse_map, nbk_c, a[0], c[0], e[0]), halves)
+    return wp.vec2i(poisson_grid_index(a[0], c[0], e[0], res_c), halves)
+
+
+@wp.func
+def count_restriction_misses(
+    brick_coords: wp.array[wp.vec3i],
+    res: wp.int32,
+    b: wp.array[wp.float32],
+    weights: wp.array[wp.float32],
+    coarse_map: wp.array[wp.int32],
+    nbk_c: wp.int32,
+    res_c: wp.int32,
+    n: wp.int32,
+    out_missing: wp.array[wp.int32],
+) -> None:
+    # Count fine node ``n``'s ``P^T`` targets the coarse band lacks (the gather form's half of
+    # ``restrict_band``'s miss count: a target that does not exist gathers nothing).
+    if not restriction_source(brick_coords, res, b, weights, n):
+        return
+    g = band_coordinates(brick_coords, n)
+    for t in range(8):
+        target = restrict_target(g, t, coarse_map, nbk_c, res_c)
+        if target[1] > 0 and target[0] < 0:
+            wp.atomic_add(out_missing, 0, 1)
+
+
 @wp.kernel
 def restrict_band(
     brick_coords: wp.array[wp.vec3i],
@@ -369,33 +447,97 @@ def restrict_band(
     # band when ``coarse_map`` is given, into a dense ``res_c**3`` grid when it is ``None``. Both
     # outputs are zeroed by the caller. A target missing from the coarse band is counted in
     # ``out_missing[0]`` and dropped -- the nesting makes it impossible, and the caller warns on it.
+    # The deterministic setting's form is the gather ``restrict_band_ordered``.
     n = wp.int32(wp.tid())
-    g = band_coordinates(brick_coords, n)
-    if not node_live(g, res):
+    if not restriction_source(brick_coords, res, b, weights, n):
         return
+    g = band_coordinates(brick_coords, n)
     bv = b[n]
     wv = weights[n]
-    if bv == 0.0 and wv == 0.0:
+    for t in range(8):
+        target = restrict_target(g, t, coarse_map, nbk_c, res_c)
+        if target[1] > 0:
+            if target[0] < 0:
+                wp.atomic_add(out_missing, 0, 1)
+            else:
+                weight = wp.float32(target[1]) * 0.125
+                wp.atomic_add(out_b, target[0], weight * bv)
+                wp.atomic_add(out_weights, target[0], weight * wv)
+
+
+@wp.func
+def restrict_footprint(a: wp.int32, res: wp.int32, segment: wp.int32) -> wp.vec2i:
+    # The fine nodes ``[2a - 1, 2a + 1]`` on the lattice that restrict into coarse node ``a`` along
+    # one axis, split at the brick boundary the span may cross: the inclusive range in the first
+    # (``segment == 0``) or second fine brick, empty (``lo > hi``) when there is none.
+    lo = wp.max(2 * a - 1, 0)
+    hi = wp.min(2 * a + 1, res - 1)
+    split = ((lo >> BRICK_SHIFT) << BRICK_SHIFT) + 7
+    if segment == 0:
+        return wp.vec2i(lo, wp.min(hi, split))
+    return wp.vec2i(split + 1, hi)
+
+
+@wp.kernel
+def restrict_band_ordered(
+    brick_coords: wp.array[wp.vec3i],
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    res: wp.int32,
+    b: wp.array[wp.float32],
+    weights: wp.array[wp.float32],
+    coarse_coords: wp.array[wp.vec3i],
+    coarse_map: wp.array[wp.int32],
+    nbk_c: wp.int32,
+    res_c: wp.int32,
+    n_targets: wp.int32,
+    out_b: wp.array[wp.float32],
+    out_weights: wp.array[wp.float32],
+    out_missing: wp.array[wp.int32],
+) -> None:
+    # ``restrict_band`` gathered, for the deterministic setting: coarse target ``tid`` (in its band
+    # when ``coarse_map`` is given, in the dense ``res_c**3`` grid otherwise) adds the terms of the
+    # up to 27 fine nodes restricting into it, in ascending fine storage index -- brick by brick
+    # (bricks are stored in ascending brick order, ``compact_bricks``), row-major within one --
+    # which is the order the CPU device's scatter adds them in, so the sums repeat bit for bit.
+    # The fine-node half of the launch (``tid`` below the fine node count) counts the misses
+    # ``restrict_band`` counts, since a missing target gathers nothing. Both outputs are zeroed by
+    # the caller; overhanging coarse slots are left so.
+    tid = wp.int32(wp.tid())
+    if tid < b.shape[0]:
+        count_restriction_misses(
+            brick_coords, res, b, weights, coarse_map, nbk_c, res_c, tid, out_missing
+        )
+    if tid >= n_targets:
         return
-    for ti in range(2):
-        a = restrict_axis(g[0], ti)
-        for tj in range(2):
-            c = restrict_axis(g[1], tj)
-            for tk in range(2):
-                e = restrict_axis(g[2], tk)
-                halves = a[1] * c[1] * e[1]
-                if halves > 0:
-                    idx = wp.int32(-1)
-                    if coarse_map.shape[0] > 0:
-                        idx = band_node(coarse_map, nbk_c, a[0], c[0], e[0])
-                    else:
-                        idx = poisson_grid_index(a[0], c[0], e[0], res_c)
-                    if idx < 0:
-                        wp.atomic_add(out_missing, 0, 1)
-                    else:
-                        weight = wp.float32(halves) * 0.125
-                        wp.atomic_add(out_b, idx, weight * bv)
-                        wp.atomic_add(out_weights, idx, weight * wv)
+    c = wp.vec3i(0, 0, 0)
+    if coarse_map.shape[0] > 0:
+        c = band_coordinates(coarse_coords, tid)
+        if not node_live(c, res_c):
+            return
+    else:
+        c = poisson_grid_coordinates(tid, res_c)
+    total_b = wp.float32(0.0)
+    total_w = wp.float32(0.0)
+    for sx in range(2):
+        span_x = restrict_footprint(c[0], res, sx)
+        for sy in range(2):
+            span_y = restrict_footprint(c[1], res, sy)
+            for sz in range(2):
+                span_z = restrict_footprint(c[2], res, sz)
+                for x in range(span_x[0], span_x[1] + 1):
+                    for y in range(span_y[0], span_y[1] + 1):
+                        for z in range(span_z[0], span_z[1] + 1):
+                            n = band_node(brick_map, nbk, x, y, z)
+                            if n >= 0:
+                                if restriction_source(brick_coords, res, b, weights, n):
+                                    # Two halves on the even fine node ``2a``, one on an odd one.
+                                    halves = (2 - (x & 1)) * (2 - (y & 1)) * (2 - (z & 1))
+                                    weight = wp.float32(halves) * 0.125
+                                    total_b += weight * b[n]
+                                    total_w += weight * weights[n]
+    out_b[tid] = total_b
+    out_weights[tid] = total_w
 
 
 @wp.kernel
