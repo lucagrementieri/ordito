@@ -1452,15 +1452,18 @@ def test_convex_hull_matches_scipy(device: str, kind: str) -> None:
     _assert_convex_hull_of(points_np, faces_np)
 
 
-def test_convex_hull_of_a_large_far_cloud_matches_scipy(device: str) -> None:
+def test_convex_hull_of_a_large_far_cloud_matches_scipy(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
-    Class A against [`scipy.spatial.ConvexHull`][], above the prefilter's point count.
+    Class A against [`scipy.spatial.ConvexHull`][], through the prefiltered path.
 
-    From ``2**18`` points ``convex_hull`` drops the points ``convex_superset_mask`` certifies
-    interior before growing, so this is the path that must still find every hull vertex. The cloud
-    sits ``1e3`` from the origin: the filter's plane test once rounded on raw coordinates there and
-    dropped true hull vertices.
+    From ``2**22`` points ``convex_hull`` drops the points ``convex_superset_mask`` certifies
+    interior before growing; the gate is lowered here so a 300 k cloud takes that path, which must
+    still find every hull vertex. The cloud sits ``1e3`` from the origin: the filter's plane test
+    once rounded on raw coordinates there and dropped true hull vertices.
     """
+    monkeypatch.setattr(od, "_HULL_PREFILTER_FROM", 1 << 18)
     points_np = (_cloud("ball", 300_000, seed=26) + 1e3).astype(np.float32)
     hull_scipy = scipy.spatial.ConvexHull(points_np.astype(np.float64))
     assert len(hull_scipy.vertices) > 1000

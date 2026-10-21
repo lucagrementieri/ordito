@@ -2930,13 +2930,13 @@
  },
  "benchmarks/test_points.py::test_convex_hull[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 36,
+   "launch": 59,
    "alloc": 67,
-   "memset": 11,
-   "d2d": 24,
+   "memset": 20,
+   "d2d": 15,
    "h2d": 1,
-   "d2h": 13,
-   "scan": 13
+   "d2h": 11,
+   "scan": 11
   }
  },
  "benchmarks/test_points.py::test_estimate_normals[sphere_large-ordito-cuda-64]": {

@@ -50,7 +50,7 @@ angle between two ``wp.vec3`` arrays, geometry rather than array structure, so
 [`ordito.array`][ordito.array] is no better a home.
 """
 
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import warp as wp
 
@@ -91,14 +91,14 @@ SUPPORT_SLICE_FILTER_FROM = 1 << 17
 TETRAHEDRON_FLATNESS = wp.constant(wp.float32(1e-3))
 
 # Point count from which ``convex_hull`` runs ``convex_superset_mask`` (at this subdivision level)
-# before growing. The filter never drops a hull vertex, and on a scan cloud it drops the points
-# under the surface's concavities that growth would otherwise insert as non-extreme vertices, which
-# halves Flip-Flop's rounds (dragon 180 to 99, lucy 210 to 108). new/old: dragon 0.70x, lucy 0.70x,
-# happy_buddha 1.07x; 1 M synthetic clouds 1.01-1.05x (cube, ball, thin disk) and 1.17x on a
-# 0.01-thick shell; a 0.25 M ball 1.08x. Below this bunny lost (1.11x). Subdivision 0 measured
-# 0.72x / 0.75x on the two scans, and 2 lost on the large ball (1.66x at 4 M).
-_HULL_PREFILTER_FROM = 1 << 18
-_HULL_PREFILTER_SUBDIVISIONS = 1
+# before growing: one pass that certifies most of a very large cloud interior, cheaper than the
+# first growth passes that would drop it. new/old: lucy (14 M) 0.72x, a 4 M ball 0.90x; at 1 M it
+# lost on four of five clouds (0.95-1.12x), and on the scans below it (dragon, happy_buddha)
+# 1.03-1.10x. Before growth interleaved its flip rounds the filter paid from 0.4 M points, by
+# halving Flip-Flop's rounds on scans; interleaving removed most of those rounds itself.
+# Subdivision 1 measured 0.84x / 0.92x on the two, and 2 lost on both.
+_HULL_PREFILTER_FROM = 1 << 22
+_HULL_PREFILTER_SUBDIVISIONS = 0
 
 # A bound on Flip-Flop's rounds that no input reaches: the flips terminate on their own (each raises
 # the volume or lowers the degree of a non-extreme vertex), and the cap only turns a defect into the
@@ -1479,8 +1479,9 @@ def convex_hull(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
     layout); [`remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices] turns
     them into a compact mesh.
 
-    The hull is grown from a tetrahedron, splitting every face at its farthest point in parallel and
-    dropping the points each round encloses, then made convex by parallel edge flips; see Notes.
+    The hull is grown from a tetrahedron, splitting every face at its farthest point in parallel,
+    flipping edges as it grows and dropping the points each round encloses, then made convex by
+    parallel edge flips; see Notes.
 
     Parameters
     ----------
@@ -1566,8 +1567,9 @@ def _convex_hull_faces(
     device = points.device
     extreme_only = False
     while True:
-        tri, adj, kernel_point, n_faces = _grow_star_surface(points)
-        label = _flip_to_convex(points, kernel_point, tri, adj, n_faces)
+        surface = _grow_star_surface(points)
+        label = _flip_to_convex(points, surface)
+        tri, adj, n_faces = surface.tri, surface.adj, surface.n_faces
 
         n_points = points.size
         convex = _launch.zeros(n_points, dtype=wp.int32, device=device)
@@ -1621,15 +1623,29 @@ def _convex_hull_faces(
     return out_faces
 
 
-def _grow_star_surface(
-    points: wp.array[wp.vec3],
-) -> tuple[wp.array[wp.vec3i], wp.array[wp.vec3i], wp.array[wp.vec3d], int]:
+class _HullSurface(NamedTuple):
+    """The surface the hull is grown and flipped on, with Flip-Flop's per-face round state."""
+
+    tri: wp.array[wp.vec3i]
+    adj: wp.array[wp.vec3i]
+    kernel_point: wp.array[wp.vec3d]
+    n_faces: int
+    dirty: wp.array[wp.int32]
+    changed: wp.array[wp.int32]
+    lock: wp.array[wp.int32]
+    group: wp.array[wp.vec3i]
+    proposal: wp.array[wp.vec3i]
+
+
+def _grow_star_surface(points: wp.array[wp.vec3]) -> _HullSurface:
     """
     Grow a star-shaped surface over every point that can be a hull vertex.
 
-    Returns ``(tri, adj, kernel_point, n_faces)``; ``tri`` and ``adj`` hold ``n_faces`` live rows.
-    One readback a round: the splits it made and the points still outside, which size the next
-    round's launches.
+    The returned surface holds ``n_faces`` live rows. Every round splits, runs one flip round of
+    the V-criterion alone, and moves the points through both: flipping as the surface grows keeps
+    it close to the hull of its vertices, so a pass drops the points under its dents instead of
+    inserting them as vertices Flip-Flop must later remove. One readback a round: the splits it
+    made and the points still outside, which size the next round's launches.
 
     Raises
     ------
@@ -1647,17 +1663,32 @@ def _grow_star_surface(
             inputs=[points, stage, stride, keys],
             device=device,
         )
-    capacity = 64
+    # A closed surface over ``n_points`` vertices has at most ``2 * n_points - 4`` faces, so that
+    # bounds every regrowth. The start and the 4x step keep a small cloud to one or two: every
+    # regrowth reallocates ten per-face buffers.
+    max_faces = 2 * n_points
+    capacity = min(max_faces, 1 << 12)
     tri = _launch.empty(capacity, dtype=wp.vec3i, device=device)
     adj = _launch.empty(capacity, dtype=wp.vec3i, device=device)
     best = _launch.empty(capacity, dtype=wp.int64, device=device)
     child = _launch.empty(capacity, dtype=wp.int32, device=device)
+    split_corners = _launch.empty(capacity, dtype=wp.vec4i, device=device)
     flags = _launch.zeros(capacity, dtype=wp.int32, device=device)
     next_flags = _launch.zeros(capacity, dtype=wp.int32, device=device)
     offsets = _launch.empty(capacity, dtype=wp.int32, device=device)
+    dirty = _launch.full(capacity, 1, dtype=wp.int32, device=device)
+    changed = _launch.zeros(capacity, dtype=wp.int32, device=device)
+    lock = _launch.full(capacity, int(kernel_hull.LOCK_FREE), dtype=wp.int32, device=device)
+    group = _launch.empty(capacity, dtype=wp.vec3i, device=device)
+    proposal = _launch.empty(capacity, dtype=wp.vec3i, device=device)
     counters = _launch.zeros(kernel_hull.COUNTERS_SIZE, dtype=wp.int32, device=device)
     corners = _launch.empty(4, dtype=wp.int32, device=device)
     kernel_point = _launch.empty(1, dtype=wp.vec3d, device=device)
+    # No labels while growing: the flip rounds read an all-zero table and a constant round word.
+    no_labels = _launch.zeros(n_points, dtype=wp.int32, device=device)
+    growth_state = _launch.zeros(
+        kernel_array.LOOP_ADVANCE_STATE_SIZE, dtype=wp.int32, device=device
+    )
     _launch.launch(
         kernel_hull.start_tetrahedron,
         dim=1,
@@ -1678,21 +1709,39 @@ def _grow_star_surface(
         # A round splits at most one face per live point, and every split adds two faces.
         needed = n_faces + 2 * min(n_faces, n_live)
         if needed > capacity:
-            capacity = max(needed, 2 * capacity)
+            capacity = min(max(needed, 4 * capacity), max_faces)
             tri = _grown(tri, capacity, n_faces)
             adj = _grown(adj, capacity, n_faces)
             best = _grown(best, capacity, n_faces)
             flags = _grown(flags, capacity, n_faces)
+            dirty = _grown(dirty, capacity, n_faces)
             child = _launch.empty(capacity, dtype=wp.int32, device=device)
+            split_corners = _launch.empty(capacity, dtype=wp.vec4i, device=device)
             next_flags = _launch.empty(capacity, dtype=wp.int32, device=device)
             offsets = _launch.empty(capacity, dtype=wp.int32, device=device)
+            changed = _launch.zeros(capacity, dtype=wp.int32, device=device)
+            lock = _launch.full(capacity, int(kernel_hull.LOCK_FREE), dtype=wp.int32, device=device)
+            group = _launch.empty(capacity, dtype=wp.vec3i, device=device)
+            proposal = _launch.empty(capacity, dtype=wp.vec3i, device=device)
         _launch.array_scan(
             _launch.view(flags, 0, n_faces), _launch.view(offsets, 0, n_faces), inclusive=True
         )
         _launch.launch(
             kernel_hull.split_faces,
             dim=n_faces,
-            inputs=[n_faces, flags, offsets, tri, adj, best, child, counters, next_flags],
+            inputs=[
+                n_faces,
+                flags,
+                offsets,
+                tri,
+                adj,
+                best,
+                child,
+                counters,
+                dirty,
+                next_flags,
+                split_corners,
+            ],
             device=device,
         )
         # Readback: the splits size the face arrays, the survivors the next pass's launch.
@@ -1703,13 +1752,30 @@ def _grow_star_surface(
                 "coincident to float32 precision)."
             )
         n_faces += 2 * int(splits)
+        surface = _HullSurface(
+            tri, adj, kernel_point, n_faces, dirty, changed, lock, group, proposal
+        )
         if n_live == 0:
-            return tri, adj, kernel_point, n_faces
+            return surface
+        _flip_round(points, surface, no_labels, growth_state, 0)
         flags, next_flags = next_flags, flags
         _launch.launch(
             kernel_hull.assign_points,
             dim=n_live,
-            inputs=[points, kernel_point, tri, child, live, counters, best, flags, next_live],
+            inputs=[
+                points,
+                kernel_point,
+                tri,
+                child,
+                split_corners,
+                changed,
+                group,
+                live,
+                counters,
+                best,
+                flags,
+                next_live,
+            ],
             device=device,
         )
         live, next_live = next_live, live
@@ -1722,13 +1788,66 @@ def _grown(array: wp.array[Any], capacity: int, used: int) -> wp.array[Any]:
     return grown
 
 
-def _flip_to_convex(
+def _flip_round(
     points: wp.array[wp.vec3],
-    kernel_point: wp.array[wp.vec3d],
-    tri: wp.array[wp.vec3i],
-    adj: wp.array[wp.vec3i],
-    n_faces: int,
-) -> wp.array[wp.int32]:
+    surface: _HullSurface,
+    label: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    labels: int,
+) -> None:
+    """One Flip-Flop round's three launches; ``labels`` zero flips by the V-criterion alone."""
+    device = points.device
+    n_faces = surface.n_faces
+    _launch.launch(
+        kernel_hull.propose_flips,
+        dim=n_faces,
+        inputs=[
+            points,
+            surface.kernel_point,
+            surface.tri,
+            surface.adj,
+            label,
+            state,
+            surface.dirty,
+            surface.changed,
+            surface.lock,
+            labels,
+            surface.proposal,
+        ],
+        device=device,
+    )
+    _launch.launch(
+        kernel_hull.apply_flips,
+        dim=n_faces,
+        inputs=[
+            surface.proposal,
+            surface.lock,
+            surface.tri,
+            surface.adj,
+            state,
+            surface.changed,
+            surface.group,
+        ],
+        device=device,
+    )
+    _launch.launch(
+        kernel_hull.repair_flip_adjacency,
+        dim=n_faces,
+        inputs=[
+            surface.changed,
+            surface.group,
+            label,
+            state,
+            surface.tri,
+            surface.adj,
+            surface.lock,
+            surface.dirty,
+        ],
+        device=device,
+    )
+
+
+def _flip_to_convex(points: wp.array[wp.vec3], surface: _HullSurface) -> wp.array[wp.int32]:
     """
     Flip-Flop the grown surface into the convex hull of its vertices, in place; return the labels.
 
@@ -1736,38 +1855,17 @@ def _flip_to_convex(
 
     The face count never grows (a 3-1 flip leaves dead slots), so every round launches the same
     three kernels over the same buffers and the loop runs as one recorded device loop on CUDA.
+    Every face starts dirty: the growth rounds decided their edges without the D-criterion.
     """
     device = points.device
-    n_points = points.size
-    label = _launch.zeros(n_points, dtype=wp.int32, device=device)
-    dirty = _launch.full(n_faces, 1, dtype=wp.int32, device=device)
-    changed = _launch.zeros(n_faces, dtype=wp.int32, device=device)
-    lock = _launch.full(n_faces, int(kernel_hull.LOCK_FREE), dtype=wp.int32, device=device)
-    group = _launch.empty(n_faces, dtype=wp.vec3i, device=device)
-    proposal = _launch.empty(n_faces, dtype=wp.vec3i, device=device)
+    label = _launch.zeros(points.size, dtype=wp.int32, device=device)
+    _launch.fill_(_launch.view(surface.dirty, 0, surface.n_faces), 1)
     # ``wp.capture_while`` reads the condition before the first round, so it starts non-zero.
     state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
     max_rounds = wp.int32(_FLIP_ROUND_CAP)
 
     def flip_round() -> None:
-        _launch.launch(
-            kernel_hull.propose_flips,
-            dim=n_faces,
-            inputs=[points, kernel_point, tri, adj, label, state, dirty, changed, lock, proposal],
-            device=device,
-        )
-        _launch.launch(
-            kernel_hull.apply_flips,
-            dim=n_faces,
-            inputs=[proposal, lock, tri, adj, state, changed, group],
-            device=device,
-        )
-        _launch.launch(
-            kernel_hull.repair_flip_adjacency,
-            dim=n_faces,
-            inputs=[changed, group, label, state, tri, adj, lock, dirty],
-            device=device,
-        )
+        _flip_round(points, surface, label, state, 1)
         _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
 
     run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), flip_round)

@@ -10,8 +10,14 @@ lets thousands of local edits run at once without a global consistency check:
 - **Growth.** Every point is located in the cone of exactly one face. Each round, every face with
   points beyond it splits 1-3 at the farthest of them; a point beneath or on its face lies in the
   tetrahedron ``(s, face)`` and is dropped for good. A split cone is three disjoint child cones, so
-  a point relocates with two orientation tests and the surface stays star-shaped. The round ends
-  when no point is beyond its face.
+  a point relocates with two orientation tests and the surface stays star-shaped. Every round also
+  runs one flip round of the V-criterion below (``propose_flips`` with ``labels`` zero), and the
+  pass follows a point through the flip too, since a flip's new faces tile its old faces' cones.
+  Flipping while growing keeps the surface near the hull of its vertices, so a pass drops the
+  points under its dents rather than inserting them as vertices Flip-Flop must later remove:
+  Flip-Flop's rounds fell 52 -> 17 on bunny, 99 -> 42 on dragon, 34 -> 8 on a 1 M sphere and
+  7 143 -> 517 on a two-ring drum (the paper flips only once growth is done). Growth stops when no
+  point is beyond its face.
 - **Flip-Flop.** The grown polyhedron contains every point but is not convex: it has *reflex*
   edges and vertices that are not extreme. A reflex edge whose flip keeps the surface star-shaped
   is flipped (the V-criterion, which only grows the volume). A reflex edge that cannot be flipped
@@ -415,7 +421,9 @@ def split_faces(
     best: wp.array[wp.int64],
     child: wp.array[wp.int32],
     counters: wp.array[wp.int32],
+    dirty: wp.array[wp.int32],
     out_next_flags: wp.array[wp.int32],
+    out_split_corners: wp.array[wp.vec4i],
 ) -> None:
     # Split every flagged face 1-3 at its winning point ``v``: ``(a, b, v)`` keeps the slot,
     # ``(b, c, v)`` and ``(c, a, v)`` take the two slots its inclusive scan entry reserves past
@@ -444,6 +452,11 @@ def split_faces(
     adj[base] = wp.vec3i(edge1, 3 * (base + 1) + 2, 3 * f + 1)
     adj[base + 1] = wp.vec3i(edge2, 3 * f + 2, 3 * base + 1)
     child[f] = base
+    # The split's corners, for the next pass: the flip round between them may rewrite these slots.
+    out_split_corners[f] = wp.vec4i(t[0], t[1], t[2], v)
+    dirty[f] = 1
+    dirty[base] = 1
+    dirty[base + 1] = 1
     best[f] = wp.int64(-1)
     best[base] = wp.int64(-1)
     best[base + 1] = wp.int64(-1)
@@ -453,6 +466,7 @@ def split_faces(
     children = wp.vec3i(f, base, base + 1)
     for k in range(3):
         far = unpack_edge(old[k])
+        dirty[far[0]] = 1
         if flags[far[0]] == 0:
             adj[far[0]][far[1]] = 3 * children[k]
 
@@ -463,41 +477,59 @@ def assign_points(
     kernel_point: wp.array[wp.vec3d],
     tri: wp.array[wp.vec3i],
     child: wp.array[wp.int32],
+    split_corners: wp.array[wp.vec4i],
+    changed: wp.array[wp.int32],
+    group: wp.array[wp.vec3i],
     live: wp.array[wp.vec2i],
     counters: wp.array[wp.int32],
     best: wp.array[wp.int64],
     flags: wp.array[wp.int32],
     out_live: wp.array[wp.vec2i],
 ) -> None:
-    # One growth pass: follow a split face's point into the child cone holding it, drop the point if
-    # it became the split vertex or lies on or beneath its face, and otherwise bid for the face.
+    # One growth pass: follow a split face's point into the child cone holding it, then, if the
+    # round's flips rewrote that child, into the rewritten face holding it; drop the point if it
+    # became the split vertex or lies on or beneath its face, and otherwise bid for the face.
     # The three children of ``(a, b, c)`` split at ``v`` are cut by the planes through ``s``, ``v``
-    # and each corner, so two or three signs place the point.
+    # and each corner, so two or three signs place the point. A flip rewrites two or three faces
+    # into ones whose cones tile the same region, so one of the flip's live faces holds it.
     entry = live[wp.int32(wp.tid())]
     i = entry[0]
     f = entry[1]
     base = child[f]
     p = points[i]
+    s = kernel_point_of(kernel_point[0])
     if base >= 0:
-        t = tri[f]
-        v = t[2]
+        split = split_corners[f]
+        v = split[3]
         if i == v:
             return
-        s = kernel_point_of(kernel_point[0])
         pv = points[v]
         # ``(a, b, v)`` holds the point when ``side_a >= 0 >= side_b``; otherwise ``(b, c, v)`` when
         # ``side_b > 0 >= side_c`` and ``(c, a, v)`` else. One call site, in a dynamic loop.
-        corners = wp.vec3i(t[0], t[1], tri[base][1])
         sides = wp.vec3i(0, 0, 0)
         needed = wp.int32(2)
         k = wp.int32(0)
         while k < needed:
-            sides[k] = orient_kernel(s, pv, points[corners[k]], p)
+            sides[k] = orient_kernel(s, pv, points[split[k]], p)
             if k == 1 and sides[1] > 0:
                 needed = 3
             k += 1
         if sides[0] < 0 or sides[1] > 0:
             f = wp.where(sides[1] > 0 and sides[2] <= 0, base, base + 1)
+    if changed[f] != 0:
+        members = group[f]
+        chosen = wp.int32(-1)
+        fallback = wp.int32(-1)
+        m = wp.int32(0)
+        while chosen < 0 and m < 3:
+            u = members[m]
+            if u >= 0 and tri[u][0] >= 0:
+                fallback = u
+                t = tri[u]
+                if in_cone(s, points[t[0]], points[t[1]], points[t[2]], p):
+                    chosen = u
+            m += 1
+        f = wp.where(chosen >= 0, chosen, fallback)
     beyond, proxy = beyond_face(points, tri[f], p)
     if beyond:
         commit_beyond(i, f, proxy, counters, best, flags, out_live)
@@ -560,6 +592,7 @@ def flip_proposal(
     label: wp.array[wp.int32],
     state: wp.array[wp.int32],
     stamp: wp.int32,
+    labels_on: wp.bool,
     f: wp.int32,
     k: wp.int32,
 ) -> wp.vec2i:
@@ -600,7 +633,7 @@ def flip_proposal(
             if orient_kernel(s, link0, link1, link2) > 0:
                 out = wp.vec2i(wp.where(a_degree3, FLIP_31_FIRST, FLIP_31_SECOND), 0)
                 out[1] = wp.where(a_degree3, across_ca[0], across_bc[0])
-            elif reflex and certified_inside(s, px, link0, link1, link2):
+            elif reflex and labels_on and certified_inside(s, px, link0, link1, link2):
                 label_vertex(label, state, x31, stamp)
         return out
     # The labelled vertex of smallest index among the four, if any.
@@ -632,7 +665,7 @@ def flip_proposal(
         # whose flip lowers the degree of the smallest labelled vertex.
         if (x < 0 and reflex) or x == a or x == b:
             out = wp.vec2i(FLIP_22, 0)
-    elif reflex:
+    elif reflex and labels_on:
         # Unflippable and reflex: one endpoint lies inside the tetrahedron the other three span
         # with ``s``, so it is not extreme.
         candidate = wp.int32(0)
@@ -657,11 +690,14 @@ def propose_flips(
     dirty: wp.array[wp.int32],
     changed: wp.array[wp.int32],
     lock: wp.array[wp.int32],
+    labels: wp.int32,
     out_proposal: wp.array[wp.vec3i],
 ) -> None:
     # Each dirty live face proposes at most one flip, over the edges it owns (the lower face index
     # of the two), and bids for every triangle that flip rewrites. A face that proposes nothing is
-    # clean until something it reads changes.
+    # clean until something it reads changes. With ``labels`` zero (the flip round interleaved with
+    # growth) nothing is labelled, so only the V-criterion flips: volume only grows, and the points
+    # it encloses can be dropped as soon as the next pass sees them.
     f = wp.int32(wp.tid())
     changed[f] = 0
     proposal = wp.vec3i(FLIP_NONE, 0, 0)
@@ -676,7 +712,9 @@ def propose_flips(
             if proposal[0] == FLIP_NONE:
                 g = adj[f][k] // 3
                 if f < g:
-                    decided = flip_proposal(points, s, tri, adj, label, state, stamp, f, k)
+                    decided = flip_proposal(
+                        points, s, tri, adj, label, state, stamp, labels != 0, f, k
+                    )
                     if decided[0] != FLIP_NONE:
                         proposal = wp.vec3i(decided[0], decided[1], k)
                         wp.atomic_min(lock, f, f)

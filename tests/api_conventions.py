@@ -643,7 +643,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.convex_hull", "pick_tetrahedron_corner"): frozenset({"keys"}),
     ("algorithms.convex_hull", "start_tetrahedron"): frozenset({"tri", "adj", "best", "counters"}),
     ("algorithms.convex_hull", "split_faces"): frozenset(
-        {"tri", "adj", "best", "child", "counters"}
+        {"tri", "adj", "best", "child", "counters", "dirty"}
     ),
     ("algorithms.convex_hull", "propose_flips"): frozenset({"changed", "dirty", "lock"}),
     ("algorithms.convex_hull", "apply_flips"): frozenset(
