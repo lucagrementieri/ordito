@@ -8045,7 +8045,26 @@ ones to pass.</p>
 <span class="normal">1202</span>
 <span class="normal">1203</span>
 <span class="normal">1204</span>
-<span class="normal">1205</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
+<span class="normal">1205</span>
+<span class="normal">1206</span>
+<span class="normal">1207</span>
+<span class="normal">1208</span>
+<span class="normal">1209</span>
+<span class="normal">1210</span>
+<span class="normal">1211</span>
+<span class="normal">1212</span>
+<span class="normal">1213</span>
+<span class="normal">1214</span>
+<span class="normal">1215</span>
+<span class="normal">1216</span>
+<span class="normal">1217</span>
+<span class="normal">1218</span>
+<span class="normal">1219</span>
+<span class="normal">1220</span>
+<span class="normal">1221</span>
+<span class="normal">1222</span>
+<span class="normal">1223</span>
+<span class="normal">1224</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8120,11 +8139,27 @@ ones to pass.</p>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="k">if</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">empty_square_bsr</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">empty_square_bsr</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="c1"># ``L``'s pattern also carries every edge's halfedges, so the boundary term is read off it</span>
+    <span class="c1"># rather than paired and sorted again (``kernels/energies.lscm_boundary_side``).</span>
+    <span class="k">if</span> <span class="n">pattern</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">pattern</span> <span class="o">=</span> <span class="n">mesh_operator_pattern</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
     <span class="n">laplacian</span> <span class="o">=</span> <span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cot_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">pattern</span><span class="o">=</span><span class="n">pattern</span><span class="p">)</span>
-    <span class="n">area</span> <span class="o">=</span> <span class="n">_vector_area_csr</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="o">-</span><span class="mf">2.0</span><span class="p">)</span>
-    <span class="c1"># Capacities, not counts: both buffers may be longer than their stored entries, and the true</span>
-    <span class="c1"># count is formed on the device, so nothing is read back.</span>
-    <span class="n">capacity</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">laplacian</span><span class="o">.</span><span class="n">columns</span><span class="o">.</span><span class="n">size</span> <span class="o">+</span> <span class="n">area</span><span class="o">.</span><span class="n">columns</span><span class="o">.</span><span class="n">size</span>
+    <span class="n">_</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">lap_offsets</span><span class="p">,</span> <span class="n">lap_columns</span><span class="p">,</span> <span class="n">run_start</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">n_keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">pattern</span>
+    <span class="n">area_offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_energies</span><span class="o">.</span><span class="n">lscm_boundary_counts</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">lap_offsets</span><span class="p">,</span> <span class="n">lap_columns</span><span class="p">,</span> <span class="n">run_start</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_keys</span><span class="p">),</span> <span class="n">order</span><span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">area_offsets</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">area_offsets</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">area_offsets</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="c1"># Sizes the entry buffers: the one readback, of the boundary entry count, which the triplet</span>
+    <span class="c1"># build of ``A`` read as its boundary edge count. Capacities, not counts: ``L``'s columns may</span>
+    <span class="c1"># be longer than its stored entries.</span>
+    <span class="n">capacity</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">lap_columns</span><span class="o">.</span><span class="n">size</span> <span class="o">+</span> <span class="mi">2</span> <span class="o">*</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">area_offsets</span><span class="p">))</span>
     <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">columns</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">capacity</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">values</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">capacity</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
@@ -8132,12 +8167,15 @@ ones to pass.</p>
         <span class="n">kernel_energies</span><span class="o">.</span><span class="n">lscm_hessian_csr</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">,</span>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
-            <span class="n">laplacian</span><span class="o">.</span><span class="n">offsets</span><span class="p">,</span>
-            <span class="n">laplacian</span><span class="o">.</span><span class="n">columns</span><span class="p">,</span>
+            <span class="n">faces</span><span class="p">,</span>
+            <span class="n">lap_offsets</span><span class="p">,</span>
+            <span class="n">lap_columns</span><span class="p">,</span>
             <span class="n">laplacian</span><span class="o">.</span><span class="n">values</span><span class="p">,</span>
-            <span class="n">area</span><span class="o">.</span><span class="n">offsets</span><span class="p">,</span>
-            <span class="n">area</span><span class="o">.</span><span class="n">columns</span><span class="p">,</span>
-            <span class="n">area</span><span class="o">.</span><span class="n">values</span><span class="p">,</span>
+            <span class="n">run_start</span><span class="p">,</span>
+            <span class="n">keys</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_keys</span><span class="p">),</span>
+            <span class="n">order</span><span class="p">,</span>
+            <span class="n">area_offsets</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n</span><span class="p">),</span>
         <span class="p">],</span>
         <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">values</span><span class="p">],</span>
@@ -8307,26 +8345,7 @@ no boundary and an empty matrix:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1208</span>
-<span class="normal">1209</span>
-<span class="normal">1210</span>
-<span class="normal">1211</span>
-<span class="normal">1212</span>
-<span class="normal">1213</span>
-<span class="normal">1214</span>
-<span class="normal">1215</span>
-<span class="normal">1216</span>
-<span class="normal">1217</span>
-<span class="normal">1218</span>
-<span class="normal">1219</span>
-<span class="normal">1220</span>
-<span class="normal">1221</span>
-<span class="normal">1222</span>
-<span class="normal">1223</span>
-<span class="normal">1224</span>
-<span class="normal">1225</span>
-<span class="normal">1226</span>
-<span class="normal">1227</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1227</span>
 <span class="normal">1228</span>
 <span class="normal">1229</span>
 <span class="normal">1230</span>
@@ -8369,7 +8388,41 @@ no boundary and an empty matrix:</p>
 <span class="normal">1267</span>
 <span class="normal">1268</span>
 <span class="normal">1269</span>
-<span class="normal">1270</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
+<span class="normal">1270</span>
+<span class="normal">1271</span>
+<span class="normal">1272</span>
+<span class="normal">1273</span>
+<span class="normal">1274</span>
+<span class="normal">1275</span>
+<span class="normal">1276</span>
+<span class="normal">1277</span>
+<span class="normal">1278</span>
+<span class="normal">1279</span>
+<span class="normal">1280</span>
+<span class="normal">1281</span>
+<span class="normal">1282</span>
+<span class="normal">1283</span>
+<span class="normal">1284</span>
+<span class="normal">1285</span>
+<span class="normal">1286</span>
+<span class="normal">1287</span>
+<span class="normal">1288</span>
+<span class="normal">1289</span>
+<span class="normal">1290</span>
+<span class="normal">1291</span>
+<span class="normal">1292</span>
+<span class="normal">1293</span>
+<span class="normal">1294</span>
+<span class="normal">1295</span>
+<span class="normal">1296</span>
+<span class="normal">1297</span>
+<span class="normal">1298</span>
+<span class="normal">1299</span>
+<span class="normal">1300</span>
+<span class="normal">1301</span>
+<span class="normal">1302</span>
+<span class="normal">1303</span>
+<span class="normal">1304</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8431,7 +8484,22 @@ no boundary and an empty matrix:</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">_vector_area_csr</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
+    <span class="n">boundary</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">boundary</span><span class="o">.</span><span class="n">oriented_boundary_edges</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+    <span class="n">n_be</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">boundary</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+    <span class="k">if</span> <span class="n">n_be</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">empty_square_bsr</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+
+    <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">triplet_buffers</span><span class="p">(</span><span class="mi">4</span> <span class="o">*</span> <span class="n">n_be</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The four cross-quadrant triplets of every oriented boundary edge.</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_energies</span><span class="o">.</span><span class="n">vector_area_triplets</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n_be</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">boundary</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_triplets</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

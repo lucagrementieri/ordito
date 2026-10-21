@@ -9096,8 +9096,8 @@ middle index (the tip of the ear each one clipped).</p>
         <p>Triangulate several packed closed 3D polylines at once (ear clipping), adding no new points.</p>
 <p>Loop <code>r</code> is <code>polylines[offsets[r] : offsets[r + 1]]</code>. Each loop gets the triangles
 <a class="autorefs autorefs-internal" title="polyline_triangulate" href="./#ordito.polyline.polyline_triangulate"><code>polyline_triangulate</code></a> gives it alone (up to row
-order), but the short loops are triangulated together, one block per loop in a single launch,
-rather than one call after another.</p>
+order), but the loops are triangulated together rather than one call after another: the short
+ones one block per loop in a single launch, the long ones side by side in one round loop.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -9213,9 +9213,7 @@ in the order <a class="autorefs autorefs-internal" title="polyline_triangulate" 
 
 <details class="note" open>
   <summary>Notes</summary>
-  <p>Two small readbacks when every loop is short: the total rows the loops may write, and the rows
-they did. A loop longer than the block launch takes is triangulated on its own, and the rows
-are then assembled on the host and uploaded once.</p>
+  <p>Two small readbacks: the total rows the loops may write, and the rows they did.</p>
 </details>
 
 <details class="see-also" open>
@@ -9351,11 +9349,7 @@ are then assembled on the host and uploaded once.</p>
 <span class="normal">1630</span>
 <span class="normal">1631</span>
 <span class="normal">1632</span>
-<span class="normal">1633</span>
-<span class="normal">1634</span>
-<span class="normal">1635</span>
-<span class="normal">1636</span>
-<span class="normal">1637</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate_from_offsets</span><span class="p">(</span>
+<span class="normal">1633</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">polyline_triangulate_from_offsets</span><span class="p">(</span>
     <span class="n">polylines</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">offsets</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9363,8 +9357,8 @@ are then assembled on the host and uploaded once.</p>
 
 <span class="sd">    Loop ``r`` is ``polylines[offsets[r] : offsets[r + 1]]``. Each loop gets the triangles</span>
 <span class="sd">    [`polyline_triangulate`][ordito.polyline.polyline_triangulate] gives it alone (up to row</span>
-<span class="sd">    order), but the short loops are triangulated together, one block per loop in a single launch,</span>
-<span class="sd">    rather than one call after another.</span>
+<span class="sd">    order), but the loops are triangulated together rather than one call after another: the short</span>
+<span class="sd">    ones one block per loop in a single launch, the long ones side by side in one round loop.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -9390,9 +9384,7 @@ are then assembled on the host and uploaded once.</p>
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
-<span class="sd">    Two small readbacks when every loop is short: the total rows the loops may write, and the rows</span>
-<span class="sd">    they did. A loop longer than the block launch takes is triangulated on its own, and the rows</span>
-<span class="sd">    are then assembled on the host and uploaded once.</span>
+<span class="sd">    Two small readbacks: the total rows the loops may write, and the rows they did.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -9428,7 +9420,7 @@ are then assembled on the host and uploaded once.</p>
     <span class="n">max_ring</span> <span class="o">=</span> <span class="n">kernel_polyline</span><span class="o">.</span><span class="n">EAR_ONE_BLOCK_MAX</span>
     <span class="c1"># Each loop's reserved face rows, scanned into bases, and the number of loops too long for the</span>
     <span class="c1"># block launch, read back together: the reservation sizes the shared face buffer, and a long</span>
-    <span class="c1"># loop sends the call to the host-assembled path below.</span>
+    <span class="c1"># loop adds the packed round loop.</span>
     <span class="n">bases</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_loops</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_polyline</span><span class="o">.</span><span class="n">reserved_ring_rows</span><span class="p">,</span>
@@ -9439,13 +9431,11 @@ are then assembled on the host and uploaded once.</p>
     <span class="n">bases_scan</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">bases</span><span class="p">[:</span> <span class="n">n_loops</span> <span class="o">+</span> <span class="mi">1</span><span class="p">])</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">bases_scan</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">bases_scan</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="n">n_reserved</span><span class="p">,</span> <span class="n">n_long</span> <span class="o">=</span> <span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">value</span><span class="p">)</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">read_values</span><span class="p">(</span><span class="n">bases</span><span class="p">,</span> <span class="n">n_loops</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
-    <span class="k">if</span> <span class="n">n_long</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_triangulate_from_offsets_on_host</span><span class="p">(</span><span class="n">polylines</span><span class="p">,</span> <span class="n">offsets</span><span class="p">)</span>
 
     <span class="n">face_offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_loops</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_reserved</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="mi">0</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">face_offsets</span>
-    <span class="n">faces</span><span class="p">,</span> <span class="n">ends</span> <span class="o">=</span> <span class="n">_triangulate_short_rings</span><span class="p">(</span><span class="n">polylines</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">n_reserved</span><span class="p">,</span> <span class="n">face_offsets</span><span class="p">)</span>
+    <span class="n">faces</span><span class="p">,</span> <span class="n">ends</span> <span class="o">=</span> <span class="n">_triangulate_rings</span><span class="p">(</span><span class="n">polylines</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">bases</span><span class="p">,</span> <span class="n">n_reserved</span><span class="p">,</span> <span class="n">face_offsets</span><span class="p">,</span> <span class="n">n_long</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">face_offsets</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">face_offsets</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="c1"># Sizes the output: the faces the loops actually wrote.</span>
     <span class="n">n_rows</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">face_offsets</span><span class="p">))</span>
@@ -9600,65 +9590,65 @@ repeats from call to call only with <a class="autorefs autorefs-internal" title=
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/polyline.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1738</span>
-<span class="normal">1739</span>
-<span class="normal">1740</span>
-<span class="normal">1741</span>
-<span class="normal">1742</span>
-<span class="normal">1743</span>
-<span class="normal">1744</span>
-<span class="normal">1745</span>
-<span class="normal">1746</span>
-<span class="normal">1747</span>
-<span class="normal">1748</span>
-<span class="normal">1749</span>
-<span class="normal">1750</span>
-<span class="normal">1751</span>
-<span class="normal">1752</span>
-<span class="normal">1753</span>
-<span class="normal">1754</span>
-<span class="normal">1755</span>
-<span class="normal">1756</span>
-<span class="normal">1757</span>
-<span class="normal">1758</span>
-<span class="normal">1759</span>
-<span class="normal">1760</span>
-<span class="normal">1761</span>
-<span class="normal">1762</span>
-<span class="normal">1763</span>
-<span class="normal">1764</span>
-<span class="normal">1765</span>
-<span class="normal">1766</span>
-<span class="normal">1767</span>
-<span class="normal">1768</span>
-<span class="normal">1769</span>
-<span class="normal">1770</span>
-<span class="normal">1771</span>
-<span class="normal">1772</span>
-<span class="normal">1773</span>
-<span class="normal">1774</span>
-<span class="normal">1775</span>
-<span class="normal">1776</span>
-<span class="normal">1777</span>
-<span class="normal">1778</span>
-<span class="normal">1779</span>
-<span class="normal">1780</span>
-<span class="normal">1781</span>
-<span class="normal">1782</span>
-<span class="normal">1783</span>
-<span class="normal">1784</span>
-<span class="normal">1785</span>
-<span class="normal">1786</span>
-<span class="normal">1787</span>
-<span class="normal">1788</span>
-<span class="normal">1789</span>
-<span class="normal">1790</span>
-<span class="normal">1791</span>
-<span class="normal">1792</span>
-<span class="normal">1793</span>
-<span class="normal">1794</span>
-<span class="normal">1795</span>
-<span class="normal">1796</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_polygon</span><span class="p">(</span><span class="n">polygon</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1797</span>
+<span class="normal">1798</span>
+<span class="normal">1799</span>
+<span class="normal">1800</span>
+<span class="normal">1801</span>
+<span class="normal">1802</span>
+<span class="normal">1803</span>
+<span class="normal">1804</span>
+<span class="normal">1805</span>
+<span class="normal">1806</span>
+<span class="normal">1807</span>
+<span class="normal">1808</span>
+<span class="normal">1809</span>
+<span class="normal">1810</span>
+<span class="normal">1811</span>
+<span class="normal">1812</span>
+<span class="normal">1813</span>
+<span class="normal">1814</span>
+<span class="normal">1815</span>
+<span class="normal">1816</span>
+<span class="normal">1817</span>
+<span class="normal">1818</span>
+<span class="normal">1819</span>
+<span class="normal">1820</span>
+<span class="normal">1821</span>
+<span class="normal">1822</span>
+<span class="normal">1823</span>
+<span class="normal">1824</span>
+<span class="normal">1825</span>
+<span class="normal">1826</span>
+<span class="normal">1827</span>
+<span class="normal">1828</span>
+<span class="normal">1829</span>
+<span class="normal">1830</span>
+<span class="normal">1831</span>
+<span class="normal">1832</span>
+<span class="normal">1833</span>
+<span class="normal">1834</span>
+<span class="normal">1835</span>
+<span class="normal">1836</span>
+<span class="normal">1837</span>
+<span class="normal">1838</span>
+<span class="normal">1839</span>
+<span class="normal">1840</span>
+<span class="normal">1841</span>
+<span class="normal">1842</span>
+<span class="normal">1843</span>
+<span class="normal">1844</span>
+<span class="normal">1845</span>
+<span class="normal">1846</span>
+<span class="normal">1847</span>
+<span class="normal">1848</span>
+<span class="normal">1849</span>
+<span class="normal">1850</span>
+<span class="normal">1851</span>
+<span class="normal">1852</span>
+<span class="normal">1853</span>
+<span class="normal">1854</span>
+<span class="normal">1855</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_polygon</span><span class="p">(</span><span class="n">polygon</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Triangulate a simple 2D polygon by ear clipping, adding no new vertices.</span>
 

@@ -4335,14 +4335,14 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/parametrization.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1198</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1197</span>
+<span class="normal">1198</span>
 <span class="normal">1199</span>
 <span class="normal">1200</span>
 <span class="normal">1201</span>
 <span class="normal">1202</span>
 <span class="normal">1203</span>
-<span class="normal">1204</span>
-<span class="normal">1205</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">1204</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Bind a solver to ``mesh``; nothing is assembled until a factorization is asked for."""</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_mesh</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span> <span class="n">twl</span><span class="o">.</span><span class="n">MinQuadWithFixedData</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
@@ -4422,12 +4422,12 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1212</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1211</span>
+<span class="normal">1212</span>
 <span class="normal">1213</span>
 <span class="normal">1214</span>
 <span class="normal">1215</span>
-<span class="normal">1216</span>
-<span class="normal">1217</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">1216</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Drop every kept factorization, and forget which systems could not be factored."""</span>
     <span class="k">for</span> <span class="n">system</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
         <span class="n">system</span><span class="o">.</span><span class="n">release</span><span class="p">()</span>
@@ -4606,7 +4606,8 @@ if <code>fixed_indices</code> repeats a vertex or holds one outside <code>[0, n_
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1219</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1218</span>
+<span class="normal">1219</span>
 <span class="normal">1220</span>
 <span class="normal">1221</span>
 <span class="normal">1222</span>
@@ -4663,8 +4664,7 @@ if <code>fixed_indices</code> repeats a vertex or holds one outside <code>[0, n_
 <span class="normal">1273</span>
 <span class="normal">1274</span>
 <span class="normal">1275</span>
-<span class="normal">1276</span>
-<span class="normal">1277</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">1276</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Factor ``method``'s system with ``fixed_indices`` fixed, for every later call fixing them.</span>
 
@@ -4980,7 +4980,8 @@ free values are the interior <code>x</code> coordinates:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1279</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1278</span>
+<span class="normal">1279</span>
 <span class="normal">1280</span>
 <span class="normal">1281</span>
 <span class="normal">1282</span>
@@ -5057,8 +5058,7 @@ free values are the interior <code>x</code> coordinates:</p>
 <span class="normal">1353</span>
 <span class="normal">1354</span>
 <span class="normal">1355</span>
-<span class="normal">1356</span>
-<span class="normal">1357</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
+<span class="normal">1356</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span>
     <span class="n">method</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
     <span class="n">fixed_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -7827,8 +7827,7 @@ exactly:</p>
 <span class="normal">917</span>
 <span class="normal">918</span>
 <span class="normal">919</span>
-<span class="normal">920</span>
-<span class="normal">921</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">arap</span><span class="p">(</span>
+<span class="normal">920</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">arap</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">fixed_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -7980,12 +7979,19 @@ exactly:</p>
     <span class="n">cot_entries</span> <span class="o">=</span> <span class="n">cotmatrix_entries</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
     <span class="n">laplacian</span> <span class="o">=</span> <span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cot_entries</span><span class="o">=</span><span class="n">cot_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
 
-    <span class="c1"># Partition vertices into pinned (fixed) and interior (free). ``fixed_values`` is the</span>
-    <span class="c1"># (2, n_vertices) prescribed-UV buffer (row 0 = u, row 1 = v) shared with the assembly / scatter</span>
-    <span class="c1"># kernels; ``interior_map`` compacts free vertices into the reduced system.</span>
+    <span class="c1"># Partition vertices into pinned (fixed) and interior (free), and extract the global-step</span>
+    <span class="c1"># operator with it: the interior block of Q = -L and the constant boundary term -(-L)_ub bc.</span>
+    <span class="c1"># ``fixed_values`` is the (2, n_vertices) prescribed-UV buffer (row 0 = u, row 1 = v) shared</span>
+    <span class="c1"># with the assembly / scatter kernels; ``interior_map`` compacts free vertices into the reduced</span>
+    <span class="c1"># system.</span>
+    <span class="c1"># ``future work``: libigl also supports rotation groups ``G`` (shared rotations across grouped</span>
+    <span class="c1"># faces, replacing the per-face fit with a group-summed covariance) and ``with_dynamics`` (a</span>
+    <span class="c1"># mass-matrix + timestep term added to Q and the right-hand side); both are out of scope here.</span>
     <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">fixed_values</span> <span class="o">=</span> <span class="n">_scatter_constraints</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">fixed_indices</span><span class="p">,</span> <span class="n">fixed_uv</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">fixed_values_2d</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">fixed_values</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
-    <span class="n">interior_map</span><span class="p">,</span> <span class="n">n_interior</span> <span class="o">=</span> <span class="n">twl</span><span class="o">.</span><span class="n">free_partition</span><span class="p">(</span><span class="n">fixed_mask</span><span class="p">)</span>
+    <span class="n">q_uu</span><span class="p">,</span> <span class="n">rhs_const</span><span class="p">,</span> <span class="n">interior_map</span><span class="p">,</span> <span class="n">n_interior</span> <span class="o">=</span> <span class="n">twl</span><span class="o">.</span><span class="n">partitioned_interior_system</span><span class="p">(</span>
+        <span class="n">laplacian</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">fixed_values_2d</span><span class="p">,</span> <span class="n">scale</span><span class="o">=-</span><span class="mf">1.0</span>
+    <span class="p">)</span>
     <span class="c1"># The scatter skips an out-of-range index and a repeated one marks its vertex once, so either</span>
     <span class="c1"># leaves fewer vertices fixed than ``fixed_indices`` lists: the free count just read shows it.</span>
     <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">-</span> <span class="n">n_interior</span> <span class="o">!=</span> <span class="n">fixed_indices</span><span class="o">.</span><span class="n">size</span><span class="p">:</span>
@@ -7999,14 +8005,14 @@ exactly:</p>
         <span class="c1"># Every vertex pinned: the prescribed positions are the whole answer, no solve. This is the</span>
         <span class="c1"># same shape `min_quad_with_fixed`'s own `n_free == 0` branch returns (an empty `(n_rhs,</span>
         <span class="c1"># n_free)` solution `scatter_solution` never indexes), but composing through it here would</span>
-        <span class="c1"># cost more than it shares: `min_quad_with_fixed` re-derives `free_partition` internally</span>
-        <span class="c1"># (arap already has `interior_map`/`n_interior` from its own call, needed by the iterative</span>
-        <span class="c1"># loop below regardless) and its single-shot solve has no hook for the warm-started,</span>
-        <span class="c1"># loop-reused solver state arap's general path builds -- so reaching it would mean throwing</span>
-        <span class="c1"># away work already done, not reusing it. The real waste this early return avoids is</span>
-        <span class="c1"># upstream of any solve: `q_uu`/`rhs_const`/`rest_edges`/the CG solver state below are built</span>
-        <span class="c1"># only for a loop that would immediately do nothing on an empty system, so skipping them</span>
-        <span class="c1"># here is the point, not a shortcut around composition.</span>
+        <span class="c1"># cost more than it shares: `min_quad_with_fixed` re-derives the free partition internally</span>
+        <span class="c1"># (arap already has `interior_map`/`n_interior` from its own extraction, needed by the</span>
+        <span class="c1"># iterative loop below regardless) and its single-shot solve has no hook for the</span>
+        <span class="c1"># warm-started, loop-reused solver state arap's general path builds -- so reaching it would</span>
+        <span class="c1"># mean throwing away work already done, not reusing it. The real waste this early return</span>
+        <span class="c1"># avoids is upstream of any solve: `rest_edges`/the CG solver state below are built only for</span>
+        <span class="c1"># a loop that would immediately do nothing on an empty system, so skipping them here is the</span>
+        <span class="c1"># point, not a shortcut around composition.</span>
         <span class="n">empty_sol</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_parametrization</span><span class="o">.</span><span class="n">scatter_solution</span><span class="p">,</span>
@@ -8015,14 +8021,6 @@ exactly:</p>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">return</span> <span class="n">out_uv</span>
-
-    <span class="c1"># Global-step operator: interior block of Q = -L and the constant boundary term -(-L)_ub bc.</span>
-    <span class="c1"># ``future work``: libigl also supports rotation groups ``G`` (shared rotations across grouped</span>
-    <span class="c1"># faces, replacing the per-face fit with a group-summed covariance) and ``with_dynamics`` (a</span>
-    <span class="c1"># mass-matrix + timestep term added to Q and the right-hand side); both are out of scope here.</span>
-    <span class="n">q_uu</span><span class="p">,</span> <span class="n">rhs_const</span> <span class="o">=</span> <span class="n">twl</span><span class="o">.</span><span class="n">assemble_interior_system</span><span class="p">(</span>
-        <span class="n">laplacian</span><span class="p">,</span> <span class="n">fixed_mask</span><span class="p">,</span> <span class="n">interior_map</span><span class="p">,</span> <span class="n">fixed_values_2d</span><span class="p">,</span> <span class="n">n_interior</span><span class="p">,</span> <span class="n">scale</span><span class="o">=-</span><span class="mf">1.0</span>
-    <span class="p">)</span>
 
     <span class="c1"># Weight-folded rest edges of the isometrically flattened triangles (internal buffer, plain</span>
     <span class="c1"># wp.empty; kernels index it as wp.array2d).</span>
@@ -8432,7 +8430,8 @@ LSCM recovers it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/parametrization.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 979</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 978</span>
+<span class="normal"> 979</span>
 <span class="normal"> 980</span>
 <span class="normal"> 981</span>
 <span class="normal"> 982</span>
@@ -8586,8 +8585,7 @@ LSCM recovers it:</p>
 <span class="normal">1130</span>
 <span class="normal">1131</span>
 <span class="normal">1132</span>
-<span class="normal">1133</span>
-<span class="normal">1134</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
+<span class="normal">1133</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">pinned_indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>

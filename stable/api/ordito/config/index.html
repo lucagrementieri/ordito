@@ -3862,9 +3862,14 @@ deterministic either way):</p>
 <li>floating-point block reductions (sums, means, moments, fits, the reductions inside the energies,
   metrics, measures, registration and solver loops) and <code>float32</code> scans (the CDF behind every
   sampler, arc lengths, resampling);</li>
+<li>the per-group sums of <a class="autorefs autorefs-internal" title="scatter_sum" href="../reduce/#ordito.reduce.scatter_sum"><code>scatter_sum</code></a> and
+  <a class="autorefs autorefs-internal" title="segment_sum" href="../reduce/#ordito.reduce.segment_sum"><code>segment_sum</code></a> (summed exactly when on, so the CPU and CUDA devices
+  agree bit for bit too);</li>
 <li>the lumped masses of <a class="autorefs autorefs-internal" title="mass_matrix_entries" href="../laplacian/#ordito.laplacian.mass_matrix_entries"><code>mass_matrix_entries</code></a> and
   <a class="autorefs autorefs-internal" title="mass_matrix" href="../laplacian/#ordito.laplacian.mass_matrix"><code>mass_matrix</code></a> given <code>float64</code> face areas (summed in ascending
   face order when on; <code>float32</code> or computed areas sum exactly and repeat either way);</li>
+<li>the rounding check of <a class="autorefs autorefs-internal" title="robust_laplacian" href="../laplacian/#ordito.laplacian.robust_laplacian"><code>robust_laplacian</code></a>, and so whether it
+  warns and the ratio it reports (each row summed exactly when on);</li>
 <li>the per-vertex sums of <a class="autorefs autorefs-internal" title="hessian_energy" href="../energies/#ordito.energies.hessian_energy"><code>hessian_energy</code></a>,
   <a class="autorefs autorefs-internal" title="curved_hessian_energy" href="../energies/#ordito.energies.curved_hessian_energy"><code>curved_hessian_energy</code></a> and
   <a class="autorefs autorefs-internal" title="vertex_defects" href="../vertices/#ordito.vertices.vertex_defects"><code>vertex_defects</code></a>;</li>
@@ -3893,6 +3898,13 @@ deterministic either way):</p>
 <li>the positions of <a class="autorefs autorefs-internal" title="cluster_decimate" href="../remesh/#ordito.remesh.cluster_decimate"><code>cluster_decimate</code></a> with
   <code>contraction="average"</code>, whose cell means are added in a fixed order (on the CPU device the
   same order as with the setting off, so the bits do not change);</li>
+<li>the positions of <a class="autorefs autorefs-internal" title="isotropic_remesh" href="../remesh/#ordito.remesh.isotropic_remesh"><code>isotropic_remesh</code></a>, whose tangential
+  smoothing adds each vertex's area-weighted one ring over its neighbours in ascending order when
+  on, and so the splits, collapses and flips that follow and the face count;</li>
+<li>the quadrics of <a class="autorefs autorefs-internal" title="quadric_decimate" href="../remesh/#ordito.remesh.quadric_decimate"><code>quadric_decimate</code></a> at a vertex with more than
+  64 incident faces or where three or more boundary edges meet (summed in a fixed order when on,
+  so on the CPU device too their last bits can differ from those with it off; every other vertex
+  is summed in a fixed order either way), and so its collapses;</li>
 <li>the values of the differentiable Chamfer losses
   <a class="autorefs autorefs-internal" title="chamfer_points_to_points_loss" href="../metrics/#ordito.metrics.chamfer_points_to_points_loss"><code>chamfer_points_to_points_loss</code></a>,
   <a class="autorefs autorefs-internal" title="chamfer_points_to_mesh_loss" href="../metrics/#ordito.metrics.chamfer_points_to_mesh_loss"><code>chamfer_points_to_mesh_loss</code></a> and
@@ -4071,19 +4083,7 @@ is_deterministic : Read the setting in force.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">106</span>
-<span class="normal">107</span>
-<span class="normal">108</span>
-<span class="normal">109</span>
-<span class="normal">110</span>
-<span class="normal">111</span>
-<span class="normal">112</span>
-<span class="normal">113</span>
-<span class="normal">114</span>
-<span class="normal">115</span>
-<span class="normal">116</span>
-<span class="normal">117</span>
-<span class="normal">118</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">118</span>
 <span class="normal">119</span>
 <span class="normal">120</span>
 <span class="normal">121</span>
@@ -4103,7 +4103,19 @@ is_deterministic : Read the setting in force.</p>
 <span class="normal">135</span>
 <span class="normal">136</span>
 <span class="normal">137</span>
-<span class="normal">138</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">138</span>
+<span class="normal">139</span>
+<span class="normal">140</span>
+<span class="normal">141</span>
+<span class="normal">142</span>
+<span class="normal">143</span>
+<span class="normal">144</span>
+<span class="normal">145</span>
+<span class="normal">146</span>
+<span class="normal">147</span>
+<span class="normal">148</span>
+<span class="normal">149</span>
+<span class="normal">150</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Set the process-wide default for reproducible results (see [`ordito.config`][ordito.config]).</span>
 
@@ -4192,27 +4204,15 @@ thread or task, or the process-wide default set by
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 16 places</summary>
+      <summary>Referenced by 19 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.sum_of_terms">sum_of_terms</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.polyline_triangulate">polyline_triangulate</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.triangulate_polygon">triangulate_polygon</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.stitch_smooth">stitch_smooth</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_volume">make_volume</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_winding_consistent">make_winding_consistent</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.remove_small_components">remove_small_components</a></span> · <span class="ordito-backlink"><a href="../adjacency/#ordito.adjacency">adjacency</a> › <a href="../adjacency/#ordito.adjacency.vertex_face_adjacency">vertex_face_adjacency</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.loop_perimeters">loop_perimeters</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.edge_length_sum">edge_length_sum</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_orientation_bits">face_orientation_bits</a></span> · <span class="ordito-backlink"><a href="../vertices/#ordito.vertices">vertices</a> › <a href="../vertices/#ordito.vertices.vertex_defects">vertex_defects</a></span> · <span class="ordito-backlink"><a href="../reconstruction/#ordito.reconstruction">reconstruction</a> › <a href="../reconstruction/#ordito.reconstruction.screened_poisson">screened_poisson</a></span> · <span class="ordito-backlink"><a href="../ray/#ordito.ray">ray</a> › <a href="../ray/#ordito.ray.intersects_location">intersects_location</a></span></p>
+<span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.scatter_sum">scatter_sum</a></span> · <span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.segment_sum">segment_sum</a></span> · <span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.sum_of_terms">sum_of_terms</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.polyline_triangulate">polyline_triangulate</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.triangulate_polygon">triangulate_polygon</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.stitch_smooth">stitch_smooth</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.quadric_decimate">quadric_decimate</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_volume">make_volume</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_winding_consistent">make_winding_consistent</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.remove_small_components">remove_small_components</a></span> · <span class="ordito-backlink"><a href="../adjacency/#ordito.adjacency">adjacency</a> › <a href="../adjacency/#ordito.adjacency.vertex_face_adjacency">vertex_face_adjacency</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.loop_perimeters">loop_perimeters</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.edge_length_sum">edge_length_sum</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_orientation_bits">face_orientation_bits</a></span> · <span class="ordito-backlink"><a href="../vertices/#ordito.vertices">vertices</a> › <a href="../vertices/#ordito.vertices.vertex_defects">vertex_defects</a></span> · <span class="ordito-backlink"><a href="../reconstruction/#ordito.reconstruction">reconstruction</a> › <a href="../reconstruction/#ordito.reconstruction.screened_poisson">screened_poisson</a></span> · <span class="ordito-backlink"><a href="../ray/#ordito.ray">ray</a> › <a href="../ray/#ordito.ray.intersects_location">intersects_location</a></span></p>
     </details>
 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">141</span>
-<span class="normal">142</span>
-<span class="normal">143</span>
-<span class="normal">144</span>
-<span class="normal">145</span>
-<span class="normal">146</span>
-<span class="normal">147</span>
-<span class="normal">148</span>
-<span class="normal">149</span>
-<span class="normal">150</span>
-<span class="normal">151</span>
-<span class="normal">152</span>
-<span class="normal">153</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">153</span>
 <span class="normal">154</span>
 <span class="normal">155</span>
 <span class="normal">156</span>
@@ -4221,7 +4221,19 @@ thread or task, or the process-wide default set by
 <span class="normal">159</span>
 <span class="normal">160</span>
 <span class="normal">161</span>
-<span class="normal">162</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_deterministic</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">162</span>
+<span class="normal">163</span>
+<span class="normal">164</span>
+<span class="normal">165</span>
+<span class="normal">166</span>
+<span class="normal">167</span>
+<span class="normal">168</span>
+<span class="normal">169</span>
+<span class="normal">170</span>
+<span class="normal">171</span>
+<span class="normal">172</span>
+<span class="normal">173</span>
+<span class="normal">174</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_deterministic</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether results are reproducible in the current context (see [`ordito.config`][ordito.config]).</span>
 
@@ -4351,19 +4363,7 @@ block inherit it), nests, and restores the previous value on exit, also when the
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">165</span>
-<span class="normal">166</span>
-<span class="normal">167</span>
-<span class="normal">168</span>
-<span class="normal">169</span>
-<span class="normal">170</span>
-<span class="normal">171</span>
-<span class="normal">172</span>
-<span class="normal">173</span>
-<span class="normal">174</span>
-<span class="normal">175</span>
-<span class="normal">176</span>
-<span class="normal">177</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">177</span>
 <span class="normal">178</span>
 <span class="normal">179</span>
 <span class="normal">180</span>
@@ -4392,7 +4392,19 @@ block inherit it), nests, and restores the previous value on exit, also when the
 <span class="normal">203</span>
 <span class="normal">204</span>
 <span class="normal">205</span>
-<span class="normal">206</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
+<span class="normal">206</span>
+<span class="normal">207</span>
+<span class="normal">208</span>
+<span class="normal">209</span>
+<span class="normal">210</span>
+<span class="normal">211</span>
+<span class="normal">212</span>
+<span class="normal">213</span>
+<span class="normal">214</span>
+<span class="normal">215</span>
+<span class="normal">216</span>
+<span class="normal">217</span>
+<span class="normal">218</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Generator</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Override the determinism setting within a ``with`` block.</span>

@@ -5137,8 +5137,8 @@ null space, where IC(0) hits a zero pivot on the last row of every connected com
 <p><strong>The multilevel option</strong> is <a class="autorefs autorefs-internal" title="multigrid_preconditioner" href="./#ordito.linalg.multigrid_preconditioner"><code>multigrid_preconditioner</code></a>:
 smoothed aggregation, the one scheme that breaks the iteration count's growth with problem size
 rather than paying it down by a constant factor. It is not the default, and the reason is the
-<em>setup</em> rather than the cycle: building the hierarchy (one aggregation, one power iteration, a
-transpose and two sparse products per level) has a real fixed cost, so the V-cycle wins
+<em>setup</em> rather than the cycle: building the hierarchy (one aggregation, one power iteration and
+three sparse assemblies per level) has a real fixed cost, so the V-cycle wins
 exactly where the solve it replaces is long enough to amortize that setup and loses on a
 well-conditioned or already-fast-converging system. See
 <a class="autorefs autorefs-internal" title="CG_MULTIGRID_DOMINANCE
@@ -7946,7 +7946,8 @@ binds a set of working vectors to the column layout of each solve that uses it.<
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/linalg.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4677</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4676</span>
+<span class="normal">4677</span>
 <span class="normal">4678</span>
 <span class="normal">4679</span>
 <span class="normal">4680</span>
@@ -7981,8 +7982,7 @@ binds a set of working vectors to the column layout of each solve that uses it.<
 <span class="normal">4709</span>
 <span class="normal">4710</span>
 <span class="normal">4711</span>
-<span class="normal">4712</span>
-<span class="normal">4713</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+<span class="normal">4712</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">weight_sums</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Build ``M_ff`` and its transpose from ``L`` and ``D``, and fix the interval."""</span>
@@ -8173,7 +8173,8 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4715</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4714</span>
+<span class="normal">4715</span>
 <span class="normal">4716</span>
 <span class="normal">4717</span>
 <span class="normal">4718</span>
@@ -8220,8 +8221,7 @@ casts them on first use.</p>
 <span class="normal">4759</span>
 <span class="normal">4760</span>
 <span class="normal">4761</span>
-<span class="normal">4762</span>
-<span class="normal">4763</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
+<span class="normal">4762</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">from_factors</span><span class="p">(</span>
     <span class="bp">cls</span><span class="p">,</span>
     <span class="n">factor</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -8295,9 +8295,9 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4765</span>
-<span class="normal">4766</span>
-<span class="normal">4767</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_SquaredLaplacianApply</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4764</span>
+<span class="normal">4765</span>
+<span class="normal">4766</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_SquaredLaplacianApply</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Working vectors for ``n_columns`` blocks at column pitch ``stride``."""</span>
     <span class="k">return</span> <span class="n">_SquaredLaplacianApply</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">,</span> <span class="n">stride</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
@@ -8329,7 +8329,8 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4815</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4814</span>
+<span class="normal">4815</span>
 <span class="normal">4816</span>
 <span class="normal">4817</span>
 <span class="normal">4818</span>
@@ -8343,8 +8344,7 @@ casts them on first use.</p>
 <span class="normal">4826</span>
 <span class="normal">4827</span>
 <span class="normal">4828</span>
-<span class="normal">4829</span>
-<span class="normal">4830</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">narrowed</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
+<span class="normal">4829</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">narrowed</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return ``B``'s and ``Bᵀ``'s values in ``float32``, built once.</span>
 
@@ -15336,17 +15336,16 @@ caller needs.</p>
 <details class="note" open>
   <summary>Notes</summary>
   <p>Setup is not free and it is not amortized over anything: building the hierarchy costs one
-aggregation, one power iteration, two sparse products and one transpose per level. <strong>Ask for
+aggregation, one power iteration and three sparse assemblies (the prolongator, <code>A P</code> and
+<code>P^T (A P)</code>) per level. <strong>Ask for
 this where the solve dominates the call</strong>, and pass the same operator's preconditioner into a
 loop rather than rebuilding it -- <a class="autorefs autorefs-internal" title="solve_spd" href="./#ordito.linalg.solve_spd"><code>solve_spd</code></a>'s <code>preconditioner</code>
 parameter exists for exactly that.</p>
 <p><strong>The setup is host cost and it is per <em>level</em>, not per unknown, so it cannot be cut by making
-the operator smaller.</strong> A level's cost is dominated by host-side overhead in
-<code>warp.sparse.bsr_mm</code>, which makes device-to-host readbacks to size its output and so costs
-roughly the same regardless of the level's size. That is Warp's, not this package's, so the
-reachable lever is to build <strong>fewer levels</strong>, which is what <code>_MULTIGRID_MAX_COARSE</code> is set
-for.</p>
-<p>Coarsening stops at 128 rows, or earlier if a level fails to shrink; the coarsest operator is
+the operator smaller.</strong> Each assembly reads its output size back to the host before it can
+allocate, so a level has a fixed cost whatever its size, and the reachable lever is to build
+<strong>fewer levels</strong>, which is what <code>_MULTIGRID_MAX_COARSE</code> is set for.</p>
+<p>Coarsening stops at 384 rows, or earlier if a level fails to shrink; the coarsest operator is
 then inverted densely on the host, which is exact and is a single launch inside the cycle where
 an iterative coarse solve would be a data-dependent loop. When coarsening stalls while the level
 is still too large to factor, there is no usable hierarchy and this hands back
@@ -15508,8 +15507,7 @@ that did not help.</p>
 <span class="normal">4434</span>
 <span class="normal">4435</span>
 <span class="normal">4436</span>
-<span class="normal">4437</span>
-<span class="normal">4438</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">multigrid_preconditioner</span><span class="p">(</span>
+<span class="normal">4437</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">multigrid_preconditioner</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -15556,19 +15554,18 @@ that did not help.</p>
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
 <span class="sd">    Setup is not free and it is not amortized over anything: building the hierarchy costs one</span>
-<span class="sd">    aggregation, one power iteration, two sparse products and one transpose per level. **Ask for</span>
+<span class="sd">    aggregation, one power iteration and three sparse assemblies (the prolongator, ``A P`` and</span>
+<span class="sd">    ``P^T (A P)``) per level. **Ask for</span>
 <span class="sd">    this where the solve dominates the call**, and pass the same operator's preconditioner into a</span>
 <span class="sd">    loop rather than rebuilding it -- [`solve_spd`][ordito.linalg.solve_spd]'s ``preconditioner``</span>
 <span class="sd">    parameter exists for exactly that.</span>
 
 <span class="sd">    **The setup is host cost and it is per *level*, not per unknown, so it cannot be cut by making</span>
-<span class="sd">    the operator smaller.** A level's cost is dominated by host-side overhead in</span>
-<span class="sd">    ``warp.sparse.bsr_mm``, which makes device-to-host readbacks to size its output and so costs</span>
-<span class="sd">    roughly the same regardless of the level's size. That is Warp's, not this package's, so the</span>
-<span class="sd">    reachable lever is to build **fewer levels**, which is what ``_MULTIGRID_MAX_COARSE`` is set</span>
-<span class="sd">    for.</span>
+<span class="sd">    the operator smaller.** Each assembly reads its output size back to the host before it can</span>
+<span class="sd">    allocate, so a level has a fixed cost whatever its size, and the reachable lever is to build</span>
+<span class="sd">    **fewer levels**, which is what ``_MULTIGRID_MAX_COARSE`` is set for.</span>
 
-<span class="sd">    Coarsening stops at 128 rows, or earlier if a level fails to shrink; the coarsest operator is</span>
+<span class="sd">    Coarsening stops at 384 rows, or earlier if a level fails to shrink; the coarsest operator is</span>
 <span class="sd">    then inverted densely on the host, which is exact and is a single launch inside the cycle where</span>
 <span class="sd">    an iterative coarse solve would be a data-dependent loop. When coarsening stalls while the level</span>
 <span class="sd">    is still too large to factor, there is no usable hierarchy and this hands back</span>
@@ -15813,7 +15810,8 @@ preconditioner apply is always <code>z = M x</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4441</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4440</span>
+<span class="normal">4441</span>
 <span class="normal">4442</span>
 <span class="normal">4443</span>
 <span class="normal">4444</span>
@@ -15909,8 +15907,7 @@ preconditioner apply is always <code>z = M x</code>.</p>
 <span class="normal">4534</span>
 <span class="normal">4535</span>
 <span class="normal">4536</span>
-<span class="normal">4537</span>
-<span class="normal">4538</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chebyshev_preconditioner</span><span class="p">(</span>
+<span class="normal">4537</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chebyshev_preconditioner</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -16193,7 +16190,8 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4541</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4540</span>
+<span class="normal">4541</span>
 <span class="normal">4542</span>
 <span class="normal">4543</span>
 <span class="normal">4544</span>
@@ -16272,8 +16270,7 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 <span class="normal">4617</span>
 <span class="normal">4618</span>
 <span class="normal">4619</span>
-<span class="normal">4620</span>
-<span class="normal">4621</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">squared_laplacian_preconditioner</span><span class="p">(</span>
+<span class="normal">4620</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">squared_laplacian_preconditioner</span><span class="p">(</span>
     <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">weight_sums</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SquaredLaplacianPreconditioner</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>

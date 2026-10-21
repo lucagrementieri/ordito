@@ -3685,6 +3685,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.graph.successor_cycles_from_table" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        successor_cycles_from_table
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.graph.shortest_path_envelope" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -3920,6 +3931,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.graph.successor_cycles_from_table" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        successor_cycles_from_table
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.graph.shortest_path_envelope" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -4033,6 +4055,14 @@
               <td>
                 <div class="doc-md-description">
                   <p>Every cycle of a successor graph in traversal order, packed flat plus per-cycle offsets.</p>
+                </div>
+              </td>
+            </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="successor_cycles_from_table (ordito.graph.successor_cycles_from_table)" href="./#ordito.graph.successor_cycles_from_table">successor_cycles_from_table</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Every cycle of a successor graph given as a successor table, packed flat plus offsets.</p>
                 </div>
               </td>
             </tr>
@@ -6600,10 +6630,10 @@ returned <code>parity</code>. This is the same best-effort contract a flood fill
 <p>The edges of a <strong>successor graph</strong> — one in which each node has at most one outgoing edge —
 decompose into node-disjoint cycles and chains. This orders every node along its cycle,
 following the edge direction from the cycle's smallest node index, with no per-cycle Python
-and no per-cycle allocation. The ranking is pointer-jumping (Wyllie's list ranking), so the
-work is <code>O(k log L)</code> over <code>k</code> cycle nodes with longest cycle <code>L</code> rather than the
-quadratic per-node successor walk. A mesh boundary's oriented edges are the motivating input
-(see <a class="autorefs autorefs-internal" title="boundary_loops_with_offsets" href="../boundary/#ordito.boundary.boundary_loops_with_offsets"><code>boundary_loops_with_offsets</code></a>).</p>
+and no per-cycle allocation. The ranking is pointer jumping (Wyllie's list ranking), so the
+work is <code>O(m log m)</code> over <code>m</code> edges rather than the quadratic per-node successor walk. A
+mesh boundary's oriented edges are the motivating input (see
+<a class="autorefs autorefs-internal" title="boundary_loops_with_offsets" href="../boundary/#ordito.boundary.boundary_loops_with_offsets"><code>boundary_loops_with_offsets</code></a>).</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6666,7 +6696,8 @@ do not appear in the result.</p>
             <td>
               <div class="doc-md-description">
                 <p>When <code>False</code>, skip the range check on <code>edges</code> and the device synchronization it
-costs; forwarded to <a class="autorefs autorefs-internal" title="connected_component_labels_from_edges" href="./#ordito.graph.connected_component_labels_from_edges"><code>connected_component_labels_from_edges</code></a> — see the warning there.</p>
+costs. An out-of-range endpoint then writes past a <code>node_count</code>-element buffer, as in
+<a class="autorefs autorefs-internal" title="connected_component_labels_from_edges" href="./#ordito.graph.connected_component_labels_from_edges"><code>connected_component_labels_from_edges</code></a> — see the warning there.</p>
               </div>
             </td>
             <td>
@@ -6752,12 +6783,14 @@ endpoint is out of range.</p>
   <p>On malformed input — a node with several in-edges, so two chains merge — the cycle ranks can
 collide. Colliding nodes overwrite one slot and leave another at <code>0</code>, which is a valid node
 index, so the result stays in-range rather than returning uninitialized garbage; it is the
-caller's job to pass a true successor graph if exact cycles are required.</p>
+caller's job to pass a true successor graph if exact cycles are required. A node with several
+out-edges keeps one of them.</p>
 </details>
 
 <details class="see-also" open>
   <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="connected_component_labels_from_edges" href="./#ordito.graph.connected_component_labels_from_edges"><code>connected_component_labels_from_edges</code></a>
+  <p><a class="autorefs autorefs-internal" title="successor_cycles_from_table" href="./#ordito.graph.successor_cycles_from_table"><code>successor_cycles_from_table</code></a>
+    The same cycles from a successor table and its tails.
 <a class="autorefs autorefs-internal" title="boundary_loops_with_offsets" href="../boundary/#ordito.boundary.boundary_loops_with_offsets"><code>boundary_loops_with_offsets</code></a></p>
 </details>
 
@@ -6775,9 +6808,9 @@ caller's job to pass a true successor graph if exact cycles are required.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 2 places</summary>
+      <summary>Referenced by 3 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../array/#ordito.array">array</a> › <a href="../array/#ordito.array.pack_1d_arrays">pack_1d_arrays</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_loops_with_offsets">boundary_loops_with_offsets</a></span></p>
+<span class="ordito-backlink"><a href="../array/#ordito.array">array</a> › <a href="../array/#ordito.array.pack_1d_arrays">pack_1d_arrays</a></span> · <span class="ordito-backlink"><a href="./#ordito.graph">graph</a> › <a href="./#ordito.graph.successor_cycles_from_table">successor_cycles_from_table</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_loops_with_offsets">boundary_loops_with_offsets</a></span></p>
     </details>
 
 
@@ -6882,10 +6915,312 @@ caller's job to pass a true successor graph if exact cycles are required.</p>
 <span class="normal">764</span>
 <span class="normal">765</span>
 <span class="normal">766</span>
-<span class="normal">767</span>
-<span class="normal">768</span>
-<span class="normal">769</span>
-<span class="normal">770</span>
+<span class="normal">767</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">successor_cycles</span><span class="p">(</span>
+    <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">node_count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Every cycle of a successor graph in traversal order, packed flat plus per-cycle offsets.</span>
+
+<span class="sd">    The edges of a **successor graph** — one in which each node has at most one outgoing edge —</span>
+<span class="sd">    decompose into node-disjoint cycles and chains. This orders every node along its cycle,</span>
+<span class="sd">    following the edge direction from the cycle's smallest node index, with no per-cycle Python</span>
+<span class="sd">    and no per-cycle allocation. The ranking is pointer jumping (Wyllie's list ranking), so the</span>
+<span class="sd">    work is ``O(m log m)`` over ``m`` edges rather than the quadratic per-node successor walk. A</span>
+<span class="sd">    mesh boundary's oriented edges are the motivating input (see</span>
+<span class="sd">    [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]).</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    edges</span>
+<span class="sd">        ``(m, 2)`` directed edges; row ``(a, b)`` makes ``b`` the successor of</span>
+<span class="sd">        ``a``. At most one out-edge per node. Nodes appearing in no edge belong to no cycle and</span>
+<span class="sd">        do not appear in the result.</span>
+<span class="sd">    node_count</span>
+<span class="sd">        Number of nodes ``0 .. node_count - 1``.</span>
+<span class="sd">    validate</span>
+<span class="sd">        When ``False``, skip the range check on ``edges`` and the device synchronization it</span>
+<span class="sd">        costs. An out-of-range endpoint then writes past a ``node_count``-element buffer, as in</span>
+<span class="sd">        [`connected_component_labels_from_edges`]</span>
+<span class="sd">        [ordito.graph.connected_component_labels_from_edges] — see the warning there.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    flat_cycles : wp.array[wp.int32]</span>
+<span class="sd">        ``(n_cycle_nodes,)`` concatenated ordered node indices of every cycle, on</span>
+<span class="sd">        ``edges.device``, ``n_cycle_nodes`` the total cycle length. Each cycle starts at its</span>
+<span class="sd">        smallest node index and follows the edge direction.</span>
+<span class="sd">    offsets : wp.array[wp.int32]</span>
+<span class="sd">        ``(n_cycles + 1,)`` total-terminated offsets: cycle ``i`` occupies</span>
+<span class="sd">        ``flat_cycles[offsets[i] : offsets[i + 1]]``; ``[0]`` when there is no cycle.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    TypeError</span>
+<span class="sd">        If ``edges`` is not a rank-2 ``int32`` array.</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``edges`` is not ``(m, 2)``, ``node_count`` is negative, or (with ``validate``) an</span>
+<span class="sd">        endpoint is out of range.</span>
+
+<span class="sd">    Notes</span>
+<span class="sd">    -----</span>
+<span class="sd">    On malformed input — a node with several in-edges, so two chains merge — the cycle ranks can</span>
+<span class="sd">    collide. Colliding nodes overwrite one slot and leave another at ``0``, which is a valid node</span>
+<span class="sd">    index, so the result stays in-range rather than returning uninitialized garbage; it is the</span>
+<span class="sd">    caller's job to pass a true successor graph if exact cycles are required. A node with several</span>
+<span class="sd">    out-edges keeps one of them.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`successor_cycles_from_table`][ordito.graph.successor_cycles_from_table]</span>
+<span class="sd">        The same cycles from a successor table and its tails.</span>
+<span class="sd">    [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    Two cycles, ``1 -&gt; 2 -&gt; 3 -&gt; 1`` and ``4 -&gt; 5 -&gt; 4``; the chain ``6 -&gt; 7`` is no cycle:</span>
+
+<span class="sd">    ```python</span>
+<span class="sd">    import warp as wp</span>
+
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    edges = wp.array([[2, 3], [1, 2], [5, 4], [3, 1], [4, 5], [6, 7]], dtype=wp.int32)</span>
+<span class="sd">    flat_cycles, offsets = od.graph.successor_cycles(edges, 8)</span>
+<span class="sd">    print(flat_cycles.numpy().tolist())  # [1, 2, 3, 4, 5]</span>
+<span class="sd">    print(offsets.numpy().tolist())  # [0, 3, 5]</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="c1"># The range check must run BEFORE ``scatter_successor_tails`` below: that kernel indexes</span>
+    <span class="c1"># ``next_node`` by the raw edge endpoints, so an out-of-range endpoint writes past a</span>
+    <span class="c1"># ``node_count``-element buffer. On the CPU device that is a host-heap overwrite, silent at the</span>
+    <span class="c1"># point of the write and surfacing later as a glibc abort somewhere unrelated.</span>
+    <span class="n">node_count</span> <span class="o">=</span> <span class="n">_validate_edge_list</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">node_count</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="n">validate</span><span class="p">)</span>
+
+    <span class="n">device</span> <span class="o">=</span> <span class="n">edges</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">m</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">edges</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+    <span class="k">if</span> <span class="n">m</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">node_count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty_packed</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+
+    <span class="c1"># The successor table and its tails in one pass over the edges, the tails in node space so the</span>
+    <span class="c1"># ranking walks the nodes in ascending order; a node with several out-edges (malformed input)</span>
+    <span class="c1"># is listed once, so the ranking places every node at most once.</span>
+    <span class="n">next_node</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">tails</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_graph</span><span class="o">.</span><span class="n">scatter_successor_tails</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">next_node</span><span class="p">,</span> <span class="n">tails</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+    <span class="p">)</span>
+    <span class="c1"># Zero-initialised: colliding ranks on malformed input (see Notes) can leave slots unwritten,</span>
+    <span class="c1"># and zero is a valid node index.</span>
+    <span class="c1"># A cycle has at most ``m`` nodes, which bounds the pointer-jumping rounds.</span>
+    <span class="k">return</span> <span class="n">_ranked_successor_cycles</span><span class="p">(</span>
+        <span class="n">tails</span><span class="p">,</span> <span class="n">next_node</span><span class="p">,</span> <span class="n">kernel_graph</span><span class="o">.</span><span class="n">CYCLE_NODES</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="nb">min</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">node_count</span><span class="p">),</span> <span class="n">zero_unwritten</span><span class="o">=</span><span class="kc">True</span>
+    <span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.graph.successor_cycles_from_table" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">successor_cycles_from_table</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">successor_cycles_from_table</span><span class="p">(</span>
+    <span class="n">tails</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">next_node</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">paired</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">node_values</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Every cycle of a successor graph given as a successor table, packed flat plus offsets.</p>
+<p><a class="autorefs autorefs-internal" title="successor_cycles" href="./#ordito.graph.successor_cycles"><code>successor_cycles</code></a>' answer — each cycle from its smallest
+node in edge direction, the cycles in ascending order of it — for a caller that already holds
+the successor table and the list of nodes with an edge out (its <em>tails</em>), so no edge list is
+scattered. Chains, walks that reach a node with no successor, are dropped. The boundary walks
+of <a class="autorefs autorefs-internal" title="boundary_loops_with_offsets" href="../boundary/#ordito.boundary.boundary_loops_with_offsets"><code>boundary_loops_with_offsets</code></a> rank their
+vertices, halfedges and darts through it.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>tails</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(m,)</code> distinct nodes that have a successor, in any order. An entry of <code>-1</code> is
+skipped.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>next_node</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(node_count,)</code> successor of every node, <code>-1</code> where a node has none. Every successor
+must be <code>-1</code> or below <code>node_count</code>, and no two tails may share a successor.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>paired</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Nodes <code>2 * v</code> and <code>2 * v + 1</code> are the two directions through <code>v</code>, so every cycle
+has a mirror over the partner nodes: keep the one of each pair whose start is even, and
+write node <code>2 * v + s</code> out as <code>v</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>node_values</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(node_count,)</code> value written for each ranked node in place of the node (after the
+<code>paired</code> halving), as the origin vertex of a halfedge. <code>None</code> writes the nodes.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+<th>Name</th>          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+<td><code>flat_cycles</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_cycle_nodes,)</code> concatenated ordered nodes (or their values) of every cycle, on
+<code>tails.device</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+<td><code>offsets</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_cycles + 1,)</code> total-terminated offsets: cycle <code>i</code> occupies
+<code>flat_cycles[offsets[i] : offsets[i + 1]]</code>; <code>[0]</code> when there is no cycle.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>tails</code>, <code>next_node</code> and <code>node_values</code> are not all on one device.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="successor_cycles" href="./#ordito.graph.successor_cycles"><code>successor_cycles</code></a>
+    The same cycles from an edge list.</p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <p>The cycles <code>0 -&gt; 2 -&gt; 1 -&gt; 0</code> and <code>3 -&gt; 4 -&gt; 3</code>; node <code>5</code> has no successor:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">tails</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">4</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
+<span class="n">next_node</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">2</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
+<span class="n">flat_cycles</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">successor_cycles_from_table</span><span class="p">(</span><span class="n">tails</span><span class="p">,</span> <span class="n">next_node</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">flat_cycles</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [0, 2, 1, 3, 4]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">offsets</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [0, 3, 5]</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 2 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.graph">graph</a> › <a href="./#ordito.graph.successor_cycles">successor_cycles</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.boundary_loops_with_offsets">boundary_loops_with_offsets</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/graph.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">770</span>
 <span class="normal">771</span>
 <span class="normal">772</span>
 <span class="normal">773</span>
@@ -6959,211 +7294,81 @@ caller's job to pass a true successor graph if exact cycles are required.</p>
 <span class="normal">841</span>
 <span class="normal">842</span>
 <span class="normal">843</span>
-<span class="normal">844</span>
-<span class="normal">845</span>
-<span class="normal">846</span>
-<span class="normal">847</span>
-<span class="normal">848</span>
-<span class="normal">849</span>
-<span class="normal">850</span>
-<span class="normal">851</span>
-<span class="normal">852</span>
-<span class="normal">853</span>
-<span class="normal">854</span>
-<span class="normal">855</span>
-<span class="normal">856</span>
-<span class="normal">857</span>
-<span class="normal">858</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">successor_cycles</span><span class="p">(</span>
-    <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">node_count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="normal">844</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">successor_cycles_from_table</span><span class="p">(</span>
+    <span class="n">tails</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">next_node</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">paired</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">node_values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Every cycle of a successor graph in traversal order, packed flat plus per-cycle offsets.</span>
+<span class="sd">    Every cycle of a successor graph given as a successor table, packed flat plus offsets.</span>
 
-<span class="sd">    The edges of a **successor graph** — one in which each node has at most one outgoing edge —</span>
-<span class="sd">    decompose into node-disjoint cycles and chains. This orders every node along its cycle,</span>
-<span class="sd">    following the edge direction from the cycle's smallest node index, with no per-cycle Python</span>
-<span class="sd">    and no per-cycle allocation. The ranking is pointer-jumping (Wyllie's list ranking), so the</span>
-<span class="sd">    work is ``O(k log L)`` over ``k`` cycle nodes with longest cycle ``L`` rather than the</span>
-<span class="sd">    quadratic per-node successor walk. A mesh boundary's oriented edges are the motivating input</span>
-<span class="sd">    (see [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]).</span>
+<span class="sd">    [`successor_cycles`][ordito.graph.successor_cycles]' answer — each cycle from its smallest</span>
+<span class="sd">    node in edge direction, the cycles in ascending order of it — for a caller that already holds</span>
+<span class="sd">    the successor table and the list of nodes with an edge out (its *tails*), so no edge list is</span>
+<span class="sd">    scattered. Chains, walks that reach a node with no successor, are dropped. The boundary walks</span>
+<span class="sd">    of [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets] rank their</span>
+<span class="sd">    vertices, halfedges and darts through it.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
-<span class="sd">    edges</span>
-<span class="sd">        ``(m, 2)`` directed edges; row ``(a, b)`` makes ``b`` the successor of</span>
-<span class="sd">        ``a``. At most one out-edge per node. Nodes appearing in no edge belong to no cycle and</span>
-<span class="sd">        do not appear in the result.</span>
-<span class="sd">    node_count</span>
-<span class="sd">        Number of nodes ``0 .. node_count - 1``.</span>
-<span class="sd">    validate</span>
-<span class="sd">        When ``False``, skip the range check on ``edges`` and the device synchronization it</span>
-<span class="sd">        costs; forwarded to [`connected_component_labels_from_edges`]</span>
-<span class="sd">        [ordito.graph.connected_component_labels_from_edges] — see the warning there.</span>
+<span class="sd">    tails</span>
+<span class="sd">        ``(m,)`` distinct nodes that have a successor, in any order. An entry of ``-1`` is</span>
+<span class="sd">        skipped.</span>
+<span class="sd">    next_node</span>
+<span class="sd">        ``(node_count,)`` successor of every node, ``-1`` where a node has none. Every successor</span>
+<span class="sd">        must be ``-1`` or below ``node_count``, and no two tails may share a successor.</span>
+<span class="sd">    paired</span>
+<span class="sd">        Nodes ``2 * v`` and ``2 * v + 1`` are the two directions through ``v``, so every cycle</span>
+<span class="sd">        has a mirror over the partner nodes: keep the one of each pair whose start is even, and</span>
+<span class="sd">        write node ``2 * v + s`` out as ``v``.</span>
+<span class="sd">    node_values</span>
+<span class="sd">        ``(node_count,)`` value written for each ranked node in place of the node (after the</span>
+<span class="sd">        ``paired`` halving), as the origin vertex of a halfedge. ``None`` writes the nodes.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
 <span class="sd">    flat_cycles : wp.array[wp.int32]</span>
-<span class="sd">        ``(n_cycle_nodes,)`` concatenated ordered node indices of every cycle, on</span>
-<span class="sd">        ``edges.device``, ``n_cycle_nodes`` the total cycle length. Each cycle starts at its</span>
-<span class="sd">        smallest node index and follows the edge direction.</span>
+<span class="sd">        ``(n_cycle_nodes,)`` concatenated ordered nodes (or their values) of every cycle, on</span>
+<span class="sd">        ``tails.device``.</span>
 <span class="sd">    offsets : wp.array[wp.int32]</span>
 <span class="sd">        ``(n_cycles + 1,)`` total-terminated offsets: cycle ``i`` occupies</span>
 <span class="sd">        ``flat_cycles[offsets[i] : offsets[i + 1]]``; ``[0]`` when there is no cycle.</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
-<span class="sd">    TypeError</span>
-<span class="sd">        If ``edges`` is not a rank-2 ``int32`` array.</span>
-<span class="sd">    ValueError</span>
-<span class="sd">        If ``edges`` is not ``(m, 2)``, ``node_count`` is negative, or (with ``validate``) an</span>
-<span class="sd">        endpoint is out of range.</span>
-
-<span class="sd">    Notes</span>
-<span class="sd">    -----</span>
-<span class="sd">    On malformed input — a node with several in-edges, so two chains merge — the cycle ranks can</span>
-<span class="sd">    collide. Colliding nodes overwrite one slot and leave another at ``0``, which is a valid node</span>
-<span class="sd">    index, so the result stays in-range rather than returning uninitialized garbage; it is the</span>
-<span class="sd">    caller's job to pass a true successor graph if exact cycles are required.</span>
+<span class="sd">    RuntimeError</span>
+<span class="sd">        If ``tails``, ``next_node`` and ``node_values`` are not all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
-<span class="sd">    [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]</span>
-<span class="sd">    [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]</span>
+<span class="sd">    [`successor_cycles`][ordito.graph.successor_cycles]</span>
+<span class="sd">        The same cycles from an edge list.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
-<span class="sd">    Two cycles, ``1 -&gt; 2 -&gt; 3 -&gt; 1`` and ``4 -&gt; 5 -&gt; 4``; the chain ``6 -&gt; 7`` is no cycle:</span>
+<span class="sd">    The cycles ``0 -&gt; 2 -&gt; 1 -&gt; 0`` and ``3 -&gt; 4 -&gt; 3``; node ``5`` has no successor:</span>
 
 <span class="sd">    ```python</span>
 <span class="sd">    import warp as wp</span>
 
 <span class="sd">    import ordito as od</span>
 
-<span class="sd">    edges = wp.array([[2, 3], [1, 2], [5, 4], [3, 1], [4, 5], [6, 7]], dtype=wp.int32)</span>
-<span class="sd">    flat_cycles, offsets = od.graph.successor_cycles(edges, 8)</span>
-<span class="sd">    print(flat_cycles.numpy().tolist())  # [1, 2, 3, 4, 5]</span>
+<span class="sd">    tails = wp.array([4, 0, 1, 2, 3], dtype=wp.int32)</span>
+<span class="sd">    next_node = wp.array([2, 0, 1, 4, 3, -1], dtype=wp.int32)</span>
+<span class="sd">    flat_cycles, offsets = od.graph.successor_cycles_from_table(tails, next_node)</span>
+<span class="sd">    print(flat_cycles.numpy().tolist())  # [0, 2, 1, 3, 4]</span>
 <span class="sd">    print(offsets.numpy().tolist())  # [0, 3, 5]</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="c1"># The range check must run BEFORE ``scatter_successor`` below, not be deferred to the</span>
-    <span class="c1"># ``connected_component_labels_from_edges`` call: that kernel indexes ``next_node`` by the raw</span>
-    <span class="c1"># edge endpoints, so an out-of-range endpoint writes past a ``node_count``-element buffer. On</span>
-    <span class="c1"># the CPU device that is a host-heap overwrite, silent at the point of the write and surfacing</span>
-    <span class="c1"># later as a glibc abort somewhere unrelated.</span>
-    <span class="n">node_count</span> <span class="o">=</span> <span class="n">_validate_edge_list</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">node_count</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="n">validate</span><span class="p">)</span>
-
-    <span class="n">device</span> <span class="o">=</span> <span class="n">edges</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">m</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">edges</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-    <span class="k">if</span> <span class="n">m</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">node_count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
-            <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-        <span class="p">)</span>
-
-    <span class="c1"># The successor table and the distinct-endpoint mask come out of one pass over the edges. The</span>
-    <span class="c1"># distinct endpoints, ascending, are then the mask's ``flatnonzero`` rather than ``unique_1d``</span>
-    <span class="c1"># over the flattened pairs: both return the sorted distinct values, and the range check above</span>
-    <span class="c1"># has already guaranteed every endpoint indexes the mask, but this one is a zeroed buffer and a</span>
-    <span class="c1"># scan where that one is a hash table, a compaction, a radix sort and two host readbacks.</span>
-    <span class="n">next_node</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">node_mask</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_graph</span><span class="o">.</span><span class="n">scatter_successor</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">next_node</span><span class="p">,</span> <span class="n">node_mask</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">tails</span><span class="o">=</span><span class="n">tails</span><span class="p">,</span> <span class="n">next_node</span><span class="o">=</span><span class="n">next_node</span><span class="p">,</span> <span class="n">node_values</span><span class="o">=</span><span class="n">node_values</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">tails</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">next_node</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty_packed</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">tails</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">mode</span> <span class="o">=</span> <span class="n">kernel_graph</span><span class="o">.</span><span class="n">CYCLE_PAIRED</span> <span class="k">if</span> <span class="n">paired</span> <span class="k">else</span> <span class="n">kernel_graph</span><span class="o">.</span><span class="n">CYCLE_NODES</span>
+    <span class="k">return</span> <span class="n">_ranked_successor_cycles</span><span class="p">(</span>
+        <span class="n">tails</span><span class="p">,</span> <span class="n">next_node</span><span class="p">,</span> <span class="n">mode</span><span class="p">,</span> <span class="n">node_values</span><span class="p">,</span> <span class="n">tails</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">zero_unwritten</span><span class="o">=</span><span class="kc">False</span>
     <span class="p">)</span>
-
-    <span class="c1"># Already range-checked above, so the downstream call skips the second reduction and host sync.</span>
-    <span class="n">labels</span> <span class="o">=</span> <span class="n">connected_component_labels_from_edges</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">node_count</span><span class="o">=</span><span class="n">node_count</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-
-    <span class="n">label_min</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">label_count</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">is_chain</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_graph</span><span class="o">.</span><span class="n">scatter_cycle_min_and_count</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">node_count</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">node_mask</span><span class="p">,</span> <span class="n">next_node</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">label_min</span><span class="p">,</span> <span class="n">label_count</span><span class="p">,</span> <span class="n">is_chain</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-
-    <span class="c1"># A successor graph decomposes into node-disjoint cycles *and* chains (see the docstring). A</span>
-    <span class="c1"># chain component contains a node with no outgoing edge (``next_node[v] &lt; 0``), which</span>
-    <span class="c1"># ``init_rank_arrays`` below treats as a fixed point identical to a genuine cycle's cut at</span>
-    <span class="c1"># ``label_min`` -- two fixed points in one component collide onto rank slot 0 and fabricate a</span>
-    <span class="c1"># bogus "cycle" out of whatever the collision leaves there, including node ids that never</span>
-    <span class="c1"># appeared in the input. Excluding a chain's nodes here keeps that collision scoped to the</span>
-    <span class="c1"># malformed input the Notes above already describe (an in-degree collision), rather than</span>
-    <span class="c1"># firing on an ordinary chain.</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_graph</span><span class="o">.</span><span class="n">chain_node_mask</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">node_count</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">labels</span><span class="p">,</span> <span class="n">is_chain</span><span class="p">,</span> <span class="n">node_mask</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="n">cycle_nodes</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">flatnonzero</span><span class="p">(</span><span class="n">node_mask</span><span class="p">)</span>
-    <span class="n">n_nodes</span> <span class="o">=</span> <span class="n">cycle_nodes</span><span class="o">.</span><span class="n">size</span>
-    <span class="k">if</span> <span class="n">n_nodes</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
-            <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-        <span class="p">)</span>
-
-    <span class="c1"># Pointer-jumping list ranking (Wyllie): O(log L) rounds of pointer jumping replace the</span>
-    <span class="c1"># per-node successor walk, whose total work was quadratic in the cycle length. Each round</span>
-    <span class="c1"># chases several pointers (``pointer_jump_schedule``), so the round count is a logarithm to a</span>
-    <span class="c1"># base above two.</span>
-    <span class="n">successor</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">steps</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">successor_next</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">steps_next</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_graph</span><span class="o">.</span><span class="n">init_rank_arrays</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_nodes</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">cycle_nodes</span><span class="p">,</span> <span class="n">next_node</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">label_min</span><span class="p">,</span> <span class="n">successor</span><span class="p">,</span> <span class="n">steps</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="n">hops</span><span class="p">,</span> <span class="n">rounds</span> <span class="o">=</span> <span class="n">kernel_graph</span><span class="o">.</span><span class="n">pointer_jump_schedule</span><span class="p">(</span><span class="n">n_nodes</span><span class="p">)</span>
-    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">rounds</span><span class="p">):</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_graph</span><span class="o">.</span><span class="n">jump_rank</span><span class="p">,</span>
-            <span class="n">dim</span><span class="o">=</span><span class="n">n_nodes</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">cycle_nodes</span><span class="p">,</span> <span class="n">successor</span><span class="p">,</span> <span class="n">steps</span><span class="p">,</span> <span class="n">hops</span><span class="p">,</span> <span class="n">successor_next</span><span class="p">,</span> <span class="n">steps_next</span><span class="p">],</span>
-            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-        <span class="p">)</span>
-        <span class="n">successor</span><span class="p">,</span> <span class="n">successor_next</span> <span class="o">=</span> <span class="n">successor_next</span><span class="p">,</span> <span class="n">successor</span>
-        <span class="n">steps</span><span class="p">,</span> <span class="n">steps_next</span> <span class="o">=</span> <span class="n">steps_next</span><span class="p">,</span> <span class="n">steps</span>
-
-    <span class="n">position</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_nodes</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">label_mask</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_graph</span><span class="o">.</span><span class="n">finalize_rank_positions</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_nodes</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">cycle_nodes</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">label_count</span><span class="p">,</span> <span class="n">steps</span><span class="p">,</span> <span class="n">position</span><span class="p">,</span> <span class="n">label_mask</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-
-    <span class="c1"># The cycles are grouped by label, and a label is a node index, so the mask's compact ranks</span>
-    <span class="c1"># number them in ascending label order -- the order ``unique_1d`` over the labels gave.</span>
-    <span class="n">label_ranks</span><span class="p">,</span> <span class="n">n_cycles</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">mask_to_compact_ranks</span><span class="p">(</span><span class="n">label_mask</span><span class="p">)</span>
-    <span class="c1"># The sizes land in the tail of the ``n_cycles + 1`` offsets buffer and are scanned there in</span>
-    <span class="c1"># place, behind the leading zero, so no separate sizes buffer is allocated.</span>
-    <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_cycles</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">sizes</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">n_cycles</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_graph</span><span class="o">.</span><span class="n">compact_cycle_sizes</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">node_count</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">label_mask</span><span class="p">,</span> <span class="n">label_ranks</span><span class="p">,</span> <span class="n">label_count</span><span class="p">,</span> <span class="n">sizes</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">sizes</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">sizes</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-
-    <span class="c1"># Zero-initialised (not wp.empty): colliding ranks on malformed input (see Notes) can leave</span>
-    <span class="c1"># slots unwritten by scatter_cycle_slot, and zero is a valid node index.</span>
-    <span class="n">flat_cycles</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_nodes</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_graph</span><span class="o">.</span><span class="n">scatter_cycle_slot</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_nodes</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">cycle_nodes</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">label_ranks</span><span class="p">,</span> <span class="n">position</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">flat_cycles</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-
-    <span class="k">return</span> <span class="n">flat_cycles</span><span class="p">,</span> <span class="n">offsets</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7402,64 +7607,7 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 861</span>
-<span class="normal"> 862</span>
-<span class="normal"> 863</span>
-<span class="normal"> 864</span>
-<span class="normal"> 865</span>
-<span class="normal"> 866</span>
-<span class="normal"> 867</span>
-<span class="normal"> 868</span>
-<span class="normal"> 869</span>
-<span class="normal"> 870</span>
-<span class="normal"> 871</span>
-<span class="normal"> 872</span>
-<span class="normal"> 873</span>
-<span class="normal"> 874</span>
-<span class="normal"> 875</span>
-<span class="normal"> 876</span>
-<span class="normal"> 877</span>
-<span class="normal"> 878</span>
-<span class="normal"> 879</span>
-<span class="normal"> 880</span>
-<span class="normal"> 881</span>
-<span class="normal"> 882</span>
-<span class="normal"> 883</span>
-<span class="normal"> 884</span>
-<span class="normal"> 885</span>
-<span class="normal"> 886</span>
-<span class="normal"> 887</span>
-<span class="normal"> 888</span>
-<span class="normal"> 889</span>
-<span class="normal"> 890</span>
-<span class="normal"> 891</span>
-<span class="normal"> 892</span>
-<span class="normal"> 893</span>
-<span class="normal"> 894</span>
-<span class="normal"> 895</span>
-<span class="normal"> 896</span>
-<span class="normal"> 897</span>
-<span class="normal"> 898</span>
-<span class="normal"> 899</span>
-<span class="normal"> 900</span>
-<span class="normal"> 901</span>
-<span class="normal"> 902</span>
-<span class="normal"> 903</span>
-<span class="normal"> 904</span>
-<span class="normal"> 905</span>
-<span class="normal"> 906</span>
-<span class="normal"> 907</span>
-<span class="normal"> 908</span>
-<span class="normal"> 909</span>
-<span class="normal"> 910</span>
-<span class="normal"> 911</span>
-<span class="normal"> 912</span>
-<span class="normal"> 913</span>
-<span class="normal"> 914</span>
-<span class="normal"> 915</span>
-<span class="normal"> 916</span>
-<span class="normal"> 917</span>
-<span class="normal"> 918</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 918</span>
 <span class="normal"> 919</span>
 <span class="normal"> 920</span>
 <span class="normal"> 921</span>
@@ -7609,7 +7757,64 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
 <span class="normal">1065</span>
 <span class="normal">1066</span>
 <span class="normal">1067</span>
-<span class="normal">1068</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shortest_path_envelope</span><span class="p">(</span>
+<span class="normal">1068</span>
+<span class="normal">1069</span>
+<span class="normal">1070</span>
+<span class="normal">1071</span>
+<span class="normal">1072</span>
+<span class="normal">1073</span>
+<span class="normal">1074</span>
+<span class="normal">1075</span>
+<span class="normal">1076</span>
+<span class="normal">1077</span>
+<span class="normal">1078</span>
+<span class="normal">1079</span>
+<span class="normal">1080</span>
+<span class="normal">1081</span>
+<span class="normal">1082</span>
+<span class="normal">1083</span>
+<span class="normal">1084</span>
+<span class="normal">1085</span>
+<span class="normal">1086</span>
+<span class="normal">1087</span>
+<span class="normal">1088</span>
+<span class="normal">1089</span>
+<span class="normal">1090</span>
+<span class="normal">1091</span>
+<span class="normal">1092</span>
+<span class="normal">1093</span>
+<span class="normal">1094</span>
+<span class="normal">1095</span>
+<span class="normal">1096</span>
+<span class="normal">1097</span>
+<span class="normal">1098</span>
+<span class="normal">1099</span>
+<span class="normal">1100</span>
+<span class="normal">1101</span>
+<span class="normal">1102</span>
+<span class="normal">1103</span>
+<span class="normal">1104</span>
+<span class="normal">1105</span>
+<span class="normal">1106</span>
+<span class="normal">1107</span>
+<span class="normal">1108</span>
+<span class="normal">1109</span>
+<span class="normal">1110</span>
+<span class="normal">1111</span>
+<span class="normal">1112</span>
+<span class="normal">1113</span>
+<span class="normal">1114</span>
+<span class="normal">1115</span>
+<span class="normal">1116</span>
+<span class="normal">1117</span>
+<span class="normal">1118</span>
+<span class="normal">1119</span>
+<span class="normal">1120</span>
+<span class="normal">1121</span>
+<span class="normal">1122</span>
+<span class="normal">1123</span>
+<span class="normal">1124</span>
+<span class="normal">1125</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shortest_path_envelope</span><span class="p">(</span>
     <span class="n">adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">max_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>

@@ -6562,9 +6562,9 @@ operator is the plain cotangent one:</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 5 places</summary>
+      <summary>Referenced by 6 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../heat/#ordito.heat">heat</a> › <a href="../heat/#ordito.heat.heat_operators">heat_operators</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.intrinsic_delaunay">intrinsic_delaunay</a></span> · <span class="ordito-backlink"><a href="./#ordito.laplacian">laplacian</a></span> · <span class="ordito-backlink"><a href="./#ordito.laplacian">laplacian</a> › <a href="./#ordito.laplacian.mollify_intrinsic">mollify_intrinsic</a></span></p>
+<span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="../heat/#ordito.heat">heat</a> › <a href="../heat/#ordito.heat.heat_operators">heat_operators</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.intrinsic_delaunay">intrinsic_delaunay</a></span> · <span class="ordito-backlink"><a href="./#ordito.laplacian">laplacian</a></span> · <span class="ordito-backlink"><a href="./#ordito.laplacian">laplacian</a> › <a href="./#ordito.laplacian.mollify_intrinsic">mollify_intrinsic</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/remesh/#remeshing-and-simplification">Remeshing and simplification</a> › <a href="../../../examples/remesh/#r6">Delaunay flips and the intrinsic Delaunay triangulation</a></span></p>
     </details>
@@ -6984,11 +6984,7 @@ because it is the honest measure of how much the geometry had to be changed.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">638</span>
-<span class="normal">639</span>
-<span class="normal">640</span>
-<span class="normal">641</span>
-<span class="normal">642</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">642</span>
 <span class="normal">643</span>
 <span class="normal">644</span>
 <span class="normal">645</span>
@@ -7070,7 +7066,11 @@ because it is the honest measure of how much the geometry had to be changed.</p>
 <span class="normal">721</span>
 <span class="normal">722</span>
 <span class="normal">723</span>
-<span class="normal">724</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mollify_intrinsic</span><span class="p">(</span>
+<span class="normal">724</span>
+<span class="normal">725</span>
+<span class="normal">726</span>
+<span class="normal">727</span>
+<span class="normal">728</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mollify_intrinsic</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">epsilon</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">TOLERANCE_MOLLIFY</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7397,11 +7397,7 @@ parallel:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">727</span>
-<span class="normal">728</span>
-<span class="normal">729</span>
-<span class="normal">730</span>
-<span class="normal">731</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">731</span>
 <span class="normal">732</span>
 <span class="normal">733</span>
 <span class="normal">734</span>
@@ -7533,7 +7529,11 @@ parallel:</p>
 <span class="normal">860</span>
 <span class="normal">861</span>
 <span class="normal">862</span>
-<span class="normal">863</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connection_laplacian</span><span class="p">(</span>
+<span class="normal">863</span>
+<span class="normal">864</span>
+<span class="normal">865</span>
+<span class="normal">866</span>
+<span class="normal">867</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connection_laplacian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">cot_entries</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7851,11 +7851,7 @@ only for the values.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">915</span>
-<span class="normal">916</span>
-<span class="normal">917</span>
-<span class="normal">918</span>
-<span class="normal">919</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">919</span>
 <span class="normal">920</span>
 <span class="normal">921</span>
 <span class="normal">922</span>
@@ -7921,7 +7917,11 @@ only for the values.</p>
 <span class="normal">982</span>
 <span class="normal">983</span>
 <span class="normal">984</span>
-<span class="normal">985</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_operator_pattern</span><span class="p">(</span>
+<span class="normal">985</span>
+<span class="normal">986</span>
+<span class="normal">987</span>
+<span class="normal">988</span>
+<span class="normal">989</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_operator_pattern</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8277,11 +8277,7 @@ directed case and <code>m == 2 * n_unique_edges</code> for the symmetric case.</
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1140</span>
-<span class="normal">1141</span>
-<span class="normal">1142</span>
-<span class="normal">1143</span>
-<span class="normal">1144</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1144</span>
 <span class="normal">1145</span>
 <span class="normal">1146</span>
 <span class="normal">1147</span>
@@ -8410,7 +8406,11 @@ directed case and <code>m == 2 * n_unique_edges</code> for the symmetric case.</
 <span class="normal">1270</span>
 <span class="normal">1271</span>
 <span class="normal">1272</span>
-<span class="normal">1273</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_entries</span><span class="p">(</span>
+<span class="normal">1273</span>
+<span class="normal">1274</span>
+<span class="normal">1275</span>
+<span class="normal">1276</span>
+<span class="normal">1277</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_entries</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">equal_weight</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
@@ -8843,11 +8843,7 @@ or vertex count.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1276</span>
-<span class="normal">1277</span>
-<span class="normal">1278</span>
-<span class="normal">1279</span>
-<span class="normal">1280</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1280</span>
 <span class="normal">1281</span>
 <span class="normal">1282</span>
 <span class="normal">1283</span>
@@ -8997,7 +8993,11 @@ or vertex count.</p>
 <span class="normal">1427</span>
 <span class="normal">1428</span>
 <span class="normal">1429</span>
-<span class="normal">1430</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian</span><span class="p">(</span>
+<span class="normal">1430</span>
+<span class="normal">1431</span>
+<span class="normal">1432</span>
+<span class="normal">1433</span>
+<span class="normal">1434</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">equal_weight</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
@@ -9335,11 +9335,7 @@ not affect the uniform weights.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1433</span>
-<span class="normal">1434</span>
-<span class="normal">1435</span>
-<span class="normal">1436</span>
-<span class="normal">1437</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1437</span>
 <span class="normal">1438</span>
 <span class="normal">1439</span>
 <span class="normal">1440</span>
@@ -9415,7 +9411,11 @@ not affect the uniform weights.</p>
 <span class="normal">1510</span>
 <span class="normal">1511</span>
 <span class="normal">1512</span>
-<span class="normal">1513</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">graph_laplacian</span><span class="p">(</span>
+<span class="normal">1513</span>
+<span class="normal">1514</span>
+<span class="normal">1515</span>
+<span class="normal">1516</span>
+<span class="normal">1517</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">graph_laplacian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9734,11 +9734,7 @@ icosphere:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1532</span>
-<span class="normal">1533</span>
-<span class="normal">1534</span>
-<span class="normal">1535</span>
-<span class="normal">1536</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1536</span>
 <span class="normal">1537</span>
 <span class="normal">1538</span>
 <span class="normal">1539</span>
@@ -9851,7 +9847,11 @@ icosphere:</p>
 <span class="normal">1646</span>
 <span class="normal">1647</span>
 <span class="normal">1648</span>
-<span class="normal">1649</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix_entries</span><span class="p">(</span>
+<span class="normal">1649</span>
+<span class="normal">1650</span>
+<span class="normal">1651</span>
+<span class="normal">1652</span>
+<span class="normal">1653</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix_entries</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
@@ -10170,11 +10170,7 @@ icosphere:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1652</span>
-<span class="normal">1653</span>
-<span class="normal">1654</span>
-<span class="normal">1655</span>
-<span class="normal">1656</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1656</span>
 <span class="normal">1657</span>
 <span class="normal">1658</span>
 <span class="normal">1659</span>
@@ -10266,7 +10262,11 @@ icosphere:</p>
 <span class="normal">1745</span>
 <span class="normal">1746</span>
 <span class="normal">1747</span>
-<span class="normal">1748</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix</span><span class="p">(</span>
+<span class="normal">1748</span>
+<span class="normal">1749</span>
+<span class="normal">1750</span>
+<span class="normal">1751</span>
+<span class="normal">1752</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>

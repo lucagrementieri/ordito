@@ -4330,6 +4330,10 @@ print is checked, so the output shown is the output you will get.</p>
 <td>reductions (<code>min</code>, <code>max</code>, <code>sum</code>, <code>mean</code>) without a host round trip</td>
 <td><a class="autorefs autorefs-internal" title="ordito.reduce" href="../api/ordito/reduce/#ordito.reduce"><code>reduce</code></a></td>
 </tr>
+<tr>
+<td>per-group sums (<code>bincount</code> with weights, <code>add.reduceat</code>), reproducible under the deterministic setting</td>
+<td><a class="autorefs autorefs-internal" title="scatter_sum" href="../api/ordito/reduce/#ordito.reduce.scatter_sum"><code>reduce.scatter_sum</code></a>, <a class="autorefs autorefs-internal" title="segment_sum" href="../api/ordito/reduce/#ordito.reduce.segment_sum"><code>reduce.segment_sum</code></a></td>
+</tr>
 </tbody>
 </table>
 <h2 id="modules">Modules</h2>
@@ -4638,7 +4642,7 @@ print is checked, so the output shown is the output you will get.</p>
 </tr>
 <tr>
 <td><a href="../api/ordito/reduce/">reduce</a></td>
-<td>Global reductions on Warp arrays: min, max, sum, mean, any, all, median.</td>
+<td>Global reductions on Warp arrays: min, max, sum, mean, any, all, median, and per-group sums.</td>
 </tr>
 <tr>
 <td><a href="../api/ordito/grouping/">grouping</a></td>
