@@ -512,6 +512,26 @@ def test_arap_all_vertices_fixed(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     assert np.array_equal(uv_wp.numpy(), fixed_uv_np)
 
 
+def test_arap_is_reproducible_when_deterministic(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
+    """
+    Not a parity assert: under the deterministic setting repeated calls agree bit for bit.
+
+    Each local step scatters ``float64`` rotation terms onto the edge endpoints, which atomics add
+    in arrival order on CUDA; the deterministic path adds each vertex's terms in ascending face and
+    edge order. Without it repeated CUDA calls on this fixture differed in the last bits of the UV.
+    The off mode is checked against the on mode to round-off, not to the bit.
+    """
+    _, mesh_wp = saddle_graded
+    boundary_wp, boundary_uv_wp, uv_init_wp = _harmonic_warm_start(mesh_wp)
+    arguments = (mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init_wp)
+    uv_np = od.parametrization.arap(*arguments).numpy()
+    for _ in range(4):
+        assert np.array_equal(od.parametrization.arap(*arguments).numpy(), uv_np)
+    with od.config.deterministic(False):
+        arrival_wp = od.parametrization.arap(*arguments)
+    assert np.allclose(arrival_wp.numpy(), uv_np, rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("lscm", "igl")
 def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
