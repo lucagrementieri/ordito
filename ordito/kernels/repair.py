@@ -23,6 +23,7 @@ from ordito.kernels.halfedge import (
     next_boundary_halfedge,
 )
 from ordito.kernels.predicates import triangle_aspect_ratio, triangle_normal
+from ordito.kernels.scatter import atomic_add_fixed_point, atomic_max_fixed_point_exponent
 from ordito.kernels.selection import face_selected_by_vertices, mark_submesh_face
 from ordito.kernels.triangles import (
     QUALITY_AREA,
@@ -446,6 +447,26 @@ def flip_all_faces(faces: wp.array[wp.int32], out_faces: wp.array[wp.int32]) -> 
     write_face_winding(faces, f, True, out_faces)
 
 
+# The per-face measure a component sums (``face_group_measure``): ``remove_small_components``'
+# area, ``make_volume(multibody=True)``'s signed volume.
+GROUP_MEASURE_AREA = wp.int32(0)
+GROUP_MEASURE_VOLUME = wp.int32(1)
+
+
+@wp.func
+def face_group_measure(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32, measure: wp.int32
+) -> wp.float32:
+    # Face ``f``'s share of its component's sum, computed where it is summed rather than written to
+    # a per-face buffer for a scatter to read back. ``GROUP_MEASURE_AREA`` is ``triangle_quality``'s
+    # area, the value ``triangles.face_quality(metric="area")`` stores; ``GROUP_MEASURE_VOLUME`` the
+    # signed tetrahedron volume from the origin, ``triangles.face_signed_volumes``'.
+    if measure == GROUP_MEASURE_AREA:
+        v0, v1, v2 = face_vertices(vertices, faces, f)
+        return triangle_quality(v0, v1, v2, QUALITY_AREA)
+    return face_signed_volume(vertices, faces, f, wp.vec3())
+
+
 @wp.kernel
 def scatter_face_area_by_group(
     vertices: wp.array[wp.vec3],
@@ -453,12 +474,13 @@ def scatter_face_area_by_group(
     groups: wp.array[wp.int32],
     out_group_area: wp.array[wp.float32],
 ) -> None:
-    # Each face's area added into its group's slot. The area is ``triangle_quality``'s, so it is the
-    # value ``triangles.face_quality(metric="area")`` would have stored for this face -- computed
-    # where it is summed rather than written to a per-face buffer for this pass to read back.
+    # Each face's area added into its group's slot, in arrival order: the deterministic setting's
+    # off form. ``mark_face_measure_exponents`` and ``scatter_face_measure_fixed`` are the
+    # reproducible one, differing in the accumulator (exact fixed point against ``float32``).
     f = wp.int32(wp.tid())
-    v0, v1, v2 = face_vertices(vertices, faces, f)
-    wp.atomic_add(out_group_area, groups[f], triangle_quality(v0, v1, v2, QUALITY_AREA))
+    wp.atomic_add(
+        out_group_area, groups[f], face_group_measure(vertices, faces, f, GROUP_MEASURE_AREA)
+    )
 
 
 @wp.kernel
@@ -468,11 +490,44 @@ def scatter_face_volume_by_group(
     groups: wp.array[wp.int32],
     out_group_volume: wp.array[wp.float32],
 ) -> None:
-    # Each face's signed tetrahedron volume from the origin added into its group's slot:
-    # ``triangles.face_signed_volume``, the value ``triangles.face_signed_volumes`` would have
-    # stored for this face, computed where it is summed. ``scatter_face_area_by_group``'s shape.
+    # ``scatter_face_area_by_group`` for the signed volume.
     f = wp.int32(wp.tid())
-    wp.atomic_add(out_group_volume, groups[f], face_signed_volume(vertices, faces, f, wp.vec3()))
+    wp.atomic_add(
+        out_group_volume, groups[f], face_group_measure(vertices, faces, f, GROUP_MEASURE_VOLUME)
+    )
+
+
+@wp.kernel
+def mark_face_measure_exponents(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
+    measure: wp.int32,
+    out_fields: wp.array[wp.int32],
+) -> None:
+    # The first pass of a component's exact sum: each group's largest exponent field
+    # (``scatter.atomic_max_fixed_point_exponent``) over its faces' measures, into a zeroed table.
+    f = wp.int32(wp.tid())
+    value = face_group_measure(vertices, faces, f, measure)
+    atomic_max_fixed_point_exponent(out_fields, groups[f], value)
+
+
+@wp.kernel
+def scatter_face_measure_fixed(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
+    measure: wp.int32,
+    fields: wp.array[wp.int32],
+    headroom: wp.int32,
+    out_sums: wp.array[wp.int64],
+) -> None:
+    # The second pass: each face's measure, recomputed bit for bit, added in fixed point into its
+    # group's zeroed ``int64`` slot (``scatter.atomic_add_fixed_point``). Exact, so the sums repeat
+    # whatever order the atomics commit in.
+    f = wp.int32(wp.tid())
+    value = face_group_measure(vertices, faces, f, measure)
+    atomic_add_fixed_point(out_sums, fields, headroom, groups[f], value)
 
 
 # ``remove_small_components``' four criteria, as the selector ``component_kept`` branches on.

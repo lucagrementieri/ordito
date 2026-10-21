@@ -1323,6 +1323,26 @@ def test_make_volume_multibody(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> 
     assert not (ok_a and ok_b)
 
 
+def test_multibody_orientation_is_reproducible_when_deterministic(
+    bohemian_dome: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a parity assert: under the deterministic setting repeated calls flip the same components.
+
+    ``multibody=True`` flips a component by the sign of its summed signed volume. The Bohemian
+    dome's is near zero (it passes through itself), so the arrival-order ``float32`` atomics of
+    the off mode gave either sign from one CUDA call to the next (two distinct face buffers in 30
+    calls); the exact fixed-point sum decides it the same way every time.
+    """
+    mesh_tm, mesh_wp = bohemian_dome
+    assert abs(mesh_tm.volume) < 1e-6 * mesh_tm.area  # non-vacuity: the sign is a near tie
+    for repair in (od.repair.make_volume, od.repair.make_normals_outward):
+        first_np = repair(mesh_wp.points, mesh_wp.indices, multibody=True).numpy()
+        for _ in range(20):
+            again_np = repair(mesh_wp.points, mesh_wp.indices, multibody=True).numpy()
+            assert np.array_equal(again_np, first_np)
+
+
 # --- degenerate / small triangle removal ----------------------------------------------------
 
 
@@ -1915,6 +1935,34 @@ def test_remove_small_components_invariants(three_shells: _ThreeShells) -> None:
         vertices_wp, faces_wp, min_faces=n_faces + 1
     )
     assert empty_faces_wp.size == 0
+
+
+def test_remove_small_components_min_area_is_reproducible_when_deterministic(
+    bohemian_dome: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a parity assert: under the deterministic setting a threshold at the area keeps or drops.
+
+    With ``min_area`` within a ``float32`` step of the one component's area, the off mode's
+    arrival-order ``float32`` atomics kept the mesh in some CUDA calls and dropped it in others at
+    each of the three thresholds below; the exact fixed-point sum decides each the same way every
+    time. The decision itself is pinned too: the threshold one step above the area drops the
+    component, so the sums are not all far from it.
+    """
+    mesh_tm, mesh_wp = bohemian_dome
+    area = np.float32(mesh_tm.area)
+    kept_counts = []
+    for min_area in (np.nextafter(area, np.float32(0.0)), area, np.nextafter(area, np.inf)):
+        counts = {
+            od.repair.remove_small_components(
+                mesh_wp.points, mesh_wp.indices, min_area=float(min_area)
+            )[1].size
+            for _ in range(20)
+        }
+        assert len(counts) == 1
+        kept_counts.append(counts.pop())
+    assert kept_counts[-1] == 0
+    assert kept_counts[0] == 3 * mesh_tm.faces.shape[0]
 
 
 # --------------------------------------------------------------------------------------

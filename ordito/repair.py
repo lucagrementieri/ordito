@@ -68,6 +68,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, require_valid_faces
+from ordito.config import is_deterministic
 from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.grouping import (
     _unique_keys_core,  # pyright: ignore[reportPrivateUsage]
@@ -1072,7 +1073,9 @@ def remove_small_components(
     min_faces
         Minimum face count for a component to be kept.
     min_area
-        Minimum summed triangle area for a component to be kept.
+        Minimum summed triangle area for a component to be kept. Under
+        [`is_deterministic`][ordito.config.is_deterministic] each component's area is summed
+        exactly, so a component at the threshold is kept or dropped the same way on every call.
     min_diameter
         Minimum bounding-box diagonal for a component to be kept.
 
@@ -1159,15 +1162,7 @@ def remove_small_components(
     counts = statistic = corners = best = None
     if min_area is not None:
         criterion = kernel_repair.COMPONENT_MIN_AREA
-        # Each face's area is summed into its component where it is computed, rather than written
-        # to a per-face buffer for a scatter pass to read back.
-        statistic = _launch.zeros(n_faces, dtype=wp.float32, device=device)
-        _launch.launch(
-            kernel_repair.scatter_face_area_by_group,
-            dim=n_faces,
-            inputs=[vertices, faces, labels, statistic],
-            device=device,
-        )
+        statistic = _component_measures(vertices, faces, labels, "area")
     elif min_diameter is not None:
         criterion = kernel_repair.COMPONENT_MIN_DIAMETER
         # ``+inf`` in all six slots seeds both ends at once: the packing stores the upper corner
@@ -2337,7 +2332,9 @@ def make_volume(
         ``(3 * n_faces,)`` flat triangle index buffer.
     multibody
         When ``True`` correct each connected component independently rather than the mesh as a
-        whole.
+        whole. Under [`is_deterministic`][ordito.config.is_deterministic] each component's volume
+        is summed exactly, so a component of near-zero volume is flipped or kept the same way on
+        every call.
 
     Returns
     -------
@@ -2504,13 +2501,7 @@ def _outward_faces(
         labels = od.adjacency.face_connected_component_labels(
             faces, n_vertices=vertices.size, mates=mates
         )
-        accum = _launch.zeros(n_faces, dtype=wp.float32, device=device)
-        _launch.launch(
-            kernel_repair.scatter_face_volume_by_group,
-            dim=n_faces,
-            inputs=[vertices, faces, labels, accum],
-            device=device,
-        )
+        accum = _component_measures(vertices, faces, labels, "volume")
         # One launch: each face reads its own component's signed volume through its label, where
         # gathering that into a per-face flag buffer first cost a map, a launch and the buffer.
         _launch.launch(
@@ -2535,6 +2526,68 @@ def _outward_faces(
         kernel_repair.flip_all_faces, dim=n_faces, inputs=[faces, out_faces], device=device
     )
     return out_faces
+
+
+def _component_measures(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    measure: Literal["area", "volume"],
+) -> wp.array[wp.float32]:
+    """
+    Each component's summed face measure (``kernels/repair.face_group_measure``), slot per label.
+
+    ``(n_faces,)``, read only at the slots ``labels`` names (a label is a representative face
+    index). Each face's measure is summed into its component where it is computed, rather than
+    written to a per-face buffer for a scatter pass to read back. With
+    [`is_deterministic`][ordito.config.is_deterministic] off this is one ``float32`` atomic scatter
+    in arrival order; on, each component is summed exactly in fixed point (an exponent pass, an
+    ``int64`` scatter and a conversion, ``kernels/scatter.fixed_point_sums_to_float``), so the sums
+    and the sign and threshold decisions read from them repeat bit for bit on CUDA, where a
+    component's last bits otherwise move from call to call (a component of near-zero volume then
+    flips its orientation).
+    """
+    n_faces = faces.size // 3
+    device = faces.device
+    selector, arrival_order = _GROUP_MEASURES[measure]
+    if not is_deterministic():
+        sums = _launch.zeros(n_faces, dtype=wp.float32, device=device)
+        _launch.launch(
+            arrival_order, dim=n_faces, inputs=[vertices, faces, labels, sums], device=device
+        )
+        return sums
+    # ``2^headroom >= n_faces`` terms fit the fixed-point range of every component.
+    headroom = max(n_faces - 1, 1).bit_length()
+    fields = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.mark_face_measure_exponents,
+        dim=n_faces,
+        inputs=[vertices, faces, labels, selector, fields],
+        device=device,
+    )
+    fixed = _launch.zeros(n_faces, dtype=wp.int64, device=device)
+    _launch.launch(
+        kernel_repair.scatter_face_measure_fixed,
+        dim=n_faces,
+        inputs=[vertices, faces, labels, selector, fields, headroom, fixed],
+        device=device,
+    )
+    sums = _launch.empty(n_faces, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_scatter.fixed_point_sums_to_float,
+        dim=n_faces,
+        inputs=[fixed, fields, headroom, sums],
+        device=device,
+    )
+    return sums
+
+
+# Each measure's kernel selector, and its arrival-order scatter, which ``_component_measures`` runs
+# with the deterministic setting off.
+_GROUP_MEASURES = {
+    "area": (kernel_repair.GROUP_MEASURE_AREA, kernel_repair.scatter_face_area_by_group),
+    "volume": (kernel_repair.GROUP_MEASURE_VOLUME, kernel_repair.scatter_face_volume_by_group),
+}
 
 
 def remove_folded_faces(

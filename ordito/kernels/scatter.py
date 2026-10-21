@@ -246,6 +246,78 @@ def scatter_sum_exact(
         wp.atomic_add(out_sum, index[j], wp.float64(values[tid, j]))
 
 
+# Exact per-group sums of ``float32`` values in fixed point, for groups too large for
+# ``scatter_sum_exact``'s ``float64`` bound (a connected component can hold every face of the
+# mesh). Two scatters and a conversion: ``atomic_max_fixed_point_exponent`` records each group's
+# largest ``float32`` exponent field, ``atomic_add_fixed_point`` adds every value as an ``int64``
+# count of ``2^-k`` with ``k`` chosen from that field so no sum of up to ``2^headroom`` terms can
+# overflow, and ``fixed_point_sums_to_float`` scales the sums back. Integer atomics are exact in
+# any order, so the sums repeat bit for bit on CUDA whatever the commit order; each term is rounded
+# to ``2^(61 - headroom)``-ths of its group's largest power of two, far finer than one ``float32``
+# addition. A group holding a non-finite value sums to NaN.
+FIXED_POINT_NONFINITE = wp.int32(255)
+
+
+@wp.func
+def fixed_point_exponent(value: wp.float32) -> wp.int32:
+    # The biased exponent field of ``value``: ``|value| < 2^(field - 126)`` for every finite value,
+    # subnormals and zero (field 0) included; 255 is a non-finite value.
+    return (wp.cast(value, wp.int32) >> 23) & 255
+
+
+@wp.func
+def fixed_point_scale(field: wp.int32, headroom: wp.int32) -> wp.float64:
+    # ``2^k`` with ``k = 188 - headroom - field``, built from its bits: a value under
+    # ``2^(field - 126)`` scales below ``2^(62 - headroom)``, so ``2^headroom`` such terms sum below
+    # ``2^62``. ``k`` lies in ``[-97, 188]`` for ``headroom <= 31``, inside ``float64``'s range.
+    return wp.cast(wp.int64(1211 - headroom - field) << wp.int64(52), wp.float64)
+
+
+@wp.func
+def atomic_max_fixed_point_exponent(
+    out_fields: wp.array[wp.int32], group: wp.int32, value: wp.float32
+) -> None:
+    # Raise ``group``'s exponent field to ``value``'s. The read first skips the atomic for most
+    # values of a large group, whose field settles early; a stale read only costs an atomic.
+    field = fixed_point_exponent(value)
+    if field > out_fields[group]:
+        wp.atomic_max(out_fields, group, field)
+
+
+@wp.func
+def atomic_add_fixed_point(
+    out_sums: wp.array[wp.int64],
+    fields: wp.array[wp.int32],
+    headroom: wp.int32,
+    group: wp.int32,
+    value: wp.float32,
+) -> None:
+    # Add ``value`` to ``group``'s fixed-point sum, at the scale its exponent field sets (complete
+    # once ``atomic_max_fixed_point_exponent`` has seen every value of the group).
+    field = fields[group]
+    if field != FIXED_POINT_NONFINITE:
+        scaled = wp.float64(value) * fixed_point_scale(field, headroom)
+        wp.atomic_add(out_sums, group, wp.int64(wp.rint(scaled)))
+
+
+@wp.kernel
+def fixed_point_sums_to_float(
+    sums: wp.array[wp.int64],
+    fields: wp.array[wp.int32],
+    headroom: wp.int32,
+    out_values: wp.array[wp.float32],
+) -> None:
+    # Each group's fixed-point sum as the ``float32`` it stands for, NaN for a group holding a
+    # non-finite value. The division is by a power of two, so the one rounding is the ``int64``'s
+    # to ``float64`` (above ``2^53``) and then to ``float32``.
+    g = wp.int32(wp.tid())
+    field = fields[g]
+    if field == FIXED_POINT_NONFINITE:
+        out_values[g] = wp.float32(wp.nan)
+    else:
+        out_values[g] = wp.float32(wp.float64(sums[g]) / fixed_point_scale(field, headroom))
+
+
 @wp.kernel
 def sum_sorted_corner_values(
     sorted_vertices: wp.array[wp.int32],

@@ -34,6 +34,11 @@ deterministic either way):
 - the flip mask of [`face_flip_mask`][ordito.validation.face_flip_mask] and the bits of
   [`face_orientation_bits`][ordito.validation.face_orientation_bits] on a non-orientable mesh,
   and so the seam [`make_winding_consistent`][ordito.repair.make_winding_consistent] leaves;
+- the per-component signed volumes of [`make_volume`][ordito.repair.make_volume] and
+  [`make_normals_outward`][ordito.repair.make_normals_outward] with ``multibody=True``, and the
+  per-component areas of [`remove_small_components`][ordito.repair.remove_small_components] with
+  ``min_area`` (summed exactly when on, so on the CPU device too a near-tie can resolve otherwise
+  than with it off), and so which components are flipped or kept;
 - the positions of [`subdivide_loop`][ordito.remesh.subdivide_loop], whose 1-ring sums are
   added in a fixed order.
 - the order of the hits [`intersects_location`][ordito.ray.intersects_location] returns
