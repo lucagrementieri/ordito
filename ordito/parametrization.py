@@ -38,7 +38,9 @@ import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
+from ordito.config import is_deterministic
 from ordito.kernels import parametrization as kernel_parametrization
+from ordito.kernels import scatter as kernel_scatter
 from ordito.laplacian import cotmatrix, cotmatrix_entries, graph_laplacian, mass_matrix_entries
 from ordito.mesh import Trimesh, mesh_arguments
 
@@ -838,16 +840,33 @@ def arap(
     # scattered into ``out_uv`` once, after the last step. Every row of ``sol`` is seeded, so it is
     # allocated uninitialised.
     sol = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
+    # Under the deterministic setting each local step stores its six edge terms a face instead of
+    # adding them in arrival order, and each vertex's are added over one stable sort of the edge
+    # endpoints, in ascending face and edge order. The setup launch writes the endpoints straight
+    # into the sort's buffers; the sort is built once, since the faces do not change.
+    edge_endpoints = edge_slots = None
+    if is_deterministic():
+        edge_endpoints = _launch.empty(12 * n_faces, dtype=wp.int32, device=device)
+        edge_slots = _launch.empty(12 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_parametrization.arap_setup,
         dim=max(n_faces, n_vertices),
         inputs=[vertices, faces, cot_entries, fixed_mask, interior_map, uv_init],
-        outputs=[rest_edges, sol],
+        outputs=[rest_edges, sol, edge_endpoints, edge_slots],
         device=device,
     )
-    # Zero for the first local step; ``arap_interior_rhs`` clears them for every later one.
-    rhs_rot_x = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    rhs_rot_y = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    sorted_endpoints = endpoint_order = edge_terms = rhs_rot_sorted = None
+    rhs_rot_x = rhs_rot_y = None
+    if edge_endpoints is not None and edge_slots is not None:
+        sorted_endpoints, endpoint_order = od.array.sort_and_argsort_in_place(
+            edge_endpoints, edge_slots, end_bit=max(1, (n_vertices - 1).bit_length())
+        )
+        edge_terms = odt.empty_2d((n_faces, 6), wp.vec2d, device=device)
+        rhs_rot_sorted = _launch.empty(n_vertices, dtype=wp.vec2d, device=device)
+    else:
+        # Zero for the first local step; ``arap_interior_rhs`` clears them for every later one.
+        rhs_rot_x = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+        rhs_rot_y = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     b = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
 
     # One batched CG state for both UV columns, built once outside the loop: its temporaries and
@@ -871,15 +890,23 @@ def arap(
             kernel_parametrization.arap_local_step,
             dim=n_faces,
             inputs=[faces, fixed_mask, interior_map, sol, fixed_values_2d, rest_edges],
-            outputs=[rhs_rot_x, rhs_rot_y],
+            outputs=[rhs_rot_x, rhs_rot_y, edge_terms],
             device=device,
         )
+        if rhs_rot_sorted is not None:
+            _launch.launch(
+                kernel_scatter.SUM_SORTED_CORNER_VALUES[wp.vec2d],
+                dim=n_vertices,
+                inputs=[sorted_endpoints, endpoint_order, edge_terms],
+                outputs=[rhs_rot_sorted, None, None],
+                device=device,
+            )
         # Global step RHS: constant boundary term + rotation term, restricted to interior rows;
         # clears the rotation RHS for the next local step.
         _launch.launch(
             kernel_parametrization.arap_interior_rhs,
             dim=n_vertices,
-            inputs=[fixed_mask, interior_map, rhs_const, rhs_rot_x, rhs_rot_y, b],
+            inputs=[fixed_mask, interior_map, rhs_const, rhs_rot_x, rhs_rot_y, rhs_rot_sorted, b],
             device=device,
         )
         # Both UV columns in one batched symmetric-PD solve, warm-started from the previous ``sol``.

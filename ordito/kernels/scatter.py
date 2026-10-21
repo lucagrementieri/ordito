@@ -336,7 +336,8 @@ def sum_sorted_corner_values(
     #
     # A "corner" is a slot of the flat buffer ``sorted_vertices`` was sorted from, and
     # ``corner_values`` has one row per row of that buffer: three slots a face here, two an edge
-    # for ``remesh.subdivide_loop``'s ring sums, which sorts its unique edges' endpoints.
+    # for ``remesh.subdivide_loop``'s ring sums, which sorts its unique edges' endpoints, six a
+    # face (two per edge) for ``parametrization.arap``'s rotation right-hand side.
     #
     # The runs are also the vertex-face incidence CSR ``adjacency.vertex_face_adjacency`` returns
     # in deterministic mode, each row in ascending face order, so a caller that wants those rows
@@ -818,8 +819,9 @@ def _register_overloads() -> None:
         },
     )
 
-    # ``float64`` sums (the energies' angle sums and mass, the heat method's divergence) and the
-    # ``wp.vec3`` ones of the log map's radial direction and Loop subdivision's ring sums.
+    # ``float64`` sums (the energies' angle sums and mass, the heat method's divergence), the
+    # ``wp.vec3`` ones of the log map's radial direction and Loop subdivision's ring sums, and the
+    # ``wp.vec2d`` ones of the ARAP local step's rotation right-hand side.
     SUM_SORTED_CORNER_VALUES = OverloadTable(
         sum_sorted_corner_values,
         {
@@ -831,7 +833,7 @@ def _register_overloads() -> None:
                 wp.array[wp.int32],
                 wp.array[wp.int32],
             ]
-            for d in (wp.float64, wp.vec3)
+            for d in (wp.float64, wp.vec3, wp.vec2d)
         },
     )
 

@@ -288,22 +288,44 @@ def arap_rest_edges(
 
 
 @wp.func
+def arap_edge_endpoints(corners: wp.vec3i, e: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # The (source, dest) vertices of a face's ARAP edge ``e`` in igl edge order e0:(1,2), e1:(2,0),
+    # e2:(0,1). One spelling for the local step's scatter and the endpoint buffer ``arap_setup``
+    # writes for the deterministic sum, whose slot ``6 * f + 2 * e`` (source) and ``+ 1`` (dest)
+    # must name the vertex the scatter's term goes to.
+    return corners[(e + 1) % 3], corners[(e + 2) % 3]
+
+
+@wp.func
 def scatter_arap_edge(
     rotation: wp.mat22d,
     w: wp.vec2d,
-    source: wp.int32,
-    dest: wp.int32,
+    corners: wp.vec3i,
+    f: wp.int32,
+    e: wp.int32,
     out_rhs_x: wp.array[wp.float64],
     out_rhs_y: wp.array[wp.float64],
+    out_edge_terms: wp.array2d[wp.vec2d],
 ) -> None:
-    # Rotate the weight-folded rest edge and scatter the ARAP right-hand side ``+r`` to the edge
-    # source and ``-r`` to the edge dest. The two components go to separate 1D buffers so the atomic
-    # adds stay 1D (row-view outputs of the (2, n_vertices) rotation RHS).
+    # Rotate the weight-folded rest edge ``e`` of face ``f`` and scatter the ARAP right-hand side
+    # ``+r`` to the edge source and ``-r`` to the edge dest. The two components go to separate 1D
+    # buffers so the atomic adds stay 1D (row-view outputs of the (2, n_vertices) rotation RHS).
+    #
+    # Under ``ordito.config``'s deterministic mode ``out_edge_terms`` is a non-empty
+    # ``(n_faces, 6)`` table and the two terms are stored in it instead, at columns ``2 * e`` and
+    # ``2 * e + 1``, for ``scatter.sum_sorted_corner_values`` to add per vertex over the stable sort
+    # of the endpoint buffer: in ascending face, edge and source-before-dest order, the order the
+    # CPU's in-order atomics add them in (the branch is warp-uniform).
     r = rotation * w
-    wp.atomic_add(out_rhs_x, source, r[0])
-    wp.atomic_add(out_rhs_y, source, r[1])
-    wp.atomic_add(out_rhs_x, dest, -r[0])
-    wp.atomic_add(out_rhs_y, dest, -r[1])
+    if out_edge_terms.shape[0] > 0:
+        out_edge_terms[f, 2 * e] = r
+        out_edge_terms[f, 2 * e + 1] = -r
+    else:
+        source, dest = arap_edge_endpoints(corners, e)
+        wp.atomic_add(out_rhs_x, source, r[0])
+        wp.atomic_add(out_rhs_y, source, r[1])
+        wp.atomic_add(out_rhs_x, dest, -r[0])
+        wp.atomic_add(out_rhs_y, dest, -r[1])
 
 
 @wp.kernel
@@ -316,14 +338,17 @@ def arap_local_step(
     rest_edges: wp.array2d[wp.vec2d],
     out_rhs_x: wp.array[wp.float64],
     out_rhs_y: wp.array[wp.float64],
+    out_edge_terms: wp.array2d[wp.vec2d],
 ) -> None:
     # Per face (dim = n_faces, once per iteration): fit the closest 2D rotation to the current UV
     # and scatter the rotation right-hand side, fused so no per-face rotation buffer is needed.
     # The current UV is read straight off the reduced solution (``solved_uv``: the value
     # ``scatter_solution`` stores), so the loop scatters the full field only once, after its last
     # step. ``out_rhs_x`` / ``out_rhs_y`` are the two rows of the (2, n_vertices) rotation RHS and
-    # must be zero at launch (``arap_interior_rhs`` clears them as it reads them). Degenerate faces
-    # have zero rest edges, so S = 0, atan2(0, 0) = 0, and the identity rotation scatters nothing.
+    # must be zero at launch (``arap_interior_rhs`` clears them as it reads them), unless
+    # ``out_edge_terms`` is non-empty and takes the terms instead (``scatter_arap_edge``).
+    # Degenerate faces have zero rest edges, so S = 0, atan2(0, 0) = 0, and the identity rotation
+    # scatters nothing.
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
     uv0 = solved_uv(fixed_mask, free_map, sol, fixed_values, i0)
@@ -341,9 +366,10 @@ def arap_local_step(
     cos_t = wp.cos(theta)
     sin_t = wp.sin(theta)
     rotation = wp.mat22d(cos_t, -sin_t, sin_t, cos_t)
-    scatter_arap_edge(rotation, w0, i1, i2, out_rhs_x, out_rhs_y)
-    scatter_arap_edge(rotation, w1, i2, i0, out_rhs_x, out_rhs_y)
-    scatter_arap_edge(rotation, w2, i0, i1, out_rhs_x, out_rhs_y)
+    corners = wp.vec3i(i0, i1, i2)
+    scatter_arap_edge(rotation, w0, corners, f, 0, out_rhs_x, out_rhs_y, out_edge_terms)
+    scatter_arap_edge(rotation, w1, corners, f, 1, out_rhs_x, out_rhs_y, out_edge_terms)
+    scatter_arap_edge(rotation, w2, corners, f, 2, out_rhs_x, out_rhs_y, out_edge_terms)
 
 
 @wp.kernel
@@ -353,6 +379,7 @@ def arap_interior_rhs(
     rhs_const: wp.array2d[wp.float64],
     rhs_rot_x: wp.array[wp.float64],
     rhs_rot_y: wp.array[wp.float64],
+    rhs_rot_sorted: wp.array[wp.vec2d],
     out_b: wp.array2d[wp.float64],
 ) -> None:
     # Assemble the interior right-hand side of the global step (dim = n_vertices). Interior rows get
@@ -364,8 +391,18 @@ def arap_interior_rhs(
     # ``rhs_rot_*`` are cleared here, every row, as they are read: the next iteration's local
     # step scatters into them, and each slot is read only by its own thread, after the scatter
     # that filled it, so the loop issues no memset.
+    #
+    # Under ``ordito.config``'s deterministic mode the rotation RHS is instead the non-empty
+    # ``rhs_rot_sorted``, the ``(n_vertices,)`` sums ``scatter.sum_sorted_corner_values`` writes
+    # whole every iteration, so nothing is cleared (the branch is warp-uniform).
     i = wp.int32(wp.tid())
     ri = free_row(fixed_mask, free_map, i)
+    if rhs_rot_sorted.shape[0] > 0:
+        if ri >= 0:
+            rot = rhs_rot_sorted[i]
+            out_b[0, ri] = rhs_const[0, ri] + rot[0]
+            out_b[1, ri] = rhs_const[1, ri] + rot[1]
+        return
     if ri >= 0:
         out_b[0, ri] = rhs_const[0, ri] + rhs_rot_x[i]
         out_b[1, ri] = rhs_const[1, ri] + rhs_rot_y[i]
@@ -405,12 +442,29 @@ def arap_setup(
     uv: wp.array[wp.vec2],
     out_rest_edges: wp.array2d[wp.vec2d],
     out_sol: wp.array2d[wp.float64],
+    out_edge_endpoints: wp.array[wp.int32],
+    out_edge_slots: wp.array[wp.int32],
 ) -> None:
     # The ARAP loop's two one-time inputs in one launch over ``max(n_faces, n_vertices)`` threads:
     # the rest edges per face (``arap_rest_edges``) and the warm start per vertex
     # (``gather_interior_uv``). They write disjoint buffers from the input alone.
+    #
+    # Under ``ordito.config``'s deterministic mode ``out_edge_endpoints`` / ``out_edge_slots`` are
+    # the non-empty ``(12 * n_faces,)`` buffers of a radix sort, and their leading halves receive
+    # each face's six edge endpoints in ``scatter_arap_edge``'s table order and the identity
+    # payload: the stable sort of those orders the per-vertex sum of the local step's terms.
     t = wp.int32(wp.tid())
     if t < faces.shape[0] // 3:
         arap_rest_edges(vertices, faces, cot_entries, t, out_rest_edges)
+        if out_edge_endpoints.shape[0] > 0:
+            i0, i1, i2 = corner_triple(faces, t)
+            corners = wp.vec3i(i0, i1, i2)
+            for e in range(3):
+                source, dest = arap_edge_endpoints(corners, e)
+                slot = 6 * t + 2 * e
+                out_edge_endpoints[slot] = source
+                out_edge_endpoints[slot + 1] = dest
+                out_edge_slots[slot] = slot
+                out_edge_slots[slot + 1] = slot + 1
     if t < vertices.shape[0]:
         gather_interior_uv(fixed_mask, free_map, uv, t, out_sol)

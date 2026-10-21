@@ -22,6 +22,9 @@ deterministic either way):
 - the per-vertex sums of [`hessian_energy`][ordito.energies.hessian_energy],
   [`curved_hessian_energy`][ordito.energies.curved_hessian_energy] and
   [`vertex_defects`][ordito.vertices.vertex_defects];
+- the rotation right-hand side of every local step of
+  [`arap`][ordito.parametrization.arap] (each vertex's edge terms added in ascending face order
+  when on);
 - the order within each row of
   [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] (ascending when on);
 - the row order of the ear-clipped faces of
