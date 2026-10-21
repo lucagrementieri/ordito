@@ -68,7 +68,6 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, require_valid_faces
-from ordito.config import is_deterministic
 from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.grouping import (
     _unique_keys_core,  # pyright: ignore[reportPrivateUsage]
@@ -2541,52 +2540,29 @@ def _component_measures(
     index). Each face's measure is summed into its component where it is computed, rather than
     written to a per-face buffer for a scatter pass to read back. With
     [`is_deterministic`][ordito.config.is_deterministic] off this is one ``float32`` atomic scatter
-    in arrival order; on, each component is summed exactly in fixed point (an exponent pass, an
-    ``int64`` scatter and a conversion, ``kernels/scatter.fixed_point_sums_to_float``), so the sums
-    and the sign and threshold decisions read from them repeat bit for bit on CUDA, where a
-    component's last bits otherwise move from call to call (a component of near-zero volume then
-    flips its orientation).
+    in arrival order; on, each component is summed exactly in fixed point
+    (``_launch.group_sums``), so the sums and the sign and threshold decisions read from them
+    repeat bit for bit on CUDA, where a component's last bits otherwise move from call to call (a
+    component of near-zero volume then flips its orientation).
     """
     n_faces = faces.size // 3
     device = faces.device
-    selector, arrival_order = _GROUP_MEASURES[measure]
-    if not is_deterministic():
-        sums = _launch.zeros(n_faces, dtype=wp.float32, device=device)
-        _launch.launch(
-            arrival_order, dim=n_faces, inputs=[vertices, faces, labels, sums], device=device
-        )
-        return sums
-    # ``2^headroom >= n_faces`` terms fit the fixed-point range of every component.
-    headroom = max(n_faces - 1, 1).bit_length()
-    fields = _launch.zeros(n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_repair.mark_face_measure_exponents,
+    # A component can hold every face, so ``n_faces`` terms bound any one sum.
+    sums = _launch.group_sums(n_faces, wp.float32, n_faces, device)
+    _launch.launch_group_sums(
+        kernel_repair.scatter_face_measure_by_group,
         dim=n_faces,
-        inputs=[vertices, faces, labels, selector, fields],
+        inputs=[vertices, faces, labels, _GROUP_MEASURES[measure]],
+        sums=sums,
         device=device,
     )
-    fixed = _launch.zeros(n_faces, dtype=wp.int64, device=device)
-    _launch.launch(
-        kernel_repair.scatter_face_measure_fixed,
-        dim=n_faces,
-        inputs=[vertices, faces, labels, selector, fields, headroom, fixed],
-        device=device,
-    )
-    sums = _launch.empty(n_faces, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_scatter.fixed_point_sums_to_float,
-        dim=n_faces,
-        inputs=[fixed, fields, headroom, sums],
-        device=device,
-    )
-    return sums
+    return _launch.finish_group_sums(sums)
 
 
-# Each measure's kernel selector, and its arrival-order scatter, which ``_component_measures`` runs
-# with the deterministic setting off.
+# Each measure's selector of ``kernels/repair.face_group_measure``.
 _GROUP_MEASURES = {
-    "area": (kernel_repair.GROUP_MEASURE_AREA, kernel_repair.scatter_face_area_by_group),
-    "volume": (kernel_repair.GROUP_MEASURE_VOLUME, kernel_repair.scatter_face_volume_by_group),
+    "area": kernel_repair.GROUP_MEASURE_AREA,
+    "volume": kernel_repair.GROUP_MEASURE_VOLUME,
 }
 
 

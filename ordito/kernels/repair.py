@@ -23,7 +23,8 @@ from ordito.kernels.halfedge import (
     next_boundary_halfedge,
 )
 from ordito.kernels.predicates import triangle_aspect_ratio, triangle_normal
-from ordito.kernels.scatter import atomic_add_fixed_point, atomic_max_fixed_point_exponent
+from ordito.kernels.reduce import GroupSumPass
+from ordito.kernels.scatter import scatter_add
 from ordito.kernels.selection import face_selected_by_vertices, mark_submesh_face
 from ordito.kernels.triangles import (
     QUALITY_AREA,
@@ -468,66 +469,19 @@ def face_group_measure(
 
 
 @wp.kernel
-def scatter_face_area_by_group(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    groups: wp.array[wp.int32],
-    out_group_area: wp.array[wp.float32],
-) -> None:
-    # Each face's area added into its group's slot, in arrival order: the deterministic setting's
-    # off form. ``mark_face_measure_exponents`` and ``scatter_face_measure_fixed`` are the
-    # reproducible one, differing in the accumulator (exact fixed point against ``float32``).
-    f = wp.int32(wp.tid())
-    wp.atomic_add(
-        out_group_area, groups[f], face_group_measure(vertices, faces, f, GROUP_MEASURE_AREA)
-    )
-
-
-@wp.kernel
-def scatter_face_volume_by_group(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    groups: wp.array[wp.int32],
-    out_group_volume: wp.array[wp.float32],
-) -> None:
-    # ``scatter_face_area_by_group`` for the signed volume.
-    f = wp.int32(wp.tid())
-    wp.atomic_add(
-        out_group_volume, groups[f], face_group_measure(vertices, faces, f, GROUP_MEASURE_VOLUME)
-    )
-
-
-@wp.kernel
-def mark_face_measure_exponents(
+def scatter_face_measure_by_group(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     groups: wp.array[wp.int32],
     measure: wp.int32,
-    out_fields: wp.array[wp.int32],
+    sums: GroupSumPass,
+    out_group_measure: wp.array[wp.float32],
 ) -> None:
-    # The first pass of a component's exact sum: each group's largest exponent field
-    # (``scatter.atomic_max_fixed_point_exponent``) over its faces' measures, into a zeroed table.
+    # Each face's measure (``face_group_measure``) into its group's sum (``scatter.scatter_add``):
+    # one ``float32`` atomic in arrival order with ``ordito.config``'s deterministic setting off,
+    # or a pass of the exact group sum with it on, recomputing the measure bit for bit each pass.
     f = wp.int32(wp.tid())
-    value = face_group_measure(vertices, faces, f, measure)
-    atomic_max_fixed_point_exponent(out_fields, groups[f], value)
-
-
-@wp.kernel
-def scatter_face_measure_fixed(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    groups: wp.array[wp.int32],
-    measure: wp.int32,
-    fields: wp.array[wp.int32],
-    headroom: wp.int32,
-    out_sums: wp.array[wp.int64],
-) -> None:
-    # The second pass: each face's measure, recomputed bit for bit, added in fixed point into its
-    # group's zeroed ``int64`` slot (``scatter.atomic_add_fixed_point``). Exact, so the sums repeat
-    # whatever order the atomics commit in.
-    f = wp.int32(wp.tid())
-    value = face_group_measure(vertices, faces, f, measure)
-    atomic_add_fixed_point(out_sums, fields, headroom, groups[f], value)
+    scatter_add(out_group_measure, sums, groups[f], face_group_measure(vertices, faces, f, measure))
 
 
 # ``remove_small_components``' four criteria, as the selector ``component_kept`` branches on.
@@ -553,7 +507,7 @@ def component_kept(
     # the branch is warp-uniform). Every bound is inclusive.
     #
     # - ``COMPONENT_MIN_FACES``: the group's member count (``scatter.count_occurrences``).
-    # - ``COMPONENT_MIN_AREA``: its summed area (``scatter_face_area_by_group``).
+    # - ``COMPONENT_MIN_AREA``: its summed area (``scatter_face_measure_by_group``).
     # - ``COMPONENT_MIN_DIAMETER``: its bounding-box diagonal, decoded from the packed box
     #   ``scatter.scatter_group_bounds`` accumulated, so no per-group diagonal table is written.
     # - ``COMPONENT_LARGEST``: the group ``reduce_largest_group`` chose. Recomputing the key and
