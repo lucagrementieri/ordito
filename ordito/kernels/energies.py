@@ -930,24 +930,144 @@ def crouzeix_raviart_mass_diag(
 
 
 @wp.func
-def write_vector_area_triplets(
+def lscm_boundary_side(
+    faces: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    n_keys: wp.int32,
+    order: wp.array[wp.int32],
+    r: wp.int32,
+    c: wp.int32,
+    e: wp.int32,
+) -> wp.int32:
+    # Which side of a boundary edge vertex ``r`` is, for the ``cotmatrix`` pattern entry ``e`` at
+    # ``(r, c)``: ``1`` when the edge is a boundary edge running ``r -> c`` in its face's winding,
+    # ``-1`` when it runs ``c -> r``, ``0`` when it is not a boundary edge (or ``e`` is the
+    # diagonal). An entry's run of equal sorted keys holds one corner per halfedge on the edge in
+    # either build of the pattern, so a run of one is ``halfedge_mates``' lone halfedge -- the
+    # boundary edge ``oriented_boundary_edges`` emits -- and its corner ``3 * f + k`` names the
+    # face whose winding runs from corner ``k + 1`` to ``k + 2``.
+    if c == r:
+        return 0
+    p = run_start[e]
+    if p + 1 < n_keys:
+        if keys[p + 1] == keys[p]:
+            return 0
+    corner = order[p]
+    tail = faces[(corner // 3) * 3 + (corner % 3 + 1) % 3]
+    return wp.where(tail == r, 1, -1)
+
+
+@wp.kernel
+def lscm_boundary_counts(
+    faces: wp.array[wp.int32],
+    laplacian_offsets: wp.array[wp.int32],
+    laplacian_columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    n_keys: wp.int32,
+    order: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # Each vertex's boundary edge count into slot ``r + 1`` (thread 0 also writes the leading
+    # zero), whose inclusive scan places every row's ``-2 A`` entries in ``lscm_hessian_csr``.
+    r = wp.int32(wp.tid())
+    if r == 0:
+        out_counts[0] = 0
+    count = wp.int32(0)
+    for e in range(laplacian_offsets[r], laplacian_offsets[r + 1]):
+        side = lscm_boundary_side(faces, run_start, keys, n_keys, order, r, laplacian_columns[e], e)
+        if side != 0:
+            count += 1
+    out_counts[r + 1] = count
+
+
+@wp.kernel
+def lscm_hessian_csr(
+    faces: wp.array[wp.int32],
+    laplacian_offsets: wp.array[wp.int32],
+    laplacian_columns: wp.array[wp.int32],
+    laplacian_values: wp.array[wp.float64],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    n_keys: wp.int32,
+    order: wp.array[wp.int32],
+    area_offsets: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # The LSCM Hessian ``-repdiag(L, 2) + (-2 A)`` written straight into CSR, one thread per row
+    # of the ``2n`` rows, with ``A`` (``igl::vector_area_matrix``) read off the pattern of ``L``:
+    # an oriented boundary edge ``(i, j)`` puts ``-2 A``'s ``-1/2`` at ``(i, j + n)`` and
+    # ``(j + n, i)`` and ``+1/2`` at ``(j, i + n)`` and ``(i + n, j)``, so an upper row ``r``
+    # holds ``-1/2`` at column ``c + n`` for each boundary neighbour ``c`` it leaves
+    # (``lscm_boundary_side`` 1) and ``+1/2`` for each it enters, and the lower row ``r + n`` the
+    # negation at column ``c``. ``vector_area_triplets`` writes the same entries as triplets for
+    # ``vector_area_matrix``. The two terms never share an entry: ``-2 A`` holds only
+    # cross-quadrant entries, so an upper row ``r`` is ``-L``'s row ``r`` (columns below ``n``)
+    # followed by ``-2 A``'s (columns from ``n``), and a lower row ``r + n`` is ``-2 A``'s row
+    # (columns below ``n``) followed by ``-L``'s row ``r`` shifted by ``n``; both walk ``L``'s
+    # sorted row, so each row stays sorted. ``area_offsets`` is the scan of
+    # ``lscm_boundary_counts``: a row's start is ``L.offsets[r] + area_offsets[r]`` above and
+    # ``L.offsets[n] + area_offsets[n] + L.offsets[r - n] + area_offsets[r - n]`` below. Thread 0
+    # also writes the leading zero.
+    r = wp.int32(wp.tid())
+    vertex = r
+    shift = wp.int32(0)
+    base = wp.int32(0)
+    sign = wp.float64(-0.5)
+    if r >= n_vertices:
+        vertex = r - n_vertices
+        shift = n_vertices
+        base = laplacian_offsets[n_vertices] + area_offsets[n_vertices]
+        sign = wp.float64(0.5)
+    lap_begin = laplacian_offsets[vertex]
+    lap_end = laplacian_offsets[vertex + 1]
+    if r == 0:
+        out_offsets[0] = 0
+    out_offsets[r + 1] = base + lap_end + area_offsets[vertex + 1]
+    slot = base + lap_begin + area_offsets[vertex]
+    if r >= n_vertices:
+        for e in range(lap_begin, lap_end):
+            c = laplacian_columns[e]
+            side = lscm_boundary_side(faces, run_start, keys, n_keys, order, vertex, c, e)
+            if side != 0:
+                out_columns[slot] = c
+                out_values[slot] = wp.where(side > 0, sign, -sign)
+                slot += 1
+    for e in range(lap_begin, lap_end):
+        out_columns[slot] = laplacian_columns[e] + shift
+        out_values[slot] = -laplacian_values[e]
+        slot += 1
+    if r < n_vertices:
+        for e in range(lap_begin, lap_end):
+            c = laplacian_columns[e]
+            side = lscm_boundary_side(faces, run_start, keys, n_keys, order, vertex, c, e)
+            if side != 0:
+                out_columns[slot] = c + n_vertices
+                out_values[slot] = wp.where(side > 0, sign, -sign)
+                slot += 1
+
+
+@wp.kernel
+def vector_area_triplets(
     boundary_edges: wp.array2d[wp.int32],
     n_vertices: wp.int32,
-    scale: wp.float64,
-    b: wp.int32,
-    base: wp.int32,
     out_rows: wp.array[wp.int32],
     out_cols: wp.array[wp.int32],
     out_vals: wp.array[wp.float64],
 ) -> None:
-    # ``igl::vector_area_matrix``: per oriented boundary edge ``(i, j)`` emit the four
-    # cross-quadrant triplets ``(i+n, j, -q)``, ``(j, i+n, -q)``, ``(i, j+n, +q)``, ``(j+n, i, +q)``
-    # with ``q = 0.25 * scale``, at slots ``base .. base + 3``. ``scale = 1`` builds ``A`` itself
-    # (``vector_area_triplets``); ``scale = -2`` builds the ``-2A`` term of the LSCM Hessian
-    # (merged with ``-repdiag(L, 2)`` by ``lscm_hessian_csr``).
+    # ``igl::vector_area_matrix``: per oriented boundary edge ``(i, j)`` the four cross-quadrant
+    # triplets ``(i+n, j, -1/4)``, ``(j, i+n, -1/4)``, ``(i, j+n, +1/4)``, ``(j+n, i, +1/4)`` at
+    # slots ``4 * b .. 4 * b + 3``. ``lscm_hessian_csr`` writes ``-2`` times the same entries
+    # straight into its rows.
+    b = wp.int32(wp.tid())
     i = boundary_edges[b, 0]
     j = boundary_edges[b, 1]
-    q = wp.float64(0.25) * scale
+    q = wp.float64(0.25)
+    base = 4 * b
     out_rows[base] = i + n_vertices
     out_cols[base] = j
     out_vals[base] = -q
@@ -960,76 +1080,6 @@ def write_vector_area_triplets(
     out_rows[base + 3] = j + n_vertices
     out_cols[base + 3] = i
     out_vals[base + 3] = q
-
-
-@wp.kernel
-def lscm_hessian_csr(
-    laplacian_offsets: wp.array[wp.int32],
-    laplacian_columns: wp.array[wp.int32],
-    laplacian_values: wp.array[wp.float64],
-    area_offsets: wp.array[wp.int32],
-    area_columns: wp.array[wp.int32],
-    area_values: wp.array[wp.float64],
-    n_vertices: wp.int32,
-    out_offsets: wp.array[wp.int32],
-    out_columns: wp.array[wp.int32],
-    out_values: wp.array[wp.float64],
-) -> None:
-    # The LSCM Hessian ``-repdiag(L, 2) + (-2 A)`` written straight into CSR, one thread per row
-    # of the ``2n`` rows. The two terms never share an entry: ``-2 A`` (handed in already summed
-    # as its own CSR) holds only cross-quadrant entries, so an upper row ``r`` is ``-L``'s row
-    # ``r`` (columns below ``n``) followed by ``-2 A``'s (columns from ``n``), and a lower row
-    # ``r + n`` is ``-2 A``'s row (columns below ``n``) followed by ``-L``'s row ``r`` shifted by
-    # ``n``. Each row stays sorted, and its start is closed-form -- no count pass or scan:
-    # ``L.offsets[r] + A.offsets[r]`` above, ``L.offsets[n] + L.offsets[r - n] + A.offsets[r]``
-    # below. Thread 0 also writes the leading zero.
-    r = wp.int32(wp.tid())
-    n_entries = laplacian_offsets[n_vertices]
-    lap_row = r
-    shift = wp.int32(0)
-    base = wp.int32(0)
-    if r >= n_vertices:
-        lap_row = r - n_vertices
-        shift = n_vertices
-        base = n_entries
-    lap_begin = laplacian_offsets[lap_row]
-    lap_end = laplacian_offsets[lap_row + 1]
-    area_begin = area_offsets[r]
-    area_end = area_offsets[r + 1]
-    if r == 0:
-        out_offsets[0] = 0
-    out_offsets[r + 1] = base + lap_end + area_end
-    slot = base + lap_begin + area_begin
-    if r >= n_vertices:
-        for e in range(area_begin, area_end):
-            out_columns[slot] = area_columns[e]
-            out_values[slot] = area_values[e]
-            slot += 1
-    for e in range(lap_begin, lap_end):
-        out_columns[slot] = laplacian_columns[e] + shift
-        out_values[slot] = -laplacian_values[e]
-        slot += 1
-    if r < n_vertices:
-        for e in range(area_begin, area_end):
-            out_columns[slot] = area_columns[e]
-            out_values[slot] = area_values[e]
-            slot += 1
-
-
-@wp.kernel
-def vector_area_triplets(
-    boundary_edges: wp.array2d[wp.int32],
-    n_vertices: wp.int32,
-    scale: wp.float64,
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
-    out_vals: wp.array[wp.float64],
-) -> None:
-    # ``write_vector_area_triplets`` for every oriented boundary edge, slot base ``4 * b``.
-    b = wp.int32(wp.tid())
-    write_vector_area_triplets(
-        boundary_edges, n_vertices, scale, b, 4 * b, out_rows, out_cols, out_vals
-    )
 
 
 # Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``. Measured

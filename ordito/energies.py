@@ -57,7 +57,7 @@ from ordito.kernels import energies as kernel_energies
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
-from ordito.laplacian import MeshOperatorPattern, cotmatrix
+from ordito.laplacian import MeshOperatorPattern, cotmatrix, mesh_operator_pattern
 
 
 def edge_length_loss(
@@ -1179,11 +1179,27 @@ def lscm_hessian(
     device = vertices.device
     if n == 0:
         return od.array.empty_square_bsr(0, wp.float64, device)
+    if faces.size == 0:
+        return od.array.empty_square_bsr(2 * n, wp.float64, device)
+    # ``L``'s pattern also carries every edge's halfedges, so the boundary term is read off it
+    # rather than paired and sorted again (``kernels/energies.lscm_boundary_side``).
+    if pattern is None:
+        pattern = mesh_operator_pattern(faces, n)
     laplacian = cotmatrix(vertices, faces, cot_entries, dtype=wp.float64, pattern=pattern)
-    area = _vector_area_csr(vertices, faces, -2.0)
-    # Capacities, not counts: both buffers may be longer than their stored entries, and the true
-    # count is formed on the device, so nothing is read back.
-    capacity = 2 * laplacian.columns.size + area.columns.size
+    _, _, lap_offsets, lap_columns, run_start, keys, n_keys, order = pattern
+    area_offsets = _launch.empty(n + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_energies.lscm_boundary_counts,
+        dim=n,
+        inputs=[faces, lap_offsets, lap_columns, run_start, keys, wp.int32(n_keys), order],
+        outputs=[area_offsets],
+        device=device,
+    )
+    _launch.array_scan(area_offsets, out_array=area_offsets, inclusive=True)
+    # Sizes the entry buffers: the one readback, of the boundary entry count, which the triplet
+    # build of ``A`` read as its boundary edge count. Capacities, not counts: ``L``'s columns may
+    # be longer than its stored entries.
+    capacity = 2 * lap_columns.size + 2 * int(read_scalar(area_offsets))
     offsets = _launch.empty(2 * n + 1, dtype=wp.int32, device=device)
     columns = _launch.empty(capacity, dtype=wp.int32, device=device)
     values = _launch.empty(capacity, dtype=wp.float64, device=device)
@@ -1191,12 +1207,15 @@ def lscm_hessian(
         kernel_energies.lscm_hessian_csr,
         dim=2 * n,
         inputs=[
-            laplacian.offsets,
-            laplacian.columns,
+            faces,
+            lap_offsets,
+            lap_columns,
             laplacian.values,
-            area.offsets,
-            area.columns,
-            area.values,
+            run_start,
+            keys,
+            wp.int32(n_keys),
+            order,
+            area_offsets,
             wp.int32(n),
         ],
         outputs=[offsets, columns, values],
@@ -1267,13 +1286,6 @@ def vector_area_matrix(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
-    return _vector_area_csr(vertices, faces, 1.0)
-
-
-def _vector_area_csr(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], scale: float
-) -> odt.BsrMatrix[wp.float64]:
-    """``scale * A``, the body of [`vector_area_matrix`][ordito.energies.vector_area_matrix]."""
     device = faces.device
     n_vertices = vertices.size
     boundary = od.boundary.oriented_boundary_edges(vertices, faces)
@@ -1286,7 +1298,7 @@ def _vector_area_csr(
     _launch.launch(
         kernel_energies.vector_area_triplets,
         dim=n_be,
-        inputs=[boundary, wp.int32(n_vertices), wp.float64(scale), rows, cols, vals],
+        inputs=[boundary, wp.int32(n_vertices), rows, cols, vals],
         device=device,
     )
     return od.array.csr_from_triplets(2 * n_vertices, 2 * n_vertices, rows, cols, vals)
