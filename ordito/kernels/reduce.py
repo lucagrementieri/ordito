@@ -546,7 +546,7 @@ def store_sum_and_count(
 # fields a node and ran 1.9x the device time of one.
 #
 # **Hot slots.** Where every active lane of a warp adds to one slot (a single group, a long sorted
-# run), the words are summed across the warp first and one lane commits (``warp_uniform_sum``):
+# run), the words are summed across the warp first and one lane commits (``warp_lanes_sum``):
 # 10 M terms into one slot ran 0.011x the time of the per-term ``float32`` atomic. Declined:
 # matching any subset of lanes (``__match_any_sync``), 1.5x the plain commit on coherent runs of
 # six and no gain on few randomly ordered groups (512 cells, 2 M terms), whose collisions are
@@ -563,7 +563,8 @@ def store_sum_and_count(
 # ``float32`` accumulators to clear, scatter into and read back). Those sites keep their forms.
 #
 # With ``words`` empty the pass is the arrival-order float form: ``kernels/scatter.scatter_add``
-# then does the plain ``atomic_add`` into the caller's float accumulator.
+# then does the ``atomic_add`` into the caller's float accumulator, pre-summed the same way where
+# a warp shares the group.
 GROUP_SUM_NONFINITE = wp.int32(2047)
 
 
@@ -666,44 +667,86 @@ def group_sum_words(
     return wp.vec2l(signed_high, signed_low)
 
 
-# A warp's words summed before the atomic when every active lane holds the same ``key`` (one
-# shuffle and a vote decide): the total to the lowest active lane, 0 to the others; otherwise each
-# lane's own ``value``. The CPU device runs one lane at a time and returns ``value``.
-_WARP_UNIFORM_SUM = """
+# Warp-uniform pre-sums: where every active lane of a warp adds to one slot, the lanes' terms are
+# summed across the warp and the lowest lane commits once. ``warp_uniform_lanes`` decides (one
+# shuffle and a vote): the active mask when the lanes share ``key`` and are more than one, else 0;
+# the CPU device runs one lane at a time and always reads 0, so its commits are the plain ones.
+# ``warp_lanes_sum`` then sums a value over those lanes into the lowest (``warp_lane_leads``);
+# the other lanes hold partial sums. A full warp folds by halves; a partial one by rank over the
+# set lanes (``__fns``), since a lane outside the mask cannot be read.
+_WARP_UNIFORM_LANES = """
 #if defined(__CUDA_ARCH__)
 const unsigned active = __activemask();
-if (!__all_sync(active, __shfl_sync(active, key, __ffs(active) - 1) == key)) {
-    return value;
+if (__popc(active) > 1 && __all_sync(active, __shfl_sync(active, key, __ffs(active) - 1) == key)) {
+    return (int)active;
+}
+#endif
+return 0;
+"""
+
+_WARP_LANES_SUM = """
+#if defined(__CUDA_ARCH__)
+const unsigned active = (unsigned)lanes;
+auto total = value;
+if (active == 0xffffffffu) {
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        total += __shfl_down_sync(active, total, offset);
+    }
+    return total;
 }
 const unsigned lane = threadIdx.x & 31u;
 const unsigned rank = __popc(active & ((1u << lane) - 1u));
 const unsigned count = __popc(active);
-long long total = value;
 for (unsigned offset = 1u; offset < count; offset <<= 1) {
     const bool has = rank + offset < count;
     const int source = has ? (int)__fns(active, 0u, (int)(rank + offset + 1u)) : (int)lane;
-    const long long other = __shfl_sync(active, total, source);
+    const auto other = __shfl_sync(active, total, source);
     if (has) {
         total += other;
     }
 }
-return rank == 0u ? total : 0ll;
+return total;
 #else
 return value;
 #endif
 """
 
+_WARP_LANE_LEADS = """
+#if defined(__CUDA_ARCH__)
+return (int)((threadIdx.x & 31u) == (unsigned)(__ffs((unsigned)lanes) - 1));
+#else
+return 1;
+#endif
+"""
 
-@wp.func_native(_WARP_UNIFORM_SUM)
-def warp_uniform_sum(key: wp.int32, value: wp.int64) -> wp.int64: ...
+
+@wp.func_native(_WARP_UNIFORM_LANES)
+def warp_uniform_lanes(key: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_WARP_LANES_SUM)
+def warp_lanes_sum(lanes: wp.int32, value: wp.int64) -> wp.int64: ...
+
+
+@wp.func_native(_WARP_LANES_SUM)
+def warp_lanes_sum_float(lanes: wp.int32, value: wp.float64) -> wp.float64: ...
+
+
+@wp.func_native(_WARP_LANE_LEADS)
+def warp_lane_leads(lanes: wp.int32) -> wp.int32: ...
 
 
 @wp.func
 def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, word: wp.int64):
     # One word of a term into ``sums.words[index]`` (a slot's high or low word): summed across the
-    # warp first where the warp shares the word (``warp_uniform_sum``, keyed on ``index`` so lanes
-    # converged on a high and a low word of one slot never pool), committed only where non-zero.
-    total = warp_uniform_sum(index, word)
+    # warp first where the warp shares the word (keyed on ``index`` so lanes converged on a high
+    # and a low word of one slot never pool), committed only where non-zero.
+    total = word
+    lanes = warp_uniform_lanes(index)
+    if lanes != 0:
+        total = warp_lanes_sum(lanes, word)
+        if warp_lane_leads(lanes) == 0:
+            total = wp.int64(0)
     if total != wp.int64(0):
         wp.atomic_add(sums.words, index, total)
 

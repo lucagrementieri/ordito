@@ -20,6 +20,9 @@ from ordito.kernels.reduce import (
     group_sum_group_field,
     group_sum_term,
     raise_group_sum_field,
+    warp_lane_leads,
+    warp_lanes_sum_float,
+    warp_uniform_lanes,
 )
 from ordito.kernels.triangles import face_normals_and_area
 
@@ -39,13 +42,28 @@ wp.set_module_options({"enable_backward": False})
 # ``scatter_add_vector`` and ``scatter_add_matrix`` are the componentwise siblings: component ``c``
 # of group ``g`` is slot ``g * n_components + c`` (row-major for a matrix), and the group's
 # components share one field, raised by their largest.
+#
+# With the setting off, a warp whose active lanes all add to one group sums their values first
+# (``kernels/reduce.warp_lanes_sum``, in ``float64`` for either precision, per component) and its
+# lowest lane commits once; any other warp takes the plain per-lane atomic, and the CPU device
+# always does. One group of 10 M terms ran 0.04x the plain atomic, ``remove_small_components``
+# and ``make_volume(multibody=True)`` 0.22-0.27x on 1 and 64 components (5 M and 21 M faces), at
+# par with every face its own component and on 1 M random groups. Declined: a ``float32`` sum
+# for ``float32`` values (0.94-1.00x; a generic func_native cannot return its argument's type, so
+# it would be a second, same-named native).
 
 
 @wp.func
 def scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float):
     # ``out_sums[group] += value`` for a scalar.
     if sums.words.shape[0] == 0:
-        wp.atomic_add(out_sums, group, value)
+        lanes = warp_uniform_lanes(group)
+        if lanes == 0:
+            wp.atomic_add(out_sums, group, value)
+        else:
+            total = type(value)(warp_lanes_sum_float(lanes, wp.float64(value)))
+            if warp_lane_leads(lanes) != 0:
+                wp.atomic_add(out_sums, group, total)
     else:
         group_sum_term(sums, group, wp.float64(value))
 
@@ -53,10 +71,18 @@ def scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, va
 @wp.func
 def scatter_add_vector(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
     # ``out_sums[group] += value`` for a vector, componentwise.
-    if sums.words.shape[0] == 0:
-        wp.atomic_add(out_sums, group, value)
-        return
     n = len(value)
+    if sums.words.shape[0] == 0:
+        lanes = warp_uniform_lanes(group)
+        if lanes == 0:
+            wp.atomic_add(out_sums, group, value)
+        else:
+            total = type(value)()
+            for c in range(n):
+                total[c] = type(value[c])(warp_lanes_sum_float(lanes, wp.float64(value[c])))
+            if warp_lane_leads(lanes) != 0:
+                wp.atomic_add(out_sums, group, total)
+        return
     if sums.phase == 0:
         field = wp.int32(0)
         for c in range(n):
@@ -71,11 +97,22 @@ def scatter_add_vector(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.in
 @wp.func
 def scatter_add_matrix(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
     # ``out_sums[group] += value`` for a matrix, componentwise.
-    if sums.words.shape[0] == 0:
-        wp.atomic_add(out_sums, group, value)
-        return
     rows = len(value)
     cols = len(value[0])
+    if sums.words.shape[0] == 0:
+        lanes = warp_uniform_lanes(group)
+        if lanes == 0:
+            wp.atomic_add(out_sums, group, value)
+        else:
+            total = type(value)()
+            for r in range(rows):
+                for c in range(cols):
+                    total[r, c] = type(value[r, c])(
+                        warp_lanes_sum_float(lanes, wp.float64(value[r, c]))
+                    )
+            if warp_lane_leads(lanes) != 0:
+                wp.atomic_add(out_sums, group, total)
+        return
     if sums.phase == 0:
         field = wp.int32(0)
         for r in range(rows):
@@ -135,7 +172,7 @@ def segment_sum_scalars(
     out_sums: wp.array[wp.Float],
 ) -> None:
     # ``reduce.segment_sum`` of scalars: one thread per item, into its segment. Consecutive items
-    # share a segment, so a long segment's warps commit once each (``warp_uniform_sum``).
+    # share a segment, so a long segment's warps commit once each (``reduce.warp_lanes_sum``).
     i = wp.int32(wp.tid())
     scatter_add(out_sums, sums, segment_of(offsets, i), values[i])
 
