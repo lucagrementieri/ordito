@@ -2954,6 +2954,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.points.convex_hull" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        convex_hull
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.points.convex_subset_mask" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -4250,6 +4261,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.points.convex_hull" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        convex_hull
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.points.convex_subset_mask" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -4360,8 +4382,10 @@
   the cloud's support. Run the exact predicates first: they are cheap and they remove the inputs the
   others are ill-defined on.</li>
 <li>
-<p><strong>Approximate hull vertices.</strong> Which points are convex-hull vertices, without building a hull.
-  Both entry points are exact-hull-free and run in a fixed number of parallel launches, and both are
+<p><strong>Convex hull.</strong> <a class="autorefs autorefs-internal" title="convex_hull" href="./#ordito.points.convex_hull"><code>convex_hull</code></a> is the exact hull as outward-wound
+  triangles over the cloud, decided by exact orientation signs, so thin, flat and degenerate
+  clouds get the true hull rather than one within a tolerance. Two approximations answer only
+  <em>which</em> points are hull vertices, each in a fixed number of parallel launches and each
   one-sided -- but in <em>opposite</em> directions:</p>
 <ul>
 <li><a class="autorefs autorefs-internal" title="convex_subset_mask" href="./#ordito.points.convex_subset_mask"><code>convex_subset_mask</code></a> (and its point-returning form
@@ -4372,12 +4396,10 @@
 <li><a class="autorefs autorefs-internal" title="convex_superset_mask" href="./#ordito.points.convex_superset_mask"><code>convex_superset_mask</code></a> accumulates <em>negative</em>
   certificates: a tetrahedron of hull points strictly containing a point proves that point is
   interior. It keeps everything it cannot rule out, so the result is <strong>never smaller</strong> than the
-  hull-vertex set -- a conservative prefilter before an exact hull.</li>
+  hull-vertex set.</li>
 </ul>
 </li>
 </ul>
-<p>Neither computes hull connectivity; for that use an exact hull library
-  (<a class="autorefs autorefs-external" href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.ConvexHull.html#scipy.spatial.ConvexHull"><code>scipy.spatial.ConvexHull</code></a> or the qhull-backed mesh packages).</p>
 <p>Normals from <a class="autorefs autorefs-internal" title="estimate_normals" href="./#ordito.points.estimate_normals"><code>estimate_normals</code></a> are <em>unoriented</em> -- a plane fit
 cannot pick a side. See <a class="autorefs autorefs-internal" title="ordito.repair" href="../repair/#ordito.repair"><code>ordito.repair</code></a> for orientation propagation.</p>
 <p>One member here takes no cloud at all: <a class="autorefs autorefs-internal" title="vector_angle" href="./#ordito.points.vector_angle"><code>vector_angle</code></a> is the unsigned
@@ -4542,6 +4564,14 @@ angle between two <code>wp.vec3</code> arrays, geometry rather than array struct
               <td>
                 <div class="doc-md-description">
                   <p>Greedily pick <code>count</code> points, each as far as possible from those already picked.</p>
+                </div>
+              </td>
+            </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="convex_hull (ordito.points.convex_hull)" href="./#ordito.points.convex_hull">convex_hull</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Exact convex hull of a point cloud, as outward-wound triangles over the input points.</p>
                 </div>
               </td>
             </tr>
@@ -4803,23 +4833,7 @@ distance is normalized by its magnitude.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">103</span>
-<span class="normal">104</span>
-<span class="normal">105</span>
-<span class="normal">106</span>
-<span class="normal">107</span>
-<span class="normal">108</span>
-<span class="normal">109</span>
-<span class="normal">110</span>
-<span class="normal">111</span>
-<span class="normal">112</span>
-<span class="normal">113</span>
-<span class="normal">114</span>
-<span class="normal">115</span>
-<span class="normal">116</span>
-<span class="normal">117</span>
-<span class="normal">118</span>
-<span class="normal">119</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">119</span>
 <span class="normal">120</span>
 <span class="normal">121</span>
 <span class="normal">122</span>
@@ -4850,7 +4864,23 @@ distance is normalized by its magnitude.</p>
 <span class="normal">147</span>
 <span class="normal">148</span>
 <span class="normal">149</span>
-<span class="normal">150</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_plane_distance</span><span class="p">(</span>
+<span class="normal">150</span>
+<span class="normal">151</span>
+<span class="normal">152</span>
+<span class="normal">153</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span>
+<span class="normal">163</span>
+<span class="normal">164</span>
+<span class="normal">165</span>
+<span class="normal">166</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_plane_distance</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">plane_normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">plane_origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -5057,23 +5087,7 @@ the plane.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">153</span>
-<span class="normal">154</span>
-<span class="normal">155</span>
-<span class="normal">156</span>
-<span class="normal">157</span>
-<span class="normal">158</span>
-<span class="normal">159</span>
-<span class="normal">160</span>
-<span class="normal">161</span>
-<span class="normal">162</span>
-<span class="normal">163</span>
-<span class="normal">164</span>
-<span class="normal">165</span>
-<span class="normal">166</span>
-<span class="normal">167</span>
-<span class="normal">168</span>
-<span class="normal">169</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">169</span>
 <span class="normal">170</span>
 <span class="normal">171</span>
 <span class="normal">172</span>
@@ -5122,7 +5136,23 @@ the plane.</p>
 <span class="normal">215</span>
 <span class="normal">216</span>
 <span class="normal">217</span>
-<span class="normal">218</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">half_space_mask</span><span class="p">(</span>
+<span class="normal">218</span>
+<span class="normal">219</span>
+<span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span>
+<span class="normal">226</span>
+<span class="normal">227</span>
+<span class="normal">228</span>
+<span class="normal">229</span>
+<span class="normal">230</span>
+<span class="normal">231</span>
+<span class="normal">232</span>
+<span class="normal">233</span>
+<span class="normal">234</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">half_space_mask</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">plane_normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">plane_origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -5284,23 +5314,7 @@ All-zeros when <code>points</code> is empty.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">221</span>
-<span class="normal">222</span>
-<span class="normal">223</span>
-<span class="normal">224</span>
-<span class="normal">225</span>
-<span class="normal">226</span>
-<span class="normal">227</span>
-<span class="normal">228</span>
-<span class="normal">229</span>
-<span class="normal">230</span>
-<span class="normal">231</span>
-<span class="normal">232</span>
-<span class="normal">233</span>
-<span class="normal">234</span>
-<span class="normal">235</span>
-<span class="normal">236</span>
-<span class="normal">237</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">237</span>
 <span class="normal">238</span>
 <span class="normal">239</span>
 <span class="normal">240</span>
@@ -5315,7 +5329,23 @@ All-zeros when <code>points</code> is empty.</p>
 <span class="normal">249</span>
 <span class="normal">250</span>
 <span class="normal">251</span>
-<span class="normal">252</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">centroid</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">252</span>
+<span class="normal">253</span>
+<span class="normal">254</span>
+<span class="normal">255</span>
+<span class="normal">256</span>
+<span class="normal">257</span>
+<span class="normal">258</span>
+<span class="normal">259</span>
+<span class="normal">260</span>
+<span class="normal">261</span>
+<span class="normal">262</span>
+<span class="normal">263</span>
+<span class="normal">264</span>
+<span class="normal">265</span>
+<span class="normal">266</span>
+<span class="normal">267</span>
+<span class="normal">268</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">centroid</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Mean position ``sum(points) / n`` as a ``(1,)`` device ``wp.vec3`` array.</span>
 
@@ -5445,23 +5475,7 @@ All-zeros when <code>points</code> is empty.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">255</span>
-<span class="normal">256</span>
-<span class="normal">257</span>
-<span class="normal">258</span>
-<span class="normal">259</span>
-<span class="normal">260</span>
-<span class="normal">261</span>
-<span class="normal">262</span>
-<span class="normal">263</span>
-<span class="normal">264</span>
-<span class="normal">265</span>
-<span class="normal">266</span>
-<span class="normal">267</span>
-<span class="normal">268</span>
-<span class="normal">269</span>
-<span class="normal">270</span>
-<span class="normal">271</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">271</span>
 <span class="normal">272</span>
 <span class="normal">273</span>
 <span class="normal">274</span>
@@ -5476,7 +5490,23 @@ All-zeros when <code>points</code> is empty.</p>
 <span class="normal">283</span>
 <span class="normal">284</span>
 <span class="normal">285</span>
-<span class="normal">286</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">gram_matrix</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">]:</span>
+<span class="normal">286</span>
+<span class="normal">287</span>
+<span class="normal">288</span>
+<span class="normal">289</span>
+<span class="normal">290</span>
+<span class="normal">291</span>
+<span class="normal">292</span>
+<span class="normal">293</span>
+<span class="normal">294</span>
+<span class="normal">295</span>
+<span class="normal">296</span>
+<span class="normal">297</span>
+<span class="normal">298</span>
+<span class="normal">299</span>
+<span class="normal">300</span>
+<span class="normal">301</span>
+<span class="normal">302</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">gram_matrix</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Uncentered Gram (scatter) matrix ``G = sum_k outer(x_k, x_k)``.</span>
 
@@ -5632,23 +5662,7 @@ moderate cloud.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">289</span>
-<span class="normal">290</span>
-<span class="normal">291</span>
-<span class="normal">292</span>
-<span class="normal">293</span>
-<span class="normal">294</span>
-<span class="normal">295</span>
-<span class="normal">296</span>
-<span class="normal">297</span>
-<span class="normal">298</span>
-<span class="normal">299</span>
-<span class="normal">300</span>
-<span class="normal">301</span>
-<span class="normal">302</span>
-<span class="normal">303</span>
-<span class="normal">304</span>
-<span class="normal">305</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">305</span>
 <span class="normal">306</span>
 <span class="normal">307</span>
 <span class="normal">308</span>
@@ -5693,7 +5707,23 @@ moderate cloud.</p>
 <span class="normal">347</span>
 <span class="normal">348</span>
 <span class="normal">349</span>
-<span class="normal">350</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fit_line</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
+<span class="normal">350</span>
+<span class="normal">351</span>
+<span class="normal">352</span>
+<span class="normal">353</span>
+<span class="normal">354</span>
+<span class="normal">355</span>
+<span class="normal">356</span>
+<span class="normal">357</span>
+<span class="normal">358</span>
+<span class="normal">359</span>
+<span class="normal">360</span>
+<span class="normal">361</span>
+<span class="normal">362</span>
+<span class="normal">363</span>
+<span class="normal">364</span>
+<span class="normal">365</span>
+<span class="normal">366</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fit_line</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Major axis of a point set, weighted across all three singular directions.</span>
 
@@ -5898,23 +5928,7 @@ cancellation.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">353</span>
-<span class="normal">354</span>
-<span class="normal">355</span>
-<span class="normal">356</span>
-<span class="normal">357</span>
-<span class="normal">358</span>
-<span class="normal">359</span>
-<span class="normal">360</span>
-<span class="normal">361</span>
-<span class="normal">362</span>
-<span class="normal">363</span>
-<span class="normal">364</span>
-<span class="normal">365</span>
-<span class="normal">366</span>
-<span class="normal">367</span>
-<span class="normal">368</span>
-<span class="normal">369</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">369</span>
 <span class="normal">370</span>
 <span class="normal">371</span>
 <span class="normal">372</span>
@@ -5944,7 +5958,23 @@ cancellation.</p>
 <span class="normal">396</span>
 <span class="normal">397</span>
 <span class="normal">398</span>
-<span class="normal">399</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">centered_covariance</span><span class="p">(</span>
+<span class="normal">399</span>
+<span class="normal">400</span>
+<span class="normal">401</span>
+<span class="normal">402</span>
+<span class="normal">403</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span>
+<span class="normal">408</span>
+<span class="normal">409</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span>
+<span class="normal">414</span>
+<span class="normal">415</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">centered_covariance</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">center</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6105,23 +6135,7 @@ point takes. <a class="autorefs autorefs-external" href="https://trimesh.org/tri
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">402</span>
-<span class="normal">403</span>
-<span class="normal">404</span>
-<span class="normal">405</span>
-<span class="normal">406</span>
-<span class="normal">407</span>
-<span class="normal">408</span>
-<span class="normal">409</span>
-<span class="normal">410</span>
-<span class="normal">411</span>
-<span class="normal">412</span>
-<span class="normal">413</span>
-<span class="normal">414</span>
-<span class="normal">415</span>
-<span class="normal">416</span>
-<span class="normal">417</span>
-<span class="normal">418</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">418</span>
 <span class="normal">419</span>
 <span class="normal">420</span>
 <span class="normal">421</span>
@@ -6164,7 +6178,23 @@ point takes. <a class="autorefs autorefs-external" href="https://trimesh.org/tri
 <span class="normal">458</span>
 <span class="normal">459</span>
 <span class="normal">460</span>
-<span class="normal">461</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fit_plane</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">461</span>
+<span class="normal">462</span>
+<span class="normal">463</span>
+<span class="normal">464</span>
+<span class="normal">465</span>
+<span class="normal">466</span>
+<span class="normal">467</span>
+<span class="normal">468</span>
+<span class="normal">469</span>
+<span class="normal">470</span>
+<span class="normal">471</span>
+<span class="normal">472</span>
+<span class="normal">473</span>
+<span class="normal">474</span>
+<span class="normal">475</span>
+<span class="normal">476</span>
+<span class="normal">477</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">fit_plane</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Fit a plane to a point set using SVD.</span>
 
@@ -6322,23 +6352,7 @@ point takes. <a class="autorefs autorefs-external" href="https://trimesh.org/tri
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">464</span>
-<span class="normal">465</span>
-<span class="normal">466</span>
-<span class="normal">467</span>
-<span class="normal">468</span>
-<span class="normal">469</span>
-<span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span>
-<span class="normal">473</span>
-<span class="normal">474</span>
-<span class="normal">475</span>
-<span class="normal">476</span>
-<span class="normal">477</span>
-<span class="normal">478</span>
-<span class="normal">479</span>
-<span class="normal">480</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">480</span>
 <span class="normal">481</span>
 <span class="normal">482</span>
 <span class="normal">483</span>
@@ -6366,7 +6380,23 @@ point takes. <a class="autorefs autorefs-external" href="https://trimesh.org/tri
 <span class="normal">505</span>
 <span class="normal">506</span>
 <span class="normal">507</span>
-<span class="normal">508</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">plane_basis</span><span class="p">(</span><span class="n">normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">508</span>
+<span class="normal">509</span>
+<span class="normal">510</span>
+<span class="normal">511</span>
+<span class="normal">512</span>
+<span class="normal">513</span>
+<span class="normal">514</span>
+<span class="normal">515</span>
+<span class="normal">516</span>
+<span class="normal">517</span>
+<span class="normal">518</span>
+<span class="normal">519</span>
+<span class="normal">520</span>
+<span class="normal">521</span>
+<span class="normal">522</span>
+<span class="normal">523</span>
+<span class="normal">524</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">plane_basis</span><span class="p">(</span><span class="n">normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Right-handed orthonormal basis ``(u, v)`` spanning the plane with the given ``normal``.</span>
 
@@ -6549,23 +6579,7 @@ point takes. <a class="autorefs autorefs-external" href="https://trimesh.org/tri
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">511</span>
-<span class="normal">512</span>
-<span class="normal">513</span>
-<span class="normal">514</span>
-<span class="normal">515</span>
-<span class="normal">516</span>
-<span class="normal">517</span>
-<span class="normal">518</span>
-<span class="normal">519</span>
-<span class="normal">520</span>
-<span class="normal">521</span>
-<span class="normal">522</span>
-<span class="normal">523</span>
-<span class="normal">524</span>
-<span class="normal">525</span>
-<span class="normal">526</span>
-<span class="normal">527</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">527</span>
 <span class="normal">528</span>
 <span class="normal">529</span>
 <span class="normal">530</span>
@@ -6591,7 +6605,23 @@ point takes. <a class="autorefs autorefs-external" href="https://trimesh.org/tri
 <span class="normal">550</span>
 <span class="normal">551</span>
 <span class="normal">552</span>
-<span class="normal">553</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">covariance</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">ddof</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">]:</span>
+<span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">covariance</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">ddof</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Sample covariance matrix ``(1 / (n - ddof)) sum_k outer(x_k - mu, x_k - mu)``.</span>
 
@@ -6780,23 +6810,7 @@ eigendecomposition fixes.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">556</span>
-<span class="normal">557</span>
-<span class="normal">558</span>
-<span class="normal">559</span>
-<span class="normal">560</span>
-<span class="normal">561</span>
-<span class="normal">562</span>
-<span class="normal">563</span>
-<span class="normal">564</span>
-<span class="normal">565</span>
-<span class="normal">566</span>
-<span class="normal">567</span>
-<span class="normal">568</span>
-<span class="normal">569</span>
-<span class="normal">570</span>
-<span class="normal">571</span>
-<span class="normal">572</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">572</span>
 <span class="normal">573</span>
 <span class="normal">574</span>
 <span class="normal">575</span>
@@ -6847,7 +6861,23 @@ eigendecomposition fixes.</p>
 <span class="normal">620</span>
 <span class="normal">621</span>
 <span class="normal">622</span>
-<span class="normal">623</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">principal_axes</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
+<span class="normal">631</span>
+<span class="normal">632</span>
+<span class="normal">633</span>
+<span class="normal">634</span>
+<span class="normal">635</span>
+<span class="normal">636</span>
+<span class="normal">637</span>
+<span class="normal">638</span>
+<span class="normal">639</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">principal_axes</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Principal frame of a point cloud: its three axes, spreads and centroid.</span>
 
@@ -7139,23 +7169,7 @@ not have one row per point.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">626</span>
-<span class="normal">627</span>
-<span class="normal">628</span>
-<span class="normal">629</span>
-<span class="normal">630</span>
-<span class="normal">631</span>
-<span class="normal">632</span>
-<span class="normal">633</span>
-<span class="normal">634</span>
-<span class="normal">635</span>
-<span class="normal">636</span>
-<span class="normal">637</span>
-<span class="normal">638</span>
-<span class="normal">639</span>
-<span class="normal">640</span>
-<span class="normal">641</span>
-<span class="normal">642</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">642</span>
 <span class="normal">643</span>
 <span class="normal">644</span>
 <span class="normal">645</span>
@@ -7259,7 +7273,23 @@ not have one row per point.</p>
 <span class="normal">743</span>
 <span class="normal">744</span>
 <span class="normal">745</span>
-<span class="normal">746</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">estimate_normals</span><span class="p">(</span>
+<span class="normal">746</span>
+<span class="normal">747</span>
+<span class="normal">748</span>
+<span class="normal">749</span>
+<span class="normal">750</span>
+<span class="normal">751</span>
+<span class="normal">752</span>
+<span class="normal">753</span>
+<span class="normal">754</span>
+<span class="normal">755</span>
+<span class="normal">756</span>
+<span class="normal">757</span>
+<span class="normal">758</span>
+<span class="normal">759</span>
+<span class="normal">760</span>
+<span class="normal">761</span>
+<span class="normal">762</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">estimate_normals</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">neighbor_idx</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7585,23 +7615,7 @@ scores <code>0</code>. All-zeros when the cloud has no spread at all.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">871</span>
-<span class="normal">872</span>
-<span class="normal">873</span>
-<span class="normal">874</span>
-<span class="normal">875</span>
-<span class="normal">876</span>
-<span class="normal">877</span>
-<span class="normal">878</span>
-<span class="normal">879</span>
-<span class="normal">880</span>
-<span class="normal">881</span>
-<span class="normal">882</span>
-<span class="normal">883</span>
-<span class="normal">884</span>
-<span class="normal">885</span>
-<span class="normal">886</span>
-<span class="normal">887</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">887</span>
 <span class="normal">888</span>
 <span class="normal">889</span>
 <span class="normal">890</span>
@@ -7694,7 +7708,23 @@ scores <code>0</code>. All-zeros when the cloud has no spread at all.</p>
 <span class="normal">977</span>
 <span class="normal">978</span>
 <span class="normal">979</span>
-<span class="normal">980</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">outlier_probability</span><span class="p">(</span>
+<span class="normal">980</span>
+<span class="normal">981</span>
+<span class="normal">982</span>
+<span class="normal">983</span>
+<span class="normal">984</span>
+<span class="normal">985</span>
+<span class="normal">986</span>
+<span class="normal">987</span>
+<span class="normal">988</span>
+<span class="normal">989</span>
+<span class="normal">990</span>
+<span class="normal">991</span>
+<span class="normal">992</span>
+<span class="normal">993</span>
+<span class="normal">994</span>
+<span class="normal">995</span>
+<span class="normal">996</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">outlier_probability</span><span class="p">(</span>
     <span class="n">neighbor_idx</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">neighbor_distance</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">3.0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7974,23 +8004,7 @@ neighbourhood is marked as an outlier, matching Open3D's <code>avg &gt; 0</code>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 983</span>
-<span class="normal"> 984</span>
-<span class="normal"> 985</span>
-<span class="normal"> 986</span>
-<span class="normal"> 987</span>
-<span class="normal"> 988</span>
-<span class="normal"> 989</span>
-<span class="normal"> 990</span>
-<span class="normal"> 991</span>
-<span class="normal"> 992</span>
-<span class="normal"> 993</span>
-<span class="normal"> 994</span>
-<span class="normal"> 995</span>
-<span class="normal"> 996</span>
-<span class="normal"> 997</span>
-<span class="normal"> 998</span>
-<span class="normal"> 999</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 999</span>
 <span class="normal">1000</span>
 <span class="normal">1001</span>
 <span class="normal">1002</span>
@@ -8068,7 +8082,23 @@ neighbourhood is marked as an outlier, matching Open3D's <code>avg &gt; 0</code>
 <span class="normal">1074</span>
 <span class="normal">1075</span>
 <span class="normal">1076</span>
-<span class="normal">1077</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">statistical_outlier_mask</span><span class="p">(</span>
+<span class="normal">1077</span>
+<span class="normal">1078</span>
+<span class="normal">1079</span>
+<span class="normal">1080</span>
+<span class="normal">1081</span>
+<span class="normal">1082</span>
+<span class="normal">1083</span>
+<span class="normal">1084</span>
+<span class="normal">1085</span>
+<span class="normal">1086</span>
+<span class="normal">1087</span>
+<span class="normal">1088</span>
+<span class="normal">1089</span>
+<span class="normal">1090</span>
+<span class="normal">1091</span>
+<span class="normal">1092</span>
+<span class="normal">1093</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">statistical_outlier_mask</span><span class="p">(</span>
     <span class="n">neighbor_distance</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">std_ratio</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8381,23 +8411,7 @@ handful of borderline points, and do not read that as a difference in the criter
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1116</span>
-<span class="normal">1117</span>
-<span class="normal">1118</span>
-<span class="normal">1119</span>
-<span class="normal">1120</span>
-<span class="normal">1121</span>
-<span class="normal">1122</span>
-<span class="normal">1123</span>
-<span class="normal">1124</span>
-<span class="normal">1125</span>
-<span class="normal">1126</span>
-<span class="normal">1127</span>
-<span class="normal">1128</span>
-<span class="normal">1129</span>
-<span class="normal">1130</span>
-<span class="normal">1131</span>
-<span class="normal">1132</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1132</span>
 <span class="normal">1133</span>
 <span class="normal">1134</span>
 <span class="normal">1135</span>
@@ -8475,7 +8489,23 @@ handful of borderline points, and do not read that as a difference in the criter
 <span class="normal">1207</span>
 <span class="normal">1208</span>
 <span class="normal">1209</span>
-<span class="normal">1210</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">radius_outlier_mask</span><span class="p">(</span>
+<span class="normal">1210</span>
+<span class="normal">1211</span>
+<span class="normal">1212</span>
+<span class="normal">1213</span>
+<span class="normal">1214</span>
+<span class="normal">1215</span>
+<span class="normal">1216</span>
+<span class="normal">1217</span>
+<span class="normal">1218</span>
+<span class="normal">1219</span>
+<span class="normal">1220</span>
+<span class="normal">1221</span>
+<span class="normal">1222</span>
+<span class="normal">1223</span>
+<span class="normal">1224</span>
+<span class="normal">1225</span>
+<span class="normal">1226</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">radius_outlier_mask</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">min_neighbors</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">HashGrid</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8684,23 +8714,7 @@ this one is named for what it selects.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1213</span>
-<span class="normal">1214</span>
-<span class="normal">1215</span>
-<span class="normal">1216</span>
-<span class="normal">1217</span>
-<span class="normal">1218</span>
-<span class="normal">1219</span>
-<span class="normal">1220</span>
-<span class="normal">1221</span>
-<span class="normal">1222</span>
-<span class="normal">1223</span>
-<span class="normal">1224</span>
-<span class="normal">1225</span>
-<span class="normal">1226</span>
-<span class="normal">1227</span>
-<span class="normal">1228</span>
-<span class="normal">1229</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1229</span>
 <span class="normal">1230</span>
 <span class="normal">1231</span>
 <span class="normal">1232</span>
@@ -8735,7 +8749,23 @@ this one is named for what it selects.</p>
 <span class="normal">1261</span>
 <span class="normal">1262</span>
 <span class="normal">1263</span>
-<span class="normal">1264</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_finite_mask</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
+<span class="normal">1264</span>
+<span class="normal">1265</span>
+<span class="normal">1266</span>
+<span class="normal">1267</span>
+<span class="normal">1268</span>
+<span class="normal">1269</span>
+<span class="normal">1270</span>
+<span class="normal">1271</span>
+<span class="normal">1272</span>
+<span class="normal">1273</span>
+<span class="normal">1274</span>
+<span class="normal">1275</span>
+<span class="normal">1276</span>
+<span class="normal">1277</span>
+<span class="normal">1278</span>
+<span class="normal">1279</span>
+<span class="normal">1280</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_finite_mask</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Flag points whose three coordinates are all finite.</span>
 
@@ -8919,23 +8949,7 @@ below <code>float32</code> resolution are one position here and two for a <code>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1267</span>
-<span class="normal">1268</span>
-<span class="normal">1269</span>
-<span class="normal">1270</span>
-<span class="normal">1271</span>
-<span class="normal">1272</span>
-<span class="normal">1273</span>
-<span class="normal">1274</span>
-<span class="normal">1275</span>
-<span class="normal">1276</span>
-<span class="normal">1277</span>
-<span class="normal">1278</span>
-<span class="normal">1279</span>
-<span class="normal">1280</span>
-<span class="normal">1281</span>
-<span class="normal">1282</span>
-<span class="normal">1283</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1283</span>
 <span class="normal">1284</span>
 <span class="normal">1285</span>
 <span class="normal">1286</span>
@@ -9005,7 +9019,23 @@ below <code>float32</code> resolution are one position here and two for a <code>
 <span class="normal">1350</span>
 <span class="normal">1351</span>
 <span class="normal">1352</span>
-<span class="normal">1353</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_duplicate_mask</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
+<span class="normal">1353</span>
+<span class="normal">1354</span>
+<span class="normal">1355</span>
+<span class="normal">1356</span>
+<span class="normal">1357</span>
+<span class="normal">1358</span>
+<span class="normal">1359</span>
+<span class="normal">1360</span>
+<span class="normal">1361</span>
+<span class="normal">1362</span>
+<span class="normal">1363</span>
+<span class="normal">1364</span>
+<span class="normal">1365</span>
+<span class="normal">1366</span>
+<span class="normal">1367</span>
+<span class="normal">1368</span>
+<span class="normal">1369</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_duplicate_mask</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Flag every point that repeats an **exactly** equal position seen earlier in the cloud.</span>
 
@@ -9281,23 +9311,7 @@ the rest of the sequence.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1356</span>
-<span class="normal">1357</span>
-<span class="normal">1358</span>
-<span class="normal">1359</span>
-<span class="normal">1360</span>
-<span class="normal">1361</span>
-<span class="normal">1362</span>
-<span class="normal">1363</span>
-<span class="normal">1364</span>
-<span class="normal">1365</span>
-<span class="normal">1366</span>
-<span class="normal">1367</span>
-<span class="normal">1368</span>
-<span class="normal">1369</span>
-<span class="normal">1370</span>
-<span class="normal">1371</span>
-<span class="normal">1372</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1372</span>
 <span class="normal">1373</span>
 <span class="normal">1374</span>
 <span class="normal">1375</span>
@@ -9377,7 +9391,23 @@ the rest of the sequence.</p>
 <span class="normal">1449</span>
 <span class="normal">1450</span>
 <span class="normal">1451</span>
-<span class="normal">1452</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">farthest_point_sample</span><span class="p">(</span>
+<span class="normal">1452</span>
+<span class="normal">1453</span>
+<span class="normal">1454</span>
+<span class="normal">1455</span>
+<span class="normal">1456</span>
+<span class="normal">1457</span>
+<span class="normal">1458</span>
+<span class="normal">1459</span>
+<span class="normal">1460</span>
+<span class="normal">1461</span>
+<span class="normal">1462</span>
+<span class="normal">1463</span>
+<span class="normal">1464</span>
+<span class="normal">1465</span>
+<span class="normal">1466</span>
+<span class="normal">1467</span>
+<span class="normal">1468</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">farthest_point_sample</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">start</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9474,6 +9504,303 @@ the rest of the sequence.</p>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">out_selected</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.points.convex_hull" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">convex_hull</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">convex_hull</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Exact convex hull of a point cloud, as outward-wound triangles over the input points.</p>
+<p>Every decision is an exact orientation sign, so the result is the true convex hull of the
+<code>float32</code> points as given -- however thin, flat or degenerate the cloud -- not one within a
+tolerance: every point lies inside or on it, and every vertex is an extreme point of the cloud.
+The triangles index <code>points</code> directly (the <a class="autorefs autorefs-external" href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.ConvexHull.html#scipy.spatial.ConvexHull"><code>scipy.spatial.ConvexHull</code></a> <code>simplices</code>
+layout); <a class="autorefs autorefs-internal" title="remove_unreferenced_vertices" href="../repair/#ordito.repair.remove_unreferenced_vertices"><code>remove_unreferenced_vertices</code></a> turns
+them into a compact mesh.</p>
+<p>The hull is grown from a tetrahedron, splitting every face at its farthest point in parallel and
+dropping the points each round encloses, then made convex by parallel edge flips; see Notes.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>points</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_points,)</code> finite point positions, <code>n_points &gt;= 4</code>, not all coplanar.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> flat triangle index buffer into <code>points</code> on <code>points.device</code>, each
+triangle wound counter-clockwise seen from outside (its normal <code>(b - a) x (c - a)</code> points
+out). A hull with <code>n_vertices</code> vertices has <code>2 * n_vertices - 4</code> triangles.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>points</code> holds fewer than 4 points, or no 4 of them span a tetrahedron (all
+coplanar, collinear or coincident, to within what <code>float32</code> coordinates can resolve).</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="note" open>
+  <summary>Notes</summary>
+  <p>The algorithm is ffHull (Gao, Cao, Tan and Huang, <em>Flip-Flop: Convex Hull Construction via
+Star-Shaped Polyhedron in 3D</em>, I3D 2013). Each growth round costs one pass over the points still
+outside the surface, and interior points leave the computation as soon as a round encloses them,
+so its cost follows the points near the hull rather than the cloud's size.</p>
+<p><strong>Degenerate input.</strong> A facet with more than three vertices (coplanar points, as on a box) is
+triangulated arbitrarily, and of several coincident points one is kept as the vertex. Points
+lying exactly on a hull facet or edge are not vertices.</p>
+</details>
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="convex_superset_mask" href="./#ordito.points.convex_superset_mask"><code>convex_superset_mask</code></a>
+<a class="autorefs autorefs-internal" title="convex_subset_mask" href="./#ordito.points.convex_subset_mask"><code>convex_subset_mask</code></a>
+<a class="autorefs autorefs-internal" title="remove_unreferenced_vertices" href="../repair/#ordito.repair.remove_unreferenced_vertices"><code>remove_unreferenced_vertices</code></a>
+<a class="autorefs autorefs-external" href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.ConvexHull.html#scipy.spatial.ConvexHull"><code>scipy.spatial.ConvexHull</code></a></p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <p>A box's 8 corners span its hull; a point inside is not a vertex:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">()</span>
+<span class="n">cloud</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">vstack</span><span class="p">([</span><span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="p">[[</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.1</span><span class="p">]]]),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">)</span>
+<span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">convex_hull</span><span class="p">(</span><span class="n">cloud</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">//</span> <span class="mi">3</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">unique</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>  <span class="c1"># 12 8</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 4 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_subset_mask">convex_subset_mask</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_superset_mask">convex_superset_mask</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/points.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1471</span>
+<span class="normal">1472</span>
+<span class="normal">1473</span>
+<span class="normal">1474</span>
+<span class="normal">1475</span>
+<span class="normal">1476</span>
+<span class="normal">1477</span>
+<span class="normal">1478</span>
+<span class="normal">1479</span>
+<span class="normal">1480</span>
+<span class="normal">1481</span>
+<span class="normal">1482</span>
+<span class="normal">1483</span>
+<span class="normal">1484</span>
+<span class="normal">1485</span>
+<span class="normal">1486</span>
+<span class="normal">1487</span>
+<span class="normal">1488</span>
+<span class="normal">1489</span>
+<span class="normal">1490</span>
+<span class="normal">1491</span>
+<span class="normal">1492</span>
+<span class="normal">1493</span>
+<span class="normal">1494</span>
+<span class="normal">1495</span>
+<span class="normal">1496</span>
+<span class="normal">1497</span>
+<span class="normal">1498</span>
+<span class="normal">1499</span>
+<span class="normal">1500</span>
+<span class="normal">1501</span>
+<span class="normal">1502</span>
+<span class="normal">1503</span>
+<span class="normal">1504</span>
+<span class="normal">1505</span>
+<span class="normal">1506</span>
+<span class="normal">1507</span>
+<span class="normal">1508</span>
+<span class="normal">1509</span>
+<span class="normal">1510</span>
+<span class="normal">1511</span>
+<span class="normal">1512</span>
+<span class="normal">1513</span>
+<span class="normal">1514</span>
+<span class="normal">1515</span>
+<span class="normal">1516</span>
+<span class="normal">1517</span>
+<span class="normal">1518</span>
+<span class="normal">1519</span>
+<span class="normal">1520</span>
+<span class="normal">1521</span>
+<span class="normal">1522</span>
+<span class="normal">1523</span>
+<span class="normal">1524</span>
+<span class="normal">1525</span>
+<span class="normal">1526</span>
+<span class="normal">1527</span>
+<span class="normal">1528</span>
+<span class="normal">1529</span>
+<span class="normal">1530</span>
+<span class="normal">1531</span>
+<span class="normal">1532</span>
+<span class="normal">1533</span>
+<span class="normal">1534</span>
+<span class="normal">1535</span>
+<span class="normal">1536</span>
+<span class="normal">1537</span>
+<span class="normal">1538</span>
+<span class="normal">1539</span>
+<span class="normal">1540</span>
+<span class="normal">1541</span>
+<span class="normal">1542</span>
+<span class="normal">1543</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">convex_hull</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Exact convex hull of a point cloud, as outward-wound triangles over the input points.</span>
+
+<span class="sd">    Every decision is an exact orientation sign, so the result is the true convex hull of the</span>
+<span class="sd">    ``float32`` points as given -- however thin, flat or degenerate the cloud -- not one within a</span>
+<span class="sd">    tolerance: every point lies inside or on it, and every vertex is an extreme point of the cloud.</span>
+<span class="sd">    The triangles index ``points`` directly (the [`scipy.spatial.ConvexHull`][] ``simplices``</span>
+<span class="sd">    layout); [`remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices] turns</span>
+<span class="sd">    them into a compact mesh.</span>
+
+<span class="sd">    The hull is grown from a tetrahedron, splitting every face at its farthest point in parallel and</span>
+<span class="sd">    dropping the points each round encloses, then made convex by parallel edge flips; see Notes.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    points</span>
+<span class="sd">        ``(n_points,)`` finite point positions, ``n_points &gt;= 4``, not all coplanar.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    wp.array[wp.int32]</span>
+<span class="sd">        ``(3 * n_faces,)`` flat triangle index buffer into ``points`` on ``points.device``, each</span>
+<span class="sd">        triangle wound counter-clockwise seen from outside (its normal ``(b - a) x (c - a)`` points</span>
+<span class="sd">        out). A hull with ``n_vertices`` vertices has ``2 * n_vertices - 4`` triangles.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``points`` holds fewer than 4 points, or no 4 of them span a tetrahedron (all</span>
+<span class="sd">        coplanar, collinear or coincident, to within what ``float32`` coordinates can resolve).</span>
+
+<span class="sd">    Notes</span>
+<span class="sd">    -----</span>
+<span class="sd">    The algorithm is ffHull (Gao, Cao, Tan and Huang, *Flip-Flop: Convex Hull Construction via</span>
+<span class="sd">    Star-Shaped Polyhedron in 3D*, I3D 2013). Each growth round costs one pass over the points still</span>
+<span class="sd">    outside the surface, and interior points leave the computation as soon as a round encloses them,</span>
+<span class="sd">    so its cost follows the points near the hull rather than the cloud's size.</span>
+
+<span class="sd">    **Degenerate input.** A facet with more than three vertices (coplanar points, as on a box) is</span>
+<span class="sd">    triangulated arbitrarily, and of several coincident points one is kept as the vertex. Points</span>
+<span class="sd">    lying exactly on a hull facet or edge are not vertices.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`convex_superset_mask`][ordito.points.convex_superset_mask]</span>
+<span class="sd">    [`convex_subset_mask`][ordito.points.convex_subset_mask]</span>
+<span class="sd">    [`remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices]</span>
+<span class="sd">    [`scipy.spatial.ConvexHull`][]</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    A box's 8 corners span its hull; a point inside is not a vertex:</span>
+
+<span class="sd">    ```python</span>
+<span class="sd">    import numpy as np</span>
+<span class="sd">    import warp as wp</span>
+
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    vertices, _ = od.creation.box()</span>
+<span class="sd">    cloud = wp.array(np.vstack([vertices.numpy(), [[0.1, 0.2, -0.1]]]), dtype=wp.vec3)</span>
+<span class="sd">    faces = od.points.convex_hull(cloud)</span>
+<span class="sd">    print(faces.shape[0] // 3, np.unique(faces.numpy()).shape[0])  # 12 8</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="n">n_points</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">size</span>
+    <span class="k">if</span> <span class="n">n_points</span> <span class="o">&lt;</span> <span class="mi">4</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"convex_hull needs at least 4 points; got </span><span class="si">{</span><span class="n">n_points</span><span class="si">}</span><span class="s2">."</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">n_points</span> <span class="o">&lt;</span> <span class="n">_HULL_PREFILTER_FROM</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_convex_hull_faces</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="n">keep</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">flatnonzero</span><span class="p">(</span><span class="n">convex_superset_mask</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">_HULL_PREFILTER_SUBDIVISIONS</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">_convex_hull_faces</span><span class="p">(</span><span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.vec3]"</span><span class="p">,</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">keep</span><span class="p">)),</span> <span class="n">keep</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -9634,9 +9961,9 @@ with the point count. On 500 standard-normal points (31 hull vertices) the recov
 measures 0.61 at <code>n_directions=32</code>, 0.87 at 256 and 1.00 at 16384; the vertices missed at 256
 have normal cones spanning a few parts in ten thousand of the sphere or less. Increasing
 <code>n_directions</code> is the only knob that raises recall -- <code>tolerance</code> trades precision for it
-and is not a substitute. When <em>all</em> hull vertices are required, use an exact hull
-(<a class="autorefs autorefs-external" href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.ConvexHull.html#scipy.spatial.ConvexHull"><code>scipy.spatial.ConvexHull</code></a> and the qhull-backed mesh libraries): no setting of these
-parameters makes this function conservative.</p>
+and is not a substitute. When <em>all</em> hull vertices are required, use the exact
+<a class="autorefs autorefs-internal" title="convex_hull" href="./#ordito.points.convex_hull"><code>convex_hull</code></a>: no setting of these parameters makes this function
+conservative.</p>
 </details>
 
 <details class="see-also" open>
@@ -9664,9 +9991,9 @@ parameters makes this function conservative.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 4 places</summary>
+      <summary>Referenced by 5 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.points">points</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_subset">convex_subset</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_superset_mask">convex_superset_mask</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.points">points</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_hull">convex_hull</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_subset">convex_subset</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_superset_mask">convex_superset_mask</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/points/#point-clouds">Point clouds</a> › <a href="../../../examples/points/#pc7">Convex-hull points and half-space tests</a></span></p>
     </details>
@@ -9674,109 +10001,109 @@ parameters makes this function conservative.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1455</span>
-<span class="normal">1456</span>
-<span class="normal">1457</span>
-<span class="normal">1458</span>
-<span class="normal">1459</span>
-<span class="normal">1460</span>
-<span class="normal">1461</span>
-<span class="normal">1462</span>
-<span class="normal">1463</span>
-<span class="normal">1464</span>
-<span class="normal">1465</span>
-<span class="normal">1466</span>
-<span class="normal">1467</span>
-<span class="normal">1468</span>
-<span class="normal">1469</span>
-<span class="normal">1470</span>
-<span class="normal">1471</span>
-<span class="normal">1472</span>
-<span class="normal">1473</span>
-<span class="normal">1474</span>
-<span class="normal">1475</span>
-<span class="normal">1476</span>
-<span class="normal">1477</span>
-<span class="normal">1478</span>
-<span class="normal">1479</span>
-<span class="normal">1480</span>
-<span class="normal">1481</span>
-<span class="normal">1482</span>
-<span class="normal">1483</span>
-<span class="normal">1484</span>
-<span class="normal">1485</span>
-<span class="normal">1486</span>
-<span class="normal">1487</span>
-<span class="normal">1488</span>
-<span class="normal">1489</span>
-<span class="normal">1490</span>
-<span class="normal">1491</span>
-<span class="normal">1492</span>
-<span class="normal">1493</span>
-<span class="normal">1494</span>
-<span class="normal">1495</span>
-<span class="normal">1496</span>
-<span class="normal">1497</span>
-<span class="normal">1498</span>
-<span class="normal">1499</span>
-<span class="normal">1500</span>
-<span class="normal">1501</span>
-<span class="normal">1502</span>
-<span class="normal">1503</span>
-<span class="normal">1504</span>
-<span class="normal">1505</span>
-<span class="normal">1506</span>
-<span class="normal">1507</span>
-<span class="normal">1508</span>
-<span class="normal">1509</span>
-<span class="normal">1510</span>
-<span class="normal">1511</span>
-<span class="normal">1512</span>
-<span class="normal">1513</span>
-<span class="normal">1514</span>
-<span class="normal">1515</span>
-<span class="normal">1516</span>
-<span class="normal">1517</span>
-<span class="normal">1518</span>
-<span class="normal">1519</span>
-<span class="normal">1520</span>
-<span class="normal">1521</span>
-<span class="normal">1522</span>
-<span class="normal">1523</span>
-<span class="normal">1524</span>
-<span class="normal">1525</span>
-<span class="normal">1526</span>
-<span class="normal">1527</span>
-<span class="normal">1528</span>
-<span class="normal">1529</span>
-<span class="normal">1530</span>
-<span class="normal">1531</span>
-<span class="normal">1532</span>
-<span class="normal">1533</span>
-<span class="normal">1534</span>
-<span class="normal">1535</span>
-<span class="normal">1536</span>
-<span class="normal">1537</span>
-<span class="normal">1538</span>
-<span class="normal">1539</span>
-<span class="normal">1540</span>
-<span class="normal">1541</span>
-<span class="normal">1542</span>
-<span class="normal">1543</span>
-<span class="normal">1544</span>
-<span class="normal">1545</span>
-<span class="normal">1546</span>
-<span class="normal">1547</span>
-<span class="normal">1548</span>
-<span class="normal">1549</span>
-<span class="normal">1550</span>
-<span class="normal">1551</span>
-<span class="normal">1552</span>
-<span class="normal">1553</span>
-<span class="normal">1554</span>
-<span class="normal">1555</span>
-<span class="normal">1556</span>
-<span class="normal">1557</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">convex_subset_mask</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1777</span>
+<span class="normal">1778</span>
+<span class="normal">1779</span>
+<span class="normal">1780</span>
+<span class="normal">1781</span>
+<span class="normal">1782</span>
+<span class="normal">1783</span>
+<span class="normal">1784</span>
+<span class="normal">1785</span>
+<span class="normal">1786</span>
+<span class="normal">1787</span>
+<span class="normal">1788</span>
+<span class="normal">1789</span>
+<span class="normal">1790</span>
+<span class="normal">1791</span>
+<span class="normal">1792</span>
+<span class="normal">1793</span>
+<span class="normal">1794</span>
+<span class="normal">1795</span>
+<span class="normal">1796</span>
+<span class="normal">1797</span>
+<span class="normal">1798</span>
+<span class="normal">1799</span>
+<span class="normal">1800</span>
+<span class="normal">1801</span>
+<span class="normal">1802</span>
+<span class="normal">1803</span>
+<span class="normal">1804</span>
+<span class="normal">1805</span>
+<span class="normal">1806</span>
+<span class="normal">1807</span>
+<span class="normal">1808</span>
+<span class="normal">1809</span>
+<span class="normal">1810</span>
+<span class="normal">1811</span>
+<span class="normal">1812</span>
+<span class="normal">1813</span>
+<span class="normal">1814</span>
+<span class="normal">1815</span>
+<span class="normal">1816</span>
+<span class="normal">1817</span>
+<span class="normal">1818</span>
+<span class="normal">1819</span>
+<span class="normal">1820</span>
+<span class="normal">1821</span>
+<span class="normal">1822</span>
+<span class="normal">1823</span>
+<span class="normal">1824</span>
+<span class="normal">1825</span>
+<span class="normal">1826</span>
+<span class="normal">1827</span>
+<span class="normal">1828</span>
+<span class="normal">1829</span>
+<span class="normal">1830</span>
+<span class="normal">1831</span>
+<span class="normal">1832</span>
+<span class="normal">1833</span>
+<span class="normal">1834</span>
+<span class="normal">1835</span>
+<span class="normal">1836</span>
+<span class="normal">1837</span>
+<span class="normal">1838</span>
+<span class="normal">1839</span>
+<span class="normal">1840</span>
+<span class="normal">1841</span>
+<span class="normal">1842</span>
+<span class="normal">1843</span>
+<span class="normal">1844</span>
+<span class="normal">1845</span>
+<span class="normal">1846</span>
+<span class="normal">1847</span>
+<span class="normal">1848</span>
+<span class="normal">1849</span>
+<span class="normal">1850</span>
+<span class="normal">1851</span>
+<span class="normal">1852</span>
+<span class="normal">1853</span>
+<span class="normal">1854</span>
+<span class="normal">1855</span>
+<span class="normal">1856</span>
+<span class="normal">1857</span>
+<span class="normal">1858</span>
+<span class="normal">1859</span>
+<span class="normal">1860</span>
+<span class="normal">1861</span>
+<span class="normal">1862</span>
+<span class="normal">1863</span>
+<span class="normal">1864</span>
+<span class="normal">1865</span>
+<span class="normal">1866</span>
+<span class="normal">1867</span>
+<span class="normal">1868</span>
+<span class="normal">1869</span>
+<span class="normal">1870</span>
+<span class="normal">1871</span>
+<span class="normal">1872</span>
+<span class="normal">1873</span>
+<span class="normal">1874</span>
+<span class="normal">1875</span>
+<span class="normal">1876</span>
+<span class="normal">1877</span>
+<span class="normal">1878</span>
+<span class="normal">1879</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">convex_subset_mask</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">n_directions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">128</span><span class="p">,</span> <span class="n">tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-6</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9842,9 +10169,9 @@ parameters makes this function conservative.</p>
 <span class="sd">    measures 0.61 at ``n_directions=32``, 0.87 at 256 and 1.00 at 16384; the vertices missed at 256</span>
 <span class="sd">    have normal cones spanning a few parts in ten thousand of the sphere or less. Increasing</span>
 <span class="sd">    ``n_directions`` is the only knob that raises recall -- ``tolerance`` trades precision for it</span>
-<span class="sd">    and is not a substitute. When *all* hull vertices are required, use an exact hull</span>
-<span class="sd">    ([`scipy.spatial.ConvexHull`][] and the qhull-backed mesh libraries): no setting of these</span>
-<span class="sd">    parameters makes this function conservative.</span>
+<span class="sd">    and is not a substitute. When *all* hull vertices are required, use the exact</span>
+<span class="sd">    [`convex_hull`][ordito.points.convex_hull]: no setting of these parameters makes this function</span>
+<span class="sd">    conservative.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -10030,67 +10357,67 @@ hull vertices, and is not a conservative superset of them.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1560</span>
-<span class="normal">1561</span>
-<span class="normal">1562</span>
-<span class="normal">1563</span>
-<span class="normal">1564</span>
-<span class="normal">1565</span>
-<span class="normal">1566</span>
-<span class="normal">1567</span>
-<span class="normal">1568</span>
-<span class="normal">1569</span>
-<span class="normal">1570</span>
-<span class="normal">1571</span>
-<span class="normal">1572</span>
-<span class="normal">1573</span>
-<span class="normal">1574</span>
-<span class="normal">1575</span>
-<span class="normal">1576</span>
-<span class="normal">1577</span>
-<span class="normal">1578</span>
-<span class="normal">1579</span>
-<span class="normal">1580</span>
-<span class="normal">1581</span>
-<span class="normal">1582</span>
-<span class="normal">1583</span>
-<span class="normal">1584</span>
-<span class="normal">1585</span>
-<span class="normal">1586</span>
-<span class="normal">1587</span>
-<span class="normal">1588</span>
-<span class="normal">1589</span>
-<span class="normal">1590</span>
-<span class="normal">1591</span>
-<span class="normal">1592</span>
-<span class="normal">1593</span>
-<span class="normal">1594</span>
-<span class="normal">1595</span>
-<span class="normal">1596</span>
-<span class="normal">1597</span>
-<span class="normal">1598</span>
-<span class="normal">1599</span>
-<span class="normal">1600</span>
-<span class="normal">1601</span>
-<span class="normal">1602</span>
-<span class="normal">1603</span>
-<span class="normal">1604</span>
-<span class="normal">1605</span>
-<span class="normal">1606</span>
-<span class="normal">1607</span>
-<span class="normal">1608</span>
-<span class="normal">1609</span>
-<span class="normal">1610</span>
-<span class="normal">1611</span>
-<span class="normal">1612</span>
-<span class="normal">1613</span>
-<span class="normal">1614</span>
-<span class="normal">1615</span>
-<span class="normal">1616</span>
-<span class="normal">1617</span>
-<span class="normal">1618</span>
-<span class="normal">1619</span>
-<span class="normal">1620</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">convex_subset</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1882</span>
+<span class="normal">1883</span>
+<span class="normal">1884</span>
+<span class="normal">1885</span>
+<span class="normal">1886</span>
+<span class="normal">1887</span>
+<span class="normal">1888</span>
+<span class="normal">1889</span>
+<span class="normal">1890</span>
+<span class="normal">1891</span>
+<span class="normal">1892</span>
+<span class="normal">1893</span>
+<span class="normal">1894</span>
+<span class="normal">1895</span>
+<span class="normal">1896</span>
+<span class="normal">1897</span>
+<span class="normal">1898</span>
+<span class="normal">1899</span>
+<span class="normal">1900</span>
+<span class="normal">1901</span>
+<span class="normal">1902</span>
+<span class="normal">1903</span>
+<span class="normal">1904</span>
+<span class="normal">1905</span>
+<span class="normal">1906</span>
+<span class="normal">1907</span>
+<span class="normal">1908</span>
+<span class="normal">1909</span>
+<span class="normal">1910</span>
+<span class="normal">1911</span>
+<span class="normal">1912</span>
+<span class="normal">1913</span>
+<span class="normal">1914</span>
+<span class="normal">1915</span>
+<span class="normal">1916</span>
+<span class="normal">1917</span>
+<span class="normal">1918</span>
+<span class="normal">1919</span>
+<span class="normal">1920</span>
+<span class="normal">1921</span>
+<span class="normal">1922</span>
+<span class="normal">1923</span>
+<span class="normal">1924</span>
+<span class="normal">1925</span>
+<span class="normal">1926</span>
+<span class="normal">1927</span>
+<span class="normal">1928</span>
+<span class="normal">1929</span>
+<span class="normal">1930</span>
+<span class="normal">1931</span>
+<span class="normal">1932</span>
+<span class="normal">1933</span>
+<span class="normal">1934</span>
+<span class="normal">1935</span>
+<span class="normal">1936</span>
+<span class="normal">1937</span>
+<span class="normal">1938</span>
+<span class="normal">1939</span>
+<span class="normal">1940</span>
+<span class="normal">1941</span>
+<span class="normal">1942</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">convex_subset</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">n_directions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">128</span><span class="p">,</span> <span class="n">tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-6</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10185,8 +10512,10 @@ the hull and cannot be a hull vertex; every other point is kept.</p>
 <p>Because a hull vertex lies on the hull <em>boundary</em>, it is in no tetrahedron's strict interior, so
 <strong>no hull vertex is ever discarded</strong> -- for any input, any <code>subdivisions</code>, and any <code>margin</code>.
 The parameters trade only how many interior points survive. That makes this a prefilter: run it,
-then hand the survivors to an exact hull, which then does its superlinear work on a small
-fraction of the cloud.</p>
+then hand the survivors to an exact hull (<a class="autorefs autorefs-external" href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.ConvexHull.html#scipy.spatial.ConvexHull"><code>scipy.spatial.ConvexHull</code></a> for instance, whose
+superlinear work then runs on a small fraction of the cloud).
+<a class="autorefs autorefs-internal" title="convex_hull" href="./#ordito.points.convex_hull"><code>convex_hull</code></a> needs no prefilter: its own growth rounds drop
+interior points as they are enclosed.</p>
 <p>Cost is one support sweep (<code>n_points</code> times the <code>10 * 4 ** subdivisions + 2</code> icosphere
 directions) plus one pass testing each point against the <code>20 * 4 ** subdivisions</code>
 tetrahedra, whose precomputed face planes every thread reads in lockstep.</p>
@@ -10326,9 +10655,9 @@ ill-conditioned, so nothing is certified interior and every point is kept, which
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 4 places</summary>
+      <summary>Referenced by 6 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../bounds/#ordito.bounds">bounds</a> › <a href="../bounds/#ordito.bounds.oriented_bounding_box">oriented_bounding_box</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_subset_mask">convex_subset_mask</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../bounds/#ordito.bounds">bounds</a> › <a href="../bounds/#ordito.bounds.oriented_bounding_box">oriented_bounding_box</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_hull">convex_hull</a></span> · <span class="ordito-backlink"><a href="./#ordito.points">points</a> › <a href="./#ordito.points.convex_subset_mask">convex_subset_mask</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/points/#point-clouds">Point clouds</a> › <a href="../../../examples/points/#pc7">Convex-hull points and half-space tests</a></span></p>
     </details>
@@ -10336,152 +10665,154 @@ ill-conditioned, so nothing is certified interior and every point is kept, which
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1660</span>
-<span class="normal">1661</span>
-<span class="normal">1662</span>
-<span class="normal">1663</span>
-<span class="normal">1664</span>
-<span class="normal">1665</span>
-<span class="normal">1666</span>
-<span class="normal">1667</span>
-<span class="normal">1668</span>
-<span class="normal">1669</span>
-<span class="normal">1670</span>
-<span class="normal">1671</span>
-<span class="normal">1672</span>
-<span class="normal">1673</span>
-<span class="normal">1674</span>
-<span class="normal">1675</span>
-<span class="normal">1676</span>
-<span class="normal">1677</span>
-<span class="normal">1678</span>
-<span class="normal">1679</span>
-<span class="normal">1680</span>
-<span class="normal">1681</span>
-<span class="normal">1682</span>
-<span class="normal">1683</span>
-<span class="normal">1684</span>
-<span class="normal">1685</span>
-<span class="normal">1686</span>
-<span class="normal">1687</span>
-<span class="normal">1688</span>
-<span class="normal">1689</span>
-<span class="normal">1690</span>
-<span class="normal">1691</span>
-<span class="normal">1692</span>
-<span class="normal">1693</span>
-<span class="normal">1694</span>
-<span class="normal">1695</span>
-<span class="normal">1696</span>
-<span class="normal">1697</span>
-<span class="normal">1698</span>
-<span class="normal">1699</span>
-<span class="normal">1700</span>
-<span class="normal">1701</span>
-<span class="normal">1702</span>
-<span class="normal">1703</span>
-<span class="normal">1704</span>
-<span class="normal">1705</span>
-<span class="normal">1706</span>
-<span class="normal">1707</span>
-<span class="normal">1708</span>
-<span class="normal">1709</span>
-<span class="normal">1710</span>
-<span class="normal">1711</span>
-<span class="normal">1712</span>
-<span class="normal">1713</span>
-<span class="normal">1714</span>
-<span class="normal">1715</span>
-<span class="normal">1716</span>
-<span class="normal">1717</span>
-<span class="normal">1718</span>
-<span class="normal">1719</span>
-<span class="normal">1720</span>
-<span class="normal">1721</span>
-<span class="normal">1722</span>
-<span class="normal">1723</span>
-<span class="normal">1724</span>
-<span class="normal">1725</span>
-<span class="normal">1726</span>
-<span class="normal">1727</span>
-<span class="normal">1728</span>
-<span class="normal">1729</span>
-<span class="normal">1730</span>
-<span class="normal">1731</span>
-<span class="normal">1732</span>
-<span class="normal">1733</span>
-<span class="normal">1734</span>
-<span class="normal">1735</span>
-<span class="normal">1736</span>
-<span class="normal">1737</span>
-<span class="normal">1738</span>
-<span class="normal">1739</span>
-<span class="normal">1740</span>
-<span class="normal">1741</span>
-<span class="normal">1742</span>
-<span class="normal">1743</span>
-<span class="normal">1744</span>
-<span class="normal">1745</span>
-<span class="normal">1746</span>
-<span class="normal">1747</span>
-<span class="normal">1748</span>
-<span class="normal">1749</span>
-<span class="normal">1750</span>
-<span class="normal">1751</span>
-<span class="normal">1752</span>
-<span class="normal">1753</span>
-<span class="normal">1754</span>
-<span class="normal">1755</span>
-<span class="normal">1756</span>
-<span class="normal">1757</span>
-<span class="normal">1758</span>
-<span class="normal">1759</span>
-<span class="normal">1760</span>
-<span class="normal">1761</span>
-<span class="normal">1762</span>
-<span class="normal">1763</span>
-<span class="normal">1764</span>
-<span class="normal">1765</span>
-<span class="normal">1766</span>
-<span class="normal">1767</span>
-<span class="normal">1768</span>
-<span class="normal">1769</span>
-<span class="normal">1770</span>
-<span class="normal">1771</span>
-<span class="normal">1772</span>
-<span class="normal">1773</span>
-<span class="normal">1774</span>
-<span class="normal">1775</span>
-<span class="normal">1776</span>
-<span class="normal">1777</span>
-<span class="normal">1778</span>
-<span class="normal">1779</span>
-<span class="normal">1780</span>
-<span class="normal">1781</span>
-<span class="normal">1782</span>
-<span class="normal">1783</span>
-<span class="normal">1784</span>
-<span class="normal">1785</span>
-<span class="normal">1786</span>
-<span class="normal">1787</span>
-<span class="normal">1788</span>
-<span class="normal">1789</span>
-<span class="normal">1790</span>
-<span class="normal">1791</span>
-<span class="normal">1792</span>
-<span class="normal">1793</span>
-<span class="normal">1794</span>
-<span class="normal">1795</span>
-<span class="normal">1796</span>
-<span class="normal">1797</span>
-<span class="normal">1798</span>
-<span class="normal">1799</span>
-<span class="normal">1800</span>
-<span class="normal">1801</span>
-<span class="normal">1802</span>
-<span class="normal">1803</span>
-<span class="normal">1804</span>
-<span class="normal">1805</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">convex_superset_mask</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1982</span>
+<span class="normal">1983</span>
+<span class="normal">1984</span>
+<span class="normal">1985</span>
+<span class="normal">1986</span>
+<span class="normal">1987</span>
+<span class="normal">1988</span>
+<span class="normal">1989</span>
+<span class="normal">1990</span>
+<span class="normal">1991</span>
+<span class="normal">1992</span>
+<span class="normal">1993</span>
+<span class="normal">1994</span>
+<span class="normal">1995</span>
+<span class="normal">1996</span>
+<span class="normal">1997</span>
+<span class="normal">1998</span>
+<span class="normal">1999</span>
+<span class="normal">2000</span>
+<span class="normal">2001</span>
+<span class="normal">2002</span>
+<span class="normal">2003</span>
+<span class="normal">2004</span>
+<span class="normal">2005</span>
+<span class="normal">2006</span>
+<span class="normal">2007</span>
+<span class="normal">2008</span>
+<span class="normal">2009</span>
+<span class="normal">2010</span>
+<span class="normal">2011</span>
+<span class="normal">2012</span>
+<span class="normal">2013</span>
+<span class="normal">2014</span>
+<span class="normal">2015</span>
+<span class="normal">2016</span>
+<span class="normal">2017</span>
+<span class="normal">2018</span>
+<span class="normal">2019</span>
+<span class="normal">2020</span>
+<span class="normal">2021</span>
+<span class="normal">2022</span>
+<span class="normal">2023</span>
+<span class="normal">2024</span>
+<span class="normal">2025</span>
+<span class="normal">2026</span>
+<span class="normal">2027</span>
+<span class="normal">2028</span>
+<span class="normal">2029</span>
+<span class="normal">2030</span>
+<span class="normal">2031</span>
+<span class="normal">2032</span>
+<span class="normal">2033</span>
+<span class="normal">2034</span>
+<span class="normal">2035</span>
+<span class="normal">2036</span>
+<span class="normal">2037</span>
+<span class="normal">2038</span>
+<span class="normal">2039</span>
+<span class="normal">2040</span>
+<span class="normal">2041</span>
+<span class="normal">2042</span>
+<span class="normal">2043</span>
+<span class="normal">2044</span>
+<span class="normal">2045</span>
+<span class="normal">2046</span>
+<span class="normal">2047</span>
+<span class="normal">2048</span>
+<span class="normal">2049</span>
+<span class="normal">2050</span>
+<span class="normal">2051</span>
+<span class="normal">2052</span>
+<span class="normal">2053</span>
+<span class="normal">2054</span>
+<span class="normal">2055</span>
+<span class="normal">2056</span>
+<span class="normal">2057</span>
+<span class="normal">2058</span>
+<span class="normal">2059</span>
+<span class="normal">2060</span>
+<span class="normal">2061</span>
+<span class="normal">2062</span>
+<span class="normal">2063</span>
+<span class="normal">2064</span>
+<span class="normal">2065</span>
+<span class="normal">2066</span>
+<span class="normal">2067</span>
+<span class="normal">2068</span>
+<span class="normal">2069</span>
+<span class="normal">2070</span>
+<span class="normal">2071</span>
+<span class="normal">2072</span>
+<span class="normal">2073</span>
+<span class="normal">2074</span>
+<span class="normal">2075</span>
+<span class="normal">2076</span>
+<span class="normal">2077</span>
+<span class="normal">2078</span>
+<span class="normal">2079</span>
+<span class="normal">2080</span>
+<span class="normal">2081</span>
+<span class="normal">2082</span>
+<span class="normal">2083</span>
+<span class="normal">2084</span>
+<span class="normal">2085</span>
+<span class="normal">2086</span>
+<span class="normal">2087</span>
+<span class="normal">2088</span>
+<span class="normal">2089</span>
+<span class="normal">2090</span>
+<span class="normal">2091</span>
+<span class="normal">2092</span>
+<span class="normal">2093</span>
+<span class="normal">2094</span>
+<span class="normal">2095</span>
+<span class="normal">2096</span>
+<span class="normal">2097</span>
+<span class="normal">2098</span>
+<span class="normal">2099</span>
+<span class="normal">2100</span>
+<span class="normal">2101</span>
+<span class="normal">2102</span>
+<span class="normal">2103</span>
+<span class="normal">2104</span>
+<span class="normal">2105</span>
+<span class="normal">2106</span>
+<span class="normal">2107</span>
+<span class="normal">2108</span>
+<span class="normal">2109</span>
+<span class="normal">2110</span>
+<span class="normal">2111</span>
+<span class="normal">2112</span>
+<span class="normal">2113</span>
+<span class="normal">2114</span>
+<span class="normal">2115</span>
+<span class="normal">2116</span>
+<span class="normal">2117</span>
+<span class="normal">2118</span>
+<span class="normal">2119</span>
+<span class="normal">2120</span>
+<span class="normal">2121</span>
+<span class="normal">2122</span>
+<span class="normal">2123</span>
+<span class="normal">2124</span>
+<span class="normal">2125</span>
+<span class="normal">2126</span>
+<span class="normal">2127</span>
+<span class="normal">2128</span>
+<span class="normal">2129</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">convex_superset_mask</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">subdivisions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span> <span class="n">margin</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-5</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10498,8 +10829,10 @@ ill-conditioned, so nothing is certified interior and every point is kept, which
 <span class="sd">    Because a hull vertex lies on the hull *boundary*, it is in no tetrahedron's strict interior, so</span>
 <span class="sd">    **no hull vertex is ever discarded** -- for any input, any ``subdivisions``, and any ``margin``.</span>
 <span class="sd">    The parameters trade only how many interior points survive. That makes this a prefilter: run it,</span>
-<span class="sd">    then hand the survivors to an exact hull, which then does its superlinear work on a small</span>
-<span class="sd">    fraction of the cloud.</span>
+<span class="sd">    then hand the survivors to an exact hull ([`scipy.spatial.ConvexHull`][] for instance, whose</span>
+<span class="sd">    superlinear work then runs on a small fraction of the cloud).</span>
+<span class="sd">    [`convex_hull`][ordito.points.convex_hull] needs no prefilter: its own growth rounds drop</span>
+<span class="sd">    interior points as they are enclosed.</span>
 
 <span class="sd">    Cost is one support sweep (``n_points`` times the ``10 * 4 ** subdivisions + 2`` icosphere</span>
 <span class="sd">    directions) plus one pass testing each point against the ``20 * 4 ** subdivisions``</span>
@@ -10623,7 +10956,7 @@ ill-conditioned, so nothing is certified interior and every point is kept, which
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_points</span><span class="o">.</span><span class="n">mark_hull_superset</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_points</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">points</span><span class="p">,</span> <span class="n">planes</span><span class="p">,</span> <span class="n">valid</span><span class="p">,</span> <span class="n">radius</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">margin</span><span class="p">),</span> <span class="n">out_mask</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">points</span><span class="p">,</span> <span class="n">planes</span><span class="p">,</span> <span class="n">valid</span><span class="p">,</span> <span class="n">centroid</span><span class="p">,</span> <span class="n">radius</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">margin</span><span class="p">),</span> <span class="n">out_mask</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="n">out_mask</span>
@@ -10786,65 +11119,65 @@ accepts unnormalized vectors, and pairs where either vector is zero read <code>0
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1857</span>
-<span class="normal">1858</span>
-<span class="normal">1859</span>
-<span class="normal">1860</span>
-<span class="normal">1861</span>
-<span class="normal">1862</span>
-<span class="normal">1863</span>
-<span class="normal">1864</span>
-<span class="normal">1865</span>
-<span class="normal">1866</span>
-<span class="normal">1867</span>
-<span class="normal">1868</span>
-<span class="normal">1869</span>
-<span class="normal">1870</span>
-<span class="normal">1871</span>
-<span class="normal">1872</span>
-<span class="normal">1873</span>
-<span class="normal">1874</span>
-<span class="normal">1875</span>
-<span class="normal">1876</span>
-<span class="normal">1877</span>
-<span class="normal">1878</span>
-<span class="normal">1879</span>
-<span class="normal">1880</span>
-<span class="normal">1881</span>
-<span class="normal">1882</span>
-<span class="normal">1883</span>
-<span class="normal">1884</span>
-<span class="normal">1885</span>
-<span class="normal">1886</span>
-<span class="normal">1887</span>
-<span class="normal">1888</span>
-<span class="normal">1889</span>
-<span class="normal">1890</span>
-<span class="normal">1891</span>
-<span class="normal">1892</span>
-<span class="normal">1893</span>
-<span class="normal">1894</span>
-<span class="normal">1895</span>
-<span class="normal">1896</span>
-<span class="normal">1897</span>
-<span class="normal">1898</span>
-<span class="normal">1899</span>
-<span class="normal">1900</span>
-<span class="normal">1901</span>
-<span class="normal">1902</span>
-<span class="normal">1903</span>
-<span class="normal">1904</span>
-<span class="normal">1905</span>
-<span class="normal">1906</span>
-<span class="normal">1907</span>
-<span class="normal">1908</span>
-<span class="normal">1909</span>
-<span class="normal">1910</span>
-<span class="normal">1911</span>
-<span class="normal">1912</span>
-<span class="normal">1913</span>
-<span class="normal">1914</span>
-<span class="normal">1915</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_angle</span><span class="p">(</span><span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2181</span>
+<span class="normal">2182</span>
+<span class="normal">2183</span>
+<span class="normal">2184</span>
+<span class="normal">2185</span>
+<span class="normal">2186</span>
+<span class="normal">2187</span>
+<span class="normal">2188</span>
+<span class="normal">2189</span>
+<span class="normal">2190</span>
+<span class="normal">2191</span>
+<span class="normal">2192</span>
+<span class="normal">2193</span>
+<span class="normal">2194</span>
+<span class="normal">2195</span>
+<span class="normal">2196</span>
+<span class="normal">2197</span>
+<span class="normal">2198</span>
+<span class="normal">2199</span>
+<span class="normal">2200</span>
+<span class="normal">2201</span>
+<span class="normal">2202</span>
+<span class="normal">2203</span>
+<span class="normal">2204</span>
+<span class="normal">2205</span>
+<span class="normal">2206</span>
+<span class="normal">2207</span>
+<span class="normal">2208</span>
+<span class="normal">2209</span>
+<span class="normal">2210</span>
+<span class="normal">2211</span>
+<span class="normal">2212</span>
+<span class="normal">2213</span>
+<span class="normal">2214</span>
+<span class="normal">2215</span>
+<span class="normal">2216</span>
+<span class="normal">2217</span>
+<span class="normal">2218</span>
+<span class="normal">2219</span>
+<span class="normal">2220</span>
+<span class="normal">2221</span>
+<span class="normal">2222</span>
+<span class="normal">2223</span>
+<span class="normal">2224</span>
+<span class="normal">2225</span>
+<span class="normal">2226</span>
+<span class="normal">2227</span>
+<span class="normal">2228</span>
+<span class="normal">2229</span>
+<span class="normal">2230</span>
+<span class="normal">2231</span>
+<span class="normal">2232</span>
+<span class="normal">2233</span>
+<span class="normal">2234</span>
+<span class="normal">2235</span>
+<span class="normal">2236</span>
+<span class="normal">2237</span>
+<span class="normal">2238</span>
+<span class="normal">2239</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_angle</span><span class="p">(</span><span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Unsigned angle in radians between pairs of vectors.</span>
 
@@ -11085,110 +11418,110 @@ When <code>None</code>, an arbitrary perpendicular axis is used.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/points.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1918</span>
-<span class="normal">1919</span>
-<span class="normal">1920</span>
-<span class="normal">1921</span>
-<span class="normal">1922</span>
-<span class="normal">1923</span>
-<span class="normal">1924</span>
-<span class="normal">1925</span>
-<span class="normal">1926</span>
-<span class="normal">1927</span>
-<span class="normal">1928</span>
-<span class="normal">1929</span>
-<span class="normal">1930</span>
-<span class="normal">1931</span>
-<span class="normal">1932</span>
-<span class="normal">1933</span>
-<span class="normal">1934</span>
-<span class="normal">1935</span>
-<span class="normal">1936</span>
-<span class="normal">1937</span>
-<span class="normal">1938</span>
-<span class="normal">1939</span>
-<span class="normal">1940</span>
-<span class="normal">1941</span>
-<span class="normal">1942</span>
-<span class="normal">1943</span>
-<span class="normal">1944</span>
-<span class="normal">1945</span>
-<span class="normal">1946</span>
-<span class="normal">1947</span>
-<span class="normal">1948</span>
-<span class="normal">1949</span>
-<span class="normal">1950</span>
-<span class="normal">1951</span>
-<span class="normal">1952</span>
-<span class="normal">1953</span>
-<span class="normal">1954</span>
-<span class="normal">1955</span>
-<span class="normal">1956</span>
-<span class="normal">1957</span>
-<span class="normal">1958</span>
-<span class="normal">1959</span>
-<span class="normal">1960</span>
-<span class="normal">1961</span>
-<span class="normal">1962</span>
-<span class="normal">1963</span>
-<span class="normal">1964</span>
-<span class="normal">1965</span>
-<span class="normal">1966</span>
-<span class="normal">1967</span>
-<span class="normal">1968</span>
-<span class="normal">1969</span>
-<span class="normal">1970</span>
-<span class="normal">1971</span>
-<span class="normal">1972</span>
-<span class="normal">1973</span>
-<span class="normal">1974</span>
-<span class="normal">1975</span>
-<span class="normal">1976</span>
-<span class="normal">1977</span>
-<span class="normal">1978</span>
-<span class="normal">1979</span>
-<span class="normal">1980</span>
-<span class="normal">1981</span>
-<span class="normal">1982</span>
-<span class="normal">1983</span>
-<span class="normal">1984</span>
-<span class="normal">1985</span>
-<span class="normal">1986</span>
-<span class="normal">1987</span>
-<span class="normal">1988</span>
-<span class="normal">1989</span>
-<span class="normal">1990</span>
-<span class="normal">1991</span>
-<span class="normal">1992</span>
-<span class="normal">1993</span>
-<span class="normal">1994</span>
-<span class="normal">1995</span>
-<span class="normal">1996</span>
-<span class="normal">1997</span>
-<span class="normal">1998</span>
-<span class="normal">1999</span>
-<span class="normal">2000</span>
-<span class="normal">2001</span>
-<span class="normal">2002</span>
-<span class="normal">2003</span>
-<span class="normal">2004</span>
-<span class="normal">2005</span>
-<span class="normal">2006</span>
-<span class="normal">2007</span>
-<span class="normal">2008</span>
-<span class="normal">2009</span>
-<span class="normal">2010</span>
-<span class="normal">2011</span>
-<span class="normal">2012</span>
-<span class="normal">2013</span>
-<span class="normal">2014</span>
-<span class="normal">2015</span>
-<span class="normal">2016</span>
-<span class="normal">2017</span>
-<span class="normal">2018</span>
-<span class="normal">2019</span>
-<span class="normal">2020</span>
-<span class="normal">2021</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">radial_sort</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2242</span>
+<span class="normal">2243</span>
+<span class="normal">2244</span>
+<span class="normal">2245</span>
+<span class="normal">2246</span>
+<span class="normal">2247</span>
+<span class="normal">2248</span>
+<span class="normal">2249</span>
+<span class="normal">2250</span>
+<span class="normal">2251</span>
+<span class="normal">2252</span>
+<span class="normal">2253</span>
+<span class="normal">2254</span>
+<span class="normal">2255</span>
+<span class="normal">2256</span>
+<span class="normal">2257</span>
+<span class="normal">2258</span>
+<span class="normal">2259</span>
+<span class="normal">2260</span>
+<span class="normal">2261</span>
+<span class="normal">2262</span>
+<span class="normal">2263</span>
+<span class="normal">2264</span>
+<span class="normal">2265</span>
+<span class="normal">2266</span>
+<span class="normal">2267</span>
+<span class="normal">2268</span>
+<span class="normal">2269</span>
+<span class="normal">2270</span>
+<span class="normal">2271</span>
+<span class="normal">2272</span>
+<span class="normal">2273</span>
+<span class="normal">2274</span>
+<span class="normal">2275</span>
+<span class="normal">2276</span>
+<span class="normal">2277</span>
+<span class="normal">2278</span>
+<span class="normal">2279</span>
+<span class="normal">2280</span>
+<span class="normal">2281</span>
+<span class="normal">2282</span>
+<span class="normal">2283</span>
+<span class="normal">2284</span>
+<span class="normal">2285</span>
+<span class="normal">2286</span>
+<span class="normal">2287</span>
+<span class="normal">2288</span>
+<span class="normal">2289</span>
+<span class="normal">2290</span>
+<span class="normal">2291</span>
+<span class="normal">2292</span>
+<span class="normal">2293</span>
+<span class="normal">2294</span>
+<span class="normal">2295</span>
+<span class="normal">2296</span>
+<span class="normal">2297</span>
+<span class="normal">2298</span>
+<span class="normal">2299</span>
+<span class="normal">2300</span>
+<span class="normal">2301</span>
+<span class="normal">2302</span>
+<span class="normal">2303</span>
+<span class="normal">2304</span>
+<span class="normal">2305</span>
+<span class="normal">2306</span>
+<span class="normal">2307</span>
+<span class="normal">2308</span>
+<span class="normal">2309</span>
+<span class="normal">2310</span>
+<span class="normal">2311</span>
+<span class="normal">2312</span>
+<span class="normal">2313</span>
+<span class="normal">2314</span>
+<span class="normal">2315</span>
+<span class="normal">2316</span>
+<span class="normal">2317</span>
+<span class="normal">2318</span>
+<span class="normal">2319</span>
+<span class="normal">2320</span>
+<span class="normal">2321</span>
+<span class="normal">2322</span>
+<span class="normal">2323</span>
+<span class="normal">2324</span>
+<span class="normal">2325</span>
+<span class="normal">2326</span>
+<span class="normal">2327</span>
+<span class="normal">2328</span>
+<span class="normal">2329</span>
+<span class="normal">2330</span>
+<span class="normal">2331</span>
+<span class="normal">2332</span>
+<span class="normal">2333</span>
+<span class="normal">2334</span>
+<span class="normal">2335</span>
+<span class="normal">2336</span>
+<span class="normal">2337</span>
+<span class="normal">2338</span>
+<span class="normal">2339</span>
+<span class="normal">2340</span>
+<span class="normal">2341</span>
+<span class="normal">2342</span>
+<span class="normal">2343</span>
+<span class="normal">2344</span>
+<span class="normal">2345</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">radial_sort</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">normal</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">start</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
