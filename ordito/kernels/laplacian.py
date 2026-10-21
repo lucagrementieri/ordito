@@ -231,9 +231,14 @@ def intrinsic_rounding_rows_exact(
     # call's device time at 1.3 M faces that is 1.5x, where evaluating the ``float64`` bound in
     # both passes measured 2.0x; ``float32`` rows (one word a component) measured 1.3x and were
     # declined, the off form's rows being ``float64``. Not the off form as well, although
-    # ``scatter_add_vector`` is an ``atomic_add`` with the setting off: the ``GroupSumPass``
-    # argument and an empty table tripled that launch's host cost, a fifth of the whole check on
-    # a small mesh.
+    # ``scatter_add_vector`` is an ``atomic_add`` with the setting off. With the packed struct
+    # launch the ``GroupSumPass`` argument no longer costs host time, and one body (``terms``
+    # ``None`` and unwritten off, the rows a ``_launch.group_sums`` buffer) matched the off call on
+    # CUDA: device time 1.00x at 5 k and 1.3 M faces, host 0.8x (one ``wp.vec2d`` accumulator for
+    # two). On the CPU device it ran the off call at 1.13x, and its kernel at 1.17x
+    # ``intrinsic_rounding_rows``: a plain ``wp.vec2d`` atomic measured 0.93x, the pass argument
+    # and selector branch over it 1.02x, and ``scatter_add_vector``'s off path (its warp pre-sum
+    # test, dead on the CPU) the rest. The off form stays as it was.
     f = wp.int32(wp.tid())
     bound = wp.vec3d()
     weight = wp.vec3d()
