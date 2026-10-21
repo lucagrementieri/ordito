@@ -43,7 +43,13 @@ deterministic either way):
   ``min_area`` (summed exactly when on, so on the CPU device too a near-tie can resolve otherwise
   than with it off), and so which components are flipped or kept;
 - the positions of [`subdivide_loop`][ordito.remesh.subdivide_loop], whose 1-ring sums are
-  added in a fixed order.
+  added in a fixed order;
+- the values of the differentiable Chamfer losses
+  [`chamfer_points_to_points_loss`][ordito.metrics.chamfer_points_to_points_loss],
+  [`chamfer_points_to_mesh_loss`][ordito.metrics.chamfer_points_to_mesh_loss] and
+  [`chamfer_mesh_to_mesh_loss`][ordito.metrics.chamfer_mesh_to_mesh_loss], and the gradients a
+  ``wp.Tape`` takes through them (each point's or vertex's gradient summed in ascending query
+  order when on);
 - the order of the hits [`intersects_location`][ordito.ray.intersects_location] returns
   (ascending ray order when on).
 

@@ -1344,6 +1344,67 @@ def test_chamfer_mesh_losses_take_prebuilt_meshes(
         assert np.allclose(prebuilt_np, built_np, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize(
+    "loss",
+    ["chamfer_points_to_points_loss", "chamfer_points_to_mesh_loss", "chamfer_mesh_to_mesh_loss"],
+)
+@pytest.mark.parametrize("squared", [False, True])
+def test_chamfer_losses_repeat_bit_for_bit_when_deterministic(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], loss: str, squared: bool
+) -> None:
+    """
+    Not a parity assert: under the deterministic setting a loss and its gradients repeat exactly.
+
+    The forward sums commit per block and the backward passes scatter each target's gradient from
+    every query that picked it; on CUDA both orders are arrival orders unless the setting fixes
+    them. A 20 000-point cloud against the 500-vertex fixture makes many queries share a target,
+    and a 2 562-vertex sphere is the second mesh. The off mode is checked against the on mode to
+    round-off, not to the bit.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    device = mesh_wp.points.device
+    rng = np.random.default_rng(57)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    cloud_np = vertices_np[rng.integers(0, vertices_np.shape[0], 20_000)]
+    cloud_np = (cloud_np + rng.normal(scale=0.05, size=cloud_np.shape)).astype(np.float32)
+    sphere_vertices_wp, sphere_faces_wp = od.creation.icosphere(4, device=device)
+    sphere_np = sphere_vertices_wp.numpy() * 0.9 + np.asarray(mesh_tm.center_mass, np.float32)
+
+    def run() -> list[np.ndarray]:
+        first_wp = wp.array(cloud_np, dtype=wp.vec3, device=device, requires_grad=True)
+        second_wp = wp.array(vertices_np, dtype=wp.vec3, device=device, requires_grad=True)
+        tape = wp.Tape()
+        if loss == "chamfer_points_to_points_loss":
+            loss_wp = od.metrics.chamfer_points_to_points_loss(
+                first_wp, second_wp, tape=tape, squared=squared
+            )
+        elif loss == "chamfer_points_to_mesh_loss":
+            loss_wp = od.metrics.chamfer_points_to_mesh_loss(
+                first_wp, second_wp, mesh_wp.indices, tape=tape, squared=squared
+            )
+        else:
+            first_wp = wp.array(sphere_np, dtype=wp.vec3, device=device, requires_grad=True)
+            loss_wp = od.metrics.chamfer_mesh_to_mesh_loss(
+                first_wp, sphere_faces_wp, second_wp, mesh_wp.indices, tape=tape, squared=squared
+            )
+        tape.backward(loss=loss_wp)
+        assert first_wp.grad is not None
+        assert second_wp.grad is not None
+        return [loss_wp.numpy(), first_wp.grad.numpy(), second_wp.grad.numpy()]
+
+    with od.config.deterministic(True):
+        reference = run()
+        repeats = [run() for _ in range(4)]
+    assert np.abs(reference[2]).max() > 0.0  # the gathered side's gradient is not all zero
+    for repeat in repeats:
+        for reference_np, repeat_np in zip(reference, repeat, strict=True):
+            assert np.array_equal(reference_np, repeat_np)
+    with od.config.deterministic(False):
+        arrival = run()
+    for reference_np, arrival_np in zip(reference, arrival, strict=True):
+        assert np.allclose(arrival_np, reference_np, rtol=1e-4, atol=1e-6)
+
+
 def test_chamfer_points_to_points_loss_guards_and_empty(device: str) -> None:
     """Not a library comparison: ``"max"`` is refused, and an empty side gives a zero loss."""
     x_wp = points_to_warp(np.zeros((3, 3), dtype=np.float32), device)
