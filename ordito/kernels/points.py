@@ -10,6 +10,8 @@ from ordito.kernels.array import (
     map_probe_single,
     mat33_column,
     pack_farthest_key,
+    to_vec3,
+    to_vec3d,
     unpack_ranked_index,
 )
 from ordito.kernels.grouping import hash_slot_words3, next_slot
@@ -1039,6 +1041,13 @@ def outward_plane(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3, interior: wp.vec3) -> w
     return wp.vec4(normal[0], normal[1], normal[2], offset)
 
 
+@wp.func
+def centroid_offset(point: wp.vec3, centroid: wp.vec3) -> wp.vec3:
+    # ``point - centroid``, subtracted in ``float64`` and rounded once, so its error is a few ulps
+    # of the offset itself rather than of the coordinates.
+    return to_vec3(to_vec3d(point) - to_vec3d(centroid))
+
+
 @wp.kernel
 def tetrahedron_planes(
     shell_vertices: wp.indexedarray[wp.vec3],
@@ -1049,10 +1058,13 @@ def tetrahedron_planes(
     out_valid: wp.array[wp.bool],
 ) -> None:
     t = wp.int32(wp.tid())
-    apex = centroid[0]
-    a = shell_vertices[shell_faces[t * 3 + 0]]
-    b = shell_vertices[shell_faces[t * 3 + 1]]
-    c = shell_vertices[shell_faces[t * 3 + 2]]
+    # Planes in the centroid's frame: ``mark_hull_superset`` tests points there too, so every
+    # rounding is relative to the shell's size rather than to how far the cloud sits from the
+    # origin (see there).
+    apex = wp.vec3(0.0, 0.0, 0.0)
+    a = centroid_offset(shell_vertices[shell_faces[t * 3 + 0]], centroid[0])
+    b = centroid_offset(shell_vertices[shell_faces[t * 3 + 1]], centroid[0])
+    c = centroid_offset(shell_vertices[shell_faces[t * 3 + 2]], centroid[0])
 
     # Scale-free flatness test: the determinant of the three apex edges against their length
     # product. A sliver's face normals are ill-conditioned cross products of nearly parallel edges,
@@ -1084,12 +1096,16 @@ def mark_hull_superset(
     points: wp.array[wp.vec3],
     planes: wp.array2d[wp.vec4],
     valid: wp.array[wp.bool],
+    centroid: wp.array[wp.vec3],
     radius: wp.array[wp.float32],
     margin: wp.float32,
     out_mask: wp.array[wp.bool],
 ) -> None:
     i = wp.int32(wp.tid())
-    point = points[i]
+    # In the centroid's frame, as the planes are. Evaluated on raw coordinates the plane test's
+    # float32 error grew with the cloud's distance from the origin while ``slack`` scales with its
+    # size: a ball of radius 1 centred at 1e3 lost true hull vertices (3 of 1 976 at 200 k points).
+    point = centroid_offset(points[i], centroid[0])
     # Strict interior only, by a real distance. A point on a tetrahedron's boundary can still be a
     # hull vertex, and requiring it to clear every face by `slack` means float32 error in the plane
     # evaluation can only keep a point that could have been dropped -- never drop a hull vertex.

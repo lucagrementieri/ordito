@@ -52,25 +52,33 @@ materializes the full ``(n, n)`` left-singular matrix and raises ``_ArrayMemoryE
 mesh. Ordito accumulates a 3x3 Gram matrix instead and runs the full registry. ``plane_fit`` does
 not take that path and needs no cap.
 
-Approximate hull
-----------------
-``convex_subset_mask`` / ``convex_subset`` / ``convex_superset_mask`` are the compute-bound cases
-here: cost is ``n_points * n_directions`` for the support sweep, and ``convex_superset_mask`` adds
-a pass testing every point against the tetrahedra spanned by the resulting shell, where every
-thread reads the same plane table and the arithmetic dominates. ``convex_subset`` is the mask plus
-a ``flatnonzero`` and a gather, so its delta over the mask is the compaction cost.
+Convex hull
+-----------
+``convex_hull`` is the exact hull, timed against qhull itself (``scipy.spatial.ConvexHull``) and
+the three qhull-backed mesh wrappers, all of which compute the same surface. A registry mesh's
+vertices are a scan cloud whose hull holds a few thousand points, so both sides spend most of their
+time discarding the rest; ordito's growth rounds do that in parallel passes over the points still
+outside the surface.
 
-**The baselines compute a different and stronger result**, which is the point of the comparison
-rather than a flaw in it. trimesh, open3d and pymeshlab all run **qhull**, producing the exact hull
-as a mesh; ``convex_subset`` produces an approximate vertex *subset*. So this is not parity — it
-quantifies what the approximation buys, which is why the function exists. Three qhull rows rather
-than one because the argument is about the operation, and because a second and third wrapper around
-the same computation is the only way to tell whether trimesh's number is qhull or trimesh.
+``convex_subset_mask`` / ``convex_subset`` / ``convex_superset_mask`` are the compute-bound
+approximations: cost is ``n_points * n_directions`` for the support sweep, and
+``convex_superset_mask`` adds a pass testing every point against the tetrahedra spanned by the
+resulting shell, where every thread reads the same plane table and the arithmetic dominates.
+``convex_subset`` is the mask plus a ``flatnonzero`` and a gather, so its delta over the mask is the
+compaction cost.
 
-**scipy** is registered for ``convex_superset_mask`` alone, and there it is a genuine parity row:
-that filter exists to run *before* an exact hull, so ``scipy.spatial.ConvexHull`` on the same cloud
-is exactly the cost it must be cheap against, and its output provably contains that hull's vertex
-set. The ratio is what decides whether the prefilter is worth running, and it widens with the point
+**The baselines of the two subset groups compute a different and stronger result**, which is the
+point of the comparison rather than a flaw in it. trimesh, open3d and pymeshlab all run **qhull**,
+producing the exact hull as a mesh; ``convex_subset`` produces an approximate vertex *subset*. So
+this is not parity -- it quantifies what the approximation buys, which is why the function exists.
+Three qhull rows rather than one because the argument is about the operation, and because a second
+and third wrapper around the same computation is the only way to tell whether trimesh's number is
+qhull or trimesh.
+
+**scipy** is registered for ``convex_superset_mask``, and there it is a genuine parity row: that
+filter exists to run *before* an exact hull, so ``scipy.spatial.ConvexHull`` on the same cloud is
+exactly the cost it must be cheap against, and its output provably contains that hull's vertex set.
+The ratio is what decides whether the prefilter is worth running, and it widens with the point
 count because the filter is linear where qhull is not. **libigl** has no hull binding.
 
 ``n_directions`` and ``subdivisions`` are each swept over two values spanning their useful range;
@@ -780,6 +788,39 @@ _N_DIRECTIONS = [32, 256]
 _SUBDIVISIONS = [1, 3]
 
 
+@pytest.mark.benchmark(group="convex_hull")
+@pytest.mark.benchlibs("ordito", "scipy", "trimesh", "open3d", "pymeshlab")
+@pytest.mark.censusmeshes("sphere_small")
+def test_convex_hull(bench_case: BenchCase) -> None:
+    """
+    The exact hull against qhull, directly and through the three mesh wrappers.
+
+    The same result on both sides: the hull's triangles, ordito's over the input points and the
+    wrappers' as a compacted mesh (``scipy`` returns ``simplices`` over the input, like ordito).
+    qhull is single-threaded on the host, which is the comparison: a registry mesh's vertices are a
+    scan cloud, whose hull holds a few thousand of its points, and both sides discard the rest.
+    """
+    if bench_case.kind == "ordito":
+        points = bench_case.vertices_wp
+        faces = bench_case.run(lambda: od.points.convex_hull(points))
+        assert faces.shape[0] >= 12
+        return
+    skip_larger_than(bench_case, "dragon", "qhull is single-threaded on the host")
+    points_np = bench_case.vertices_np
+    if bench_case.kind == "scipy":
+        hull_np = bench_case.run(lambda: scipy.spatial.ConvexHull(points_np))
+        assert hull_np.simplices.shape[0] >= 4
+    elif bench_case.kind == "pymeshlab":
+        bench_case.run(lambda: bench_case.new_meshset_pml().generate_convex_hull())
+    elif bench_case.kind == "trimesh":
+        hull_tm = bench_case.run(lambda: tm.points.PointCloud(points_np).convex_hull)
+        assert hull_tm.faces.shape[0] >= 4
+    else:
+        mesh_o3d = bench_case.mesh_o3d
+        hull_o3d, _indices = bench_case.run(lambda: mesh_o3d.compute_convex_hull())
+        assert np.asarray(hull_o3d.triangles).shape[0] >= 4
+
+
 @pytest.mark.benchmark(group="convex_subset_mask")
 @pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab")
 @pytest.mark.parametrize("n_directions", _N_DIRECTIONS)
@@ -858,7 +899,7 @@ def test_convex_superset_mask(bench_case: BenchCase, subdivisions: int) -> None:
     only a fixed accuracy bar: this filter's *purpose* is to run before an exact hull, so the
     question the benchmark has to answer is whether it is cheap relative to the hull it feeds. Both
     rows are timed on the same cloud and produce comparable results (the filter's output contains
-    the hull's vertex set, which ``tests/test_convex.py`` asserts), so this one *is* a parity
+    the hull's vertex set, which ``tests/test_points.py`` asserts), so this one *is* a parity
     comparison.
 
     ``subdivisions`` is the axis because it drives both halves of the cost -- the direction count of

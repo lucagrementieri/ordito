@@ -631,6 +631,25 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.ball_pivoting", "rehash_edges"): frozenset(
         {"new_cand", "new_count", "new_opp", "new_src", "new_state", "new_tgt"}
     ),
+    # The convex hull's surface is one set of buffers rewritten in place from the first kernel to
+    # the last: ``tri`` / ``adj`` (faces and their packed adjacency), ``best`` (each face's farthest
+    # bid), ``child`` (where a split face's points went) and the growth loop's ``counters`` word.
+    # The tetrahedron start writes their first rows, every split and flip rewrites them, and the
+    # output kernels read them, so they keep the names of what they hold. ``keys`` collects the four
+    # dependent corner picks, each sweep reading the earlier slots. Flip-Flop's per-face round state
+    # -- ``changed``, ``dirty``, ``lock``, ``group`` -- is cleared and set by different kernels of
+    # one round, and ``state`` is the shared loop word. ``seed_points`` and ``assign_points`` bid
+    # into ``best`` and flag through ``commit_beyond``, which check 13 does not follow.
+    ("algorithms.convex_hull", "pick_tetrahedron_corner"): frozenset({"keys"}),
+    ("algorithms.convex_hull", "start_tetrahedron"): frozenset({"tri", "adj", "best", "counters"}),
+    ("algorithms.convex_hull", "split_faces"): frozenset(
+        {"tri", "adj", "best", "child", "counters"}
+    ),
+    ("algorithms.convex_hull", "propose_flips"): frozenset({"changed", "dirty", "lock"}),
+    ("algorithms.convex_hull", "apply_flips"): frozenset(
+        {"tri", "adj", "state", "changed", "group"}
+    ),
+    ("algorithms.convex_hull", "repair_flip_adjacency"): frozenset({"adj", "lock", "dirty"}),
     ("repair", "emit_degree3_replacement"): frozenset({"cursor"}),
     # The flip loop's incremental state, carried across rounds and kept current by the commit that
     # rewrites the faces: the row <-> halfedge maps and the tracked valences. Neither an input nor

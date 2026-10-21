@@ -69,6 +69,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | estimate normals | [`points.estimate_normals`][ordito.points.estimate_normals] |
 | down-sample | [`voxels.voxel_down_sample`][ordito.voxels.voxel_down_sample], [`points.farthest_point_sample`][ordito.points.farthest_point_sample] |
 | remove outliers | [`points.statistical_outlier_mask`][ordito.points.statistical_outlier_mask], [`radius_outlier_mask`][ordito.points.radius_outlier_mask] |
+| convex hull | [`points.convex_hull`][ordito.points.convex_hull] (exact), [`convex_superset_mask`][ordito.points.convex_superset_mask] (prefilter) |
 | reconstruct a surface | [`reconstruction.screened_poisson`][ordito.reconstruction.screened_poisson], [`ball_pivoting`][ordito.reconstruction.ball_pivoting] |
 | align two scans | [`registration.icp`][ordito.registration.icp], [`icp_point_to_plane`][ordito.registration.icp_point_to_plane], [`procrustes`][ordito.registration.procrustes] |
 | voxelize | [`voxels.voxelize_mesh`][ordito.voxels.voxelize_mesh], [`voxelize_points`][ordito.voxels.voxelize_points] |
@@ -143,7 +144,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 
 | Module | Contents |
 |---|---|
-| [points](api/ordito/points.md) | Point-cloud geometry: plane and line fits, covariance, normals, outliers, down-sampling. |
+| [points](api/ordito/points.md) | Point-cloud geometry: plane and line fits, covariance, normals, outliers, down-sampling, convex hull. |
 | [sample](api/ordito/sample.md) | New points on a mesh surface, inside its volume, or over a sphere. |
 | [voxels](api/ordito/voxels.md) | Sparse voxel grids: voxelize, test membership, morphology, booleans, and mesh the result. |
 | [reconstruction](api/ordito/reconstruction.md) | Surfaces from points: Delaunay, screened Poisson, ball pivoting, uniform resampling. |

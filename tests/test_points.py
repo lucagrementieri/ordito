@@ -15,11 +15,12 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import ordito.config as od_config
+import ordito.creation as od_creation
 import ordito.grouping as od_grouping
 import ordito.neighbors as od_neighbors
 import ordito.points as od
 import ordito.typing as odt
-from tests.comparisons import assert_same_up_to_sign
+from tests.comparisons import assert_same_up_to_sign, lexsort_rows
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_indices_to_numpy,
@@ -1350,13 +1351,268 @@ def test_vector_angle(device: str) -> None:
     assert np.allclose(angles_wp.numpy(), angles_tm, rtol=1e-5, atol=1e-5)
 
 
+def _rotation(rng: np.random.Generator) -> np.ndarray:
+    """Draw a random rotation, so no thin direction of a test cloud is a coordinate axis."""
+    q_np, _ = np.linalg.qr(rng.standard_normal((3, 3)))
+    return q_np
+
+
+def _hull_cloud(kind: str, n: int, seed: int) -> np.ndarray:
+    """
+    Build a ``float32`` cloud in general position for the exact hull, by distribution.
+
+    The thin ones are the hard case for a hull: ``disk_*`` and ``slab_*`` are a unit disk and a
+    unit square of thickness ``1e-4`` / ``1e-6``, rotated and moved off the origin so the thinness
+    is in no coordinate, and ``noisy_plane`` is a scanned flat patch, a plane with ``1e-5`` normal
+    noise. At ``1e-6`` the thickness is two ``float32`` ulps of the coordinates.
+    """
+    rng = np.random.default_rng(seed)
+    offset_np = np.array([3.0, -2.0, 5.0])
+    if kind == "gaussian":
+        points_np = rng.standard_normal((n, 3))
+    elif kind == "sphere":
+        points_np = rng.standard_normal((n, 3))
+        points_np /= np.linalg.norm(points_np, axis=1, keepdims=True)
+    elif kind.startswith("disk"):
+        radius_np, angle_np = np.sqrt(rng.random(n)), 2.0 * np.pi * rng.random(n)
+        thickness = float(kind.split("_")[1])
+        points_np = np.column_stack(
+            [
+                radius_np * np.cos(angle_np),
+                radius_np * np.sin(angle_np),
+                thickness * (rng.random(n) - 0.5),
+            ]
+        )
+        points_np = points_np @ _rotation(rng) + offset_np
+    elif kind.startswith("slab"):
+        thickness = float(kind.split("_")[1])
+        points_np = np.column_stack([rng.random(n), rng.random(n), thickness * rng.random(n)])
+        points_np = points_np @ _rotation(rng) + offset_np
+    else:  # noisy_plane
+        points_np = np.column_stack([2.0 * rng.random(n), rng.random(n), 1e-5 * rng.normal(size=n)])
+        points_np = points_np @ _rotation(rng) + offset_np
+    return points_np.astype(np.float32)
+
+
+def _assert_convex_hull_of(points_np: np.ndarray, faces_np: np.ndarray) -> None:
+    """
+    Assert ``faces_np`` is the boundary of a convex polytope wound outward that holds every point.
+
+    A closed 2-manifold (every directed edge once, its reverse present) of genus 0 with
+    ``2 * n_vertices - 4`` faces, every face's plane leaving all points beneath it and every edge's
+    far vertex beneath the face across. The plane tests run in ``float64`` on ``float32`` points,
+    so their only error is ``float64`` rounding; the tolerance is a thousand times that.
+    """
+    triangles_np = faces_np.reshape(-1, 3).astype(np.int64)
+    edges_np = triangles_np[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    keys_np = edges_np[:, 0] * len(points_np) + edges_np[:, 1]
+    reverse_np = edges_np[:, 1] * len(points_np) + edges_np[:, 0]
+    assert np.unique(keys_np).shape[0] == keys_np.shape[0]
+    assert np.isin(reverse_np, keys_np).all()
+    n_vertices = np.unique(triangles_np).shape[0]
+    assert triangles_np.shape[0] == 2 * n_vertices - 4
+
+    points64_np = points_np.astype(np.float64)
+    corner_np = points64_np[triangles_np]
+    normal_np = np.cross(corner_np[:, 1] - corner_np[:, 0], corner_np[:, 2] - corner_np[:, 0])
+    normal_np /= np.linalg.norm(normal_np, axis=1, keepdims=True)
+    scale = float(np.abs(points64_np).max())
+    for start in range(0, len(points64_np), 4096):
+        chunk_np = points64_np[start : start + 4096]
+        height_np = np.einsum("pk,fk->pf", chunk_np, normal_np)
+        height_np -= np.einsum("fk,fk->f", corner_np[:, 0], normal_np)[None]
+        assert height_np.max() < 1e-13 * scale
+
+
+@pytest.mark.parametrize(
+    "kind", ["gaussian", "sphere", "disk_1e-4", "disk_1e-6", "slab_1e-6", "noisy_plane"]
+)
+@pytest.mark.parity("convex_hull", "scipy")
+def test_convex_hull_matches_scipy(device: str, kind: str) -> None:
+    """
+    Class A on the vertex set, Class B on the faces, against [`scipy.spatial.ConvexHull`][].
+
+    In general position the hull's triangulation is unique, so the faces must equal qhull's
+    ``simplices`` as a set of triangles; the named transform is sorting each triangle's corners,
+    because qhull winds its simplices arbitrarily. Ordito's winding is checked on its own, by the
+    convexity invariants. The thin disks and slabs are the near-planar cases: at ``1e-6`` the cloud
+    is two ``float32`` ulps thick, where a tolerance-based predicate either merges the two faces or
+    flips their orientation, and an exact one must still find every rim vertex of both.
+    """
+    points_np = _hull_cloud(kind, 4000, seed=21)
+    hull_scipy = scipy.spatial.ConvexHull(points_np.astype(np.float64))
+    assert hull_scipy.vertices.shape[0] > 30
+
+    faces_np = od.convex_hull(points_to_warp(points_np, device)).numpy()
+    assert set(np.unique(faces_np).tolist()) == set(hull_scipy.vertices.tolist())
+    assert np.array_equal(
+        lexsort_rows(np.sort(faces_np.reshape(-1, 3), axis=1)),
+        lexsort_rows(np.sort(hull_scipy.simplices, axis=1)),
+    )
+    _assert_convex_hull_of(points_np, faces_np)
+
+
+def test_convex_hull_of_a_large_far_cloud_matches_scipy(device: str) -> None:
+    """
+    Class A against [`scipy.spatial.ConvexHull`][], above the prefilter's point count.
+
+    From ``2**18`` points ``convex_hull`` drops the points ``convex_superset_mask`` certifies
+    interior before growing, so this is the path that must still find every hull vertex. The cloud
+    sits ``1e3`` from the origin: the filter's plane test once rounded on raw coordinates there and
+    dropped true hull vertices.
+    """
+    points_np = (_cloud("ball", 300_000, seed=26) + 1e3).astype(np.float32)
+    hull_scipy = scipy.spatial.ConvexHull(points_np.astype(np.float64))
+    assert len(hull_scipy.vertices) > 1000
+
+    faces_np = od.convex_hull(points_to_warp(points_np, device)).numpy()
+    assert set(np.unique(faces_np).tolist()) == set(hull_scipy.vertices.tolist())
+    assert np.array_equal(
+        lexsort_rows(np.sort(faces_np.reshape(-1, 3), axis=1)),
+        lexsort_rows(np.sort(hull_scipy.simplices, axis=1)),
+    )
+
+
+@pytest.mark.parity("convex_hull", "trimesh", "open3d", "pymeshlab")
+def test_convex_hull_matches_the_qhull_mesh_wrappers(device: str) -> None:
+    """
+    Class B: the same hull vertices as trimesh's, Open3D's and MeshLab's qhull meshes.
+
+    All three return a compacted mesh, so the named transform maps each wrapper's vertex positions
+    back onto the input cloud's indices (an exact match: qhull copies the coordinates). They all run
+    qhull, so this is three wrappers' bookkeeping checked against one answer, and their face counts
+    against ordito's ``2 * n_vertices - 4``.
+    """
+    points_np = _hull_cloud("gaussian", 2000, seed=22).astype(np.float64)
+
+    def hull_indices(hull_vertices_np: np.ndarray) -> set[int]:
+        distance_np, index_np = scipy.spatial.cKDTree(points_np).query(hull_vertices_np)
+        assert np.max(distance_np) == 0.0
+        return set(np.asarray(index_np).tolist())
+
+    mesh_tm = tm.PointCloud(points_np).convex_hull
+    mesh_o3d, _kept = points_to_open3d(points_np).compute_convex_hull()
+    meshset_pml = points_to_pymeshlab(points_np)
+    meshset_pml.generate_convex_hull()
+    hulls = {
+        "trimesh": (hull_indices(mesh_tm.vertices), len(mesh_tm.faces)),
+        "open3d": (hull_indices(np.asarray(mesh_o3d.vertices)), len(mesh_o3d.triangles)),
+        "pymeshlab": (
+            hull_indices(meshset_pml.current_mesh().vertex_matrix()),
+            meshset_pml.current_mesh().face_number(),
+        ),
+    }
+
+    faces_np = od.convex_hull(points_to_warp(points_np, device)).numpy()
+    vertices = set(np.unique(faces_np).tolist())
+    assert len(vertices) > 20
+    for name, (hull_vertices, n_faces) in hulls.items():
+        assert hull_vertices == vertices, name
+        assert n_faces == len(faces_np) // 3, name
+
+
+def _degenerate_hull_cloud(kind: str) -> np.ndarray:
+    """
+    Build a cloud whose hull facets hold many exactly coplanar, collinear or coincident points.
+
+    The lattices put integer points on every facet and edge of a cube or an octahedron (the
+    octahedron's facets lie on no coordinate plane); ``prism`` stacks 16 identical rings of 96
+    points, so the side facets are vertical strips with 14 collinear points on each edge; the
+    pyramid has 4 000 points on its base; ``duplicates`` repeats 40 points 50 times each.
+    """
+    rng = np.random.default_rng(23)
+    if kind == "cube_lattice":
+        grid_np = np.stack(np.meshgrid(*[np.arange(9)] * 3, indexing="ij"), -1).reshape(-1, 3)
+        return grid_np.astype(np.float32)
+    if kind == "octahedron_lattice":
+        grid_np = np.stack(np.meshgrid(*[np.arange(-8, 9)] * 3, indexing="ij"), -1).reshape(-1, 3)
+        return grid_np[np.abs(grid_np).sum(axis=1) <= 8].astype(np.float32)
+    if kind == "prism":
+        angle_np = 2.0 * np.pi * np.arange(96) / 96
+        ring_np = np.column_stack([np.cos(angle_np), np.sin(angle_np)])
+        return np.vstack(
+            [np.column_stack([ring_np, np.full(96, z)]) for z in np.linspace(0.0, 1.0, 16)]
+        ).astype(np.float32)
+    if kind == "pyramid":
+        base_np = np.column_stack([rng.random(4000), rng.random(4000), np.zeros(4000)])
+        return np.vstack([base_np, [[0.5, 0.5, 1.0]]]).astype(np.float32)
+    distinct_np = rng.standard_normal((40, 3))
+    return distinct_np[rng.integers(0, 40, 2000)].astype(np.float32)
+
+
+@pytest.mark.parametrize(
+    "kind", ["cube_lattice", "octahedron_lattice", "prism", "pyramid", "duplicates"]
+)
+def test_convex_hull_degenerate_input_matches_scipy(device: str, kind: str) -> None:
+    """
+    Class B: the same hull vertex *positions* and volume as [`scipy.spatial.ConvexHull`][].
+
+    Positions rather than indices are the named transform: of coincident points qhull and ordito
+    may keep different copies. The faces are not compared -- a facet with more than three corners
+    has many triangulations -- but they must still bound a convex polytope holding every point. A
+    point lying exactly on a facet or an edge is never a vertex: on the lattices those are all but
+    the corners, on the prism all but the top and bottom rings.
+    """
+    points_np = _degenerate_hull_cloud(kind)
+    hull_scipy = scipy.spatial.ConvexHull(points_np.astype(np.float64))
+
+    faces_np = od.convex_hull(points_to_warp(points_np, device)).numpy()
+    vertices_np = np.unique(points_np[np.unique(faces_np)], axis=0)
+    assert np.array_equal(vertices_np, np.unique(points_np[hull_scipy.vertices], axis=0))
+    corner_np = points_np.astype(np.float64)[faces_np.reshape(-1, 3)]
+    volume = np.einsum("ij,ij->", corner_np[:, 0], np.cross(corner_np[:, 1], corner_np[:, 2])) / 6
+    assert np.isclose(volume, hull_scipy.volume, rtol=1e-6)
+    _assert_convex_hull_of(points_np, faces_np)
+
+
+def test_convex_hull_of_a_symmetric_cloud(device: str) -> None:
+    """
+    Class A: every icosphere vertex is a hull vertex, as qhull finds.
+
+    A guard for the kernel point. The icosphere is symmetric under the coordinate mirrors, so the
+    centroid of any tetrahedron of its vertices lies on mirror planes through dozens of input
+    points, and every cone test against them ties. An unperturbed kernel point once split a face
+    at a point exactly on its cone's boundary, and the surface dropped 98 hull vertices.
+    """
+    vertices_wp, _ = od_creation.icosphere(subdivisions=4, device=device)
+    points_np = vertices_wp.numpy()
+    hull_scipy = scipy.spatial.ConvexHull(points_np.astype(np.float64))
+    assert len(hull_scipy.vertices) == len(points_np)
+
+    faces_np = od.convex_hull(vertices_wp).numpy()
+    assert len(np.unique(faces_np)) == len(points_np)
+    _assert_convex_hull_of(points_np, faces_np)
+
+
+def test_convex_hull_is_reproducible(device: str) -> None:
+    """Ordito against ordito: two calls return the same face buffer, row for row."""
+    points_wp = points_to_warp(_hull_cloud("gaussian", 20_000, seed=24), device)
+    assert np.array_equal(od.convex_hull(points_wp).numpy(), od.convex_hull(points_wp).numpy())
+
+
+@pytest.mark.parametrize("kind", ["three_points", "coplanar", "collinear", "coincident"])
+def test_convex_hull_rejects_flat_input(device: str, kind: str) -> None:
+    """Not a library comparison: a cloud spanning no tetrahedron has no 3D hull to return."""
+    rng = np.random.default_rng(25)
+    if kind == "three_points":
+        points_np = rng.standard_normal((3, 3))
+    elif kind == "coplanar":
+        points_np = np.column_stack([rng.standard_normal((500, 2)), np.full(500, 2.5)])
+    elif kind == "collinear":
+        points_np = np.outer(np.linspace(0.0, 1.0, 100), np.array([1.0, 2.0, 3.0]))
+    else:
+        points_np = np.ones((50, 3))
+    with pytest.raises(ValueError, match="convex_hull"):
+        od.convex_hull(points_to_warp(points_np, device))
+
+
 @pytest.mark.parity("convex_subset_mask", "trimesh", "open3d", "pymeshlab")
 @pytest.mark.parity("convex_subset", "trimesh", "open3d", "pymeshlab")
 def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> None:
     """
     Class C (soundness plus a recall bound), against exact qhull.
 
-    ``benchmarks/test_convex.py`` says of these three rows that "this is not a parity comparison":
+    ``benchmarks/test_points.py`` says of these three rows that "this is not a parity comparison":
     trimesh, Open3D and pymeshlab all run **qhull** and return the exact hull as a *mesh*, while
     ``convex_subset`` returns an approximate *vertex subset* from a direction sweep. That rules
     out equality -- it does not rule out a test. Two properties are checkable and are exactly
@@ -1584,6 +1840,24 @@ def test_convex_superset_mask_scale_invariant(device: str) -> None:
     assert np.array_equal(
         od.convex_superset_mask(points_wp).numpy(), od.convex_superset_mask(scaled_wp).numpy()
     )
+
+
+@pytest.mark.parametrize("offset", [0.0, 1e3, 1e5])
+def test_convex_superset_mask_keeps_the_hull_of_a_far_cloud(device: str, offset: float) -> None:
+    """
+    Class B (containment of qhull's vertex set, as above), on a ball moved far from the origin.
+
+    The margin scales with the shell's radius, so the plane test must too: evaluated on raw
+    coordinates its ``float32`` error grew with the distance from the origin instead, and a ball of
+    radius 1 centred at ``1e3`` lost 3 of its 1 976 hull vertices. The kept fraction must not grow
+    with the offset either (it was 13 % at the origin and 20 % at ``1e5``).
+    """
+    points_np = (_cloud("ball", 200_000, seed=16) + offset).astype(np.float32)
+    mask_np = od.convex_superset_mask(points_to_warp(points_np, device), subdivisions=1).numpy()
+    hull_scipy = scipy.spatial.ConvexHull(points_np.astype(np.float64)).vertices
+    assert len(hull_scipy) > 1000
+    assert mask_np[hull_scipy].all()
+    assert mask_np.mean() < 0.15
 
 
 @pytest.mark.parametrize("kind", ["coplanar", "collinear", "identical", "three_points"])

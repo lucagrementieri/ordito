@@ -1688,6 +1688,34 @@ def complement_rank_index(index: wp.int32) -> wp.uint32:
     return wp.uint32(INT32_MAX_CONSTANT - index)
 
 
+# A slot in an append-only list whose length is ``counter[index]``: on CUDA one ``atomicAdd`` per
+# warp reserves every converged lane's slot (the lowest active lane adds the lane count, and each
+# lane takes its rank among the active ones), the CPU device takes one atomic per call. Slots come
+# in arrival order, so only a list whose order decides nothing may use it. Every lane of a warp
+# appending to one counter is the case it exists for: the convex hull's first pass keeps most of a
+# 14 M-point cloud and appended through a single address.
+_APPEND_SLOT = """
+#if defined(__CUDA_ARCH__)
+const unsigned active = __activemask();
+const unsigned lane = threadIdx.x & 31u;
+const int leader = __ffs(active) - 1;
+int base = 0;
+if ((int)lane == leader) {
+    base = wp::atomic_add(
+        wp::data_at_byte_offset(counter, wp::byte_offset(counter, index)), (int)__popc(active));
+}
+base = __shfl_sync(active, base, leader);
+return base + (int)__popc(active & ((1u << lane) - 1u));
+#else
+return wp::atomic_add(wp::data_at_byte_offset(counter, wp::byte_offset(counter, index)), 1);
+#endif
+"""
+
+
+@wp.func_native(_APPEND_SLOT)
+def append_slot(counter: wp.array[wp.int32], index: wp.int32) -> wp.int32: ...
+
+
 @wp.func
 def float_order_bits(value: wp.float32) -> wp.uint64:
     # A **non-negative** float reinterpreted as the high half of a sortable integer key. The

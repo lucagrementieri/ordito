@@ -26,8 +26,10 @@ No connectivity here -- everything takes a bare ``(n,)`` array of positions. Fou
   [`farthest_point_sample`][ordito.points.farthest_point_sample] picks an exact count spread over
   the cloud's support. Run the exact predicates first: they are cheap and they remove the inputs the
   others are ill-defined on.
-- **Approximate hull vertices.** Which points are convex-hull vertices, without building a hull.
-  Both entry points are exact-hull-free and run in a fixed number of parallel launches, and both are
+- **Convex hull.** [`convex_hull`][ordito.points.convex_hull] is the exact hull as outward-wound
+  triangles over the cloud, decided by exact orientation signs, so thin, flat and degenerate
+  clouds get the true hull rather than one within a tolerance. Two approximations answer only
+  *which* points are hull vertices, each in a fixed number of parallel launches and each
   one-sided -- but in *opposite* directions:
 
     - [`convex_subset_mask`][ordito.points.convex_subset_mask] (and its point-returning form
@@ -38,10 +40,7 @@ No connectivity here -- everything takes a bare ``(n,)`` array of positions. Fou
     - [`convex_superset_mask`][ordito.points.convex_superset_mask] accumulates *negative*
       certificates: a tetrahedron of hull points strictly containing a point proves that point is
       interior. It keeps everything it cannot rule out, so the result is **never smaller** than the
-      hull-vertex set -- a conservative prefilter before an exact hull.
-
-  Neither computes hull connectivity; for that use an exact hull library
-  ([`scipy.spatial.ConvexHull`][] or the qhull-backed mesh packages).
+      hull-vertex set.
 
 Normals from [`estimate_normals`][ordito.points.estimate_normals] are *unoriented* -- a plane fit
 cannot pick a side. See [`ordito.repair`][ordito.repair] for orientation propagation.
@@ -51,20 +50,22 @@ angle between two ``wp.vec3`` arrays, geometry rather than array structure, so
 [`ordito.array`][ordito.array] is no better a home.
 """
 
-from typing import cast
+from typing import Any, cast
 
 import warp as wp
 
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device, slice_count
+from ordito._device import read_values, require_same_device, run_device_loop, slice_count
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_ZERO
+from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels.algorithms import convex_hull as kernel_hull
 
 # Relative slack, against the support extent along a direction, for recognizing a point as that
 # direction's support point. It cannot be zero: the reducing kernel and the marking kernel compute
@@ -88,6 +89,21 @@ SUPPORT_SLICE_FILTER_FROM = 1 << 17
 # reason, and paired with ``convex_superset_mask``'s ``margin`` default -- dropping this to 1e-9
 # makes every margin in the useful range unsafe.
 TETRAHEDRON_FLATNESS = wp.constant(wp.float32(1e-3))
+
+# Point count from which ``convex_hull`` runs ``convex_superset_mask`` (at this subdivision level)
+# before growing. The filter never drops a hull vertex, and on a scan cloud it drops the points
+# under the surface's concavities that growth would otherwise insert as non-extreme vertices, which
+# halves Flip-Flop's rounds (dragon 180 to 99, lucy 210 to 108). new/old: dragon 0.70x, lucy 0.70x,
+# happy_buddha 1.07x; 1 M synthetic clouds 1.01-1.05x (cube, ball, thin disk) and 1.17x on a
+# 0.01-thick shell; a 0.25 M ball 1.08x. Below this bunny lost (1.11x). Subdivision 0 measured
+# 0.72x / 0.75x on the two scans, and 2 lost on the large ball (1.66x at 4 M).
+_HULL_PREFILTER_FROM = 1 << 18
+_HULL_PREFILTER_SUBDIVISIONS = 1
+
+# A bound on Flip-Flop's rounds that no input reaches: the flips terminate on their own (each raises
+# the volume or lowers the degree of a non-extreme vertex), and the cap only turns a defect into the
+# reflex-edge error instead of a hang.
+_FLIP_ROUND_CAP = 1 << 20
 
 # Bytes in one ``wp.mat33``: where a fit's ticket sits in its two-matrix atomic buffer.
 _MAT33_BYTES = 9 * 4
@@ -1452,6 +1468,312 @@ def farthest_point_sample(
     return out_selected
 
 
+def convex_hull(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
+    """
+    Exact convex hull of a point cloud, as outward-wound triangles over the input points.
+
+    Every decision is an exact orientation sign, so the result is the true convex hull of the
+    ``float32`` points as given -- however thin, flat or degenerate the cloud -- not one within a
+    tolerance: every point lies inside or on it, and every vertex is an extreme point of the cloud.
+    The triangles index ``points`` directly (the [`scipy.spatial.ConvexHull`][] ``simplices``
+    layout); [`remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices] turns
+    them into a compact mesh.
+
+    The hull is grown from a tetrahedron, splitting every face at its farthest point in parallel and
+    dropping the points each round encloses, then made convex by parallel edge flips; see Notes.
+
+    Parameters
+    ----------
+    points
+        ``(n_points,)`` finite point positions, ``n_points >= 4``, not all coplanar.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(3 * n_faces,)`` flat triangle index buffer into ``points`` on ``points.device``, each
+        triangle wound counter-clockwise seen from outside (its normal ``(b - a) x (c - a)`` points
+        out). A hull with ``n_vertices`` vertices has ``2 * n_vertices - 4`` triangles.
+
+    Raises
+    ------
+    ValueError
+        If ``points`` holds fewer than 4 points, or no 4 of them span a tetrahedron (all
+        coplanar, collinear or coincident, to within what ``float32`` coordinates can resolve).
+
+    Notes
+    -----
+    The algorithm is ffHull (Gao, Cao, Tan and Huang, *Flip-Flop: Convex Hull Construction via
+    Star-Shaped Polyhedron in 3D*, I3D 2013). Each growth round costs one pass over the points still
+    outside the surface, and interior points leave the computation as soon as a round encloses them,
+    so its cost follows the points near the hull rather than the cloud's size.
+
+    **Degenerate input.** A facet with more than three vertices (coplanar points, as on a box) is
+    triangulated arbitrarily, and of several coincident points one is kept as the vertex. Points
+    lying exactly on a hull facet or edge are not vertices.
+
+    See Also
+    --------
+    [`convex_superset_mask`][ordito.points.convex_superset_mask]
+    [`convex_subset_mask`][ordito.points.convex_subset_mask]
+    [`remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices]
+    [`scipy.spatial.ConvexHull`][]
+
+    Examples
+    --------
+    A box's 8 corners span its hull; a point inside is not a vertex:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, _ = od.creation.box()
+    cloud = wp.array(np.vstack([vertices.numpy(), [[0.1, 0.2, -0.1]]]), dtype=wp.vec3)
+    faces = od.points.convex_hull(cloud)
+    print(faces.shape[0] // 3, np.unique(faces.numpy()).shape[0])  # 12 8
+    ```
+    """
+    n_points = points.size
+    if n_points < 4:
+        raise ValueError(f"convex_hull needs at least 4 points; got {n_points}.")
+    if n_points < _HULL_PREFILTER_FROM:
+        return _convex_hull_faces(points, None)
+    keep = od.array.flatnonzero(convex_superset_mask(points, _HULL_PREFILTER_SUBDIVISIONS))
+    return _convex_hull_faces(cast("wp.array[wp.vec3]", od.array.gather(points, keep)), keep)
+
+
+def _convex_hull_faces(
+    points: wp.array[wp.vec3], remap: wp.array[wp.int32] | None
+) -> wp.array[wp.int32]:
+    """
+    Return the hull's faces over ``points``, mapped through ``remap`` into the caller's points.
+
+    Grows the star-shaped surface, flips it convex, then checks the result. Two outcomes rebuild
+    from a subset of the surface's vertices, and both leave the hull unchanged because every point
+    they drop is a convex combination of the others:
+
+    - **Flip-Flop stalled** with reflex edges left. That takes exactly degenerate input (collinear
+      runs of points on a hull edge) where removing a non-extreme vertex needs a flip through a
+      collinear triangle. Every reflex edge then waits on a labelled vertex, and every label is
+      certified non-extreme, so the rebuild drops the labelled vertices -- at least one -- and the
+      loop terminates.
+    - **A vertex lies on a hull facet or edge** (fewer than three strictly convex edges meet it):
+      not a hull vertex. The rebuild keeps the extreme vertices alone, where neither outcome can
+      recur -- an extreme point meets three strictly convex edges in any triangulation of the hull,
+      and with no three of them collinear every reflex edge is flippable.
+    """
+    device = points.device
+    extreme_only = False
+    while True:
+        tri, adj, kernel_point, n_faces = _grow_star_surface(points)
+        label = _flip_to_convex(points, kernel_point, tri, adj, n_faces)
+
+        n_points = points.size
+        convex = _launch.zeros(n_points, dtype=wp.int32, device=device)
+        check = _launch.zeros(kernel_hull.CHECK_SIZE, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_hull.count_strict_edges,
+            dim=n_faces,
+            inputs=[points, tri, adj, convex, check],
+            device=device,
+        )
+        vertex_flags = _launch.zeros(n_points, dtype=wp.int32, device=device)
+        face_flags = _launch.empty(n_faces, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_hull.flag_extreme_vertices,
+            dim=n_faces,
+            inputs=[tri, convex, check, vertex_flags, face_flags],
+            device=device,
+        )
+        # Readback: the face count sizes the output, and the two checks decide whether it is final.
+        reflex, non_extreme, live_faces = read_values(check, 0, kernel_hull.CHECK_SIZE)
+        keep = None
+        if reflex != 0:
+            unlabelled = _launch.zeros(n_points, dtype=wp.int32, device=device)
+            _launch.launch(
+                kernel_hull.flag_unlabelled_vertices,
+                dim=n_faces,
+                inputs=[tri, label, unlabelled],
+                device=device,
+            )
+            keep = od.array.flatnonzero_in_place(unlabelled)
+            # A closed surface of ``live_faces`` triangles has ``live_faces / 2 + 2`` vertices.
+            if extreme_only or keep.size == live_faces // 2 + 2:
+                raise RuntimeError(f"convex_hull: {reflex} reflex edges survived the flips.")
+        elif non_extreme != 0 and not extreme_only:
+            keep = od.array.flatnonzero_in_place(vertex_flags)
+            extreme_only = True
+        if keep is None:
+            break
+        points = cast("wp.array[wp.vec3]", od.array.gather(points, keep))
+        remap = keep if remap is None else cast("wp.array[wp.int32]", od.array.gather(remap, keep))
+
+    _launch.array_scan(face_flags, face_flags, inclusive=True)
+    out_faces = _launch.empty(3 * int(live_faces), dtype=wp.int32, device=device)
+    no_remap = _launch.empty(0, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_hull.write_live_faces,
+        dim=n_faces,
+        inputs=[tri, face_flags, no_remap if remap is None else remap, out_faces],
+        device=device,
+    )
+    return out_faces
+
+
+def _grow_star_surface(
+    points: wp.array[wp.vec3],
+) -> tuple[wp.array[wp.vec3i], wp.array[wp.vec3i], wp.array[wp.vec3d], int]:
+    """
+    Grow a star-shaped surface over every point that can be a hull vertex.
+
+    Returns ``(tri, adj, kernel_point, n_faces)``; ``tri`` and ``adj`` hold ``n_faces`` live rows.
+    One readback a round: the splits it made and the points still outside, which size the next
+    round's launches.
+
+    Raises
+    ------
+    ValueError
+        If the cloud spans no tetrahedron.
+    """
+    device = points.device
+    n_points = points.size
+    keys = _launch.full(4, -1, dtype=wp.int64, device=device)
+    stride = slice_count(n_points, device)
+    for stage in range(4):
+        _launch.launch(
+            kernel_hull.pick_tetrahedron_corner,
+            dim=stride,
+            inputs=[points, stage, stride, keys],
+            device=device,
+        )
+    capacity = 64
+    tri = _launch.empty(capacity, dtype=wp.vec3i, device=device)
+    adj = _launch.empty(capacity, dtype=wp.vec3i, device=device)
+    best = _launch.empty(capacity, dtype=wp.int64, device=device)
+    child = _launch.empty(capacity, dtype=wp.int32, device=device)
+    flags = _launch.zeros(capacity, dtype=wp.int32, device=device)
+    next_flags = _launch.zeros(capacity, dtype=wp.int32, device=device)
+    offsets = _launch.empty(capacity, dtype=wp.int32, device=device)
+    counters = _launch.zeros(kernel_hull.COUNTERS_SIZE, dtype=wp.int32, device=device)
+    corners = _launch.empty(4, dtype=wp.int32, device=device)
+    kernel_point = _launch.empty(1, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_hull.start_tetrahedron,
+        dim=1,
+        inputs=[points, keys, tri, adj, best, counters, corners, kernel_point],
+        device=device,
+    )
+    live = _launch.empty(n_points, dtype=wp.vec2i, device=device)
+    next_live = _launch.empty(n_points, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_hull.seed_points,
+        dim=n_points,
+        inputs=[points, corners, kernel_point, tri, counters, best, flags, live],
+        device=device,
+    )
+    n_faces = 4
+    n_live = n_points
+    while True:
+        # A round splits at most one face per live point, and every split adds two faces.
+        needed = n_faces + 2 * min(n_faces, n_live)
+        if needed > capacity:
+            capacity = max(needed, 2 * capacity)
+            tri = _grown(tri, capacity, n_faces)
+            adj = _grown(adj, capacity, n_faces)
+            best = _grown(best, capacity, n_faces)
+            flags = _grown(flags, capacity, n_faces)
+            child = _launch.empty(capacity, dtype=wp.int32, device=device)
+            next_flags = _launch.empty(capacity, dtype=wp.int32, device=device)
+            offsets = _launch.empty(capacity, dtype=wp.int32, device=device)
+        _launch.array_scan(
+            _launch.view(flags, 0, n_faces), _launch.view(offsets, 0, n_faces), inclusive=True
+        )
+        _launch.launch(
+            kernel_hull.split_faces,
+            dim=n_faces,
+            inputs=[n_faces, flags, offsets, tri, adj, best, child, counters, next_flags],
+            device=device,
+        )
+        # Readback: the splits size the face arrays, the survivors the next pass's launch.
+        splits, n_live, status = read_values(counters, int(kernel_hull.COUNT_SPLITS), 3)
+        if status != int(kernel_hull.STATUS_OK):
+            raise ValueError(
+                "convex_hull: the points span no tetrahedron (all coplanar, collinear or "
+                "coincident to float32 precision)."
+            )
+        n_faces += 2 * int(splits)
+        if n_live == 0:
+            return tri, adj, kernel_point, n_faces
+        flags, next_flags = next_flags, flags
+        _launch.launch(
+            kernel_hull.assign_points,
+            dim=n_live,
+            inputs=[points, kernel_point, tri, child, live, counters, best, flags, next_live],
+            device=device,
+        )
+        live, next_live = next_live, live
+
+
+def _grown(array: wp.array[Any], capacity: int, used: int) -> wp.array[Any]:
+    """``array``'s first ``used`` rows in a fresh buffer of ``capacity`` rows."""
+    grown = _launch.empty(capacity, dtype=array.dtype, device=array.device)
+    _launch.copy(grown, array, count=used)
+    return grown
+
+
+def _flip_to_convex(
+    points: wp.array[wp.vec3],
+    kernel_point: wp.array[wp.vec3d],
+    tri: wp.array[wp.vec3i],
+    adj: wp.array[wp.vec3i],
+    n_faces: int,
+) -> wp.array[wp.int32]:
+    """
+    Flip-Flop the grown surface into the convex hull of its vertices, in place; return the labels.
+
+    ``label[v]`` is non-zero for a vertex certified non-extreme (the round that labelled it).
+
+    The face count never grows (a 3-1 flip leaves dead slots), so every round launches the same
+    three kernels over the same buffers and the loop runs as one recorded device loop on CUDA.
+    """
+    device = points.device
+    n_points = points.size
+    label = _launch.zeros(n_points, dtype=wp.int32, device=device)
+    dirty = _launch.full(n_faces, 1, dtype=wp.int32, device=device)
+    changed = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+    lock = _launch.full(n_faces, int(kernel_hull.LOCK_FREE), dtype=wp.int32, device=device)
+    group = _launch.empty(n_faces, dtype=wp.vec3i, device=device)
+    proposal = _launch.empty(n_faces, dtype=wp.vec3i, device=device)
+    # ``wp.capture_while`` reads the condition before the first round, so it starts non-zero.
+    state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
+    max_rounds = wp.int32(_FLIP_ROUND_CAP)
+
+    def flip_round() -> None:
+        _launch.launch(
+            kernel_hull.propose_flips,
+            dim=n_faces,
+            inputs=[points, kernel_point, tri, adj, label, state, dirty, changed, lock, proposal],
+            device=device,
+        )
+        _launch.launch(
+            kernel_hull.apply_flips,
+            dim=n_faces,
+            inputs=[proposal, lock, tri, adj, state, changed, group],
+            device=device,
+        )
+        _launch.launch(
+            kernel_hull.repair_flip_adjacency,
+            dim=n_faces,
+            inputs=[changed, group, label, state, tri, adj, lock, dirty],
+            device=device,
+        )
+        _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
+
+    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), flip_round)
+    return label
+
+
 def convex_subset_mask(
     points: wp.array[wp.vec3], n_directions: int = 128, tolerance: float = 1e-6
 ) -> wp.array[wp.bool]:
@@ -1518,9 +1840,9 @@ def convex_subset_mask(
     measures 0.61 at ``n_directions=32``, 0.87 at 256 and 1.00 at 16384; the vertices missed at 256
     have normal cones spanning a few parts in ten thousand of the sphere or less. Increasing
     ``n_directions`` is the only knob that raises recall -- ``tolerance`` trades precision for it
-    and is not a substitute. When *all* hull vertices are required, use an exact hull
-    ([`scipy.spatial.ConvexHull`][] and the qhull-backed mesh libraries): no setting of these
-    parameters makes this function conservative.
+    and is not a substitute. When *all* hull vertices are required, use the exact
+    [`convex_hull`][ordito.points.convex_hull]: no setting of these parameters makes this function
+    conservative.
 
     See Also
     --------
@@ -1674,8 +1996,10 @@ def convex_superset_mask(
     Because a hull vertex lies on the hull *boundary*, it is in no tetrahedron's strict interior, so
     **no hull vertex is ever discarded** -- for any input, any ``subdivisions``, and any ``margin``.
     The parameters trade only how many interior points survive. That makes this a prefilter: run it,
-    then hand the survivors to an exact hull, which then does its superlinear work on a small
-    fraction of the cloud.
+    then hand the survivors to an exact hull ([`scipy.spatial.ConvexHull`][] for instance, whose
+    superlinear work then runs on a small fraction of the cloud).
+    [`convex_hull`][ordito.points.convex_hull] needs no prefilter: its own growth rounds drop
+    interior points as they are enclosed.
 
     Cost is one support sweep (``n_points`` times the ``10 * 4 ** subdivisions + 2`` icosphere
     directions) plus one pass testing each point against the ``20 * 4 ** subdivisions``
@@ -1799,7 +2123,7 @@ def convex_superset_mask(
     _launch.launch(
         kernel_points.mark_hull_superset,
         dim=n_points,
-        inputs=[points, planes, valid, radius, wp.float32(margin), out_mask],
+        inputs=[points, planes, valid, centroid, radius, wp.float32(margin), out_mask],
         device=device,
     )
     return out_mask

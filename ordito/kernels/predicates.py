@@ -976,6 +976,289 @@ def triangle_triangle_distance_sq(
     return wp.float32(best)
 
 
+# Exact orientation signs
+# -----------------------
+# A ``float64`` determinant with a static forward error bound decides almost every call; the rest
+# go to an exact evaluation that is exact *because of where the coordinates come from*, not by
+# general expansion arithmetic. Every coordinate must carry at most 24 significant bits (a
+# ``float32`` widened to ``float64``), except that one of the four points of an ``orient3d`` may
+# carry 28 (a kernel point rounded by ``round_to_28_bits``). Then the determinant
+# ``-sum sgn(p, q, r, s) x_p y_q z_r`` over the 24 permutations is a sum of exact doubles: each
+# ``x_p * y_q`` has at most 52 significant bits, so it is exact, and splitting it by a bit mask into
+# its top 25 bits and a remainder of at most 27 leaves two parts whose products with ``z_r`` fit 53
+# bits as well. No product is ever rounded, so the exact path does not depend on whether a compiler
+# fuses a multiply and an add, and both devices return the same sign. The 48 exact terms are summed
+# into a zero-eliminated expansion (Shewchuk's ``grow_expansion``), whose largest component has the
+# sign of the sum. The filter is Shewchuk's ``o3derrboundA`` doubled, which also covers an FMA
+# contracting the filter's own products.
+ORIENT3D_FILTER_BOUND = wp.float64(2.0e-15)
+ORIENT2D_FILTER_BOUND = wp.float64(1.0e-15)
+# Clearing the low 28 explicit mantissa bits of a double keeps its top 25 significant bits.
+_PRODUCT_SPLIT_MASK = wp.int64(-(1 << 28))
+# Clearing the low 25 keeps 28.
+_KERNEL_POINT_MASK = wp.int64(-(1 << 25))
+_Expansion48 = wp.types.vector(length=48, dtype=wp.float64)
+_Expansion6 = wp.types.vector(length=6, dtype=wp.float64)
+
+
+@wp.func
+def round_to_28_bits(value: wp.vec3d) -> wp.vec3d:
+    # Truncate each coordinate to 28 significant bits: the one point per ``orient3d_sign`` call the
+    # exact path admits beyond ``float32`` precision.
+    x = wp.cast(wp.cast(value[0], wp.int64) & _KERNEL_POINT_MASK, wp.float64)
+    y = wp.cast(wp.cast(value[1], wp.int64) & _KERNEL_POINT_MASK, wp.float64)
+    z = wp.cast(wp.cast(value[2], wp.int64) & _KERNEL_POINT_MASK, wp.float64)
+    return wp.vec3d(x, y, z)
+
+
+@wp.func
+def expansion_grow(e: Any, n: wp.int32, term: wp.float64):
+    # Add one double to a nonoverlapping expansion of ``n`` components in increasing magnitude
+    # (``grow_expansion_zeroelim``); returns the expansion and its new length. ``orient3d_exact``
+    # inlines this loop (see there); the six-term ``orient2d_exact`` calls it.
+    big = term
+    k = wp.int32(0)
+    for i in range(n):
+        small = e[i]
+        total = big + small
+        big_virtual = total - big
+        small_virtual = total - big_virtual
+        error = (big - small_virtual) + (small - big_virtual)
+        big = total
+        if error != wp.float64(0.0):
+            e[k] = error
+            k += 1
+    if big != wp.float64(0.0) or k == 0:
+        e[k] = big
+        k += 1
+    return e, k
+
+
+@wp.func
+def expansion_sign(e: Any, n: wp.int32) -> wp.int32:
+    # The sign of an expansion is its largest component's.
+    top = e[n - 1]
+    return wp.where(top > wp.float64(0.0), 1, wp.where(top < wp.float64(0.0), -1, 0))
+
+
+@wp.func
+def _select4(index: wp.int32, a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d) -> wp.vec3d:
+    chosen = d
+    if index == 0:
+        chosen = a
+    elif index == 1:
+        chosen = b
+    elif index == 2:
+        chosen = c
+    return chosen
+
+
+@wp.func
+def orient3d_exact(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d) -> wp.int32:
+    # Exact sign of ``det(b - a, c - a, d - a)`` under the bit budget above. The 24 permutations are
+    # walked as the distinct triples of a dynamic 64-step loop, so the body is compiled once rather
+    # than unrolled 24 times into every kernel that might reach it.
+    #
+    # ``expansion_grow``'s loop is inlined rather than called: passing the 48-component expansion
+    # to a ``@wp.func`` by value made this 3-7x slower (6.4 ms against 0.9-2.0 ms over 1 M calls)
+    # and by ``wp.ref`` 6-12x, on coplanar and generic corners alike.
+    e = _Expansion48()
+    n = wp.int32(0)
+    steps = wp.int32(64)
+    for step in range(steps):
+        p = step & 3
+        q = (step >> 2) & 3
+        r = (step >> 4) & 3
+        if p != q and q != r and p != r:
+            s = 6 - p - q - r
+            inversions = wp.int32(0)
+            inversions += wp.where(p > q, 1, 0) + wp.where(p > r, 1, 0) + wp.where(p > s, 1, 0)
+            inversions += wp.where(q > r, 1, 0) + wp.where(q > s, 1, 0) + wp.where(r > s, 1, 0)
+            xy = _select4(p, a, b, c, d)[0] * _select4(q, a, b, c, d)[1]
+            z = _select4(r, a, b, c, d)[2]
+            # det(b - a, c - a, d - a) is minus the permutation sum, so an even permutation
+            # contributes with its sign flipped.
+            if (inversions & 1) == 0:
+                z = -z
+            high = wp.cast(wp.cast(xy, wp.int64) & _PRODUCT_SPLIT_MASK, wp.float64)
+            for part in range(2):
+                big = high * z
+                if part == 1:
+                    big = (xy - high) * z
+                k = wp.int32(0)
+                for i in range(n):
+                    small = e[i]
+                    total = big + small
+                    big_virtual = total - big
+                    small_virtual = total - big_virtual
+                    error = (big - small_virtual) + (small - big_virtual)
+                    big = total
+                    if error != wp.float64(0.0):
+                        e[k] = error
+                        k += 1
+                if big != wp.float64(0.0) or k == 0:
+                    e[k] = big
+                    k += 1
+                n = k
+    return expansion_sign(e, n)
+
+
+@wp.func
+def orient3d_filtered(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d) -> wp.vec2d:
+    # ``(det(b - a, c - a, d - a), bound)``: the determinant's sign is certain when its magnitude
+    # exceeds ``bound``. The value doubles as a distance proxy, six times the signed volume.
+    u = b - a
+    v = c - a
+    w = d - a
+    m1 = v[1] * w[2]
+    m2 = v[2] * w[1]
+    m3 = v[2] * w[0]
+    m4 = v[0] * w[2]
+    m5 = v[0] * w[1]
+    m6 = v[1] * w[0]
+    det = u[0] * (m1 - m2) + u[1] * (m3 - m4) + u[2] * (m5 - m6)
+    permanent = (
+        wp.abs(u[0]) * (wp.abs(m1) + wp.abs(m2))
+        + wp.abs(u[1]) * (wp.abs(m3) + wp.abs(m4))
+        + wp.abs(u[2]) * (wp.abs(m5) + wp.abs(m6))
+    )
+    return wp.vec2d(det, ORIENT3D_FILTER_BOUND * permanent)
+
+
+@wp.func
+def filtered_sign(filtered: wp.vec2d) -> wp.int32:
+    # The sign ``orient3d_filtered`` certifies, or ``0`` where only the exact path can decide.
+    return wp.where(filtered[0] > filtered[1], 1, wp.where(filtered[0] < -filtered[1], -1, 0))
+
+
+@wp.func
+def orient3d_sign(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d) -> wp.int32:
+    # Exact sign of ``det(b - a, c - a, d - a)``: positive when ``d`` lies on the side of the plane
+    # of ``(a, b, c)`` its normal ``(b - a) x (c - a)`` points to. Under the bit budget above.
+    sign = filtered_sign(orient3d_filtered(a, b, c, d))
+    if sign == 0:
+        sign = orient3d_exact(a, b, c, d)
+    return sign
+
+
+# The ``float32`` stage ahead of the ``float64`` filter. On ``float32`` input every difference is a
+# rounded difference of exact inputs, which is the situation ``o3derrboundA`` is derived for, so
+# ``(7 + 56 eps) eps`` with ``eps = 2**-24`` bounds the error, and the bound here doubles it. A
+# permanent below ``_FLOAT32_FILTER_FLOOR`` (products that may have underflowed) or a non-finite one
+# (overflow) certifies nothing and falls through. ``float32`` because the device this targets runs
+# ``float64`` at 1/64 of its ``float32`` rate: the flip round of a hull, a handful of warps each
+# walking a chain of these tests, was latency-bound on ``float64``.
+ORIENT3D_FILTER_BOUND_F32 = wp.float32(1.0e-6)
+_FLOAT32_FILTER_FLOOR = wp.float32(1.0e-30)
+
+
+@wp.func
+def _orient3d_f32(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> wp.vec4:
+    # ``(det, permanent, |u|_1 |v|_1 + |v|_1 |w|_1 + |w|_1 |u|_1, 0)`` of the ``float32``
+    # determinant of ``u, v, w = b - a, c - a, d - a``. The third entry bounds the 1-norm of
+    # ``u x v + v x w + w x u``, the gradient a shift of ``a`` moves the determinant along.
+    u = b - a
+    v = c - a
+    w = d - a
+    m1 = v[1] * w[2]
+    m2 = v[2] * w[1]
+    m3 = v[2] * w[0]
+    m4 = v[0] * w[2]
+    m5 = v[0] * w[1]
+    m6 = v[1] * w[0]
+    det = u[0] * (m1 - m2) + u[1] * (m3 - m4) + u[2] * (m5 - m6)
+    permanent = (
+        wp.abs(u[0]) * (wp.abs(m1) + wp.abs(m2))
+        + wp.abs(u[1]) * (wp.abs(m3) + wp.abs(m4))
+        + wp.abs(u[2]) * (wp.abs(m5) + wp.abs(m6))
+    )
+    nu = wp.abs(u[0]) + wp.abs(u[1]) + wp.abs(u[2])
+    nv = wp.abs(v[0]) + wp.abs(v[1]) + wp.abs(v[2])
+    nw = wp.abs(w[0]) + wp.abs(w[1]) + wp.abs(w[2])
+    return wp.vec4(det, permanent, nu * nv + nv * nw + nw * nu, wp.float32(0.0))
+
+
+@wp.func
+def _float32_certified(det: wp.float32, permanent: wp.float32, bound: wp.float32) -> wp.int32:
+    # The sign a ``float32`` determinant certifies against its bound, or ``0``.
+    usable = wp.isfinite(bound) and permanent > _FLOAT32_FILTER_FLOOR
+    return wp.where(usable and det > bound, 1, wp.where(usable and det < -bound, -1, 0))
+
+
+@wp.func
+def orient3d_filtered_f32(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> wp.vec2:
+    # ``(det, sign)`` of the ``float32`` filter: the determinant (a distance proxy, as for
+    # ``orient3d_filtered``) and the sign it certifies, ``0`` where a later stage must decide.
+    filtered = _orient3d_f32(a, b, c, d)
+    sign = _float32_certified(filtered[0], filtered[1], ORIENT3D_FILTER_BOUND_F32 * filtered[1])
+    return wp.vec2(filtered[0], wp.float32(sign))
+
+
+@wp.func
+def orient3d_sign_f32(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> wp.int32:
+    # ``orient3d_sign`` of four ``float32`` points, through the ``float32`` filter first.
+    sign = wp.int32(orient3d_filtered_f32(a, b, c, d)[1])
+    if sign == 0:
+        sign = orient3d_sign(
+            kernel_array.to_vec3d(a),
+            kernel_array.to_vec3d(b),
+            kernel_array.to_vec3d(c),
+            kernel_array.to_vec3d(d),
+        )
+    return sign
+
+
+@wp.func
+def orient3d_sign_from(
+    s: wp.vec3d, s_rounded: wp.vec3, s_error: wp.float32, x: wp.vec3, y: wp.vec3, p: wp.vec3
+) -> wp.int32:
+    # ``orient3d_sign(s, x, y, p)`` for a 28-bit ``s`` and ``float32`` ``x, y, p``, through the
+    # ``float32`` filter first. ``s_rounded`` is ``s`` rounded to ``float32`` and ``s_error`` at
+    # least ``max |s - s_rounded|``. The determinant is multilinear and its quadratic terms in the
+    # shift cancel, so exactly ``det(x - s, ...) = det(x - r, ...) - (s - r) . N`` with
+    # ``N = (y - x) x (p - x)``; ``s_error`` times the 1-norm bound on ``N`` covers the shift.
+    filtered = _orient3d_f32(s_rounded, x, y, p)
+    bound = ORIENT3D_FILTER_BOUND_F32 * filtered[1] + wp.float32(1.0001) * s_error * filtered[2]
+    sign = _float32_certified(filtered[0], filtered[1], bound)
+    if sign == 0:
+        sign = orient3d_sign(
+            s, kernel_array.to_vec3d(x), kernel_array.to_vec3d(y), kernel_array.to_vec3d(p)
+        )
+    return sign
+
+
+@wp.func
+def orient2d_exact(
+    ax: wp.float64, ay: wp.float64, bx: wp.float64, by: wp.float64, cx: wp.float64, cy: wp.float64
+) -> wp.int32:
+    # Exact sign of ``(b - a) x (c - a)`` from raw coordinates of at most 26 significant bits: six
+    # exact products, summed exactly.
+    e = _Expansion6()
+    n = wp.int32(0)
+    e, n = expansion_grow(e, n, bx * cy)
+    e, n = expansion_grow(e, n, -(by * cx))
+    e, n = expansion_grow(e, n, -(ax * cy))
+    e, n = expansion_grow(e, n, ay * cx)
+    e, n = expansion_grow(e, n, ax * by)
+    e, n = expansion_grow(e, n, -(ay * bx))
+    return expansion_sign(e, n)
+
+
+@wp.func
+def orient2d_sign(
+    ax: wp.float64, ay: wp.float64, bx: wp.float64, by: wp.float64, cx: wp.float64, cy: wp.float64
+) -> wp.int32:
+    # Exact sign of ``(b - a) x (c - a)``, filtered by Shewchuk's ``ccwerrboundA`` tripled.
+    left = (bx - ax) * (cy - ay)
+    right = (by - ay) * (cx - ax)
+    sign = filtered_sign(
+        wp.vec2d(left - right, ORIENT2D_FILTER_BOUND * (wp.abs(left) + wp.abs(right)))
+    )
+    if sign == 0:
+        sign = orient2d_exact(ax, ay, bx, by, cx, cy)
+    return sign
+
+
 def _declare_map_kernels() -> None:
     """
     Pre-declare this module's forking ``wp.map`` signatures so each builds one module, not three.
