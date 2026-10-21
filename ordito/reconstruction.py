@@ -38,6 +38,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
+from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import levelset as kernel_levelset
@@ -576,6 +577,11 @@ def screened_poisson(
     not area-normalized as in PoissonRecon, so its numeric scale differs; ``4`` is a reasonable
     default for unit-scale clouds.
 
+    Under [`is_deterministic`][ordito.config.is_deterministic] the splat and the adaptive
+    backend's restriction add their terms in one fixed order, so repeated calls return identical
+    buffers on CUDA; otherwise they add in arrival order and the surface can move in its last bits
+    between calls.
+
     **Choosing ``depth``.** The useful depth follows the cloud's *sampling density*, not its size,
     and past that point extra depth costs time without buying fidelity -- once the grid outruns the
     samples, accuracy can get worse rather than better. The default of ``8`` matches PoissonRecon's
@@ -879,23 +885,37 @@ def _poisson_solve_level(
     # The splat's four accumulators in one zeroed allocation.
     splat = _launch.zeros(4 * n_nodes, dtype=wp.float32, device=device)
     vx, vy, vz, weights = (odt.as_dense(splat[k * n_nodes : (k + 1) * n_nodes]) for k in range(4))
-    _launch.launch(
-        kernel_reconstruction.splat_normals,
-        dim=points.size,
-        inputs=[
+    if is_deterministic() and wp.get_device(device).is_cuda:
+        _splat_ordered(
+            kernel_reconstruction.splat_corner_keys,
+            [points, cube_lower, wp.float32(inv_cell), res],
             points,
             normals,
             cube_lower,
-            wp.float32(inv_cell),
+            inv_cell,
             res,
-            wp.int32(1 if confidence else 0),
-            vx,
-            vy,
-            vz,
-            weights,
-        ],
-        device=device,
-    )
+            confidence,
+            n_nodes,
+            [vx, vy, vz, weights],
+        )
+    else:
+        _launch.launch(
+            kernel_reconstruction.splat_normals,
+            dim=points.size,
+            inputs=[
+                points,
+                normals,
+                cube_lower,
+                wp.float32(inv_cell),
+                res,
+                wp.int32(1 if confidence else 0),
+                vx,
+                vy,
+                vz,
+                weights,
+            ],
+            device=device,
+        )
     rhs = _launch.empty(n_nodes, dtype=wp.float32, device=device)
     smoother = _launch.empty(n_nodes, dtype=wp.float32, device=device)
     _launch.launch(
@@ -1785,22 +1805,45 @@ def _band_data(
     n_nodes = finest.n_nodes
     splat = _launch.zeros(4 * n_nodes, dtype=wp.float32, device=device)
     vx, vy, vz, weights = (odt.as_dense(splat[k * n_nodes : (k + 1) * n_nodes]) for k in range(4))
-    _launch.launch(
-        kernel_poisson_band.band_splat,
-        dim=points.size,
-        inputs=[
+    inv_cell = (finest.res - 1) / cube_size
+    if is_deterministic() and wp.get_device(device).is_cuda:
+        _splat_ordered(
+            kernel_poisson_band.band_splat_keys,
+            [
+                points,
+                cube_lower,
+                wp.float32(inv_cell),
+                finest.res,
+                finest.brick_map,
+                finest.nbk,
+                n_nodes,
+            ],
             points,
             normals,
             cube_lower,
-            wp.float32((finest.res - 1) / cube_size),
+            inv_cell,
             finest.res,
-            wp.int32(1 if confidence else 0),
-            finest.brick_map,
-            finest.nbk,
-        ],
-        outputs=[vx, vy, vz, weights],
-        device=device,
-    )
+            confidence,
+            n_nodes,
+            [vx, vy, vz, weights],
+        )
+    else:
+        _launch.launch(
+            kernel_poisson_band.band_splat,
+            dim=points.size,
+            inputs=[
+                points,
+                normals,
+                cube_lower,
+                wp.float32(inv_cell),
+                finest.res,
+                wp.int32(1 if confidence else 0),
+                finest.brick_map,
+                finest.nbk,
+            ],
+            outputs=[vx, vy, vz, weights],
+            device=device,
+        )
     b = _launch.empty(n_nodes, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_poisson_band.band_rhs,
@@ -1821,6 +1864,69 @@ def _band_data(
     return data
 
 
+def _splat_ordered(
+    key_kernel: odt.Kernel,
+    key_inputs: list[object],
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    lower: wp.vec3,
+    inv_cell: float,
+    res: int,
+    confidence: bool,
+    n_nodes: int,
+    outputs: list[wp.array[wp.float32]],
+) -> None:
+    """
+    Splat the normals into the zeroed ``outputs`` (``V`` and ``W``) in one fixed order.
+
+    The deterministic setting's form on CUDA (the CPU device's atomic splat adds in sample order
+    on every call). ``key_kernel`` writes each sample's eight node keys (the dense grid's or a
+    band's index, the sentinel ``n_nodes`` for none) with the term ``8 s + corner`` as payload; a
+    stable sort lists each node's terms in ascending sample order, and
+    ``kernels/reconstruction.sum_splat_chunks`` and ``sum_splat_runs`` add each node's run in
+    fixed-size chunks of it, so a coarse level's long runs do not serialise.
+    """
+    device = points.device
+    count = 8 * points.size
+    keys = _launch.empty(2 * count, dtype=wp.int32, device=device)
+    order = _launch.empty(2 * count, dtype=wp.int32, device=device)
+    _launch.launch(
+        key_kernel, dim=points.size, inputs=key_inputs, outputs=[keys, order], device=device
+    )
+    _launch.radix_sort_pairs(keys, order, count, end_bit=n_nodes.bit_length())
+    # Chunks of 16 to 128 terms, about ``2**15`` of them: long chunks shorten the second pass's
+    # walk over a coarse level's long runs, short ones keep a small cloud's first pass parallel.
+    chunk = min(128, max(16, 1 << (count >> 15).bit_length()))
+    n_chunks = -(-count // chunk)
+    pieces = _launch.empty(2 * n_chunks, dtype=wp.vec4, device=device)
+    heads, tails = odt.as_dense(pieces[:n_chunks]), odt.as_dense(pieces[n_chunks:])
+    _launch.launch(
+        kernel_reconstruction.sum_splat_chunks,
+        dim=n_chunks,
+        inputs=[
+            keys,
+            order,
+            count,
+            points,
+            normals,
+            lower,
+            wp.float32(inv_cell),
+            res,
+            wp.int32(1 if confidence else 0),
+            chunk,
+        ],
+        outputs=[heads, tails, *outputs],
+        device=device,
+    )
+    _launch.launch(
+        kernel_reconstruction.sum_splat_runs,
+        dim=n_chunks,
+        inputs=[keys, count, chunk, heads, tails],
+        outputs=outputs,
+        device=device,
+    )
+
+
 def _restrict_band(
     fine: _BandLevel,
     b: wp.array[wp.float32],
@@ -1831,7 +1937,34 @@ def _restrict_band(
     out_weights: wp.array[wp.float32],
     missing: wp.array[wp.int32],
 ) -> None:
-    """``P^T`` of ``fine``'s data into the band ``coarse``, or the dense ``res_c**3`` grid."""
+    """
+    ``P^T`` of ``fine``'s data into the band ``coarse``, or the dense ``res_c**3`` grid.
+
+    With the deterministic setting on each target gathers its fine terms in a fixed order
+    (``kernels/algorithms/poisson_band.restrict_band_ordered``) instead of the atomic scatter.
+    """
+    if is_deterministic():
+        n_targets = res_c**3 if coarse is None else coarse.n_nodes
+        _launch.launch(
+            kernel_poisson_band.restrict_band_ordered,
+            dim=max(fine.n_nodes, n_targets),
+            inputs=[
+                fine.brick_coords,
+                fine.brick_map,
+                fine.nbk,
+                fine.res,
+                b,
+                weights,
+                None if coarse is None else coarse.brick_coords,
+                None if coarse is None else coarse.brick_map,
+                0 if coarse is None else coarse.nbk,
+                res_c,
+                n_targets,
+            ],
+            outputs=[out_b, out_weights, missing],
+            device=b.device,
+        )
+        return
     _launch.launch(
         kernel_poisson_band.restrict_band,
         dim=fine.n_nodes,

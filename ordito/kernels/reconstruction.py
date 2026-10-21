@@ -723,6 +723,50 @@ def poisson_sample_grid(
     return wp.lerp(c0, c1, fz)
 
 
+@wp.func
+def splat_cell(
+    points: wp.array[wp.vec3], lower: wp.vec3, inv_cell: wp.float32, res: wp.int32, s: wp.int32
+) -> tuple[wp.vec3i, wp.vec3i, wp.vec3]:
+    # Sample ``s``'s lattice cell (``trilinear_cell``): its two corners and the fractions.
+    g = (points[s] - lower) * inv_cell
+    return trilinear_cell(g, wp.vec3i(res, res, res))
+
+
+@wp.func
+def splat_sample(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    lower: wp.vec3,
+    inv_cell: wp.float32,
+    res: wp.int32,
+    confidence: wp.int32,
+    s: wp.int32,
+) -> tuple[wp.vec3i, wp.vec3i, wp.vec3, wp.vec3, wp.float32]:
+    # Everything sample ``s`` splats: its cell (``splat_cell``), its unit direction and its weight.
+    # Shared by the arrival-order splats (``splat_normals``, ``poisson_band.band_splat``) and the
+    # fixed-order one (``splat_term``), so the two forms add the same terms.
+    n = normals[s]
+    length = wp.length(n)
+    # Confidence weighting scales the splat by the normal magnitude; otherwise unit weight.
+    weight = wp.float32(1.0)
+    if confidence != 0:
+        weight = length
+    # Unit direction, reusing ``length`` instead of ``wp.normalize``'s own redundant sqrt; a zero
+    # vector's length is already zero, so it is left unchanged -- the same zero-vector result
+    # ``wp.normalize`` gives that input (magnitude is carried separately by ``weight``).
+    if length > 0.0:
+        n = n / length
+    base, next_corner, fractions = splat_cell(points, lower, inv_cell, res, s)
+    return base, next_corner, fractions, n, weight
+
+
+@wp.func
+def splat_corner_offset(corner: wp.int32) -> wp.vec3i:
+    # The 0/1 offsets of a cell's ``corner``-th corner, ``corner = 4 di + 2 dj + dk``: the order the
+    # arrival-order splats' three nested loops visit them in.
+    return wp.vec3i(corner >> 2, (corner >> 1) & 1, corner & 1)
+
+
 @wp.kernel(enable_backward=False)
 def splat_normals(
     points: wp.array[wp.vec3],
@@ -736,22 +780,12 @@ def splat_normals(
     out_vz: wp.array[wp.float32],
     out_w: wp.array[wp.float32],
 ) -> None:
+    # The oriented normals into the ``res**3`` node grid, trilinearly, in arrival order: the
+    # deterministic setting's form on CUDA is ``splat_corner_keys`` and ``sum_splat_chunks``.
     s = wp.int32(wp.tid())
-    n = normals[s]
-    length = wp.length(n)
-    # Confidence weighting scales the splat by the normal magnitude; otherwise unit weight.
-    weight = wp.float32(1.0)
-    if confidence != 0:
-        weight = length
-    # Unit direction, reusing ``length`` instead of ``wp.normalize``'s own redundant sqrt; a zero
-    # vector's length is already zero, so it is left unchanged -- the same zero-vector result
-    # ``wp.normalize`` gives that input (magnitude is carried separately by ``weight``).
-    if length > 0.0:
-        n = n / length
-
-    g = (points[s] - cube_lower) * inv_cell
-    base, next_corner, fractions = trilinear_cell(g, wp.vec3i(res, res, res))
-
+    base, next_corner, fractions, n, weight = splat_sample(
+        points, normals, cube_lower, inv_cell, res, confidence, s
+    )
     for di in range(2):
         for dj in range(2):
             for dk in range(2):
@@ -762,6 +796,151 @@ def splat_normals(
                 wp.atomic_add(out_vy, idx, w * n[1])
                 wp.atomic_add(out_vz, idx, w * n[2])
                 wp.atomic_add(out_w, idx, w)
+
+
+@wp.kernel(enable_backward=False)
+def splat_corner_keys(
+    points: wp.array[wp.vec3],
+    cube_lower: wp.vec3,
+    inv_cell: wp.float32,
+    res: wp.int32,
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``splat_normals``' eight targets per sample as sort keys, the payload ``8 s + corner`` naming
+    # the term, for ``sum_splat_chunks`` and ``sum_splat_runs`` to add each node's terms in the one
+    # order a stable sort lists them in.
+    # ``poisson_band.band_splat_keys`` is the same for a band's storage.
+    s = wp.int32(wp.tid())
+    base, next_corner, _fractions = splat_cell(points, cube_lower, inv_cell, res, s)
+    for c in range(8):
+        corner = trilinear_corner(base, next_corner, splat_corner_offset(c))
+        out_keys[8 * s + c] = poisson_grid_index(corner[0], corner[1], corner[2], res)
+        out_order[8 * s + c] = 8 * s + c
+
+
+@wp.func
+def splat_term(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    lower: wp.vec3,
+    inv_cell: wp.float32,
+    res: wp.int32,
+    confidence: wp.int32,
+    term: wp.int32,
+) -> wp.vec4:
+    # Term ``8 s + corner`` of the splat (``splat_corner_keys``): the ``V`` and ``W`` sample ``s``
+    # adds to its cell's ``corner``-th node, the values ``splat_normals`` adds.
+    _base, _next, fractions, n, weight = splat_sample(
+        points, normals, lower, inv_cell, res, confidence, term >> 3
+    )
+    offset = splat_corner_offset(term & 7)
+    w = trilinear_weight(fractions, offset[0], offset[1], offset[2]) * weight
+    return wp.vec4(w * n[0], w * n[1], w * n[2], w)
+
+
+@wp.func
+def store_splat(
+    key: wp.int32,
+    total: wp.vec4,
+    out_vx: wp.array[wp.float32],
+    out_vy: wp.array[wp.float32],
+    out_vz: wp.array[wp.float32],
+    out_w: wp.array[wp.float32],
+) -> None:
+    # A node's finished sums; a key at or past the outputs' length is a sentinel and stores nothing.
+    if key < out_w.shape[0]:
+        out_vx[key] = total[0]
+        out_vy[key] = total[1]
+        out_vz[key] = total[2]
+        out_w[key] = total[3]
+
+
+@wp.kernel(enable_backward=False)
+def sum_splat_chunks(
+    sorted_keys: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    count: wp.int32,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    lower: wp.vec3,
+    inv_cell: wp.float32,
+    res: wp.int32,
+    confidence: wp.int32,
+    chunk: wp.int32,
+    out_heads: wp.array[wp.vec4],
+    out_tails: wp.array[wp.vec4],
+    out_vx: wp.array[wp.float32],
+    out_vy: wp.array[wp.float32],
+    out_vz: wp.array[wp.float32],
+    out_w: wp.array[wp.float32],
+) -> None:
+    # The fixed-order splat's first pass (dense grid or band), one thread per ``chunk``
+    # consecutive stably sorted terms: it adds each node's piece of the chunk in sort order. A run
+    # starting and ending inside the chunk is a node's whole sum and is stored; the chunk's first
+    # piece is kept in ``out_heads`` and a run starting in it that continues past its end in
+    # ``out_tails``, for ``sum_splat_runs`` to add up. Every sum has one fixed order, so the nodes
+    # repeat bit for bit where ``splat_normals``' atomics commit in arrival order. A node no term
+    # reaches keeps its zero. The chunks split a long run of one node's terms (a coarse level's
+    # node sees thousands of samples) across threads: one thread a run serialised it, at 37x the
+    # atomic splat's time on ``dragon`` at ``res = 9``.
+    k = wp.int32(wp.tid())
+    start = k * chunk
+    end = wp.min(start + chunk, count)
+    key = sorted_keys[start]
+    piece = start
+    total = wp.vec4(0.0)
+    for j in range(start, end):
+        if sorted_keys[j] != key:
+            if piece == start:
+                out_heads[k] = total
+            if sorted_run_start(sorted_keys, piece):
+                store_splat(key, total, out_vx, out_vy, out_vz, out_w)
+            key = sorted_keys[j]
+            piece = j
+            total = wp.vec4(0.0)
+        total += splat_term(points, normals, lower, inv_cell, res, confidence, order[j])
+    if piece == start:
+        out_heads[k] = total
+    if sorted_run_start(sorted_keys, piece):
+        if end < count and sorted_keys[end] == key:
+            out_tails[k] = total
+        else:
+            store_splat(key, total, out_vx, out_vy, out_vz, out_w)
+
+
+@wp.kernel(enable_backward=False)
+def sum_splat_runs(
+    sorted_keys: wp.array[wp.int32],
+    count: wp.int32,
+    chunk: wp.int32,
+    heads: wp.array[wp.vec4],
+    tails: wp.array[wp.vec4],
+    out_vx: wp.array[wp.float32],
+    out_vy: wp.array[wp.float32],
+    out_vz: wp.array[wp.float32],
+    out_w: wp.array[wp.float32],
+) -> None:
+    # The second pass: the chunk where a run crossing a chunk boundary starts adds its tail and the
+    # head piece of every later chunk the run reaches, in chunk order, and stores the node's sums.
+    k = wp.int32(wp.tid())
+    start = k * chunk
+    end = start + chunk
+    if end >= count:
+        return
+    key = sorted_keys[end - 1]
+    if sorted_keys[end] != key or (start > 0 and sorted_keys[start - 1] == key):
+        return
+    total = tails[k]
+    m = k + 1
+    while m < heads.shape[0]:
+        total += heads[m]
+        m += 1
+        if m * chunk >= count:
+            break
+        if sorted_keys[m * chunk] != key:
+            break
+    store_splat(key, total, out_vx, out_vy, out_vz, out_w)
 
 
 @wp.func

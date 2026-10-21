@@ -38,6 +38,9 @@ deterministic either way):
   added in a fixed order.
 - the order of the hits [`intersects_location`][ordito.ray.intersects_location] returns
   (ascending ray order when on).
+- the lattice data of [`screened_poisson`][ordito.reconstruction.screened_poisson], and so its
+  surface: the splat of the normals (each node's terms added in ascending sample order when on)
+  and the adaptive backend's restriction of it down its levels.
 
 What it does not govern:
 
