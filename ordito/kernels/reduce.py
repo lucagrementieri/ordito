@@ -183,6 +183,22 @@ __threadfence();
 def thread_fence(): ...
 
 
+_DEVICE_IS_CPU = """
+#if defined(__CUDA_ARCH__)
+return 0;
+#else
+return 1;
+#endif
+"""
+
+
+@wp.func_native(_DEVICE_IS_CPU)
+def device_is_cpu() -> wp.int32:
+    # 1 when compiled for the CPU device: a constant the compiler folds, so a branch on it costs
+    # neither device anything and the other device's arm is dropped.
+    ...
+
+
 @wp.func
 def take_ticket(out: wp.array[Any], counter: wp.int32, unit: Any):
     # Lane 0's ticket, once it has stored its row: the count of rows stored before it, kept in

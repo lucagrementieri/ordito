@@ -16,6 +16,7 @@ from ordito.kernels.array import (
 from ordito.kernels.reduce import (
     GroupSumPass,
     add_group_sum_term,
+    device_is_cpu,
     group_sum_field,
     group_sum_group_field,
     group_sum_term,
@@ -53,36 +54,48 @@ wp.set_module_options({"enable_backward": False})
 # it would be a second, same-named native).
 
 
+# The off-mode commit, ``out_sums[index] += value`` without a negative index's wrap, which costs
+# the CPU device a load of the array's length per term (every caller's index lies in
+# ``[0, n_groups)``, ``reduce.scatter_sum`` validates its own).
+_ATOMIC_ADD_AT = """
+wp::atomic_add(wp::data_at_byte_offset(out, wp::byte_offset(out, index)), value);
+"""
+
+
+@wp.func_native(_ATOMIC_ADD_AT)
+def atomic_add_at(out: wp.array[Any], index: wp.int32, value: Any): ...
+
+
 @wp.func
-def scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float):
-    # ``out_sums[group] += value`` for a scalar.
-    if sums.words.shape[0] == 0:
-        lanes = warp_uniform_lanes(group)
-        if lanes == 0:
-            wp.atomic_add(out_sums, group, value)
-        else:
-            total = type(value)(warp_lanes_sum_float(lanes, wp.float64(value)))
-            if warp_lane_leads(lanes) != 0:
-                wp.atomic_add(out_sums, group, total)
+def arrival_order_add(out_sums: wp.array[Any], group: wp.int32, value: wp.Float):
+    # The off-mode commit of a scalar: pre-summed across a warp sharing ``group``, else per lane.
+    lanes = warp_uniform_lanes(group)
+    if lanes == 0:
+        atomic_add_at(out_sums, group, value)
     else:
-        group_sum_term(sums, group, wp.float64(value))
+        total = type(value)(warp_lanes_sum_float(lanes, wp.float64(value)))
+        if warp_lane_leads(lanes) != 0:
+            atomic_add_at(out_sums, group, total)
 
 
 @wp.func
-def scatter_add_vector(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
-    # ``out_sums[group] += value`` for a vector, componentwise.
+def arrival_order_add_vector(out_sums: wp.array[Any], group: wp.int32, value: Any):
+    # ``arrival_order_add`` for a vector, componentwise.
+    lanes = warp_uniform_lanes(group)
+    if lanes == 0:
+        atomic_add_at(out_sums, group, value)
+    else:
+        total = type(value)()
+        for c in range(len(value)):
+            total[c] = type(value[c])(warp_lanes_sum_float(lanes, wp.float64(value[c])))
+        if warp_lane_leads(lanes) != 0:
+            atomic_add_at(out_sums, group, total)
+
+
+@wp.func
+def group_sum_vector_term(sums: GroupSumPass, group: wp.int32, value: Any):
+    # ``reduce.group_sum_term`` for a vector: its components' bound (pass 0) or words (pass 1).
     n = len(value)
-    if sums.words.shape[0] == 0:
-        lanes = warp_uniform_lanes(group)
-        if lanes == 0:
-            wp.atomic_add(out_sums, group, value)
-        else:
-            total = type(value)()
-            for c in range(n):
-                total[c] = type(value[c])(warp_lanes_sum_float(lanes, wp.float64(value[c])))
-            if warp_lane_leads(lanes) != 0:
-                wp.atomic_add(out_sums, group, total)
-        return
     if sums.phase == 0:
         field = wp.int32(0)
         for c in range(n):
@@ -95,6 +108,24 @@ def scatter_add_vector(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.in
 
 
 @wp.func
+def scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float):
+    # ``out_sums[group] += value`` for a scalar.
+    if sums.words.shape[0] == 0:
+        arrival_order_add(out_sums, group, value)
+    else:
+        group_sum_term(sums, group, wp.float64(value))
+
+
+@wp.func
+def scatter_add_vector(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
+    # ``out_sums[group] += value`` for a vector, componentwise.
+    if sums.words.shape[0] == 0:
+        arrival_order_add_vector(out_sums, group, value)
+    else:
+        group_sum_vector_term(sums, group, value)
+
+
+@wp.func
 def scatter_add_matrix(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
     # ``out_sums[group] += value`` for a matrix, componentwise.
     rows = len(value)
@@ -102,7 +133,7 @@ def scatter_add_matrix(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.in
     if sums.words.shape[0] == 0:
         lanes = warp_uniform_lanes(group)
         if lanes == 0:
-            wp.atomic_add(out_sums, group, value)
+            atomic_add_at(out_sums, group, value)
         else:
             total = type(value)()
             for r in range(rows):
@@ -111,7 +142,7 @@ def scatter_add_matrix(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.in
                         warp_lanes_sum_float(lanes, wp.float64(value[r, c]))
                     )
             if warp_lane_leads(lanes) != 0:
-                wp.atomic_add(out_sums, group, total)
+                atomic_add_at(out_sums, group, total)
         return
     if sums.phase == 0:
         field = wp.int32(0)
@@ -127,6 +158,48 @@ def scatter_add_matrix(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.in
                 add_group_sum_term(sums, group, slot, field, wp.float64(value[r, c]))
 
 
+# ``scatter_add`` and ``scatter_add_vector`` for a kernel whose body is little more than the scatter
+# (``scatter_sum_*``, ``segment_sum_*``): on the CPU device the on-mode terms run out of line
+# (``device_is_cpu`` folds, so CUDA inlines them as the plain forms do). Inlined, a term makes so
+# small a kernel too large for the CPU compiler to inline into its per-thread loop, and the off mode
+# then pays a call per thread: 1.3-1.6x a plain atomic per term, against 1.00-1.06x out of line.
+# Not the plain forms: a kernel with work of its own is never inlined into that loop, and there the
+# out-of-line call (its spilled registers) cost the on mode 1.26-1.40x (``robust_laplacian``'s
+# rounding rows, six calls a face).
+@wp.func(inline=False)
+def group_sum_term_out_of_line(sums: GroupSumPass, group: wp.int32, value: wp.float64):
+    group_sum_term(sums, group, value)
+
+
+@wp.func(inline=False)
+def group_sum_vector_term_out_of_line(sums: GroupSumPass, group: wp.int32, value: Any):
+    group_sum_vector_term(sums, group, value)
+
+
+@wp.func
+def sole_scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float):
+    # ``scatter_add`` as a kernel's whole work.
+    if sums.words.shape[0] == 0:
+        arrival_order_add(out_sums, group, value)
+    elif device_is_cpu() != 0:
+        group_sum_term_out_of_line(sums, group, wp.float64(value))
+    else:
+        group_sum_term(sums, group, wp.float64(value))
+
+
+@wp.func
+def sole_scatter_add_vector(
+    out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any
+):
+    # ``scatter_add_vector`` as a kernel's whole work.
+    if sums.words.shape[0] == 0:
+        arrival_order_add_vector(out_sums, group, value)
+    elif device_is_cpu() != 0:
+        group_sum_vector_term_out_of_line(sums, group, value)
+    else:
+        group_sum_vector_term(sums, group, value)
+
+
 @wp.kernel
 def scatter_sum_scalars(
     values: wp.array[wp.Float],
@@ -137,7 +210,7 @@ def scatter_sum_scalars(
     # ``reduce.scatter_sum`` of scalars: each value into its group. Also the second pass of a
     # producer that stores its values in the bound pass rather than computing them twice.
     i = wp.int32(wp.tid())
-    scatter_add(out_sums, sums, indices[i], values[i])
+    sole_scatter_add(out_sums, sums, indices[i], values[i])
 
 
 @wp.kernel
@@ -146,7 +219,7 @@ def scatter_sum_vectors(
 ) -> None:
     # ``scatter_sum_scalars`` for vectors.
     i = wp.int32(wp.tid())
-    scatter_add_vector(out_sums, sums, indices[i], values[i])
+    sole_scatter_add_vector(out_sums, sums, indices[i], values[i])
 
 
 @wp.func
@@ -174,7 +247,7 @@ def segment_sum_scalars(
     # ``reduce.segment_sum`` of scalars: one thread per item, into its segment. Consecutive items
     # share a segment, so a long segment's warps commit once each (``reduce.warp_lanes_sum``).
     i = wp.int32(wp.tid())
-    scatter_add(out_sums, sums, segment_of(offsets, i), values[i])
+    sole_scatter_add(out_sums, sums, segment_of(offsets, i), values[i])
 
 
 @wp.kernel
@@ -183,7 +256,7 @@ def segment_sum_vectors(
 ) -> None:
     # ``segment_sum_scalars`` for vectors.
     i = wp.int32(wp.tid())
-    scatter_add_vector(out_sums, sums, segment_of(offsets, i), values[i])
+    sole_scatter_add_vector(out_sums, sums, segment_of(offsets, i), values[i])
 
 
 @wp.func
