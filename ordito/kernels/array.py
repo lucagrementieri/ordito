@@ -127,7 +127,7 @@ def merge_window_minimum(
     window_offset: wp.int32,
     window_start: wp.int32,
 ) -> tuple[wp.int32, wp.int32]:
-    # The merge rule of every multi-hop pointer-jumping ranking (``boundary.closed_cycle_jump``,
+    # The merge rule of every multi-hop pointer-jumping ranking (``graph.closed_cycle_jump``,
     # ``intersection.link_rank_round``): fold a later window, which begins ``window_start`` hops
     # into the merged one, into the running ``(lowest, offset)``. The strict ``<`` keeps the
     # *first* occurrence of the minimum, which is what makes ``offset`` the hop count to it -- a

@@ -33,9 +33,9 @@ from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
+from ordito.graph import successor_cycles_from_table
 from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
-from ordito.kernels import graph as kernel_graph
 from ordito.kernels import halfedge as kernel_halfedge
 
 
@@ -287,8 +287,9 @@ def boundary_loops_with_offsets(
     Prefer it when a mesh has many small holes or when the loops feed straight into another
     batched kernel, as [`ordito.holes`][ordito.holes] does. The loops come out as
     [`successor_cycles`][ordito.graph.successor_cycles] orders a successor graph's cycles --
-    each from its smallest vertex, the loops in ascending order of it -- ranked by pointer jumping
-    specialised to a graph that is all cycles by construction.
+    each from its smallest vertex, the loops in ascending order of it -- ranked by
+    [`successor_cycles_from_table`][ordito.graph.successor_cycles_from_table] straight off the
+    boundary's successor table.
 
     Parameters
     ----------
@@ -368,7 +369,7 @@ def boundary_loops_with_offsets(
     # directed rows are cycles over the boundary vertices -- plus, on a mesh that is not
     # edge-manifold, chains running into a vertex with no edge out, which the ranking drops.
     tails, next_node = boundary.successors(n_vertices)
-    return _closed_successor_cycles(tails, next_node, kernel_boundary.CYCLE_NODES)
+    return successor_cycles_from_table(tails, next_node)
 
 
 def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> tuple[bool, bool]:
@@ -429,7 +430,7 @@ def _pinched_boundary_cycles(
     be edge-manifold, and on one that is not, the walk is still
     bounded and in range, just not meaningful). There a rotation can dead-end on a halfedge that is
     not a boundary one, and the chain it leaves is dropped rather than ranked (see
-    ``kernels/boundary.closed_cycle_windows``), so every returned pair is still a boundary edge.
+    ``kernels/graph.closed_cycle_windows``), so every returned pair is still a boundary edge.
     """
     faces = boundary.faces
     # ``halfedge_twins(faces, n_vertices=n_vertices, validate=False)``, read off the boundary
@@ -444,7 +445,7 @@ def _pinched_boundary_cycles(
         device=device,
     )
     tails, next_node = boundary.successors(n, twins=twins)
-    return _closed_successor_cycles(tails, next_node, kernel_boundary.CYCLE_HALFEDGES, faces)
+    return successor_cycles_from_table(tails, next_node, node_values=faces)
 
 
 def _unoriented_boundary_cycles(
@@ -501,81 +502,7 @@ def _unoriented_boundary_cycles(
         inputs=[boundary_edges, neighbors, tails, next_node],
         device=device,
     )
-    return _closed_successor_cycles(tails, next_node, kernel_boundary.CYCLE_DARTS)
-
-
-def _closed_successor_cycles(
-    tails: wp.array[wp.int32],
-    next_node: wp.array[wp.int32],
-    mode: int,
-    faces: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """
-    Every cycle of a successor graph whose nodes are ``tails``, packed as ``successor_cycles`` does.
-
-    The boundary walks' ranking: [`successor_cycles`][ordito.graph.successor_cycles]' answer --
-    each cycle from its smallest node in edge direction, the cycles in ascending order of it --
-    for a graph that is all cycles by construction, where each node is the tail of exactly one
-    edge. ``next_node`` is the node-sized successor table, ``-1`` wherever a successor can fail to
-    be a tail (the chains a mesh that is not edge-manifold leaves, which are dropped). ``mode``
-    (``kernels/boundary.CYCLE_*``) says what each ranked node is written out as; ``faces`` is read
-    by the halfedge walk.
-
-    Because the nodes and their count are known and no two tails share a successor, the general
-    function's node-list compaction, chain pass and component labelling all drop out: pointer
-    jumping finds each node's cycle start (its smallest node) and its distance to it together,
-    several pointers a launch (``kernels/graph.pointer_jump_schedule``), and one inclusive scan
-    over the cycle starts places every cycle. One readback, of the cycle and node counts.
-    """
-    device = tails.device
-    m = tails.size
-    node_count = next_node.size
-    hops, rounds = kernel_graph.pointer_jump_schedule(m)
-    windows = _launch.empty(node_count, dtype=wp.vec3i, device=device)
-    # Per cycle start, ``(1, length)``, accumulated by the last round and scanned in place.
-    cycle_counts = _launch.zeros(node_count, dtype=wp.vec2i, device=device)
-    _launch.launch(
-        kernel_boundary.closed_cycle_windows,
-        dim=m,
-        inputs=[tails, next_node, hops, mode, windows, cycle_counts if rounds == 1 else None],
-        device=device,
-    )
-    if rounds > 1:
-        spare = _launch.empty(node_count, dtype=wp.vec3i, device=device)
-        window = hops
-        for r in range(1, rounds):
-            _launch.launch(
-                kernel_boundary.closed_cycle_jump,
-                dim=m,
-                inputs=[
-                    tails,
-                    windows,
-                    window,
-                    hops,
-                    mode,
-                    spare,
-                    cycle_counts if r == rounds - 1 else None,
-                ],
-                device=device,
-            )
-            windows, spare = spare, windows
-            window *= hops
-    _launch.array_scan(cycle_counts, out_array=cycle_counts, inclusive=True)
-    # Sizes both outputs: the cycle count and the ranked node count, in one read.
-    total = read_scalar(cycle_counts)
-    n_cycles, n_ranked = int(total[0]), int(total[1])
-    flat = _launch.empty(n_ranked, dtype=wp.int32, device=device)
-    if n_cycles == 0:
-        return flat, _launch.zeros(1, dtype=wp.int32, device=device)
-    # Every entry, the leading zero and the total included, is written by the cycle it bounds.
-    offsets = _launch.empty(n_cycles + 1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boundary.scatter_closed_cycles,
-        dim=m,
-        inputs=[tails, windows, cycle_counts, mode, faces, flat, offsets],
-        device=device,
-    )
-    return flat, offsets
+    return successor_cycles_from_table(tails, next_node, paired=True)
 
 
 def loop_perimeters(

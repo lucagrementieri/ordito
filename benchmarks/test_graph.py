@@ -191,6 +191,45 @@ def test_connected_component_parity_from_edges(bench_case: BenchCase) -> None:
     assert parity.shape == (n_vertices,)
 
 
+def _successor_edges_np(bench_case: BenchCase, shape: str) -> tuple[np.ndarray, int]:
+    """
+    Build a successor graph sized by the mesh, its rows shuffled with a fixed seed.
+
+    ``"faces"`` is the halfedge ``next`` graph -- ``n_faces`` cycles of three over ``3 * n_faces``
+    halfedge ids, the many-small-cycles shape of a mesh with many holes. ``"one_cycle"`` is one
+    cycle through every vertex in a random order, which takes the most pointer-jumping rounds.
+    """
+    rng = np.random.default_rng(0)
+    if shape == "faces":
+        n = 3 * bench_case.n_faces
+        tails = np.arange(n, dtype=np.int32)
+        heads = (tails // 3) * 3 + (tails % 3 + 1) % 3
+    else:
+        n = bench_case.n_vertices
+        tails = rng.permutation(n).astype(np.int32)
+        heads = np.roll(tails, -1)
+    edges_np = np.stack((tails, heads), axis=1).astype(np.int32)
+    return edges_np[rng.permutation(n)], n
+
+
+@pytest.mark.benchmark(group="successor_cycles")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("shape", ["faces", "one_cycle"])
+def test_successor_cycles(bench_case: BenchCase, shape: str) -> None:
+    """
+    Every cycle of a successor graph, ranked and packed, with the default range check.
+
+    Ordito only: no reference library ranks the cycles of a successor graph. The edge table is an
+    input, uploaded outside the timed callable. On the ``scale`` axis, so the census gate sees it.
+    """
+    edges_np, node_count = _successor_edges_np(bench_case, shape)
+    edges = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=bench_case.device), wp.int32)
+    flat_cycles, offsets = bench_case.run(lambda: od.graph.successor_cycles(edges, node_count))
+    assert flat_cycles.shape == (node_count,)
+    assert offsets.shape[0] == (node_count // 3 if shape == "faces" else 1) + 1
+
+
 @pytest.mark.benchmark(group="connected_component_labels_depth")
 @pytest.mark.benchaxis("diameter")
 @pytest.mark.benchlibs("ordito", "scipy", "igl")
