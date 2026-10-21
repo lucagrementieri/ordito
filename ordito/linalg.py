@@ -5483,23 +5483,23 @@ def _multigrid_prolongator(
     Smoothed prolongator ``(I - omega D^-1 A) P0``, given ``omega D^-1``, for ``P0``.
 
     ``P0`` has one entry a row, so the product is ``A``'s entries re-keyed by their column's
-    aggregate and summed: one triplet per stored entry plus the identity's, one assembly
-    (``kernels/algorithms/multigrid.smoothed_prolongator_triplets``), with no sparse product.
+    aggregate and summed: one keyed contribution per stored entry plus the identity's, one
+    assembly (``kernels/algorithms/multigrid.smoothed_prolongator_keys``), with no sparse product.
     Entries that sum to exactly zero are pruned. ``stored`` is ``matrix``'s stored entry count
     when the caller knows it, else ``None``.
     """
     device = matrix.device
     n = int(matrix.nrow)
     # The stored count, not ``matrix.nnz``: that field is a capacity after a triplet build, and the
-    # triplets are laid out at the slots the entries occupy. Read back unless the caller holds it.
+    # contributions are laid out at the slots the entries occupy. Read back unless the caller
+    # holds it.
     if stored is None:
         stored = int(read_scalar(matrix.offsets, n))
     count = stored + n
-    rows = _launch.empty(count, dtype=wp.int32, device=device)
-    cols = _launch.empty(count, dtype=wp.int32, device=device)
+    keys, order = od.array.csr_key_buffers(count, device)
     values = _launch.empty(count, dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_mg.smoothed_prolongator_triplets,
+        kernel_mg.smoothed_prolongator_keys,
         dim=n,
         inputs=[
             matrix.offsets,
@@ -5508,12 +5508,13 @@ def _multigrid_prolongator(
             label,
             sizes,
             damped_inverse_diagonal,
+            wp.int32(n_aggregates),
         ],
-        outputs=[rows, cols, values],
+        outputs=[keys, order, values],
         device=device,
     )
     return _synced(
-        od.array.csr_from_triplets(n, n_aggregates, rows, cols, values, prune_numerical_zeros=True)
+        od.array.csr_from_coo_keys(n, n_aggregates, keys, order, values, prune_numerical_zeros=True)
     )
 
 
@@ -5523,15 +5524,15 @@ def _multigrid_galerkin(
     """
     Form the coarse operator ``P^T A P``, with its exactly-zero entries pruned.
 
-    Two triplet assemblies and no sparse product: ``A P`` from its ``A_ij P_jl`` products
-    (``kernels/algorithms/multigrid.product_triplets``), then ``P^T (A P)`` from each fine row's
-    outer product of its two sparse rows (``galerkin_triplets``), so no transpose is multiplied.
+    Two key assemblies and no sparse product: ``A P`` from its ``A_ij P_jl`` products
+    (``kernels/algorithms/multigrid.product_keys``), then ``P^T (A P)`` from each fine row's
+    outer product of its two sparse rows (``galerkin_keys``), so no transpose is multiplied.
 
     Pruning is part of the algorithm, not tidying: an explicit zero at ``(i, c)`` would make coarse
     column ``c`` see fine row ``i``, so the next level's product would inherit every aggregate
-    reachable from it and operator complexity would blow up. Zero-valued triplets are skipped and
-    an entry whose triplets cancel exactly is dropped -- two summation orders can disagree on that,
-    for a handful of entries per million.
+    reachable from it and operator complexity would blow up. Zero-valued contributions are skipped
+    and an entry whose contributions cancel exactly is dropped -- two summation orders can disagree
+    on that, for a handful of entries per million.
     """
     n = int(matrix.nrow)
     n_coarse = int(prolongator.ncol)
@@ -5540,33 +5541,33 @@ def _multigrid_galerkin(
     # in the row length where the product itself is not; past the budget a product takes
     # ``bsr_mm`` instead, whose memory follows the output.
     budget = min(_MULTIGRID_TRIPLET_FACTOR * (int(matrix.nnz) + n), _MULTIGRID_TRIPLET_CAP)
-    product = _row_triplet_assembly(
+    product = _row_key_assembly(
         matrix.device,
         n,
         n_coarse,
         kernel_mg.product_triplet_counts,
         [matrix.offsets, matrix.columns, p.offsets],
-        kernel_mg.product_triplets,
+        kernel_mg.product_keys,
         [matrix.offsets, matrix.columns, matrix.values, p.offsets, p.columns, p.values],
         budget=budget,
         synced=False,
     )
     if product is None:
         product = odt.bsr_mm(matrix, p)
-    galerkin = _row_triplet_assembly(
+    galerkin = _row_key_assembly(
         matrix.device,
         n,
         n_coarse,
         kernel_mg.galerkin_triplet_counts,
         [p.offsets, product.offsets],
-        kernel_mg.galerkin_triplets,
+        kernel_mg.galerkin_keys,
         [p.offsets, p.columns, p.values, product.offsets, product.columns, product.values],
         budget=budget,
         out_rows=n_coarse,
     )
     if galerkin is None:
         # ``bsr_mm``'s structural zeros are what ``bsr_compress`` drops here; it reads the
-        # product's ``nnz``, which a triplet-assembled product leaves unsynced.
+        # product's ``nnz``, which a key-assembled product leaves unsynced.
         product.nnz_sync()
         galerkin = _synced(
             odt.bsr_compress(
@@ -5576,51 +5577,51 @@ def _multigrid_galerkin(
     return galerkin
 
 
-def _row_triplet_assembly(
+def _row_key_assembly(
     device: wp.DeviceLike,
     n: int,
     n_cols: int,
     count_kernel: odt.Kernel,
     count_inputs: Sequence[object],
-    triplet_kernel: odt.Kernel,
-    triplet_inputs: Sequence[object],
+    key_kernel: odt.Kernel,
+    key_inputs: Sequence[object],
     *,
     budget: int,
     out_rows: int | None = None,
     synced: bool = True,
 ) -> odt.BsrMatrix[wp.float64] | None:
     """
-    Sum the triplets ``n`` fine rows emit into a pruned CSR, ``nnz``-synced when ``synced``.
+    Sum the contributions ``n`` fine rows emit into a pruned CSR, ``nnz``-synced when ``synced``.
 
-    Each row's thread counts its triplets (``count_kernel`` writes ``counts[i + 1]`` and a leading
-    zero, in ``int64``), the counts are scanned in place into starts, and ``triplet_kernel`` writes
-    row ``i``'s triplets from ``starts[i]``. The result has ``out_rows`` rows (``n`` by default)
-    and ``n_cols`` columns. ``None``, with nothing allocated past the counts, when the triplets
-    would number more than ``budget``. An unsynced result's ``nnz`` is the triplet count, a
-    capacity: for a consumer that reads only the offsets and the entries they bound.
+    Each row's thread counts its contributions (``count_kernel`` writes ``counts[i + 1]`` and a
+    leading zero, in ``int64``), the counts are scanned in place into starts, and ``key_kernel``
+    writes row ``i``'s keys, identity payloads and values from ``starts[i]``, its last two inputs
+    the result's shape. The result has ``out_rows`` rows (``n`` by default) and ``n_cols``
+    columns. ``None``, with nothing allocated past the counts, when the contributions would number
+    more than ``budget``. An unsynced result's ``nnz`` is the contribution count, a capacity: for
+    a consumer that reads only the offsets and the entries they bound.
     """
     # Counted and scanned in 64 bits: the budget test must see the true total, which an ``int32``
     # scan wraps on a dense level.
     starts = _launch.empty(n + 1, dtype=wp.int64, device=device)
     _launch.launch(count_kernel, dim=n, inputs=count_inputs, outputs=[starts], device=device)
     _launch.array_scan(starts, starts, inclusive=True)
-    # The total sizes the triplet buffers, and decides the fallback.
+    # The total sizes the key buffers, and decides the fallback.
     total = int(read_scalar(starts, n))
     if total > budget:
         return None
-    rows = _launch.empty(total, dtype=wp.int32, device=device)
-    cols = _launch.empty(total, dtype=wp.int32, device=device)
+    n_out = n if out_rows is None else out_rows
+    keys, order = od.array.csr_key_buffers(total, device)
     values = _launch.empty(total, dtype=wp.float64, device=device)
     _launch.launch(
-        triplet_kernel,
+        key_kernel,
         dim=n,
-        inputs=[*triplet_inputs, starts],
-        outputs=[rows, cols, values],
+        inputs=[*key_inputs, starts, wp.int32(n_out), wp.int32(n_cols)],
+        outputs=[keys, order, values],
         device=device,
     )
-    n_out = n if out_rows is None else out_rows
-    assembled = od.array.csr_from_triplets(
-        n_out, n_cols, rows, cols, values, prune_numerical_zeros=True
+    assembled = od.array.csr_from_coo_keys(
+        n_out, n_cols, keys, order, values, prune_numerical_zeros=True
     )
     return _synced(assembled) if synced else assembled
 
@@ -5629,7 +5630,7 @@ def _synced(matrix: odt.BsrMatrix[wp.float64]) -> odt.BsrMatrix[wp.float64]:
     """
     ``matrix`` with its ``nnz`` field repaired to the stored count.
 
-    A triplet assembly leaves ``nnz`` at the triplet count, and ``csr_transpose``, ``bsr_mm`` and
+    A key assembly leaves ``nnz`` at the contribution count, and ``csr_transpose``, ``bsr_mm`` and
     the V-cycle's launches read the field rather than the offsets, so every hierarchy matrix pays
     the one readback here.
     """

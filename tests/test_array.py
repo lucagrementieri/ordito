@@ -737,14 +737,18 @@ def test_csr_from_triplets_prunes_assembled_zeros(device: str) -> None:
     assert dropped == [0.0]  # (1, 1): Warp keeps the cancelled entry
 
 
+@pytest.mark.parametrize("prune", [False, True])
 @pytest.mark.parametrize("dtype", [wp.float32, wp.float64, wp.int32])
-def test_csr_from_coo_keys_matches_csr_from_triplets(dtype: type, device: str) -> None:
+def test_csr_from_coo_keys_matches_csr_from_triplets(dtype: type, prune: bool, device: str) -> None:
     """
     Keys written by the caller assemble the matrix the same triplets assemble, bit for bit.
 
     Ordito against ordito: ``csr_from_triplets`` is pinned to ``bsr_from_triplets`` above, and
     this entry point differs from it only in who writes the keys. Duplicates, out-of-range indices
-    (the sentinel key) and an empty row are all present.
+    (the sentinel key), an otherwise empty row holding a cancelling pair and a zero-valued
+    contribution, which pruning must drop, are all present. The keys here keep the zero-valued
+    contribution in range, so pruning on the sums alone must match the triplet build, which
+    sentinels it before the sort.
     """
     rng = np.random.default_rng(5)
     n_rows, n_cols, m = 40, 30, 500
@@ -752,6 +756,10 @@ def test_csr_from_coo_keys_matches_csr_from_triplets(dtype: type, device: str) -
     cols_np = rng.integers(-2, n_cols + 2, m).astype(np.int32)
     rows_np[rows_np == 7] = 8  # an empty row
     values_np = (rng.standard_normal(m) * 10).astype(wp.dtype_to_numpy(dtype))
+    # Row 7: (7, 3) cancels and (7, 4) is a lone zero, so the row is empty only when pruned.
+    rows_np[:3] = 7
+    cols_np[:3] = [3, 3, 4]
+    values_np[:3] = [5, -5, 0]
     inside = (rows_np >= 0) & (rows_np < n_rows) & (cols_np >= 0) & (cols_np < n_cols)
     keys_np = np.where(
         inside, rows_np.astype(np.uint64) * n_cols + cols_np.astype(np.uint64), n_rows * n_cols
@@ -760,16 +768,21 @@ def test_csr_from_coo_keys_matches_csr_from_triplets(dtype: type, device: str) -
     wp.copy(keys_wp, wp.array(keys_np, dtype=wp.uint64, device=device))
     wp.copy(order_wp, wp.array(np.arange(m, dtype=np.int32), dtype=wp.int32, device=device))
     values_wp = wp.array(values_np, dtype=dtype, device=device)
-    ours_wp = od.array.csr_from_coo_keys(n_rows, n_cols, keys_wp, order_wp, values_wp)
+    ours_wp = od.array.csr_from_coo_keys(
+        n_rows, n_cols, keys_wp, order_wp, values_wp, prune_numerical_zeros=prune
+    )
     triplets_wp = od.array.csr_from_triplets(
         n_rows,
         n_cols,
         wp.array(rows_np, dtype=wp.int32, device=device),
         wp.array(cols_np, dtype=wp.int32, device=device),
         values_wp,
+        prune_numerical_zeros=prune,
     )
     n_entries = triplets_wp.nnz_sync()
     assert n_entries > n_rows
+    offsets_np = triplets_wp.offsets.numpy()
+    assert offsets_np[8] - offsets_np[7] == (0 if prune else 2)
     assert ours_wp.nnz_sync() == n_entries
     assert np.array_equal(ours_wp.offsets.numpy(), triplets_wp.offsets.numpy())
     assert np.array_equal(

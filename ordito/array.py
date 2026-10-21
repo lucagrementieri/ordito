@@ -1614,6 +1614,8 @@ def csr_from_coo_keys(
     keys: wp.array[wp.uint64],
     order: wp.array[wp.int32],
     values: wp.array[odt.Block, Any],
+    *,
+    prune_numerical_zeros: bool = False,
 ) -> odt.BsrMatrix[odt.Block]:
     """
     Assemble a sparse matrix from written entry keys, summing each key's ``values``.
@@ -1634,6 +1636,11 @@ def csr_from_coo_keys(
     values
         ``(n_triplets,)`` blocks the payloads index (``wp.float32``, ``wp.float64``, ``wp.int32``
         or ``wp.mat22d``).
+    prune_numerical_zeros
+        Drop every entry whose *summed* value is exactly zero, as
+        [`csr_from_triplets`][ordito.array.csr_from_triplets] does. That build also gives each
+        zero-valued triplet the sentinel key before sorting, which changes no sum; a producer
+        writing its own keys may do the same (``kernels/array.csr_key_nonzero``).
 
     Returns
     -------
@@ -1684,7 +1691,9 @@ def csr_from_coo_keys(
             _launch.empty(0, dtype=wp.int32, device=device),
             _launch.empty(0, dtype=values.dtype, device=device),
         )
-    return _csr_from_coo_keys(n_rows, n_cols, keys, order, values)
+    return _csr_from_coo_keys(
+        n_rows, n_cols, keys, order, values, prune_numerical_zeros=prune_numerical_zeros
+    )
 
 
 def csr_transpose(matrix: odt.BsrMatrix[odt.Block]) -> odt.BsrMatrix[odt.Block]:

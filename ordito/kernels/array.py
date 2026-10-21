@@ -881,6 +881,20 @@ def csr_key(row: wp.int32, col: wp.int32, n_rows: wp.int32, n_cols: wp.int32) ->
     return wp.uint64(row) * wp.uint64(n_cols) + wp.uint64(col)
 
 
+@wp.func
+def csr_key_nonzero(
+    row: wp.int32, col: wp.int32, value: Any, zero: Any, n_rows: wp.int32, n_cols: wp.int32
+) -> wp.uint64:
+    # ``csr_key`` for a pruning build: a contribution whose value is exactly ``zero`` gets the
+    # sentinel, so it is never summed. That cannot change any entry's sum (``x + 0 == x``), so it is
+    # purely a saving; ``csr_nonzero_run_flags`` then drops the entries whose remaining
+    # contributions cancel. Shared by ``coo_keys_nonzero`` and every producer that writes its keys
+    # for ``array.csr_from_coo_keys(prune_numerical_zeros=True)`` itself.
+    if value == zero:
+        return wp.uint64(n_rows) * wp.uint64(n_cols)
+    return csr_key(row, col, n_rows, n_cols)
+
+
 @wp.kernel
 def coo_keys(
     rows: wp.array[wp.int32],
@@ -933,14 +947,9 @@ def coo_keys_nonzero(
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
 ) -> None:
-    # ``coo_keys`` for a pruning build: a triplet whose value is exactly ``zero`` gets the sentinel,
-    # so it is never sorted. That cannot change any entry's sum (``x + 0 == x``), so it is purely
-    # a saving; ``csr_nonzero_run_flags`` then drops the entries whose remaining triplets cancel.
+    # ``coo_keys`` for a pruning build (``csr_key_nonzero``).
     i = wp.int32(wp.tid())
-    key = csr_key(rows[i], cols[i], n_rows, n_cols)
-    if values[i] == zero:
-        key = wp.uint64(n_rows) * wp.uint64(n_cols)
-    out_keys[i] = key
+    out_keys[i] = csr_key_nonzero(rows[i], cols[i], values[i], zero, n_rows, n_cols)
     out_order[i] = i
 
 

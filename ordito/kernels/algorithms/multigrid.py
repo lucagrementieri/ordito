@@ -27,12 +27,13 @@ and it is small.
 
 The tentative prolongator is one entry per row (the constant near-nullspace vector, normalized
 per aggregate), so the smoothed prolongator ``P = (I - w D^-1 A) P0`` is ``A``'s own entries
-re-keyed by their column's aggregate and summed as triplets; the coarse operator is the Galerkin
+re-keyed by their column's aggregate and summed by key; the coarse operator is the Galerkin
 product ``P^T A P``, ``A P`` summed from its ``A_ij P_jl`` triplets and ``P^T (A P)`` from the
-outer product of each fine row's two sparse rows. No ``bsr_mm`` runs in the setup. Against the
+outer product of each fine row's two sparse rows, every contribution written as a ``csr_key``
+(no ``(row, col)`` triplet buffers). No ``bsr_mm`` runs in the setup. Against the
 earlier ``bsr_mm`` / ``bsr_axpy`` chain the prolongator is 1.9-4.0x faster on the dragon and bunny
-cotangent Laplacians, with the same patterns and values to round-off; see ``product_triplets`` and
-``galerkin_triplets`` for the products. Operator complexity comes out just above 1, so the coarse
+cotangent Laplacians, with the same patterns and values to round-off; see ``product_keys`` and
+``galerkin_keys`` for the products. Operator complexity comes out just above 1, so the coarse
 levels are nearly free and a cycle's cost is its fine level.
 
 The per-level inverse diagonal is ``array.inverse_or_one`` of the operator's diagonal, applied
@@ -48,7 +49,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import TILE_1D
-from ordito.kernels.array import element_priority, inverse_or_one, sqrt_abs
+from ordito.kernels.array import csr_key_nonzero, element_priority, inverse_or_one, sqrt_abs
 from ordito.kernels.linalg import csr_row_diagonal
 from ordito.kernels.reduce import block_chunk, block_sum
 
@@ -317,6 +318,26 @@ def tentative_norm(sizes: wp.array[wp.int32], aggregate: wp.int32) -> wp.float64
 
 
 @wp.func
+def emit_entry(
+    row: wp.int32,
+    col: wp.int32,
+    value: wp.float64,
+    slot: wp.int32,
+    n_rows: wp.int32,
+    n_cols: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # One contribution to a pruned key assembly (``array.csr_from_coo_keys``): its key, the sentinel
+    # when the value is exactly zero, the identity payload and the value, all at ``slot``. The three
+    # setup assemblies below write nothing else, so no ``(row, col)`` buffers exist to be packed.
+    out_keys[slot] = csr_key_nonzero(row, col, value, wp.float64(0.0), n_rows, n_cols)
+    out_order[slot] = slot
+    out_values[slot] = value
+
+
+@wp.func
 def emit_scaled_row(
     row: wp.int32,
     weight: wp.float64,
@@ -325,40 +346,51 @@ def emit_scaled_row(
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
     slot: wp.int32,
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_rows: wp.int32,
+    n_cols: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
 ) -> wp.int32:
-    # ``weight`` times the sparse row ``[begin, end)`` of a CSR, as triplets in output row ``row``
-    # from ``slot`` on; returns the slot after the last. The emission both row-local products below
-    # are made of: ``A P`` emits ``A_ij`` times ``P``'s row ``j`` into row ``i``, ``P^T (A P)``
-    # emits ``P_ik`` times ``A P``'s row ``i`` into row ``k``.
+    # ``weight`` times the sparse row ``[begin, end)`` of a CSR, as contributions to output row
+    # ``row`` from ``slot`` on; returns the slot after the last. The emission both row-local
+    # products below are made of: ``A P`` emits ``A_ij`` times ``P``'s row ``j`` into row ``i``,
+    # ``P^T (A P)`` emits ``P_ik`` times ``A P``'s row ``i`` into row ``k``.
     for b in range(begin, end):
-        out_rows[slot] = row
-        out_cols[slot] = columns[b]
-        out_values[slot] = weight * values[b]
+        emit_entry(
+            row,
+            columns[b],
+            weight * values[b],
+            slot,
+            n_rows,
+            n_cols,
+            out_keys,
+            out_order,
+            out_values,
+        )
         slot += 1
     return slot
 
 
 @wp.kernel
-def smoothed_prolongator_triplets(
+def smoothed_prolongator_keys(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
     label: wp.array[wp.int32],
     sizes: wp.array[wp.int32],
     damped_inverse_diagonal: wp.array[wp.float64],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_aggregates: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
 ) -> None:
-    # The smoothed prolongator ``P = (I - w D^-1 A) P0`` as coordinate triplets, one thread a row.
+    # The smoothed prolongator ``P = (I - w D^-1 A) P0`` as keyed contributions, one thread a row.
     # ``P0`` holds one entry a row -- node ``j``'s aggregate, ``1 / sqrt(|aggregate|)``, the
     # constant near-nullspace vector normalized per column -- so ``(A P0)_ik`` is the sum of
     # ``A_ij P0_j`` over the row's columns ``j`` in aggregate ``k``: every stored ``A_ij`` is one
-    # triplet at ``(i, label[j])``, at the slot ``A`` stores it in, and the identity's ``P0_i`` one
-    # more, after all of ``A``'s. The triplet sum that follows is the whole product, where
+    # contribution at ``(i, label[j])``, at the slot ``A`` stores it in, and the identity's ``P0_i``
+    # one more, after all of ``A``'s. The key sum that follows is the whole product, where
     # ``bsr_mm`` against ``P0`` then a row scale and a ``bsr_axpy`` against ``P0`` was three
     # sparse passes, each allocating its result.
     i = wp.int32(wp.tid())
@@ -366,13 +398,28 @@ def smoothed_prolongator_triplets(
     scale = -damped_inverse_diagonal[i]
     for e in range(offsets[i], offsets[i + 1]):
         aggregate = label[columns[e]]
-        out_rows[e] = i
-        out_cols[e] = aggregate
-        out_values[e] = scale * values[e] / tentative_norm(sizes, aggregate)
-    own = offsets[n] + i
-    out_rows[own] = i
-    out_cols[own] = label[i]
-    out_values[own] = wp.float64(1.0) / tentative_norm(sizes, label[i])
+        emit_entry(
+            i,
+            aggregate,
+            scale * values[e] / tentative_norm(sizes, aggregate),
+            e,
+            n,
+            n_aggregates,
+            out_keys,
+            out_order,
+            out_values,
+        )
+    emit_entry(
+        i,
+        label[i],
+        wp.float64(1.0) / tentative_norm(sizes, label[i]),
+        offsets[n] + i,
+        n,
+        n_aggregates,
+        out_keys,
+        out_order,
+        out_values,
+    )
 
 
 @wp.kernel
@@ -397,7 +444,7 @@ def product_triplet_counts(
 
 
 @wp.kernel
-def product_triplets(
+def product_keys(
     a_offsets: wp.array[wp.int32],
     a_columns: wp.array[wp.int32],
     a_values: wp.array[wp.float64],
@@ -405,13 +452,15 @@ def product_triplets(
     p_columns: wp.array[wp.int32],
     p_values: wp.array[wp.float64],
     starts: wp.array[wp.int64],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_rows: wp.int32,
+    n_cols: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
 ) -> None:
-    # ``A P`` as coordinate triplets, one thread a row, at ``starts[i]``: the triplet sum that
-    # follows replaces ``bsr_mm`` (1.7x on the product at the bunny Laplacians, 1.04x at dragon's
-    # 9 M triplets) and leaves no structural zeros behind.
+    # ``A P`` as keyed contributions, one thread a row, at ``starts[i]``: the key sum that follows
+    # replaces ``bsr_mm`` (1.7x on the product at the bunny Laplacians, 1.04x at dragon's 9 M
+    # contributions) and leaves no structural zeros behind.
     i = wp.int32(wp.tid())
     slot = wp.int32(starts[i])  # the wrapper capped the total below ``2^30``
     for e in range(a_offsets[i], a_offsets[i + 1]):
@@ -424,8 +473,10 @@ def product_triplets(
             p_columns,
             p_values,
             slot,
-            out_rows,
-            out_cols,
+            n_rows,
+            n_cols,
+            out_keys,
+            out_order,
             out_values,
         )
 
@@ -445,7 +496,7 @@ def galerkin_triplet_counts(
 
 
 @wp.kernel
-def galerkin_triplets(
+def galerkin_keys(
     p_offsets: wp.array[wp.int32],
     p_columns: wp.array[wp.int32],
     p_values: wp.array[wp.float64],
@@ -453,11 +504,13 @@ def galerkin_triplets(
     ap_columns: wp.array[wp.int32],
     ap_values: wp.array[wp.float64],
     starts: wp.array[wp.int64],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_rows: wp.int32,
+    n_cols: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
 ) -> None:
-    # ``P^T (A P)`` as coordinate triplets, one thread a fine row: ``(P^T A P)_kl`` is the sum over
+    # ``P^T (A P)`` as keyed contributions, one thread a fine row: ``(P^T A P)_kl`` is the sum over
     # fine rows ``i`` of ``P_ik (A P)_il``, so row ``i`` emits the outer product of its two sparse
     # rows at ``starts[i]``. No transpose is formed and no second product runs.
     i = wp.int32(wp.tid())
@@ -471,8 +524,10 @@ def galerkin_triplets(
             ap_columns,
             ap_values,
             slot,
-            out_rows,
-            out_cols,
+            n_rows,
+            n_cols,
+            out_keys,
+            out_order,
             out_values,
         )
 
