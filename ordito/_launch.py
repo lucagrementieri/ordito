@@ -122,7 +122,7 @@ _SCALAR_CHARS = {
     ctypes.c_double: "d",
     ctypes.c_bool: "?",
 }
-_KIND_ARRAY, _KIND_SCALAR, _KIND_VALUE = 0, 1, 2
+_KIND_ARRAY, _KIND_SCALAR, _KIND_VALUE, _KIND_STRUCT = 0, 1, 2, 3
 
 
 class _Block:
@@ -161,6 +161,12 @@ class _Block:
                 fmt.append(f"{size}s")
                 kinds.append((_KIND_VALUE, 0, {arg_type}, arg_type))
                 offset += size
+            elif isinstance(arg_type, _codegen.Struct) and ctypes.alignment(arg_type.ctype) <= 8:
+                # A ``@wp.struct`` is its ctypes image, the bytes Warp's own launch hands over.
+                size = ctypes.sizeof(arg_type.ctype)
+                fmt.append(f"{size}s")
+                kinds.append((_KIND_STRUCT, 0, None, arg_type))
+                offset += size
             elif (
                 isinstance(arg_type, type)
                 and arg_type not in _HALF
@@ -187,7 +193,9 @@ class _Block:
         Python call, one ``pack_into`` and the native call. It returns ``False`` without launching
         when an argument has no packed form: not exactly the parameter's array class and rank, a
         gradient-carrying array, a dtype or value type that is not Warp-equal to the parameter's,
-        an array on another device under a strict access mode, or a value outside its C type.
+        an instance of another struct, an array on another device under a strict access mode, or
+        a value outside its C type. A struct's own array members are not checked, as in Warp's
+        launch.
         """
         kernel_dim = kernel.adj.kernel_dim
         env: dict[str, Any] = {
@@ -250,7 +258,7 @@ class _Block:
                     f"    x{j} = v",
                 ]
                 values.append(f"x{j}")
-            else:
+            elif kind == _KIND_VALUE:
                 body += [
                     "    t = type(v)",
                     f"    if t not in A{j} and not _accept(A{j}, t, D{j}):",
