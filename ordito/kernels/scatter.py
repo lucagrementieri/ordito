@@ -50,17 +50,6 @@ def atomic_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) ->
 
 
 @wp.kernel
-def scatter_add(values: wp.array[Any], indices: wp.array[wp.int32], out_sum: wp.array[Any]) -> None:
-    # 1D indexed accumulation: out_sum[indices[tid]] += values[tid]. ``Any`` rather than
-    # ``wp.Scalar`` because the latter does not instantiate for vectors, and the vector heat
-    # method seeds a ``wp.vec2d`` field through exactly this kernel. The widening gives up a
-    # compile-time dtype guard: Warp still rejects a mismatched ``values`` / ``out_sum`` pair, but
-    # the error arrives from codegen rather than from overload resolution and reads worse.
-    tid = wp.int32(wp.tid())
-    wp.atomic_add(out_sum, indices[tid], values[tid])
-
-
-@wp.kernel
 def count_occurrences(indices: wp.array[wp.int32], out_counts: wp.array[wp.int32]) -> None:
     # Histogram of ``indices``: one atomic increment per entry. Launch over ``indices.shape[0]``.
     # Sizing a CSR is what every caller wants it for -- incident faces per vertex (a flat face
@@ -712,15 +701,9 @@ def divide_by_density(
 # This module is reached from 11 wrappers at scattered moments, so it forked
 # nearly twice per overload before registration.
 #
-# Each set is the dtypes its call sites actually build, not a menu: ``scatter_add`` accumulates a
-# ``wp.float32`` per-component volume in ``repair`` and a ``wp.vec2d`` tangent field in
-# ``heat.vector``, and the two mass/curvature scatters follow their wrapper's precision keyword.
+# Each set is the dtypes its call sites actually build, not a menu: the two mass/curvature
+# scatters follow their wrapper's precision keyword.
 _VALUE_DTYPES = (wp.float32, wp.float64)
-# ``scatter_add`` gets its own, narrower set: it has exactly three call sites -- ``repair.py``'s two
-# per-component ``wp.float32`` volume/area accumulators and ``heat.py``'s ``wp.vec2d`` tangent seed
-# -- so the ``wp.float64`` and ``wp.vec3`` rows registered beside them were compile time paid on
-# every rebuild for an overload nothing can reach.
-_SCATTER_ADD_DTYPES = (wp.float32, wp.vec2d)
 # The two vector scatters get a set of **one**, for the same reason: their only caller is
 # ``vertices._accumulate_and_normalize``, which accumulates at ``wp.float64`` so that the summation
 # order the atomics pick cannot reach the answer (see ``atomic_add_vec3``). The kernels stay generic
@@ -744,7 +727,6 @@ _GRID_DTYPES = (wp.float32, wp.vec3)
 # short wrapper each, which is where a generic launch's host-side resolution is worth the most.
 DIVIDE_BY_DENSITY: OverloadTable
 SPLAT_GRID_TRILINEAR: OverloadTable
-SCATTER_ADD: OverloadTable
 SCATTER_FACE_THIRDS: OverloadTable
 SUM_SORTED_FACE_THIRDS: OverloadTable
 SCALE_FACE_SUMS: OverloadTable
@@ -755,7 +737,7 @@ SCATTER_WEIGHTED_SUM_VEC: OverloadTable
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global DIVIDE_BY_DENSITY, SPLAT_GRID_TRILINEAR, SCATTER_ADD
+    global DIVIDE_BY_DENSITY, SPLAT_GRID_TRILINEAR
     global SCALE_FACE_SUMS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR, SUM_SORTED_FACE_THIRDS
     global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC, SUM_SORTED_CORNER_VALUES
     DIVIDE_BY_DENSITY = OverloadTable(
@@ -775,10 +757,6 @@ def _register_overloads() -> None:
             ]
             for d in _GRID_DTYPES
         },
-    )
-    SCATTER_ADD = OverloadTable(
-        scatter_add,
-        {d: [wp.array[d], wp.array[wp.int32], wp.array[d]] for d in _SCATTER_ADD_DTYPES},
     )
     # Keyed ``(areas dtype, mass dtype)``, the cross product: a caller's areas may be either.
     SCATTER_FACE_THIRDS = OverloadTable(
