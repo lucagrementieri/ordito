@@ -357,6 +357,12 @@ whose counts follow an iteration count can carry `"exempt": "<reason>"` in the b
 `--census-update` preserves. The plugin patches Warp's private native table, so a Warp upgrade
 re-records both budgets (the `upgrade-warp` skill's step 3).
 
+No scan mesh is `small`, so a scan-sweep group is invisible to the gate unless it also wears
+`@pytest.mark.censusmeshes("sphere_small")`, which adds ordito rows on that feature mesh beside the
+sweep (filtered by `--size` like it). The plane cuts, the mesh metrics, `screened_poisson` (its
+smallest depth), `sample_surface_poisson_disk` and `reduce.scatter_sum` / `segment_sum` carry it.
+Most other scan-sweep groups do not yet.
+
 ## Notes
 
 - **Every ordito row runs with determinism off.** `benchmarks/conftest.py` calls

@@ -295,6 +295,7 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
 
 @pytest.mark.benchmark(group="sample_surface_poisson_disk")
 @pytest.mark.benchlibs("ordito")
+@pytest.mark.censusmeshes("sphere_small")
 def test_sample_surface_poisson_disk(bench_case: BenchCase) -> None:
     """
     Yuksel's weighted sample elimination down to ``_TARGET_SAMPLES``, from its default pool.

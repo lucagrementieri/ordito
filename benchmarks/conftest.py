@@ -13,6 +13,10 @@ face count to a shared control. A benchmark picks whichever is relevant:
 - ``@pytest.mark.benchmeshes("sphere_med", ...)`` names meshes directly for a one-off,
 - neither runs the scan sweep, filtered by ``--size`` / ``--cpu-max-size``.
 
+A scan-sweep benchmark may add ``@pytest.mark.censusmeshes("sphere_small")``: ordito rows on those
+feature meshes beside the sweep, filtered by ``--size`` like it. No scan mesh is ``small``, so
+without it the census gate (``--size small``, ``census.py``) never sees the group's host traffic.
+
 The rule the suite follows is **one group measures one axis, at 2-3 points**. A group that has no
 mesh axis at all (``ordito.creation``) takes ``bench_lib`` instead of ``bench_case`` and sizes its
 work with a plain ``pytest.mark.parametrize``.
@@ -66,6 +70,7 @@ from meshes import (
     ALL_MESHES_BY_NAME,
     AXES,
     BUILDERS,
+    FEATURE_MESHES_BY_NAME,
     MESH_ORDER,
     MESHES,
     MESHES_BY_NAME,
@@ -772,11 +777,34 @@ def _mesh_names(metafunc: pytest.Metafunc) -> tuple[str, ...] | None:
     return tuple(explicit.args) if explicit is not None else None
 
 
+def _census_meshes(metafunc: pytest.Metafunc, lib: LibrarySpec) -> list[MeshSpec]:
+    """Feature meshes a scan-sweep test also runs its ordito rows on (``censusmeshes``)."""
+    marker = metafunc.definition.get_closest_marker("censusmeshes")
+    if marker is None:
+        return []
+    if _mesh_names(metafunc) is not None:
+        raise pytest.UsageError(
+            f"{metafunc.definition.nodeid}: censusmeshes extends the scan sweep; with benchaxis / "
+            "benchmeshes there is no sweep to extend."
+        )
+    if lib["kind"] != "ordito":
+        return []
+    sizes, _explicit = _selected_sizes(metafunc.config)
+    meshes = []
+    for name in marker.args:
+        spec = FEATURE_MESHES_BY_NAME.get(name)
+        if spec is None:
+            raise pytest.UsageError(f"censusmeshes takes feature mesh names, got {name!r}")
+        if spec["size"] in sizes:
+            meshes.append(spec)
+    return meshes
+
+
 def _test_meshes(metafunc: pytest.Metafunc, lib: LibrarySpec) -> list[MeshSpec]:
     """Meshes for one test: the axis / explicit names, else the registry filtered by CLI flags."""
     names = _mesh_names(metafunc)
     if names is None:
-        return _selected_meshes(metafunc.config, lib)
+        return _selected_meshes(metafunc.config, lib) + _census_meshes(metafunc, lib)
     meshes = []
     for name in names:
         spec = ALL_MESHES_BY_NAME.get(name)
@@ -828,6 +856,11 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "benchmeshes(*names): mesh names for a benchmark (registry or feature); bypasses --size.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "censusmeshes(*names): feature meshes a scan-sweep benchmark also runs its ordito rows on, "
+        "filtered by --size, so the census gate at --size small counts the group.",
     )
     # Declared here but enforced from tests/: the parity gate is a static scan so that it runs in
     # the default ``pytest`` invocation, which does not collect this directory at all. Validating

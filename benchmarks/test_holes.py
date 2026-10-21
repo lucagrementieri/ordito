@@ -393,36 +393,64 @@ def test_fill_smooth_target_edge(bench_case: BenchCase, derive_target: bool) -> 
 
 _Submesh = tuple[wp.array[wp.vec3], wp.array[wp.int32]]
 _stitch_cache: dict[tuple[str, str], tuple[_Submesh, _Submesh]] = {}
-_stitch_np_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+_NumpyMesh = tuple[np.ndarray, np.ndarray]
+_stitch_np_cache: dict[str, tuple[_NumpyMesh, _NumpyMesh]] = {}
 
 
-def _face_slice(bench_case: BenchCase, lo: int, hi: int) -> wp.array[wp.int32]:
-    """Contiguous face-index range as a device buffer (untimed setup, so numpy is fine)."""
-    return wp.array(np.arange(lo, hi, dtype=np.int32), dtype=wp.int32, device=bench_case.device)
+def _stitch_caps_np(bench_case: BenchCase) -> tuple[_NumpyMesh, _NumpyMesh]:
+    """
+    Close each rim of the open tube with a fan, giving two caps whose rims face each other.
 
-
-def _submesh(bench_case: BenchCase, lo: int, hi: int) -> _Submesh:
-    """Faces ``[lo, hi)`` of the case mesh as a compact standalone ``(vertices, faces)`` pair."""
-    return od.selection.submesh_from_face_indices(
-        bench_case.vertices_wp, bench_case.faces_wp, _face_slice(bench_case, lo, hi)
-    )
+    Each stitch input must have exactly one boundary loop, and the two rims must face each other
+    across the gap the band fills. Halving the tube's face buffer meets the first condition but
+    not the second: it cuts the side into two half-strips whose loops run along each other, the
+    minimum-weight DP never reaches the far corner of its table and returns an empty band, so the
+    traceback and the band were untimed. The tube's two rims capped by a fan over their centroid
+    are two disks a unit apart, outward-facing, whose stitch rebuilds the tube's side: a band of
+    ``La + Lb`` triangles. Untimed setup, so NumPy is fine.
+    """
+    if bench_case.mesh_name not in _stitch_np_cache:
+        vertices_np = bench_case.vertices_np
+        z_np = vertices_np[:, 2]
+        caps = []
+        for outward, rim_mask in ((-1.0, z_np < z_np.mean()), (1.0, z_np > z_np.mean())):
+            rim_np = vertices_np[rim_mask]
+            center_np = rim_np.mean(axis=0)
+            angle_np = np.arctan2(rim_np[:, 1] - center_np[1], rim_np[:, 0] - center_np[0])
+            rim_np = rim_np[np.argsort(angle_np)]
+            n_rim = len(rim_np)
+            ring = np.arange(n_rim, dtype=np.int32)
+            following = np.roll(ring, -1)
+            center = np.full(n_rim, n_rim, dtype=np.int32)
+            # A counter-clockwise rim seen from +z: (center, i, i + 1) faces +z, the reverse -z.
+            pair = (ring, following) if outward > 0.0 else (following, ring)
+            caps.append(
+                (
+                    np.vstack([rim_np, center_np]).astype(np.float32),
+                    np.stack([center, *pair], axis=1),
+                )
+            )
+        _stitch_np_cache[bench_case.mesh_name] = (caps[0], caps[1])
+    return _stitch_np_cache[bench_case.mesh_name]
 
 
 def _stitch_halves(bench_case: BenchCase) -> tuple[_Submesh, _Submesh]:
-    """
-    Cut the open tube into two rings, so each half has exactly one boundary loop to stitch.
-
-    ``_open_cylinder`` emits its lower band of triangles before its upper one, so the first and
-    second halves of the face buffer are exactly the two rings -- no adjacency query needed.
-    """
+    """Upload the two caps of [`_stitch_caps_np`] as standalone ``(vertices, faces)`` pairs."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _stitch_cache:
-        half = bench_case.n_faces // 2
-        _stitch_cache[key] = (
-            _submesh(bench_case, 0, half),
-            _submesh(bench_case, half, bench_case.n_faces),
-        )
+        halves = []
+        for vertices_np, faces_np in _stitch_caps_np(bench_case):
+            vertices = wp.array(vertices_np, dtype=wp.vec3, device=bench_case.device)
+            faces = wp.array(faces_np.ravel(), dtype=wp.int32, device=bench_case.device)
+            halves.append((vertices, faces))
+        _stitch_cache[key] = (halves[0], halves[1])
     return _stitch_cache[key]
+
+
+def _stitch_band_size(bench_case: BenchCase) -> int:
+    """Return the triangle count of a two-loop stitch between the caps: ``La + Lb``."""
+    (va_np, _fa_np), (vb_np, _fb_np) = _stitch_caps_np(bench_case)
+    return len(va_np) - 1 + len(vb_np) - 1
 
 
 @pytest.mark.benchmark(group="stitch")
@@ -431,32 +459,20 @@ def _stitch_halves(bench_case: BenchCase) -> tuple[_Submesh, _Submesh]:
 def test_stitch(bench_case: BenchCase) -> None:
     """Greedy band between two rims: O(La + Lb), the cheap counterpart of the DP below."""
     (va, fa), (vb, fb) = _stitch_halves(bench_case)
+    n_out = (fa.size + fb.size) // 3 + _stitch_band_size(bench_case)
     _vertices, faces = bench_case.run(lambda: od.holes.stitch(va, fa, vb, fb))
-    assert faces.size > 0
+    assert faces.size // 3 == n_out
 
 
 def _stitch_pair_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
     """
-    Build the same two rings as [`_stitch_halves`] as one NumPy mesh with two disjoint rims.
+    Build the same two caps as [`_stitch_halves`] as one NumPy mesh with two disjoint rims.
 
-    MeshLib's ``stitchHoles`` takes a *single* ``Mesh`` holding both holes, so the two halves are
-    compacted independently and index-offset into one buffer -- the same construction
-    ``tests/test_holes.py::_meshlib_stitch_band`` uses, which is what makes the benchmark and the
-    parity test measure the same thing.
+    MeshLib's ``stitchHoles`` takes a *single* ``Mesh`` holding both holes, so the two caps are
+    index-offset into one buffer.
     """
-    if bench_case.mesh_name not in _stitch_np_cache:
-        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
-        half = bench_case.n_faces // 2
-        parts = []
-        for lo, hi in ((0, half), (half, bench_case.n_faces)):
-            used, inverse = np.unique(faces_np[lo:hi], return_inverse=True)
-            parts.append((vertices_np[used], inverse.reshape(-1, 3)))
-        (va_np, fa_np), (vb_np, fb_np) = parts
-        _stitch_np_cache[bench_case.mesh_name] = (
-            np.vstack([va_np, vb_np]),
-            np.vstack([fa_np, fb_np + len(va_np)]),
-        )
-    return _stitch_np_cache[bench_case.mesh_name]
+    (va_np, fa_np), (vb_np, fb_np) = _stitch_caps_np(bench_case)
+    return np.vstack([va_np, vb_np]), np.vstack([fa_np, fb_np + len(va_np)])
 
 
 @pytest.mark.benchmark(group="stitch_min_weight")
@@ -482,6 +498,7 @@ def test_stitch_min_weight(bench_case: BenchCase) -> None:
     """
     if bench_case.kind == "meshlib":
         vertices_np, faces_np = _stitch_pair_np(bench_case)
+        n_out = len(faces_np) + _stitch_band_size(bench_case)
 
         def run_ml() -> int:
             mesh_ml = mesh_ml_from_numpy(vertices_np, faces_np)
@@ -491,14 +508,15 @@ def test_stitch_min_weight(bench_case: BenchCase) -> None:
             mm.stitchHoles(mesh_ml, edges_ml[0], edges_ml[1], params_ml)
             return mesh_ml.topology.numValidFaces()
 
-        assert bench_case.run(run_ml, rounds=_ROUNDS) > len(faces_np)
+        assert bench_case.run(run_ml, rounds=_ROUNDS) == n_out
         return
     (va, fa), (vb, fb) = _stitch_halves(bench_case)
+    n_out = (fa.size + fb.size) // 3 + _stitch_band_size(bench_case)
     up = (0.0, 0.0, 1.0)
     _vertices, faces = bench_case.run(
         lambda: od.holes.stitch_min_weight(va, fa, vb, fb, up_dir=up), rounds=_ROUNDS
     )
-    assert faces.size > 0
+    assert faces.size // 3 == n_out
 
 
 @pytest.mark.benchmark(group="fillable_loop_mask")

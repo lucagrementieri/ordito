@@ -394,6 +394,7 @@ def _corners_wp(
 
 @pytest.mark.benchmark(group="scatter_sum")
 @pytest.mark.benchlibs("ordito", "numpy")
+@pytest.mark.censusmeshes("sphere_small")
 def test_scatter_sum(bench_case: BenchCase) -> None:
     """
     Each face's value summed into its three corners' vertices: the per-vertex scatter shape.
@@ -416,6 +417,7 @@ def test_scatter_sum(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="segment_sum")
 @pytest.mark.benchlibs("ordito", "numpy")
+@pytest.mark.censusmeshes("sphere_small")
 def test_segment_sum(bench_case: BenchCase) -> None:
     """
     The same per-vertex sums from the corners sorted by vertex and their offsets.
