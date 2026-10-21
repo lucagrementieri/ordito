@@ -544,7 +544,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("remesh", "gather_hub_quadrics"): frozenset({"quadrics"}),
     # ``robust_laplacian``'s exact rounding check keeps each face's terms between the group sum's
     # two passes: scratch the first pass writes and the second reads, not an output.
-    ("laplacian", "intrinsic_rounding_rows_exact"): frozenset({"terms"}),
+    ("laplacian", "intrinsic_rounding_rows"): frozenset({"terms"}),
     # ``quadric_decimate``'s provenance column, folded one pass at a time: the array is the previous
     # pass's answer *and* this pass's, so it is in place and ``out_`` would read as write-only.
     ("remesh", "compact_decimation_pass"): frozenset({"index"}),

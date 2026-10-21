@@ -602,41 +602,22 @@ def _intrinsic_rounding_ratio(
     n_faces = faces.size // 3
     if n_faces == 0:
         return None
-    limit = wp.float64(_INTRINSIC_ROUNDING_LIMIT)
-    if is_deterministic():
-        # A row takes two terms per corner it holds, so ``6 * n_faces`` bound any one component.
-        rows = _launch.group_sums(n_vertices, wp.vec2d, 6 * n_faces, device)
-        terms = odt.empty_2d((n_faces, 2), wp.vec3d, device=device)
-        _launch.launch_group_sums(
-            kernel_laplacian.intrinsic_rounding_rows_exact,
-            dim=n_faces,
-            inputs=[faces, lengths, terms],
-            sums=rows,
-            device=device,
-        )
-        worst = _launch.zeros(1, dtype=wp.float64, device=device)
-        _launch.launch(
-            kernel_laplacian.max_row_ratio_pairs,
-            dim=n_vertices,
-            inputs=[_launch.finish_group_sums(rows), limit],
-            outputs=[worst],
-            device=device,
-        )
-        return worst
-    error = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    scale = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    _launch.launch(
+    # A row takes two terms per corner it holds, so ``6 * n_faces`` bound any one component.
+    rows = _launch.group_sums(n_vertices, wp.vec2d, 6 * n_faces, device)
+    # The first pass's terms, for the second (the setting on only).
+    terms = None if rows.words is None else odt.empty_2d((n_faces, 2), wp.vec3d, device=device)
+    _launch.launch_group_sums(
         kernel_laplacian.intrinsic_rounding_rows,
         dim=n_faces,
-        inputs=[faces, lengths],
-        outputs=[error, scale],
+        inputs=[faces, lengths, terms],
+        sums=rows,
         device=device,
     )
     worst = _launch.zeros(1, dtype=wp.float64, device=device)
     _launch.launch(
         kernel_laplacian.max_row_ratio,
         dim=n_vertices,
-        inputs=[error, scale, limit],
+        inputs=[_launch.finish_group_sums(rows), wp.float64(_INTRINSIC_ROUNDING_LIMIT)],
         outputs=[worst],
         device=device,
     )
