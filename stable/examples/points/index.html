@@ -234,14 +234,26 @@
   
   
   
-    <li class="md-tabs__item">
-      <a href="../../concepts/" class="md-tabs__link">
+    
+      
+      
         
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../concepts/" class="md-tabs__link">
+          
   
   Concepts
 
-      </a>
-    </li>
+        </a>
+      </li>
+    
   
 
       
@@ -257,6 +269,8 @@
       
         
           
+        
+      
         
       
         
@@ -525,6 +539,63 @@
   
   
   
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_3">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Concepts
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
     <li class="md-nav__item">
       <a href="../../concepts/" class="md-nav__link">
         
@@ -544,6 +615,42 @@
     </li>
   
 
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reproducible results
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
     
       
       
@@ -558,6 +665,8 @@
       
         
           
+        
+      
         
       
         
@@ -1110,6 +1219,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#pc8" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Exact convex hull
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc9" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Convex hulls of degenerate clouds
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1134,6 +1265,33 @@
     
   
   Reconstruction and registration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reproducible results
 
     
   </span>
@@ -3873,6 +4031,28 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#pc8" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Exact convex hull
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pc9" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Convex hulls of degenerate clouds
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -3894,7 +4074,8 @@
 
 
 <h1 id="point-clouds">Point clouds</h1>
-<p>Down-sampling, surface sampling, normal estimation, outlier removal and interpolation.</p>
+<p>Down-sampling, surface sampling, normal estimation, outlier removal, interpolation and exact
+convex hulls.</p>
 <h2 id="pc1">Down-sampling: voxel grid, farthest point and blue noise</h2>
 <p>Three ways to thin the dragon's 437 000 vertices to a few thousand points.
 <a class="autorefs autorefs-internal" title="voxel_down_sample" href="../../api/ordito/voxels/#ordito.voxels.voxel_down_sample"><code>voxel_down_sample</code></a> averages the points in each occupied
@@ -4085,8 +4266,9 @@ along some sampled direction: every one is on the hull, and more directions find
 them. <a class="autorefs autorefs-internal" title="convex_superset_mask" href="../../api/ordito/points/#ordito.points.convex_superset_mask"><code>convex_superset_mask</code></a> answers the other way
 round, discarding only points provably inside, so every hull vertex survives.
 <a class="autorefs autorefs-internal" title="half_space_mask" href="../../api/ordito/points/#ordito.points.half_space_mask"><code>half_space_mask</code></a> is the building block: the points strictly
-on one side of a plane. ordito selects hull <em>points</em> only; it does not build the hull's
-triangle mesh.</p>
+on one side of a plane. Both masks approximate the vertex set without building a surface; the
+hull's triangles, exactly, come from <a class="autorefs autorefs-internal" title="convex_hull" href="../../api/ordito/points/#ordito.points.convex_hull"><code>convex_hull</code></a>
+(<a href="#pc8">next example</a>).</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
@@ -4109,8 +4291,125 @@ triangle mesh.</p>
 <p><a class="glightbox" data-type="image" href="../../assets/examples/pc7.webp"><img alt="Convex-hull points and half-space tests" src="../../assets/examples/pc7.webp" /></a></p>
 <p>Checked against an exact hull (<code>scipy.spatial.ConvexHull</code>, 1564 vertices on this cloud): all
 1104 points of the subset are hull vertices, and every hull vertex is among the superset's
-candidates. Convex-hull meshing is not part of ordito.</p>
+candidates.</p>
 <p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html">Open3D: convex hull</a> · <a href="https://trimesh.org/trimesh.convex.html">trimesh: convex</a></p>
+<h2 id="pc8">Exact convex hull</h2>
+<p><a class="autorefs autorefs-internal" title="convex_hull" href="../../api/ordito/points/#ordito.points.convex_hull"><code>convex_hull</code></a> returns the convex hull of a cloud as triangles
+that index the input points, the layout of <a class="autorefs autorefs-external" href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.ConvexHull.html#scipy.spatial.ConvexHull"><code>scipy.spatial.ConvexHull</code></a>'s <code>simplices</code>. Each
+triangle is wound counter-clockwise seen from outside, and a hull of <code>V</code> vertices has <code>2V - 4</code>
+of them. Every decision the algorithm takes is an exact orientation sign, with the same answer
+on the CPU and the CUDA device and no tolerance to tune, so the hull is the true hull of the
+<code>float32</code> points: its vertex set equals qhull's on both clouds below, the bunny sampled at
+30 000 points and the dragon scan's 437 645 vertices.
+<a class="autorefs autorefs-internal" title="remove_unreferenced_vertices" href="../../api/ordito/repair/#ordito.repair.remove_unreferenced_vertices"><code>remove_unreferenced_vertices</code></a> turns the
+triangles into a compact mesh, outward-facing and ready for a <a class="autorefs autorefs-internal" title="Trimesh" href="../../api/ordito/mesh/#ordito.mesh.Trimesh"><code>Trimesh</code></a>.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">scipy.spatial</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">clouds</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"bunny cloud"</span><span class="p">:</span> <span class="n">data</span><span class="o">.</span><span class="n">load_points</span><span class="p">(</span><span class="s2">"bunny_cloud"</span><span class="p">,</span> <span class="n">device</span><span class="p">)}</span>
+<span class="n">clouds</span><span class="p">[</span><span class="s2">"dragon scan"</span><span class="p">],</span> <span class="n">_</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"dragon"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">hulls</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">points</span> <span class="ow">in</span> <span class="n">clouds</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">convex_hull</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
+    <span class="n">hull_vertices</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">unique</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+    <span class="n">qhull</span> <span class="o">=</span> <span class="n">scipy</span><span class="o">.</span><span class="n">spatial</span><span class="o">.</span><span class="n">ConvexHull</span><span class="p">(</span><span class="n">points</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+    <span class="nb">print</span><span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">points</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2"> points, hull of </span><span class="si">{</span><span class="n">hull_vertices</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> vertices "</span>
+        <span class="sa">f</span><span class="s2">"and </span><span class="si">{</span><span class="n">faces</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">//</span><span class="w"> </span><span class="mi">3</span><span class="si">}</span><span class="s2"> triangles, same vertices as qhull: "</span>
+        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">array_equal</span><span class="p">(</span><span class="n">hull_vertices</span><span class="p">,</span><span class="w"> </span><span class="n">np</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">qhull</span><span class="o">.</span><span class="n">vertices</span><span class="p">))</span><span class="si">}</span><span class="s2">"</span>
+    <span class="p">)</span>
+    <span class="n">hulls</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">repair</span><span class="o">.</span><span class="n">remove_unreferenced_vertices</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">faces</span><span class="p">)[:</span><span class="mi">2</span><span class="p">]</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>bunny cloud: 30000 points, hull of 1564 vertices and 3124 triangles, same vertices as qhull: True
+dragon scan: 437645 points, hull of 2536 vertices and 5068 triangles, same vertices as qhull: True
+</code></pre></div>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc8.webp"><img alt="Exact convex hull" src="../../assets/examples/pc8.webp" /></a></p>
+<p><strong>How it works.</strong> The algorithm is ffHull (Gao, Cao, Tan and Huang, <em>Flip-Flop: Convex Hull
+Construction via Star-Shaped Polyhedron in 3D</em>, I3D 2013). Incremental algorithms such as
+quickhull add one point at a time. ffHull keeps the surface <em>star-shaped</em> instead of convex,
+every face seeing one fixed kernel point inside, and that weaker invariant can be kept by
+thousands of local edits at once. The surface starts as a tetrahedron. Each round, every face
+with points beyond it splits into three at the farthest of them, all at once, and the points
+the new surface encloses leave the computation for good, so the cost follows the points near
+the hull rather than the size of the cloud. The figure runs the same growth in the plane (the
+cross is the kernel point; blue points are still outside, grey ones dropped):</p>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc8-growth.svg"><img alt="ffHull's growth in the plane" src="../../assets/examples/pc8-growth.svg" /></a></p>
+<p>In the plane the growth ends convex. In space it ends with <em>reflex</em> edges, dents where two faces
+meet inward. Flip-Flop removes them with edge flips, again in parallel: a 2-2 flip swaps the
+shared diagonal of two triangles (red) for the other one (blue) and only grows the volume;
+where a dent cannot be flipped away, one of its vertices is provably not extreme and a 3-1 flip
+deletes it. ordito also flips during growth, which drops the points under the dents early (2.4x
+fewer flip rounds on the dragon, 3x on the bunny).</p>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc8-flip.webp"><img alt="A reflex edge before and after a 2-2 flip" src="../../assets/examples/pc8-flip.webp" /></a></p>
+<p><strong>Speed.</strong> qhull, behind SciPy, trimesh, Open3D and MeshLab, is single-threaded on the host.
+On the dragon's 437 645 points:</p>
+<p><a class="glightbox" data-type="image" href="../../assets/benchmarks/convex_hull-dragon-light.png#only-light"><img alt="Benchmark" src="../../assets/benchmarks/convex_hull-dragon-light.png#only-light" /></a>
+<a class="glightbox" data-type="image" href="../../assets/benchmarks/convex_hull-dragon-dark.png#only-dark"><img alt="Benchmark" src="../../assets/benchmarks/convex_hull-dragon-dark.png#only-dark" /></a></p>
+<p>The gap is about 5x on the bunny's 35 947 points and 22x on the dragon. A GPU call has a floor
+of a couple of milliseconds, so below a few thousand points qhull is as fast or faster.</p>
+<p class="ordito-credits">Modelled on: <a href="https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html">Open3D: convex hull</a> · <a href="https://trimesh.org/trimesh.convex.html">trimesh: convex</a></p>
+<h2 id="pc9">Convex hulls of degenerate clouds</h2>
+<p>The clouds a tolerance-based hull gets wrong are the ones made of exact coincidences. A
+9 x 9 x 9 lattice has every point of a face in one plane and every point of an edge on one
+line: <a class="autorefs autorefs-internal" title="convex_hull" href="../../api/ordito/points/#ordito.points.convex_hull"><code>convex_hull</code></a> keeps the 8 corners and nothing else. An
+octahedron's 6 corners, with 2 000 more points placed <em>exactly</em> on its faces (multiples of
+1/64, which <code>float32</code> stores without rounding), keep the corners alone. A disc 2e-6 thick, six
+orders of magnitude thinner than it is wide, is still a solid: its hull runs round the rim and
+over the few interior points that stand proud of their neighbours by a fraction of a micron.
+Each hull's vertex set is checked against <code>scipy.spatial.ConvexHull</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">scipy.spatial</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">axis</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mi">9</span><span class="p">)</span>
+<span class="n">lattice</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">meshgrid</span><span class="p">(</span><span class="n">axis</span><span class="p">,</span> <span class="n">axis</span><span class="p">,</span> <span class="n">axis</span><span class="p">,</span> <span class="n">indexing</span><span class="o">=</span><span class="s2">"ij"</span><span class="p">),</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span>
+
+<span class="c1"># Points on the octahedron |x| + |y| + |z| = 1 with coordinates in multiples of 1/64.</span>
+<span class="n">steps</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">integers</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">65</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="p">(</span><span class="mi">4000</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+<span class="n">steps</span> <span class="o">=</span> <span class="n">steps</span><span class="p">[</span><span class="n">steps</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mi">64</span><span class="p">][:</span><span class="mi">2000</span><span class="p">]</span>
+<span class="n">signs</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">choice</span><span class="p">([</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">],</span> <span class="n">size</span><span class="o">=</span><span class="p">(</span><span class="n">steps</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>
+<span class="n">on_faces</span> <span class="o">=</span> <span class="n">signs</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">column_stack</span><span class="p">([</span><span class="n">steps</span><span class="p">,</span> <span class="mi">64</span> <span class="o">-</span> <span class="n">steps</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)])</span> <span class="o">/</span> <span class="mf">64.0</span>
+<span class="n">octahedron</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">vstack</span><span class="p">([</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">),</span> <span class="o">-</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">),</span> <span class="n">on_faces</span><span class="p">])</span>
+
+<span class="n">disc</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">uniform</span><span class="p">(</span><span class="o">-</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="p">(</span><span class="mi">6000</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+<span class="n">disc</span> <span class="o">=</span> <span class="n">disc</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">hypot</span><span class="p">(</span><span class="n">disc</span><span class="p">[:,</span> <span class="mi">0</span><span class="p">],</span> <span class="n">disc</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">])</span> <span class="o">&lt;</span> <span class="mf">1.0</span><span class="p">]</span>
+<span class="n">slab</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">column_stack</span><span class="p">([</span><span class="n">disc</span><span class="p">,</span> <span class="n">rng</span><span class="o">.</span><span class="n">uniform</span><span class="p">(</span><span class="o">-</span><span class="mf">1e-6</span><span class="p">,</span> <span class="mf">1e-6</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="n">disc</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])])</span>
+
+<span class="n">clouds</span> <span class="o">=</span> <span class="p">{</span><span class="s2">"lattice"</span><span class="p">:</span> <span class="n">lattice</span><span class="p">,</span> <span class="s2">"octahedron"</span><span class="p">:</span> <span class="n">octahedron</span><span class="p">,</span> <span class="s2">"slab"</span><span class="p">:</span> <span class="n">slab</span><span class="p">}</span>
+<span class="n">hulls</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">cloud</span> <span class="ow">in</span> <span class="n">clouds</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="n">points</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">cloud</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">convex_hull</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
+    <span class="n">hull_vertices</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">unique</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+    <span class="n">qhull</span> <span class="o">=</span> <span class="n">scipy</span><span class="o">.</span><span class="n">spatial</span><span class="o">.</span><span class="n">ConvexHull</span><span class="p">(</span><span class="n">points</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+    <span class="nb">print</span><span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">points</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2"> points, </span><span class="si">{</span><span class="n">hull_vertices</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> hull vertices, "</span>
+        <span class="sa">f</span><span class="s2">"same as qhull: </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">array_equal</span><span class="p">(</span><span class="n">hull_vertices</span><span class="p">,</span><span class="w"> </span><span class="n">np</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="n">qhull</span><span class="o">.</span><span class="n">vertices</span><span class="p">))</span><span class="si">}</span><span class="s2">"</span>
+    <span class="p">)</span>
+    <span class="n">hulls</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">points</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="n">faces</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>lattice: 729 points, 8 hull vertices, same as qhull: True
+octahedron: 2006 points, 6 hull vertices, same as qhull: True
+slab: 4750 points, 179 hull vertices, same as qhull: True
+</code></pre></div>
+<p><a class="glightbox" data-type="image" href="../../assets/examples/pc9.webp"><img alt="Convex hulls of degenerate clouds" src="../../assets/examples/pc9.webp" /></a></p>
+<p>The rules for degenerate input:</p>
+<ul>
+<li><strong>Coplanar points on a facet</strong> (the lattice's faces): the facet is triangulated arbitrarily,
+  and the points inside it are not vertices.</li>
+<li><strong>Collinear points along a hull edge</strong>: only the two ends are vertices.</li>
+<li><strong>Coincident points</strong>: one of them is kept as the vertex.</li>
+<li><strong>A cloud a fraction of a micron thick</strong>: still a solid, hulled like any other.</li>
+<li><strong>Fewer than 4 points, or no 4 spanning a tetrahedron</strong> (an exactly flat cloud): <code>ValueError</code>,
+  as there is no volume to bound.</li>
+</ul>
+<p class="ordito-credits">Modelled on: <a href="https://trimesh.org/trimesh.convex.html">trimesh: convex</a></p>
 
 
 

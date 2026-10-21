@@ -234,14 +234,26 @@
   
   
   
-    <li class="md-tabs__item">
-      <a href="./concepts/" class="md-tabs__link">
+    
+      
+      
         
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="./concepts/" class="md-tabs__link">
+          
   
   Concepts
 
-      </a>
-    </li>
+        </a>
+      </li>
+    
   
 
       
@@ -255,6 +267,8 @@
       
         
           
+        
+      
         
       
         
@@ -625,6 +639,63 @@
   
   
   
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_3">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Concepts
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
     <li class="md-nav__item">
       <a href="./concepts/" class="md-nav__link">
         
@@ -644,6 +715,42 @@
     </li>
   
 
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reproducible results
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
     
       
       
@@ -656,6 +763,8 @@
       
         
           
+        
+      
         
       
         
@@ -1105,6 +1214,33 @@
     
   
   Reconstruction and registration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./examples/reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reproducible results
 
     
   </span>
@@ -3890,6 +4026,11 @@ and falls back to CPU otherwise, with the same code.</p>
 <li><strong>Optional <code>Trimesh</code> object.</strong> A frozen mesh class with lazily cached derived quantities
   (normals, adjacency, boundary loops, manifoldness and watertightness predicates, BVH) for when
   an object API is more convenient than free functions.</li>
+<li><strong>Exact where it matters.</strong> <a href="examples/points/#pc8">Convex hulls</a> and other topological
+  decisions take exact orientation signs, so the answer does not depend on a tolerance or on the
+  device.</li>
+<li><strong>Reproducible on demand.</strong> One switch, <code>od.set_deterministic(True)</code>, makes results repeat bit
+  for bit on CUDA; see <a href="reproducibility/">Reproducible results</a>.</li>
 <li><strong>Fully typed</strong> (<code>py.typed</code>) and validated function-by-function against eleven reference
   implementations — nine established geometry-processing libraries plus SciPy and NumPy, all
   listed below.</li>

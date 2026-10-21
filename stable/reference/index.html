@@ -234,14 +234,26 @@
   
   
   
-    <li class="md-tabs__item">
-      <a href="../concepts/" class="md-tabs__link">
+    
+      
+      
         
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../concepts/" class="md-tabs__link">
+          
   
   Concepts
 
-      </a>
-    </li>
+        </a>
+      </li>
+    
   
 
       
@@ -255,6 +267,8 @@
       
         
           
+        
+      
         
       
         
@@ -525,6 +539,63 @@
   
   
   
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_3">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Concepts
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
     <li class="md-nav__item">
       <a href="../concepts/" class="md-nav__link">
         
@@ -544,6 +615,42 @@
     </li>
   
 
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reproducible results
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
     
       
       
@@ -556,6 +663,8 @@
       
         
           
+        
+      
         
       
         
@@ -1005,6 +1114,33 @@
     
   
   Reconstruction and registration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/reproducibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reproducible results
 
     
   </span>
@@ -4283,7 +4419,7 @@ print is checked, so the output shown is the output you will get.</p>
 <td><a class="autorefs autorefs-internal" title="statistical_outlier_mask" href="../api/ordito/points/#ordito.points.statistical_outlier_mask"><code>points.statistical_outlier_mask</code></a>, <a class="autorefs autorefs-internal" title="radius_outlier_mask" href="../api/ordito/points/#ordito.points.radius_outlier_mask"><code>radius_outlier_mask</code></a></td>
 </tr>
 <tr>
-<td>convex hull</td>
+<td>convex hull (<a href="../examples/points/#pc8">example</a>)</td>
 <td><a class="autorefs autorefs-internal" title="convex_hull" href="../api/ordito/points/#ordito.points.convex_hull"><code>points.convex_hull</code></a> (exact), <a class="autorefs autorefs-internal" title="convex_superset_mask" href="../api/ordito/points/#ordito.points.convex_superset_mask"><code>convex_superset_mask</code></a> (prefilter)</td>
 </tr>
 <tr>
@@ -4666,7 +4802,7 @@ print is checked, so the output shown is the output you will get.</p>
 </tr>
 <tr>
 <td><a href="../api/ordito/config/">config</a></td>
-<td>Runtime settings: whether float reductions and scans repeat bit for bit on CUDA (<code>od.set_deterministic</code>, <code>with od.deterministic(False):</code>).</td>
+<td>Runtime settings: whether float reductions and scans repeat bit for bit on CUDA (<code>od.set_deterministic</code>, <code>with od.deterministic(False):</code>); see <a href="../reproducibility/">Reproducible results</a>.</td>
 </tr>
 </tbody>
 </table>

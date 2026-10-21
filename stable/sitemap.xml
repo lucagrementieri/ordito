@@ -169,6 +169,12 @@
         <loc>https://lucagrementieri.github.io/ordito/stable/assets/benchmarks/blue_noise-bunny-radius_scale-0.5/</loc>
       </url>
       <url>
+        <loc>https://lucagrementieri.github.io/ordito/stable/assets/benchmarks/convex_hull-bunny/</loc>
+      </url>
+      <url>
+        <loc>https://lucagrementieri.github.io/ordito/stable/assets/benchmarks/convex_hull-dragon/</loc>
+      </url>
+      <url>
         <loc>https://lucagrementieri.github.io/ordito/stable/assets/benchmarks/oriented_bounding_box-dragon/</loc>
       </url>
       <url>
@@ -235,6 +241,9 @@
         <loc>https://lucagrementieri.github.io/ordito/stable/examples/repair/</loc>
       </url>
       <url>
+        <loc>https://lucagrementieri.github.io/ordito/stable/examples/reproducibility/</loc>
+      </url>
+      <url>
         <loc>https://lucagrementieri.github.io/ordito/stable/examples/smoothing/</loc>
       </url>
       <url>
@@ -272,5 +281,8 @@
       </url>
       <url>
         <loc>https://lucagrementieri.github.io/ordito/stable/reference/</loc>
+      </url>
+      <url>
+        <loc>https://lucagrementieri.github.io/ordito/stable/reproducibility/</loc>
       </url>
 </urlset>
