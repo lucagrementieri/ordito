@@ -630,6 +630,80 @@ def test_scatter_sum_repeats_bit_for_bit_on_both_devices(
         assert np.array_equal(repeat.view(np.uint8), sums[0].view(np.uint8))
 
 
+def _scatter_sum_positive(dtype: Any, width: int) -> Any:
+    """Build a kernel adding each ``dtype`` value whose first component is positive."""
+
+    def _scalars(values: Any, indices: Any, sums: Any, out_sums: Any) -> None:
+        i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
+        if values[i] > type(values[i])(0.0):
+            kernel_scatter.scatter_add(out_sums, sums, indices[i], values[i])
+
+    def _vectors(values: Any, indices: Any, sums: Any, out_sums: Any) -> None:
+        i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
+        if values[i][0] > type(values[i][0])(0.0):
+            kernel_scatter.scatter_add_vector(out_sums, sums, indices[i], values[i])
+
+    _k = _scalars if width == 1 else _vectors
+    _k.__annotations__.update(
+        values=wp.array[dtype],
+        indices=wp.array[wp.int32],
+        sums=kernel_reduce.GroupSumPass,
+        out_sums=wp.array[dtype],
+        **{"return": None},
+    )
+    return wp.kernel(_k, name=f"test_scatter_sum_positive_{dtype.__name__}")
+
+
+_SCATTER_SUM_POSITIVE = {
+    dtype_wp: _scatter_sum_positive(dtype_wp, width)
+    for dtype_wp, width in ((wp.float32, 1), (wp.vec3, 3), (wp.vec3d, 3))
+}
+
+
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES[::3])
+@pytest.mark.parametrize("run", [1, 7, 10_000])
+def test_group_sums_of_hot_groups_under_divergence(
+    device: str, dtype_wp: type, dtype_np: type, width: int, run: int, deterministic: bool
+) -> None:
+    """
+    Class A: a scatter taken by about half of each warp's lanes, against ``numpy.bincount``.
+
+    Groups are runs of ``run`` consecutive items (1: every lane its own group; 7: warps shared
+    by a few groups; 10 000: every warp on one group), and only the items whose first component
+    is positive add, so a warp's active lanes are a scattered subset of it. With the setting off
+    that is the warp-uniform pre-sum over a partial mask (``kernels/reduce.warp_lanes_sum``'s
+    rank walk); a lane summed twice, or one dropped, moves its group by a whole term. The item
+    count is not a multiple of 32, so the last warp is short too. Under the setting the sums also
+    repeat bit for bit.
+    """
+    n = 100_003
+    values_np = _group_values(n, width, dtype_np, seed=20)
+    indices_np = (np.arange(n) // run).astype(np.int32)
+    n_groups = int(indices_np[-1]) + 1
+    columns_np = values_np.reshape(n, width).astype(np.float64)
+    taken_np = columns_np[:, 0] > 0.0
+    assert 0.4 < taken_np.mean() < 0.6
+    expected_np = np.stack(
+        [
+            np.bincount(indices_np[taken_np], columns_np[taken_np, c], minlength=n_groups)
+            for c in range(width)
+        ],
+        1,
+    ).reshape((n_groups,) if width == 1 else (n_groups, width))
+    values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
+    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
+    sums = [_launch.group_sums(n_groups, dtype_wp, n, device) for _ in range(2)]
+    for pass_sums in sums:
+        _launch.launch_group_sums(
+            _SCATTER_SUM_POSITIVE[dtype_wp], n, [values_wp, indices_wp], pass_sums, device=device
+        )
+    sums_np, again_np = (_launch.finish_group_sums(pass_sums).numpy() for pass_sums in sums)
+    assert np.allclose(sums_np, expected_np, rtol=1e-5, atol=1e-3)
+    if deterministic:
+        assert np.array_equal(again_np.view(np.uint8), sums_np.view(np.uint8))
+
+
 @pytest.mark.parametrize(
     ("dtype_wp", "dtype_np"), [(wp.float32, np.float32), (wp.float64, np.float64)]
 )
