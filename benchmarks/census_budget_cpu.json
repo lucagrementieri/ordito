@@ -2691,11 +2691,11 @@
  },
  "benchmarks/test_points.py::test_convex_hull[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 71,
-   "alloc": 80,
-   "h2h": 21,
-   "readback": 11,
-   "scan": 11
+   "launch": 107,
+   "alloc": 41,
+   "h2h": 6,
+   "readback": 10,
+   "scan": 10
   }
  },
  "benchmarks/test_points.py::test_estimate_normals[sphere_large-ordito-cpu-64]": {

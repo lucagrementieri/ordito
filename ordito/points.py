@@ -98,6 +98,14 @@ TETRAHEDRON_FLATNESS = wp.constant(wp.float32(1e-3))
 # halving Flip-Flop's rounds on scans; interleaving removed most of those rounds itself.
 # Subdivision 1 measured 0.84x / 0.92x on the two, and 2 lost on both.
 _HULL_PREFILTER_FROM = 1 << 22
+
+# V-criterion flip rounds per growth round, each followed by a pass moving the points through it.
+# One round left the surface's fans to be straightened by Flip-Flop one step a round: on a drum
+# (two identical cocircular rings) every proposal won its locks, but ~130 waves advanced one flip a
+# round, 517 rounds at 16 k points a ring. Two rounds keep the surface near convex while it grows:
+# drums 4.25 / 10.8 / 37.6 -> 2.9 / 3.5 / 4.2 ms at 1 k / 4 k / 16 k a ring, dragon 0.81x, thin
+# disk 0.92x; small clouds 1.13-1.19x, a 1 M sphere surface 1.17x. Three and four lost everywhere.
+_GROWTH_FLIP_ROUNDS = 2
 _HULL_PREFILTER_SUBDIVISIONS = 0
 
 # A bound on Flip-Flop's rounds that no input reaches: the flips terminate on their own (each raises
@@ -1668,7 +1676,8 @@ def _grow_star_surface(points: wp.array[wp.vec3]) -> _HullSurface:
     # regrowth reallocates ten per-face buffers.
     max_faces = 2 * n_points
     capacity = min(max_faces, 1 << 12)
-    tri = _launch.empty(capacity, dtype=wp.vec3i, device=device)
+    # Unused slots hold dead faces, so a flip round launched over an upper bound skips them.
+    tri = _launch.full(capacity, kernel_hull.DEAD_FACE, dtype=wp.vec3i, device=device)
     adj = _launch.empty(capacity, dtype=wp.vec3i, device=device)
     best = _launch.empty(capacity, dtype=wp.int64, device=device)
     child = _launch.empty(capacity, dtype=wp.int32, device=device)
@@ -1710,7 +1719,7 @@ def _grow_star_surface(points: wp.array[wp.vec3]) -> _HullSurface:
         needed = n_faces + 2 * min(n_faces, n_live)
         if needed > capacity:
             capacity = min(max(needed, 4 * capacity), max_faces)
-            tri = _grown(tri, capacity, n_faces)
+            tri = _grown(tri, capacity, n_faces, kernel_hull.DEAD_FACE)
             adj = _grown(adj, capacity, n_faces)
             best = _grown(best, capacity, n_faces)
             flags = _grown(flags, capacity, n_faces)
@@ -1744,46 +1753,63 @@ def _grow_star_surface(points: wp.array[wp.vec3]) -> _HullSurface:
             ],
             device=device,
         )
-        # Readback: the splits size the face arrays, the survivors the next pass's launch.
-        splits, n_live, status = read_values(counters, int(kernel_hull.COUNT_SPLITS), 3)
+        # Everything up to this round's readback is launched over upper bounds -- the faces the
+        # splits can make and the points the last round kept -- with the kernels skipping dead
+        # slots and reading the real list lengths on the device, so the host issues the round
+        # ahead of the GPU instead of waiting on it after the split.
+        surface = _HullSurface(
+            tri, adj, kernel_point, needed, dirty, changed, lock, group, proposal
+        )
+        flags, next_flags = next_flags, flags
+        for follow in range(_GROWTH_FLIP_ROUNDS):
+            _flip_round(points, surface, no_labels, growth_state, 0)
+            if follow:
+                _launch.launch(
+                    kernel_hull.begin_follow,
+                    dim=needed,
+                    inputs=[counters, best, flags],
+                    device=device,
+                )
+            _launch.launch(
+                kernel_hull.assign_points,
+                dim=n_live,
+                inputs=[
+                    points,
+                    kernel_point,
+                    tri,
+                    child,
+                    split_corners,
+                    changed,
+                    group,
+                    live,
+                    counters,
+                    best,
+                    flags,
+                    int(follow != 0),
+                    next_live,
+                ],
+                device=device,
+            )
+            live, next_live = next_live, live
+        # Readback: the round's splits size the face arrays, the survivors the next round.
+        n_live, splits, _, status = read_values(counters, 0, 4)
         if status != int(kernel_hull.STATUS_OK):
             raise ValueError(
                 "convex_hull: the points span no tetrahedron (all coplanar, collinear or "
                 "coincident to float32 precision)."
             )
         n_faces += 2 * int(splits)
-        surface = _HullSurface(
-            tri, adj, kernel_point, n_faces, dirty, changed, lock, group, proposal
-        )
         if n_live == 0:
-            return surface
-        _flip_round(points, surface, no_labels, growth_state, 0)
-        flags, next_flags = next_flags, flags
-        _launch.launch(
-            kernel_hull.assign_points,
-            dim=n_live,
-            inputs=[
-                points,
-                kernel_point,
-                tri,
-                child,
-                split_corners,
-                changed,
-                group,
-                live,
-                counters,
-                best,
-                flags,
-                next_live,
-            ],
-            device=device,
-        )
-        live, next_live = next_live, live
+            return surface._replace(n_faces=n_faces)
 
 
-def _grown(array: wp.array[Any], capacity: int, used: int) -> wp.array[Any]:
-    """``array``'s first ``used`` rows in a fresh buffer of ``capacity`` rows."""
-    grown = _launch.empty(capacity, dtype=array.dtype, device=array.device)
+def _grown(array: wp.array[Any], capacity: int, used: int, fill: object = None) -> wp.array[Any]:
+    """``array``'s first ``used`` rows in a fresh buffer of ``capacity`` rows, the rest ``fill``."""
+    grown = (
+        _launch.empty(capacity, dtype=array.dtype, device=array.device)
+        if fill is None
+        else _launch.full(capacity, fill, dtype=array.dtype, device=array.device)
+    )
     _launch.copy(grown, array, count=used)
     return grown
 

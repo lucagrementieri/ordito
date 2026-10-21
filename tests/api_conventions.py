@@ -646,6 +646,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
         {"tri", "adj", "best", "child", "counters", "dirty"}
     ),
     ("algorithms.convex_hull", "propose_flips"): frozenset({"changed", "dirty", "lock"}),
+    # A follow pass's reset: the growth loop's ``counters`` word, bids and split flags (above).
+    ("algorithms.convex_hull", "begin_follow"): frozenset({"counters", "best", "flags"}),
     ("algorithms.convex_hull", "apply_flips"): frozenset(
         {"tri", "adj", "state", "changed", "group"}
     ),

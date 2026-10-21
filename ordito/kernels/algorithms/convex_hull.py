@@ -83,7 +83,9 @@ COUNT_APPENDED = wp.int32(0)
 COUNT_SPLITS = wp.int32(1)
 COUNT_LIVE = wp.int32(2)
 COUNT_STATUS = wp.int32(3)
-COUNTERS_SIZE = 4
+# Entries in the live list a follow pass reads (``begin_follow`` moves the append count here).
+COUNT_FOLLOW = wp.int32(4)
+COUNTERS_SIZE = 5
 
 # Start statuses: a usable tetrahedron, a cloud with no four non-coplanar points, and a tetrahedron
 # so thin that no 28-bit kernel point lies strictly inside it.
@@ -472,6 +474,21 @@ def split_faces(
 
 
 @wp.kernel
+def begin_follow(
+    counters: wp.array[wp.int32], best: wp.array[wp.int64], flags: wp.array[wp.int32]
+) -> None:
+    # Before a follow pass: its input count moves out of the append slot, and every face's bid and
+    # split flag is cleared, since the pass re-bids every surviving point onto the faces the flips
+    # left -- a flagged face may have lost its only bidder.
+    f = wp.int32(wp.tid())
+    if f == 0:
+        counters[COUNT_FOLLOW] = counters[COUNT_APPENDED]
+        counters[COUNT_APPENDED] = 0
+    best[f] = wp.int64(-1)
+    flags[f] = 0
+
+
+@wp.kernel
 def assign_points(
     points: wp.array[wp.vec3],
     kernel_point: wp.array[wp.vec3d],
@@ -484,18 +501,27 @@ def assign_points(
     counters: wp.array[wp.int32],
     best: wp.array[wp.int64],
     flags: wp.array[wp.int32],
+    follow: wp.int32,
     out_live: wp.array[wp.vec2i],
 ) -> None:
+    # With ``follow`` set, a follow pass after a further flip round of the same growth round: the
+    # list is the previous pass's output, its length in ``COUNT_FOLLOW``, and no face was split.
+    #
     # One growth pass: follow a split face's point into the child cone holding it, then, if the
     # round's flips rewrote that child, into the rewritten face holding it; drop the point if it
     # became the split vertex or lies on or beneath its face, and otherwise bid for the face.
     # The three children of ``(a, b, c)`` split at ``v`` are cut by the planes through ``s``, ``v``
     # and each corner, so two or three signs place the point. A flip rewrites two or three faces
     # into ones whose cones tile the same region, so one of the flip's live faces holds it.
-    entry = live[wp.int32(wp.tid())]
+    # Launched over an upper bound on the list's length: the host learns the real one only at the
+    # round's single readback.
+    j = wp.int32(wp.tid())
+    if j >= counters[wp.where(follow != 0, COUNT_FOLLOW, COUNT_LIVE)]:
+        return
+    entry = live[j]
     i = entry[0]
     f = entry[1]
-    base = child[f]
+    base = wp.where(follow != 0, -1, child[f])
     p = points[i]
     s = kernel_point_of(kernel_point[0])
     if base >= 0:
