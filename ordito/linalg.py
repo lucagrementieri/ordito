@@ -70,8 +70,8 @@ null space, where IC(0) hits a zero pivot on the last row of every connected com
 **The multilevel option** is [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]:
 smoothed aggregation, the one scheme that breaks the iteration count's growth with problem size
 rather than paying it down by a constant factor. It is not the default, and the reason is the
-*setup* rather than the cycle: building the hierarchy (one aggregation, one power iteration, a
-transpose and two sparse products per level) has a real fixed cost, so the V-cycle wins
+*setup* rather than the cycle: building the hierarchy (one aggregation, one power iteration and
+three sparse assemblies per level) has a real fixed cost, so the V-cycle wins
 exactly where the solve it replaces is long enough to amortize that setup and loses on a
 well-conditioned or already-fast-converging system. See
 [`CG_MULTIGRID_DOMINANCE`][ordito.linalg.CG_MULTIGRID_DOMINANCE] for how the gate decides.
@@ -4368,19 +4368,18 @@ def multigrid_preconditioner(
     Notes
     -----
     Setup is not free and it is not amortized over anything: building the hierarchy costs one
-    aggregation, one power iteration, two sparse products and one transpose per level. **Ask for
+    aggregation, one power iteration and three sparse assemblies (the prolongator, ``A P`` and
+    ``P^T (A P)``) per level. **Ask for
     this where the solve dominates the call**, and pass the same operator's preconditioner into a
     loop rather than rebuilding it -- [`solve_spd`][ordito.linalg.solve_spd]'s ``preconditioner``
     parameter exists for exactly that.
 
     **The setup is host cost and it is per *level*, not per unknown, so it cannot be cut by making
-    the operator smaller.** A level's cost is dominated by host-side overhead in
-    ``warp.sparse.bsr_mm``, which makes device-to-host readbacks to size its output and so costs
-    roughly the same regardless of the level's size. That is Warp's, not this package's, so the
-    reachable lever is to build **fewer levels**, which is what ``_MULTIGRID_MAX_COARSE`` is set
-    for.
+    the operator smaller.** Each assembly reads its output size back to the host before it can
+    allocate, so a level has a fixed cost whatever its size, and the reachable lever is to build
+    **fewer levels**, which is what ``_MULTIGRID_MAX_COARSE`` is set for.
 
-    Coarsening stops at 128 rows, or earlier if a level fails to shrink; the coarsest operator is
+    Coarsening stops at 384 rows, or earlier if a level fails to shrink; the coarsest operator is
     then inverted densely on the host, which is exact and is a single launch inside the cycle where
     an iterative coarse solve would be a data-dependent loop. When coarsening stalls while the level
     is still too large to factor, there is no usable hierarchy and this hands back
@@ -5111,9 +5110,10 @@ def _ratio_bound(ratios: wp.array[wp.float64, Any]) -> wp.array[wp.float64]:
 # dense pseudo-inverse factored on the host, so this is also the size of that factorization.
 #
 # The last level is expensive twice over: it costs a level's setup (one aggregation, one power
-# iteration, a prolongator, a transpose and two ``bsr_mm``) and then a smoothing sweep, a
-# restriction and a prolongation in *every* cycle, where solving that level densely instead is one
-# matvec. 384 keeps headroom under ``_MULTIGRID_MAX_DENSE`` and the host ``pinv`` that guard sizes.
+# iteration, a prolongator and the two key-assembled Galerkin products) and then a smoothing
+# sweep, a restriction and a prolongation in *every* cycle, where solving that level densely
+# instead is one matvec. 384 keeps headroom under ``_MULTIGRID_MAX_DENSE`` and the host ``pinv``
+# that guard sizes.
 _MULTIGRID_MAX_COARSE = 384
 
 # Hard cap on the hierarchy depth, and on the dense coarse solve. Coarsening stops early whenever a
