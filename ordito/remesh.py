@@ -2021,10 +2021,12 @@ def quadric_decimate(
       retract.
     - **The output is reproducible run to run on either device**: each vertex quadric is summed
       over its faces in a fixed order, so every cost, every tie between equal costs and every
-      placement repeats. The exceptions are a vertex with more than 64 incident faces and one
-      where three or more boundary edges meet, whose sums take whatever order the pass's atomics
-      produced. The CPU and CUDA devices need not agree with each other: the GPU contracts
-      floating-point expressions differently.
+      placement repeats. Two sums are the exception on CUDA with
+      [`is_deterministic`][ordito.config.is_deterministic] off: a vertex with more than 64
+      incident faces and one where three or more boundary edges meet take whatever order the
+      pass's atomics produced. With it on those two are summed in a fixed order too, so the
+      whole output repeats. The CPU and CUDA devices need not agree with each other: the GPU
+      contracts floating-point expressions differently.
 
     Examples
     --------
@@ -2111,6 +2113,8 @@ class _DecimationBuffers:
         self._target = target
         self._feature = feature
         self._track_index = track_index
+        # Read once, so every pass of one call, captured or issued, sums its quadrics one way.
+        self._exact = is_deterministic()
         self._graph = None
         self._passes = 0
         self._retain: list[object] = []
@@ -2156,6 +2160,10 @@ class _DecimationBuffers:
             v_cap, dtype=kernel_remesh.SymmetricQuadric, device=device
         )
         self._boundary_flags = _launch.zeros(v_cap, dtype=wp.int32, device=device)
+        # The deterministic setting's list of hub vertices, whose rows ``gather_hub_quadrics`` sums
+        # exactly, and its count (cleared every pass by ``count_pass_edges_exact``).
+        self._hubs = _launch.empty(v_cap if self._exact else 0, dtype=wp.int32, device=device)
+        self._hub_count = _launch.empty(1 if self._exact else 0, dtype=wp.int32, device=device)
         self._remapped_store = _launch.empty(n, dtype=wp.int32, device=device)
         # Per-vertex state the pass accumulates into or starts from; ``begin_decimation_pass``
         # resets all of it.
@@ -2371,19 +2379,59 @@ class _DecimationBuffers:
         offsets = self._group_edges()
         csr_offsets = odt.as_dense(offsets[: v_cap + 1])
         face_offsets = offsets[v_cap:]
-        _launch.launch(
-            kernel_remesh.gather_vertex_quadrics,
-            dim=v_cap,
-            inputs=[
-                self._face_quadrics,
-                face_offsets,
-                self._adjacency,
-                self._boundary_quadrics,
-                self._boundary_flags,
-            ],
-            outputs=[self._quadrics],
-            device=device,
-        )
+        if self._exact:
+            # The two sums the plain gather leaves in arrival order -- a vertex-face row past
+            # ``QUADRIC_ORDERED_ROW_MAX`` and three or more boundary planes -- summed exactly.
+            _launch.launch(
+                kernel_remesh.gather_vertex_quadrics_exact,
+                dim=v_cap,
+                inputs=[
+                    self._face_quadrics,
+                    face_offsets,
+                    self._adjacency,
+                    csr_offsets,
+                    self._adjacency,
+                    self.vertices,
+                    self.faces,
+                    self._unique_edges,
+                    self._edge_face_count,
+                    self._edge_faces,
+                    self.state,
+                    wp.uint64(v_cap),
+                    self._boundary_quadrics,
+                    self._boundary_flags,
+                ],
+                outputs=[self._hubs, self._hub_count, self._quadrics],
+                device=device,
+            )
+            _launch.launch_tiled(
+                kernel_remesh.gather_hub_quadrics,
+                dim=kernel_remesh.HUB_BLOCKS,
+                inputs=[
+                    self._hubs,
+                    self._hub_count,
+                    self._face_quadrics,
+                    face_offsets,
+                    self._adjacency,
+                    self._quadrics,
+                ],
+                block_dim=kernel_remesh.HUB_BLOCK_DIM,
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_remesh.gather_vertex_quadrics,
+                dim=v_cap,
+                inputs=[
+                    self._face_quadrics,
+                    face_offsets,
+                    self._adjacency,
+                    self._boundary_quadrics,
+                    self._boundary_flags,
+                ],
+                outputs=[self._quadrics],
+                device=device,
+            )
         _launch.launch(
             kernel_remesh.quadric_collapse_candidates,
             dim=self.n_edges,
@@ -2469,25 +2517,32 @@ class _DecimationBuffers:
             ],
             device=device,
         )
-        _launch.launch(
-            kernel_remesh.count_pass_edges,
-            dim=self.n_edges,
-            inputs=[
-                self.vertices,
-                self.faces,
-                self._unique_edges,
-                self._edge_face_count,
-                self._edge_faces,
-                self.state,
-                self._feature,
-                self._feature_count,
-                self._adjacency_counts,
-                self._edge_slots,
-                self._boundary_quadrics,
-                self._boundary_flags,
-            ],
-            device=device,
-        )
+        counts = [
+            self.vertices,
+            self.faces,
+            self._unique_edges,
+            self._edge_face_count,
+            self._edge_faces,
+            self.state,
+            self._feature,
+            self._feature_count,
+            self._adjacency_counts,
+            self._edge_slots,
+            self._boundary_quadrics,
+            self._boundary_flags,
+        ]
+        if self._exact:
+            # Each boundary vertex's flag counts its boundary edges, and the hub list is cleared.
+            _launch.launch(
+                kernel_remesh.count_pass_edges_exact,
+                dim=self.n_edges,
+                inputs=[*counts, self._hub_count],
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_remesh.count_pass_edges, dim=self.n_edges, inputs=counts, device=device
+            )
         self._adjacency_scan.launch(self._adjacency_counts)
         _launch.launch(
             kernel_remesh.scatter_pass_adjacency,

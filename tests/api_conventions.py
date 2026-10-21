@@ -539,16 +539,18 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # and the per-row partners the decode reads.
     ("holes", "join_round"): frozenset({"rows", "component", "state", "best", "partner"}),
     ("holes", "fill_dp_span_tiled"): frozenset({"tables"}),
+    # ``quadric_decimate``'s hub sums are added in place to the boundary planes the gather left in
+    # each hub's quadric, so the array is read and written, not an output.
+    ("remesh", "gather_hub_quadrics"): frozenset({"quadrics"}),
+    # ``robust_laplacian``'s exact rounding check keeps each face's terms between the group sum's
+    # two passes: scratch the first pass writes and the second reads, not an output.
+    ("laplacian", "intrinsic_rounding_rows_exact"): frozenset({"terms"}),
     # ``quadric_decimate``'s provenance column, folded one pass at a time: the array is the previous
     # pass's answer *and* this pass's, so it is in place and ``out_`` would read as write-only.
     ("remesh", "compact_decimation_pass"): frozenset({"index"}),
     # ``isotropic_remesh``'s fused topology fill: ``cursor`` is the spent count buffer counting each
     # CSR row's free slots down, ``graph.scatter_neighbor_lists``' argument of that name.
     ("remesh", "fill_edge_topology"): frozenset({"cursor"}),
-    # The decimation pass's boundary-plane table: ``count_pass_edges`` accumulates into it and this
-    # kernel folds each entry into its vertex's quadric and re-zeroes it for the next pass, so it is
-    # persistent scratch whose zero state is the invariant, not an output.
-    ("remesh", "gather_vertex_quadrics"): frozenset({"boundary_quadrics", "boundary_flags"}),
     # ``intrinsic_delaunay``'s halfedge-twin flip engine mutates the mesh it was handed rather than
     # producing a fresh one each round: ``edge_lengths`` is the caller's own metric, read pre-flip
     # and overwritten in the same launch, and ``twin`` is the incrementally-maintained twin table

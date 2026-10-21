@@ -594,12 +594,35 @@ def _intrinsic_rounding_ratio(
     ``(1,)`` the largest row movement the ``float32`` lengths' rounding allows, past the limit.
 
     ``0`` when no row exceeds ``_INTRINSIC_ROUNDING_LIMIT``; ``None`` for a mesh with no faces.
+    With [`is_deterministic`][ordito.config.is_deterministic] the rows are summed exactly
+    (``_launch.group_sums``), so the ratio, and the warning read from it, repeat bit for bit on
+    CUDA.
     """
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
         return None
     limit = wp.float64(_INTRINSIC_ROUNDING_LIMIT)
+    if is_deterministic():
+        # A row takes two terms per corner it holds, so ``6 * n_faces`` bound any one component.
+        rows = _launch.group_sums(n_vertices, wp.vec2d, 6 * n_faces, device)
+        terms = odt.empty_2d((n_faces, 2), wp.vec3d, device=device)
+        _launch.launch_group_sums(
+            kernel_laplacian.intrinsic_rounding_rows_exact,
+            dim=n_faces,
+            inputs=[faces, lengths, terms],
+            sums=rows,
+            device=device,
+        )
+        worst = _launch.zeros(1, dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_laplacian.max_row_ratio_pairs,
+            dim=n_vertices,
+            inputs=[_launch.finish_group_sums(rows), limit],
+            outputs=[worst],
+            device=device,
+        )
+        return worst
     error = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     scale = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     _launch.launch(

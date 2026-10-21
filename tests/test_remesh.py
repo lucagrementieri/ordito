@@ -1697,6 +1697,104 @@ def test_quadric_decimate_is_reproducible(device: str, target_ratio: float) -> N
     assert outputs[1:] == outputs[:-1]
 
 
+@pytest.mark.parametrize("feature", ["hub", "branching_rim"])
+def test_quadric_decimate_sums_hub_and_branching_rim_quadrics_reproducibly(
+    device: str, feature: Literal["hub", "branching_rim"]
+) -> None:
+    """
+    Ordito against ordito: the two sums the ordered gather skips repeat under the setting.
+
+    The vertex quadrics are summed in ascending face order only over rows of at most
+    ``QUADRIC_ORDERED_ROW_MAX`` faces, and the boundary planes are added by atomics, which commit
+    in arrival order once three or more meet at a vertex. One mesh has two cone apices of 200
+    faces each, the other a rim vertex where four open fans meet (eight boundary edges), scattered
+    through a scrambled sphere so their rows are filled from many blocks. With the setting on a
+    hub's faces are summed exactly and a branching rim's planes in ascending neighbour order; in
+    arrival order the pass's quadric table took a different
+    value on each of 10 CUDA runs with the hubs, and two values in 10 with the branching rim (in
+    each of three sessions).
+    The table is compared rather than the output: a last-bit change in a quadric seldom moves a
+    ``float32`` cost or placement, and so a test on the decimated mesh alone does not bite.
+
+    **Bug class excluded:** an arrival-order float sum left in the decimation pass.
+    """
+    vertices_np, faces_np = _hub_or_branching_rim_mesh(feature)
+    row_max = int(kernel_remesh.QUADRIC_ORDERED_ROW_MAX)
+    assert (np.bincount(faces_np.ravel()).max() > row_max) == (feature == "hub")
+    edges_np = np.sort(faces_np[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+    unique_np, counts_np = np.unique(edges_np, axis=0, return_counts=True)
+    rim_ends = np.bincount(unique_np[counts_np == 1].ravel())
+    assert (rim_ends.size > 0 and rim_ends.max() >= 3) == (feature == "branching_rim")
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    tables = set()
+    for _ in range(10):
+        buffers = od.remesh._DecimationBuffers(
+            vertices_wp, faces_wp, faces_np.shape[0] // 4, wp.float32(math.pi)
+        )
+        assert buffers.run_pass()
+        assert buffers.run_pass()
+        tables.add(buffers._quadrics.numpy().tobytes())
+    assert len(tables) == 1
+
+
+def _hub_or_branching_rim_mesh(
+    feature: Literal["hub", "branching_rim"],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build a bipyramid of 200 sides, or four open fans sharing a rim vertex, in a sphere."""
+    rng = np.random.default_rng(7)
+    vertices: list[list[float]] = []
+    faces: list[list[int]] = []
+    if feature == "hub":
+        sides = 200
+        angles = np.linspace(0.0, 2.0 * np.pi, sides, endpoint=False)
+        radii = 1.0 + 0.2 * rng.random(sides)
+        heights = 0.15 * rng.standard_normal(sides)
+        vertices = [
+            [float(r * np.cos(a)), float(r * np.sin(a)), float(z)]
+            for r, a, z in zip(radii, angles, heights, strict=True)
+        ]
+        vertices += [[0.0, 0.0, 1.0], [0.0, 0.0, -1.3]]
+        for i in range(sides):
+            j = (i + 1) % sides
+            faces += [[i, j, sides], [j, i, sides + 1]]
+        return _scattered_in_a_sphere(vertices, faces, rng)
+    shared = 0
+    vertices.append([4.0, 0.0, 0.0])
+    for fan in range(4):
+        direction = 2.0 * np.pi * fan / 4
+        centre = len(vertices)
+        vertices.append([4.0 + np.cos(direction), np.sin(direction), 0.1 * fan])
+        rim = [shared]
+        for i in range(1, 30):
+            angle = direction + np.pi + (i / 30 - 0.5) * 1.5
+            reach = 0.9 * (1.0 + 0.3 * rng.random())
+            rim.append(len(vertices))
+            vertices.append(
+                [
+                    4.0 + np.cos(direction) + reach * np.cos(angle),
+                    np.sin(direction) + reach * np.sin(angle),
+                    0.1 * fan + 0.05 * rng.standard_normal(),
+                ]
+            )
+        faces += [[centre, rim[i], rim[i + 1]] for i in range(len(rim) - 1)]
+    return _scattered_in_a_sphere(vertices, faces, rng)
+
+
+def _scattered_in_a_sphere(
+    vertices: list[list[float]], faces: list[list[int]], rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray]:
+    """Place the mesh beside a sphere and shuffle its vertices and faces through the sphere's."""
+    sphere_vertices, sphere_faces = od.creation.icosphere(subdivisions=6)
+    offset = len(vertices)
+    all_vertices = np.vstack([np.asarray(vertices), sphere_vertices.numpy() * 0.3 + [8.0, 0, 0]])
+    all_faces = np.vstack([np.asarray(faces), sphere_faces.numpy().reshape(-1, 3) + offset])
+    permutation = rng.permutation(all_vertices.shape[0])
+    inverse = np.empty_like(permutation)
+    inverse[permutation] = np.arange(permutation.size)
+    scrambled = inverse[all_faces][rng.permutation(all_faces.shape[0])]
+    return all_vertices[permutation].astype(np.float32), scrambled.astype(np.int32)
+
+
 def test_quadric_decimate_keeps_a_thin_part_without_slivers(device: str) -> None:
     """
     Not a library comparison: an invariant on a thin part, which no reference reports.

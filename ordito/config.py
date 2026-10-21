@@ -22,6 +22,8 @@ deterministic either way):
 - the lumped masses of [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries] and
   [`mass_matrix`][ordito.laplacian.mass_matrix] given ``float64`` face areas (summed in ascending
   face order when on; ``float32`` or computed areas sum exactly and repeat either way);
+- the rounding check of [`robust_laplacian`][ordito.laplacian.robust_laplacian], and so whether it
+  warns and the ratio it reports (each row summed exactly when on);
 - the per-vertex sums of [`hessian_energy`][ordito.energies.hessian_energy],
   [`curved_hessian_energy`][ordito.energies.curved_hessian_energy] and
   [`vertex_defects`][ordito.vertices.vertex_defects];
@@ -50,6 +52,13 @@ deterministic either way):
 - the positions of [`cluster_decimate`][ordito.remesh.cluster_decimate] with
   ``contraction="average"``, whose cell means are added in a fixed order (on the CPU device the
   same order as with the setting off, so the bits do not change);
+- the positions of [`isotropic_remesh`][ordito.remesh.isotropic_remesh], whose tangential
+  smoothing adds each vertex's area-weighted one ring over its neighbours in ascending order when
+  on, and so the splits, collapses and flips that follow and the face count;
+- the quadrics of [`quadric_decimate`][ordito.remesh.quadric_decimate] at a vertex with more than
+  64 incident faces or where three or more boundary edges meet (summed in a fixed order when on,
+  so on the CPU device too their last bits can differ from those with it off; every other vertex
+  is summed in a fixed order either way), and so its collapses;
 - the values of the differentiable Chamfer losses
   [`chamfer_points_to_points_loss`][ordito.metrics.chamfer_points_to_points_loss],
   [`chamfer_points_to_mesh_loss`][ordito.metrics.chamfer_points_to_mesh_loss] and

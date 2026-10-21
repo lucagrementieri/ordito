@@ -16,6 +16,7 @@ from ordito.kernels.array import (
     pack_index_triple,
     scanned_slot,
     sort3,
+    sort_segment,
     sorted_run_start,
     to_vec2d,
     to_vec3,
@@ -43,7 +44,14 @@ from ordito.kernels.predicates import (
     triangle_normal,
     vector_angle,
 )
-from ordito.kernels.reduce import block_sum
+from ordito.kernels.reduce import (
+    GROUP_SUM_NONFINITE,
+    block_max,
+    block_sum,
+    group_sum_field,
+    group_sum_power,
+    group_sum_words,
+)
 from ordito.kernels.scatter import (
     accumulate_endpoint_value,
     add_corner_triple,
@@ -3852,6 +3860,55 @@ def emit_pass_edges(
         out_state[DECIMATION_EDGES] = wp.min(run_starts, edge_capacity)
 
 
+@wp.func
+def count_pass_edge(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    feature_angle: wp.float32,
+    e: wp.int32,
+    tally_boundary: wp.int32,
+    out_feature_count: wp.array[wp.int32],
+    out_adjacency_counts: wp.array[wp.int32],
+    out_edge_slots: wp.array[wp.vec2i],
+    out_boundary_quadrics: wp.array[SymmetricQuadric],
+    out_boundary_flags: wp.array[wp.int32],
+) -> None:
+    # Live unique edge ``e``'s share of the pass, once the incidence is complete: its feature vote
+    # (the topology fill's count, ``is_feature_edge``), its two entries' slots in the vertex-vertex
+    # CSR rows, and a boundary edge's constraint plane (``boundary_quadric``), added to both
+    # endpoints' entries of a separate table and flagged there for ``gather_vertex_quadrics``,
+    # which folds the table into the vertex quadrics and leaves it zeroed for the next pass. Two
+    # terms added to zero give the same sum in either order, so the table is the same run to run
+    # wherever no vertex ends three or more boundary edges -- every vertex of a manifold boundary.
+    # ``tally_boundary`` counts each endpoint's boundary edges into its flag instead of setting it,
+    # which is how ``gather_vertex_quadrics_exact`` finds the vertices whose table it must not
+    # read. A degenerate edge ``(a, a)`` from a face with a repeated corner is one entry in row
+    # ``a``, as the triplet build this replaces accumulated its two identical triplets into one.
+    u = unique_edges[e, 0]
+    v = unique_edges[e, 1]
+    if is_feature_edge(vertices, faces, edge_face_count, edge_faces, e, feature_angle):
+        wp.atomic_add(out_feature_count, u, 1)
+        wp.atomic_add(out_feature_count, v, 1)
+    if edge_face_count[e] == 1 and u != v:
+        plane = boundary_quadric(vertices, faces, edge_faces[e, 0], u, v)
+        wp.atomic_add(out_boundary_quadrics, u, plane)
+        wp.atomic_add(out_boundary_quadrics, v, plane)
+        if tally_boundary != 0:
+            wp.atomic_add(out_boundary_flags, u, 1)
+            wp.atomic_add(out_boundary_flags, v, 1)
+        else:
+            out_boundary_flags[u] = 1
+            out_boundary_flags[v] = 1
+    slot_u = wp.atomic_add(out_adjacency_counts, u, 1)
+    slot_v = wp.int32(-1)
+    if u != v:
+        slot_v = wp.atomic_add(out_adjacency_counts, v, 1)
+    out_edge_slots[e] = wp.vec2i(slot_u, slot_v)
+
+
 @wp.kernel
 def count_pass_edges(
     vertices: wp.array[wp.vec3],
@@ -3867,34 +3924,67 @@ def count_pass_edges(
     out_boundary_quadrics: wp.array[SymmetricQuadric],
     out_boundary_flags: wp.array[wp.int32],
 ) -> None:
-    # Per live unique edge, once the incidence is complete: its feature vote (the topology fill's
-    # count, ``is_feature_edge``), its two entries' slots in the vertex-vertex CSR rows, and a
-    # boundary edge's constraint plane (``boundary_quadric``), added to both endpoints' entries of
-    # a separate table and flagged there for ``gather_vertex_quadrics``, which folds the table into
-    # the vertex quadrics and leaves it zeroed for the next pass. Two terms added to zero give the
-    # same sum in either order, so the table is the same run to run wherever no vertex ends three
-    # or more boundary edges -- every vertex of a manifold boundary. A
-    # degenerate edge ``(a, a)`` from a face with a repeated corner is one entry in row ``a``, as
-    # the triplet build this replaces accumulated its two identical triplets into one.
+    # ``count_pass_edge`` per live unique edge, flagging boundary vertices.
+    # ``count_pass_edges_exact`` is the deterministic setting's form, counting them.
     e = wp.int32(wp.tid())
     if e >= state[DECIMATION_EDGES]:
         return
-    u = unique_edges[e, 0]
-    v = unique_edges[e, 1]
-    if is_feature_edge(vertices, faces, edge_face_count, edge_faces, e, feature_angle):
-        wp.atomic_add(out_feature_count, u, 1)
-        wp.atomic_add(out_feature_count, v, 1)
-    if edge_face_count[e] == 1 and u != v:
-        plane = boundary_quadric(vertices, faces, edge_faces[e, 0], u, v)
-        wp.atomic_add(out_boundary_quadrics, u, plane)
-        wp.atomic_add(out_boundary_quadrics, v, plane)
-        out_boundary_flags[u] = 1
-        out_boundary_flags[v] = 1
-    slot_u = wp.atomic_add(out_adjacency_counts, u, 1)
-    slot_v = wp.int32(-1)
-    if u != v:
-        slot_v = wp.atomic_add(out_adjacency_counts, v, 1)
-    out_edge_slots[e] = wp.vec2i(slot_u, slot_v)
+    count_pass_edge(
+        vertices,
+        faces,
+        unique_edges,
+        edge_face_count,
+        edge_faces,
+        feature_angle,
+        e,
+        wp.int32(0),
+        out_feature_count,
+        out_adjacency_counts,
+        out_edge_slots,
+        out_boundary_quadrics,
+        out_boundary_flags,
+    )
+
+
+@wp.kernel
+def count_pass_edges_exact(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    state: wp.array[wp.int32],
+    feature_angle: wp.float32,
+    out_feature_count: wp.array[wp.int32],
+    out_adjacency_counts: wp.array[wp.int32],
+    out_edge_slots: wp.array[wp.vec2i],
+    out_boundary_quadrics: wp.array[SymmetricQuadric],
+    out_boundary_flags: wp.array[wp.int32],
+    out_hub_count: wp.array[wp.int32],
+) -> None:
+    # ``count_pass_edges`` with each boundary vertex's flag holding its boundary-edge count, for
+    # ``gather_vertex_quadrics_exact``, which also lists this pass's hub vertices from the count
+    # cleared here.
+    e = wp.int32(wp.tid())
+    if e == 0:
+        out_hub_count[0] = 0
+    if e >= state[DECIMATION_EDGES]:
+        return
+    count_pass_edge(
+        vertices,
+        faces,
+        unique_edges,
+        edge_face_count,
+        edge_faces,
+        feature_angle,
+        e,
+        wp.int32(1),
+        out_feature_count,
+        out_adjacency_counts,
+        out_edge_slots,
+        out_boundary_quadrics,
+        out_boundary_flags,
+    )
 
 
 @wp.kernel
@@ -3933,8 +4023,44 @@ def scatter_pass_adjacency(
 # Rows longer than this are summed in their stored order instead of ascending face order:
 # ``gather_vertex_quadrics`` finds each next face by a rescan of the row (``array.next_row_entry``),
 # quadratic in its length, which a hub vertex (a cone apex with tens of thousands of faces) cannot
-# afford.
+# afford. Under the deterministic setting ``gather_hub_quadrics`` sums such a row exactly instead.
 QUADRIC_ORDERED_ROW_MAX = wp.constant(64)
+
+
+@wp.func
+def ordered_face_quadric_sum(
+    face_quadrics: wp.array[SymmetricQuadric],
+    vertex_faces: wp.array[wp.int32],
+    lo: wp.int32,
+    hi: wp.int32,
+) -> SymmetricQuadric:
+    # The faces' planes of the vertex-face row ``vertex_faces[lo:hi]``, summed in **ascending face
+    # order** -- the row itself is in atomic arrival order -- so the sum is the same run to run on
+    # every device; a row longer than ``QUADRIC_ORDERED_ROW_MAX`` is summed as stored.
+    ordered = hi - lo <= QUADRIC_ORDERED_ROW_MAX
+    q = SymmetricQuadric()
+    last = wp.int32(-1)
+    slot = wp.int32(-1)
+    for j in range(lo, hi):
+        f = vertex_faces[j]
+        if ordered:
+            last, slot = next_row_entry(vertex_faces, lo, hi, last, slot)
+            f = last
+        q = q + face_quadrics[f]
+    return q
+
+
+@wp.func
+def take_boundary_quadric(
+    boundary_quadrics: wp.array[SymmetricQuadric], boundary_flags: wp.array[wp.int32], v: wp.int32
+) -> SymmetricQuadric:
+    # The boundary planes ``count_pass_edges`` accumulated for flagged vertex ``v``, with its entry
+    # and flag reset for the next pass: the table is persistent scratch whose zero state is the
+    # invariant, not an output, which is why neither argument wears the output prefix.
+    q = boundary_quadrics[v]
+    boundary_quadrics[v] = SymmetricQuadric()
+    boundary_flags[v] = 0
+    return q
 
 
 @wp.kernel
@@ -3946,32 +4072,267 @@ def gather_vertex_quadrics(
     boundary_flags: wp.array[wp.int32],
     out_quadrics: wp.array[SymmetricQuadric],
 ) -> None:
-    # Each vertex's quadric: its faces' planes, summed by one thread over its vertex-face row in
-    # **ascending face order** -- the row itself is in atomic arrival order -- so the sum, and every
-    # cost and placement read from it, is the same run to run on every device (a row longer than
-    # ``QUADRIC_ORDERED_ROW_MAX`` is summed as stored), then the boundary planes
-    # ``count_pass_edges`` accumulated for it, whose entry is reset here for the next pass. A
-    # degenerate face that names ``v`` twice is visited once per occurrence; its plane is zero, so
-    # it adds nothing either way. The dummy vertex's row is empty, so its
-    # quadric is zero, as is every unreferenced vertex's.
+    # Each vertex's quadric: its faces' planes, summed by one thread over its vertex-face row
+    # (``ordered_face_quadric_sum``), so every cost and placement read from it is the same run to
+    # run on every device, then the boundary planes ``count_pass_edges`` accumulated for it, whose
+    # entry is reset here for the next pass. A degenerate face that names ``v`` twice is visited
+    # once per occurrence; its plane is zero, so it adds nothing either way. The dummy vertex's row
+    # is empty, so its quadric is zero, as is every unreferenced vertex's.
+    #
+    # Two sums stay in arrival order on CUDA: a row longer than ``QUADRIC_ORDERED_ROW_MAX``, and
+    # the boundary table of a vertex where three or more boundary edges meet. The form for
+    # ``ordito.config``'s deterministic setting off; ``gather_vertex_quadrics_exact`` is the form
+    # for it on.
+    v = wp.int32(wp.tid())
+    q = ordered_face_quadric_sum(
+        face_quadrics, vertex_faces, vertex_face_offsets[v], vertex_face_offsets[v + 1]
+    )
+    if boundary_flags[v] != 0:
+        q = q + take_boundary_quadric(boundary_quadrics, boundary_flags, v)
+    out_quadrics[v] = q
+
+
+@wp.func
+def unique_edge_index(
+    unique_edges: wp.array2d[wp.int32], n_edges: wp.int32, u: wp.int32, v: wp.int32, base: wp.uint64
+) -> wp.int32:
+    # The row of edge ``(u, v)`` among the first ``n_edges`` rows of ``unique_edges``, which ascend
+    # by ``pack_edge_key``; ``-1`` when it is not there.
+    key = pack_edge_key(u, v, base)
+    lo = wp.int32(0)
+    hi = n_edges
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if pack_edge_key(unique_edges[mid, 0], unique_edges[mid, 1], base) < key:
+            lo = mid + 1
+        else:
+            hi = mid
+    if lo < n_edges:
+        if pack_edge_key(unique_edges[lo, 0], unique_edges[lo, 1], base) == key:
+            return lo
+    return wp.int32(-1)
+
+
+@wp.func
+def boundary_edge_at(
+    unique_edges: wp.array2d[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    n_edges: wp.int32,
+    base: wp.uint64,
+    v: wp.int32,
+    w: wp.int32,
+) -> wp.int32:
+    # The row of edge ``(v, w)`` when it is a boundary edge ``count_pass_edges`` adds a plane for
+    # (one face, two distinct ends), else ``-1``.
+    if w == v:
+        return wp.int32(-1)
+    e = unique_edge_index(unique_edges, n_edges, v, w, base)
+    if e < 0:
+        return wp.int32(-1)
+    if edge_face_count[e] != 1:
+        return wp.int32(-1)
+    return e
+
+
+@wp.func
+def edge_boundary_quadric(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    e: wp.int32,
+) -> SymmetricQuadric:
+    # Boundary edge ``e``'s plane, bit for bit the one ``count_pass_edges`` adds.
+    return boundary_quadric(
+        vertices, faces, edge_faces[e, 0], unique_edges[e, 0], unique_edges[e, 1]
+    )
+
+
+@wp.func
+def sorted_boundary_quadric_sum(
+    neighbor_offsets: wp.array[wp.int32],
+    neighbors: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    n_edges: wp.int32,
+    base: wp.uint64,
+    v: wp.int32,
+) -> SymmetricQuadric:
+    # The planes of vertex ``v``'s boundary edges, each found from its vertex-vertex row
+    # (``boundary_edge_at``) and recomputed bit for bit, summed in ascending neighbour order: the
+    # row is sorted in place first, which no later reader of it minds (the link condition counts,
+    # the lock and the claim take unions and minima). The table ``count_pass_edges`` filled holds
+    # the same planes in arrival order.
+    sort_segment(neighbor_offsets, neighbors, v)
+    q = SymmetricQuadric()
+    for j in range(neighbor_offsets[v], neighbor_offsets[v + 1]):
+        e = boundary_edge_at(unique_edges, edge_face_count, n_edges, base, v, neighbors[j])
+        if e >= 0:
+            q = q + edge_boundary_quadric(vertices, faces, unique_edges, edge_faces, e)
+    return q
+
+
+@wp.kernel
+def gather_vertex_quadrics_exact(
+    face_quadrics: wp.array[SymmetricQuadric],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    neighbor_offsets: wp.array[wp.int32],
+    neighbors: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    state: wp.array[wp.int32],
+    base: wp.uint64,
+    boundary_quadrics: wp.array[SymmetricQuadric],
+    boundary_flags: wp.array[wp.int32],
+    out_hubs: wp.array[wp.int32],
+    out_hub_count: wp.array[wp.int32],
+    out_quadrics: wp.array[SymmetricQuadric],
+) -> None:
+    # ``gather_vertex_quadrics`` with its two arrival-order sums put in a fixed order, the
+    # deterministic setting's form. A row longer than ``QUADRIC_ORDERED_ROW_MAX`` is listed in
+    # ``out_hubs`` and left to ``gather_hub_quadrics``, which adds its faces' planes exactly; and a
+    # vertex where three or more boundary edges meet -- the count ``count_pass_edges_exact`` left
+    # in its flag -- sums their planes in ascending neighbour order
+    # (``sorted_boundary_quadric_sum``) in place of the table filled in arrival order. Every other
+    # vertex gets ``gather_vertex_quadrics``' bits: two planes added to zero are the same sum in
+    # either order. The table is still taken and reset, for the next pass. The list's order is
+    # arrival order, which no sum reads.
     v = wp.int32(wp.tid())
     lo = vertex_face_offsets[v]
     hi = vertex_face_offsets[v + 1]
-    ordered = hi - lo <= QUADRIC_ORDERED_ROW_MAX
     q = SymmetricQuadric()
-    last = wp.int32(-1)
-    slot = wp.int32(-1)
-    for j in range(lo, hi):
-        f = vertex_faces[j]
-        if ordered:
-            last, slot = next_row_entry(vertex_faces, lo, hi, last, slot)
-            f = last
-        q = q + face_quadrics[f]
-    if boundary_flags[v] != 0:
-        q = q + boundary_quadrics[v]
-        boundary_quadrics[v] = SymmetricQuadric()
-        boundary_flags[v] = 0
+    if hi - lo > QUADRIC_ORDERED_ROW_MAX:
+        out_hubs[wp.atomic_add(out_hub_count, 0, 1)] = v
+    else:
+        q = ordered_face_quadric_sum(face_quadrics, vertex_faces, lo, hi)
+    count = boundary_flags[v]
+    if count != 0:
+        planes = take_boundary_quadric(boundary_quadrics, boundary_flags, v)
+        if count >= 3:
+            planes = sorted_boundary_quadric_sum(
+                neighbor_offsets,
+                neighbors,
+                vertices,
+                faces,
+                unique_edges,
+                edge_face_count,
+                edge_faces,
+                state[DECIMATION_EDGES],
+                base,
+                v,
+            )
+        q = q + planes
     out_quadrics[v] = q
+
+
+# A hub's faces' planes summed exactly by one block (``gather_hub_quadrics``): its lanes stride
+# the row, a block maximum finds the group's exponent field (``reduce.group_sum_field``, one for the
+# quadric's ten components), each lane adds its terms' two fixed-point words at that scale
+# (``reduce.group_sum_words``, the shared exact group sum's arithmetic) and a block sum of the
+# integer words is exact in any order, to ``2^-(124 - 2h)`` of the largest component for ``2^h``
+# terms. A block rather than a thread: summed in one thread -- the words in two passes, or a shell
+# sort of the row and an ascending sum -- a hub cost 3.3x the arrival-order gather's time on a mesh
+# with two 400-face cones, the whole call 1.4x, and a sort is superlinear in a cone apex of tens
+# of thousands of faces. The block form made that call 0.88x the arrival-order one, and costs
+# meshes with no hub the one more graph node a pass (at most 1.01x, 4 k to 330 k faces). Not
+# ``_launch.group_sums``: the pass is a captured graph that may not allocate, and ten ``float64``
+# components are not one of its dtypes.
+QuadricWords = wp.types.vector(length=10, dtype=wp.int64)
+HUB_BLOCKS = 64
+HUB_BLOCK_DIM = 128
+
+
+@wp.func
+def quadric_field(q: SymmetricQuadric) -> wp.int32:
+    field = wp.int32(0)
+    for c in range(10):
+        field = wp.max(field, group_sum_field(q[c]))
+    return field
+
+
+@wp.func
+def quadric_words(
+    q: SymmetricQuadric, field: wp.int32, headroom: wp.int32
+) -> tuple[QuadricWords, QuadricWords]:
+    high = QuadricWords()
+    low = QuadricWords()
+    for c in range(10):
+        words = group_sum_words(q[c], field, headroom, 1)
+        high[c] = words[0]
+        low[c] = words[1]
+    return high, low
+
+
+@wp.func
+def quadric_from_words(
+    high: QuadricWords, low: QuadricWords, field: wp.int32, headroom: wp.int32
+) -> SymmetricQuadric:
+    # The words read back as the ``float64`` sum, as ``reduce.group_sum_value`` reads a buffer's:
+    # the carry normalized, the two words joined, the scale undone in two power-of-two factors.
+    q = SymmetricQuadric()
+    width = 62 - headroom
+    undo = wp.max(field, 1) + headroom - 1084
+    first = undo >> 1
+    for c in range(10):
+        carried = high[c] + (low[c] >> wp.int64(width))
+        rest = low[c] & ((wp.int64(1) << wp.int64(width)) - wp.int64(1))
+        total = wp.float64(carried) + wp.float64(rest) * group_sum_power(-width)
+        q[c] = total * group_sum_power(first) * group_sum_power(undo - first)
+    return q
+
+
+@wp.kernel
+def gather_hub_quadrics(
+    hubs: wp.array[wp.int32],
+    hub_count: wp.array[wp.int32],
+    face_quadrics: wp.array[SymmetricQuadric],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    quadrics: wp.array[SymmetricQuadric],
+) -> None:
+    # Each listed hub's faces' planes, summed exactly by one block and added to the boundary
+    # planes ``gather_vertex_quadrics_exact`` left in ``quadrics``. ``HUB_BLOCKS`` blocks walk the
+    # list, which is empty on most meshes; a block's lanes stride the row by ``wp.block_dim()``, so
+    # on the CPU device one lane walks it all and the block reductions are its own values.
+    block, lane = wp.tid()
+    lanes = wp.block_dim()
+    h = block
+    while h < hub_count[0]:
+        v = hubs[h]
+        lo = vertex_face_offsets[v]
+        hi = vertex_face_offsets[v + 1]
+        field = wp.int32(0)
+        for j in range(lo + lane, hi, lanes):
+            field = wp.max(field, quadric_field(face_quadrics[vertex_faces[j]]))
+        field = block_max(field)
+        headroom = wp.int32(0)
+        while (wp.int32(1) << headroom) < hi - lo:
+            headroom += 1
+        high = QuadricWords()
+        low = QuadricWords()
+        if field != GROUP_SUM_NONFINITE:
+            for j in range(lo + lane, hi, lanes):
+                term_high, term_low = quadric_words(face_quadrics[vertex_faces[j]], field, headroom)
+                high = high + term_high
+                low = low + term_low
+        high = block_sum(high)
+        low = block_sum(low)
+        if lane == 0:
+            faces_sum = SymmetricQuadric()
+            if field == GROUP_SUM_NONFINITE:
+                for c in range(10):
+                    faces_sum[c] = wp.float64(wp.nan)
+            else:
+                faces_sum = quadric_from_words(high, low, field, headroom)
+            quadrics[v] = faces_sum + quadrics[v]
+        h += HUB_BLOCKS
 
 
 @wp.kernel
