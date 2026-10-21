@@ -85,6 +85,28 @@ class _Distances(NamedTuple):
     forward_max: float | None
 
 
+class _NnTerm(NamedTuple):
+    """One point-to-point Chamfer loss term: each ``x[i]`` against ``y[nearest[i]]``."""
+
+    x: wp.array[wp.vec3]
+    y: wp.array[wp.vec3]
+    nearest: odt.ArrayNdInt32
+    scale: float
+
+
+class _SurfaceTerm(NamedTuple):
+    """One point-to-surface Chamfer loss term: each point against triangle ``face_id[i]``."""
+
+    points: wp.array[wp.vec3]
+    vertices: wp.array[wp.vec3]
+    faces: wp.array[wp.int32]
+    face_id: odt.ArrayNdInt32
+    scale: float
+
+
+_ChamferTerm = _NnTerm | _SurfaceTerm
+
+
 # ---------------------------------------------------------------------------
 # Chamfer distance
 # ---------------------------------------------------------------------------
@@ -610,20 +632,12 @@ def chamfer_points_to_points_loss(
     # Non-differentiable nearest-neighbor indices (computed outside the tape). The backward search
     # is chosen from the forward one's own distances -- see `_backward_nearest`.
     nearest_xy, distance_xy = _nearest(y, x)
-    terms = [
-        lambda: _launch_nn_term(
-            x, y, nearest_xy, _reduction_scale(point_reduction, n), loss, squared=squared
-        )
-    ]
+    terms: list[_ChamferTerm] = [_NnTerm(x, y, nearest_xy, _reduction_scale(point_reduction, n))]
     if not single_directional:
         nearest_yx = _backward_nearest(x, y, distance_xy, nearest_xy)[0][0]
-        terms.append(
-            lambda: _launch_nn_term(
-                y, x, nearest_yx, _reduction_scale(point_reduction, m), loss, squared=squared
-            )
-        )
+        terms.append(_NnTerm(y, x, nearest_yx, _reduction_scale(point_reduction, m)))
 
-    _accumulate_chamfer_terms(tape, terms)
+    _accumulate_chamfer_terms(tape, terms, loss, squared=squared)
     return loss
 
 
@@ -723,31 +737,14 @@ def chamfer_points_to_mesh_loss(
     # Non-differentiable closest-face and nearest-neighbor assignment (outside the tape). The
     # backward search is chosen from the forward one's own distances -- see `_backward_nearest`.
     distance_forward, face_id = _closest_on_mesh(points, vertices, faces, mesh)
-    terms = [
-        lambda: _launch_surface_term(
-            points,
-            vertices,
-            faces,
-            face_id,
-            _reduction_scale(point_reduction, n),
-            loss,
-            squared=squared,
-        )
+    terms: list[_ChamferTerm] = [
+        _SurfaceTerm(points, vertices, faces, face_id, _reduction_scale(point_reduction, n))
     ]
     if not single_directional:
         nearest_vp = _backward_nearest(points, vertices, distance_forward, face_id, faces)[0][0]
-        terms.append(
-            lambda: _launch_nn_term(
-                vertices,
-                points,
-                nearest_vp,
-                _reduction_scale(point_reduction, v),
-                loss,
-                squared=squared,
-            )
-        )
+        terms.append(_NnTerm(vertices, points, nearest_vp, _reduction_scale(point_reduction, v)))
 
-    _accumulate_chamfer_terms(tape, terms)
+    _accumulate_chamfer_terms(tape, terms, loss, squared=squared)
     return loss
 
 
@@ -860,32 +857,20 @@ def chamfer_mesh_to_mesh_loss(
         vertices_a, faces_a, vertices_b, faces_b, single_directional, mesh_a, mesh_b
     )
     face_id_ab = odt.as_dense(face_ids[:va])
-    terms = [
-        lambda: _launch_surface_term(
-            vertices_a,
-            vertices_b,
-            faces_b,
-            face_id_ab,
-            _reduction_scale(point_reduction, va),
-            loss,
-            squared=squared,
+    terms: list[_ChamferTerm] = [
+        _SurfaceTerm(
+            vertices_a, vertices_b, faces_b, face_id_ab, _reduction_scale(point_reduction, va)
         )
     ]
     if not single_directional:
         face_id_ba = odt.as_dense(face_ids[va:])
         terms.append(
-            lambda: _launch_surface_term(
-                vertices_b,
-                vertices_a,
-                faces_a,
-                face_id_ba,
-                _reduction_scale(point_reduction, vb),
-                loss,
-                squared=squared,
+            _SurfaceTerm(
+                vertices_b, vertices_a, faces_a, face_id_ba, _reduction_scale(point_reduction, vb)
             )
         )
 
-    _accumulate_chamfer_terms(tape, terms)
+    _accumulate_chamfer_terms(tape, terms, loss, squared=squared)
     return loss
 
 
@@ -1514,28 +1499,39 @@ def _zero_loss(device: wp.DeviceLike) -> wp.array[wp.float32]:
     return _launch.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
 
 
-def _accumulate_chamfer_terms(tape: wp.Tape | None, terms: list[Callable[[], None]]) -> None:
+def _accumulate_chamfer_terms(
+    tape: wp.Tape | None, terms: list[_ChamferTerm], loss: wp.array[wp.float32], *, squared: bool
+) -> None:
     """
-    Run every term's launch closure into ``loss``, inside ``tape`` when there is one.
+    Accumulate every term into ``loss``, recording the launches on ``tape`` when there is one.
 
-    Each of the three ``chamfer_*_loss`` entry points builds ``terms`` as one zero-argument closure
-    per direction it accumulates (one when ``single_directional``, two otherwise) and hands them
-    here instead of each writing its own ``_record`` closure. A closure already captures whichever
-    assignment it was built from, so no caller needs an ``| None`` placeholder and a narrowing
-    assertion for the direction it did not take. Recording is opt-in because a ``wp.Tape`` context
-    is only wanted when the caller intends to backpropagate; passing ``tape=None`` still runs every
-    term, just untaped.
+    Each of the three ``chamfer_*_loss`` entry points hands over one term per direction it
+    accumulates (one when ``single_directional``, two otherwise). Recording is opt-in because a
+    ``wp.Tape`` context is only wanted when the caller intends to backpropagate; passing
+    ``tape=None`` still runs every term, just untaped.
+
+    On CUDA each term commits one atomic per block, and its adjoint scatters a gathered operand's
+    gradient atomically; under ``ordito.config``'s deterministic setting
+    [`_ordered_chamfer_terms`][ordito.metrics._ordered_chamfer_terms] takes the fixed-order form of
+    both instead. The CPU device runs the sliced kernels' threads in turn, so they repeat either
+    way and keep their form.
     """
+    if is_deterministic() and prefers_tiled_reduction(loss.device):
+        record = _ordered_chamfer_terms(terms, loss, squared)
+    else:
 
-    def _record() -> None:
-        for term in terms:
-            term()
+        def record() -> None:
+            for term in terms:
+                if isinstance(term, _NnTerm):
+                    _launch_nn_term(*term, loss, squared=squared)
+                else:
+                    _launch_surface_term(*term, loss, squared=squared)
 
     if tape is not None:
         with tape:
-            _record()
+            record()
     else:
-        _record()
+        record()
 
 
 def _launch_nn_term(
@@ -1616,3 +1612,133 @@ def _launch_reduction_pair(
             inputs=[*common_inputs, wp.int32(slices), loss],
             device=device,
         )
+
+
+def _ordered_chamfer_terms(
+    terms: list[_ChamferTerm], loss: wp.array[wp.float32], squared: bool
+) -> Callable[[], None]:
+    """
+    Prepare the fixed-order form of ``terms`` and return the closure that writes ``loss``.
+
+    Everything the adjoint never needs -- the stable sorts that turn each gathered index into
+    per-source runs, and the corner keys they sort -- runs here, outside any tape. The closure runs
+    the differentiable launches: the pulls that copy each gathered operand out per query
+    ([`gather_by_sorted_key`][ordito.kernels.metrics.gather_by_sorted_key]), the per-query terms
+    into one buffer at each term's offset, and the two fixed-order passes of
+    [`sum_in_blocks`][ordito.kernels.metrics.sum_in_blocks] from that buffer into ``loss``. Each
+    adjoint is then a gather or a one-writer write, so the loss and every gradient repeat bit for
+    bit; the order of the sum differs from the arrival-order kernels', so the bits differ from
+    theirs.
+    """
+    device = loss.device
+    counts = [term.x.size if isinstance(term, _NnTerm) else term.points.size for term in terms]
+    total = sum(counts)
+    values = _launch.empty(total, dtype=wp.float32, device=device, requires_grad=True)
+    launches: list[Callable[[], None]] = []
+    offset = 0
+    for term, count in zip(terms, counts, strict=True):
+        if isinstance(term, _NnTerm):
+            sorted_keys, order = od.array.sort_and_argsort(
+                term.nearest, end_bit=max(1, (term.y.size - 1).bit_length())
+            )
+            nearest, pull = _pull_gather(term.y, sorted_keys, order, count)
+            launches += [
+                pull,
+                _launcher(
+                    kernel_metrics.chamfer_nn_terms,
+                    count,
+                    [term.x, nearest, wp.float32(term.scale), wp.int32(squared), offset],
+                    values,
+                ),
+            ]
+        else:
+            corners, pull = _pull_gather(
+                term.vertices,
+                *_corner_runs(term.faces, term.face_id, term.vertices.size),
+                3 * count,
+            )
+            launches += [
+                pull,
+                _launcher(
+                    kernel_metrics.chamfer_surface_terms,
+                    count,
+                    [
+                        term.points,
+                        corners,
+                        term.face_id,
+                        wp.float32(term.scale),
+                        wp.int32(squared),
+                        offset,
+                    ],
+                    values,
+                ),
+            ]
+        offset += count
+    blocks = kernel_reduce.blocks_1d(total)
+    partials = _launch.empty(blocks, dtype=wp.float32, device=device, requires_grad=True)
+
+    def record() -> None:
+        for launch in launches:
+            launch()
+        for source, width, out in (
+            (values, int(kernel_reduce.ITEMS_PER_BLOCK_1D), partials),
+            (partials, blocks, loss),
+        ):
+            _launch.launch_tiled(
+                kernel_metrics.sum_in_blocks,
+                dim=[out.size],
+                inputs=[source, width, out],
+                block_dim=TILE_1D,
+                device=device,
+            )
+
+    return record
+
+
+def _corner_runs(
+    faces: wp.array[wp.int32], face_id: odt.ArrayNdInt32, n_vertices: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Sort the vertex under each corner ``3 i + k`` of query ``i``'s face, returning keys and order.
+
+    A query with no face keys its corners ``n_vertices``, past every run a pull reads.
+    """
+    device = faces.device
+    n = face_id.size
+    keys = _launch.empty(6 * n, dtype=wp.int32, device=device)
+    order = _launch.empty(6 * n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_metrics.surface_corner_keys,
+        dim=n,
+        inputs=[faces, face_id, n_vertices],
+        outputs=[keys, order],
+        device=device,
+    )
+    return od.array.sort_and_argsort_in_place(keys, order, end_bit=n_vertices.bit_length())
+
+
+def _pull_gather(
+    values: wp.array[wp.vec3],
+    sorted_keys: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    count: int,
+) -> tuple[wp.array[wp.vec3], Callable[[], None]]:
+    """Allocate ``values`` gathered through a sorted index; return it and the launch filling it."""
+    gathered = _launch.empty(count, dtype=wp.vec3, device=values.device, requires_grad=True)
+    return gathered, _launcher(
+        kernel_metrics.gather_by_sorted_key, values.size, [values, sorted_keys, order], gathered
+    )
+
+
+def _launcher(
+    kernel: odt.Kernel,
+    dim: int,
+    inputs: list[object],
+    out: wp.array[wp.float32] | wp.array[wp.vec3],
+) -> Callable[[], None]:
+    """Return a closure launching ``kernel`` over ``dim`` threads with ``inputs`` then ``out``."""
+
+    def launch() -> None:
+        _launch.launch(kernel, dim=dim, inputs=inputs, outputs=[out], device=out.device)
+
+    return launch
