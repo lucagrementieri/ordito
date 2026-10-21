@@ -23,7 +23,7 @@ from ordito.kernels.halfedge import (
     next_boundary_halfedge,
 )
 from ordito.kernels.predicates import triangle_aspect_ratio, triangle_normal
-from ordito.kernels.reduce import GroupSumPass
+from ordito.kernels.reduce import GroupSumPass, read_group_sum
 from ordito.kernels.scatter import scatter_add
 from ordito.kernels.selection import face_selected_by_vertices, mark_submesh_face
 from ordito.kernels.triangles import (
@@ -497,6 +497,7 @@ def component_kept(
     group: wp.int32,
     counts: wp.array[wp.int32],
     statistic: wp.array[wp.float32],
+    statistic_sums: GroupSumPass,
     corners: wp.array[wp.float32],
     best: wp.array[wp.int64],
     min_count: wp.int32,
@@ -507,7 +508,8 @@ def component_kept(
     # the branch is warp-uniform). Every bound is inclusive.
     #
     # - ``COMPONENT_MIN_FACES``: the group's member count (``scatter.count_occurrences``).
-    # - ``COMPONENT_MIN_AREA``: its summed area (``scatter_face_measure_by_group``).
+    # - ``COMPONENT_MIN_AREA``: its summed area (``scatter_face_measure_by_group``), read through
+    #   ``reduce.read_group_sum`` from ``statistic`` and ``statistic_sums`` with no finish launch.
     # - ``COMPONENT_MIN_DIAMETER``: its bounding-box diagonal, decoded from the packed box
     #   ``scatter.scatter_group_bounds`` accumulated, so no per-group diagonal table is written.
     # - ``COMPONENT_LARGEST``: the group ``reduce_largest_group`` chose. Recomputing the key and
@@ -516,7 +518,7 @@ def component_kept(
     if criterion == COMPONENT_MIN_FACES:
         return counts[group] >= min_count
     if criterion == COMPONENT_MIN_AREA:
-        return statistic[group] >= min_value
+        return read_group_sum(statistic, statistic_sums, group) >= min_value
     if criterion == COMPONENT_MIN_DIAMETER:
         return packed_box_diagonal(corners, group) >= min_value
     return pack_ranked_key(counts[group], group) == best[0]
@@ -529,6 +531,7 @@ def mark_kept_components(
     criterion: wp.int32,
     counts: wp.array[wp.int32],
     statistic: wp.array[wp.float32],
+    statistic_sums: GroupSumPass,
     corners: wp.array[wp.float32],
     best: wp.array[wp.int64],
     min_count: wp.int32,
@@ -543,7 +546,7 @@ def mark_kept_components(
     # which the compaction still reads.
     f = wp.int32(wp.tid())
     keep = component_kept(
-        criterion, groups[f], counts, statistic, corners, best, min_count, min_value
+        criterion, groups[f], counts, statistic, statistic_sums, corners, best, min_count, min_value
     )
     mark_face_fate(faces, f, keep, out_keep, out_flags)
 
@@ -553,6 +556,7 @@ def flip_faces_by_component_volume(
     faces: wp.array[wp.int32],
     labels: wp.array[wp.int32],
     component_volume: wp.array[wp.float32],
+    volume_sums: GroupSumPass,
     out_faces: wp.array[wp.int32],
 ) -> None:
     # ``make_volume(multibody=True)``'s orientation pass: a face is reversed when the component it
@@ -562,8 +566,11 @@ def flip_faces_by_component_volume(
     # per-face buffer first: the Python-scope form was an ``indexedarray`` view, a ``wp.map`` to
     # materialise a face-sized flag array, and then this pass to consume it -- two launches and a
     # buffer for a value one indirection away. Measured 1.15x on ``make_volume(multibody=True)``.
+    # The volume is read through ``reduce.read_group_sum`` likewise, so the exact group sum needs
+    # no finish launch.
     f = wp.int32(wp.tid())
-    write_face_winding(faces, f, component_volume[labels[f]] < wp.float32(0.0), out_faces)
+    volume = read_group_sum(component_volume, volume_sums, labels[f])
+    write_face_winding(faces, f, volume < wp.float32(0.0), out_faces)
 
 
 @wp.kernel

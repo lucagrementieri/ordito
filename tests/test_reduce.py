@@ -728,6 +728,52 @@ def test_group_sum_headroom_limits(device: str) -> None:
         _launch.group_sums(2, wp.float64, 2**31 + 1, device)
 
 
+@wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]  # wp.kernel has no return annotation
+def _read_group_sums(
+    sums_in: wp.array[wp.float32],
+    sums: kernel_reduce.GroupSumPass,  # pyright: ignore[reportGeneralTypeIssues]  # a struct value
+    out: wp.array[wp.float32],
+) -> None:
+    g = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
+    out[g] = kernel_reduce.read_group_sum(sums_in, sums, g)  # pyright: ignore[reportIndexIssue]
+
+
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+def test_read_group_sum_equals_the_finish(device: str, deterministic: bool) -> None:
+    """
+    Ordito against ordito: a consumer reading ``read_group_sum`` gets the finished sums' bits.
+
+    ``_launch.group_sums(fused=True)`` allocates no result under the setting (``out`` is
+    ``None``) and the consumer reads the words; off, it reads the accumulator. Either way it must
+    equal ``finish_group_sums`` of the same scatter bit for bit, whose values
+    ``test_scatter_sum_matches_numpy`` checks against NumPy.
+    """
+    n, n_groups = 30_000, 700
+    rng = np.random.default_rng(20)
+    values_wp = wp.array(rng.standard_normal(n).astype(np.float32), device=device)
+    indices_np = rng.integers(0, n_groups, n).astype(np.int32)
+    indices_np[: n // 4] = 3
+    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
+    kernel = kernel_scatter.SCATTER_SUM_SCALARS[wp.float32]
+    finished = _launch.group_sums(n_groups, wp.float32, n, device)
+    _launch.launch_group_sums(kernel, n, [values_wp, indices_wp], finished, device=device)
+    expected_np = _launch.finish_group_sums(finished).numpy()
+    fused = _launch.group_sums(n_groups, wp.float32, n, device, fused=True)
+    assert (fused.out is None) == deterministic
+    _launch.launch_group_sums(kernel, n, [values_wp, indices_wp], fused, device=device)
+    read_wp = warp_empty(n_groups, wp.float32, device)
+    wp.launch(
+        _read_group_sums,
+        dim=n_groups,
+        inputs=[fused.out, fused.launch_pass, read_wp],
+        device=device,
+    )
+    if deterministic or not wp.get_device(device).is_cuda:
+        assert np.array_equal(read_wp.numpy().view(np.uint8), expected_np.view(np.uint8))
+    else:
+        assert np.allclose(read_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 @pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES[::3])
 @pytest.mark.parity("segment_sum", "numpy")

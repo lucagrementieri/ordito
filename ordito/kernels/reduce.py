@@ -508,8 +508,9 @@ def store_sum_and_count(
 #   (``add_group_sum_term``).
 #
 # The finish (``group_sum_value``) reads a slot's words back as one ``float64``; a consumer kernel
-# may call it instead of the finish launch. ``kernels/scatter.scatter_add`` and its vector and
-# matrix siblings are the entry points, and ``_launch.group_sums`` allocates the buffer.
+# may call it instead of the finish launch (``read_group_sum``, a scalar sum in either mode).
+# ``kernels/scatter.scatter_add`` and its vector and matrix siblings are the entry points, and
+# ``_launch.group_sums`` allocates the buffer.
 #
 # **The scale.** With ``h = headroom`` the caller's bound ``ceil(log2(terms per slot))``
 # (``h <= 31``), a term of a group whose field is ``F`` is scaled to ``x = v * 2^k`` with
@@ -765,6 +766,20 @@ def group_sum_value(sums: GroupSumPass, group: wp.int32, slot: wp.int32) -> wp.f
     undo = wp.max(field, 1) + headroom - 1084
     first = undo >> 1
     return total * group_sum_power(first) * group_sum_power(undo - first)
+
+
+@wp.func
+def read_group_sum(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32):
+    # Group ``group``'s scalar sum in ``out_sums``' dtype, whatever the deterministic setting: the
+    # accumulator ``out_sums[group]`` the arrival-order scatter added into when ``sums`` holds no
+    # words, else ``group_sum_value`` rounded as the finish rounds it (bit for bit the finished
+    # value). The consumer-fused finish: a kernel that reads each group's sum takes ``out_sums``
+    # and ``sums`` from ``_launch.group_sums(fused=True)`` and calls this, so the setting on skips
+    # the finish launch, its pass over the words and the result buffer (``out_sums`` is then
+    # ``None`` and never read). The branch is uniform over a launch.
+    if sums.words.shape[0] == 0:
+        return out_sums[group]
+    return out_sums.dtype(group_sum_value(sums, group, group))
 
 
 @wp.func

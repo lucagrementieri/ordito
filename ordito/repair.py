@@ -1159,9 +1159,10 @@ def remove_small_components(
     # read. The table is then thresholded inside the submesh extraction's own marking pass, so no
     # separate keep-mask pass runs.
     counts = statistic = corners = best = None
+    statistic_sums = _launch.empty_group_sum_pass()
     if min_area is not None:
         criterion = kernel_repair.COMPONENT_MIN_AREA
-        statistic = _component_measures(vertices, faces, labels, "area")
+        statistic, statistic_sums = _component_measures(vertices, faces, labels, "area")
     elif min_diameter is not None:
         criterion = kernel_repair.COMPONENT_MIN_DIAMETER
         # ``+inf`` in all six slots seeds both ends at once: the packing stores the upper corner
@@ -1205,6 +1206,7 @@ def remove_small_components(
             criterion,
             counts,
             statistic,
+            statistic_sums,
             corners,
             best,
             int(min_faces) if min_faces is not None else 0,
@@ -2500,13 +2502,13 @@ def _outward_faces(
         labels = od.adjacency.face_connected_component_labels(
             faces, n_vertices=vertices.size, mates=mates
         )
-        accum = _component_measures(vertices, faces, labels, "volume")
+        volumes, volume_sums = _component_measures(vertices, faces, labels, "volume")
         # One launch: each face reads its own component's signed volume through its label, where
         # gathering that into a per-face flag buffer first cost a map, a launch and the buffer.
         _launch.launch(
             kernel_repair.flip_faces_by_component_volume,
             dim=n_faces,
-            inputs=[faces, labels, accum, out_faces],
+            inputs=[faces, labels, volumes, volume_sums, out_faces],
             device=device,
         )
         return out_faces
@@ -2532,23 +2534,25 @@ def _component_measures(
     faces: wp.array[wp.int32],
     labels: wp.array[wp.int32],
     measure: Literal["area", "volume"],
-) -> wp.array[wp.float32]:
+) -> tuple[wp.array[wp.float32] | None, object]:
     """
     Each component's summed face measure (``kernels/repair.face_group_measure``), slot per label.
 
-    ``(n_faces,)``, read only at the slots ``labels`` names (a label is a representative face
-    index). Each face's measure is summed into its component where it is computed, rather than
-    written to a per-face buffer for a scatter pass to read back. With
-    [`is_deterministic`][ordito.config.is_deterministic] off this is one ``float32`` atomic scatter
-    in arrival order; on, each component is summed exactly in fixed point
-    (``_launch.group_sums``), so the sums and the sign and threshold decisions read from them
-    repeat bit for bit on CUDA, where a component's last bits otherwise move from call to call (a
-    component of near-zero volume then flips its orientation).
+    The accumulator and the ``kernels/reduce.GroupSumPass`` a consumer kernel reads each sum
+    through (``kernels/reduce.read_group_sum``): ``(n_faces,)`` slots, read only at the slots
+    ``labels`` names (a label is a representative face index). Each face's measure is summed into
+    its component where it is computed, rather than written to a per-face buffer for a scatter
+    pass to read back. With [`is_deterministic`][ordito.config.is_deterministic] off this is one
+    ``float32`` atomic scatter in arrival order; on, each component is summed exactly in fixed
+    point (``_launch.group_sums``), so the sums and the sign and threshold decisions read from
+    them repeat bit for bit on CUDA, where a component's last bits otherwise move from call to
+    call (a component of near-zero volume then flips its orientation). There the consumer reads
+    the words, so no finish launch runs and the accumulator is ``None``.
     """
     n_faces = faces.size // 3
     device = faces.device
     # A component can hold every face, so ``n_faces`` terms bound any one sum.
-    sums = _launch.group_sums(n_faces, wp.float32, n_faces, device)
+    sums = _launch.group_sums(n_faces, wp.float32, n_faces, device, fused=True)
     _launch.launch_group_sums(
         kernel_repair.scatter_face_measure_by_group,
         dim=n_faces,
@@ -2556,7 +2560,7 @@ def _component_measures(
         sums=sums,
         device=device,
     )
-    return _launch.finish_group_sums(sums)
+    return sums.out, sums.launch_pass
 
 
 # Each measure's selector of ``kernels/repair.face_group_measure``.
