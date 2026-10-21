@@ -49,7 +49,7 @@ from ordito.kernels.reduce import (
     block_max,
     block_sum,
     group_sum_field,
-    group_sum_power,
+    group_sum_from_words,
     group_sum_words,
 )
 from ordito.kernels.scatter import (
@@ -4274,17 +4274,11 @@ def quadric_words(
 def quadric_from_words(
     high: QuadricWords, low: QuadricWords, field: wp.int32, headroom: wp.int32
 ) -> SymmetricQuadric:
-    # The words read back as the ``float64`` sum, as ``reduce.group_sum_value`` reads a buffer's:
-    # the carry normalized, the two words joined, the scale undone in two power-of-two factors.
+    # The words read back as the ``float64`` sum, component by component, as
+    # ``reduce.group_sum_value`` reads a buffer's (``reduce.group_sum_from_words``).
     q = SymmetricQuadric()
-    width = 62 - headroom
-    undo = wp.max(field, 1) + headroom - 1084
-    first = undo >> 1
     for c in range(10):
-        carried = high[c] + (low[c] >> wp.int64(width))
-        rest = low[c] & ((wp.int64(1) << wp.int64(width)) - wp.int64(1))
-        total = wp.float64(carried) + wp.float64(rest) * group_sum_power(-width)
-        q[c] = total * group_sum_power(first) * group_sum_power(undo - first)
+        q[c] = group_sum_from_words(high[c], low[c], field, headroom, 1)
     return q
 
 

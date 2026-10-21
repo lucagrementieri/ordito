@@ -786,29 +786,43 @@ def group_sum_term(sums: GroupSumPass, slot: wp.int32, value: wp.float64) -> Non
 
 
 @wp.func
-def group_sum_value(sums: GroupSumPass, group: wp.int32, slot: wp.int32) -> wp.float64:
-    # Slot ``slot``'s sum (of group ``group``) once pass 1 has added every term: the carry
-    # normalized (``lo`` to ``[0, 2^(62 - h))``, flooring for a negative total), the words read as
+def group_sum_from_words(
+    high: wp.int64, low: wp.int64, field: wp.int32, headroom: wp.int32, two_words: wp.int32
+) -> wp.float64:
+    # The ``float64`` sum a slot's finished words hold at the scale ``field`` and ``headroom`` set,
+    # from the words as values (a buffer's, or a block's sum of them in registers): the carry
+    # normalized (``low`` to ``[0, 2^(62 - h))``, flooring for a negative total), the words read as
     # one ``float64``, and the scale undone in two power-of-two factors (``k`` spans
-    # ``[-993, 1083]``). NaN for a non-finite group. A consumer kernel may call this itself instead
-    # of launching the finish.
-    field = group_sum_group_field(sums, group)
-    if field == GROUP_SUM_NONFINITE:
-        return wp.float64(wp.nan)
-    headroom = sums.headroom
-    high = sums.words[sums.n_fields + slot]
+    # ``[-993, 1083]``). ``low`` is ignored for a one-word sum. Requires
+    # ``field < GROUP_SUM_NONFINITE``.
     total = wp.float64(0.0)
-    if group_sum_two_words(sums) != 0:
+    if two_words != 0:
         width = 62 - headroom
-        low = sums.words[sums.n_fields + sums.n_slots + slot]
-        high += low >> wp.int64(width)
-        low = low & ((wp.int64(1) << wp.int64(width)) - wp.int64(1))
-        total = wp.float64(high) + wp.float64(low) * group_sum_power(-width)
+        carried = high + (low >> wp.int64(width))
+        rest = low & ((wp.int64(1) << wp.int64(width)) - wp.int64(1))
+        total = wp.float64(carried) + wp.float64(rest) * group_sum_power(-width)
     else:
         total = wp.float64(high)
     undo = wp.max(field, 1) + headroom - 1084
     first = undo >> 1
     return total * group_sum_power(first) * group_sum_power(undo - first)
+
+
+@wp.func
+def group_sum_value(sums: GroupSumPass, group: wp.int32, slot: wp.int32) -> wp.float64:
+    # Slot ``slot``'s sum (of group ``group``) once pass 1 has added every term
+    # (``group_sum_from_words`` of its words); NaN for a non-finite group. A consumer kernel may
+    # call this itself instead of launching the finish.
+    field = group_sum_group_field(sums, group)
+    if field == GROUP_SUM_NONFINITE:
+        return wp.float64(wp.nan)
+    two_words = group_sum_two_words(sums)
+    low = wp.int64(0)
+    if two_words != 0:
+        low = sums.words[sums.n_fields + sums.n_slots + slot]
+    return group_sum_from_words(
+        sums.words[sums.n_fields + slot], low, field, sums.headroom, two_words
+    )
 
 
 @wp.func
