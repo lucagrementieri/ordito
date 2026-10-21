@@ -787,12 +787,19 @@ def arap(
     cot_entries = cotmatrix_entries(vertices, faces, dtype=wp.float64)
     laplacian = cotmatrix(vertices, faces, cot_entries=cot_entries, dtype=wp.float64)
 
-    # Partition vertices into pinned (fixed) and interior (free). ``fixed_values`` is the
-    # (2, n_vertices) prescribed-UV buffer (row 0 = u, row 1 = v) shared with the assembly / scatter
-    # kernels; ``interior_map`` compacts free vertices into the reduced system.
+    # Partition vertices into pinned (fixed) and interior (free), and extract the global-step
+    # operator with it: the interior block of Q = -L and the constant boundary term -(-L)_ub bc.
+    # ``fixed_values`` is the (2, n_vertices) prescribed-UV buffer (row 0 = u, row 1 = v) shared
+    # with the assembly / scatter kernels; ``interior_map`` compacts free vertices into the reduced
+    # system.
+    # ``future work``: libigl also supports rotation groups ``G`` (shared rotations across grouped
+    # faces, replacing the per-face fit with a group-summed covariance) and ``with_dynamics`` (a
+    # mass-matrix + timestep term added to Q and the right-hand side); both are out of scope here.
     fixed_mask, fixed_values = _scatter_constraints(n_vertices, fixed_indices, fixed_uv, device)
     fixed_values_2d = odt.as_array2d(fixed_values, wp.float64)
-    interior_map, n_interior = twl.free_partition(fixed_mask)
+    q_uu, rhs_const, interior_map, n_interior = twl.partitioned_interior_system(
+        laplacian, fixed_mask, fixed_values_2d, scale=-1.0
+    )
     # The scatter skips an out-of-range index and a repeated one marks its vertex once, so either
     # leaves fewer vertices fixed than ``fixed_indices`` lists: the free count just read shows it.
     if n_vertices - n_interior != fixed_indices.size:
@@ -806,14 +813,14 @@ def arap(
         # Every vertex pinned: the prescribed positions are the whole answer, no solve. This is the
         # same shape `min_quad_with_fixed`'s own `n_free == 0` branch returns (an empty `(n_rhs,
         # n_free)` solution `scatter_solution` never indexes), but composing through it here would
-        # cost more than it shares: `min_quad_with_fixed` re-derives `free_partition` internally
-        # (arap already has `interior_map`/`n_interior` from its own call, needed by the iterative
-        # loop below regardless) and its single-shot solve has no hook for the warm-started,
-        # loop-reused solver state arap's general path builds -- so reaching it would mean throwing
-        # away work already done, not reusing it. The real waste this early return avoids is
-        # upstream of any solve: `q_uu`/`rhs_const`/`rest_edges`/the CG solver state below are built
-        # only for a loop that would immediately do nothing on an empty system, so skipping them
-        # here is the point, not a shortcut around composition.
+        # cost more than it shares: `min_quad_with_fixed` re-derives the free partition internally
+        # (arap already has `interior_map`/`n_interior` from its own extraction, needed by the
+        # iterative loop below regardless) and its single-shot solve has no hook for the
+        # warm-started, loop-reused solver state arap's general path builds -- so reaching it would
+        # mean throwing away work already done, not reusing it. The real waste this early return
+        # avoids is upstream of any solve: `rest_edges`/the CG solver state below are built only for
+        # a loop that would immediately do nothing on an empty system, so skipping them here is the
+        # point, not a shortcut around composition.
         empty_sol = _launch.zeros((2, 0), dtype=wp.float64, device=device)
         _launch.launch(
             kernel_parametrization.scatter_solution,
@@ -822,14 +829,6 @@ def arap(
             device=device,
         )
         return out_uv
-
-    # Global-step operator: interior block of Q = -L and the constant boundary term -(-L)_ub bc.
-    # ``future work``: libigl also supports rotation groups ``G`` (shared rotations across grouped
-    # faces, replacing the per-face fit with a group-summed covariance) and ``with_dynamics`` (a
-    # mass-matrix + timestep term added to Q and the right-hand side); both are out of scope here.
-    q_uu, rhs_const = twl.assemble_interior_system(
-        laplacian, fixed_mask, interior_map, fixed_values_2d, n_interior, scale=-1.0
-    )
 
     # Weight-folded rest edges of the isometrically flattened triangles (internal buffer, plain
     # wp.empty; kernels index it as wp.array2d).
@@ -1396,7 +1395,7 @@ class FixedVertexSolver:
                 self._refused.add((method, k))
                 _LOGGER.debug("%s: the k=%d system cannot be factored; it iterates", method, k)
         else:
-            _require_fixed_count(system, n_fixed, method)
+            _require_fixed_count(system.fixed_mask.size - system.n_free, n_fixed, method)
         solution, free_map, _ = system.solve(
             fixed_values, tol=_CG_TOLERANCE, preconditioner=preconditioner
         )
@@ -1440,17 +1439,76 @@ def _solve_fixed_vertices(
     n_fixed: int,
 ) -> tuple[odt.Array2dFloat, wp.array[wp.int32]]:
     """
-    Solve a fixed-vertex map's reduced system on the mesh's solver, or on one made for the call.
+    Solve a fixed-vertex map's reduced system on the mesh's solver, or once for the call.
 
     ``n_fixed`` is the degrees of freedom the caller's indices fix when they are distinct and in
     range, which the system's free count confirms. A caller-owned mesh keeps whatever factorization
     the solve builds; a ``vertices, faces`` call drops it, saying so at ``INFO``.
     """
-    held = mesh.fixed_vertex_solver() if owned else FixedVertexSolver(mesh)
-    solution, free_map = held._solve(  # pyright: ignore[reportPrivateUsage]
-        method, fixed_mask, fixed_values, k, cast("Literal['auto', 'direct']", solver), n_fixed
+    solver_name = cast("Literal['auto', 'direct']", solver)
+    if owned:
+        return mesh.fixed_vertex_solver()._solve(  # pyright: ignore[reportPrivateUsage]
+            method, fixed_mask, fixed_values, k, solver_name, n_fixed
+        )
+    return _solve_fixed_vertices_once(
+        mesh, method, k, fixed_mask, fixed_values, solver_name, n_fixed
     )
-    if not owned and held.nbytes > 0:
+
+
+def _solve_fixed_vertices_once(
+    mesh: Trimesh,
+    method: str,
+    k: int,
+    fixed_mask: wp.array[wp.bool],
+    fixed_values: odt.Array2dFloat64,
+    solver: Literal["auto", "direct"],
+    n_fixed: int,
+) -> tuple[odt.Array2dFloat, wp.array[wp.int32]]:
+    """
+    ``FixedVertexSolver.solve`` on a solver made for the call, which nothing keeps.
+
+    The same system, factorization rule and solve as a fresh solver's, but with the right-hand side
+    formed by the extraction's own pass, as
+    [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] forms it: nothing outlives the call,
+    so the system is never held for a later solve to re-form its right-hand side.
+    """
+    _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve")
+    _require_solver_name(solver, "FixedVertexSolver.solve")
+    vertices = mesh.vertices
+    require_same_device(vertices=vertices, fixed_mask=fixed_mask, fixed_values=fixed_values)
+    device = fixed_mask.device
+    at_once = _factors_at_once(method, k, vertices.size)
+    q, laplacian, mass_diag = _fixed_vertex_operator(mesh, method, k)
+    q_uu, rhs, free_map, n_free = twl.partitioned_interior_system(q, fixed_mask, fixed_values)
+    _require_fixed_count(fixed_mask.size - n_free, n_fixed, method)
+    n_rhs = int(fixed_values.shape[0])
+    solution = odt.as_array2d(
+        _launch.zeros((n_rhs, n_free), dtype=wp.float64, device=device), wp.float64
+    )
+    if n_free == 0 or n_rhs == 0:
+        return solution, free_map
+    held = twl.OperatorFactorization(
+        q_uu, twl.free_coordinates(vertices, fixed_mask, free_map, n_free)
+    )
+    if solver == "direct" or at_once:
+        held.factor()
+        if at_once and held.factorization is None:
+            _LOGGER.debug("%s: the k=%d system cannot be factored; it iterates", method, k)
+    if held.factorization is not None:
+        held.solve(rhs, solution, tol=_CG_TOLERANCE)
+    else:
+        preconditioner = _fixed_vertex_preconditioner(
+            k, laplacian, mass_diag, fixed_mask, free_map, n_free, factored=False
+        )
+        twl.solve_spd_columns(
+            q_uu,
+            rhs,
+            solution,
+            tol=_CG_TOLERANCE,
+            preconditioner=preconditioner,
+            factorization=held,
+        )
+    if held.nbytes > 0:
         _LOGGER.info(
             "%s: built a sparse Cholesky factorization (%d bytes) and is discarding it; pass an "
             "ordito.mesh.Trimesh to keep it for later calls fixing the same vertices",
@@ -1498,20 +1556,28 @@ def _fixed_vertex_system(
 
     The mask's fixed count is checked against ``n_fixed`` (``_require_fixed_count``) after the
     extraction, which reads the free count anyway, and before the factorization.
+    """
+    q, laplacian, mass_diag = _fixed_vertex_operator(mesh, method, k)
+    system = _checked_system(q, fixed_mask, mesh.vertices, n_fixed, method, factor)
+    preconditioner = _fixed_vertex_preconditioner(
+        k, laplacian, mass_diag, fixed_mask, system.free_map, system.n_free, system.factored
+    )
+    return system, preconditioner
+
+
+def _fixed_vertex_operator(
+    mesh: Trimesh, method: str, k: int
+) -> tuple[
+    odt.BsrMatrix[wp.float64], odt.BsrMatrix[wp.float64] | None, wp.array[wp.float64] | None
+]:
+    """
+    Assemble ``method``'s ``float64`` operator ``Q``, with what its preconditioner needs.
 
     ``harmonic`` / ``tutte`` minimize ``Q = -L`` at ``k == 1`` and ``Q = (-L) (M^-1 (-L))^(k-1)``
     above ([`k_harmonic`][ordito.energies.k_harmonic]; ``M`` the barycentric lumped mass, the
     identity for ``tutte``), ``lscm`` its Hessian; the operator is ``float64``, since ``k > 1``
-    raises the Laplacian's condition number to the ``k``-th power. The preconditioner is the one
-    the iteration runs under when the system is not factored: the Jacobi-Chebyshev polynomial for a
-    Laplacian (``k == 1``) or ``lscm`` -- with only the boundary or two vertices fixed their solves
-    are long -- and for ``k == 2`` the square of the Laplacian's polynomial
-    ([`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]): the
-    free block of ``L M^-1 L`` is spectrally close to ``L_ff D^-2 L_ff`` with ``D = sqrt(M_f)``,
-    the terms it drops being the one ring of the fixed boundary. ``k >= 3`` is factored from the
-    start: conjugate gradient needs thousands of rounds there and still leaves an error of 1e-5 to
-    1e-2 of the range, so the multigrid ``"auto"`` route remains only for a system the
-    factorization refuses.
+    raises the Laplacian's condition number to the ``k``-th power. The Laplacian ``L`` and the mass
+    diagonal (``None`` for ``tutte``) come back above ``k == 1``, and ``None`` at it.
     """
     vertices, faces = mesh.vertices, mesh.faces
     # The mesh's cached cotangent weights and sparsity serve the float64 operators too (both are
@@ -1520,7 +1586,7 @@ def _fixed_vertex_system(
         q = od.energies.lscm_hessian(
             vertices, faces, cot_entries=mesh.cotmatrix_entries, pattern=mesh.mesh_operator_pattern
         )
-        return _checked_system(q, fixed_mask, vertices, n_fixed, method, factor), "chebyshev"
+        return q, None, None
     if method == "harmonic" and k == 1 and faces.size > 0:
         # ``-L`` written by one row kernel over the mesh's pattern, so ``L`` is never formed.
         _, _, offsets, columns, run_start, keys, count, order = mesh.mesh_operator_pattern
@@ -1541,7 +1607,7 @@ def _fixed_vertex_system(
             device=vertices.device,
         )
         q = od.array.bsr_from_csr(vertices.size, vertices.size, offsets, columns, negated_values)
-        return _checked_system(q, fixed_mask, vertices, n_fixed, method, factor), "chebyshev"
+        return q, None, None
     if method == "harmonic":
         laplacian = cotmatrix(
             vertices,
@@ -1571,33 +1637,57 @@ def _fixed_vertex_system(
             laplacian.columns,
             negated_values,
         )
-    else:
-        q = od.energies.k_harmonic(laplacian, mass_diag, k=k)
-    system = _checked_system(q, fixed_mask, vertices, n_fixed, method, factor)
+        return q, None, None
+    return od.energies.k_harmonic(laplacian, mass_diag, k=k), laplacian, mass_diag
+
+
+def _fixed_vertex_preconditioner(
+    k: int,
+    laplacian: odt.BsrMatrix[wp.float64] | None,
+    mass_diag: wp.array[wp.float64] | None,
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    n_free: int,
+    factored: bool,
+) -> str | twl.SquaredLaplacianPreconditioner:
+    """
+    Return the preconditioner a fixed-vertex system's iteration runs under when not factored.
+
+    The Jacobi-Chebyshev polynomial for a Laplacian (``k == 1``) or ``lscm`` -- with only the
+    boundary or two vertices fixed their solves are long -- and for ``k == 2`` the square of the
+    Laplacian's polynomial
+    ([`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]): the
+    free block of ``L M^-1 L`` is spectrally close to ``L_ff D^-2 L_ff`` with ``D = sqrt(M_f)``,
+    the terms it drops being the one ring of the fixed boundary. ``k >= 3`` is factored from the
+    start: conjugate gradient needs thousands of rounds there and still leaves an error of 1e-5 to
+    1e-2 of the range, so the multigrid ``"auto"`` route remains only for a system the
+    factorization refuses.
+    """
     if k == 1:
-        return system, "chebyshev"
-    if k >= 3 or system.factored or system.n_free == 0:
-        return system, "auto"
+        return "chebyshev"
+    if k >= 3 or factored or n_free == 0:
+        return "auto"
+    assert laplacian is not None
     device = fixed_mask.device
-    n_vertices = vertices.size
+    n_vertices = fixed_mask.size
     no_values = odt.as_array2d(
         _launch.empty((0, n_vertices), dtype=wp.float64, device=device), wp.float64
     )
     # ``-L``'s free block, negated as it is extracted.
     l_ff, _ = twl.assemble_interior_system(
-        laplacian, fixed_mask, system.free_map, no_values, system.n_free, scale=-1.0
+        laplacian, fixed_mask, free_map, no_values, n_free, scale=-1.0
     )
     if mass_diag is None:
-        roots = _launch.full(system.n_free, 1.0, dtype=wp.float64, device=device)
+        roots = _launch.full(n_free, 1.0, dtype=wp.float64, device=device)
     else:
-        roots = _launch.empty(system.n_free, dtype=wp.float64, device=device)
+        roots = _launch.empty(n_free, dtype=wp.float64, device=device)
         _launch.launch(
             kernel_parametrization.free_mass_roots,
             dim=n_vertices,
-            inputs=[fixed_mask, system.free_map, mass_diag, roots],
+            inputs=[fixed_mask, free_map, mass_diag, roots],
             device=device,
         )
-    return system, twl.squared_laplacian_preconditioner(l_ff, roots)
+    return twl.squared_laplacian_preconditioner(l_ff, roots)
 
 
 def _checked_system(
@@ -1610,26 +1700,23 @@ def _checked_system(
 ) -> twl.MinQuadWithFixedData:
     """Build ``q``'s reduced system over ``fixed_mask``, check its fixed count, then factor it."""
     system = twl.MinQuadWithFixedData(q, fixed_mask, vertices, factor=False)
-    _require_fixed_count(system, n_fixed, method)
+    _require_fixed_count(system.fixed_mask.size - system.n_free, n_fixed, method)
     if factor and system.factorization is not None:
         system.factorization.factor()
     return system
 
 
-def _require_fixed_count(
-    system: twl.MinQuadWithFixedData, n_fixed: int | None, method: str
-) -> None:
+def _require_fixed_count(fixed: int, n_fixed: int | None, method: str) -> None:
     """
-    Raise ``ValueError`` unless ``system`` fixes the ``n_fixed`` degrees of freedom asked for.
+    Raise ``ValueError`` unless a system fixes the ``n_fixed`` degrees of freedom asked for.
 
     The scatter kernels mark one degree of freedom (two for ``lscm``) per distinct in-range index
     and skip an out-of-range one, so a repeated or out-of-range index leaves fewer fixed than the
-    caller's count. The fixed count is the mask's size less the free count the system read when it
-    was built: no read of its own.
+    caller's count. ``fixed`` is the mask's size less the free count the extraction read: no read
+    of its own.
     """
     if n_fixed is None:
         return
-    fixed = system.fixed_mask.size - system.n_free
     if fixed != n_fixed:
         raise ValueError(
             f"{method}: the fixed vertex indices must be distinct and in [0, n_vertices); they fix "

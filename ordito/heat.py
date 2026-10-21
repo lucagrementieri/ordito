@@ -714,29 +714,26 @@ def _solve_poisson_zero_set(
     By a factorization when ``factor``.
 
     ``linalg.min_quad_with_fixed`` minimizes ``0.5 x' Q x`` and has no place for a linear term, so
-    the pieces underneath it are used directly: the free-free block comes from
-    [`assemble_interior_system`][ordito.linalg.assemble_interior_system] (whose own right-hand side
-    is zero here, the pinned values being zero) and the divergence is compacted into it.
+    the pieces underneath it are used directly: the free partition and the free-free block come
+    from [`partitioned_interior_system`][ordito.linalg.partitioned_interior_system] (whose own
+    right-hand side is zero here, the pinned values being zero) and the divergence is compacted
+    into it.
     """
     device = vertices.device
     n_vertices = vertices.size
-    free_map, n_free = twl.free_partition(fixed_mask)
-    if n_free == 0:
-        return _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-
     # No pinned-value right-hand side to assemble: the curve is pinned to zero, so ``-Q_ub bc``
     # vanishes and the extraction is asked for none. The system's one right-hand side is the
     # divergence, compacted to the free rows by the extraction's own row pass (``load``).
     # ``divergence`` is already the -div right-hand side the -L operator takes.
     no_values = odt.empty_2d((0, n_vertices), wp.float64, device=device)
-    operator_uu, rhs = twl.assemble_interior_system(
+    operator_uu, rhs, free_map, n_free = twl.partitioned_interior_system(
         operator,
         fixed_mask,
-        free_map,
         no_values,
-        n_free,
         load=odt.as_array2d(divergence.reshape((1, n_vertices)), wp.float64),
     )
+    if n_free == 0:
+        return _launch.zeros(n_vertices, dtype=wp.float64, device=device)
 
     solution = _launch.zeros((1, n_free), dtype=wp.float64, device=device)
     direct = None
