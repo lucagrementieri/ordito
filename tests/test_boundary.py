@@ -39,13 +39,15 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B against all three references: the same edge set after a canonical row order.
+    Class A against trimesh, Class B (reordered) against pyvista and igl.
 
-    Neither side defines the order in which boundary edges come back, so every comparison is a
-    lexsort of the rows.
-
-    - **trimesh**: its multiplicity-1 rows of ``edges_sorted``. The rows are min-first on both
-      sides, which is what makes the lexsort sufficient.
+    - **trimesh**: its multiplicity-1 rows, read from ``edges_sorted`` for the undirected form and
+      from ``edges`` for the directed one, are compared with ordito's rows *as returned*. Both sides
+      order rows by the ``(max, min)`` key of the edge (trimesh's ``hashable_rows`` packs column 0
+      into the low bits), so no transform is needed: the comparison pins the row order, each row's
+      direction, and -- through
+      [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges] -- the face winding.
+      A lexsort of both sides, as this test did, passed for any permutation of ordito's rows.
     - **pyvista**: ``extract_feature_edges(boundary_edges=True)`` with the other three classes off,
       after the index remap of VTK's renumbered output (as in ``tests/test_seams.py``). The flags
       matter more here than anywhere else in the suite, because VTK's default turns on the
@@ -60,15 +62,20 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
       **oriented** (they carry the incident face's winding), so they are sorted within each row
       for the undirected set and compared unsorted against
       [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges], which agrees with igl's
-      orientation vertex for vertex. That directed compare, where only the row order is
-      canonicalized, is what catches a reversed half-edge.
+      orientation vertex for vertex.
+
+    pyvista and igl order rows by their own constructions, so only their rows are moved, into
+    ordito's ``(max, min)`` key order (``_in_edge_key_order``, which keeps each row's direction),
+    and ordito's side is compared as returned.
 
     Both fixtures are open, so the references are non-empty by construction -- asserted anyway,
     since running this on a closed mesh would compare two empty sets and pass.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
-    boundary_edges_tm = mesh_tm.edges_sorted[_boundary_indices_tm(mesh_tm)]
+    boundary_indices_tm = _boundary_indices_tm(mesh_tm)
+    boundary_edges_tm = mesh_tm.edges_sorted[boundary_indices_tm]
+    oriented_edges_tm = mesh_tm.edges[boundary_indices_tm]
     edges_pv = pyvista_edges_to_indices(
         trimesh_to_pyvista(mesh_tm).extract_feature_edges(
             boundary_edges=True, feature_edges=False, non_manifold_edges=False, manifold_edges=False
@@ -78,14 +85,14 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
     edges_igl, _face_igl, _corner_igl = igl.boundary_facets(mesh_tm.faces.astype(np.int64))
     assert len(edges_pv) > 0
 
-    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
-    oriented_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
+    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
+    oriented_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
 
-    canonical_wp = lexsort_rows(boundary_edges_wp.numpy())
-    assert np.array_equal(canonical_wp, lexsort_rows(boundary_edges_tm))
-    assert np.array_equal(canonical_wp, lexsort_rows(edges_pv))
-    assert np.array_equal(canonical_wp, lexsort_rows(np.sort(edges_igl, axis=1)))
-    assert np.array_equal(lexsort_rows(oriented_wp.numpy()), lexsort_rows(np.asarray(edges_igl)))
+    assert np.array_equal(boundary_edges_wp, boundary_edges_tm)
+    assert np.array_equal(oriented_wp, oriented_edges_tm)
+    assert np.array_equal(boundary_edges_wp, _in_edge_key_order(np.sort(edges_pv, axis=1)))
+    assert np.array_equal(boundary_edges_wp, _in_edge_key_order(np.sort(edges_igl, axis=1)))
+    assert np.array_equal(oriented_wp, _in_edge_key_order(np.asarray(edges_igl)))
 
 
 @pytest.mark.parametrize("mesh_name", [*BOUNDARY_MESHES, "mobius"])
@@ -965,6 +972,12 @@ def test_loop_measures_empty(device: str) -> None:
 
 def _boundary_indices_tm(mesh_tm: tm.Trimesh) -> np.ndarray:
     return np.asarray(tm_grouping.group_rows(mesh_tm.edges_sorted, require_count=1))
+
+
+def _in_edge_key_order(rows_np: np.ndarray) -> np.ndarray:
+    """Reorder edge rows by their ``(max, min)`` key, keeping each row's direction."""
+    rows_np = np.asarray(rows_np).astype(np.int32)
+    return rows_np[np.lexsort((rows_np.min(axis=1), rows_np.max(axis=1)))]
 
 
 def _assert_edge_key_order(rows_np: np.ndarray) -> None:

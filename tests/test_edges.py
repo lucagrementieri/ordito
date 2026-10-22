@@ -138,15 +138,17 @@ def test_edges_face(device: str) -> None:
 @pytest.mark.parity("edges_unique_manifold", "potpourri3d")
 def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B (the references reordered): the unique undirected edge set against three references.
+    Class A against trimesh, Class B (the reference reordered) against pyvista and potpourri3d.
 
-    The references order their rows by their own constructions, so each reference's table is put
-    into ordito's order (``_in_ordito_edge_order``: each pair min-first, rows ascending by the
-    ``(max, min)`` key the sort produces) and compared with ``array_equal`` against ordito's rows
-    *as returned*. Only the reference side moves, so the comparison also pins the row order that
-    ``quadric_decimate``, the lock keys and the new-vertex numbering read; sorting both sides, as
-    this test did, passed for any permutation of ordito's rows. The inverse that pairs with this
-    set is checked by [`test_edges_unique_inverse`].
+    trimesh's ``unique_rows`` keys each min-first pair with column 0 in the low bits, so its rows
+    ascend by the same ``(max, min)`` key ordito's sort produces: its table is compared with
+    ``array_equal`` against ordito's rows *as returned*, untransformed. pyvista and potpourri3d
+    order their rows by their own constructions, so only their tables are put into ordito's order
+    (``_in_ordito_edge_order``: each pair min-first, rows ascending by ``(max, min)``). Ordito's
+    side never moves, so every arm also pins the row order that ``quadric_decimate``, the lock keys
+    and the new-vertex numbering read; sorting both sides, as this test once did, passed for any
+    permutation of ordito's rows. The inverse that pairs with this set is checked by
+    [`test_edges_unique_inverse`].
 
     - **trimesh** (``unique_rows`` over the sorted edge table) and **pyvista**
       (``extract_all_edges``, a line-cell ``PolyData``) are called against the form that omits
@@ -183,7 +185,7 @@ def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
     hinted_edges_wp, _ = od.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
 
     assert len(edges_pv) > 0  # non-vacuous: two empty sets would compare equal
-    assert np.array_equal(unique_edges_wp_np, _in_ordito_edge_order(unique_edges_tm))
+    assert np.array_equal(unique_edges_wp_np, unique_edges_tm)
     assert np.array_equal(unique_edges_wp_np, _in_ordito_edge_order(edges_pv))
     assert np.array_equal(hinted_edges_wp.numpy(), _in_ordito_edge_order(edges_pp))
 
@@ -429,13 +431,14 @@ def test_edges_unique_from_precomputed_sorted_edges(
 @pytest.mark.parity("edges_unique_length", "trimesh", "meshlib")
 def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B (the references reordered): each unique edge's length, paired with its edge.
+    Class A against trimesh, Class B (the reference reordered) against MeshLib.
 
-    Each reference's lengths are carried with their own edges into ordito's ``(max, min)`` row
-    order (``_in_ordito_edge_order``'s key) and compared elementwise, so a length written at the
-    wrong row fails; comparing sorted multisets, as this test did, passed for any permutation. The
-    trimesh-side lengths come from a ``float32`` copy of the vertices, so this is not measuring
-    ordito's precision against numpy's.
+    trimesh's unique edges already come in ordito's ``(max, min)`` row order (see
+    [`test_edges_unique`]), so its lengths are compared elementwise as computed. MeshLib's lengths
+    are carried with their own edges into that order (``_in_ordito_edge_order``'s key) first. A
+    length written at the wrong row fails either way; comparing sorted multisets, as this test once
+    did, passed for any permutation. The trimesh-side lengths come from a ``float32`` copy of the
+    vertices, so this is not measuring ordito's precision against numpy's.
 
     MeshLib's ``edgeLengths`` is the second reference and indexes by ``UndirectedEdgeId``, its own
     numbering, decoded to a vertex pair through ``org`` / ``dest`` of the edge. Its answer comes
@@ -467,10 +470,10 @@ def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> 
         ]
     )
     assert lengths_wp_np.shape == lengths_ml.shape  # non-vacuity, and MeshLib's own edge count
-    for edges_ref, lengths_ref in ((unique_edges_tm, lengths_tm), (edges_ml, lengths_ml)):
-        pairs_ref = np.sort(edges_ref, axis=1)
-        order_ref = np.lexsort((pairs_ref[:, 0], pairs_ref[:, 1]))
-        assert np.allclose(lengths_wp_np, lengths_ref[order_ref], rtol=1e-5, atol=1e-5)
+    assert np.allclose(lengths_wp_np, lengths_tm, rtol=1e-5, atol=1e-5)
+    pairs_ml = np.sort(edges_ml, axis=1)
+    order_ml = np.lexsort((pairs_ml[:, 0], pairs_ml[:, 1]))
+    assert np.allclose(lengths_wp_np, lengths_ml[order_ml], rtol=1e-5, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
