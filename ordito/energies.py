@@ -166,11 +166,14 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
 
     Notes
     -----
-    Matches ``pytorch3d.loss.mesh_normal_consistency`` on **edge-manifold** input. The restriction
-    is real and is not a tolerance -- the reference enumerates *every* pair of faces sharing an
-    edge, so an edge with ``k`` incident faces contributes ``C(k, 2)`` terms where
-    [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles] reports one pair per
-    adjacency. The two coincide exactly wherever every edge has at most two faces.
+    Matches ``pytorch3d.loss.mesh_normal_consistency`` on **consistently oriented, edge-manifold**
+    input. Both restrictions are real and neither is a tolerance. The reference enumerates *every*
+    pair of faces sharing an edge, so an edge with ``k`` incident faces contributes ``C(k, 2)``
+    terms where [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles] reports one pair
+    per adjacency; the two coincide wherever every edge has at most two faces. And the reference
+    orients each pair by the shared edge rather than by face winding, so it reads a pair wound
+    against each other (an inconsistently oriented or non-orientable mesh) as smooth where this
+    function reads it as a fold.
 
     Examples
     --------

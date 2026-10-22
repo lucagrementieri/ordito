@@ -8,7 +8,7 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
-from tests.comparisons import assert_nonconstant, fraction_within
+from tests.comparisons import assert_nonconstant
 from tests.conftest import ROUND_FRAME_ROTATION, ROUND_FRAME_SHIFT, round_frame_coordinates
 from tests.conversions import points_to_warp, trimesh_to_pymeshlab
 
@@ -23,6 +23,7 @@ def test_principal_curvature_with_supplied_face_tables(
 
     The pair is used only when both halves are given; a lone ``face_normals`` is ignored and the
     function derives both, so either way the answer must match ``igl.principal_curvature``.
+    Measured 1.3e-06 at worst, both devices.
     """
     mesh_tm, mesh_wp = sphere_irregular
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
@@ -39,8 +40,8 @@ def test_principal_curvature_with_supplied_face_tables(
         face_normals=face_normals_wp,
         face_areas=face_areas_wp if supplied == "both" else None,
     )
-    assert np.allclose(pv1_wp.numpy(), pv1_igl, atol=1e-3, rtol=1e-3)
-    assert np.allclose(pv2_wp.numpy(), pv2_igl, atol=1e-3, rtol=1e-3)
+    assert np.allclose(pv1_wp.numpy(), pv1_igl, atol=1e-5, rtol=1e-5)
+    assert np.allclose(pv2_wp.numpy(), pv2_igl, atol=1e-5, rtol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -48,15 +49,20 @@ def test_principal_curvature_graded(request: pytest.FixtureRequest, mesh_name: s
     """
     Values and directions against libigl where curvature varies, on both shape-operator paths.
 
-    **Class B (directions up to sign), ``frame_independent=False``**: reproduces
-    ``igl::principal_curvature``'s symmetrized shape operator, so values and directions match.
+    **Class A, ``frame_independent=False``**: reproduces ``igl::principal_curvature``'s symmetrized
+    shape operator, so values and directions match at the standard tolerance. Measured, both
+    devices: values to **7.1e-06** absolute (3.3e-07 relative), directions to ``|cos| = 1.000000``
+    at every vertex. The only freedom is the eigenvector's sign, so directions compare by
+    ``|dot|``; that is the convention, not a transform.
 
-    **Class C (a fraction bound), ``frame_independent=True``**: the default solves the true
-    generalized eigenproblem (a surface invariant) rather than libigl's frame-dependent symmetrized
-    operator. The two formulations share the trace of the shape operator, so the mean curvature
-    ``(PV1 + PV2) / 2`` is preserved exactly; only the eigenvalue *spread* differs, and only
-    appreciably at high-anisotropy vertices where ``PV1 - PV2`` is large. The bulk of vertices
-    therefore stay close to libigl.
+    **Class C (a bound), ``frame_independent=True``**: the default solves the true generalized
+    eigenproblem (a surface invariant) rather than libigl's frame-dependent symmetrized operator.
+    The two share the trace, so the mean curvature ``(PV1 + PV2) / 2`` agrees at the standard
+    tolerance (measured **3.7e-06**). The values themselves differ only where the fitted frame is
+    anisotropic: on this fixture by **1.13e-04** at worst, bounded at 3x that. Not a sharp test
+    of the formulation: here the two operators nearly coincide (on ``sphere_irregular`` they part
+    by 0.33, which is why that fixture runs only the frame-dependent comparison above); it pins
+    that the default stays the same answer wherever the frame does not matter.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
@@ -72,39 +78,30 @@ def test_principal_curvature_graded(request: pytest.FixtureRequest, mesh_name: s
     mask = np.ones(len(pv1_igl), dtype=bool)
     if len(bad) > 0:
         mask[bad] = False
-    mask[gap < 1e-2] = False
+    assert mask.sum() > 0.9 * mask.size  # non-vacuity: the comparison covers the mesh
+    directional = mask & (gap >= 1e-2)
 
     pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
         mesh_wp.points, mesh_wp.indices, frame_independent=False
     )
-    # Tolerance is relaxed relative to the closed-mesh test: float32 input vs libigl float64,
-    # plus slight radius difference from avg_edge_length rounding.
-    assert np.allclose(pv1_wp.numpy()[mask], pv1_igl[mask], atol=5e-2, rtol=5e-2)
-    assert np.allclose(pv2_wp.numpy()[mask], pv2_igl[mask], atol=5e-2, rtol=5e-2)
-    # Directions defined up to sign — compare |cos angle| ≈ 1 at non-umbilic vertices
-    pd1_dot = np.abs(np.einsum("ij,ij->i", pd1_wp.numpy()[mask], pd1_igl[mask]))
-    pd2_dot = np.abs(np.einsum("ij,ij->i", pd2_wp.numpy()[mask], pd2_igl[mask]))
-    assert np.allclose(pd1_dot, 1.0, atol=1e-1)
-    assert np.allclose(pd2_dot, 1.0, atol=1e-1)
+    assert np.allclose(pv1_wp.numpy()[mask], pv1_igl[mask], atol=1e-5, rtol=1e-5)
+    assert np.allclose(pv2_wp.numpy()[mask], pv2_igl[mask], atol=1e-5, rtol=1e-5)
+    pd1_dot = np.abs(np.einsum("ij,ij->i", pd1_wp.numpy()[directional], pd1_igl[directional]))
+    pd2_dot = np.abs(np.einsum("ij,ij->i", pd2_wp.numpy()[directional], pd2_igl[directional]))
+    assert np.allclose(pd1_dot, 1.0, rtol=0.0, atol=1e-5)
+    assert np.allclose(pd2_dot, 1.0, rtol=0.0, atol=1e-5)
 
     # Default (frame_independent=True): true Weingarten map, independent of the tangent frame.
     _, _, pv1_wp, pv2_wp = od.curvature.principal_curvature(mesh_wp.points, mesh_wp.indices)
     pv1_indep = pv1_wp.numpy()
     pv2_indep = pv2_wp.numpy()
 
-    # Mean curvature (the shared trace invariant) must match libigl tightly.
+    # Mean curvature (the shared trace invariant) must match libigl at the standard tolerance.
     mean_indep = 0.5 * (pv1_indep + pv2_indep)
     mean_igl = 0.5 * (np.asarray(pv1_igl) + np.asarray(pv2_igl))
-    assert np.allclose(mean_indep[mask], mean_igl[mask], atol=5e-2, rtol=5e-2)
-
-    # The principal values themselves stay close for the vast majority of vertices; genuine
-    # divergence is confined to the few highest-anisotropy vertices, which the mask already drops.
-    # Class C, so it carries the shuffle probe its helper asks for: both fractions measure
-    # **1.0000** over the 544 surviving vertices, and permuting the reference drops them to 0.105
-    # and 0.074 -- 9x under the bar, so the threshold is testing the correspondence and not the
-    # marginal distributions.
-    assert fraction_within(pv1_indep[mask], pv1_igl[mask]) > 0.95
-    assert fraction_within(pv2_indep[mask], pv2_igl[mask]) > 0.95
+    assert np.allclose(mean_indep[mask], mean_igl[mask], atol=1e-5, rtol=1e-5)
+    assert np.abs(pv1_indep - pv1_igl)[mask].max() < 3.4e-4
+    assert np.abs(pv2_indep - pv2_igl)[mask].max() < 3.4e-4
 
 
 @pytest.mark.parity("principal_curvature", "pymeshlab")

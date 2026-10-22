@@ -166,14 +166,27 @@ def _faces_with_duplicates_wp(bench_case: BenchCase, fraction: float) -> wp.arra
     reason="D2 as above but the other way round: MeshLab's hash is orientation-*insensitive*, so "
     "it does see the flipped copies, yet it still keeps one representative per group where "
     "ordito cancels a (+1, -1) pair to nothing. Same input, three different survivor sets by "
-    "design; the numpy oracle in tests/test_repair.py covers the signed-count rule itself.",
+    "design; igl, timed here and compared face for face in tests/test_repair.py, is the "
+    "signed-count rule's own reference.",
 )
 @pytest.mark.benchmark(group="resolve_duplicated_faces")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab")
 @pytest.mark.parametrize("fraction", _DUPLICATE_FRACTIONS, ids=["clean", "dup10pct"])
 def test_resolve_duplicated_faces(bench_case: BenchCase, fraction: float) -> None:
-    """Sort-based grouping with a signed-count rule: nothing to do, against a tenth of the mesh."""
+    """
+    Sort-based grouping with a signed-count rule: nothing to do, against a tenth of the mesh.
+
+    ``igl.resolve_duplicated_faces`` is the same rule and the same output, face for face, so it is
+    the like-for-like row; open3d and pymeshlab de-duplicate by other rules (exempt above).
+    """
+    if bench_case.kind == "igl":
+        faces_dup_i64 = _faces_with_duplicates_np(bench_case, fraction).astype(np.int64)
+        resolved_igl, _kept_igl = bench_case.run(
+            lambda: igl.resolve_duplicated_faces(faces_dup_i64)
+        )
+        assert resolved_igl.shape[0] > 0
+        return
     if bench_case.kind == "pymeshlab":
         # Orientation-insensitive, so unlike open3d's hash it does see the flipped copies.
         vertices_np = bench_case.vertices_np

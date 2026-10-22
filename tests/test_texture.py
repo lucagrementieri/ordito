@@ -2,10 +2,10 @@
 Regression tests for ``ordito.texture``.
 
 The forward rasterizers are compared against a vendored moderngl (OpenGL) reference; the inverse
-samplers against ``scipy.ndimage.map_coordinates``. Because OpenGL's top-left edge fill rule
-differs subtly from a barycentric pixel-center coverage test, comparisons of the covered/uncovered
-mask allow a thin boundary band of disagreement, while interpolated values are compared only where
-both rasterizers cover the pixel (the interpolated field is continuous, so values agree there).
+samplers against ``scipy.ndimage.map_coordinates``. OpenGL's top-left edge fill rule and a
+barycentric pixel-centre coverage test part only on a pixel centre lying exactly on a rim edge,
+which the fixture avoids, so the coverage masks are compared exactly; interpolated values carry
+OpenGL's sub-pixel snapping and are compared at a measured bound.
 """
 
 from __future__ import annotations
@@ -161,6 +161,14 @@ def _grid_uv_mesh(
     return uv, np.array(faces, dtype=np.int32)
 
 
+def _anisotropic_grid_uv_mesh() -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int32]]:
+    """``_grid_uv_mesh(8)`` squeezed to ``v`` in ``[0.135, 0.765]``: no symmetry under transpose."""
+    uv_np, faces_np = _grid_uv_mesh(n=8)
+    squeeze = np.array([1.0, 0.7], dtype=np.float32)
+    lift = np.array([0.0, 0.1], dtype=np.float32)
+    return (uv_np * squeeze + lift).astype(np.float32), faces_np
+
+
 def _interior_mask(n: int) -> npt.NDArray[np.bool_]:
     """Lattice vertices not on the outer ring (surrounded by covered pixels)."""
     rows, cols = np.divmod(np.arange(n * n), n)
@@ -191,43 +199,49 @@ def _float_rows(values_np: npt.NDArray[np.float32], device: str) -> odt.Array2dF
     "kernel and read as a throughput number for neither. benchmarks/test_texture.py carries that "
     "decline; moderngl is registered as a test-only reference so this claim is still checked.",
 )
-def test_rasterize_attribute_matches_opengl(gl_context: moderngl.Context, device: str):
+@pytest.mark.parametrize(("resolution", "value_atol"), [(64, 1e-3), (256, 2.5e-4)])
+def test_rasterize_attribute_matches_opengl(
+    gl_context: moderngl.Context, device: str, resolution: int, value_atol: float
+):
     """
-    Class C (a coverage fraction plus values on the jointly-covered pixels).
+    Class C (values at a measured bound), with the coverage masks compared exactly.
 
-    No correspondence is available pixel-for-pixel: OpenGL's top-left fill rule and ordito's
-    barycentric pixel-centre coverage test disagree by construction on a boundary pixel, so the
-    comparison is a coverage *agreement fraction* and then an exact value check restricted to the
-    pixels both rasterizers claim. The interpolated field is continuous, which is what makes the
-    restriction sound rather than convenient -- where both cover, both are interpolating the same
-    affine function over the same triangle.
+    The tolerance is not ``1e-5`` because the reference carries a named error, OpenGL's sub-pixel
+    snapping, so this stays Class C; the coverage half is exact.
 
-    Measured on five channels: coverage agreement is **1.000000** -- the fill-rule band this
-    fixture could exercise is empty -- with 82.1 % of the image covered, 3 364 jointly-covered
-    pixels and a max value difference of **1.99e-04** against the ``1e-3`` bound. So the ``0.98``
-    threshold is *headroom for the documented fill-rule difference, not a fitted number*; it has
-    never been approached on this fixture.
+    The coverage masks are compared with ``array_equal``. OpenGL's top-left fill rule and ordito's
+    lowest-face owner only part ways on a pixel centre lying exactly on a *boundary* edge; on a
+    shared interior edge both cover the pixel, and the interpolated field is continuous there. This
+    fixture puts no pixel centre on its rim, so the masks are equal -- measured, on both devices and
+    at both resolutions -- and the comparison is exact rather than a fraction.
 
-    Mutation probe, and it has a trap worth recording: **transposing** ordito's coverage mask
-    also scores **1.000000**, because ``_grid_uv_mesh`` is symmetric under transposition -- so the
-    obvious mutation is vacuous here and would "prove" the bound bites when it does not. A
-    **shuffle** is the valid probe: it drops agreement to **0.708**, i.e. 29.2 % disagreement
-    against the 2 % the
-    threshold allows, a **14.6x** margin.
+    Values are compared on the covered pixels at an absolute tolerance scaled to the resolution.
+    OpenGL snaps vertices to its sub-pixel grid before interpolating, so its barycentrics carry a
+    position error of a fixed fraction of a pixel, and the value error is that times the field's
+    gradient: measured max **3.03e-04** at 64 px and **6.84e-05** at 256 px (attributes in
+    ``[1, 2]``), identical on CPU and CUDA, against ``1e-3`` and ``2.5e-4`` (3.3x and 3.7x).
+
+    The fixture is a lattice squeezed in ``v`` (``_anisotropic_grid_uv_mesh``) on purpose: the
+    square lattice is symmetric under transposition, so a transposed mask scored a perfect
+    agreement there and the obvious mutation was vacuous. Here a **transposed** mask disagrees on
+    1 440 pixels at 64 px (22 218 at 256 px), so the ``array_equal`` bites on a swapped ``u`` /
+    ``v`` axis or a missing vertical flip.
+
+    A random Delaunay UV mesh was measured and rejected as the fixture: its slivers put a pixel
+    centre within the snapping error of a rim edge (one coverage pixel apart at 64 px) and raise the
+    value error to 2.9e-03 through their gradients, so the test would get looser, not stricter.
 
     The bug class this excludes: a wrong barycentric interpolation, a channel permutation, an
-    off-by-one in the pixel-centre offset, a UV-to-NDC sign error, and any coverage rule wrong by
-    more than a boundary pixel. What it does *not* see is a systematic half-pixel shift small enough
-    to keep the same pixel set, which the round-trip tests below are what cover.
+    off-by-one in the pixel-centre offset, a UV-to-NDC sign error or axis swap, and any coverage
+    rule that differs on a single pixel.
     """
     n_channels = 5
     rng = np.random.default_rng(20240704 + n_channels)
-    uv_np, faces_np = _grid_uv_mesh(n=8)
+    uv_np, faces_np = _anisotropic_grid_uv_mesh()
     # Offset into [1, 2] so covered pixels are never ~0 (distinguishable from uncovered 0).
     attribute_np = (rng.random((uv_np.shape[0], n_channels), dtype=np.float32) + 1.0).astype(
         np.float32
     )
-    resolution = 64
 
     image_gl = _rasterize_attribute_gl(
         gl_context, uv_np, faces_np.reshape(-1, 3), attribute_np, resolution
@@ -239,11 +253,11 @@ def test_rasterize_attribute_matches_opengl(gl_context: moderngl.Context, device
 
     covered_gl = image_gl[:, :, 0] > 0.5
     covered_wp = image_wp[:, :, 0] > 0.5
-    # Coverage masks agree except for a thin boundary band (fill-rule differences).
-    assert np.mean(covered_gl == covered_wp) > 0.98
-    both = covered_gl & covered_wp
-    assert both.sum() > 0
-    assert np.allclose(image_wp[both], image_gl[both], rtol=1e-3, atol=1e-3)
+    # Non-vacuous: both covered and uncovered pixels exist, and the mask is not transpose-symmetric.
+    assert 0.2 < covered_gl.mean() < 0.9
+    assert not np.array_equal(covered_gl, covered_gl.T)
+    assert np.array_equal(covered_wp, covered_gl)
+    assert np.allclose(image_wp[covered_gl], image_gl[covered_gl], rtol=0.0, atol=value_atol)
 
 
 @pytest.mark.parity(
@@ -255,34 +269,40 @@ def test_rasterize_attribute_matches_opengl(gl_context: moderngl.Context, device
     "also needs a one-hot encoding on the reference side, so the two are not even doing the same "
     "amount of work -- the label agreement is what is comparable, and that is what this checks.",
 )
-def test_rasterize_discrete_attribute_matches_opengl(gl_context: moderngl.Context, device: str):
+@pytest.mark.parametrize("resolution", [64, 256])
+def test_rasterize_discrete_attribute_matches_opengl(
+    gl_context: moderngl.Context, device: str, resolution: int
+):
     """
-    Class C (coverage fraction plus label agreement), through a named one-hot transform.
+    Class B (equal coverage; equal labels outside a named argmax-tie band), via one-hot.
 
     OpenGL has no per-pixel argmax, so the reference rasterizes the labels **one-hot** as a
-    continuous attribute and takes the argmax afterwards. That is the transform, and it is not free:
-    interpolating a one-hot vector and then taking an argmax is barycentric nearest-label, which is
-    what ordito's weight accumulation computes -- but the two break argmax *ties* differently, so
-    the label comparison is a fraction rather than an equality.
+    continuous attribute and takes the argmax afterwards. Interpolating a one-hot vector and taking
+    the argmax is barycentric nearest-label, which is what ordito's weight accumulation computes,
+    and both break an exact tie towards the lowest label (``np.argmax`` takes the first maximum).
 
-    Measured: coverage agreement **1.000000** and label agreement **0.999405** -- 2 disagreeing
-    pixels of 3 364, both on a tie edge -- against the ``0.98`` bound.
+    So the labels are compared with ``array_equal`` everywhere except on the **tie band**: pixels
+    where OpenGL's two largest interpolated weights are within ``1e-3`` of each other. There the
+    argmax is decided by the reference's own error, not by a convention: its sub-pixel snapping
+    (see the continuous test above) moves a weight by up to **2.7e-04** (measured, the largest gap
+    at any disagreeing pixel over both resolutions and devices; on the square lattice the
+    disagreements were exact ties at 3e-08 float noise). The band holds 0.04 % of the covered
+    pixels at 64 px and 0.07 % at 256 px, and its size is asserted, so it cannot swallow the
+    comparison.
 
-    Mutation probe: shuffling the reference labels over the jointly-covered pixels drops agreement
-    to **0.2815**, which is chance for this fixture's 4 labels. So the bound sits **34x** above
-    chance
-    in disagreement terms (0.06 % measured against 71.8 % shuffled, with 2 % allowed).
+    Mutation probes: a transposed class image fails the coverage ``array_equal`` (the fixture is
+    the anisotropic lattice of the continuous test), and breaking ties towards the *highest* label
+    in the reference leaves the off-band labels equal -- correctly, since ties live in the band --
+    while shuffling the labels over the covered pixels drops off-band agreement to 0.27-0.28,
+    chance for four labels.
 
     The bug class this excludes: a label gathered from the wrong vertex, an argmax over the wrong
-    axis, a coverage rule that disagrees by more than a boundary pixel, and the ``-1`` uncovered
-    sentinel leaking into the covered region. Ties near an edge are the residual, and they are the
-    reason this is a fraction and not ``array_equal``.
+    axis, any coverage disagreement, and the ``-1`` uncovered sentinel leaking into the covered
+    region.
     """
     rng = np.random.default_rng(99)
-    n = 8
-    uv_np, faces_np = _grid_uv_mesh(n=n)
+    uv_np, faces_np = _anisotropic_grid_uv_mesh()
     labels_np = rng.integers(0, 4, size=uv_np.shape[0]).astype(np.int32)
-    resolution = 64
 
     n_classes = int(labels_np.max() + 1)
     one_hot = np.eye(n_classes, dtype=np.float32)[labels_np]
@@ -292,6 +312,8 @@ def test_rasterize_discrete_attribute_matches_opengl(gl_context: moderngl.Contex
     covered_gl = ~np.all(np.isclose(one_hot_image, 0.0), axis=-1)
     class_gl = np.argmax(one_hot_image, axis=-1).astype(np.int32)
     class_gl[~covered_gl] = -1
+    top_two = np.sort(one_hot_image, axis=-1)[:, :, -2:]
+    decided = covered_gl & (top_two[:, :, 1] - top_two[:, :, 0] >= 1e-3)
 
     uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
     labels_wp = wp.array(labels_np, dtype=wp.int32, device=device)
@@ -299,11 +321,11 @@ def test_rasterize_discrete_attribute_matches_opengl(gl_context: moderngl.Contex
         uv_wp, faces_wp, labels_wp, resolution
     ).numpy()
 
-    covered_wp = class_wp >= 0
-    assert np.mean(covered_gl == covered_wp) > 0.98
-    both = covered_gl & covered_wp
-    # Labels agree on the vast majority of jointly-covered pixels (argmax ties near edges differ).
-    assert np.mean(class_wp[both] == class_gl[both]) > 0.98
+    assert np.array_equal(class_wp >= 0, covered_gl)
+    # Non-vacuous: the tie band is a thin minority and every label is present off it.
+    assert decided.sum() > 0.99 * covered_gl.sum()
+    assert np.unique(class_gl[decided]).shape[0] == n_classes
+    assert np.array_equal(class_wp[decided], class_gl[decided])
 
 
 # --------------------------------------------------------------------------------------------

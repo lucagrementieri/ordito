@@ -84,13 +84,22 @@ def test_normal_consistency_loss_matches_pytorch3d(
     incident faces and so reports **no pairs at all** and a loss of ``0.0``. The test pins both
     numbers rather than papering over them with a tolerance; without that half the class-A label
     would read as a claim about all input.
+
+    The third half is a second divergence, on edge-manifold input: pytorch3d orients each pair by
+    the shared *edge* (``(v1 - v0) x (opposite - v0)`` per face), so its loss ignores face winding,
+    where ordito's dihedral angle reads a pair wound against each other as a fold. On
+    ``sphere_irregular`` with every seventh face flipped, pytorch3d reports the unflipped value
+    while ordito's rises to **0.581**, measured, so the agreement is limited to *consistently
+    oriented* input (``mobius`` and ``boy_surface`` part the same way: 0.0062 / 0.0232 and 0.0189 /
+    0.0362). Pinned in both directions so a fix that adopted the edge orientation would fail here
+    and be relabelled.
     """
     mesh_tm, mesh_wp = sphere_irregular
     loss_p3d = float(p3d_loss.mesh_normal_consistency(trimesh_to_pytorch3d(mesh_tm)))
     loss_wp = od.energies.normal_consistency_loss(mesh_wp.points, mesh_wp.indices)
 
     assert loss_p3d > 1e-6
-    assert np.allclose(loss_wp, loss_p3d, rtol=1e-4, atol=0.0)
+    assert np.allclose(loss_wp, loss_p3d, rtol=1e-5, atol=0.0)
 
     # Three faces on one edge: 3 reference pairs against ordito's 2 adjacencies.
     vertices_np = np.array(
@@ -106,6 +115,19 @@ def test_normal_consistency_loss_matches_pytorch3d(
 
     assert np.allclose(fan_p3d, 0.777404, rtol=1e-4, atol=0.0)
     assert fan_wp == 0.0
+
+    # Inconsistent winding: the reference is winding-free, ordito's dihedral angle is not.
+    flipped_np = np.asarray(mesh_tm.faces).copy()
+    flipped_np[::7] = flipped_np[::7, ::-1]
+    flipped_p3d = float(
+        p3d_loss.mesh_normal_consistency(
+            trimesh_to_pytorch3d(tm.Trimesh(mesh_tm.vertices, flipped_np, process=False))
+        )
+    )
+    flipped_vertices_wp, flipped_faces_wp = numpy_to_warp(mesh_tm.vertices, flipped_np, device)
+    flipped_wp = od.energies.normal_consistency_loss(flipped_vertices_wp, flipped_faces_wp)
+    assert np.allclose(flipped_p3d, loss_p3d, rtol=1e-5, atol=0.0)
+    assert flipped_wp > 3.0 * flipped_p3d
 
 
 @pytest.mark.parametrize(
@@ -487,7 +509,7 @@ def test_lscm_hessian_matches_igl(
     assert sparse_allclose(bsr_to_csr(hessian_cached_wp), hessian_igl, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 def test_vector_area_matrix_matches_igl_derived(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -497,7 +519,8 @@ def test_vector_area_matrix_matches_igl_derived(
     ``A = (-repdiag(L, 2) - Q) / 2`` inverts the definition of the LSCM Hessian, giving an
     independent reference out of ``igl.cotmatrix`` and ``igl.lscm`` -- both of which ordito is
     compared against separately, so the derivation does not smuggle in ordito's own answer.
-    It is among the C++ functions with no Python binding.
+    It is among the C++ functions with no Python binding. On ``BOUNDARY_MESHES``, one rim and four,
+    since the matrix is a sum over boundary edges and is zero on a closed mesh.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)
@@ -506,6 +529,7 @@ def test_vector_area_matrix_matches_igl_derived(
         sp.csr_matrix, (-sp.block_diag([laplacian_igl, laplacian_igl]) - _lscm_q_igl(mesh_tm)) / 2.0
     )
 
+    assert abs(area_igl).max() > 1e-3  # non-vacuity: the rims contribute
     area_wp = bsr_to_csr(od.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices))
     assert sparse_allclose(area_wp, area_igl, rtol=1e-5, atol=1e-5)
 

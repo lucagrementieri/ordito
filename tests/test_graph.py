@@ -38,7 +38,8 @@ def test_edges_to_neighbor_lists_matches_igl(
     igl returns one Python list per vertex, already ascending; ``edges_to_neighbor_lists`` returns
     ``(neighbors, offsets)`` with **arbitrary order within a row**, which is the documented
     difference and the whole reason it is cheaper than
-    [`edges_to_csr`][ordito.graph.edges_to_csr]. Sorting each row is the transform.
+    [`edges_to_csr`][ordito.graph.edges_to_csr]. Sorting each row is the transform; with
+    ``sort_rows=True`` there is none, and the packed buffer is igl's lists concatenated (Class A).
 
     The fixtures span closed/open and curved/faceted, and every one of them is **irregular**: the
     assert below pins the maximum degree strictly above the minimum, because on a mesh where every
@@ -90,6 +91,8 @@ def test_edges_to_neighbor_lists_matches_igl(
     sorted_np = sorted_wp.numpy()
     assert np.array_equal(sorted_offsets_wp.numpy(), adjacency.offsets.numpy())
     assert np.array_equal(sorted_np, columns)
+    # Class A on the sorted form: igl's lists, concatenated, are its buffer exactly.
+    assert np.array_equal(sorted_np, np.concatenate([np.asarray(row) for row in adjacency_igl]))
     for _ in range(4):
         repeat_wp, _ = od.graph.edges_to_neighbor_lists(n_vertices, edges_wp, sort_rows=True)
         assert np.array_equal(repeat_wp.numpy(), sorted_np)
@@ -913,7 +916,7 @@ def test_shortest_path_envelope_matches_pymeshlab(
     # moves and not the field around it -- the zeros are already minimal and nothing is ever raised.
     assert 0.0 < float(saturated_wp.numpy()[0]) < 10.0
     assert np.allclose(
-        saturated_wp.numpy(), meshset_pml.current_mesh().vertex_scalar_array(), rtol=1e-4, atol=1e-5
+        saturated_wp.numpy(), meshset_pml.current_mesh().vertex_scalar_array(), rtol=1e-5, atol=1e-5
     )
 
 

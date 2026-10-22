@@ -27,6 +27,7 @@ from ordito.kernels import remesh as kernel_remesh
 from ordito.triangles import FaceQualityMetric
 from tests.comparisons import (
     assert_nearest_bijection,
+    canonical_winding,
     hausdorff_surface_two_sided,
     lexsort_rows,
     trimesh_outline_loops,
@@ -1136,15 +1137,19 @@ def test_cluster_decimate_matches_meshlib_cell_count(device: str, voxel_fraction
     faces. What the two share is the cell decomposition, so the comparable quantity is **how many
     cells the surface occupies**, which is ordito's output vertex count and MeshLib's bit count.
 
-    Measured on ``icosphere(4)`` at 2 %, 5 % and 10 % of the bounding-box diagonal: 2 310 / 541 /
-    151 against MeshLib's 2 394 / 548 / 128, i.e. ratios of **0.97 / 0.99 / 1.18**. The residual is
-    grid *anchoring* -- neither library documents where cell zero starts, and at a coarse voxel a
-    half-cell shift moves points across boundaries -- so the bound is 1.3x rather than exact.
+    Measured on ``icosphere(4)`` at 2 % and 5 % of the bounding-box diagonal, both devices: 2 310 /
+    541 against MeshLib's 2 394 / 548, i.e. ratios of **0.965 / 0.987** (and 1.18 at 10 %, which is
+    why that coarser size is not a parameter). The residual is grid *anchoring*, a convention the
+    two genuinely differ on and ordito cannot adopt without breaking its Open3D parity: ordito
+    anchors half a cell below the bounding box with cells of exactly ``voxel_size`` (Open3D's grid),
+    where MeshLib, measured, fits ``ceil(extent / voxel_size)`` cells *exactly* to the bounding box
+    and so stretches them. Hence a bound of 1.12x rather than exact: about 3x the worse 3.5 %
+    residual.
 
     **Bug class excluded:** a voxel size interpreted in the wrong units, or a grid whose cells are
     the wrong size. **Mutation probe, measured:** the count falls **4.3x** between consecutive
     fractions here (2 310 -> 541 -> 151), so a factor-of-two error in the cell size moves the ratio
-    far outside the 1.3x band while the anchoring residual stays inside it.
+    far outside the 1.12x band while the anchoring residual stays inside it.
     """
     sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
     diagonal = float(
@@ -1163,7 +1168,7 @@ def test_cluster_decimate_matches_meshlib_cell_count(device: str, voxel_fraction
     n_cells_wp = clustered_vertices_wp.size
     assert 0 < n_cells_ml < sphere_tm.vertices.shape[0]  # non-vacuity: it really sampled down
     assert 0 < n_cells_wp < sphere_tm.vertices.shape[0]
-    assert 1.0 / 1.3 < n_cells_wp / n_cells_ml < 1.3
+    assert 1.0 / 1.12 < n_cells_wp / n_cells_ml < 1.12
     assert clustered_faces_wp.size > 0
 
 
@@ -1376,15 +1381,21 @@ def test_quadric_decimate_beats_igl_and_open3d_on_deviation(device: str, target_
     """
     Class C (a deviation bound): at the same face count, no *worse* than two serial references.
 
-    The plan for this port said to expect the batched-parallel formulation to pick a different
-    sequence of collapses from a serial priority queue, and to compare by deviation rather than by
-    equality. It does, and it comes out ahead: measured two-sided Hausdorff to the input icosphere
-    at 512 faces is **0.0147 here against igl's 0.0250 and Open3D's 0.0236**, and the ordering holds
-    at every target. Spreading the collapses over independent sets rather than draining a queue
-    keeps the error evenly distributed, which is what a max-norm rewards.
+    The batched-parallel formulation picks a different sequence of collapses from a serial
+    priority queue, so the comparison is by deviation rather than by equality, and it comes out
+    clearly ahead. Measured two-sided Hausdorff to the input icosphere, identical on both devices:
 
-    The assertion is one-sided with slack, not an equality — the point is that the parallel method
-    is competitive, not that this exact ratio is a contract.
+    | target faces | ordito | / igl | / Open3D |
+    |---|---|---|---|
+    | 2 560 | 0.00209 | 0.354 | 0.573 |
+    | 1 024 | 0.00567 | 0.424 | 0.493 |
+    | 512 | 0.00900 | 0.361 | 0.381 |
+
+    So the bound is **0.75x** the better of the two, a 1.3x margin on the worst reading (0.573):
+    ordito must *beat* both serial references by a quarter, not merely stay within a slack above
+    them. **Bug class excluded:** a collapse order or placement that lets the error concentrate --
+    a quadric summed over the wrong faces or a placement off the minimizer reads as a deviation at
+    or above the references', which this bound refuses.
     """
     sphere_tm = tm.creation.icosphere(subdivisions=4, radius=1.0)
     vertices_np = np.ascontiguousarray(sphere_tm.vertices, dtype=np.float64)
@@ -1408,7 +1419,7 @@ def test_quadric_decimate_beats_igl_and_open3d_on_deviation(device: str, target_
     deviation_o3d = hausdorff_surface_two_sided(
         vertices_np, np.asarray(sphere_tm.faces), o3d_tm.vertices, o3d_tm.faces
     )
-    assert deviation_wp <= 1.2 * min(deviation_igl, deviation_o3d)
+    assert deviation_wp <= 0.75 * min(deviation_igl, deviation_o3d)
 
 
 def test_quadric_decimate_emits_no_inverted_or_degenerate_faces(device: str) -> None:
@@ -1433,7 +1444,10 @@ def test_quadric_decimate_keeps_the_features_of_a_cube(device: str) -> None:
     This is the property that distinguishes a quadric method from a length-driven one: the flat
     faces have zero quadric cost to collapse and the creases have a large one, so the sharp edges
     survive down to the coarsest usable mesh. Checked as the surviving dihedral distribution, which
-    is invariant to *which* particular collapses happened.
+    is invariant to *which* particular collapses happened. Measured, both devices: the bounds and
+    the volume are reproduced exactly (0.0 error) at 76 faces, and the 95th-percentile dihedral is
+    90 degrees; the bounds and the volume are asserted at ``1e-5``. **Bug class excluded:** a
+    decimator that rounds the creases off, which loses volume at the corners.
     """
     box_tm = tm.creation.box(extents=[1.0, 1.0, 1.0]).subdivide().subdivide().subdivide()
     vertices_wp, faces_wp = numpy_to_warp(
@@ -1444,8 +1458,8 @@ def test_quadric_decimate_keeps_the_features_of_a_cube(device: str) -> None:
     )
     decimated_tm = warp_to_trimesh(decimated_vertices_wp, decimated_faces_wp)
     # Still a box: the same eight corners, the same volume, and 90-degree edges intact.
-    assert np.allclose(decimated_tm.bounds, box_tm.bounds, atol=1e-4)
-    assert np.isclose(decimated_tm.volume, box_tm.volume, rtol=0.02)
+    assert np.allclose(decimated_tm.bounds, box_tm.bounds, rtol=1e-5, atol=1e-5)
+    assert np.isclose(decimated_tm.volume, box_tm.volume, rtol=1e-5, atol=1e-5)
     angles_np = np.rad2deg(np.abs(decimated_tm.face_adjacency_angles))
     assert np.percentile(angles_np, 95.0) > 85.0
 
@@ -1457,7 +1471,9 @@ def test_quadric_decimate_reaches_pymeshlab_quality(device: str) -> None:
 
     Its ``autoclean`` default deletes unreferenced vertices, so the MeshSet is built fresh here (it
     is one of the two filters recorded as not idempotent even in geometry). Compared by deviation,
-    as with the other two references.
+    as with the other two references: measured on ``icosphere(4)`` at 1 024 faces, ordito's
+    two-sided Hausdorff is **0.851x** MeshLab's on both devices (0.929x at 2 560, 0.707x at 512), so
+    the bound is "no worse than MeshLab", 1.0x, rather than a slack above it.
     """
     sphere_tm = tm.creation.icosphere(subdivisions=4, radius=1.0)
     target_faces = 1024
@@ -1477,7 +1493,7 @@ def test_quadric_decimate_reaches_pymeshlab_quality(device: str) -> None:
     deviation_pml = hausdorff_surface_two_sided(
         vertices_np, np.asarray(sphere_tm.faces), pml_tm.vertices, pml_tm.faces
     )
-    assert deviation_wp <= 1.2 * deviation_pml
+    assert deviation_wp <= deviation_pml
 
 
 @pytest.mark.parametrize("target_faces", [2560, 1024])
@@ -1495,9 +1511,9 @@ def test_quadric_decimate_matches_meshlib_quality(device: str, target_faces: int
 
     There is no correspondence between the outputs -- two greedy quadric solvers with different
     tie-breaking pick different collapses -- so the comparison is the deviation from the *input*
-    surface, which is what a decimator is trying to minimize. Measured on ``icosphere(4)``:
-    ordito is **1.30x** MeshLib's deviation at 2 560 faces and **1.04x** at 1 024, so the bound is
-    set at 1.5x.
+    surface, which is what a decimator is trying to minimize. Measured on ``icosphere(4)``, both
+    devices: ordito is **1.065x** MeshLib's deviation at 2 560 faces and **0.848x** at 1 024, so
+    the bound is set at 1.2x (a 1.13x margin on the worse reading).
 
     **Bug class excluded:** a decimator that reaches the face count by collapsing the wrong edges,
     which shows up as a deviation several times the reference's rather than a third above it.
@@ -1526,7 +1542,7 @@ def test_quadric_decimate_matches_meshlib_quality(device: str, target_faces: int
         vertices_np, faces_np, decimated_tm.vertices, decimated_tm.faces
     )
     assert deviation_ml > 0.0
-    assert deviation_wp <= 1.5 * deviation_ml
+    assert deviation_wp <= 1.2 * deviation_ml
 
 
 @pytest.mark.parametrize("target_faces", [2560, 1024, 512])
@@ -1537,19 +1553,18 @@ def test_quadric_decimate_stays_within_the_pyvista_band(device: str, target_face
 
     That is the finding this row exists to record rather than hide. ``vtkDecimatePro`` (which is
     what ``PolyData.decimate`` wraps) hits the requested count exactly and, on ``icosphere(4)``,
-    leaves a
-    *smaller* two-sided surface deviation than ordito's batched-parallel collapse: measured
-    **0.00167 / 0.00609 / 0.00986** against ordito's **0.00255 / 0.00695 / 0.01330** at 2 560 /
-    1 024 / 512 faces -- a ratio of 1.53 / 1.14 / 1.35. So the bound here is a *band*, at 2.0x with
-    a 1.3x margin on the worst reading, and not the one-sided "no worse than" the igl / open3d test
-    asserts.
+    leaves a *smaller* two-sided surface deviation than ordito's batched-parallel collapse at the
+    finest target: measured, both devices, ordito is **1.252 / 0.930 / 0.913x** VTK's deviation at
+    2 560 / 1 024 / 512 faces (ordito 0.00209 / 0.00567 / 0.00900). So the bound here is a *band*,
+    at 1.5x with a 1.2x margin on the worst reading, and not the one-sided "beats" the igl / open3d
+    test asserts.
 
-    The same measurement puts the four references in order, which is what makes the band meaningful
-    rather than arbitrary: at 2 560 faces, pyvista 0.00167 < ordito 0.00255 < open3d 0.00364 < igl
-    0.00589. Serial priority queues are not all alike, and VTK's is the strongest of the three;
-    [`test_quadric_decimate_beats_igl_and_open3d_on_deviation`] keeps that ordering live at the same
-    three targets by requiring ordito to stay ahead of the other two on the same decimation, so a
-    regression cannot hide inside the loosened ceiling.
+    The same measurement puts the references in order, which is what makes the band meaningful
+    rather than arbitrary: at 2 560 faces, pyvista < MeshLib < ordito < MeshLab < Open3D < igl.
+    Serial priority queues are not all alike, and VTK's is the strongest of them;
+    [`test_quadric_decimate_beats_igl_and_open3d_on_deviation`] keeps the lower half of that
+    ordering live at the same three targets by requiring ordito to beat the other two by a quarter
+    on the same decimation, so a regression cannot hide inside this band.
 
     ``decimate_pro`` is deliberately **not** the row even though pyvista exposes it: it only
     *removes* vertices, so every surviving point stays exactly on the sphere (mean ``| |r| - 1 |`` =
@@ -1575,7 +1590,7 @@ def test_quadric_decimate_stays_within_the_pyvista_band(device: str, target_face
 
     deviation_pv = hausdorff_surface_two_sided(vertices_np, faces_np, pv_tm.vertices, pv_tm.faces)
     assert deviation_pv > 0.0
-    assert deviation_wp <= 2.0 * deviation_pv
+    assert deviation_wp <= 1.5 * deviation_pv
 
     # The kind-of-algorithm discriminator: decimate_pro only removes, the other two place.
     def radius_error(points_np: np.ndarray) -> float:
@@ -2623,16 +2638,30 @@ def test_flip_by_objective_planarity_improves_the_worst_triangle(device: str) ->
 
 
 @pytest.mark.parity("flip_by_objective", "pymeshlab")
-def test_flip_by_objective_planarity_at_least_matches_pymeshlab(device: str) -> None:
+def test_flip_by_objective_planarity_contains_pymeshlab(device: str) -> None:
     """
-    Class C (a planarity bound): MeshLab runs the same objective serially, so it sets the bar.
+    Class B (face-set inclusion): every flip MeshLab's planar optimization takes, ordito takes too.
 
-    ``meshing_edge_flip_by_planar_optimization`` takes the *same* planarity threshold and the *same*
-    quality metric (``planartype='area/max side'``), and its greedy serial pass is free to take
-    every flip in any order. A parallel independent-set pass can only ever match it, so requiring
-    the resulting worst triangle to be within 10% is a real check that the predicate agrees.
+    ``meshing_edge_flip_by_planar_optimization`` takes the *same* planarity threshold and the
+    *same* quality metric (``planartype='area/max side'``), but its serial pass stops early: on a
+    flat grid sheared by one cell it takes **131 flips of the 529 available** (262 faces changed),
+    whatever the metric, the threshold or ``iterations`` (1, 10 or 100 all give the same mesh), and
+    leaves the worst triangle exactly where it was (0.2). ordito's independent-set rounds take all
+    529 and reach the fully flipped grid (worst triangle 0.5). The comparison that holds is
+    therefore an inclusion, asserted on face rows: **every face MeshLab creates is a face of
+    ordito's output** -- measured, all 262 of them, on both devices -- and ordito's worst triangle
+    is no worse than MeshLab's.
+
+    The old bound ("ordito's worst triangle within 10 % of MeshLab's") was vacuous on the shear-4
+    grid it used: MeshLab's worst triangle there *is* the input's, so a pass that flipped nothing
+    passed it. The shear here is 1 rather than ``_sheared_grid``'s default 4 because at shear 4
+    ordito's rounds reach a different, better optimum through intermediate flips (244 of MeshLab's
+    262 faces are not in it), so no inclusion holds there.
+
+    **Mutation probe, by construction:** a no-op pass leaves none of MeshLab's 262 new faces, and a
+    pass that flips a quad the wrong way produces a face MeshLab's does not.
     """
-    vertices_np, faces_np = _sheared_grid()
+    vertices_np, faces_np = _sheared_grid(shear=1.0)
     meshset_pml = ml.MeshSet()
     meshset_pml.add_mesh(ml.Mesh(vertices_np, np.ascontiguousarray(faces_np, dtype=np.int32)))
     meshset_pml.meshing_edge_flip_by_planar_optimization(
@@ -2644,7 +2673,15 @@ def test_flip_by_objective_planarity_at_least_matches_pymeshlab(device: str) -> 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     _vertices_pml_wp, faces_pml_wp = numpy_to_warp(vertices_np, faces_pml, device)
     flipped_wp = od.remesh.flip_by_objective(vertices_wp, faces_wp, objective="planarity")
-    assert _min_quality(vertices_wp, flipped_wp) >= 0.9 * _min_quality(vertices_wp, faces_pml_wp)
+
+    input_rows = {tuple(row) for row in np.sort(faces_np, axis=1).tolist()}
+    pml_rows = {tuple(row) for row in np.sort(faces_pml, axis=1).tolist()}
+    wp_rows = {tuple(row) for row in np.sort(flipped_wp.numpy().reshape(-1, 3), axis=1).tolist()}
+    created_pml = pml_rows - input_rows
+    assert len(created_pml) == 262  # non-vacuity: the reference really flipped
+    assert created_pml <= wp_rows
+    assert not wp_rows & input_rows  # ordito flips every quad: the fully flipped grid
+    assert _min_quality(vertices_wp, flipped_wp) >= _min_quality(vertices_wp, faces_pml_wp)
 
 
 def test_flip_by_objective_planarity_refuses_a_curved_quad(device: str) -> None:
@@ -2824,76 +2861,151 @@ def test_intrinsic_delaunay_resolves_interior_violations_via_multi_edges(device:
     assert min(weight[e] for e in boundary) < -1e-6
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular"])
+def _canonical_intrinsic_faces(
+    faces_np: np.ndarray, lengths_np: np.ndarray
+) -> dict[tuple[int, int, int], np.ndarray]:
+    """
+    Key each intrinsic face by its corners rotated to start at the smallest, with its lengths.
+
+    ``lengths[f, e]`` is the edge opposite corner ``e``, so the lengths rotate with the corners and
+    a face reads the same from any library that keeps its winding. A rotation is the only freedom:
+    an intrinsic triangulation keeps the input's orientation, so a reflected row is a real
+    disagreement rather than a relabelling.
+    """
+    faces = faces_np.reshape(-1, 3).astype(np.int64)
+    lengths = lengths_np.reshape(-1, 3).astype(np.float64)
+    rotation = (np.argmin(faces, axis=1)[:, None] + np.arange(3)) % 3
+    faces = np.take_along_axis(faces, rotation, axis=1)
+    lengths = np.take_along_axis(lengths, rotation, axis=1)
+    return {(int(a), int(b), int(c)): row for (a, b, c), row in zip(faces, lengths, strict=True)}
+
+
+def _intrinsic_edge_angle_sums(
+    faces: dict[tuple[int, int, int], np.ndarray],
+) -> dict[tuple[int, int], float]:
+    """Return ``alpha + beta - pi`` for every interior edge: the intrinsic Delaunay slack."""
+    angles: dict[tuple[int, int], list[float]] = {}
+    for face, lengths in faces.items():
+        for corner in range(3):
+            opposite, left, right = (lengths[(corner + k) % 3] for k in range(3))
+            cosine = (left * left + right * right - opposite * opposite) / (2.0 * left * right)
+            edge = (face[(corner + 1) % 3], face[(corner + 2) % 3])
+            angles.setdefault((min(edge), max(edge)), []).append(
+                math.acos(min(1.0, max(-1.0, cosine)))
+            )
+    return {edge: sum(pair) - math.pi for edge, pair in angles.items() if len(pair) == 2}
+
+
+def _assert_same_intrinsic_triangulation(
+    faces_wp: wp.array[wp.int32],
+    lengths_wp: odt.Array2dFloat32,
+    faces_ref: np.ndarray,
+    lengths_ref: np.ndarray,
+    *,
+    tie: float,
+) -> int:
+    """
+    Assert two intrinsic Delaunay triangulations agree face for face, cocircular ties excepted.
+
+    Every face both sides hold must carry the same three lengths to ``1e-5``. A face only one side
+    holds must touch an edge only that side holds, and every such edge must be a tie -- its two
+    opposite angles summing to ``pi`` within ``tie`` on *both* sides, the one place the intrinsic
+    Delaunay triangulation is not unique. Returns the number of tied edges, for the caller to pin.
+    """
+    ours = _canonical_intrinsic_faces(faces_wp.numpy(), lengths_wp.numpy())
+    theirs = _canonical_intrinsic_faces(faces_ref, lengths_ref)
+    assert len(ours) == len(theirs) == faces_wp.shape[0] // 3  # no face listed twice
+    shared = ours.keys() & theirs.keys()
+    assert np.allclose(
+        np.stack([ours[face] for face in sorted(shared)]),
+        np.stack([theirs[face] for face in sorted(shared)]),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+    sums_ours, sums_theirs = _intrinsic_edge_angle_sums(ours), _intrinsic_edge_angle_sums(theirs)
+    ties_ours = sums_ours.keys() - sums_theirs.keys()
+    ties_theirs = sums_theirs.keys() - sums_ours.keys()
+    assert len(ties_ours) == len(ties_theirs)
+    for ties, sums, faces in ((ties_ours, sums_ours, ours), (ties_theirs, sums_theirs, theirs)):
+        assert all(abs(sums[edge]) < tie for edge in ties)
+        for face in faces.keys() - shared:
+            edges = {tuple(sorted((face[k], face[(k + 1) % 3]))) for k in range(3)}
+            assert edges & ties, f"face {face} differs without touching a tied edge"
+    return len(ties_ours)
+
+
+@pytest.mark.parametrize(("mesh_name", "n_ties"), [("saddle_graded", 33), ("torus_irregular", 0)])
 @pytest.mark.parity("intrinsic_delaunay", "igl")
 def test_intrinsic_delaunay_metric_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, n_ties: int
 ) -> None:
     """
-    The intrinsic metric after flipping, against libigl's serial flipper.
+    Class B (face rotation): the same intrinsic triangulation as libigl's serial flipper.
 
-    The two cannot be compared face for face: ordito flips independent sets in parallel rounds
-    where libigl drains a queue, so the *sequence* differs and so does the face ordering. What must
-    agree is where they land, because the intrinsic Delaunay triangulation of a surface is unique
-    away from cocircular degeneracies -- so the multiset of edge lengths is the invariant, and this
-    is Class B with a sort rather than a weakened tolerance.
+    ``igl.intrinsic_delaunay_cotmatrix`` returns the flipped faces as well as their lengths, so the
+    two triangulations are compared face for face rather than as a sorted multiset of lengths: the
+    named transform is [`_canonical_intrinsic_faces`][tests.test_remesh._canonical_intrinsic_faces],
+    which rotates each face to start at its smallest corner. ordito flips independent sets in
+    parallel rounds where libigl drains a queue, so the flip *sequence* differs -- yet the intrinsic
+    Delaunay triangulation of a surface is unique away from cocircular quads, so the two must land
+    on the same faces except across ties.
 
-    That makes it a real check rather than a formality: on ``half_torus`` ordito performs **298**
-    flips and still reaches libigl's metric to 1e-4, which a wrong flip rule or a mis-unfolded
-    diagonal would not. ``igl.intrinsic_delaunay_cotmatrix`` is used for its second return value
-    (the lengths); it assembles a matrix as well, which is why the benchmark reads its row as
-    including work ordito's does not.
+    Measured, both devices: on ``torus_irregular`` (473 flips) the face sets are **identical** and
+    the lengths agree to 1.3e-06. On ``saddle_graded`` (1 134 flips on CUDA, 918 on CPU) **33**
+    diagonals differ, every one a tie: the opposite angles sum to pi within 7.6e-04 on ordito's
+    float32 lengths and 4.0e-05 on libigl's float64 ones, so the bound is 3e-03. The tie count is
+    pinned, so a flip rule that stopped short of Delaunay would show up as an untied difference or
+    as a changed count, not hide inside a sorted multiset as it could before. **Mutation probe,
+    measured:** stopping the flipper at ``max_iter=3`` fails three of the four arms here and in
+    the MeshLib sibling, by an untied differing edge or by the tie count.
 
-    The invariants of an intrinsic flip are asserted on the same call, and they are not implied by
-    the length multiset: the vertex set, the face count and the total (Heron) area are properties
-    of the surface, not of its triangulation, so none may change.
+    The invariants of an intrinsic flip are asserted on the same call: the vertex set, the face
+    count and the total (Heron) area are properties of the surface, not of its triangulation.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    _lengths_igl = igl.intrinsic_delaunay_cotmatrix(
+    _cotmatrix_igl, lengths_igl, faces_igl = igl.intrinsic_delaunay_cotmatrix(
         np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), mesh_tm.faces.astype(np.int64)
-    )[1]
+    )
 
     faces_wp, lengths_wp, n_flips = od.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
 
-    # A quad grid split by diagonals is not Delaunay, so there is work to do...
     assert n_flips > 0, "fixture is already Delaunay; this would assert nothing"
-    assert np.allclose(
-        np.sort(lengths_wp.numpy().ravel()),
-        np.sort(np.asarray(_lengths_igl).ravel()),
-        rtol=1e-4,
-        atol=1e-4,
+    assert (
+        _assert_same_intrinsic_triangulation(
+            faces_wp, lengths_wp, np.asarray(faces_igl), np.asarray(lengths_igl), tie=3e-3
+        )
+        == n_ties
     )
-    # ... but the flips are *intrinsic*: the vertex count, the face count and the total area are all
-    # properties of the surface, not of its triangulation, so none of them may change.
     assert faces_wp.shape == mesh_wp.indices.shape
     assert np.array_equal(np.sort(np.unique(faces_wp.numpy())), np.sort(np.unique(mesh_tm.faces)))
     sides = lengths_wp.numpy().astype(np.float64)
     semi = sides.sum(axis=1) / 2.0
     heron = semi * (semi - sides[:, 0]) * (semi - sides[:, 1]) * (semi - sides[:, 2])
-    assert np.isclose(np.sqrt(np.maximum(heron, 0.0)).sum(), mesh_tm.area, rtol=1e-3, atol=1e-3)
+    assert np.isclose(np.sqrt(np.maximum(heron, 0.0)).sum(), mesh_tm.area, rtol=1e-5, atol=1e-5)
 
 
-def _undirected_intrinsic_lengths(faces_np: np.ndarray, lengths_np: np.ndarray) -> np.ndarray:
+def _intrinsic_faces_meshlib(edge_mesh_ml: mm.EdgeLengthMesh) -> tuple[np.ndarray, np.ndarray]:
     """
-    Reduce a ``(n_faces, 3)`` per-corner length table to one sorted length per undirected edge.
+    Read an ``EdgeLengthMesh`` as ordito's ``(faces, lengths)`` pair, one row per face.
 
-    ``lengths[f, e]`` belongs to the edge *opposite* corner ``e``, so the same interior edge appears
-    in two face corners and a boundary edge in one. Deduplicating rather than doubling is what makes
-    the multiset comparable on an open mesh: ``half_torus`` has 64 boundary edges, so the naive
-    ``np.repeat(..., 2)`` of the reference side is 3 136 entries against ordito's 3 072.
+    ``edgeLengths`` is indexed by undirected edge, so each face's three edges are looked up through
+    its topology and placed opposite the corner they do not touch.
     """
-    faces = faces_np.reshape(-1, 3)
-    corners = [
-        np.sort(np.stack([faces[:, (e + 1) % 3], faces[:, (e + 2) % 3]], axis=1), axis=1)
-        for e in range(3)
-    ]
-    edges = np.concatenate(corners)
-    lengths = np.concatenate([lengths_np[:, e] for e in range(3)])
-    _unique, first = np.unique(edges, axis=0, return_index=True)
-    return np.sort(lengths[first].astype(np.float64))
+    topology = edge_mesh_ml.topology
+    lengths_ml = meshlib_scalars_to_numpy(edge_mesh_ml.edgeLengths).astype(np.float64)
+    faces_np = np.asarray(topology.getAllTriVerts(), dtype=np.int64).reshape(-1, 3)
+    lengths_np = np.empty(faces_np.shape, dtype=np.float64)
+    for face_index, face in enumerate(faces_np):
+        edges = (mm.EdgeId(), mm.EdgeId(), mm.EdgeId())
+        topology.getTriEdges(mm.FaceId(face_index), *edges)  # fills its out-parameters
+        for edge in edges:
+            ends = {topology.org(edge).get(), topology.dest(edge).get()}
+            corner = next(k for k in range(3) if int(face[k]) not in ends)
+            lengths_np[face_index, corner] = lengths_ml[edge.undirected().get()]
+    return faces_np, lengths_np
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular"])
+@pytest.mark.parametrize(("mesh_name", "n_ties"), [("saddle_graded", 18), ("torus_irregular", 0)])
 @pytest.mark.parity(
     "intrinsic_delaunay",
     "meshlib",
@@ -2903,29 +3015,20 @@ def _undirected_intrinsic_lengths(faces_np: np.ndarray, lengths_np: np.ndarray) 
     "quantity the group times. The igl row is the timed CPU reference.",
 )
 def test_intrinsic_delaunay_metric_matches_meshlib(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, n_ties: int
 ) -> None:
     """
-    Class B: the same intrinsic metric, from a flipper that reaches it in a different flip count.
+    Class B (face rotation): the same intrinsic triangulation, from a different flip count.
 
-    A second witness for the invariant
-    [`test_intrinsic_delaunay_metric_matches_igl`][tests.test_remesh.test_intrinsic_delaunay_metric_matches_igl]
-    rests on, and a sharper one, because this reference **disagrees about the flips and still agrees
-    about the metric**. On ``torus`` ordito performs 476 flips and ``makeDeloneEdgeFlips`` performs
-    **592** -- a 1.24x difference in the work done -- yet the resulting edge-length multisets match
-    to 5.96e-08 absolute / 2.22e-07 relative. That is the content of the claim: the intrinsic
-    Delaunay triangulation of a fixed surface is unique away from cocircular degeneracies, so the
-    flip *sequence* and even the flip *count* are implementation detail while the metric is not.
-    Comparing against igl alone cannot show this, since igl exposes no flip count.
-
-    The named transform is
-    [`_undirected_intrinsic_lengths`][tests.test_remesh._undirected_intrinsic_lengths]: ordito
-    returns a per-corner ``(n_faces, 3)`` table and ``EdgeLengthMesh.edgeLengths`` is indexed by
-    undirected edge, so ordito's side is deduplicated to one length per edge. Doubling the
-    reference instead is wrong on an open mesh -- see that helper's docstring for the 64-edge
-    discrepancy on ``half_torus``.
-
-    Measured, ``half_torus``: 298 flips from both sides, agreeing to 4.77e-07 / 3.72e-07.
+    A second witness for
+    [`test_intrinsic_delaunay_metric_matches_igl`][tests.test_remesh.test_intrinsic_delaunay_metric_matches_igl],
+    and a sharper one, because this reference **disagrees about the flips and still agrees about
+    the faces**: ``makeDeloneEdgeFlips`` performs a different number of flips from ordito, yet both
+    land on the same intrinsic triangulation, compared face for face with
+    [`_assert_same_intrinsic_triangulation`][tests.test_remesh._assert_same_intrinsic_triangulation]
+    after [`_intrinsic_faces_meshlib`][tests.test_remesh._intrinsic_faces_meshlib] reads MeshLib's
+    per-undirected-edge lengths back onto its faces. The flip *sequence* and *count* are
+    implementation detail; the triangulation is not.
 
     !!! note "The intrinsic overload is the third one"
         ``makeDeloneEdgeFlips`` is overloaded three ways and only the ``EdgeLengthMesh`` form flips
@@ -2940,28 +3043,56 @@ def test_intrinsic_delaunay_metric_matches_meshlib(
 
     edge_mesh_ml = mm.EdgeLengthMesh.fromMesh(trimesh_to_meshlib(mesh_tm))
     n_flips_ml = mm.makeDeloneEdgeFlips(edge_mesh_ml, mm.IntrinsicDeloneSettings(), 100)
-    lengths_ml = np.sort(meshlib_scalars_to_numpy(edge_mesh_ml.edgeLengths).astype(np.float64))
+    faces_ml, lengths_ml = _intrinsic_faces_meshlib(edge_mesh_ml)
 
     assert n_flips > 0, "fixture is already Delaunay; this would assert nothing"
     assert n_flips_ml > 0, "the reference flipped nothing; the comparison would be vacuous"
-    assert np.allclose(
-        _undirected_intrinsic_lengths(faces_wp.numpy(), lengths_wp.numpy()),
-        lengths_ml,
-        rtol=1e-5,
-        atol=1e-5,
+    assert (
+        _assert_same_intrinsic_triangulation(faces_wp, lengths_wp, faces_ml, lengths_ml, tie=3e-3)
+        == n_ties
+    )
+
+
+def _assert_same_mesh_under_vertex_match(
+    vertices_wp: wp.array[wp.vec3],
+    faces_wp: wp.array[wp.int32],
+    vertices_ref: np.ndarray,
+    faces_ref: np.ndarray,
+    max_distance: float,
+) -> None:
+    """
+    Assert two meshes are the same up to vertex numbering: the same points *and* the same faces.
+
+    The class-B transform for two subdivisions that number their new vertices by their own edge
+    tables. The vertices are matched one to one by nearest neighbour
+    ([`assert_nearest_bijection`][tests.comparisons.assert_nearest_bijection]), the reference faces
+    are renumbered through that match, and the two face sets must then be equal row for row after
+    [`canonical_winding`][tests.comparisons.canonical_winding] -- so a child face that is missing,
+    duplicated, wired to the wrong midpoint or wound the other way fails, which a centroid match
+    does not see.
+    """
+    match = assert_nearest_bijection(
+        vertices_wp.numpy().astype(np.float64), np.asarray(vertices_ref, np.float64), max_distance
+    )
+    reference_to_wp = np.argsort(match)
+    faces_ref_in_wp = reference_to_wp[np.asarray(faces_ref).reshape(-1, 3)]
+    assert np.array_equal(
+        lexsort_rows(canonical_winding(faces_wp.numpy().reshape(-1, 3))),
+        lexsort_rows(canonical_winding(faces_ref_in_wp)),
     )
 
 
 @pytest.mark.parity("subdivide", "trimesh")
 def test_subdivide(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class B (face order): one uniform 1-to-4 pass against ``trimesh.remesh.subdivide``.
+    Class B (vertex numbering): one uniform 1-to-4 pass against ``trimesh.remesh.subdivide``.
 
     The reference is computed in ``float64`` and cast down, so the comparison is not measuring
-    ordito's precision against numpy's. The counts are compared directly and the faces through a
-    nearest-neighbour bijection on their centroids, which pins the new midpoints and that every
-    child face exists once. A coordinate lexsort is not usable: the icosahedron's centroids tie, and
-    a tie broken by rounding noise orders the two sides differently.
+    ordito's precision against numpy's. The two number their midpoints by their own edge tables,
+    so the named transform is
+    [`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]:
+    a one-to-one vertex match, then the faces compared row for row with their winding. The
+    original vertices keep their indices on both sides, which is asserted positionally.
     """
     mesh_tm, mesh_wp = sphere_irregular
 
@@ -2973,32 +3104,22 @@ def test_subdivide(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
 
     new_v_wp, new_f_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
-    new_v_wp_np = new_v_wp.numpy()
-    new_f_wp_np = new_f_wp.numpy().reshape(-1, 3)
-    new_f_tm_np = new_f_tm.reshape(-1, 3)
-
-    assert len(new_v_wp_np) == new_v_tm.shape[0], (
-        f"vertex count mismatch: got {len(new_v_wp_np)}, expected {new_v_tm.shape[0]}"
-    )
-    assert new_f_wp_np.shape[0] == new_f_tm_np.shape[0], (
-        f"face count mismatch: got {new_f_wp_np.shape[0]}, expected {new_f_tm_np.shape[0]}"
-    )
-
-    centroids_wp = new_v_wp_np[new_f_wp_np].mean(axis=1)
-    centroids_tm = new_v_tm[new_f_tm_np].mean(axis=1)
-    assert_nearest_bijection(centroids_wp, centroids_tm, 1e-5)
+    n_original = vertices_np.shape[0]
+    assert np.allclose(new_v_wp.numpy()[:n_original], new_v_tm[:n_original], rtol=1e-5, atol=1e-5)
+    _assert_same_mesh_under_vertex_match(new_v_wp, new_f_wp, new_v_tm, new_f_tm, 1e-5)
 
 
 @pytest.mark.parity("subdivide", "open3d")
 def test_subdivide_matches_open3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class B: Open3D's ``subdivide_midpoint`` is the same 1:4 split under a different vertex order.
+    Class B (vertex numbering): Open3D's ``subdivide_midpoint`` is the same 1:4 split.
 
-    Neither library defines the output ordering -- ordito appends one new vertex per unique edge in
-    its own edge order, Open3D in its -- so the named transform matches the face **centroid sets**
-    and requires the match to be a bijection. A lexsort compare is not usable: the icosahedron's
-    centroids carry coordinate ties that ordito resolves in ``float32`` and Open3D in ``float64``,
-    so the row order is decided by rounding noise (measured: a 1.59 spurious mismatch).
+    Neither library defines the new vertices' order -- ordito appends one per unique edge in its
+    own edge order, Open3D in its -- so the named transform is
+    [`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]:
+    a one-to-one vertex match, then every child face compared with its winding. A coordinate
+    lexsort is not usable: ties that ordito resolves in ``float32`` and Open3D in ``float64`` order
+    the rows by rounding noise (measured: a 1.59 spurious mismatch).
     """
     mesh_tm, mesh_wp = sphere_irregular
 
@@ -3006,14 +3127,9 @@ def test_subdivide_matches_open3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) 
     mesh_ref = open3d_to_trimesh(mesh_o3d)
     vertices_wp, faces_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
-    assert vertices_wp.size == mesh_ref.vertices.shape[0]
-    assert faces_wp.size // 3 == mesh_ref.faces.shape[0]
-
-    centroids_wp = (
-        vertices_wp.numpy().astype(np.float64)[faces_wp.numpy().reshape(-1, 3)].mean(axis=1)
+    _assert_same_mesh_under_vertex_match(
+        vertices_wp, faces_wp, mesh_ref.vertices, mesh_ref.faces, 1e-5
     )
-    centroids_o3d = mesh_ref.vertices[mesh_ref.faces].mean(axis=1)
-    assert_nearest_bijection(centroids_wp, centroids_o3d, 1e-5)
 
 
 # No ``parity`` marker: ``igl.upsample`` is not a *benchmarked* reference for ``subdivide``, because
@@ -3028,8 +3144,10 @@ def test_subdivide_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh
 
     Identical counts (642 vertices, 1 280 faces from 162 / 320) and the matched coordinates agree
     at **0.0** -- exactly, because both sides take the same midpoint of the same float32 edge.
-    Face buffers are deliberately *not* compared positionally: pytorch3d emits its four children in
-    its own order and numbers the new midpoints by its own edge table.
+    Face buffers are not compared positionally -- pytorch3d emits its four children in its own order
+    and numbers the new midpoints by its own edge table -- but through the vertex match, row for
+    row with their winding
+    ([`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]).
 
     The vertex correspondence is a ``cKDTree`` query plus a bijection check and **not**
     ``lexsort_rows``, which unusable on float coordinates with
@@ -3050,7 +3168,7 @@ def test_subdivide_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh
     assert vertices_p3d.shape[0] == 4 * len(mesh_tm.vertices) - 6
     assert faces_p3d.shape[0] == 4 * len(mesh_tm.faces)
     assert vertices_wp.size == vertices_p3d.shape[0]
-    assert faces_wp.size // 3 == faces_p3d.shape[0]
+    _assert_same_mesh_under_vertex_match(vertices_wp, faces_wp, vertices_p3d, faces_p3d, 1e-6)
     assert_nearest_bijection(vertices_wp.numpy(), vertices_p3d.astype(np.float32), 0.0)
 
 
@@ -3061,9 +3179,8 @@ def test_subdivide_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> 
     igl keeps the original vertices in place and appends one per unique edge, exactly as ordito
     does, so the *vertex* arrays agree on their leading ``n_vertices`` rows -- which is asserted
     directly and is a stronger statement than the centroid match alone. The new vertices and the
-    faces are ordered by each library's own edge enumeration, so those go through the same
-    bijective centroid match the Open3D test uses, and for the same reason: a lexsort over
-    coordinates is decided by rounding noise where the icosahedron's centroids tie.
+    faces are ordered by each library's own edge enumeration, so those go through the same vertex
+    match and row-for-row face comparison the Open3D test uses.
     """
     mesh_tm, mesh_wp = sphere_irregular
 
@@ -3081,11 +3198,9 @@ def test_subdivide_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> 
         vertices_wp.numpy()[:n_original], vertices_upsampled_igl[:n_original], rtol=1e-5, atol=1e-5
     )
 
-    centroids_wp = (
-        vertices_wp.numpy().astype(np.float64)[faces_wp.numpy().reshape(-1, 3)].mean(axis=1)
+    _assert_same_mesh_under_vertex_match(
+        vertices_wp, faces_wp, vertices_upsampled_igl, faces_upsampled_igl, 1e-5
     )
-    centroids_igl = vertices_upsampled_igl[faces_upsampled_igl].mean(axis=1)
-    assert_nearest_bijection(centroids_wp, centroids_igl, 1e-5)
 
 
 # --------------------------------------------------------------------------------------
@@ -3129,7 +3244,8 @@ def test_subdivide_loop_matches_igl(mesh_name: str, request: pytest.FixtureReque
     The originals correspond by index on both sides -- igl returns them first too -- so that half is
     Class A and directly comparable. The new vertices are ordered by each library's own edge
     enumeration, and ``_loop_odd_correspondence`` decodes the exact pairing from the face tables
-    rather than matching coordinates.
+    rather than matching coordinates; the faces renumbered through it must then be the same rows
+    with the same winding.
 
     The fixtures cover what the branches need: two closed meshes (``cave_cube`` supplies valence-3
     and valence-6 corners) and two with a boundary, so the boundary rules are not dead code here --
@@ -3162,6 +3278,13 @@ def test_subdivide_loop_matches_igl(mesh_name: str, request: pytest.FixtureReque
     assert np.allclose(
         vertices_new_np[new_ids], vertices_igl[perm_np[new_ids]], rtol=1e-5, atol=1e-5
     )
+    # And the same faces, with the same winding, once igl's are renumbered through that pairing.
+    perm_np[:n_original] = np.arange(n_original)  # the originals keep their indices on both sides
+    faces_igl_in_wp = np.argsort(perm_np)[np.asarray(faces_loop_igl)]
+    assert np.array_equal(
+        lexsort_rows(canonical_winding(faces_wp.numpy().reshape(-1, 3))),
+        lexsort_rows(canonical_winding(faces_igl_in_wp)),
+    )
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -3175,10 +3298,10 @@ def test_subdivide_loop_matches_open3d(mesh_name: str, request: pytest.FixtureRe
     choice that is genuinely ambiguous here -- Warren's ``beta`` against Loop's original. trimesh
     picks the other one and is exempted in the benchmark for it.
 
-    Open3D also returns the originals first, so that prefix compares directly; the new vertices and
-    faces follow its own edge enumeration and go through the bijective centroid match the
-    ``subdivide`` / Open3D test uses, for the same reason (a coordinate ``lexsort`` is decided by
-    rounding noise where centroids tie).
+    Open3D also returns the originals first, so that prefix compares directly; the new vertices
+    follow its own edge enumeration, so the whole mesh goes through
+    [`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]:
+    a one-to-one vertex match, then every child face compared with its winding.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_original = int(mesh_tm.vertices.shape[0])
@@ -3192,11 +3315,9 @@ def test_subdivide_loop_matches_open3d(mesh_name: str, request: pytest.FixtureRe
         vertices_wp.numpy()[:n_original], vertices_o3d[:n_original], rtol=1e-5, atol=1e-5
     )
 
-    centroids_wp = (
-        vertices_wp.numpy().astype(np.float64)[faces_wp.numpy().reshape(-1, 3)].mean(axis=1)
+    _assert_same_mesh_under_vertex_match(
+        vertices_wp, faces_wp, vertices_o3d, np.asarray(mesh_o3d.triangles), 1e-5
     )
-    centroids_o3d = vertices_o3d[np.asarray(mesh_o3d.triangles)].mean(axis=1)
-    assert_nearest_bijection(centroids_wp, centroids_o3d, 1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -4134,13 +4255,13 @@ def test_refiners_return_buffers_independent_of_their_input(
     reason="both are timed already, and not here: open3d's subdivide_midpoint carries the row in "
     "the subdivide group and a second one would double-count it, while igl.upsample is absent from "
     "benchmarks/ outright because it corrupts the process heap on the scan meshes -- the reason it "
-    "is pinned to icosahedron here, the one fixture it is measured clean on.",
+    "is kept to a small fixture here.",
 )
 def test_split_edges_all_matches_igl_and_open3d(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Class B (vertex order): splitting every edge is the regular 1-to-4 subdivision.
+    Class B (vertex numbering): splitting every edge is the regular 1-to-4 subdivision.
 
     That is the operation both ``igl.upsample`` and open3d's ``subdivide_midpoint(1)`` perform.
 
@@ -4151,15 +4272,14 @@ def test_split_edges_all_matches_igl_and_open3d(
     midpoint and retriangulate each face into four, which is exactly ``split_edges`` with an
     all-``True`` mask.
 
-    The named transform is a nearest-neighbour bijection on the vertex set, because the three
-    libraries number the inserted midpoints in three different orders -- ``lexsort_rows`` is not
-    usable on float coordinates, and the counts are asserted first so the
-    bijection cannot hide a missing or duplicated vertex. Measured max nearest-neighbour distance
-    5.4e-08 against both, i.e. ordito's float32 storage.
+    The named transform is
+    [`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match],
+    because the three libraries number the inserted midpoints in three different orders: a
+    one-to-one vertex match (measured max distance 5.4e-08 against both, i.e. ordito's float32
+    storage), then every child face compared row for row with its winding.
 
-    ``igl.upsample`` is pinned to ``icosahedron``: it corrupts the heap on the scan meshes and
-    SIGSEGVs on ``bunny``, and ``icosahedron`` is the fixture it is measured clean on over 1 200
-    calls.
+    ``igl.upsample`` is kept to a small fixture: it corrupts the heap on the scan meshes and
+    SIGSEGVs on ``bunny``.
     """
     mesh_tm, mesh_wp = sphere_irregular
     n_faces = mesh_wp.indices.size // 3
@@ -4180,8 +4300,13 @@ def test_split_edges_all_matches_igl_and_open3d(
     assert np.asarray(faces_upsampled_igl).shape[0] == 4 * n_faces
     assert np.asarray(mesh_o3d.triangles).shape[0] == 4 * n_faces
 
-    for reference in (vertices_igl, vertices_o3d):
-        assert_nearest_bijection(split_np, np.ascontiguousarray(reference, dtype=np.float64), 1e-5)
+    for reference_vertices, reference_faces in (
+        (vertices_igl, faces_upsampled_igl),
+        (vertices_o3d, np.asarray(mesh_o3d.triangles)),
+    ):
+        _assert_same_mesh_under_vertex_match(
+            split_vertices_wp, split_faces_wp, reference_vertices, reference_faces, 1e-5
+        )
 
 
 def test_split_edges_every_edge_is_the_regular_subdivision(
@@ -4199,8 +4324,9 @@ def test_split_edges_every_edge_is_the_regular_subdivision(
 
     That transitivity is why the ``split_edges`` benchmark group carries no parity claim: the
     reference coverage here is real but indirect, and a marker would assert a comparison this test
-    does not make. A *direct* one is available -- ``igl.upsample`` and open3d's
-    ``subdivide_midpoint`` both bind the regular subdivision -- and would upgrade this to Class B.
+    does not make. The *direct* comparison against ``igl.upsample`` and open3d's
+    ``subdivide_midpoint`` is
+    [`test_split_edges_every_edge_matches_igl_and_open3d`][tests.test_remesh.test_split_edges_every_edge_matches_igl_and_open3d].
     """
     _mesh_tm, mesh_wp = sphere_irregular
     split_v, split_f = _split_every_edge(mesh_wp)

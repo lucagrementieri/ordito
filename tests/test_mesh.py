@@ -532,13 +532,14 @@ def test_vertex_face_adjacency_matches_trimesh(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B on ``vertex_face_adjacency``: row *sets*, after two named transforms.
+    Class B on ``vertex_face_adjacency``: rows in order, after two named transforms.
 
     trimesh returns a dense ``(n_vertices, max_degree)`` array right-padded with ``-1`` where
-    ordito returns a CSR pair, and neither orders a row -- ordito's counting sort fills each row
-    through an atomic cursor, so the order differs between two calls on the same mesh. The set is
-    the whole claim, and it is the one the free function's docstring makes ("each row is a set, not
-    a rotation").
+    ordito returns a CSR pair, so the padding is stripped; and trimesh lists each row's faces in
+    *descending* index order where ordito, under the deterministic setting every test runs with,
+    lists them ascending (a stable corner sort), so trimesh's row is reversed. The order is then
+    compared exactly, not as a set. With the setting off ordito's rows are arrival-ordered and only
+    the set is promised.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
@@ -549,7 +550,7 @@ def test_vertex_face_adjacency_matches_trimesh(
     for vertex in range(mesh.n_vertices):
         row = faces_np[offsets_np[vertex] : offsets_np[vertex + 1]]
         row_tm = padded_tm[vertex][padded_tm[vertex] >= 0]
-        assert np.array_equal(np.sort(row), np.sort(row_tm))
+        assert np.array_equal(row, row_tm[::-1])
 
 
 def test_halfedge_properties_match_the_free_functions(

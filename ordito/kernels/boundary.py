@@ -224,13 +224,15 @@ def emit_ears(
     out_ear: wp.array[wp.int32],
     out_ear_opp: wp.array[wp.int32],
 ) -> None:
-    # Where ``mark_ears``' in-place scan steps, write the ear and its interior corner at its rank:
-    # ascending face order on both devices, with no atomic cursor and no trim copy.
+    # Where ``mark_ears``' in-place scan steps, write the ear and the corner opposite its interior
+    # edge at its rank: ascending face order on both devices, with no atomic cursor and no trim
+    # copy. Interior edge ``i`` runs from corner ``i`` to ``i + 1``, so the corner facing it is
+    # ``i + 2`` (libigl's ``ear_opp`` numbering).
     f = wp.int32(wp.tid())
     slot, flag = scanned_count(inclusive, f)
     if flag != 0:
         out_ear[slot] = f
-        out_ear_opp[slot] = ear_interior_corner(mates, f)
+        out_ear_opp[slot] = (ear_interior_corner(mates, f) + 2) % 3
 
 
 @wp.kernel

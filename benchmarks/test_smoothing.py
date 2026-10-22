@@ -294,19 +294,6 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
 
 
 @pytest.mark.noparity(
-    "open3d",
-    oracle="trimesh",
-    reason="D2 the filter_mut_dif_laplacian finding again, on Taubin's scheme: "
-    "filter_smooth_taubin alternates lambda/mu passes toward the inverse-distance-weighted 1-ring "
-    "mean and re-derives those weights from the current positions every pass, while ordito holds "
-    "one assembled operator fixed. Probed before the row landed: the closest mapping (one o3d "
-    "iteration against ordito's lamb=0.5, nu=0.53, iterations=2 under the inverse-distance "
-    "operator) still deviates 3.5e-3 max-coordinate on an icosphere(3) carrying 0.01 noise, and "
-    "8.8e-3 under the uniform operator -- 350x past tolerance. Like MeshLab, its iteration count "
-    "is in lambda-mu PAIRS. trimesh is the oracle for this group, in "
-    "tests/test_smoothing.py::test_filter_taubin.",
-)
-@pytest.mark.noparity(
     "pyvista",
     oracle="trimesh",
     reason="D2 a different algorithm with a measured disagreement: smooth_taubin is VTK's "
@@ -334,8 +321,11 @@ def test_filter_taubin(bench_case: BenchCase) -> None:
     half-steps**, where ordito and trimesh do one half-step per ``iterations`` and alternate. So
     both get ``_ITERATIONS // 2``: passing ``_ITERATIONS`` to both times twice the passes. The
     MeshLab mapping is pinned exactly in
-    ``tests/test_smoothing.py::test_filter_taubin_matches_pymeshlab``; open3d's cannot be (see the
-    exemption above).
+    ``tests/test_smoothing.py::test_filter_taubin_matches_pymeshlab``. open3d's filter re-derives
+    its inverse-distance weights from the current positions every half-pass, so its tested pair is
+    ``filter_taubin(recompute=True)`` (``test_filter_taubin_recompute_matches_open3d``), while this
+    row times the fixed operator: read the open3d ratio as a per-pass cost of one 1-ring sweep, not
+    as the same filter.
 
     **pytorch3d is deliberately absent, and it is the one reference here that agrees with ordito.**
     ``ops.taubin_smoothing`` rebuilds its inverse-distance operator from the current positions every
@@ -643,18 +633,6 @@ def test_filter_two_step(bench_case: BenchCase) -> None:
     assert smoothed.shape == (n_vertices,)
 
 
-@pytest.mark.noparity(
-    "open3d",
-    oracle="pymeshlab",
-    reason="D2 a per-vertex factor no parameter can absorb: open3d's filter_sharpen adds "
-    "strength * (deg(v) * v - sum of neighbours), the UNNORMALIZED uniform residual, where "
-    "ordito's unsharp mask adds weight * (v - mean of neighbours) through a row-stochastic "
-    "operator. Probed before the row landed: the per-vertex displacement ratio o3d/ordito equals "
-    "the vertex degree to 7 significant digits (4.99977-6.00074 on icosphere(3), correlation with "
-    "degree 0.9999993), so the two agree only on degree-regular meshes and no strength mapping "
-    "fixes an irregular one. pymeshlab is the oracle for this group, in "
-    "tests/test_smoothing.py::test_filter_sharpen_matches_pymeshlab.",
-)
 @pytest.mark.benchmark(group="filter_sharpen")
 @pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
 def test_filter_sharpen(bench_case: BenchCase) -> None:
@@ -663,7 +641,8 @@ def test_filter_sharpen(bench_case: BenchCase) -> None:
     if bench_case.kind == "open3d":
         _skip_pml_beyond_bunny(bench_case)
         mesh_o3d = bench_case.mesh_o3d
-        # Small strength: the degree factor in its update amplifies noise fast (see the exemption).
+        # Small strength: its update adds the *unnormalized* residual, degree times ordito's, so it
+        # amplifies noise fast; the one-pass correspondence is test_filter_sharpen_matches_open3d.
         sharpened_o3d = bench_case.run(
             lambda: mesh_o3d.filter_sharpen(number_of_iterations=5, strength=0.05)
         )

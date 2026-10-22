@@ -216,9 +216,10 @@ def test_topological_measures_match_pymeshlab(
         and n_self_intersecting == 0
     )
     assert od.validation.is_watertight(mesh_wp.points, mesh_wp.indices) == watertight_pml
-    # ``is_volume`` adds consistent winding on top, which is true of every fixture here.
+    # ``is_volume`` adds consistent winding on top, which is true of every fixture here; trimesh
+    # judges that conjunct, so no part of the expected verdict is ordito's own.
     assert od.validation.is_volume(mesh_wp.points, mesh_wp.indices) == (
-        watertight_pml and od.validation.is_winding_consistent(mesh_wp.indices)
+        watertight_pml and bool(mesh_tm.is_winding_consistent)
     )
 
     n_loops = len(od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices))
@@ -1740,6 +1741,10 @@ def test_face_defective_mask_normal_criterion_diverges_from_meshlab(device: str)
     faces_np = sphere_tm.faces.copy()
     faces_np[7] = faces_np[7][::-1]
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, faces_np, device)
+    # The culprit and the three faces sharing an edge with it: MeshLab's answer, exactly.
+    adjacency_np = sphere_tm.face_adjacency
+    neighbourhood = {7, *adjacency_np[(adjacency_np == 7).any(axis=1)].ravel().tolist()}
+    assert len(neighbourhood) == 4
     for angle in (30.0, 60.0, 90.0):
         meshset_pml = ml.MeshSet()
         meshset_pml.add_mesh(ml.Mesh(sphere_tm.vertices, np.ascontiguousarray(faces_np)))
@@ -1751,8 +1756,7 @@ def test_face_defective_mask_normal_criterion_diverges_from_meshlab(device: str)
             ).numpy()
         )
         assert selected_wp.tolist() == [7]
-        assert selected_pml.shape[0] == 4
-        assert set(selected_wp.tolist()) < set(selected_pml.tolist())
+        assert set(selected_pml.tolist()) == neighbourhood
 
 
 def _hinge_fan_np(angles_deg: tuple[float, ...]) -> tuple[np.ndarray, np.ndarray]:

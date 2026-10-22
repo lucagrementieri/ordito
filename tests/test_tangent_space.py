@@ -46,8 +46,12 @@ def test_vertex_tangent_frames_match_potpourri3d(
     Both libraries pick ``basis_x`` by their own convention, so the comparison is that the two
     frames differ by a rotation *about the shared normal* -- one angle for the whole frame,
     checked by reconstructing each side's ``basis_y`` from the other's. Comparing ``basis_x``
-    elementwise is ruled out. The frame is also checked orthonormal and
-    right-handed against its own normal at ``1e-5``, tighter than the cross-library ``1e-4``.
+    elementwise is ruled out: geometry-central's reference is ``vertex.halfedge()``, which its
+    construction leaves on the highest-index face's outgoing halfedge for most interior vertices
+    but not all, and on no edge direction at all for about a tenth of ``sphere_irregular``'s
+    vertices (measured; no rule ordito could adopt reproduced it). Normals and the rotation agree
+    to 1.7e-07 and 1.3e-07 (measured on both fixtures), so every assert is at ``1e-5``; the
+    cross-library ones were ``1e-4``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.vertex_tangent_frames(
@@ -66,16 +70,16 @@ def test_vertex_tangent_frames_match_potpourri3d(
     assert np.allclose((np.cross(basis_x, basis_y) * normal).sum(axis=1), 1.0, rtol=1e-5, atol=1e-5)
 
     # Normals are frame-independent, so they must agree outright.
-    assert np.allclose(normal, normal_pp, rtol=1e-4, atol=1e-4)
+    assert np.allclose(normal, normal_pp, rtol=1e-5, atol=1e-5)
     # The two tangent bases span the same plane and differ by a rotation about the normal, so the
     # components of basis_x in potpourri3d's basis are a unit (cos, sin) pair.
     cosine = (basis_x * basis_x_pp).sum(axis=1)
     sine = (basis_x * basis_y_pp).sum(axis=1)
-    assert np.allclose(np.hypot(cosine, sine), 1.0, rtol=1e-4, atol=1e-4)
+    assert np.allclose(np.hypot(cosine, sine), 1.0, rtol=1e-5, atol=1e-5)
     # ... and the same rotation carries basis_y onto potpourri3d's, i.e. the frames are right-handed
     # in the same orientation rather than mirrored.
-    assert np.allclose((basis_y * basis_x_pp).sum(axis=1), -sine, rtol=1e-4, atol=1e-4)
-    assert np.allclose((basis_y * basis_y_pp).sum(axis=1), cosine, rtol=1e-4, atol=1e-4)
+    assert np.allclose((basis_y * basis_x_pp).sum(axis=1), -sine, rtol=1e-5, atol=1e-5)
+    assert np.allclose((basis_y * basis_y_pp).sum(axis=1), cosine, rtol=1e-5, atol=1e-5)
 
 
 def test_vertex_tangent_frames_isolated_vertex(device: str) -> None:
@@ -284,7 +288,7 @@ def test_halfedge_transport_angle_holonomy_matches_potpourri3d(
     holonomy_wp = (rho[0::3] + rho[1::3] + rho[2::3])[usable]
 
     assert np.allclose(
-        np.angle(np.exp(1j * (holonomy_wp + holonomy_pp))), 0.0, rtol=1e-4, atol=1e-4
+        np.angle(np.exp(1j * (holonomy_wp + holonomy_pp))), 0.0, rtol=1e-5, atol=1e-5
     )
 
 

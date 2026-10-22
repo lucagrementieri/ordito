@@ -682,13 +682,14 @@ def test_oriented_bounding_box_matches_igl(
     ``refine_iterations=0``: igl has no refinement, and the identical-candidate-set argument is
     only about the sampled phase -- refined, ordito is strictly better than this comparison.
 
-    The ``volume`` arm (igl's default objective) is also Class B on the frame itself: the same
-    matrix as igl, element-wise, once transposed for igl's row-vector convention. That pins the one
-    thing the objective comparison cannot -- which of the two transpose conventions ordito returns.
-    Reading it the wrong way round still gives an orthonormal matrix and a plausible box, so nothing
-    else here would catch it. Element-wise equality of the *frames* is only well posed because the
-    minimizer is unique on a stretched, tilted cloud; that is why this does not run on the raw
-    fixtures. Every arm checks the frame is a proper rotation, not a reflection.
+    Every arm is also Class B on the frame itself: the same matrix as igl, element-wise, once
+    transposed for igl's row-vector convention (measured 5e-08 to 1.2e-07 on all three objectives,
+    both devices). That pins the one thing the objective comparison cannot -- which of the two
+    transpose conventions ordito returns. Reading it the wrong way round still gives an orthonormal
+    matrix and a plausible box, so nothing else here would catch it. Element-wise equality of the
+    *frames* is only well posed because the minimizer is unique on a stretched, tilted cloud; that
+    is why this does not run on the raw fixtures. Every arm checks the frame is a proper rotation,
+    not a reflection.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
@@ -708,8 +709,7 @@ def test_oriented_bounding_box_matches_igl(
     loss_wp = _achieved_loss(points_np, frame_wp, objective)
     loss_igl = _achieved_loss(points_np, frame_igl, objective)
     assert np.isclose(loss_wp, loss_igl, rtol=1e-5)
-    if objective == "volume":
-        assert np.allclose(frame_wp, frame_igl, atol=1e-5)
+    assert np.allclose(frame_wp, frame_igl, rtol=1e-5, atol=1e-5)
     # A proper rotation, not a reflection: the box axes are right-handed.
     assert np.allclose(frame_wp @ frame_wp.T, np.eye(3), atol=1e-5)
     assert np.isclose(np.linalg.det(frame_wp), 1.0, atol=1e-5)
@@ -744,33 +744,32 @@ def test_oriented_bounding_box_volume_bands(
     does not search -- a mis-scored objective, candidates that fail to cover ``SO(3)``, or a frame
     paired with extents it did not produce -- all of which leave the volume far above a real
     minimum. The reported extents are checked to be the box the reported frame achieves, so the
-    volume is the quantity that was minimized and not an unrelated pair of numbers. Mutation probe,
-    asserted against pyvista below: the axis-aligned box (``rotations=1, refine_iterations=0``, what
-    a search that silently scored nothing would return) reads 1.58x to 5.37x the trimesh and open3d
-    volumes and 1.65x to 5.37x pyvista's, breaking every ``1.02`` ceiling on every fixture.
+    volume is the quantity that was minimized and not an unrelated pair of numbers.
 
-    **trimesh** searches the orientations flush with a convex-hull face. **Neither side bounds the
-    other, and that was measured rather than assumed.** trimesh's answer reads like an exact minimum
-    and is not one: refined, ordito returns **3.4% less** volume on the tilted half torus and 2.1%
-    less on the icosahedron, so the hull-face restriction can miss the optimum -- hence a two-sided
-    band. ``volume_wp / volume_tm`` runs from 0.966 (half_torus) through 0.979 (icosahedron) and
-    1.0001 (hemisphere) to 1.0005 (cave_cube -- refinement recovers the cube's exact orientation to
-    0.05%), so the ``[0.88, 1.02]`` band clears the worst reading by 3.5x below and 40x above.
+    Measured on the tilted clouds, identical on both devices (``volume_wp / volume_ref``):
 
-    **open3d**'s ``get_minimal_oriented_bounding_box`` is a third independent hull-based minimizer.
-    Not ``get_oriented_bounding_box``: that one is PCA of the hull and minimizes nothing (measured
-    12.9% above ordito on the tilted half_torus, and *exact* on cave_cube where axis-snapping is
-    what PCA happens to do). Neither side bounds the other: ``volume_wp / volume_o3d`` runs 0.979
-    (icosahedron) through 1.0000 (half_torus and hemisphere, ties to 4 digits) to 1.0005
-    (cave_cube). The ``[0.90, 1.02]`` band clears the worst reading by 4.7x below and 40x above.
+    | fixture | trimesh | open3d | pyvista |
+    |---|---|---|---|
+    | ``sphere_irregular`` | 0.99956 | 0.99997 | 0.75021 |
+    | ``saddle_graded`` | 1.00004 | collapsed | 1.00004 |
+
+    **trimesh** searches the orientations flush with a convex-hull face and **open3d**'s
+    ``get_minimal_oriented_bounding_box`` is a third independent hull-based minimizer (not
+    ``get_oriented_bounding_box``, which is PCA of the hull and minimizes nothing). Neither bounds
+    ordito: the hull-face restriction can miss the optimum, and refinement can land a hair above a
+    hull-flush box. So both are two-sided bands, at 3x the worst measured departure: ``1.5e-3``
+    for trimesh (measured 4.4e-04) and ``1e-4`` for open3d (measured 3e-05).
 
     **pyvista** -- VTK's ``oriented_bounding_box`` -- is PCA of the **points**, so it minimizes
-    nothing and is the one reference ordito's search should *dominate*: a search over ``SO(3)``
-    cannot lose to a single fixed orientation by more than its own sampling error. Measured
-    ``volume_wp / volume_pv``: **1.00001 (icosahedron), 1.00015 (cave_cube), 0.9428 (hemisphere),
-    0.8353 (half_torus)** -- up to 17% tighter and never more than 0.02% looser, so the ``1.02``
-    ceiling clears the worst reading by 130x on that side. The ``0.75`` floor is a sanity bound
-    rather than a tight one: PCA is not arbitrarily bad on these shapes.
+    nothing and is the one reference ordito's search must *dominate*: a search over ``SO(3)``
+    cannot lose to a single fixed orientation by more than its own sampling error. The ceiling is
+    ``1 + 1.5e-4`` (3.75x the measured 4e-05 on the saddle, where PCA happens to find the optimum);
+    on ``sphere_irregular`` PCA is 25% loose, so there is no floor -- a floor would assert how bad
+    PCA is, not how good ordito is.
+
+    Mutation probe: the axis-aligned box (``rotations=1, refine_iterations=0``, what a search that
+    silently scored nothing would return) reads 2.39x / 2.60x the trimesh volume and 1.80x / 2.60x
+    pyvista's, three orders of magnitude past every band.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
@@ -784,7 +783,7 @@ def test_oriented_bounding_box_volume_bands(
     _, extents_tm = tm.bounds.oriented_bounds(tm.PointCloud(points_np))
     volume_tm = float(np.prod(extents_tm))
     assert volume_tm > 0.0, "the reference produced a box before it is compared to"
-    assert volume_tm * 0.88 <= volume_wp <= volume_tm * 1.02
+    assert abs(volume_wp / volume_tm - 1.0) < 1.5e-3
 
     # open3d's minimal box collapses on ``saddle_graded``: extent ``[0, 0, 0]`` (``robust=True``
     # too, and on the cloud's convex-hull vertices alone), where trimesh and pyvista both return
@@ -793,18 +792,18 @@ def test_oriented_bounding_box_volume_bands(
         cloud_o3d = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points_np))
         volume_o3d = cloud_o3d.get_minimal_oriented_bounding_box().volume()
         assert volume_o3d > 0.0, "the reference produced a box before it is compared to"
-        assert volume_o3d * 0.90 <= volume_wp <= volume_o3d * 1.02
+        assert abs(volume_wp / volume_o3d - 1.0) < 1e-4
 
     box_pv = cast("pv.PolyData", pv.PolyData(points_np).oriented_bounding_box(as_composite=False))
     volume_pv = float(box_pv.volume)
     assert volume_pv > 0.0, "the reference produced a box before it is compared to"
-    assert volume_pv * 0.75 <= volume_wp <= volume_pv * 1.02
+    assert volume_wp <= volume_pv * (1.0 + 1.5e-4)
 
     # The axis-aligned box is what a search that scored nothing would return, and it fails.
     _rotation_np, lower_np, upper_np = od.bounds.oriented_bounding_box(
         points_wp, 1, refine_iterations=0
     )
-    assert float(np.prod(np.ptp(_bounds_np(lower_np, upper_np), axis=0))) > volume_pv * 1.02
+    assert float(np.prod(np.ptp(_bounds_np(lower_np, upper_np), axis=0))) > volume_tm * 1.5
 
 
 def test_oriented_bounding_box_prefilter_returns_the_identical_box(device: str) -> None:

@@ -13,7 +13,7 @@ from trimesh.path import traversal as tm_traversal
 
 import ordito as od
 from ordito.kernels import polyline as kernel_polyline
-from tests.comparisons import hausdorff_two_sided, lexsort_rows
+from tests.comparisons import lexsort_rows
 from tests.conversions import (
     meshlib_to_trimesh,
     points_to_warp,
@@ -85,6 +85,18 @@ def _max_deviation_np(points_np: np.ndarray, polyline_np: np.ndarray) -> float:
     )
     closest = starts + fractions[..., None] * spans
     return float(np.linalg.norm(points_np[:, None, :] - closest, axis=-1).min(axis=1).max())
+
+
+def _input_indices_np(kept_np: np.ndarray, pts_np: np.ndarray) -> np.ndarray:
+    """
+    Return the input index of every kept point, asserting each is exactly an input point.
+
+    Exact against the input's ``float32`` values, the precision both ordito and MeshLib store.
+    """
+    pts32_np = pts_np.astype(np.float32).astype(np.float64)
+    gaps_np = np.linalg.norm(np.asarray(kept_np, dtype=np.float64)[:, None] - pts32_np, axis=-1)
+    assert np.all(gaps_np.min(axis=1) == 0.0), "a kept point is not an input point"
+    return gaps_np.argmin(axis=1)
 
 
 def _closed_from(pts_np: np.ndarray) -> np.ndarray:
@@ -598,36 +610,47 @@ def test_upsample_polyline_matches_reference(device: str) -> None:
 
 
 @pytest.mark.parity("polyline_upsample", "meshlib")
-def test_upsample_polyline_matches_meshlib(device: str) -> None:
+@pytest.mark.parametrize("step_factor", [0.8, 0.4, 0.24])
+def test_upsample_polyline_matches_meshlib(device: str, step_factor: float) -> None:
     """
-    Class C (no correspondence): the same curve resampled two ways, both of them *on* the curve.
+    Class B (a stride): ordito's points are every ``stride``-th point of MeshLib's, exactly.
 
     ``subdividePolyline`` takes the same ``maxEdgeLen``, and it is the only reference that resamples
-    a 3-D polyline at all. What the two do not share is the rule: ordito splits each segment into
-    ``max(floor(length / step), 1)`` **equal** pieces, so it lands near the step and can overshoot
-    it by up to 2x; MeshLib **bisects** until every edge is under the cap, so it lands under the
-    step and can undershoot by up to 2x. Measured on a 128-point helix (spacing 0.100273) at a step
-    of 0.040109 -- ordito 254 points at spacing 0.050136, MeshLib 509 at 0.025068. Both are inside
-    the factor of two, from opposite sides, which is what the count bound below asserts.
+    a 3-D polyline at all. The two share the placement -- equal pieces of each input segment, on
+    its chord -- and differ in the count: ordito splits a segment of length ``L`` into
+    ``max(floor(L / step), 1)`` pieces, MeshLib **bisects** until every edge is under the cap, so
+    into ``2 ** ceil(log2(L / step))``. Wherever the first count divides the second, ordito's
+    points are a subset of MeshLib's at a fixed stride, and that is the named transform.
 
-    The claim that does hold exactly is the one that matters: **every point either library emits
-    lies on the input polyline**, so neither is smoothing. Measured 1.3e-07 and 2.2e-07, i.e. the
-    float32 buffer's own noise.
+    The fixture makes that hold everywhere: the helix's segments are all one length (0.100273),
+    and the three steps give ``(floor, bisected)`` counts of ``(1, 2)``, ``(2, 4)`` and ``(4, 8)``,
+    so the stride is 2 at every setting -- asserted below rather than assumed, since a fixture
+    whose counts stopped dividing would make the stride meaningless. Measured agreement after the
+    stride: 2.4e-07 on both devices, float32 rounding of the chord points. Both outputs also keep
+    every input vertex exactly, and MeshLib's edges are all under the cap where ordito's are at
+    least the step -- the opposite sides of the step the two rules land on (MeshLib 0.625 of the
+    step, ordito 1.25 at the middle setting).
 
     ``maxEdgeSplits`` is raised from its default of **1 000**, which would otherwise stop the
     reference in the first few percent of the work and make it look fast.
 
-    **Bug class excluded:** a resampler that interpolates off the curve (a spline fit, a smoothing
-    pass) or that leaves the spacing where it found it. **Mutation probe, measured:** feeding
-    ``polyline_smooth_upsample``'s output to the deviation assert -- ordito's own curvature-aware
-    variant, which is *meant* to leave the chord -- gives 1.1e-03, four orders past the 1e-05 bound.
+    **Bug class excluded:** a resampler that interpolates off the chord (a spline fit, a smoothing
+    pass), that places its pieces unevenly, or that uses another count rule. **Mutation probe,
+    measured:** ``polyline_smooth_upsample``'s output -- the same counts with the new points on a
+    fitted arc -- differs from the strided reference by 1.2e-03 at the two settings that insert a
+    point, 120x past the 1e-05 tolerance.
     """
     pts_np = _helix()
-    spacing = float(np.linalg.norm(np.diff(pts_np, axis=0), axis=1).mean())
-    step = 0.4 * spacing
+    lengths_np = np.linalg.norm(np.diff(pts_np, axis=0), axis=1)
+    step = step_factor * float(lengths_np.mean())
+    n_pieces_wp = np.maximum(np.floor(lengths_np / step), 1).astype(np.int64)
+    n_pieces_ml = 2 ** np.ceil(np.log2(lengths_np / step)).astype(np.int64)
+    # The fixture makes the stride one integer: every segment has the same two counts.
+    assert np.unique(n_pieces_wp).size == np.unique(n_pieces_ml).size == 1
+    assert n_pieces_ml[0] % n_pieces_wp[0] == 0
+    stride = int(n_pieces_ml[0] // n_pieces_wp[0])
 
     dense_wp = od.polyline.polyline_upsample(points_to_warp(pts_np, device), step)
-    dense_np = dense_wp.numpy().astype(np.float64)
 
     polyline_ml = _polyline_ml(pts_np)
     settings_ml = mm.PolylineSubdivideSettings()
@@ -636,19 +659,22 @@ def test_upsample_polyline_matches_meshlib(device: str) -> None:
     n_added_ml = mm.subdividePolyline(polyline_ml, settings_ml)
     dense_ml = _ordered_ml(polyline_ml)
 
-    assert n_added_ml > 0  # non-vacuity: the reference really subdivided
-    for resampled_np in (dense_np, dense_ml):
-        assert len(resampled_np) > pts_np.shape[0]
-        # Every emitted point is on the input polyline: neither library smooths.
-        assert _max_deviation_np(resampled_np, pts_np) < 1e-5
-        # Both land within a factor of two of the step, from opposite sides.
-        emitted = np.linalg.norm(np.diff(resampled_np, axis=0), axis=1)
-        assert emitted.max() < 2.0 * step
-        assert emitted.mean() > 0.5 * step
+    # Non-vacuity: the reference subdivided every segment the count rule says it must.
+    assert n_added_ml == int((n_pieces_ml - 1).sum())
+    # ordito drops the polyline's final endpoint, MeshLib keeps it.
+    assert np.allclose(dense_wp.numpy(), dense_ml[:-1:stride], rtol=1e-5, atol=1e-5)
+    assert np.allclose(dense_ml[-1], pts_np[-1], rtol=1e-5, atol=1e-5)
+    # Opposite sides of the step: MeshLib under the cap, ordito at least the step.
+    assert np.linalg.norm(np.diff(dense_ml, axis=0), axis=1).max() <= step * (1.0 + 1e-5)
+    assert np.linalg.norm(np.diff(dense_wp.numpy(), axis=0), axis=1).min() >= step * (1.0 - 1e-5)
 
-    # Mutation probe for the deviation bound: the curvature-aware variant leaves the chord.
-    smooth_np = od.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step).numpy()
-    assert _max_deviation_np(smooth_np.astype(np.float64), pts_np) > 1e-4
+    # Mutation probe for the placement: the curvature-aware variant leaves the chord wherever it
+    # inserts a point (one piece per segment inserts none, so the two coincide there).
+    if n_pieces_wp[0] > 1:
+        smooth_np = od.polyline.polyline_smooth_upsample(
+            points_to_warp(pts_np, device), step
+        ).numpy()
+        assert not np.allclose(smooth_np, dense_ml[:-1:stride], rtol=1e-5, atol=1e-5)
 
 
 # --- smooth upsample (curvature-aware, NumPy reference + circle oracle) ---
@@ -915,8 +941,10 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
     spacing its last kept point is one short of the end), where MeshLib at ``touchBdVertices=False``
     keeps both.
 
-    **Bug class excluded:** a downsampler that moves the points it keeps, or that loses the start of
-    the curve. Both are asserted on both answers.
+    **Bug class excluded:** a downsampler that moves, reorders or repeats the points it keeps, or
+    that loses the start of the curve. All are asserted on both answers, and exactly: every kept
+    point equals an input point's ``float32`` value bit for bit (measured distance 0.0 on both
+    sides, both devices), so the membership test needs no tolerance.
     """
     pts_np = _helix()
     spacing = float(np.linalg.norm(np.diff(pts_np, axis=0), axis=1).mean())
@@ -943,10 +971,12 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
         assert int(result_ml.vertsDeleted) == pts_np.shape[0] - n_expected
         assert sparse_ml.shape[0] == n_expected
         for reduced_np in (sparse_np, sparse_ml):
-            # A kept point is an input point: neither library moved what it kept.
-            assert _max_deviation_np(reduced_np, pts_np) < 1e-5
+            # A kept point is *exactly* an input point, in input order: neither library moved,
+            # reordered or repeated what it kept.
+            kept_np = _input_indices_np(reduced_np, pts_np)
+            assert np.all(np.diff(kept_np) > 0)
             # The start of the curve survives, so this shortened rather than trimmed.
-            assert np.allclose(reduced_np[0], pts_np[0], rtol=1e-5, atol=1e-5)
+            assert kept_np[0] == 0
         # MeshLib additionally keeps the far endpoint; ordito's greedy walk need not land on it.
         assert np.allclose(sparse_ml[-1], pts_np[-1], rtol=1e-5, atol=1e-5)
 
@@ -1246,6 +1276,39 @@ def _assert_valid_triangulation(pts: np.ndarray, faces: np.ndarray) -> None:
     assert np.allclose(tri_areas.sum(), _polygon_area(pts), rtol=1e-5, atol=1e-5)
 
 
+def _assert_tiles_the_ring(
+    ring_np: np.ndarray, vertices_np: np.ndarray, faces_np: np.ndarray, *, reoriented: bool = False
+) -> None:
+    """
+    Assert ``faces_np`` over ``vertices_np`` is a disk spanned by the 2-D ring ``ring_np``.
+
+    Each output vertex is matched to a ring vertex (a library may store them in its own order),
+    then: every rim edge is used once and in the ring's direction, every other edge exactly twice
+    in opposite directions, and every triangle winds like the ring. ``reoriented`` expects the
+    opposite direction throughout, for a library that winds a clockwise ring's output
+    counter-clockwise. An area sum alone passes a flipped triangle; this does not.
+    """
+    n = ring_np.shape[0]
+    gaps_np = np.linalg.norm(vertices_np[:, None, :2] - ring_np[None, :, :2], axis=-1)
+    assert gaps_np.min(axis=1).max() < 1e-5  # no Steiner points
+    faces_ring = gaps_np.argmin(axis=1)[faces_np]
+    if reoriented:
+        faces_ring = faces_ring[:, ::-1]
+    assert np.unique(faces_ring).size == n  # every ring vertex is used
+    signed_np = _signed_ring_area(ring_np[:, :2])
+    for face_np in faces_ring:
+        assert _signed_ring_area(ring_np[face_np, :2]) * signed_np > 0.0, "a flipped triangle"
+    directed = [
+        (int(a), int(b))
+        for face_np in faces_ring
+        for a, b in zip(face_np, np.roll(face_np, -1), strict=True)
+    ]
+    assert len(set(directed)) == len(directed)  # no directed edge twice: no overlap
+    rim = {(i, (i + 1) % n) for i in range(n)}
+    assert rim <= set(directed)  # the whole rim, in the ring's direction
+    assert all((b, a) in set(directed) for a, b in directed if (a, b) not in rim)
+
+
 @pytest.mark.parity("polyline_triangulate", "meshlib")
 def test_triangulate_polyline_matches_meshlib(device: str) -> None:
     """
@@ -1266,6 +1329,13 @@ def test_triangulate_polyline_matches_meshlib(device: str) -> None:
     polygon correctly and would pass a convex comparison while producing triangles outside an
     L-shape. The area assert is what catches that, since a fan over a reflex vertex covers more or
     less than the polygon.
+
+    Both answers are also held to the full validity of a polygon triangulation, which the count
+    and area together do not pin: each is a disk over the ring's own vertices, every rim edge used
+    once in the ring's direction, every diagonal twice in opposite directions, every triangle wound
+    like the ring. **Mutation probe:** reversing one ordito face keeps the count and the (unsigned)
+    area sum exactly and fails the winding assert; over every fan of the two shapes the disk check
+    rejects exactly the fans the area rejects (4 of 6 on the L, 5 of 10 on the star) and no more.
     """
     for name, polygon_np in (
         ("L", _l_shape()[:, :2]),
@@ -1289,6 +1359,10 @@ def test_triangulate_polyline_matches_meshlib(device: str) -> None:
         ).sum()
         assert np.isclose(area_wp, area_ml, rtol=1e-5), name
         assert np.isclose(area_wp, _polygon_area(points_np), rtol=1e-5), name
+        _assert_tiles_the_ring(polygon_np, points_np, faces_wp)
+        _assert_tiles_the_ring(
+            polygon_np, np.asarray(mesh_ml.vertices), np.asarray(mesh_ml.faces, dtype=np.int64)
+        )
 
 
 @pytest.mark.parity("polyline_triangulate", "pyvista")
@@ -1307,6 +1381,9 @@ def test_triangulate_polyline_matches_pyvista(device: str) -> None:
     And ``delaunay_2d(edge_source=loop)`` is *not* the alternative route: it ignores the loop as a
     boundary and triangulates the convex hull, measured 63 cells covering area **4.465** against
     the star's 3.264.
+
+    Both answers are held to the same disk check as the MeshLib pairing: rim edges once and in
+    order, diagonals twice and opposed, every triangle wound like the ring.
     """
     for name, polygon_np in (("L", _l_shape()[:, :2]), ("star", _star(5)[:, :2])):
         points_np = np.column_stack([polygon_np, np.zeros(polygon_np.shape[0])])
@@ -1321,6 +1398,10 @@ def test_triangulate_polyline_matches_pyvista(device: str) -> None:
         area_wp = _triangle_areas(points_np, faces_wp).sum()
         assert np.isclose(area_wp, float(filled_pv.area), rtol=1e-5), name
         assert np.isclose(area_wp, _polygon_area(points_np), rtol=1e-5), name
+        _assert_tiles_the_ring(polygon_np, points_np, faces_wp)
+        _assert_tiles_the_ring(
+            polygon_np, np.asarray(filled_pv.points), filled_pv.regular_faces.astype(np.int64)
+        )
 
 
 def test_triangulate_convex_is_fan(device: str) -> None:
@@ -1686,8 +1767,10 @@ def test_simplify_matches_the_two_decimators(device: str, tolerance: float) -> N
     ``test_downsample_polyline_matches_meshlib`` records; without the first, the "keeps a subset of
     the input points" assert below would fail on every setting.
 
-    **Bug class excluded:** a simplifier that moves the points it keeps (all three), and one that
-    exceeds its own tolerance (the two that promise one). **Mutation probe, measured:** MeshLib's
+    **Bug class excluded:** a simplifier that moves, reorders or drops the endpoints of the points
+    it keeps (all three, asserted as exact input indices), one that exceeds its own tolerance (the
+    two that promise one), and at the light setting any change to ordito's selection, which VTK
+    pins index for index. **Mutation probe, measured:** MeshLib's
     ``maxError``-driven answer deviates 1.9187 against a 0.8134 bound, 2.4x, so the bound is not
     something any reduction of roughly the right size passes.
     """
@@ -1717,9 +1800,21 @@ def test_simplify_matches_the_two_decimators(device: str, tolerance: float) -> N
     assert simplified_ml.shape[0] == n_kept
     assert simplified_pv.shape[0] == n_kept
 
-    # All three keep a subset of the input points rather than moving them.
-    for reduced_np in (simplified_np, simplified_ml, simplified_pv):
-        assert _max_deviation_np(reduced_np, pts_np) < 1e-5
+    # All three keep a subset of the input points, in input order, rather than moving them:
+    # ordito and MeshLib bit for bit, VTK within its own float32 round trip (measured 9.3e-08).
+    kept_wp = _input_indices_np(simplified_np, pts_np)
+    kept_ml = _input_indices_np(simplified_ml, pts_np)
+    gaps_pv = np.linalg.norm(simplified_pv[:, None] - pts_np, axis=-1)
+    assert gaps_pv.min(axis=1).max() < 1e-6
+    kept_pv = gaps_pv.argmin(axis=1)
+    for kept_np in (kept_wp, kept_ml, kept_pv):
+        assert np.all(np.diff(kept_np) > 0)
+        assert kept_np[0] == 0
+        assert kept_np[-1] == pts_np.shape[0] - 1
+    # At the light setting VTK keeps ordito's own point set (measured); at the heavy one the two
+    # legitimately part ways, which the docstring's table records.
+    if tolerance == 0.8:
+        assert np.array_equal(kept_pv, kept_wp)
     # Only the two that bound the deviation are held to the tolerance.
     assert _max_deviation_np(pts_np, simplified_np) <= tolerance
     assert _max_deviation_np(pts_np, simplified_pv) <= tolerance
@@ -1912,8 +2007,8 @@ def test_triangulate_polygon_covers_same_region_as_trimesh(device: str) -> None:
     ``n - 2`` count and still disagrees on all 1 275 interior points, and the naive single fan --
     valid only for a convex ring -- disagrees on 1 777.
 
-    Both sides are additionally checked to introduce no Steiner points, which is what makes the
-    vertex arrays directly comparable as sets.
+    Both sides are additionally checked to return the ring's own points row for row (no Steiner
+    point, no reordering), so the two face buffers index the same vertices.
     """
     n = 64
     ring_np = _star_ring_wp(n)
@@ -1922,10 +2017,10 @@ def test_triangulate_polygon_covers_same_region_as_trimesh(device: str) -> None:
 
     assert faces_wp.size // 3 == faces_tm.shape[0] == n - 2
     assert vertices_wp.size == vertices_tm.shape[0] == n
-    # Same vertex set: equal counts plus a two-sided Hausdorff distance at float32 resolution. A
-    # lexsort compare is not usable here -- the star has coordinate pairs that tie to 1e-16, so the
-    # row order is decided by rounding noise rather than by the values.
-    assert hausdorff_two_sided(vertices_wp.numpy().astype(np.float64), vertices_tm) < 1e-6
+    # Same vertex rows: both return the ring's own points in ring order (trimesh exactly, ordito at
+    # float32, measured 3.0e-08), so a face index means the same point on both sides.
+    assert np.allclose(vertices_wp.numpy(), vertices_tm, rtol=1e-5, atol=1e-5)
+    assert np.array_equal(vertices_tm, ring_np)
 
     rng = np.random.default_rng(11)
     points_np = rng.uniform(-1.05, 1.05, size=(4000, 2))
@@ -1934,6 +2029,8 @@ def test_triangulate_polygon_covers_same_region_as_trimesh(device: str) -> None:
     )
     count_tm = _triangle_cover_count(vertices_tm, faces_tm, points_np, 1e-9)
     assert np.array_equal(count_wp, count_tm)
+    _assert_tiles_the_ring(ring_np, vertices_tm, faces_tm)
+    _assert_tiles_the_ring(ring_np, vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3))
 
 
 @pytest.mark.parity("triangulate_polygon", "trimesh")
@@ -1969,6 +2066,11 @@ def test_triangulate_polygon_near_collinear(device: str) -> None:
     # Non-vacuous: the ring's interior holds a real share of the samples.
     assert (count_tm == 1).sum() > 1000
     assert np.array_equal(count_wp, count_tm)
+    # This ring is clockwise, which trimesh reverses before clipping: its rows are the ring's read
+    # backwards from 0 and its faces wind counter-clockwise. ordito keeps the caller's winding.
+    assert _signed_ring_area(ring_np) < 0.0
+    _assert_tiles_the_ring(ring_np, vertices_tm, faces_tm, reoriented=True)
+    _assert_tiles_the_ring(ring_np, vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3))
 
 
 def test_triangulate_polygon_drops_repeated_closing_point(device: str) -> None:

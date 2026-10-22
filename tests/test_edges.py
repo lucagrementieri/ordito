@@ -16,7 +16,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
-from tests.comparisons import assert_unordered_rows_equal, lexsort_rows
+from tests.comparisons import assert_unordered_rows_equal
 from tests.conftest import MESHES
 from tests.conversions import (
     meshlib_scalars_to_numpy,
@@ -77,12 +77,14 @@ def test_edges(device: str, sort_rows: bool) -> None:
 @pytest.mark.parity("faces_to_edges", "igl")
 def test_edges_match_igl(device: str) -> None:
     """
-    Class B (row order): ``igl.oriented_facets`` emits the same ``3F`` directed pairs, permuted.
+    Class B (an explicit row permutation): ``igl.oriented_facets`` emits the same ``3F`` pairs.
 
     trimesh lists all three edges of face 0, then all three of face 1, and ordito matches that
-    exactly (the test above). igl groups by *corner* instead -- every face's edge 0, then every
-    face's edge 1 -- so the row order differs while the multiset does not, which is what
-    [`tests.comparisons.lexsort_rows`][] canonicalises.
+    exactly (the test above). igl groups by *corner* instead, and numbers each edge by the corner
+    opposite it: block ``k`` holds every face's edge ``(f[k+1], f[k+2])``, which is ordito's edge
+    ``(k + 1) % 3``. That permutation is applied to ordito's rows and the tables compared with
+    ``array_equal``, so every row is matched to its own face and slot; a ``lexsort`` of both, as
+    this test used, only matched the multiset and passed for edges assigned to the wrong face.
 
     The rows are compared **directed**, without sorting the pair itself: ``oriented_facets`` keeps
     the winding, so a comparison that sorted within each row would stop testing the orientation and
@@ -95,7 +97,8 @@ def test_edges_match_igl(device: str) -> None:
     edges_wp = od.edges.faces_to_edges(_faces_np_to_wp(faces_np, device))
 
     assert edges_igl.shape == (faces_np.shape[0] * 3, 2)
-    assert np.array_equal(lexsort_rows(edges_wp.numpy()), lexsort_rows(edges_igl))
+    corner_major_wp = edges_wp.numpy().reshape(-1, 3, 2)[:, [1, 2, 0]].transpose(1, 0, 2)
+    assert np.array_equal(corner_major_wp.reshape(-1, 2), edges_igl)
 
 
 # ---------------------------------------------------------------------------
@@ -135,12 +138,15 @@ def test_edges_face(device: str) -> None:
 @pytest.mark.parity("edges_unique_manifold", "potpourri3d")
 def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B (row-set canonicalization): the unique undirected edge set against three references.
+    Class B (the references reordered): the unique undirected edge set against three references.
 
-    ordito's order comes from a parallel sort and the references' from their own constructions,
-    so no order is shared; every comparison sorts each pair and lexsorts the rows. The inverse that
-    pairs with this set is checked by [`test_edges_unique_inverse`], which this sort would
-    otherwise invalidate.
+    The references order their rows by their own constructions, so each reference's table is put
+    into ordito's order (``_in_ordito_edge_order``: each pair min-first, rows ascending by the
+    ``(max, min)`` key the sort produces) and compared with ``array_equal`` against ordito's rows
+    *as returned*. Only the reference side moves, so the comparison also pins the row order that
+    ``quadric_decimate``, the lock keys and the new-vertex numbering read; sorting both sides, as
+    this test did, passed for any permutation of ordito's rows. The inverse that pairs with this
+    set is checked by [`test_edges_unique_inverse`].
 
     - **trimesh** (``unique_rows`` over the sorted edge table) and **pyvista**
       (``extract_all_edges``, a line-cell ``PolyData``) are called against the form that omits
@@ -176,10 +182,16 @@ def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
     unique_edges_wp_np = unique_edges_wp.numpy()
     hinted_edges_wp, _ = od.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
 
-    assert np.array_equal(lexsort_rows(unique_edges_wp_np), lexsort_rows(unique_edges_tm))
     assert len(edges_pv) > 0  # non-vacuous: two empty sets would compare equal
-    assert_unordered_rows_equal(np.sort(unique_edges_wp_np, axis=1), edges_pv)
-    assert_unordered_rows_equal(np.sort(hinted_edges_wp.numpy(), axis=1), np.sort(edges_pp, axis=1))
+    assert np.array_equal(unique_edges_wp_np, _in_ordito_edge_order(unique_edges_tm))
+    assert np.array_equal(unique_edges_wp_np, _in_ordito_edge_order(edges_pv))
+    assert np.array_equal(hinted_edges_wp.numpy(), _in_ordito_edge_order(edges_pp))
+
+
+def _in_ordito_edge_order(edges_np: np.ndarray) -> np.ndarray:
+    """Put a reference's unique edges in ordito's order: pairs min-first, rows by ``(max, min)``."""
+    pairs_np = np.sort(np.asarray(edges_np).astype(np.int32), axis=1)
+    return pairs_np[np.lexsort((pairs_np[:, 0], pairs_np[:, 1]))]
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -238,7 +250,8 @@ def test_edges_unique_and_inverse_match_igl(request: pytest.FixtureRequest, mesh
     order
     ``uE`` however they like, so this is Class B twice over rather than a weakened comparison:
 
-    - the edge *sets* are compared after sorting each pair and then lexsorting the rows;
+    - the edge *sets*: igl's table is put into ordito's ``(max, min)`` row order and compared
+      with ordito's rows as returned (``_in_ordito_edge_order``);
     - the inverse maps index into two differently ordered tables *and* are indexed by two different
       directed-edge orderings, so they need both ends aligned. Composing each map with its own table
       removes the first difference; the second is a fixed permutation, because igl stacks its
@@ -274,14 +287,12 @@ def test_edges_unique_and_inverse_match_igl(request: pytest.FixtureRequest, mesh
     standalone_wp = od.edges.edges_unique_inverse(mesh_wp.indices, n_vertices=n_vertices)
     assert np.array_equal(standalone_wp.numpy(), inverse_wp.numpy())
 
-    assert_unordered_rows_equal(np.sort(unique_edges_np, axis=1), np.sort(unique_edges_igl, axis=1))
+    assert np.array_equal(unique_edges_np, _in_ordito_edge_order(unique_edges_igl))
 
     # The inferred-base call (the ``edges_unique_auto_nv`` group) must return the same set, so
     # igl's answer covers both groups: the hint only picks the radix width.
     auto_edges_wp, _auto_inverse_wp = od.edges.edges_unique(mesh_wp.indices)
-    assert_unordered_rows_equal(
-        np.sort(auto_edges_wp.numpy(), axis=1), np.sort(unique_edges_igl, axis=1)
-    )
+    assert np.array_equal(auto_edges_wp.numpy(), _in_ordito_edge_order(unique_edges_igl))
 
     # Compose each inverse map with its own table, then reorder igl's directed edges into ordito's
     # per-face interleaving (see the docstring) so the two are indexed the same way.
@@ -306,12 +317,14 @@ def test_edges_unique_and_inverse_match_pytorch3d(
     """
     Class B, twice: the edge set after a sort, and the inverse map after a remap and a permutation.
 
-    ``Meshes.edges_packed`` orders its rows by the hash ``V * v0 + v1``, i.e. already lexsorted, so
-    only ordito's side moves for the set half. The inverse half needs two steps and both were
-    recovered by measurement: pytorch3d numbers its unique edges differently, so ordito's labels
-    are remapped into pytorch3d's numbering through the sorted pair, and only then does the column
-    order line up -- ``faces_packed_to_edges_packed[:, (2, 0, 1)]``, because pytorch3d builds it by
-    concatenating ``[e12, e20, e01]`` and reshaping, against ordito's ``(e01, e12, e20)``.
+    ``Meshes.edges_packed`` orders its rows by the hash ``V * v0 + v1``, i.e. lexsorted by
+    ``(min, max)``; it is put into ordito's ``(max, min)`` order and compared with ordito's rows
+    as returned, so only the reference side moves for the set half. The inverse half needs two
+    steps and both were recovered by measurement: pytorch3d numbers its unique edges differently,
+    so ordito's labels are remapped into pytorch3d's numbering through the sorted pair, and only
+    then does the column order line up -- ``faces_packed_to_edges_packed[:, (2, 0, 1)]``, because
+    pytorch3d builds it by concatenating ``[e12, e20, e01]`` and reshaping, against ordito's
+    ``(e01, e12, e20)``.
 
     Doing the remap *and* the permutation is what makes this a check of the map rather than of the
     edge set: it fails on an off-by-one, on a permuted table, or on two directed edges assigned to
@@ -344,7 +357,7 @@ def test_edges_unique_and_inverse_match_pytorch3d(
 
     assert edges_p3d.shape[0] > 0
     assert np.array_equal(inverse_wp.numpy().reshape(-1, 3), face_edges_np)
-    assert_unordered_rows_equal(np.sort(unique_edges_np, axis=1), np.sort(edges_p3d, axis=1))
+    assert np.array_equal(unique_edges_np, _in_ordito_edge_order(edges_p3d))
 
     slot_p3d = {tuple(row): index for index, row in enumerate(np.sort(edges_p3d, axis=1).tolist())}
     remap_np = np.array([slot_p3d[tuple(row)] for row in np.sort(unique_edges_np, axis=1).tolist()])
@@ -416,17 +429,18 @@ def test_edges_unique_from_precomputed_sorted_edges(
 @pytest.mark.parity("edges_unique_length", "trimesh", "meshlib")
 def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B: the unique edge lengths as a sorted multiset, since the row orders differ.
+    Class B (the references reordered): each unique edge's length, paired with its edge.
 
-    Sorting the lengths is weaker than pairing each with its edge, and that is the honest limit
-    here: the pairing is pinned separately by [`test_edges_unique`] plus
-    [`test_edges_unique_inverse`]. The reference lengths come from a ``float32`` copy of the
-    vertices, so this is not measuring ordito's precision against numpy's.
+    Each reference's lengths are carried with their own edges into ordito's ``(max, min)`` row
+    order (``_in_ordito_edge_order``'s key) and compared elementwise, so a length written at the
+    wrong row fails; comparing sorted multisets, as this test did, passed for any permutation. The
+    trimesh-side lengths come from a ``float32`` copy of the vertices, so this is not measuring
+    ordito's precision against numpy's.
 
-    MeshLib's ``edgeLengths`` is the second reference and needs the same sort -- it indexes by
-    ``UndirectedEdgeId``, which is its own numbering. Its answer comes back as an
-    ``UndirectedEdgeScalars`` container, which ``np.asarray`` turns into a 0-d ``object`` array
-    rather than raising, so it goes through
+    MeshLib's ``edgeLengths`` is the second reference and indexes by ``UndirectedEdgeId``, its own
+    numbering, decoded to a vertex pair through ``org`` / ``dest`` of the edge. Its answer comes
+    back as an ``UndirectedEdgeScalars`` container, which ``np.asarray`` turns into a 0-d
+    ``object`` array rather than raising, so it goes through
     [`tests.conversions.meshlib_scalars_to_numpy`][].
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -445,10 +459,18 @@ def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     lengths_ml = meshlib_scalars_to_numpy(mm.edgeLengths(mesh_ml.topology, mesh_ml.points))
 
-    # lengths are unordered — sort both for comparison
+    topology_ml = mesh_ml.topology
+    edges_ml = np.array(
+        [
+            [topology_ml.org(edge_ml).get(), topology_ml.dest(edge_ml).get()]
+            for edge_ml in (mm.EdgeId(mm.UndirectedEdgeId(ue)) for ue in range(lengths_ml.shape[0]))
+        ]
+    )
     assert lengths_wp_np.shape == lengths_ml.shape  # non-vacuity, and MeshLib's own edge count
-    assert np.allclose(np.sort(lengths_wp_np), np.sort(lengths_tm), rtol=1e-4, atol=1e-4)
-    assert np.allclose(np.sort(lengths_wp_np), np.sort(lengths_ml), rtol=1e-4, atol=1e-4)
+    for edges_ref, lengths_ref in ((unique_edges_tm, lengths_tm), (edges_ml, lengths_ml)):
+        pairs_ref = np.sort(edges_ref, axis=1)
+        order_ref = np.lexsort((pairs_ref[:, 0], pairs_ref[:, 1]))
+        assert np.allclose(lengths_wp_np, lengths_ref[order_ref], rtol=1e-5, atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -459,13 +481,7 @@ def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("edges_length", "trimesh")
 def test_edges_length(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class B: per-edge lengths as a sorted multiset, matching the unique form's convention.
-
-    Row order is in fact shared with trimesh here -- both face-major -- so this could compare
-    elementwise; it sorts for consistency with the test above, and [`test_edges`] is what pins
-    the order itself.
-    """
+    """Class A: per-edge lengths elementwise, the face-major row order being trimesh's too."""
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     edges_np = mesh_tm.edges
@@ -475,7 +491,7 @@ def test_edges_length(request: pytest.FixtureRequest, mesh_name: str) -> None:
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
     lengths_wp = od.edges.edges_length(vertices_wp, mesh_wp.indices)
 
-    assert np.allclose(np.sort(lengths_wp.numpy()), np.sort(lengths_tm), rtol=1e-4, atol=1e-4)
+    assert np.allclose(lengths_wp.numpy(), lengths_tm, rtol=1e-5, atol=1e-5)
 
 
 def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
@@ -553,8 +569,10 @@ def test_edge_length_averages_match_their_references(
     either way. The final block asserts that divergence, which is what stops the two being quietly
     swapped for one another.
 
-    The per-face length *table* is Class B: igl's ``(n_faces, 3)`` uses its opposite-edge corner
-    convention against ordito's flat face-order buffer, so rows are sorted before comparing.
+    The per-face length *table* is Class B: igl's ``(n_faces, 3)`` column ``k`` is the edge
+    opposite corner ``k``, ``(f[k+1], f[k+2])``, which is ordito's edge ``(k + 1) % 3``; that
+    column permutation is applied and the tables compared elementwise (sorting each row, as this
+    test did, passed for a face's lengths assigned to the wrong edges).
 
     MeshLib's ``averageEdgeLength`` is a fourth reference for the unique-edge average specifically,
     and it settles *which* mean it computes -- undirected edges, once each -- which is the whole
@@ -570,9 +588,7 @@ def test_edge_length_averages_match_their_references(
 
     lengths_igl = np.asarray(igl.edge_lengths(vertices_np, faces_np))
     lengths_wp = od.edges.edges_length(mesh_wp.points, mesh_wp.indices).numpy().reshape(-1, 3)
-    assert np.allclose(
-        np.sort(lengths_wp, axis=1), np.sort(lengths_igl, axis=1), rtol=1e-4, atol=1e-5
-    )
+    assert np.allclose(lengths_wp[:, [1, 2, 0]], lengths_igl, rtol=1e-5, atol=1e-5)
 
     # Per-face average == igl's curvature-side getAverageEdge, i.e. edge_lengths().mean().
     per_face_wp = float(od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices))

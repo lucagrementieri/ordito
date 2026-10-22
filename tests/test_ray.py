@@ -166,8 +166,9 @@ def test_intersects_match_meshlib(request: pytest.FixtureRequest, mesh_name: str
     same reason the curvature comparisons use ``mrmeshnumpy``'s batched forms. Its four outputs map
     one-to-one onto ordito's three entry points: ``isectFaces`` is ``intersects_first``'s dense
     face array, ``intersectingRays`` is ``intersects_any``'s mask, and ``isectPts`` paired with
-    that bitset is ``intersects_location``'s compacted ``(points, rays, faces)`` triple, once that
-    triple is sorted by ray -- its compaction emits rows in BVH order, not in ray order.
+    that bitset is ``intersects_location``'s compacted ``(points, rays, faces)`` triple, compared
+    as returned: under the deterministic setting the suite runs with, the compaction emits rows in
+    ascending ray order.
 
     Two conventions, both named. MeshLib returns the hits **densely** with an invalid ``FaceId``
     where ordito writes ``-1``, so the transform on the first form is ``FaceId -> int`` with
@@ -175,9 +176,8 @@ def test_intersects_match_meshlib(request: pytest.FixtureRequest, mesh_name: str
     selecting the rows ``intersectingRays`` marks, in ray order, which is the order ordito's
     compaction already produces.
 
-    Non-vacuous: 140 of 256 rays hit the icosahedron, 134 the hemisphere and 174 the saddle, so
-    neither the hit mask nor the location table is empty or full, and the miss rays check the
-    ``-1`` convention.
+    Non-vacuous: on every fixture some but not all of the 256 rays hit, so neither the hit mask
+    nor the location table is empty or full, and the miss rays check the ``-1`` convention.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     origins_np, directions_np = _upward_rays(mesh_tm, 256, seed=0)
@@ -209,10 +209,9 @@ def test_intersects_match_meshlib(request: pytest.FixtureRequest, mesh_name: str
     locations_wp, rays_wp, triangles_wp = od.ray.intersects_location(
         mesh_wp, origins_wp, directions_wp
     )
-    order_wp = np.argsort(rays_wp.numpy(), kind="stable")
-    assert np.array_equal(rays_wp.numpy()[order_wp], np.flatnonzero(hit_ml))
-    assert np.array_equal(triangles_wp.numpy()[order_wp], faces_ml[hit_ml])
-    assert np.allclose(locations_wp.numpy()[order_wp], points_ml[hit_ml], rtol=1e-5, atol=1e-5)
+    assert np.array_equal(rays_wp.numpy(), np.flatnonzero(hit_ml))
+    assert np.array_equal(triangles_wp.numpy(), faces_ml[hit_ml])
+    assert np.allclose(locations_wp.numpy(), points_ml[hit_ml], rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parity("intersects_first", "open3d")
@@ -236,8 +235,9 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
     ``float32`` recomputation ordito's kernel does, so the two agree to the ray parameter's own
     precision rather than exactly.
 
-    ordito's ``intersects_location`` compacts in BVH order rather than ray order, so its rows are
-    sorted by ray first, exactly as the meshlib comparison above does.
+    No row reordering: with the deterministic setting the suite runs under, ordito's
+    ``intersects_location`` returns its rows in ascending ray order, which is the order
+    ``np.flatnonzero`` of the reference's hit mask produces, so the rows are compared as returned.
 
     Non-vacuous: the assert requires both branches present in the hit mask, so a scene that hit
     everything or nothing would fail rather than agree.
@@ -281,12 +281,11 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
     locations_wp, rays_wp, triangles_wp = od.ray.intersects_location(
         mesh_wp, origins_wp, directions_wp
     )
-    order_wp = np.argsort(rays_wp.numpy(), kind="stable")
-    assert np.array_equal(rays_wp.numpy()[order_wp], np.flatnonzero(hit_o3d))
-    assert np.array_equal(triangles_wp.numpy()[order_wp], faces_o3d[hit_o3d].astype(np.int32))
+    assert np.array_equal(rays_wp.numpy(), np.flatnonzero(hit_o3d))
+    assert np.array_equal(triangles_wp.numpy(), faces_o3d[hit_o3d].astype(np.int32))
     # The hit position is a transform of t_hit, not an output: origin + t * direction.
     points_o3d = origins_np[hit_o3d] + distance_o3d[hit_o3d, None] * directions_np[hit_o3d]
-    assert np.allclose(locations_wp.numpy()[order_wp], points_o3d, rtol=1e-5, atol=1e-5)
+    assert np.allclose(locations_wp.numpy(), points_o3d, rtol=1e-5, atol=1e-5)
 
 
 def test_queries_on_no_rays_or_points(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):

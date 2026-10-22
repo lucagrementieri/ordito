@@ -730,9 +730,14 @@ def test_fill_min_weight_matches_meshlib(
     fill that misses the true minimum, an off-by-one in the interval recursion -- for each of the
     metrics in ``FILL_METRICS``, which is why the metric is an axis rather than a single choice.
 
-    The tolerance is ``rtol=2e-3`` rather than the usual ``1e-5`` because both sides accumulate
-    their metric in ``float32`` across the whole patch. The scorer itself works in ``float64``: on
-    ``saddle_graded``'s slivers a ``float32`` mirror of the kernel was the noise, not the scale.
+    Measured on ``saddle_graded``, identical on both devices: the face sets differ on every metric
+    (8 to 125 of 130 triangles, the rim being a regular grid edge full of ties) while the achieved
+    totals agree to at most **1.9e-07** relative (``min_area``; ``complex_fill``,
+    ``min_tri_angle`` and ``edge_length`` to 5e-16, ``circumscribed`` and ``max_dihedral``
+    exactly). So the tolerance is ``rtol=1e-6``, 5x the worst reading, where it was ``2e-3``: a DP
+    whose optimum is off by one triangle's worth of cost fails it. The scorer works in ``float64``:
+    on ``saddle_graded``'s slivers a ``float32`` mirror of the kernel was the noise, not the
+    scale.
 
     The ``min_tri_angle`` arm on ``saddle_graded`` is the regression test for the ``min_area``
     retry firing on a metric that never rejects a triangle: that rim's best triangulation has 172
@@ -775,14 +780,8 @@ def test_fill_min_weight_matches_meshlib(
     assert len(fill_wp) // 3 == len(fill_ml) // 3
     total_wp = _total_fill_metric(mesh_wp.points, mesh_wp.indices, fill_wp, metric)
     total_ml = _total_fill_metric(mesh_wp.points, mesh_wp.indices, fill_ml, metric)
-    if mesh_name == "saddle_graded":
-        # One-sided there: MeshLib forms the aspect ratio ``complex_fill`` weighs in float32 from
-        # the ``s - a`` differences, 0.22 % off on this rim's slivers (``test_triangles``' MeshLib
-        # comparison), so its optimum is not the metric's -- it scores 1 434 166 against ordito's
-        # 1 413 465.
-        assert total_wp <= total_ml * (1.0 + 2e-3) + 1e-3
-    else:
-        assert np.isclose(total_wp, total_ml, rtol=2e-3, atol=1e-3)
+    assert total_ml > 0.0  # non-vacuity: a zero total would make the relative bound empty
+    assert np.isclose(total_wp, total_ml, rtol=1e-6, atol=0.0)
 
 
 def test_fill_metric_scorer_matches_meshlib(
@@ -1464,14 +1463,14 @@ def test_fill_min_weight_matches_pymeshfix(
       one twice;
     - both results are watertight with Euler characteristic 2, which excludes a self-intersecting
       or non-manifold patch;
-    - the two surfaces agree to under 5 % of the mean edge length.
+    - the two surfaces agree to under 3.5 % of the mean edge length.
 
     That last bound is where the numbers matter. On the ``two_rims`` case the rims are non-planar,
     the two triangulations genuinely differ in space, and the distance reads **0.00165**, 1.1 % of
     the 0.1508 mean edge. Mutation probes on that same input, replacing the DP with a different
     filler: [`fill_fan`][ordito.holes.fill_fan] measures 0.0309 (20.5 % of the mean edge) and
-    [`fill_cone`][ordito.holes.fill_cone] 0.0257 (17.1 %), so the 5 % threshold sits 4.5x above the
-    agreement and 4x below the nearest wrong answer.
+    [`fill_cone`][ordito.holes.fill_cone] 0.0257 (17.1 %), so the 3.5 % threshold sits 3.2x above
+    the agreement and 4.9x below the nearest wrong answer.
     """
     if mesh_name == "two_rims":
         mesh_tm, vertices_wp, faces_wp, _sizes = _two_rims_of_different_edge_count(device)
@@ -1510,7 +1509,7 @@ def test_fill_min_weight_matches_pymeshfix(
     distance = hausdorff_surface_two_sided(
         np.asarray(filled_tm.vertices), filled_tm.faces, vertices_pmf, faces_pmf
     )
-    assert distance < 0.05 * mean_edge
+    assert distance < 0.035 * mean_edge
 
 
 @pytest.mark.parametrize("mesh_name", _PLANAR_RIM_MESHES)
@@ -1608,9 +1607,9 @@ def test_fill_smooth_refinement_matches_pymeshfix(
     ``"max_edge"`` bisects against one global target length and over-refines; ``"density"`` splits
     each patch triangle at its centroid only while its own sampling is coarser than the surrounding
     mesh's, which is MeshFix's criterion and lands within 1.3x of its count. The bound asserted here
-    is 2x for ``"density"`` and only 20x for ``"max_edge"``, which is what makes the pair a
-    comparison rather than two independent tolerances -- the default's row is recorded, not
-    endorsed.
+    is 2x for ``"density"`` and 8x for ``"max_edge"`` (1.3x above its worse reading), which is what
+    makes the pair a comparison rather than two independent tolerances -- the default's row is
+    recorded, not endorsed, and an over-refinement that grew past it would fail.
 
     Mutation probe for the surface bound, and it is a large one: ordito's own curvature smoothing
     moves the patch to **161 %** of the mean edge on the cap and 100 % on the band,
@@ -1633,7 +1632,7 @@ def test_fill_smooth_refinement_matches_pymeshfix(
 
     refines: tuple[tuple[Literal["max_edge", "density"], float], ...] = (
         ("density", 2.0),
-        ("max_edge", 20.0),
+        ("max_edge", 8.0),
     )
     for refine, ratio_bound in refines:
         refined_wp, refined_faces_wp = od.holes.fill_smooth(
@@ -1819,7 +1818,7 @@ def test_refill_region_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.Me
 
     volume_flat = float(od.measures.volume(flat_vertices_wp, flat_faces_wp))
     volume_refined = float(od.measures.volume(refined_vertices_wp, refined_faces_wp))
-    assert np.isclose(volume_refined, refined_ml.volume, rtol=0.02)
+    assert np.isclose(volume_refined, refined_ml.volume, rtol=0.016)  # 3x the measured 0.53 %
     # The refinement is worth having: it recovers curvature the flat cap loses.
     assert abs(volume_refined - volume_before) < abs(volume_flat - volume_before)
     assert od.validation.is_edge_manifold(refined_faces_wp, allow_boundary_edges=False)
@@ -2052,7 +2051,8 @@ def test_stitch_argument_order_invariant(device: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("n_a", "n_b", "phase", "offset"), [(16, 11, 0.3, 0.0), (17, 11, 0.9, 0.4)]
+    ("n_a", "n_b", "phase", "offset", "ratio_bound"),
+    [(16, 11, 0.3, 0.0, 1.0 + 1e-6), (17, 11, 0.9, 0.4, 1.25)],
 )
 @pytest.mark.parity(
     "stitch",
@@ -2064,7 +2064,7 @@ def test_stitch_argument_order_invariant(device: str) -> None:
     "the zipper being 100x slower than it is.",
 )
 def test_stitch_reaches_meshlibs_optimum(
-    device: str, n_a: int, n_b: int, phase: float, offset: float
+    device: str, n_a: int, n_b: int, phase: float, offset: float, ratio_bound: float
 ) -> None:
     """
     Class C (a derived scalar): the greedy zipper's band, scored by MeshLib's own metric.
@@ -2079,7 +2079,8 @@ def test_stitch_reaches_meshlibs_optimum(
     on seven of them**, and costs 18.9% more on the one whose top rim is shifted sideways, where the
     rim-to-rim correspondence stops being monotone and greed is provably not enough. Those are the
     two cases parametrized here, so the test covers both the tight branch and the loose one rather
-    than only the flattering half.
+    than only the flattering half -- and each carries its own bound: the optimum itself (``1e-6``
+    relative) on the monotone rims, 1.25x on the shifted ones.
 
     What it excludes is a zipper that emits a *valid but badly shaped* band -- a slipped
     correspondence costs several times the optimum, not 19% -- and what it cannot see is a different
@@ -2122,7 +2123,7 @@ def test_stitch_reaches_meshlibs_optimum(
     cost_ml = _meshlib_stitch_cost(verts_ml, orig_ml, band_ml, "complex_stitch")
     assert cost_ml > 0.0  # non-vacuity: a zero optimum would make any ratio pass
     assert cost_od >= cost_ml * (1.0 - 1e-6)  # the greedy band cannot beat the exhaustive one
-    assert cost_od < 1.25 * cost_ml  # measured 1.0000 and 1.1889 on these two configurations
+    assert cost_od <= ratio_bound * cost_ml  # measured 1.0000 and 1.1889 on the two configurations
 
 
 # --- Minimum-weight stitching (``stitch_min_weight``) ------------------------------------------
@@ -2247,12 +2248,15 @@ def test_stitch_dp_tile_matches_diagonal(
 @pytest.mark.parametrize("metric", STITCH_COST_METRICS)
 def test_stitch_min_weight_matches_meshlib(device: str, n_a: int, n_b: int, metric: str) -> None:
     """
-    Class C (a derived scalar): the band's *cost* matches MeshLib's optimum, not its triangles.
+    Class B (face set) on the bands, Class C (a derived scalar) on the one exact tie.
 
-    Both sides minimize the same objective over the same rims, and several triangulations can reach
-    the optimum -- so the comparable quantity is the cost, evaluated by one shared function on both
-    answers. What this excludes is ordito settling for a worse triangulation; what it cannot see is
-    a different tie-break at equal cost, which is the point of comparing costs.
+    Both sides minimize the same objective over the same rims. Measured, identical on both devices:
+    the two costs agree to **3e-13** relative on every arm, and the bands are the same triangles on
+    three of the four -- the fourth, ``(9, 13)`` under ``vertical``, reaches the identical cost
+    (difference 0.0) through a different triangulation, a tie the two DPs break differently. So the
+    band is compared row for row wherever no tie is recorded (``_STITCH_TIES``), and the cost, one
+    shared scorer on both answers, at ``rtol=1e-9`` everywhere -- where it was ``3e-3``, which a
+    band one suboptimal triangle off would have passed.
     """
     (va_np, fa_np, va, fa), (vb_np, fb_np, vb, fb) = _capsule_halves(device, n_a, n_b)
 
@@ -2267,7 +2271,17 @@ def test_stitch_min_weight_matches_meshlib(device: str, n_a: int, n_b: int, metr
     # ordito reaches MeshLib's exhaustive stitchHoles optimum (compare cost, not exact triangles).
     cost_od = _meshlib_stitch_cost(new_vertices.numpy(), orig_od, band_od, metric)
     cost_ml = _meshlib_stitch_cost(verts_ml, orig_ml, band_ml, metric)
-    assert np.isclose(cost_od, cost_ml, rtol=3e-3, atol=1e-3)
+    assert cost_ml > 0.0  # non-vacuity: a zero optimum would make the relative bound empty
+    assert np.isclose(cost_od, cost_ml, rtol=1e-9, atol=0.0)
+    same_band = lexsort_rows(np.sort(band_od, axis=1)).tolist() == (
+        lexsort_rows(np.sort(np.asarray(band_ml).reshape(-1, 3), axis=1)).tolist()
+    )
+    assert same_band is ((n_a, n_b, metric) not in _STITCH_TIES)
+
+
+# The one arm of ``test_stitch_min_weight_matches_meshlib`` whose optimum MeshLib reaches through
+# a different triangulation at the identical cost.
+_STITCH_TIES = {(9, 13, "vertical")}
 
 
 @pytest.mark.parametrize(("n_a", "n_b", "offset"), [(9, 13, 0.0), (7, 11, 1.2), (16, 5, 0.6)])
@@ -3214,14 +3228,17 @@ def test_join_closest_components_matches_pymeshfix(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str, count: int
 ) -> None:
     """
-    Class B: the same joins, compared through the counts because the chosen seam is not shared.
+    Class B: the same joins, compared through the counts and the join distance.
 
     ``join_closest_components`` picks the globally closest pair of boundary *vertices* and bridges
-    an oriented edge at each; MeshFix picks a vertex pair too but bridges its own choice of incident
-    edge, so the two patches need not be the same two triangles even when the same shells were
-    joined. What is comparable, and asserted: the face count, the boundary loop count, the component
-    count, and that no vertex was added. Measured on three shells, both sides go from
-    291 v / 504 f / 3 loops to **291 v / 508 f / 1 loop / 1 component**.
+    an oriented edge at each, as MeshFix does. On this fixture the choice is a tie -- the shells'
+    facing rims are copies a fixed gap apart, so many vertex pairs sit at exactly the minimum
+    distance -- and the two libraries break it differently: measured, ordito bridges at vertices
+    1122 / 1123 against 1156 / 1190 and MeshFix at 1154 / 1155 against 1188 / 1189. So the patches
+    are not compared triangle for triangle; what is asserted is what both claim: the face count, the
+    boundary loop count, the component count, that no vertex was added, and that **each bridge
+    spans the globally closest pair** -- its shortest cross-shell edge equals the minimum distance
+    between two shells' rim vertices, on both sides (measured: 1.0 everywhere).
 
     The transform is the counts, and the identity ``2 * (count - 1)`` faces added is what makes them
     an oracle for *how many* joins happened rather than merely that something did: each bridge is
@@ -3253,6 +3270,25 @@ def test_join_closest_components_matches_pymeshfix(
     assert len(od.boundary.boundary_loops(vertices_wp, joined_wp)) == 1
     assert len(joined_tm.split(only_watertight=False)) == 1
     assert len(joined_pmf.split(only_watertight=False)) == 1
+    # Both bridges join at the closest pair of rim vertices, whichever tied pair each picked.
+    n_shell = saddle_graded[0].vertices.shape[0]
+    points_np = np.asarray(mesh_tm.vertices)
+    rim_np = np.unique(mesh_tm.edges_sorted[tm.grouping.group_rows(mesh_tm.edges_sorted, 1)])
+    gaps_np = np.linalg.norm(points_np[rim_np][:, None] - points_np[rim_np][None], axis=2)
+    closest = float(gaps_np[rim_np[:, None] // n_shell != rim_np[None] // n_shell].min())
+    original_rows = {tuple(sorted(row)) for row in mesh_tm.faces.tolist()}
+    for joined_rows in (joined_wp.numpy().reshape(-1, 3).tolist(), faces_pmf.tolist()):
+        spans: dict[tuple[int, int], float] = {}  # shortest bridge edge per joined pair of shells
+        for row in joined_rows:
+            if tuple(sorted(row)) in original_rows:
+                continue
+            for a, b in ((row[0], row[1]), (row[1], row[2]), (row[2], row[0])):
+                shells = (min(a, b) // n_shell, max(a, b) // n_shell)
+                if shells[0] != shells[1]:
+                    span = float(np.linalg.norm(points_np[a] - points_np[b]))
+                    spans[shells] = min(spans.get(shells, float("inf")), span)
+        assert len(spans) == count - 1
+        assert np.allclose(list(spans.values()), closest, rtol=1e-5, atol=1e-5)
     assert od.validation.is_edge_manifold(joined_wp)
     # The prefix is the input face buffer: bridge triangles are appended, never interleaved.
     assert np.array_equal(joined_wp.numpy()[: faces_wp.size], faces_wp.numpy())

@@ -74,7 +74,6 @@ from ordito.grouping import (
     hash_vector_rows,
 )
 from ordito.kernels import array as kernel_array
-from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import polyline as kernel_polyline
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import repair as kernel_repair
@@ -631,9 +630,10 @@ def resolve_duplicated_faces(
     Returns
     -------
     resolved_faces : wp.array[wp.int32]
-        ``(3 * n_kept,)`` flat buffer of kept faces.
+        ``(3 * n_kept,)`` flat buffer of kept faces, in libigl's order: one per surviving group,
+        the groups ascending lexicographically by their sorted corner indices.
     kept_indices : wp.array[wp.int32]
-        ``(n_kept,)`` original face indices into the input ``faces`` buffer.
+        ``(n_kept,)`` original face indices into the input ``faces`` buffer, in the same order.
 
     Raises
     ------
@@ -675,14 +675,15 @@ def resolve_duplicated_faces(
         if min_index < 0:
             raise ValueError(f"faces must be non-negative, got a minimum of {min_index}")
         n_vertices = max_value + 1
-    # ``unique_faces``' orientation-free keys and identity payload, sorted, and then each run of
-    # equal keys -- one duplicate group, its faces in ascending index -- decided by the thread at
-    # its start: no unique table, inverse or per-group statistics are written between the sort and
-    # the decision. Three sorted indices below ``n_vertices`` pack below ``n_vertices ** 3``.
+    # Orientation-free keys ordered as the sorted rows are lexicographically, with the identity
+    # payload, sorted, and then each run of equal keys -- one duplicate group, its faces in
+    # ascending index -- decided by the thread at its start: no unique table, inverse or per-group
+    # statistics are written between the sort and the decision. Three sorted indices below
+    # ``n_vertices`` pack below ``n_vertices ** 3``.
     keys = _launch.empty(2 * n_faces, dtype=wp.uint64, device=device)
     order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_grouping.pack_sorted_face_keys_and_order,
+        kernel_repair.pack_lexicographic_face_keys_and_order,
         dim=n_faces,
         inputs=[faces, wp.uint64(n_vertices), keys, order],
         device=device,
@@ -727,9 +728,9 @@ def _raise_duplicate_group(
     """
     Raise ``resolve_duplicated_faces``' error for the group whose run starts at sorted ``start``.
 
-    The group is numbered as ``grouping.unique_faces`` numbers it, by its rank in key order, and its
-    signed count is the run's, both recovered on the host: readbacks paid only on the way to the
-    raise.
+    The group is numbered by its rank in key order, the lexicographic order of its sorted corners
+    (the index ``np.unique`` of the sorted rows gives it), and its signed count is the run's, both
+    recovered on the host: readbacks paid only on the way to the raise.
     """
     n_faces = faces.size // 3
     # Readbacks on the error path only: the group's rank and its members.

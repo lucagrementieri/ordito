@@ -110,16 +110,6 @@ def _voxel_size(bench_case: BenchCase, divisor: int) -> float:
     return float(np.linalg.norm(vertices_np.max(axis=0) - vertices_np.min(axis=0))) / divisor
 
 
-@pytest.mark.noparity(
-    "trimesh",
-    oracle="open3d",
-    reason="D2 a different algorithm with a measured disagreement: voxelize_subdivide splits every "
-    "triangle until its edges are under pitch/2 and then rounds each resulting vertex to a cell, "
-    "so it accepts a cell iff some *sample* lands in it. That set neither contains nor is "
-    "contained in the exact tri-box accept set -- it misses cells a triangle merely clips and adds "
-    "cells no part of the triangle reaches. open3d runs the identical 13-axis test and is asserted "
-    "cell-for-cell in tests/test_voxels.py::test_voxelize_mesh_matches_open3d.",
-)
 @pytest.mark.benchmark(group="voxelize_mesh")
 @pytest.mark.benchlibs("ordito", "open3d", "trimesh", "pyvista", "meshlib")
 @pytest.mark.parametrize("divisor", _CELL_DIVISORS)

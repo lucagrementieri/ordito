@@ -9,8 +9,10 @@ from ordito.kernels.array import (
     map_probe,
     map_probe_single,
     pack_edge_key,
+    pack_index_triple,
     pack_ranked_key,
     scanned_count,
+    sort3,
     update_argmin_pair,
 )
 from ordito.kernels.bounds import packed_box_diagonal
@@ -90,6 +92,24 @@ def compact_referenced(
     out_remap[t] = slot
     out_vertices[slot] = vertices[t]
     out_inverse[slot] = t
+
+
+@wp.kernel
+def pack_lexicographic_face_keys_and_order(
+    faces: wp.array[wp.int32],
+    max_index: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``grouping.pack_sorted_face_keys_and_order`` with the digits reversed: the *smallest* sorted
+    # corner is the most significant, so ascending keys are the lexicographic order of the sorted
+    # rows -- ``np.unique``'s and ``igl::resolve_duplicated_faces``' emission order -- where the
+    # grouping key ascends colexicographically. The two kernels differ by that digit order only.
+    f = wp.int32(wp.tid())
+    a, b, c = corner_triple(faces, f)
+    s0, s1, s2 = sort3(a, b, c)
+    out_keys[f] = pack_index_triple(s2, s1, s0, max_index)
+    out_order[f] = f
 
 
 @wp.func
@@ -1478,9 +1498,9 @@ def _declare_map_kernels() -> None:
     dense, single = map_probe, map_probe_single
     declare_map_signatures(
         [
-            (is_interior_degree3, (dense(wp.int32), dense(wp.int32), dense(wp.bool)), wp.bool),
             (region_weight, (dense(wp.bool),), wp.float32),
             (region_weight, (single(wp.bool),), wp.float32),
+            (is_interior_degree3, (dense(wp.int32), dense(wp.int32), dense(wp.bool)), wp.bool),
             (is_interior_degree3, (single(wp.int32), single(wp.int32), single(wp.bool)), wp.bool),
             (
                 is_interior_degree3_in_region,

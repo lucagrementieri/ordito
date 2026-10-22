@@ -825,8 +825,10 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
     for that homotopy class -- and on a simply-connected surface that is *the* geodesic. Measured on
     ``sphere_well_shaped`` over 24 targets: ordito is never shorter (minimum ratio **1.0000**),
     median **1.0116** and worst **1.0848**. The gap is the heat field's first-order accuracy, which
-    is the price of getting every path from one solve. (On ``sphere_irregular`` a path stopping at
-    the field's spurious minimum is finished along mesh edges; see ``_PATH_MESHES``.)
+    is the price of getting every path from one solve. The median bound is 3x that excess
+    (1.035); the worst-path bound, 1.2, is tighter than 3x of its 8.5 %. (On
+    ``sphere_irregular`` a path stopping at the field's spurious minimum is finished along mesh
+    edges; see ``_PATH_MESHES``.)
 
     **This fixture is simply connected on purpose.** On a torus the comparison inverts, for a
     reason that is not an error on either side: ``find_geodesic_path`` shortens within the
@@ -860,7 +862,7 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
 
     ratio_np = lengths_np / exact_pp
     assert ratio_np.min() > 0.999
-    assert np.median(ratio_np) < 1.05
+    assert np.median(ratio_np) < 1.035  # 3x the measured median excess
     assert ratio_np.max() < 1.2
 
 

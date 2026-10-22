@@ -120,7 +120,7 @@ def _face_angles(bench_case: BenchCase) -> odt.Array2dFloat32:
     "own and inherit vtkCurvatures' 1-ring stencil. They also go complex where H^2 < K, which is "
     "300 of 642 vertices on that same sphere, and VTK returns the clamped real part rather than "
     "raising. igl.principal_curvature(useKring=False) is the quadric fit ordito implements and is "
-    "the oracle, in tests/test_curvature.py::test_principal_curvature.",
+    "the oracle, in tests/test_curvature.py::test_principal_curvature_graded.",
 )
 @pytest.mark.benchmark(group="principal_curvature")
 @pytest.mark.benchaxis("scale")

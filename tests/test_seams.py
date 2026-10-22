@@ -13,10 +13,11 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.sparse.csgraph import connected_components
+from scipy.spatial import cKDTree
 
 import ordito as od
 import ordito.typing as odt
-from tests.comparisons import lexsort_rows, same_partition
+from tests.comparisons import assert_nearest_bijection, lexsort_rows, same_partition
 from tests.conftest import MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -70,72 +71,99 @@ def test_crease_edges_thresholds(
     assert np.allclose(lengths_np, 1.0, rtol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
-@pytest.mark.parity("crease_edges", "pymeshlab")
-def test_crease_edges_matches_pymeshlab(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class B (selection to edge rows): the same dihedral threshold, reported as a selection.
+# ``(mesh, angle)`` pairs where the crease set is neither empty nor everything: a sphere and a torus
+# at a tight and a loose threshold (the torus has concave edges, so both signs of the dihedral are
+# live), the graded saddle at the one threshold its gentle folds reach (its largest dihedral is
+# 5.4 degrees, so at 40 the set is empty and a comparison would read ``set() == set()``), and the
+# unit box, whose twelve 90-degree creases are the shape a crease detector exists for.
+_CREASE_CASES = [
+    ("sphere_irregular", 5.0),
+    ("sphere_irregular", 40.0),
+    ("torus_irregular", 20.0),
+    ("saddle_graded", 2.0),
+    ("unit_box", 30.0),
+]
 
-    MeshLab selects *vertices* of crease edges rather than the edges themselves, so the comparison
-    is on the vertex set the two edge lists span — which is the quantity a caller of either one
-    actually uses (it is what gets duplicated by a cut, or pinned by a solver).
-    """
+
+def _crease_rows(
+    request: pytest.FixtureRequest, mesh_name: str, angle: float
+) -> tuple[tm.Trimesh, set[tuple[int, int]]]:
+    """Return the fixture's trimesh and ordito's crease edges as undirected vertex pairs."""
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    angle = 40.0
+    creases_np = od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=angle).numpy()
+    rows = {(min(a, b), max(a, b)) for a, b in creases_np.tolist()}
+    assert 0 < len(rows) < len(mesh_tm.edges_unique)  # non-vacuity: a real selection
+    return mesh_tm, rows
+
+
+@pytest.mark.parametrize(("mesh_name", "angle"), _CREASE_CASES)
+@pytest.mark.parity("crease_edges", "pymeshlab")
+def test_crease_edges_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str, angle: float
+) -> None:
+    """
+    Class B (face-edge flags to vertex pairs): the same dihedral threshold, the same edges.
+
+    ``compute_selection_crease_per_edge`` marks *face-edge* flags, which pymeshlab's Python API does
+    not expose -- reading its ``vertex_selection_array`` instead returns nothing on every mesh,
+    which is how the old form of this test passed: on ``saddle_graded`` at 40 degrees both sides
+    were empty. ``generate_polyline_from_selected_edges`` turns the flags into an edge layer, whose
+    points are copies of the input's and are matched back to vertex indices exactly (distance 0).
+    Measured: the edge sets are identical on every case of ``_CREASE_CASES``, both devices.
+
+    MeshLab takes a signed pair (``angledegneg`` / ``angledegpos``), ordito one unsigned angle from
+    flat; a symmetric pair is ordito's ``angle``.
+    """
+    mesh_tm, rows_wp = _crease_rows(request, mesh_name, angle)
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.compute_selection_crease_per_edge(angledegneg=-angle, angledegpos=angle)
-    selected_pml = np.flatnonzero(meshset_pml.current_mesh().vertex_selection_array())
+    meshset_pml.generate_polyline_from_selected_edges()
+    polyline_pml = meshset_pml.current_mesh()
+    distance_np, index_np = map(
+        np.asarray, cKDTree(mesh_tm.vertices).query(polyline_pml.vertex_matrix())
+    )
+    assert float(np.max(distance_np)) == 0.0
+    rows_pml = {(min(a, b), max(a, b)) for a, b in index_np[polyline_pml.edge_matrix()].tolist()}
+    assert rows_wp == rows_pml
 
-    creases_np = od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=angle).numpy()
-    assert set(np.unique(creases_np).tolist()) == set(selected_pml.tolist())
 
-
+@pytest.mark.parametrize(("mesh_name", "angle"), _CREASE_CASES)
 @pytest.mark.parity("crease_edges", "meshlib")
-def test_crease_edges_matches_meshlib(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_crease_edges_matches_meshlib(
+    request: pytest.FixtureRequest, mesh_name: str, angle: float
+) -> None:
     """
     Class B (undirected-edge decode): the same dihedral threshold, reported as a bitset.
 
     ``findCreaseEdges`` returns an ``UndirectedEdgeBitSet``, so the two named transforms are its
     **units** and its **indexing**. The angle is in *radians* -- there is no degree overload -- and
     each set bit is an undirected edge id, which becomes a vertex pair through
-    ``EdgeId(2 * ue)`` and the topology's ``org`` / ``dest``. Both sides are then sorted within a
-    row and across rows, since neither orients an undirected edge.
+    ``EdgeId(2 * ue)`` and the topology's ``org`` / ``dest``. Both sides are then compared as sets
+    of undirected pairs. Measured: identical on every case of ``_CREASE_CASES``, both devices --
+    curved meshes at several thresholds, where a degree/radian or ``>`` / ``>=`` slip would show,
+    and not only the box's 90-degree creases, which any threshold below 90 selects.
 
-    Exact: 12 edges on a unit box, the same 12 vertex pairs. The box is the
-    fixture for the reason the pyvista pairing above uses it -- a smooth sphere yields ``[] == []``
-    at 30 degrees and would test nothing -- and the count is asserted before the sets are compared.
-
-    Note the *sign* of the threshold is not shared vocabulary: MeshLab takes a signed pair
-    (``angledegneg`` / ``angledegpos``) and this takes ``angleFromPlanar``, one number measured from
-    flat, which is ordito's ``angle``.
+    ``angleFromPlanar`` is one number measured from flat, which is ordito's ``angle``.
     """
-    mesh_tm, mesh_wp = unit_box
-    angle = 30.0
-    creases_wp = od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=angle)
-
+    mesh_tm, rows_wp = _crease_rows(request, mesh_name, angle)
     mesh_ml = trimesh_to_meshlib(mesh_tm)
-    crease_bits_ml = mm.findCreaseEdges(mesh_ml.topology, mesh_ml.points, float(np.radians(angle)))
-    edges_ml = np.array(
-        sorted(
-            sorted(
-                (
-                    int(mesh_ml.topology.org(mm.EdgeId(int(edge) * 2))),
-                    int(mesh_ml.topology.dest(mm.EdgeId(int(edge) * 2))),
-                )
-            )
-            for edge in np.flatnonzero(
-                meshlib_bitset_to_numpy(crease_bits_ml, mesh_ml.topology.undirectedEdgeSize())
-            )
-        )
-    )
-    edges_wp = np.array(sorted(sorted(row) for row in creases_wp.numpy().tolist()))
-
-    assert edges_ml.shape[0] == 12  # the box's creases, so neither side is empty
-    assert np.array_equal(edges_wp, edges_ml)
+    topology_ml = mesh_ml.topology
+    crease_bits_ml = mm.findCreaseEdges(topology_ml, mesh_ml.points, float(np.radians(angle)))
+    rows_ml = set()
+    for edge in np.flatnonzero(
+        meshlib_bitset_to_numpy(crease_bits_ml, topology_ml.undirectedEdgeSize())
+    ):
+        org = int(topology_ml.org(mm.EdgeId(int(edge) * 2)))
+        dest = int(topology_ml.dest(mm.EdgeId(int(edge) * 2)))
+        rows_ml.add((min(org, dest), max(org, dest)))
+    assert rows_wp == rows_ml
 
 
+@pytest.mark.parametrize(("mesh_name", "angle"), _CREASE_CASES)
 @pytest.mark.parity("crease_edges", "pyvista")
-def test_crease_edges_matches_pyvista(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_crease_edges_matches_pyvista(
+    request: pytest.FixtureRequest, mesh_name: str, angle: float
+) -> None:
     """
     Class B: ``extract_feature_edges`` is the same dihedral threshold, as line cells.
 
@@ -144,18 +172,12 @@ def test_crease_edges_matches_pyvista(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> N
     [`tests.conversions.pyvista_edges_to_indices`][] first; and the three other edge classes
     (``boundary_edges``, ``non_manifold_edges``, ``manifold_edges``) have to be switched **off**,
     because VTK's default emits all four and ordito's ``include_boundary=False`` emits only the
-    crease.
-
-    The fixture is a **box**, not a curved mesh: on a smooth sphere the reference finds nothing at
-    ``30`` degrees, so the comparison would be ``[] == []`` -- the ``test_ears`` failure. A box has
-    exactly 12 feature edges, which is asserted before the sets are compared.
+    crease. Measured: identical edge sets on every case of ``_CREASE_CASES``, both devices.
     """
-    mesh_tm, mesh_wp = unit_box
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-
+    mesh_tm, rows_wp = _crease_rows(request, mesh_name, angle)
     edges_pv = pyvista_edges_to_indices(
         trimesh_to_pyvista(mesh_tm).extract_feature_edges(
-            feature_angle=30.0,
+            feature_angle=angle,
             feature_edges=True,
             boundary_edges=False,
             non_manifold_edges=False,
@@ -163,10 +185,7 @@ def test_crease_edges_matches_pyvista(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> N
         ),
         mesh_tm.vertices,
     )
-    assert len(edges_pv) == 12  # non-vacuous, and the count a cube's creases must have
-
-    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
-    assert np.array_equal(lexsort_rows(np.sort(creases_wp.numpy(), axis=1)), lexsort_rows(edges_pv))
+    assert rows_wp == {(min(a, b), max(a, b)) for a, b in edges_pv.tolist()}
 
 
 def test_crease_edges_include_boundary(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -407,7 +426,11 @@ def test_cut_along_edges_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.
     cut adds one copy per loop vertex and creates no geometry.
 
     The face count is asserted precisely because it must *not* move: a cut that retriangulated, or
-    one that dropped the seam faces, would still plausibly raise the vertex count.
+    one that dropped the seam faces, would still plausibly raise the vertex count. And beyond the
+    counts the two splits are the same one: read back onto the input's corners
+    ([`_input_corner_vertices`][tests.test_seams._input_corner_vertices]), the corners partition
+    into vertices identically ([`same_partition`][tests.comparisons.same_partition]) -- which
+    pins *which* side of the seam each face's corner went to, not only how many copies were made.
     """
     mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -436,6 +459,12 @@ def test_cut_along_edges_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.
     assert cut_tm.vertices.shape[0] == mesh_tm.vertices.shape[0] + edges_wp.shape[0]
     assert cut_vertices_wp.size == cut_tm.vertices.shape[0]
     assert cut_faces_wp.size // 3 == cut_tm.faces.shape[0] == mesh_tm.faces.shape[0]
+    # The same split, corner by corner: two input corners share a vertex on one side exactly when
+    # they share one on the other.
+    assert same_partition(
+        _input_corner_vertices(cut_vertices_wp.numpy(), cut_faces_wp.numpy(), mesh_tm),
+        _input_corner_vertices(cut_tm.vertices, cut_tm.faces, mesh_tm),
+    )
 
 
 @pytest.mark.parity("cut_along_edges", "pymeshlab", "igl")
@@ -453,14 +482,18 @@ def test_cut_along_edges_matches_pymeshlab_and_igl(
     vertices: both sides produce 6 face-connected components, 12 faces and the same surface area --
     the whole content of the operation -- but MeshLab emits **32** vertices, carrying 8 redundant
     duplicates, apparently from splitting per face corner and re-welding only some of them. So the
-    count is asserted as an inequality in ordito's favour rather than as a match; the topology is
-    asserted exactly.
+    count is asserted as an inequality in ordito's favour rather than as a match, and the split as
+    a *refinement*: read back onto the input's corners
+    ([`_input_corner_vertices`][tests.test_seams._input_corner_vertices]), every MeshLab vertex
+    lies inside one of ordito's, so the extra 8 only ever duplicate a vertex ordito made.
 
     **Class B (an edge set becomes a per-corner mask) against igl**, which **settles** that
     disagreement. ``igl.cut_mesh(V, F, C)`` takes ``C`` as a ``(n_faces, 3)`` **bool** per-corner
     mask rather than an edge list, so the named transform is to mark ``C[f, i]`` for every
     face-corner whose edge is in ordito's cut set. igl emits **24 vertices, exactly ordito's
-    answer**, so MeshLab's extra 8 are its own.
+    answer**, so MeshLab's extra 8 are its own -- and not only the count: the input's corners
+    partition into vertices identically on both sides
+    ([`same_partition`][tests.comparisons.same_partition]).
 
     **The corner numbering is ``(i, i + 1)`` here, unlike ``igl.ears``.** ``cut_mesh``'s edge ``i``
     of face ``f`` is ``(F[f, i], F[f, (i + 1) % 3])`` -- the same convention ordito uses -- where
@@ -498,6 +531,12 @@ def test_cut_along_edges_matches_pymeshlab_and_igl(
     assert components_pml == 6
     assert np.isclose(mesh_cut_pml.area, box_tm.area, rtol=1e-5)
     assert cut_vertices_wp.size < mesh_pml.vertex_number()
+    # MeshLab's split refines ordito's: its extra vertices only ever duplicate one of ordito's.
+    corners_wp = _input_corner_vertices(cut_vertices_wp.numpy(), cut_faces_wp.numpy(), box_tm)
+    corners_pml = _input_corner_vertices(mesh_pml.vertex_matrix(), faces_pml, box_tm)
+    assert len(set(zip(corners_pml.tolist(), corners_wp.tolist(), strict=True))) == len(
+        np.unique(corners_pml)
+    )
 
     cut_set = {tuple(sorted(pair)) for pair in creases_wp.numpy().tolist()}
     corner_mask_igl = np.array(
@@ -520,6 +559,9 @@ def test_cut_along_edges_matches_pymeshlab_and_igl(
     assert faces_cut_igl.shape[0] == cut_faces_wp.size // 3
     mesh_cut_igl = tm.Trimesh(vertices_cut_igl, faces_cut_igl, process=False)
     assert np.isclose(mesh_cut_igl.area, cut_tm.area, rtol=1e-5)
+    assert same_partition(
+        corners_wp, _input_corner_vertices(vertices_cut_igl, faces_cut_igl, box_tm)
+    )
     # The opposite-vertex convention is genuinely a different answer, so the mask above is a choice.
     opposite_mask_igl = np.array(
         [
@@ -533,6 +575,29 @@ def test_cut_along_edges_matches_pymeshlab_and_igl(
         dtype=bool,
     )
     assert np.asarray(igl.cut_mesh(vertices_np, faces_np, opposite_mask_igl)[0]).shape[0] == 28
+
+
+def _input_corner_vertices(
+    vertices_np: np.ndarray, faces_np: np.ndarray, mesh_tm: tm.Trimesh
+) -> np.ndarray:
+    """
+    Return, for every corner of the *input* faces, the vertex a cut mesh gave it.
+
+    A cut moves no point and creates no face, so each output face is matched to its input face by
+    centroid ([`assert_nearest_bijection`][tests.comparisons.assert_nearest_bijection]) and each
+    corner to its input corner by position; neither library has to keep the face order or the
+    starting corner for the result to be comparable.
+    """
+    corners_np = np.asarray(vertices_np, dtype=np.float64)[np.asarray(faces_np).reshape(-1, 3)]
+    face_match = assert_nearest_bijection(corners_np.mean(axis=1), mesh_tm.triangles_center, 1e-5)
+    input_corners = np.asarray(mesh_tm.vertices)[mesh_tm.faces[face_match]]
+    gaps = np.linalg.norm(input_corners[:, :, None] - corners_np[:, None], axis=3)
+    assert float(gaps.min(axis=2).max()) < 1e-5  # every input corner found among the output's
+    labels = np.empty((len(mesh_tm.faces), 3), dtype=np.int64)
+    labels[face_match] = np.take_along_axis(
+        np.asarray(faces_np).reshape(-1, 3), gaps.argmin(axis=2), axis=1
+    )
+    return labels.reshape(-1)
 
 
 def _spherical_wedge_atlas(vertices_np: np.ndarray, faces_np: np.ndarray) -> np.ndarray:

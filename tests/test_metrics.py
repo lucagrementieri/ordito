@@ -1248,7 +1248,7 @@ def test_chamfer_losses_match_numpy_on_both_devices(kernel_device: str) -> None:
     squared_np = ((x_np[:, None, :] - y_np[None, :, :]) ** 2).sum(-1)
     loss_np = squared_np.min(1).mean() + squared_np.min(0).mean()
     loss_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp, squared=True)
-    assert np.allclose(loss_wp.numpy()[0], loss_np, rtol=1e-4, atol=1e-4)
+    assert np.allclose(loss_wp.numpy()[0], loss_np, rtol=1e-5, atol=1e-5)
 
     # Single-directional points-to-mesh: the reference is the distance to the nearest triangle,
     # which for a convex mesh sampled outside it is the distance to its surface.
@@ -1258,7 +1258,7 @@ def test_chamfer_losses_match_numpy_on_both_devices(kernel_device: str) -> None:
         x_wp, mesh_wp.points, mesh_wp.indices, single_directional=True, squared=True
     )
     _closest_np, distance_np, _face_np = tm_proximity.closest_point(mesh_tm, x_np)
-    assert np.allclose(surface_loss_wp.numpy()[0], (distance_np**2).mean(), rtol=1e-3, atol=1e-3)
+    assert np.allclose(surface_loss_wp.numpy()[0], (distance_np**2).mean(), rtol=1e-5, atol=1e-5)
 
 
 def test_chamfer_mesh_losses_take_prebuilt_meshes(

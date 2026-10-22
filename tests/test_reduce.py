@@ -983,6 +983,14 @@ def test_segment_sum_matches_numpy(
     ``reduceat`` repeats the value at an empty segment's start where ``segment_sum`` returns zero,
     so the transform is to zero the reference at the empty segments (asserted present). Segment
     lengths run from 0 to 2 000, so a long segment's warps share one slot.
+
+    The bound depends on the mode. With the deterministic setting on, the ``float32`` sums are the
+    exact sum correctly rounded, so they equal the ``float64`` reference rounded to ``float32``
+    bit for bit (measured on both devices), and the ``float64`` sums sit within ``1.8e-14`` of a
+    reference that is itself rounded (bound ``6e-14``). With it off, the arrival-order atomics are
+    measured at **2.4e-05** absolute for ``float32`` (CPU, the sequential loop; 8.4e-06 on CUDA)
+    and 1.1e-13 for ``float64``, on sums up to 30, bounded at ``7.5e-5`` and ``3.5e-13`` (3.1x and
+    3.3x). The test used ``atol=1e-4`` plus ``rtol=1e-5`` in both modes.
     """
     rng = np.random.default_rng(17)
     lengths_np = rng.integers(0, 40, 300)
@@ -998,7 +1006,13 @@ def test_segment_sum_matches_numpy(
     offsets_wp = wp.array(offsets_np, dtype=wp.int32, device=device)
     sums_wp = od_reduce.segment_sum(values_wp, offsets_wp)
     assert sums_wp.shape == (lengths_np.size,)
-    assert np.allclose(sums_wp.numpy(), expected_np, rtol=1e-5, atol=1e-4)
+    if deterministic and dtype_np == np.float32:
+        assert np.array_equal(sums_wp.numpy(), expected_np.astype(np.float32))
+    else:
+        atol = {(True, np.float64): 6e-14, (False, np.float32): 7.5e-5}.get(
+            (deterministic, dtype_np), 3.5e-13
+        )
+        assert np.allclose(sums_wp.numpy(), expected_np, rtol=0.0, atol=atol)
     if deterministic:
         assert np.array_equal(od_reduce.segment_sum(values_wp, offsets_wp).numpy(), sums_wp.numpy())
 
@@ -1167,8 +1181,9 @@ def test_reduce_median_matches_numpy(device: str, n: int, dtype_wp: type, dtype_
     assert np.allclose(od_reduce.median(values_wp), np.median(values_np), rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("n", [100, 101], ids=["even", "odd"])
 @pytest.mark.parity("median", "pymeshlab", "numpy")
-def test_scalar_statistics_match_pymeshlab(device: str) -> None:
+def test_scalar_statistics_match_pymeshlab(device: str, n: int) -> None:
     """
     Class B: ``get_scalar_statistics_per_vertex`` answers four of these reductions in one call.
 
@@ -1182,9 +1197,9 @@ def test_scalar_statistics_match_pymeshlab(device: str) -> None:
     middle is 49.5, 50 and 500. So it is compared against that named order statistic instead, which
     still checks that the two see the same sorted distribution, while
     [`tests.test_reduce.test_reduce_median_matches_numpy`][] is the oracle for
-    [`ordito.reduce.median`][] itself.
+    [`ordito.reduce.median`][] itself. Both parities run, since that is where the two definitions
+    part: one rank below the averaged middle pair at even ``n``, one full rank below at odd ``n``.
     """
-    n = 100
     rng = np.random.default_rng(0)
     values_np = rng.standard_normal(n)
     # A face-less MeshSet carrying the values as its vertex scalar attribute: the reduction is over

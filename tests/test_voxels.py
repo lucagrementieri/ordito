@@ -204,6 +204,55 @@ def test_voxelize_mesh_matches_meshlib(
     assert occupied_wp.numpy().all()
 
 
+@pytest.mark.parametrize("voxel_size", [0.05, 0.13])
+@pytest.mark.parity("voxelize_mesh", "trimesh")
+def test_voxelize_mesh_brackets_trimesh(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], voxel_size: float
+):
+    """
+    Class C (two exact set inclusions): ``voxelized(method="subdivide")`` is a *sampled* cell set.
+
+    trimesh splits every triangle until its edges are under half the pitch and accepts the cell
+    each resulting vertex rounds to. Those vertices lie on the surface, so on the same lattice its
+    set is a **subset** of the exact tri-box set ordito computes; and a cell a triangle merely
+    clips is face-adjacent to one a sample landed in, so ordito's set lies inside trimesh's
+    6-neighbour dilation. trimesh centres cells on its lattice nodes (``transform`` is
+    ``pitch * I`` plus the first centre), so ordito's ``origin`` is that centre less half a pitch.
+
+    Measured on the offset ``sphere_irregular``, identical on both devices: 0 trimesh cells outside
+    ordito's set and 0 ordito cells outside the dilation, with ordito accepting 29 188 against
+    26 374 and 4 291 against 3 872 at the two pitches -- so neither inclusion is an equality in
+    disguise, and there is no tolerance to loosen.
+
+    **Bug class excluded:** a grid anchored half a cell off, the error every voxel comparison here
+    is written against. **Mutation probe, measured:** shifting ``origin`` by half a pitch on one
+    axis puts 3 881 and 535 trimesh cells outside ordito's set.
+    """
+    mesh_tm, vertices_wp, faces_wp = sphere
+    grid_tm = mesh_tm.voxelized(voxel_size, method="subdivide")
+    assert grid_tm is not None
+    assert np.allclose(grid_tm.transform[:3, :3], np.eye(3) * voxel_size)
+    origin_np = grid_tm.transform[:3, 3] - 0.5 * voxel_size
+    cells_tm = np.asarray(grid_tm.sparse_indices, dtype=np.int64)
+
+    grid = od.voxels.voxelize_mesh(
+        vertices_wp, faces_wp, voxel_size, origin=wp.vec3(*origin_np.tolist())
+    )
+    cells_wp = od.voxels.cells(grid).numpy().astype(np.int64)
+
+    offsets_np = np.array([[0, 0, 0], *np.eye(3, dtype=np.int64), *-np.eye(3, dtype=np.int64)])
+
+    def cell_set(rows_np: np.ndarray) -> set[tuple[int, ...]]:
+        return {tuple(row) for row in rows_np.reshape(-1, 3).tolist()}
+
+    dilated_tm = cell_set(cells_tm[:, None] + offsets_np[None])
+    set_tm, set_wp = cell_set(cells_tm), cell_set(cells_wp)
+    assert len(set_tm) > 500
+    assert len(set_wp) > len(set_tm), "the exact test accepts clipped cells sampling misses"
+    assert set_tm <= set_wp
+    assert set_wp <= dilated_tm
+
+
 @pytest.mark.parity("voxelize_mesh", "pyvista")
 def test_voxelize_mesh_solid_contains_the_pyvista_mask(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
@@ -400,35 +449,58 @@ def test_voxel_down_sample_matches_meshlib(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
 ):
     """
-    Class C (a count statistic): ``pointGridSampling`` *selects* a point, it does not pool one.
+    Class B (the closed top layer): the occupied cells are the same set, cell for cell.
 
-    The difference is the operation, not the parameter: MeshLib returns a ``VertBitSet`` picking one
-    surviving input point per occupied cell, where ``voxel_down_sample`` returns the cell **mean**,
-    a position that need not be an input point at all. So the positions are not comparable and the
-    shared quantity is how many cells the cloud occupies.
+    ``pointGridSampling`` *selects* one input point per occupied cell where ``voxel_down_sample``
+    pools the cell **mean**, so positions are not comparable -- but which cells are occupied is,
+    and the selection exposes it exactly. MeshLib's grid, recovered by probing (it is documented
+    only as "voxels of approximately given size"): ``ceil(extent / voxel_size)`` cells per axis
+    over the cloud's bounding box, each ``extent / dims`` wide, so a cell is anisotropic unless
+    the extent is a multiple of the voxel. Its last layer is **closed**: the points on the box's
+    upper face are clamped into it.
 
-    Measured on the translated icosphere cloud, ordito against MeshLib: 429 / 464 at a 5 % voxel
-    and 136 / 128 at 10 %. The residual is grid *anchoring* -- neither library documents where cell
-    zero starts -- so the bound is 1.3x, the same one ``cluster_decimate`` carries against
-    ``verticesGridSampling`` for the same reason.
-
-    **Mutation probe, measured:** the count falls ~3x per doubling of the voxel size on both sides,
-    so a factor-of-two error in the cell size lands far outside the 1.3x band that anchoring
-    accounts for. open3d carries the exact positional comparison for this group.
+    So the cloud is rescaled to the box ``[0.5, 2.5]^3`` and the voxel is ``1/8``: every extent is
+    16 cells, every coordinate difference and quotient is exact in ``float32``, and MeshLib's grid
+    *is* ordito's at ``origin = bbox.min``. The one named transform is that clamp: ordito's
+    half-open floor puts the upper-face points in a 17th layer, folded back here before comparing.
+    Ordito's own cells are read off ``return_inverse`` (every member of a cell must floor to the
+    same index, and no two cells to the same one), MeshLib's off its selected points, and the two
+    sets must be **equal** -- previously a 1.3x count band blamed on undocumented anchoring.
     """
     mesh_tm, _vertices_wp, _faces_wp = sphere
-    points_np, points_wp = _cloud(mesh_tm, device)
-    voxel_size = 0.13
+    sample_np = _cloud(mesh_tm, device)[0]
+    lower_np, upper_np = sample_np.min(axis=0), sample_np.max(axis=0)
+    points_np = (0.5 + (sample_np - lower_np) / (upper_np - lower_np) * 2.0).astype(np.float32)
+    voxel_size, n_cells = 0.125, 16
+    assert np.array_equal(points_np.min(axis=0), [0.5] * 3)
+    assert np.array_equal(points_np.max(axis=0), [2.5] * 3)
 
-    pooled_wp = od.voxels.voxel_down_sample(points_wp, voxel_size)
-    cloud_ml = points_to_meshlib(points_np)
-    sampled_ml = mm.pointGridSampling(mm.PointCloudPart(cloud_ml), voxel_size)
+    _pooled_wp, inverse_wp = od.voxels.voxel_down_sample(
+        points_to_warp(points_np, device),
+        voxel_size,
+        origin=wp.vec3(0.5, 0.5, 0.5),
+        return_inverse=True,
+    )
+    floored_np = np.floor((points_np.astype(np.float64) - 0.5) / voxel_size).astype(np.int64)
+    inverse_np = inverse_wp.numpy()
+    cells_wp = np.zeros((inverse_np.max() + 1, 3), dtype=np.int64)
+    cells_wp[inverse_np] = floored_np
+    assert np.array_equal(cells_wp[inverse_np], floored_np), "a cell's members share one index"
+    assert np.unique(cells_wp, axis=0).shape[0] == cells_wp.shape[0], "one cell per index"
 
-    n_cells_ml = sampled_ml.count()
-    n_cells_wp = pooled_wp.size
-    assert 0 < n_cells_ml < points_np.shape[0]  # non-vacuity: it really sampled down
-    assert 0 < n_cells_wp < points_np.shape[0]
-    assert 1.0 / 1.3 < n_cells_wp / n_cells_ml < 1.3
+    selected_ml = mm.pointGridSampling(
+        mm.PointCloudPart(points_to_meshlib(points_np.astype(np.float64))), voxel_size
+    )
+    selected_np = np.flatnonzero(
+        [selected_ml.test(mm.VertId(i)) for i in range(points_np.shape[0])]
+    )
+    cells_ml = np.minimum(floored_np[selected_np], n_cells - 1)
+    assert 100 < selected_np.shape[0] < points_np.shape[0]  # non-vacuity: it sampled down
+    assert np.unique(cells_ml, axis=0).shape[0] == cells_ml.shape[0], "one point per cell"
+    assert (cells_wp == n_cells).any(), "the upper face really needs the clamp"
+    assert np.array_equal(
+        lexsort_rows(np.unique(np.minimum(cells_wp, n_cells - 1), axis=0)), lexsort_rows(cells_ml)
+    )
 
 
 def test_voxel_down_sample_pooling_modes(

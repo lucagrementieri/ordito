@@ -322,18 +322,31 @@ def _heat_geodesic_igl(
     return np.asarray(igl.heat_geodesics_solve(data, sources_np))
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize(
+    ("mesh_name", "bound"), [("sphere_irregular", 3.3e-2), ("saddle_graded", 7.1e-3)]
+)
 @pytest.mark.parity("heat_geodesic", "igl")
 @pytest.mark.parity("heat_geodesic_conditioning", "igl")
-def test_heat_geodesic_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_heat_geodesic_matches_igl(
+    request: pytest.FixtureRequest, mesh_name: str, bound: float
+) -> None:
     """
-    Class A at 5e-2: the same method, but igl factorizes where ordito runs conjugate gradient.
+    Class C (the worst error against the range): the same method on a different mass matrix.
 
-    The tolerance is the discretization the two share plus each solver's own stopping point,
-    not a disagreement about the method -- both are Crane et al. on the identical
-    triangulation, which is why ``_heat_geodesic_igl`` is built with matching defaults rather
-    than igl's own. The multi-source form is compared in
-    ``test_heat_geodesic_matches_igl_far_from_the_sources``.
+    Both are Crane et al. on the identical triangulation with ``t = h^2``, but
+    ``igl::heat_geodesics_precompute`` lumps the mass with ``MASSMATRIX_TYPE_DEFAULT``, which is
+    **Voronoi**, where ordito -- like geometry-central and MeshLab, which it matches to 1e-5 of the
+    diameter in ``test_heat_geodesic_matches_potpourri3d_plain_and_pymeshlab`` -- lumps it
+    barycentrically. That is a discretization choice, not a convention to align, so no
+    element-wise tolerance follows from the method and the comparison is a bound.
+
+    Measured, both devices: worst error **1.11e-02** of the range on ``sphere_irregular`` (72 %
+    obtuse faces, where the two lumpings part most) and **2.36e-03** on ``saddle_graded``; the
+    bounds are 3x those. Mutation probes: a field scaled by 1.05 scores 5.9e-02 / 4.9e-02 (1.8x /
+    6.9x past) and one scaled by 1.02 fails the saddle row (1.9e-02, 2.7x past), while a timestep
+    off by 20-25 % lands only 1.0-1.3x past -- the Voronoi gap is the same size as that error, so
+    this pair is the weak oracle for the timestep and the potpourri3d pair the strong one. The
+    multi-source form is compared in ``test_heat_geodesic_matches_igl_far_from_the_sources``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
@@ -344,7 +357,8 @@ def test_heat_geodesic_matches_igl(request: pytest.FixtureRequest, mesh_name: st
     distance_igl = _heat_geodesic_igl(vertices_np, faces_np, sources_np)
     distance_wp = od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources_wp)
 
-    assert np.allclose(distance_wp.numpy(), distance_igl, rtol=5e-2, atol=5e-2)
+    assert np.ptp(distance_igl) > 1.0  # non-vacuity: the reference propagated
+    assert np.abs(distance_wp.numpy() - distance_igl).max() < bound * np.ptp(distance_igl)
 
 
 @pytest.mark.parity(
@@ -384,10 +398,11 @@ def test_heat_geodesic_matches_meshlib(
 
     **Mutation probe**, and what it says is that the three asserts divide the work unevenly. The
     measured errors against the exact field are 0.120 (ordito) and 0.100 (meshlib) against a 0.364
-    bar (7 % of the range, 3x the larger), and the correlation is 0.99979 against a 0.999 bar.
+    bar (7 % of the range, 3x the larger), and the correlation is 0.99979 against a 0.9993 bar
+    (3x the gap from 1).
     Mutating the ordito field:
 
-    | mutation      | error vs the 7 % bar | correlation vs the 0.999 bar |
+    | mutation      | error vs the 7 % bar | correlation vs the 0.9993 bar |
     |---------------|----------------------|------------------------------|
     | shuffle       | 4.069 -- **fails**   | -0.011 -- **fails**          |
     | scale x1.10   | 0.444 -- **fails**   | 0.99979 -- passes            |
@@ -421,7 +436,7 @@ def test_heat_geodesic_matches_meshlib(
     # Each within 7 % of the exact great-circle field, and correlated with each other.
     assert np.abs(distance_wp - exact_np).max() < 0.07 * exact_np.max()
     assert np.abs(distance_ml - exact_np).max() < 0.07 * exact_np.max()
-    assert np.corrcoef(distance_wp, distance_ml)[0, 1] > 0.999
+    assert np.corrcoef(distance_wp, distance_ml)[0, 1] > 0.9993
 
 
 @pytest.mark.parametrize("n_sources", [1, 3])
@@ -568,21 +583,26 @@ def test_heat_geodesic_matches_potpourri3d_plain_and_pymeshlab(
     different triangulations and can only agree to the heat method's own accuracy. Passing
     ``use_robust=False`` on both sides removes that difference -- same mesh, same cotangent
     weights, same lumped mass -- which is what makes this the honest oracle for the benchmark row
-    and lets the tolerance be far tighter than the robust comparison's ``0.1 * scale``. Measured
-    across the three fixtures: mean error **0.00 / 0.00 / 0.01%** of the diameter and maximum
-    **0.00 / 0.00 / 0.99%**, the worst being ``half_torus``, whose non-uniform scaling gives it the
-    widest triangle-quality spread. The bounds sit 10x and 5x off those, which is the margin rule;
-    they are this tight *because* both sides discretize identically, and a regression to the robust
-    comparison's ``0.1 * scale`` would mean the two are no longer solving the same system.
+    and lets the tolerance be far tighter than the robust comparison's ``0.1 * scale``.
 
     **pymeshlab**, a fourth independent implementation of the same PDE and the cheapest strong
     check on it. The named transform is how the source is specified: MeshLab has no source argument
     at all and takes the current *selection*, so ``compute_selection_by_condition_per_vertex`` with
     ``"(vi == 0)"`` is what pins it to vertex 0, and the answer is read off
-    ``vertex_scalar_array()`` rather than returned. Exactly what the benchmark does. Measured:
-    mean error **0.000 / 0.002 / 0.019%** of the diameter and maximum **0.000 / 0.006 / 0.966%**
-    -- within a factor of two of the potpourri3d numbers, on a completely separate codebase, under
-    the same bounds (>50x and 5x off the measured values).
+    ``vertex_scalar_array()`` rather than returned. Exactly what the benchmark does.
+
+    Measured as a fraction of the diameter, mean / max, the same on both devices:
+
+    | | ``sphere_irregular`` | ``saddle_graded`` |
+    |---|---|---|
+    | potpourri3d | 6.4e-06 / 1.3e-05 | 3.0e-05 / 6.5e-05 |
+    | pymeshlab | 1.1e-07 / 3.9e-07 | 6.3e-05 / 2.3e-04 |
+
+    The bounds, **2e-4 / 7e-4**, are 3x the worst row; the two references disagree with each other
+    by 8.3e-04 on the saddle, which is why the bound is not tighter. Mutation probes against
+    potpourri3d: a timestep 10 % off either way scores mean 9.4e-04 / max 3.4e-03 at best (4.7x /
+    4.9x past), and a field scaled by **1.001** scores mean 2.9e-04 / 5.5e-04 (1.5x / 2.8x past),
+    so a 0.1 % scale error is caught. The old bounds (1e-3 / 5e-2) let a 1 % scale error through.
 
     **Bug class excluded:** a wrong timestep or a wrong mass lumping. Both leave the field smooth,
     monotone and zero at the source -- so they pass every self-consistency test in this module --
@@ -611,8 +631,8 @@ def test_heat_geodesic_matches_potpourri3d_plain_and_pymeshlab(
     for distance_ref in (distance_pp, distance_pml):
         assert distance_ref.max() > 0.1 * diameter  # non-vacuity: the reference propagated
         error = np.abs(distance_wp - distance_ref)
-        assert error.mean() < 0.001 * diameter
-        assert error.max() < 0.05 * diameter
+        assert error.mean() < 2e-4 * diameter
+        assert error.max() < 7e-4 * diameter
 
 
 @pytest.mark.parametrize(
@@ -817,18 +837,19 @@ def test_heat_signed_distance_level_set_constraint_matches_potpourri3d(
 
     **The constraint is observable, which is what keeps this from being one comparison run twice.**
     Under ``zero_set`` both libraries pin the curve to exactly ``0.0``; under ``none`` neither does,
-    and the measured on-curve magnitudes on this fixture are 5.57e-02 (ordito) and 6.94e-02
+    and the measured on-curve magnitudes on this fixture are 5.93e-02 (ordito) and 4.04e-02
     (potpourri3d). So the last two asserts fail if either side silently ignores the keyword -- the
     bug this exists for, and one a correlation bound alone would pass, since the two fields
-    correlate 0.940 and 0.936 respectively, i.e. the *statistic does not separate the two modes at
-    all*. The 1e-3 floor is 18x below the smaller measured magnitude.
+    correlate 0.9986 and 0.9985 respectively, i.e. the *statistic does not separate the two modes
+    at all*. The 1e-3 floor is 40x below the smaller measured magnitude.
 
-    **Mutation probe.** The paragraph above already *is* one for the last two asserts -- it names
-    the bug (a silently ignored keyword), shows the correlation cannot see it, and records the 18x
-    floor. For the two statistical asserts the probe is the sibling's, on this same fixture and
-    these same two bounds: shuffling one side gives a mean error of **0.478 against the 0.150 bar**
-    and negating it gives ``r = -0.94``, so both fail. What that probe also found and this test
-    inherits: the ``hemisphere`` error bound has only **1.19x** headroom on unshuffled input.
+    **Measured on ``saddle_graded``, both devices:** correlation **0.9986 / 0.9985** (``zero_set``
+    / ``none``) against a **0.995** bar (3x the gap from 1), mean error **1.5 % / 1.9 %** of the
+    diagonal against the 5 % bar. **Mutation probe:** shuffling one side drops the correlation to
+    -0.06 and raises the mean error to 19 %; scaling ordito's field by 1.05 leaves the
+    correlation untouched (it is scale-invariant) and the mean error at 0.8 %, so on this fixture a
+    small scale error is the one thing the pair cannot see, and the sibling's ``sphere_irregular``
+    row (where x1.05 fails the bar) carries it.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, curve_np, curve_wp = _one_ring_cycle(mesh_tm, mesh_wp)
@@ -839,7 +860,7 @@ def test_heat_signed_distance_level_set_constraint_matches_potpourri3d(
     distance_pp = _distance_pp(mesh_tm, curve_np, level_set_constraint=constraint_pp)
 
     scale = float(np.linalg.norm(mesh_tm.vertices.max(axis=0) - mesh_tm.vertices.min(axis=0)))
-    assert np.corrcoef(distance_wp, distance_pp)[0, 1] > 0.9
+    assert np.corrcoef(distance_wp, distance_pp)[0, 1] > 0.995
     assert np.abs(distance_wp - distance_pp).mean() < 0.05 * scale
 
     # The keyword really took, on both sides: pinned to zero, or demonstrably not pinned.
@@ -869,28 +890,27 @@ def test_heat_signed_distance_matches_potpourri3d(
     Both sides solve the same continuous problem but through different boundary handling at the
     curve, so a vertex-wise ``allclose`` is not available at any tolerance -- what *is* shared is
     the sign convention and the shape of the field. The bug class this excludes is the one that
-    matters here: a sign flip, a scale error, or a field ignoring the curve would each break a 0.9
-    correlation and a mean error under 5 % of the mesh diagonal. Measured margins are in the comment
-    below, and the correlation is the tighter constraint (0.996 and 0.940 against the 0.9 bar).
+    matters here: a sign flip, a scale error, or a field ignoring the curve would each break the
+    correlation bar or a mean error under 5 % of the mesh diagonal.
 
-    **Mutation probe** (30 permutations, both fixtures), and it shows the two statistics are
-    complementary rather than redundant -- neither alone excludes the whole bug class:
+    **Measured on ``sphere_irregular``, both devices:** correlation **0.977** against a **0.93**
+    bar (3x the gap from 1), mean error **4.4 %** of the diagonal against the 5 % bar -- only
+    1.13x headroom, and deliberately not loosened: the gap is the *reference's* error (see the
+    comment above the parametrize), so a looser bar would hide ordito drifting toward it.
 
-    | mutation             | correlation      | mean error vs its bar        |
+    **Mutation probe**, and it shows the two statistics are complementary rather than redundant
+    -- neither alone excludes the whole bug class:
+
+    | mutation             | correlation      | mean error vs the 5 % bar    |
     |----------------------|------------------|------------------------------|
-    | shuffle one side     | 0.73 / 0.21      | 0.487 / 0.478 vs 0.147 / 0.150 -- **fails** |
-    | negate one side      | -0.996 / -0.940 -- **fails** | unchanged in magnitude |
-    | scale one side x1.5  | unchanged (scale-invariant) | 0.284 / 0.533 -- **fails** |
+    | shuffle one side     | 0.02 -- **fails** | 19 % -- **fails**           |
+    | negate one side      | -0.977 -- **fails** | far past it -- **fails**  |
+    | scale ordito x1.05   | unchanged (scale-invariant) | 5.7 % -- **fails** |
 
-    So the correlation catches the sign flip and the error bound catches the scale error and the
-    shuffle, which is the division of labour the docstring above claims. One caveat worth carrying:
-    on ``hemisphere`` the measured mean error is **0.1259 against a 0.1500 bar -- 1.19x**, well
-    inside the 3x preference, because that curve sits one ring from the rim where the two
-    boundary handlings diverge most. Do not tighten that bar without re-measuring both fixtures.
-
-    The ``hemisphere`` comparison is the ``zero_set`` arm of
-    [`test_heat_signed_distance_level_set_constraint_matches_potpourri3d`] -- the default
-    constraint, the same curve and the same two bounds -- so it runs there, once.
+    So the correlation catches the sign flip and the error bound catches the scale error, which is
+    the division of labour claimed above. The ``saddle_graded`` comparison is the ``zero_set`` arm
+    of [`test_heat_signed_distance_level_set_constraint_matches_potpourri3d`] -- the default
+    constraint and the same statistics -- so it runs there, once.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, curve_np, curve_wp = _one_ring_cycle(mesh_tm, mesh_wp)
@@ -899,14 +919,9 @@ def test_heat_signed_distance_matches_potpourri3d(
     distance_pp = _distance_pp(mesh_tm, curve_np)
 
     # Same sign convention (a counter-clockwise curve encloses the positive side) and the same field
-    # to a few percent of the mesh scale: measured 1.6% on ``icosahedron`` and 4.0% on
-    # ``hemisphere``.
-    # The correlation is the looser of the two statistics here -- 0.996 and 0.940 -- because this
-    # curve sits one ring from the hemisphere's rim, where the reference's boundary handling and
-    # this
-    # one's diverge; taking the centre-most interior vertex instead gives 0.990.
+    # to a few percent of the mesh scale.
     scale = float(np.linalg.norm(mesh_tm.vertices.max(axis=0) - mesh_tm.vertices.min(axis=0)))
-    assert np.corrcoef(distance_wp, distance_pp)[0, 1] > 0.9
+    assert np.corrcoef(distance_wp, distance_pp)[0, 1] > 0.93
     assert np.abs(distance_wp - distance_pp).mean() < 0.05 * scale
 
 
@@ -1319,7 +1334,7 @@ def test_transport_tangent_vectors_matches_potpourri3d(
         )
         ordito_np = transported_wp.numpy().astype(np.float64) @ np.array([1.0, 1j])
         aligned_pp = (transported_pp @ np.array([1.0, 1j])) * np.exp(-1j * offset_np)
-        assert np.allclose(np.abs(ordito_np), 1.0, rtol=5e-2, atol=5e-2)
+        assert np.allclose(np.abs(ordito_np), 1.0, rtol=1e-4, atol=1e-4)
         angle = np.degrees(np.abs(np.angle(ordito_np * np.conj(aligned_pp))))
         assert angle.max() < 1e-2, f"source {source}: worst {angle.max():.2e} degrees"
 
@@ -1542,12 +1557,25 @@ def test_log_map_radius_is_the_geodesic_distance(
 @pytest.mark.parity("log_map", "potpourri3d")
 def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B (gauge fix by an explicit rotation): both log maps live in the source's tangent plane.
+    Class C (a median error against the diagonal), after a gauge fix by one explicit rotation.
 
     Unlike the transport test, the gauge here is a single rotation for the whole field -- both maps
     measure angles in *one* tangent plane, the source vertex's -- so the transform is that vertex's
     offset between the two libraries' angle 0 (``_potpourri3d_angle_offsets``) and rotates
     potpourri3d's answer by it. The fixture choice is explained in the comment above.
+
+    Class C because the two are different constructions past the gauge: potpourri3d's radial
+    direction comes from a second vector-heat solve and its radius from that field, where ordito
+    reads both off ``heat_geodesic``'s distance. The angles differ by a median **13.2** degrees
+    (90th percentile 21.3), varying with direction, and expressing ordito's radial direction
+    intrinsically (each face's gradient rotated into the vertex's normalized-angle coordinates)
+    instead of by projection onto the vertex frame was measured to change that by under 0.1 degree
+    -- so it is not a coordinate mix-up on ordito's side. Measured median error **10.56 %** of the
+    diagonal on both devices, against the 15 % bar (1.4x; not tightened to 3x because the gap is
+    the reference's construction, and its radius is the less accurate one, below). **Mutation
+    probes**, median error: leaving the gauge rotation out scores **88 %**, mirroring ordito's map
+    46 %, rotating it by 90 degrees 68 % -- 3x to 6x past the bar, so the frame, handedness and
+    gauge are what this pins.
 
     The source is the first interior vertex. The gauge holds at a boundary source too (it does for
     transport), but the two constructions differ most there: from ``saddle_graded``'s corner the
@@ -1666,9 +1694,8 @@ def test_log_map_is_invariant_to_mesh_scale(sphere_irregular: tuple[tm.Trimesh, 
 # this ordito-against-ordito check costs seconds a call on the CPU device, while the graded reuse
 # path keeps its oracles in ``test_transport_on_a_graded_mesh_matches_a_direct_solve`` and
 # ``test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy``.
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_reused_operators_give_the_same_transport(
-    request: pytest.FixtureRequest, mesh_name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: a `Trimesh`, solved twice, changes no answer.
@@ -1678,7 +1705,7 @@ def test_reused_operators_give_the_same_transport(
     which assembles three matrices -- each called twice on one mesh, so the second call goes to the
     factorizations the first one's solves earned.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     _, _, curve_wp = _one_ring_cycle(mesh_tm, mesh_wp)
     sources, vectors = _unit_transport_source(mesh_wp.device)
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)

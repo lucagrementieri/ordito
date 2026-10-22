@@ -28,14 +28,15 @@ from warp.geometry import IsoSurfaceMarchingCubes
 import ordito as od
 import ordito.typing as odt
 from tests.comparisons import (
+    assert_nearest_bijection,
     assert_unordered_rows_equal,
     canonical_winding,
     euler_characteristic,
-    hausdorff_surface_two_sided,
     hausdorff_two_sided,
     open_edge_count,
     symmetric_surface_distance,
 )
+from tests.conftest import BOUNDARY_MESHES, CLOSED_MESHES
 from tests.conversions import (
     mesh_igl,
     meshlib_to_trimesh,
@@ -85,9 +86,12 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
     so the mean-radius assert is the guard: at this resolution a half-voxel shift moves it by 0.065,
     five hundred times the 1e-04 tolerance below.
 
-    **Bug class excluded:** a case table that emits the right count of the wrong triangles. Vertex
-    *sets* are matched by nearest neighbour with a bijection check rather than by index, since
-    nothing pins the three libraries to one emission order.
+    **Bug class excluded:** a case table that emits the right count of the wrong triangles, or
+    winds them the wrong way. Vertex *sets* are matched by nearest neighbour with a bijection check
+    rather than by index, since nothing pins the three libraries to one emission order, and the
+    face sets are then compared through that match with each triangle's winding kept: igl's are
+    ordito's exactly, VTK's are ordito's with every triangle reversed (its contour filter's own
+    winding, the one transform here), measured on both devices.
     """
     resolution, half, radius = 24, 1.5, 1.0
     axis_np = np.linspace(-half, half, resolution)
@@ -127,12 +131,19 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
     vertices_pv = np.asarray(contour_pv.points, dtype=np.float64)
 
     assert len(vertices_np) > 0  # non-vacuity: there is a surface to compare
-    for reference_np, n_faces in (
-        (np.asarray(vertices_igl, dtype=np.float64), np.asarray(faces_igl).shape[0]),
-        (vertices_pv, contour_pv.n_cells),
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    for reference_np, reference_faces_np in (
+        (np.asarray(vertices_igl, dtype=np.float64), np.asarray(faces_igl)),
+        # VTK's contour filter winds every triangle the other way round.
+        (vertices_pv, contour_pv.regular_faces[:, ::-1]),
     ):
         assert reference_np.shape[0] == len(vertices_np)
-        assert n_faces == faces_wp.size // 3
+        assert reference_faces_np.shape[0] == faces_np.shape[0]
+        # The same triangles with the same winding, once the vertices are matched.
+        matched_np = assert_nearest_bijection(reference_np, vertices_np, 1e-5)
+        assert_unordered_rows_equal(
+            canonical_winding(faces_np), canonical_winding(matched_np[reference_faces_np])
+        )
         # A half-voxel origin error moves this by 0.065; the tolerance is 1e-04.
         assert np.isclose(
             np.linalg.norm(reference_np, axis=1).mean(),
@@ -165,10 +176,10 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
     with ``lessInside=False`` it is exactly the negation. True is the value that matches ordito's
     outside-positive field convention.
 
-    The invariants beside the comparison are what a vertex-cloud match cannot see: both meshes are
-    closed (no boundary edge) with Euler characteristic 2, and their triangle centroids match as
-    well as their vertices do -- so the two agree on the *triangulation*, not merely on the point
-    set.
+    The comparison is the triangulation, not the point set: the vertices are matched one to one
+    (a nearest-neighbour bijection at 1.2e-07) and through that match the two face sets are equal
+    row for row with each triangle's winding kept. Beside it, both meshes are closed (no boundary
+    edge) with Euler characteristic 2.
     """
     resolution, radius = 48, 0.6
     field_np = _sphere_field(resolution, radius)
@@ -196,12 +207,10 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
     assert faces_ml_np.shape[0] > 0
     assert vertices_ml_np.shape[0] == len(vertices_np)
     assert faces_ml_np.shape[0] == faces_od_np.shape[0]
-    assert hausdorff_two_sided(vertices_np, vertices_ml_np) < 1e-5
-    assert (
-        hausdorff_two_sided(
-            vertices_np[faces_od_np].mean(axis=1), vertices_ml_np[faces_ml_np].mean(axis=1)
-        )
-        < 1e-5
+    # The same triangles with the same winding, through a vertex bijection at the float32 floor.
+    matched_np = assert_nearest_bijection(vertices_ml_np, vertices_np, 1e-5)
+    assert_unordered_rows_equal(
+        canonical_winding(faces_od_np), canonical_winding(matched_np[faces_ml_np])
     )
 
     # The transform is the claim, so show the un-shifted call fails by the half diagonal.
@@ -477,7 +486,8 @@ def test_offset_mesh_lands_at_the_distance_and_matches_meshlib(
 
     Class C against MeshLib: no correspondence exists between the two triangulations -- both march
     their own field on their own lattice -- so the comparison is the symmetric surface distance,
-    plus the vertex counts as a sanity check on the resolution actually used (within 5 %).
+    plus the vertex counts as a check on the resolution actually used: measured 0.02 % / 0.34 %
+    apart, held to 1 % (2.9x the worse); a lattice one cell off in size moves the count by ~6 %.
     ``OffsetParameters.voxelSize`` is set explicitly rather than left at its default, which is the
     parameter that would otherwise decide the comparison. The *mean* carries the claim, not the
     maximum: both extractions err most at the offset's creases (MeshLib by up to 0.035), so a
@@ -485,9 +495,9 @@ def test_offset_mesh_lands_at_the_distance_and_matches_meshlib(
 
     **Mutation probe**: the bug class is an offset applied at the wrong *distance*, so the probe
     re-runs MeshLib at a wrong one. Measured mean distance 0.00076 / 0.00115 at ``distance =
-    +-0.2``; MeshLib 5 % out gives 0.0100 / 0.0099 and 10 % out 0.0201 / 0.0200. The bound is
-    ``0.1 * _VOXEL`` (0.005): 4.3x the agreement, and half the 5 % error. The worst point is held
-    to one cell (measured 0.0140 / 0.0198).
+    +-0.2`` (identical on both devices); MeshLib 5 % out gives 0.0100 / 0.0099 and 10 % out
+    0.0201 / 0.0200. The bound is ``0.07 * _VOXEL`` (0.0035): 3.0x the worse agreement, and 2.9x
+    under the 5 % error. The worst point is held to one cell (measured 0.0140 / 0.0198).
     """
     mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -515,12 +525,12 @@ def test_offset_mesh_lands_at_the_distance_and_matches_meshlib(
 
     count_wp = offset_vertices_wp.size
     count_ml = offset_ml.vertices.shape[0]
-    assert abs(count_wp - count_ml) < 0.05 * count_ml
+    assert abs(count_wp - count_ml) < 0.01 * count_ml
 
     mean, worst = symmetric_surface_distance(
         warp_to_trimesh(offset_vertices_wp, offset_faces_wp), offset_ml
     )
-    assert mean < 0.1 * _VOXEL
+    assert mean < 0.07 * _VOXEL
     assert worst < _VOXEL
 
 
@@ -534,16 +544,19 @@ def test_offset_mesh_matches_pymeshlab(sphere_irregular: tuple[tm.Trimesh, wp.Me
     erosion* at 0 % to full dilation at 100 %, so its own 50 % default is the **zero** offset.
     ``PureValue`` is therefore mandatory here, and it is the same number ordito gets.
 
-    Compared on the surfaces (two-sided Hausdorff) and on the same distance invariant the test above
-    applies to ordito: MeshLab's own output sits at mean signed distance **+0.1999** with a spread
-    of 0.0002 from the input, so the two implementations are measuring the same quantity rather than
-    two things that happen to look alike.
+    Compared on the surfaces and on the same distance invariant the test above applies to ordito:
+    MeshLab's own output sits at mean signed distance **+0.1999** with a spread of 0.0002 from the
+    input, so the two implementations are measuring the same quantity rather than two things that
+    happen to look alike.
 
-    **Mutation probe**, and it retightened the threshold, identically to the MeshLab comparison
-    above. Measured agreement **0.00179**, the same on both devices; re-running pymeshlab at a wrong
-    offset gives 0.0521 at 0.15 and 0.0516 at 0.25 (25 % out, both **fail**) and **0.0212 at 0.22**
-    -- 10 % out, which the original ``0.5 * _VOXEL`` bar (0.025, a 14x headroom) admitted. It is now
-    ``0.25 * _VOXEL``: 0.0125, still **7.0x** the measured agreement.
+    The *mean* symmetric surface distance carries the claim, as in the MeshLib pairing, and not a
+    two-sided Hausdorff: that maximum sits on the offset's creases, measured **0.0108** at the right
+    offset against 0.0194 / 0.0213 at 5 % out either way, so no bound on it separates a right
+    offset from a wrong one with any margin (the 0.25-cell bar it used to carry had 1.16x
+    headroom). **Mutation probe**, re-running pymeshlab at a wrong offset: the mean is
+    **0.000348** at 0.2, the same on both devices, against 0.0100 at 0.19 / 0.21 (5 % out) and
+    0.0200 at 0.18 / 0.22. The bound is ``0.025 * _VOXEL`` (0.00125): 3.6x the agreement and 8x
+    under the 5 % error. The worst point is held to one cell (measured 0.0156).
     """
     distance = 0.2
     mesh_tm, mesh_wp = sphere_irregular
@@ -563,14 +576,11 @@ def test_offset_mesh_matches_pymeshlab(sphere_irregular: tuple[tm.Trimesh, wp.Me
     signed_pml = _signed_distance_to((vertices_wp, faces_wp), np.asarray(offset_pml.vertices))
     assert np.abs(signed_pml.mean() - distance) < 0.1 * _VOXEL  # same quantity, not just a shape
 
-    offset_tm = warp_to_trimesh(offset_vertices_wp, offset_faces_wp)
-    deviation = hausdorff_surface_two_sided(
-        np.asarray(offset_tm.vertices, dtype=np.float64),
-        np.asarray(offset_tm.faces),
-        np.asarray(offset_pml.vertices, dtype=np.float64),
-        np.asarray(offset_pml.faces),
+    mean, worst = symmetric_surface_distance(
+        warp_to_trimesh(offset_vertices_wp, offset_faces_wp), offset_pml
     )
-    assert deviation < 0.25 * _VOXEL
+    assert mean < 0.025 * _VOXEL
+    assert worst < _VOXEL
 
 
 def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
@@ -1175,21 +1185,24 @@ def test_thicken_mesh_displaces_along_the_angle_weighted_normals(
     assert np.allclose(shell_np[n_vertices:], vertices_np - thickness * normals_np, atol=1e-6)
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
+@pytest.mark.parametrize("mesh_name", [*BOUNDARY_MESHES, *CLOSED_MESHES])
 @pytest.mark.parity("thicken_mesh", "meshlib")
 def test_thicken_mesh_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: the same shell as ``makeThickMesh``, under a nearest-neighbour vertex bijection.
 
     MeshLib's thickening is the same construction rather than a different one -- extrude along the
-    vertex normals, reverse a copy, band the rim -- and the outputs agree to a degree worth stating:
-    identical counts (194 vertices, 384 faces), volumes equal to five decimals (0.28940), a
-    **bijective** nearest-neighbour vertex match at **4.6e-05**, and *identical face sets* once the
-    windings are canonicalized and MeshLib's vertex ids are mapped through that bijection.
+    vertex normals, reverse a copy, band every rim -- and the outputs agree to a degree worth
+    stating: identical counts, a **bijective** nearest-neighbour vertex match, and *identical face
+    sets* once the windings are canonicalized and MeshLib's vertex ids are mapped through that
+    bijection. Run on one long rim (``saddle_graded``), several unequal ones
+    (``torus_irregular_holes``) and none (``sphere_irregular``, two nested closed layers), since
+    the rim band is where the two constructions could part.
 
     The transform is the bijection, which is what makes this Class B rather than A: neither library
-    promises a vertex order. The 4.6e-05 residual is 0.09 % of the thickness and is the float32
-    normal normalization, not a difference of rule.
+    promises a vertex order. Measured worst residual over the three, both devices: **2.6e-06**
+    (5e-05 of the thickness, float32 normal normalization), held to 1e-05; shell volumes equal to
+    **1.3e-05** relative (the CPU closed shell; 3e-08 to 5e-06 elsewhere), held to 5e-05.
 
     ``ThickenParams`` splits the displacement into ``insideOffset`` and ``outsideOffset``, so the
     single-sided default here is ``(thickness, 0)`` -- passed explicitly, since it is the parameter
@@ -1197,7 +1210,7 @@ def test_thicken_mesh_matches_meshlib(request: pytest.FixtureRequest, mesh_name:
     MeshLib *smooths* the field of shift directions unless it trusts the raw pseudonormals, which
     is invisible on ``hemisphere`` and is not ordito's rule -- on ``saddle_graded`` its default 1
     put the shell 6.8e-3 (14 % of the thickness) off ordito's raw-pseudonormal one, 1e6 puts it
-    1.6e-6 off, with the volumes equal to 9 digits.
+    2.6e-6 off.
     """
     thickness = 0.05
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -1217,14 +1230,14 @@ def test_thicken_mesh_matches_meshlib(request: pytest.FixtureRequest, mesh_name:
     assert np.isclose(
         float(od.measures.volume(shell_vertices_wp, shell_faces_wp)),
         shell_ml.volume,
-        rtol=1e-4,
+        rtol=5e-5,
         atol=1e-6,
     )
 
     # The bijection, then the face sets through it.
     shell_np = shell_vertices_wp.numpy().astype(np.float64)
     distance_np, match_np = map(np.asarray, cKDTree(np.asarray(shell_ml.vertices)).query(shell_np))
-    assert distance_np.max() < 1e-4
+    assert distance_np.max() < 1e-5
     assert len(set(match_np.tolist())) == match_np.size
     inverse_np = np.empty(shell_ml.vertices.shape[0], dtype=np.int64)
     inverse_np[match_np] = np.arange(len(shell_np))

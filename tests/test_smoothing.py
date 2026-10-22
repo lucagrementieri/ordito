@@ -21,12 +21,13 @@ import warp as wp
 import warp.sparse as wps
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
+from scipy.spatial import cKDTree
 
 import ordito as od
 import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
 from ordito.kernels import smoothing as kernel_smoothing
-from tests.conftest import saddle_graded_large_arrays, sphere_irregular_arrays
+from tests.conftest import MESHES, saddle_graded_large_arrays, sphere_irregular_arrays
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -47,49 +48,68 @@ if TYPE_CHECKING:
     from typing_extensions import Buffer
 
 
-def _meshlab_umbrella(mesh_tm: tm.Trimesh, device: str) -> odt.BsrMatrix[wp.float32]:
+def _meshlab_umbrella(
+    mesh_tm: tm.Trimesh, device: str, *, taubin: bool = False
+) -> odt.BsrMatrix[wp.float32]:
     """
-    Assemble MeshLab's face-count-weighted umbrella as a row-stochastic operator.
+    Assemble one of MeshLab's two coordinate umbrellas as a row-stochastic operator.
 
-    Each neighbour is weighted by the number of faces its edge shares (2 for an interior edge, 1 on
-    a boundary) and the vertex itself by 1, then the row is normalized. Feeding this to ordito's
-    ``laplacian_operator=`` parameter is what makes the comparison Class B rather than an exemption.
+    Both stencils were solved for rather than read off documentation: one pass of each filter is a
+    linear map, so a least-squares fit of a vertex's weights over random position sets on one
+    connectivity determines them exactly (residual 1e-15; see the comment above
+    ``test_filter_taubin_matches_pymeshlab``).
+
+    * ``taubin=False``, ``apply_coord_laplacian_smoothing`` and ``apply_coord_unsharp_mask``: an
+      interior vertex weights each neighbour by the number of faces their edge shares (2) and
+      itself by 1; a **rim** vertex sees only its two rim neighbours, at 1 each, and itself at 2.
+    * ``taubin=True``, ``apply_coord_taubin_smoothing``: an interior vertex takes the plain 1-ring
+      mean (ordito's default operator); a rim vertex the mean of itself and its rim neighbours.
+
+    Feeding this to ordito's ``laplacian_operator=`` parameter is what makes the comparisons Class
+    B rather than exemptions, on closed and open meshes alike.
     """
-    shared: dict[tuple[int, int], int] = {}
-    for face_np in mesh_tm.faces:
-        for start, end in ((0, 1), (1, 2), (2, 0)):
-            key = (int(face_np[start]), int(face_np[end]))
-            shared[key] = shared.get(key, 0) + 1
-            shared[key[1], key[0]] = shared.get((key[1], key[0]), 0) + 1
-
+    faces_np = np.asarray(mesh_tm.faces)
     n_vertices = mesh_tm.vertices.shape[0]
-    row_sum_np = np.ones(n_vertices)
-    for (row, _column), count in shared.items():
-        row_sum_np[row] += count
-    rows_np = np.arange(n_vertices, dtype=np.int32)
-    columns_np = rows_np.copy()
-    values_np = 1.0 / row_sum_np
-    entries_np = np.array(list(shared.items()), dtype=object)
-    neighbor_rows = np.array([row for (row, _column), _count in entries_np], dtype=np.int32)
-    neighbor_columns = np.array([column for (_row, column), _count in entries_np], dtype=np.int32)
-    neighbor_values = (
-        np.array([count for _key, count in entries_np], dtype=np.float64)
-        / row_sum_np[neighbor_rows]
-    )
+    directed_np = faces_np[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    edges_np, shared_np = np.unique(np.sort(directed_np, axis=1), axis=0, return_counts=True)
+    rim_np = shared_np == 1
+    on_rim_np = np.zeros(n_vertices, dtype=bool)
+    on_rim_np[edges_np[rim_np].ravel()] = True
 
-    umbrella = wps.bsr_from_triplets(
-        n_vertices,
-        n_vertices,
-        wp.array(np.concatenate((rows_np, neighbor_rows)), dtype=wp.int32, device=device),
-        wp.array(np.concatenate((columns_np, neighbor_columns)), dtype=wp.int32, device=device),
-        wp.array(
-            np.concatenate((values_np, neighbor_values)).astype(np.float32),
-            dtype=wp.float32,
-            device=device,
+    rows_np = np.concatenate((edges_np[:, 0], edges_np[:, 1]))
+    columns_np = np.concatenate((edges_np[:, 1], edges_np[:, 0]))
+    weights_np = np.tile(np.ones(shared_np.shape[0]) if taubin else shared_np, 2)
+    keep_np = ~on_rim_np[rows_np] | np.tile(rim_np, 2)  # a rim vertex sees its rim edges only
+    self_np = np.where(on_rim_np, 1.0 if taubin else 2.0, 0.0 if taubin else 1.0)
+    vertex_ids_np = np.arange(n_vertices)
+    weighted_sp = sp.csr_matrix(
+        (
+            np.concatenate((weights_np[keep_np], self_np)).astype(np.float64),
+            (
+                np.concatenate((rows_np[keep_np], vertex_ids_np)),
+                np.concatenate((columns_np[keep_np], vertex_ids_np)),
+            ),
         ),
+        shape=(n_vertices, n_vertices),
     )
-    assert odt.has_blocks(umbrella, wp.float32)
-    return umbrella
+    weighted_sp.eliminate_zeros()
+    operator_sp = sp.coo_matrix(
+        sp.diags(1.0 / np.asarray(weighted_sp.sum(axis=1)).ravel()) @ weighted_sp
+    )
+    return _bsr_from_scipy(operator_sp, device)
+
+
+def _bsr_from_scipy(matrix_sp: sp.coo_matrix, device: str) -> odt.BsrMatrix[wp.float32]:
+    """Upload a SciPy operator as a ``float32`` Warp BSR matrix: the reference's own stencil."""
+    operator = wps.bsr_from_triplets(
+        matrix_sp.shape[0],
+        matrix_sp.shape[1],
+        wp.array(matrix_sp.row.astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(matrix_sp.col.astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(matrix_sp.data.astype(np.float32), dtype=wp.float32, device=device),
+    )
+    assert odt.has_blocks(operator, wp.float32)
+    return operator
 
 
 def _noisy_icosphere(subdivisions: int = 2, sigma: float = 0.01, seed: int = 0) -> tm.Trimesh:
@@ -157,8 +177,11 @@ def test_filter_laplacian_matches_trimesh(
 
 
 @pytest.mark.parametrize("iterations", [1, 10])
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("filter_laplacian_integration", "pymeshlab")
-def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> None:
+def test_filter_laplacian_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str, iterations: int
+) -> None:
     """
     Class B: exact, once MeshLab's own umbrella is passed through ``laplacian_operator=``.
 
@@ -166,24 +189,24 @@ def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> Non
     passes it too); ``lamb=1.0`` matches MeshLab's full step, which replaces the vertex by the
     weighted mean rather than interpolating toward it; and the operator is
     [`_meshlab_umbrella`][tests.test_smoothing._meshlab_umbrella] rather than ordito's default,
-    because MeshLab's uniform Laplacian is *not* the 1-ring mean.
+    because MeshLab's uniform Laplacian is *not* the 1-ring mean, and on a rim it is a different
+    stencil again (a rim vertex sees only its rim neighbours).
 
-    Measured agreement **6.5e-08 / 1.2e-07 / 2.6e-07** at 1 / 3 / 10 passes -- float32 accumulation
-    noise -- against **5.0e-03** at one pass with the plain 1-ring mean. So this is the assert that
-    pins which of MeshLab's two umbrellas this filter uses; with the wrong one it fails by 4 orders
-    of magnitude. This also exercises the pluggable-operator path the benchmark's
+    Measured agreement at 1 / 10 passes, both devices: **3.0e-07 / 1.4e-06** on
+    ``sphere_irregular`` and **6.0e-08 / 3.0e-07** on ``saddle_graded``, against **3.7e-02 /
+    5.2e-02** and **1.4e-01 / 3.4e-01** with ordito's default operator. So this is the assert that
+    pins both of MeshLab's stencils, interior and rim; with either wrong it fails by five orders of
+    magnitude. This also exercises the pluggable-operator path the benchmark's
     ``filter_laplacian_integration`` group times.
-
-    A closed fixture, because the ``1`` self-weight and per-face neighbour counts were solved for on
-    one; the boundary generalization (a shared count of 1) is written but not asserted here.
     """
-    mesh_tm = _noisy_icosphere()
-    mesh_wp = trimesh_to_warp(mesh_tm, device)
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.apply_coord_laplacian_smoothing(
         stepsmoothnum=iterations, cotangentweight=False, boundary=True
     )
+    smoothed_pml = meshset_pml.current_mesh().vertex_matrix()
+    assert np.abs(smoothed_pml - mesh_tm.vertices).max() > 1e-2  # non-vacuity: it moved
 
     smoothed_wp = od.smoothing.filter_laplacian(
         mesh_wp.points,
@@ -191,11 +214,9 @@ def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> Non
         lamb=1.0,
         iterations=iterations,
         volume_constraint=False,
-        laplacian_operator=_meshlab_umbrella(mesh_tm, device),
+        laplacian_operator=_meshlab_umbrella(mesh_tm, mesh_wp.device),
     )
-    assert np.allclose(
-        smoothed_wp.numpy(), meshset_pml.current_mesh().vertex_matrix(), rtol=1e-5, atol=1e-5
-    )
+    assert np.allclose(smoothed_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize(
@@ -836,7 +857,10 @@ def test_relax_approx_matches_meshlib(device: str, fit: Literal["planar", "quadr
     and **0.0194** against the same reference, so the bound below separates the real answer from
     doing nothing by **3.7x** planar and **1.0x** quadric. Only the planar row therefore carries a
     ratio bound; the quadric row is pinned by the *shared* claim instead, that both flatten the
-    noise by a similar amount.
+    noise by a similar amount. The fits themselves are pinned element-wise, both of them, by
+    [`test_relax_approx_matches_meshlib_where_the_balls_coincide`][tests.test_smoothing.test_relax_approx_matches_meshlib_where_the_balls_coincide],
+    on a lattice where the two neighbourhoods are the same set; this test is what covers the sets
+    differing.
 
     ``fit`` is parametrized because the two are different fits, not a tuning: the quadric keeps
     curvature the plane removes, and on a sphere that difference is the whole answer.
@@ -871,6 +895,73 @@ def test_relax_approx_matches_meshlib(device: str, fit: Literal["planar", "quadr
     smoothed_od = before - roughness(relaxed_wp.numpy())
     smoothed_ml = before - roughness(relaxed_ml)
     assert abs(smoothed_od - smoothed_ml) < 0.25 * max(smoothed_od, smoothed_ml)
+
+
+def _hex_lattice(n: int = 24, spacing: float = 0.1) -> tm.Trimesh:
+    """Return an equilateral triangle lattice on the paraboloid ``z = r^2 / 2``, with 1 % noise."""
+    j_np, i_np = np.divmod(np.arange(n * n), n)
+    xy_np = np.stack((i_np + 0.5 * j_np, j_np * math.sqrt(3.0) / 2.0), axis=1) * spacing
+    corner_np = (j_np * n + i_np).reshape(n, n)[:-1, :-1].ravel()
+    faces_np = np.concatenate(
+        (
+            np.stack((corner_np, corner_np + 1, corner_np + n), axis=1),
+            np.stack((corner_np + 1, corner_np + n + 1, corner_np + n), axis=1),
+        )
+    )
+    z_np = 0.5 * ((xy_np - xy_np.mean(axis=0)) ** 2).sum(axis=1)
+    z_np += np.random.default_rng(0).normal(0.0, 0.01, z_np.shape[0])
+    return tm.Trimesh(np.column_stack((xy_np, z_np)), faces_np, process=False)
+
+
+@pytest.mark.parity("relax_approx", "meshlib")
+@pytest.mark.parametrize(("fit", "iterations"), [("planar", 1), ("quadric", 3)])
+def test_relax_approx_matches_meshlib_where_the_balls_coincide(
+    device: str, fit: Literal["planar", "quadric"], iterations: int
+) -> None:
+    """
+    Class A: the fits themselves, on a lattice where both neighbourhoods are provably the 1-ring.
+
+    The Class C test above cannot pin the fit, because the two sides fit different point sets:
+    ``relaxApprox`` dilates by **path length** along edges (``dilateRegion``) and ordito takes the
+    edge-connected part of a **Euclidean** ball. On an equilateral lattice of spacing ``h`` and a
+    radius ``h < r < sqrt(3) h`` both are the 1-ring vertices within ``r`` -- no two-edge path fits
+    in ``r``, and no second-ring vertex sits within it -- which the premise assert below checks
+    directly. So any disagreement here is the fit: the plane, the quadric's frame and coefficients,
+    the six-point floor, or the ``force`` step.
+
+    Measured, both devices: **2.4e-07** planar at one pass, **1.2e-07** quadric at three, against
+    reference moves of 1.8e-02 and 3.9e-03. The quadric runs three passes because its one-pass move
+    (1.3e-03) is close to the tolerance. The planar fit stops at one pass on purpose: MeshLib
+    re-derives every ball from the *moved* positions each pass, where ordito builds them once from
+    the input (a documented choice), and on this curved lattice that alone puts the third planar
+    pass **2.6e-03** apart.
+    """
+    mesh_tm = _hex_lattice()
+    vertices_np = np.asarray(mesh_tm.vertices)
+    mesh_wp = trimesh_to_warp(mesh_tm, device)
+    radius = 0.12
+
+    # The premise: every pair within the radius is an edge, so both balls are the 1-ring's in-radius
+    # part. Nothing would flag a fixture change that broke it otherwise.
+    close_np = cKDTree(vertices_np).query_pairs(radius, output_type="ndarray")
+    edges_np = np.asarray(mesh_tm.edges_unique)
+    edge_keys = set(map(tuple, np.sort(edges_np, axis=1).tolist()))
+    assert set(map(tuple, np.sort(close_np, axis=1).tolist())) <= edge_keys
+
+    relaxed_wp = od.smoothing.relax_approx(
+        mesh_wp.points, mesh_wp.indices, radius, iterations, 0.5, fit
+    )
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    params_ml = mm.MeshApproxRelaxParams()
+    params_ml.iterations = iterations
+    params_ml.force = 0.5
+    params_ml.surfaceDilateRadius = radius
+    params_ml.type = mm.RelaxApproxType.Planar if fit == "planar" else mm.RelaxApproxType.Quadric
+    mm.relaxApprox(mesh_ml, params_ml)
+    relaxed_ml = cast("np.ndarray", mn.toNumpyArray(mesh_ml.points))
+
+    assert np.abs(relaxed_ml - vertices_np).max() > 3e-3  # non-vacuity: the reference moved
+    assert np.allclose(relaxed_wp.numpy(), relaxed_ml, rtol=1e-5, atol=1e-5)
 
 
 def test_relax_approx_quadric_is_scale_equivariant(device: str) -> None:
@@ -983,8 +1074,11 @@ def test_filter_taubin(request: pytest.FixtureRequest, mesh_name: str) -> None:
 
 
 @pytest.mark.parametrize("steps", [1, 3])
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("filter_taubin", "pymeshlab")
-def test_filter_taubin_matches_pymeshlab(device: str, steps: int) -> None:
+def test_filter_taubin_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str, steps: int
+) -> None:
     """
     Class B: exact, once the *pass count* is mapped -- and the mapping is a factor of two.
 
@@ -992,27 +1086,38 @@ def test_filter_taubin_matches_pymeshlab(device: str, steps: int) -> None:
     one half-step per ``iterations``, alternating the shrinking and inflating passes. So
     ``iterations = 2 * stepsmoothnum`` is the named transform, and ``mu=-0.53`` is ordito's
     ``nu=0.53`` (the sign is in the convention, not the value). Unlike the two filters above, this
-    one uses the plain 1-ring mean, so ordito's default operator is the right one.
+    one uses the plain 1-ring mean, so ordito's **default** operator is the right one on a closed
+    mesh -- which is why ``sphere_irregular`` passes none. On a rim MeshLab averages a vertex with
+    its two rim neighbours instead, so the open fixture passes
+    [`_meshlab_umbrella`][tests.test_smoothing._meshlab_umbrella]'s Taubin form, a second named
+    transform that touches the rim rows only.
 
-    Measured **5.2e-08 / 4.4e-08 / 4.6e-08** at 1 / 3 / 5 MeshLab steps under the doubled count,
-    against **2.7e-02 / 2.6e-02 / 2.6e-02** at the naive equal count -- a 5-orders-of-magnitude
-    separation, so this assert is what holds the pass mapping in place.
-    ``benchmarks/test_smoothing`` originally gave MeshLab ``stepsmoothnum=_ITERATIONS`` against
-    ordito's ``iterations=_ITERATIONS`` and so timed it doing twice the passes; that row now halves
-    it.
+    Measured **1.3e-07 / 1.8e-07** at 1 / 3 MeshLab steps on ``sphere_irregular`` and **5.1e-08 /
+    5.6e-08** on ``saddle_graded``, both devices, against **4.4e-02 / 8.7e-02** on the saddle with
+    the default operator's rim rows. The naive equal pass count is off by 2.7e-02 on a noisy
+    icosphere, so this assert also holds the pass mapping in place. ``benchmarks/test_smoothing``
+    originally gave MeshLab ``stepsmoothnum=_ITERATIONS`` against ordito's
+    ``iterations=_ITERATIONS`` and so timed it doing twice the passes; that row now halves it.
     """
-    mesh_tm = _noisy_icosphere()
-    mesh_wp = trimesh_to_warp(mesh_tm, device)
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.apply_coord_taubin_smoothing(lambda_=0.5, mu=-0.53, stepsmoothnum=steps)
+    smoothed_pml = meshset_pml.current_mesh().vertex_matrix()
+    assert np.abs(smoothed_pml - mesh_tm.vertices).max() > 1e-2  # non-vacuity: it moved
 
+    operator = (
+        None if mesh_tm.is_watertight else _meshlab_umbrella(mesh_tm, mesh_wp.device, taubin=True)
+    )
     smoothed_wp = od.smoothing.filter_taubin(
-        mesh_wp.points, mesh_wp.indices, lamb=0.5, nu=0.53, iterations=2 * steps
+        mesh_wp.points,
+        mesh_wp.indices,
+        lamb=0.5,
+        nu=0.53,
+        iterations=2 * steps,
+        laplacian_operator=operator,
     )
-    assert np.allclose(
-        smoothed_wp.numpy(), meshset_pml.current_mesh().vertex_matrix(), rtol=1e-5, atol=1e-5
-    )
+    assert np.allclose(smoothed_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("iterations", [1, 10])
@@ -1077,6 +1182,52 @@ def test_filter_taubin_recompute_matches_pytorch3d(device: str, iterations: int)
         ),
     )
     assert float(np.abs(fixed_wp.numpy() - vertices_p3d).max()) > 1e-3
+
+
+@pytest.mark.parametrize("iterations", [1, 5])
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("filter_taubin", "open3d")
+def test_filter_taubin_recompute_matches_open3d(
+    request: pytest.FixtureRequest, mesh_name: str, iterations: int
+) -> None:
+    """
+    Class B: ``filter_smooth_taubin`` under the pass-count doubling, with ``recompute=True``.
+
+    Open3D's filter is pytorch3d's convention again: it re-derives inverse-distance weights
+    ``1 / (|v - n| + 1e-12)`` over the undirected 1-ring from the *current* positions before every
+    half-pass, which is exactly ``recompute=True``'s operator (the ``1e-12`` is below ``float32``
+    resolution at any edge length on these fixtures). The two named transforms are the same as the
+    pymeshlab and pytorch3d pairs': ``number_of_iterations`` counts lambda-mu **pairs**, so the
+    count doubles, and ``mu=-0.53`` is ordito's ``nu=0.53``.
+
+    Measured, both devices, at 1 / 5 pairs: **4.1e-07 / 7.1e-07** on ``sphere_irregular`` and
+    **1.3e-07 / 2.3e-07** on ``saddle_graded`` (whose rim takes no special rule on either side).
+    One fixed inverse-distance operator instead sits **3.9e-02 / 1.2e-01** and **5.4e-03 /
+    1.6e-02** away -- half the displacement or more -- which is asserted too, so this test cannot be
+    read as the two libraries' default filters agreeing.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    smoothed_o3d = np.asarray(
+        trimesh_to_open3d(mesh_tm).filter_smooth_taubin(iterations, 0.5, -0.53).vertices
+    )
+    assert np.abs(smoothed_o3d - mesh_tm.vertices).max() > 1e-2  # non-vacuity: it moved
+
+    recomputed_wp = od.smoothing.filter_taubin(
+        mesh_wp.points, mesh_wp.indices, 0.5, 0.53, 2 * iterations, recompute=True
+    )
+    assert np.allclose(recomputed_wp.numpy(), smoothed_o3d, rtol=1e-5, atol=1e-5)
+
+    fixed_wp = od.smoothing.filter_taubin(
+        mesh_wp.points,
+        mesh_wp.indices,
+        0.5,
+        0.53,
+        2 * iterations,
+        laplacian_operator=od.laplacian.laplacian(
+            mesh_wp.points, mesh_wp.indices, equal_weight=False
+        ),
+    )
+    assert float(np.abs(fixed_wp.numpy() - smoothed_o3d).max()) > 1e-3
 
     with pytest.raises(ValueError, match="do not also pass one"):
         od.smoothing.filter_taubin(
@@ -1964,10 +2115,13 @@ def test_smooth_region_boundary_matches_meshlib(device: str, subdivisions: int) 
     What does match, and is asserted: the set of vertices that move is **exactly equal** (44 of 642
     at ``subdivisions=3``, 112 of 2 562 at 4), the rim's total length agrees within 1 % (6.073
     against 6.107, and 6.024 against 6.049), the per-vertex displacement magnitudes correlate at
-    **0.984-0.987**, and the largest position disagreement is **0.0052** against displacements
-    reaching 0.15 -- a 29x margin. The bug class excluded is a band that slides the wrong way or
-    off the surface: both sides keep every moved vertex within **0.0021** of the unit sphere, which
-    a projection onto the wrong level set would not.
+    **0.984-0.987**, and the largest position disagreement is **0.0052 / 0.0049** against
+    reference displacements reaching **0.036 / 0.050** (identical on both devices). The bounds are
+    3x those: position 0.016, correlation 0.95, sphere distance 0.0065. Mutation probe: a filter
+    that moves nothing scores the whole displacement, 0.036 / 0.050, on the position bound (2.3x /
+    3.1x past it) besides failing the moved-set equality. The bug class excluded is a band that
+    slides the wrong way or off the surface: both sides keep every moved vertex within **0.0021**
+    of the unit sphere, which a projection onto the wrong level set would not.
 
     The invariant asserted alongside is the function's actual purpose and no comparison implies it:
     the rim gets **shorter**. Two mesh resolutions because the level set is a property of the
@@ -2002,7 +2156,10 @@ def test_smooth_region_boundary_matches_meshlib(device: str, subdivisions: int) 
     moved_ml = np.linalg.norm(smoothed_ml - before_ml, axis=1) > 1e-6
     assert int(moved_ml.sum()) > 0  # non-vacuity: the reference did something
     assert np.array_equal(moved_wp, moved_ml)
-    assert np.abs(smoothed_np - smoothed_ml).max() < 0.05
+    assert np.abs(smoothed_np - smoothed_ml).max() < 0.016
+    displacement_wp = np.linalg.norm(smoothed_np - vertices_np, axis=1)[moved_wp]
+    displacement_ml = np.linalg.norm(smoothed_ml - before_ml, axis=1)[moved_wp]
+    assert np.corrcoef(displacement_wp, displacement_ml)[0, 1] > 0.95
 
     rim_np = od.selection.region_boundary_edges(faces_wp, region_wp).numpy()
 
@@ -2015,7 +2172,8 @@ def test_smooth_region_boundary_matches_meshlib(device: str, subdivisions: int) 
     assert rim_length(smoothed_np) < start
     assert abs(rim_length(smoothed_np) - rim_length(smoothed_ml)) < 0.01 * start
     # Neither side lifted the band off the sphere it slid along.
-    assert np.abs(np.linalg.norm(smoothed_np[moved_wp], axis=1) - 1.0).max() < 0.01
+    assert np.abs(np.linalg.norm(smoothed_np[moved_wp], axis=1) - 1.0).max() < 0.0065
+    assert np.abs(np.linalg.norm(smoothed_ml[moved_ml], axis=1) - 1.0).max() < 0.0065
 
 
 def test_smooth_region_boundary_leaves_connectivity_and_the_rest_alone(device: str) -> None:
@@ -2404,9 +2562,11 @@ def test_filter_normals_matches_meshlib(device: str) -> None:
     | ordito against meshlib | 0.99856 | 0.9843 |
 
     So both recover the field, and **they agree with each other more closely than either agrees
-    with the input** -- which is the claim, and the mutation probe is the input row itself: a
-    filter that did nothing would score 0.9604 / 0.665 and fail every assert below by a wide
-    margin.
+    with the input** -- which is the claim. Identical on both devices. The bounds are 3x the
+    measured gaps from 1: pair mean above 0.9955 and worst above 0.95, recovery means above 0.996
+    and worsts above 0.96. Mutation probes, against the pair bounds: a filter that does nothing
+    scores 0.9676 / 0.745, and one that stops after a **single** pass 0.9919 / 0.933 -- both fail
+    the mean and worst bounds, so these pin the smoothing *depth*, not only that it ran.
 
     Two interface facts. ``denoiseNormals`` mutates the ``FaceNormals`` it is handed and returns
     nothing, so the field is recomputed with ``computePerFaceNormals`` first; and its ``v`` argument
@@ -2445,11 +2605,11 @@ def test_filter_normals_matches_meshlib(device: str) -> None:
     pair_mean, pair_worst = agreement(smoothed_wp.numpy(), denoised_ml)
 
     assert raw_worst < 0.8  # non-vacuity: the input really is noisy
-    assert min(wp_worst, ml_worst) > 0.95  # both recovered the field
-    assert min(wp_mean, ml_mean) > raw_mean
-    # And they agree with each other better than either agrees with what they were given.
-    assert pair_mean > raw_mean
-    assert pair_worst > raw_worst
+    assert min(wp_worst, ml_worst) > 0.96  # both recovered the field
+    assert min(wp_mean, ml_mean) > 0.996
+    # And they agree with each other far better than either agrees with what they were given.
+    assert pair_mean > 0.9955 > raw_mean
+    assert pair_worst > 0.95 > raw_worst
 
 
 def test_filter_normals_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -2611,9 +2771,12 @@ def test_filter_two_step_rejects_a_threshold_outside_a_half_turn(
         od.smoothing.filter_two_step(mesh_wp.points, mesh_wp.indices, threshold=200.0)
 
 
-@pytest.mark.parametrize("iterations", [1, 5])
+@pytest.mark.parametrize("iterations", [1, 10])
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("filter_sharpen", "pymeshlab")
-def test_filter_sharpen_matches_pymeshlab(device: str, iterations: int) -> None:
+def test_filter_sharpen_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str, iterations: int
+) -> None:
     """
     Class B: exact under the same operator substitution as the Laplacian test above.
 
@@ -2625,26 +2788,76 @@ def test_filter_sharpen_matches_pymeshlab(device: str, iterations: int) -> None:
     1), so the only transform is passing
     [`_meshlab_umbrella`][tests.test_smoothing._meshlab_umbrella] as the smoothing operator.
 
-    Measured **1.4e-07** at both 1 and 5 iterations, against **1.5e-03 / 4.4e-03** with the plain
-    1-ring mean -- so, like the Laplacian test, this doubles as the check on which umbrella the
-    filter uses.
+    Measured at 1 / 10 iterations, both devices: **1.7e-07 / 5.0e-07** on
+    ``sphere_irregular`` and **4.1e-08 / 1.2e-07** on ``saddle_graded``, against **1.1e-02 /
+    1.6e-02** and **4.3e-02 / 1.0e-01** with ordito's default operator -- so, like the Laplacian
+    test, this doubles as the check on which umbrella the filter uses, rim rows included.
     """
-    mesh_tm = _noisy_icosphere()
-    mesh_wp = trimesh_to_warp(mesh_tm, device)
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.apply_coord_unsharp_mask(weight=0.3, weightorig=1.0, iterations=iterations)
+    sharpened_pml = meshset_pml.current_mesh().vertex_matrix()
+    assert np.abs(sharpened_pml - mesh_tm.vertices).max() > 1e-3  # non-vacuity: it moved
 
     sharpened_wp = od.smoothing.filter_sharpen(
         mesh_wp.points,
         mesh_wp.indices,
         weight=0.3,
         iterations=iterations,
-        laplacian_operator=_meshlab_umbrella(mesh_tm, device),
+        laplacian_operator=_meshlab_umbrella(mesh_tm, mesh_wp.device),
     )
-    assert np.allclose(
-        sharpened_wp.numpy(), meshset_pml.current_mesh().vertex_matrix(), rtol=1e-5, atol=1e-5
+    assert np.allclose(sharpened_wp.numpy(), sharpened_pml, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("filter_sharpen", "open3d")
+def test_filter_sharpen_matches_open3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class B: one ``filter_sharpen`` pass is the unsharp mask under the operator ``I - (D - A)``.
+
+    Open3D adds ``strength * (deg(v) * v - sum of neighbours)``: the **unnormalized** graph
+    Laplacian of the undirected 1-ring. ordito's mask is ``p + weight * (p - S p)`` for a smoothing
+    operator ``S``, so ``S = I - (D - A)`` -- a matrix whose rows still sum to one, with diagonal
+    ``1 - deg(v)`` -- reproduces it exactly at one pass, with ``weight = strength``. That operator
+    is the named transform. Open3D's ``number_of_iterations`` then *repeats* the sharpening, where
+    ordito's ``iterations`` deepens the smoothing it subtracts, so the two counts are different
+    parameters and only one pass of each corresponds.
+
+    Measured, both devices: **1.2e-07** on ``sphere_irregular`` and **4.8e-08** on
+    ``saddle_graded``, against **4.2e-01** and **2.6e-02** with ordito's default row-stochastic
+    operator -- the per-vertex degree factor no ``weight`` mapping absorbs on an irregular mesh,
+    which is asserted too.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    sharpened_o3d = np.asarray(trimesh_to_open3d(mesh_tm).filter_sharpen(1, 0.1).vertices)
+    assert np.abs(sharpened_o3d - mesh_tm.vertices).max() > 1e-2  # non-vacuity: it moved
+
+    n_vertices = mesh_tm.vertices.shape[0]
+    edges_np = np.asarray(mesh_tm.edges_unique)
+    adjacency_sp = sp.csr_matrix(
+        (
+            np.ones(2 * edges_np.shape[0]),
+            (
+                np.concatenate((edges_np[:, 0], edges_np[:, 1])),
+                np.concatenate((edges_np[:, 1], edges_np[:, 0])),
+            ),
+        ),
+        shape=(n_vertices, n_vertices),
     )
+    degree_np = np.asarray(adjacency_sp.sum(axis=1)).ravel()
+    operator = _bsr_from_scipy(
+        sp.coo_matrix(sp.identity(n_vertices) - sp.diags(degree_np) + adjacency_sp), mesh_wp.device
+    )
+    sharpened_wp = od.smoothing.filter_sharpen(
+        mesh_wp.points, mesh_wp.indices, weight=0.1, iterations=1, laplacian_operator=operator
+    )
+    assert np.allclose(sharpened_wp.numpy(), sharpened_o3d, rtol=1e-5, atol=1e-5)
+
+    default_wp = od.smoothing.filter_sharpen(
+        mesh_wp.points, mesh_wp.indices, weight=0.1, iterations=1
+    )
+    assert float(np.abs(default_wp.numpy() - sharpened_o3d).max()) > 1e-2
 
 
 def test_filter_sharpen_amplifies_detail(

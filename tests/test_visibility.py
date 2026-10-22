@@ -118,11 +118,10 @@ def test_ambient_occlusion_ranks_like_pymeshlab(
     the occluded ones — hence a rank correlation over a torus, whose hole occludes half of its inner
     wall.
 
-    **Mutation probe**, the one a Class C threshold requires and this test did not
-    carry: shuffling the ordito side, 30 permutations on this fixture, gives ``|r|`` at most
-    **0.0695** (mean 0.0269) against the measured **-0.8621** -- a separation of **12.4x**, well
-    past the 3x floor, so the threshold is testing the correspondence and not the two marginal
-    distributions.
+    Measured **-0.910** on both devices; the bar is ``-0.85``. **Mutation probe**: shuffling the
+    ordito side, 30 permutations on this fixture, gives ``|r|`` at most **0.0695** (mean 0.0269) --
+    a separation of **12x** from the bar, so the threshold is testing the correspondence and not
+    the two marginal distributions.
     """
     mesh_tm, mesh_wp = torus_irregular
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
@@ -137,7 +136,7 @@ def test_ambient_occlusion_ranks_like_pymeshlab(
     # correlation must be strongly *negative*.
     rank_pml = np.argsort(np.argsort(exposure_pml))
     rank_wp = np.argsort(np.argsort(occlusion_np))
-    assert np.corrcoef(rank_pml, rank_wp)[0, 1] < -0.8
+    assert np.corrcoef(rank_pml, rank_wp)[0, 1] < -0.85
 
 
 @pytest.mark.parity(
@@ -170,9 +169,10 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
     equal radiation, which is what makes MeshLib's weighted mean an isotropic one.
 
     Measured at 256 patches against 256 rays: **mean |difference| 0.0035, maximum 0.0195, Pearson
-    0.99985** over 441 samples spanning 0 to 0.98. The bound below is 3x the measured maximum. The
-    mutation probe: shuffling one side gives mean |difference| **0.235** (67x) and correlation
-    -0.02, so the agreement is a correspondence rather than two similar marginal distributions.
+    0.99985** over 441 samples spanning 0 to 0.98, on both devices. Each bound below is 3x its
+    measured value. The mutation probe: shuffling one side gives mean |difference| **0.235** (22x
+    the bound) and correlation -0.02, so the agreement is a correspondence rather than two similar
+    marginal distributions.
     """
     n_patches = 256
     ground = tm.creation.box(extents=(8.0, 8.0, 0.2))
@@ -230,9 +230,10 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
     assert sky_view_ml.min() < 0.2
     assert sky_view_ml.max() > 0.9
     difference = np.abs((1.0 - occlusion_np) - sky_view_ml)
-    assert difference.mean() < 0.02  # 5.7x the measured 0.0035
+    assert difference.mean() < 0.0105  # 3x the measured 0.0035
     assert difference.max() < 0.06  # 3x the measured 0.0195
-    assert np.corrcoef(1.0 - occlusion_np, sky_view_ml)[0, 1] > 0.99
+    # 3x the measured 1 - r of 1.5e-4
+    assert np.corrcoef(1.0 - occlusion_np, sky_view_ml)[0, 1] > 0.9995
 
 
 def test_ambient_occlusion_converges_with_more_rays(
@@ -328,13 +329,13 @@ def test_volumetric_obscurance_ranks_like_pymeshlab(
     Class C (rank correlation), and the sign of the correlation is the claim.
 
     MeshLab reports *exposure* where ordito reports *obscurance*, so agreement means a correlation
-    below **-0.8**, not above it -- an implementation that returned exposure would pass a
-    ``|corr| > 0.8`` bar and fails this one. The torus is the fixture because its hole obscures the
+    below **-0.85**, not above it -- an implementation that returned exposure would pass a
+    ``|corr| > 0.85`` bar and fails this one. The torus is the fixture because its hole obscures the
     inner wall and leaves the outer wall exposed, giving the ranks something to disagree about.
 
-    **Mutation probe**: shuffling the ordito side, 30 permutations on this fixture, gives ``|r|``
-    at most **0.0777** (mean 0.0274) against the measured **-0.8651** -- a separation of **11.1x**,
-    past the 3x floor for a Class C threshold.
+    Measured **-0.895** on both devices. **Mutation probe**: shuffling the ordito side, 30
+    permutations on this fixture, gives ``|r|`` at most **0.0777** (mean 0.0274) -- a separation of
+    **11x** from the bar, past the 3x floor for a Class C threshold.
     """
     mesh_tm, mesh_wp = torus_irregular
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
@@ -346,7 +347,7 @@ def test_volumetric_obscurance_ranks_like_pymeshlab(
     ).numpy()
     rank_pml = np.argsort(np.argsort(exposure_pml))
     rank_wp = np.argsort(np.argsort(obscurance_np))
-    assert np.corrcoef(rank_pml, rank_wp)[0, 1] < -0.8
+    assert np.corrcoef(rank_pml, rank_wp)[0, 1] < -0.85
 
 
 # ---------------------------------------------------------------------------
@@ -458,10 +459,13 @@ def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: s
     Class C (rank structure): MeshLab's SDF differs from this one by roughly a constant factor.
 
     Its ``cone_amplitude`` parameter is a **no-op** in the 2025.07 build (byte-identical output at
-    90 and 120 degrees) and its trimming is not the paper's, so neither a value comparison nor a
-    per-vertex rank correlation is available. What both must agree on is the thing the field is
-    *for*: on a dumbbell — two radius-1 balls joined by a radius-0.2 bar — the bar is thin and the
-    balls are thick, which is the segmentation cue SDF exists to provide.
+    90 and 120 degrees) and its trimming is not the paper's, so no value comparison is available
+    (the per-vertex ratio ``pymeshlab / ordito`` has a median of 1.43 and a coefficient of variation
+    of 0.39). What both must agree on is the thing the field is *for*: on a dumbbell — two
+    radius-1 balls joined by a radius-0.2 bar — the bar is thin and the balls are thick, which is
+    the segmentation cue SDF exists to provide. Each side's bar-to-ball contrast is bounded at its
+    own measured value, and the per-vertex Spearman correlation -- weak, **0.594** over 4 550
+    vertices, but 21x the shuffled-side null of 0.028 -- is held above 0.5.
 
     Note this is *not* a test that either side reports the bar's diameter as 0.4. A cone of rays
     from a point on a slender bar mostly hits the bar's own walls, so SDF measures the local
@@ -501,10 +505,16 @@ def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: s
     ball_np = vertices_np[:, 0] < -0.3  # only the left ball reaches there
     assert bar_np.sum() > 10
     assert ball_np.sum() > 10
-    # Both must call the bar the thinner part. The margin is loose because MeshLab compresses the
-    # contrast: it reads a 0.68 bar-to-ball ratio here where this port reads 0.55.
-    for field_np in (diameter_np, diameter_pml):
-        assert field_np[bar_np].mean() < 0.8 * field_np[ball_np].mean()
+    # Both must call the bar the thinner part, each at its own measured contrast: MeshLab
+    # compresses it to a 0.683 bar-to-ball ratio where this port reads 0.255 (the true diameters'
+    # ratio is 0.2).
+    assert diameter_np[bar_np].mean() < 0.35 * diameter_np[ball_np].mean()
+    assert diameter_pml[bar_np].mean() < 0.75 * diameter_pml[ball_np].mean()
+    # ... and the per-vertex ranks correspond: measured 0.594, against a shuffled-side null of at
+    # most 0.028 over 30 permutations.
+    rank_pml = np.argsort(np.argsort(diameter_pml))
+    rank_wp = np.argsort(np.argsort(diameter_np))
+    assert np.corrcoef(rank_pml, rank_wp)[0, 1] > 0.5
 
 
 @pytest.mark.parity(
@@ -685,13 +695,14 @@ def test_thickness_at_vertices_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.M
 
 def test_max_tangent_sphere(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class A on both returns, at ``1e-2`` -- the loosest tolerance in this file, and why.
+    Class A on both returns.
 
     The sphere's centre slides along the normal as its radius grows, so a small radius disagreement
     displaces the centre by the same amount; both are compared rather than just the radius, since a
-    centre off the normal would be a different failure. The tolerance is set by
-    ``mesh_query_point``'s own accuracy (up to 2.1e-5 absolute) amplified by
-    that sliding, not by a disagreement about the definition. 20 of 20 points finite.
+    centre off the normal would be a different failure. Measured on both devices: radii to
+    **3.2e-06** and centres to **2.6e-06**, 20 of 20 points finite, so the shared ``1e-5`` holds
+    with a 3x margin. (This was once held at ``1e-2`` for a ``mesh_query_point`` inaccuracy that no
+    longer reproduces; re-measure before loosening it.)
     """
     mesh_tm, mesh_wp = sphere_irregular
     points_np, face_ids = tm.sample.sample_surface(mesh_tm, 20, seed=42)[:2]
@@ -703,13 +714,10 @@ def test_max_tangent_sphere(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> Non
     centers_wp, radii_wp = od.visibility.max_tangent_sphere(mesh_wp, points_wp, normals=normals_wp)
     centers_tm, radii_tm = tm_proximity.max_tangent_sphere(mesh_tm, points_np, normals=normals_np)
 
-    finite_tm = np.isfinite(radii_tm)
-    assert np.array_equal(np.isfinite(radii_wp.numpy()), finite_tm)
-    if finite_tm.any():
-        assert np.allclose(radii_wp.numpy()[finite_tm], radii_tm[finite_tm], rtol=1e-2, atol=1e-2)
-        assert np.allclose(
-            centers_wp.numpy()[finite_tm], centers_tm[finite_tm], rtol=1e-2, atol=1e-2
-        )
+    assert np.isfinite(radii_tm).all()  # non-vacuity: every sphere found its second contact
+    assert np.isfinite(radii_wp.numpy()).all()
+    assert np.allclose(radii_wp.numpy(), radii_tm, rtol=1e-5, atol=1e-5)
+    assert np.allclose(centers_wp.numpy(), centers_tm, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parity("max_tangent_sphere_reach", "trimesh")

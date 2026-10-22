@@ -9,7 +9,6 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito.kernels.grouping import VEC3_PACK_PRECISION, VEC3_PACK_SHIFT
-from tests.comparisons import lexsort_rows, same_partition
 from tests.conftest import MESHES
 from tests.conversions import points_to_warp, warp_empty
 
@@ -59,15 +58,15 @@ def test_group(
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_group_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B (row and group order): ``trimesh.grouping.group`` over the same edge inverse.
+    Class B (order within a group): ``trimesh.grouping.group`` over the same edge inverse.
 
     Both sides answer "which index sets share a value, at exactly this multiplicity", and on a
     mesh's unique-edge inverse the ``length=2`` groups are the adjacent face pairs -- the workload
-    the benchmark row times. Neither library promises an order: ordito emits groups in
-    radix-sorted key order and trimesh in ``argsort`` order, and within a group neither fixes
-    which member comes first, so the named transform is a sort along both axes. The count assert
-    is what makes that sound -- a sort cannot rescue two answers that disagree about *how many*
-    groups there are.
+    the benchmark row times. Both emit groups in ascending value order (ordito's radix sort,
+    trimesh's ``argsort``), so the group order is compared as is. Within a group ordito's stable
+    sort lists members ascending while trimesh's unstable ``argsort`` fixes nothing, so the one
+    transform is a sort of each of *trimesh's* rows; ordito's table is compared untouched. Sorting
+    both sides along both axes, as this test did, passed for groups emitted in any order.
 
     The boundary case is the point of running ``half_torus`` as well: an open mesh's rim edges
     appear once, so they must be absent from both answers rather than padded into either.
@@ -86,29 +85,32 @@ def test_group_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -
     assert n_interior > 1
     assert groups_wp.shape == (n_interior, 2)
 
-    assert np.array_equal(
-        lexsort_rows(np.sort(groups_wp, axis=1)), lexsort_rows(np.sort(groups_tm, axis=1))
-    )
+    assert np.array_equal(groups_wp, np.sort(groups_tm, axis=1))
 
 
 def test_group_int_rows(device: str) -> None:
     """
     Class B (order within a group): ``trimesh.grouping.group_rows`` at the same multiplicity.
 
-    Ordito against ordito for the unvalidated arm: with a ``max_value`` bound, ``validate=False``
-    skips the range check and must return the validated groups unchanged.
+    Both order groups by the row's packed key, column 0 least significant, so only trimesh's rows
+    are sorted (its ``argsort`` fixes no order within a group) and ordito's table is compared as
+    returned. Ordito against ordito for the unvalidated arm: with a ``max_value`` bound,
+    ``validate=False`` skips the range check and must return the validated groups unchanged.
     """
-    data_np = np.array([[1, 2], [3, 4], [1, 2], [2, 1], [3, 4], [0, 1], [3, 4]], dtype=np.int32)
+    data_np = np.array(
+        [[0, 5], [1, 2], [3, 4], [1, 2], [2, 1], [3, 4], [0, 1], [3, 4], [0, 5]], dtype=np.int32
+    )
     length = 2
     groups_np = np.sort(tm.grouping.group_rows(data_np, require_count=length), axis=1)
 
     data_wp = _int_rows(data_np, device)
     groups_wp = od.grouping.group_int_rows(data_wp, length)
-    assert np.array_equal(np.sort(groups_wp.numpy(), axis=1), groups_np)
+    assert groups_np.shape == (2, 2)  # [1, 2] and [0, 5] twice; [3, 4] thrice is excluded
+    assert np.array_equal(groups_wp.numpy(), groups_np)
 
     bounded_wp = od.grouping.group_int_rows(data_wp, length, max_value=7)
     unvalidated_wp = od.grouping.group_int_rows(data_wp, length, max_value=7, validate=False)
-    assert np.array_equal(np.sort(bounded_wp.numpy(), axis=1), groups_np)
+    assert np.array_equal(bounded_wp.numpy(), groups_np)
     assert np.array_equal(unvalidated_wp.numpy(), bounded_wp.numpy())
 
 
@@ -242,13 +244,15 @@ def test_unique_rows_matches_trimesh(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str, unique_fraction: float
 ) -> None:
     """
-    Class B: ``trimesh.grouping.unique_rows`` returns row *indices*, ordito returns the rows.
+    Class A: ``trimesh.grouping.unique_rows`` returns row *indices*, ordito returns the rows.
 
-    Two named transforms. ``unique_rows_tm[0]`` indexes back into the input to get the rows
-    themselves, and neither library defines the output order, so both sides go through
-    [`tests.comparisons.lexsort_rows`][]. The inverse map is compared through its defining property
-    -- ``unique[inverse[i]] == data[i]`` -- rather than elementwise, because the label *numbering*
-    is a function of each library's own output order.
+    ``unique_rows_tm[0]`` indexes back into the input to get the rows themselves, which is reading
+    the answer, not transforming it. Both libraries order the unique rows by the same packed key --
+    trimesh's ``hashable_rows`` bit-packs each column into 21 bits, column 0 least significant, and
+    ordito's ``hash_indices_rows`` packs in base ``max + 1`` with the same digit order -- so the
+    orders agree by construction for every row trimesh can bit-pack, and the rows and the inverse
+    labels are compared elementwise. (This test sorted both sides and compared the inverse only
+    through ``unique[inverse] == data``, which passed for any permutation of the output.)
 
     Parametrized over the same two duplicate densities the benchmark sweeps: every row distinct, and
     a tenth as many distinct rows repeated ten times.
@@ -262,8 +266,9 @@ def test_unique_rows_matches_trimesh(
     unique_tm, inverse_tm = tm.grouping.unique_rows(rows_np)
     unique_wp, inverse_wp = od.grouping.unique_rows(rows_wp, return_inverse=True)
 
-    assert np.array_equal(lexsort_rows(unique_wp.numpy()), lexsort_rows(rows_np[unique_tm]))
-    assert np.array_equal(unique_wp.numpy()[inverse_wp.numpy()], rows_np[unique_tm][inverse_tm])
+    assert 1 < unique_tm.shape[0] <= rows_np.shape[0]
+    assert np.array_equal(unique_wp.numpy(), rows_np[unique_tm])
+    assert np.array_equal(inverse_wp.numpy(), inverse_tm)
 
 
 def test_unique_rows_vec3(device: str):
@@ -299,11 +304,14 @@ def test_hashed_occurrence_counts_match_numpy(device: str) -> None:
 @pytest.mark.parametrize("layout", ["width5", "strided"])
 def test_unique_rows_without_a_row_vector_view_matches_numpy(device: str, layout: str) -> None:
     """
-    Class B (row order, ``lexsort``) against ``numpy.unique(axis=0)``, on the gather fallback.
+    Class B (column order reversed) against ``numpy.unique(axis=0)``, on the gather fallback.
 
     A five-column table has no integer-vector view and a column-strided one is not contiguous, so
-    both dedup through the key core and gather the representatives. Beyond the set, the inverse
-    must map every input row onto an equal unique row, and the counts must sum per class.
+    both dedup through the key core and gather the representatives. ordito orders rows by a key
+    whose least significant digit is column 0, and ``numpy.unique`` lexicographically from column
+    0, so numpy is handed the columns reversed and its answer reversed back: then the rows, the
+    inverse and the counts all compare elementwise. (This test lexsorted both sides and compared
+    the counts as a sorted multiset, which passed for any permutation of the output.)
     """
     rng = np.random.default_rng(37)
     width, high = (5, 2) if layout == "width5" else (6, 3)
@@ -315,17 +323,17 @@ def test_unique_rows_without_a_row_vector_view_matches_numpy(device: str, layout
         data_np = base_np[:, ::2]
         data_wp = odt.as_array2d(odt.as_dense(base_wp[:, ::2]), wp.int32)
         assert not data_wp.is_contiguous
-    unique_np, counts_np = np.unique(data_np, axis=0, return_counts=True)
-    assert 1 < unique_np.shape[0] < data_np.shape[0]
+    reversed_np, inverse_np, counts_np = np.unique(
+        data_np[:, ::-1], axis=0, return_inverse=True, return_counts=True
+    )
+    assert 1 < reversed_np.shape[0] < data_np.shape[0]
 
     unique_wp, inverse_wp, counts_wp = od.grouping.unique_rows(
         data_wp, return_inverse=True, return_counts=True
     )
-    unique_rows_np = unique_wp.numpy()
-    assert np.array_equal(lexsort_rows(unique_rows_np), lexsort_rows(unique_np))
-    assert np.array_equal(unique_rows_np[inverse_wp.numpy()], data_np)
-    assert np.array_equal(np.sort(counts_wp.numpy()), np.sort(counts_np))
-    assert np.array_equal(np.bincount(inverse_wp.numpy()), counts_wp.numpy())
+    assert np.array_equal(unique_wp.numpy(), reversed_np[:, ::-1])
+    assert np.array_equal(inverse_wp.numpy(), inverse_np.ravel())
+    assert np.array_equal(counts_wp.numpy(), counts_np)
 
 
 @pytest.mark.parametrize(
@@ -363,11 +371,16 @@ def test_unique_faces(device: str):
     Both dedup faces up to vertex permutation and both return the inverse map. The difference is the
     *representative*: igl documents ``FF == sort(F(IA, :), 2)``, so its rows come out ascending,
     while ordito keeps the first occurrence's original winding -- the property the last two asserts
-    below pin, and the reason the igl comparison sorts ordito's rows first.
+    below pin, and the reason the igl comparison sorts ordito's rows first. ordito orders its
+    faces by the sorted triple's key, largest index most significant; igl's own row order is
+    neither that nor lexicographic, so igl's rows are put in ordito's order and its inverse
+    relabelled through the same permutation, and both compare elementwise (they were compared as
+    a lexsorted set and a partition).
 
     ``Trimesh.unique_faces`` is the third implementation and does strictly less: it returns a
-    per-face **bool mask** marking the survivors rather than rebuilding the buffer, so its transform
-    is a ``flatnonzero`` and the comparison is on the surviving *set*. It is also
+    per-face **bool mask** marking the survivors rather than rebuilding the buffer. It keeps the
+    first occurrence of each class, as ordito does, so the surviving faces *with their winding*,
+    put in the same key order, must equal ordito's table row for row. It is also
     orientation-agnostic, which is the property this group turns on and the reason it belongs here
     rather than beside ``unique_rows`` -- measured on a sphere plus a flipped copy of 20 of its
     faces, 320 kept of 340.
@@ -400,19 +413,23 @@ def test_unique_faces(device: str):
     unique_igl, _representatives_igl, inverse_igl = igl.unique_simplices(
         np.ascontiguousarray(faces_np, dtype=np.int64)
     )[:3]
-    assert np.array_equal(lexsort_rows(np.sort(unique_faces_np, axis=1)), lexsort_rows(unique_igl))
+    unique_igl = np.asarray(unique_igl)
+    order_igl = np.lexsort((unique_igl[:, 0], unique_igl[:, 1], unique_igl[:, 2]))
+    rank_igl = np.empty_like(order_igl)
+    rank_igl[order_igl] = np.arange(order_igl.size)
+    assert np.array_equal(np.sort(unique_faces_np, axis=1), unique_igl[order_igl])
+    assert np.array_equal(inverse, rank_igl[np.asarray(inverse_igl).ravel()])
 
-    # trimesh returns a survivor *mask* over the input faces, so compare the sets it selects.
+    # trimesh returns a survivor *mask* over the input faces: the first occurrences, wound as given.
     vertices_np = np.zeros((int(faces_np.max()) + 1, 3), dtype=np.float64)
     vertices_np[:, 0] = np.arange(vertices_np.shape[0])
     mask_tm = tm.Trimesh(vertices_np, faces_np, process=False).unique_faces()
     assert int(np.count_nonzero(mask_tm)) == n_unique_np
+    kept_tm = faces_np[mask_tm]
+    keys_tm = np.sort(kept_tm, axis=1)
     assert np.array_equal(
-        lexsort_rows(np.sort(faces_np[mask_tm], axis=1)),
-        lexsort_rows(np.sort(unique_faces_np, axis=1)),
+        unique_faces_np, kept_tm[np.lexsort((keys_tm[:, 0], keys_tm[:, 1], keys_tm[:, 2]))]
     )
-    # The two inverse maps agree as *partitions* of the input, whatever the slot numbering.
-    assert same_partition(inverse, np.asarray(inverse_igl).ravel())
 
 
 def test_unique_faces_with_max_index_matches_the_inferred_bound(device: str) -> None:

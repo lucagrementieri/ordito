@@ -12,7 +12,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
-from tests.conftest import MESHES
+from tests.conftest import MESHES, OPEN_MESHES
 from tests.conversions import warp_empty
 
 # ---------------------------------------------------------------------------
@@ -374,11 +374,15 @@ def test_vertex_one_ring_neighbor_counts_match_trimesh(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B: ``Trimesh.vertex_neighbors`` counts, after adding one per boundary vertex.
+    Class B: ``Trimesh.vertex_neighbors`` sets, after adding one per boundary vertex.
 
     The transform is the definitional difference between the two structures, not a fudge: a ring
     holds one halfedge per incident *face*, which is one fewer than the neighbour count exactly when
-    the fan is open. Folding ``is_boundary`` into the comparison means it also tests that flag,
+    the fan is open. The *sets* are compared, not only their sizes: every ring halfedge leaves its
+    vertex, its heads are distinct, and each is one of trimesh's neighbours -- so with the count
+    assert below, the heads are exactly the neighbour set, less the one vertex an open fan cannot
+    reach. (This test compared the counts alone, which a ring holding the right number of wrong
+    halfedges passed.) Folding ``is_boundary`` into the comparison means it also tests that flag,
     which is why it is asserted here as an addend rather than masked out; with the ring sizes pinned
     by the first assert, the flag is the neighbour count minus the incident-face count exactly.
 
@@ -403,6 +407,22 @@ def test_vertex_one_ring_neighbor_counts_match_trimesh(
     neighbors_tm = np.array([len(neighbors) for neighbors in mesh_tm.vertex_neighbors])
     ring_sizes = np.diff(offsets_wp.numpy())
     assert np.array_equal(ring_sizes + is_boundary_wp.numpy().astype(np.int32), neighbors_tm)
+
+    # And the heads are that many distinct neighbours of the ring's own vertex.
+    faces_np = np.asarray(mesh_tm.faces)
+    ring_np = ring_wp.numpy()
+    owner_np = np.repeat(np.arange(n_vertices), ring_sizes)
+    corner_np = ring_np % 3
+    assert np.array_equal(faces_np[ring_np // 3, corner_np], owner_np)
+    head_np = faces_np[ring_np // 3, (corner_np + 1) % 3]
+    pair_keys_np = owner_np.astype(np.int64) * n_vertices + head_np
+    assert np.unique(pair_keys_np).size == pair_keys_np.size
+    edges_tm = np.asarray(mesh_tm.edges_unique, dtype=np.int64)
+    neighbor_keys_tm = np.concatenate(
+        [edges_tm[:, 0] * n_vertices + edges_tm[:, 1], edges_tm[:, 1] * n_vertices + edges_tm[:, 0]]
+    )
+    assert np.isin(pair_keys_np, neighbor_keys_tm).all()
+    assert is_boundary_wp.numpy().any() == (mesh_name in OPEN_MESHES)  # both cases are reached
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)

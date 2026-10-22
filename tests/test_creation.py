@@ -20,7 +20,7 @@ from scipy.spatial import cKDTree
 
 import ordito as od
 from ordito.creation import ParametricSurfaceKind
-from tests.comparisons import euler_characteristic, lexsort_rows, open_edge_count
+from tests.comparisons import canonical_winding, euler_characteristic, lexsort_rows, open_edge_count
 from tests.conversions import (
     meshlib_to_trimesh,
     open3d_to_trimesh,
@@ -67,18 +67,50 @@ def _assert_same_solid(
     vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32], mesh_tm: tm.Trimesh
 ) -> None:
     """
-    Assert the ordito result is the same solid as ``mesh_tm`` without pinning its triangulation.
+    Assert the ordito result is ``mesh_tm`` face for face, up to the diagonals of a flat cap.
 
     Used wherever the result contains an ear-clipped cap: ordito's clipper and trimesh's earcut
-    pick different (equally valid) diagonals, so the face *count* and the enclosed volume agree
-    while individual cap triangles do not.
+    pick different (equally valid) diagonals there and nowhere else. So the vertices must match
+    one to one by position (``1e-5``), every face must be one of trimesh's as a wound position
+    triple, and the faces that are not must tile the same planar regions -- the same total area
+    per supporting plane -- on both sides. Measured over every caller: vertices within 1e-7, every
+    wall face matched, volumes within 6e-8 relative (bar ``1e-6``).
     """
-    assert vertices_wp.size == mesh_tm.vertices.shape[0]
-    assert faces_wp.size // 3 == mesh_tm.faces.shape[0]
-    assert np.isclose(warp_to_trimesh(vertices_wp, faces_wp).volume, mesh_tm.volume, rtol=1e-4)
-    assert np.allclose(
-        warp_to_trimesh(vertices_wp, faces_wp).bounds, mesh_tm.bounds, rtol=1e-5, atol=1e-5
-    )
+    vertices_np = vertices_wp.numpy().astype(np.float64)
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    distance_np, match_np = cKDTree(mesh_tm.vertices).query(vertices_np)
+    index_np = np.asarray(match_np, dtype=np.int64)
+    assert len(vertices_np) == mesh_tm.vertices.shape[0]
+    assert np.max(distance_np) < 1e-5
+    assert np.unique(index_np).size == index_np.size, "the vertex match is a bijection"
+    assert faces_np.shape[0] == mesh_tm.faces.shape[0]
+
+    def wound(rows_np: np.ndarray) -> set[tuple[int, ...]]:
+        return {tuple(row) for row in canonical_winding(rows_np).tolist()}
+
+    def area_per_plane(rows_np: np.ndarray) -> dict[tuple[float, ...], float]:
+        corners_np = mesh_tm.vertices[rows_np]
+        cross_np = np.cross(
+            corners_np[:, 1] - corners_np[:, 0], corners_np[:, 2] - corners_np[:, 0]
+        )
+        areas_np = 0.5 * np.linalg.norm(cross_np, axis=1)
+        normals_np = cross_np / np.maximum(2.0 * areas_np, 1e-300)[:, None]
+        offsets_np = np.einsum("ij,ij->i", normals_np, corners_np[:, 0])
+        totals: dict[tuple[float, ...], float] = {}
+        for normal, offset, area in zip(normals_np, offsets_np, areas_np, strict=True):
+            key = (*np.round(normal, 4).tolist(), round(float(offset), 4))
+            totals[key] = totals.get(key, 0.0) + float(area)
+        return totals
+
+    faces_mapped_np = index_np[faces_np]
+    ours, theirs = wound(faces_mapped_np), wound(np.asarray(mesh_tm.faces))
+    only_ours = np.array(sorted(ours - theirs), dtype=np.int64).reshape(-1, 3)
+    only_theirs = np.array(sorted(theirs - ours), dtype=np.int64).reshape(-1, 3)
+    planes_ours, planes_theirs = area_per_plane(only_ours), area_per_plane(only_theirs)
+    assert planes_ours.keys() == planes_theirs.keys(), "differing faces lie on the same planes"
+    for key, area in planes_ours.items():
+        assert np.isclose(area, planes_theirs[key], rtol=1e-5, atol=1e-5)
+    assert np.isclose(warp_to_trimesh(vertices_wp, faces_wp).volume, mesh_tm.volume, rtol=1e-6)
 
 
 def _assert_closed(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> None:
@@ -194,22 +226,22 @@ _L_RING = np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], 
 @pytest.mark.parity("torus", "open3d")
 def test_primitives_match_open3d(device: str) -> None:
     """
-    Four primitives against Open3D's, which agree exactly -- same counts, same volume, same area.
+    Four primitives against Open3D's, which are the same mesh, vertex for vertex and face for face.
 
-    Worth asserting rather than assuming: these are table-driven generators, so a wrong cap winding
-    or a dropped seam ring changes the enclosed volume while leaving the face count intact, and a
-    count check alone would miss it. Class A on the counts, Class B on volume and area (both are
-    functions of the mesh, not of its vertex ordering, which the two libraries do not share).
+    Class B (vertices matched by position, faces compared as wound triples): the two libraries
+    share positions but not vertex order, so the vertices are matched one to one (measured within
+    4.4e-07) and every face must then be one of Open3D's with the same winding -- a wrong cap
+    winding or a dropped seam ring fails it. One named transform: ``create_box`` stands on its
+    corner at the origin, so it is shifted by half its extents onto ordito's centred box.
 
     ``uv_sphere`` is deliberately not here -- its tessellation parameter does not map
     one-for-one, and it gets its own test below.
     """
+    # ``create_box`` stands on its corner; ``translate`` shifts it in place onto the centred box.
+    box_o3d = o3d.geometry.TriangleMesh.create_box(1.0, 2.0, 3.0)
+    box_o3d.translate(np.array([-0.5, -1.0, -1.5]))
     for name, (vertices_wp, faces_wp), mesh_o3d in (
-        (
-            "box",
-            od.creation.box(extents=(1.0, 2.0, 3.0), device=device),
-            o3d.geometry.TriangleMesh.create_box(1.0, 2.0, 3.0),
-        ),
+        ("box", od.creation.box(extents=(1.0, 2.0, 3.0), device=device), box_o3d),
         (
             "cylinder",
             od.creation.cylinder(radius=1.0, height=2.0, sections=32, device=device),
@@ -229,11 +261,8 @@ def test_primitives_match_open3d(device: str) -> None:
         ),
     ):
         mesh_ref = open3d_to_trimesh(mesh_o3d)
-        assert vertices_wp.size == len(mesh_ref.vertices), name
-        assert faces_wp.size // 3 == len(mesh_ref.faces), name
-        mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
-        assert np.isclose(mesh_wp.volume, mesh_ref.volume, rtol=1e-4), name
-        assert np.isclose(mesh_wp.area, mesh_ref.area, rtol=1e-4), name
+        assert mesh_ref.faces.shape[0] > 0, name  # non-vacuity: the reference built something
+        _assert_same_solid(vertices_wp, faces_wp, mesh_ref)
 
 
 @pytest.mark.parity("box", "meshlib")
@@ -242,12 +271,11 @@ def test_primitives_match_open3d(device: str) -> None:
 @pytest.mark.parity("torus", "meshlib")
 def test_primitives_match_meshlib(device: str) -> None:
     """
-    Class A on the counts and Class B on the invariants -- and the four agree **exactly**.
+    Class B (vertices matched by position, faces compared as wound triples): the same four meshes.
 
-    Stronger than the plan for this pairing predicted, which was a rigid-motion comparison after
-    scaling: measured on all four, the vertex and face counts, the enclosed volume, the surface
-    area *and* the bounding-box **extent** match to float32. The extent is asserted because volume
-    and area are both invariant under a rotation and would not notice a differently oriented cone.
+    Measured on all four: the vertices match one to one within 1.5e-07, and every face is one of
+    MeshLib's with the same winding (``_assert_same_solid``, which leaves only cap diagonals free
+    and none differ here). The bounds are asserted too, because they carry the origin convention.
 
     Where the two do differ is *where the origin sits*, and only for one of the four: MeshLib's
     ``makeCylinder`` is **base-anchored** (z from 0 to the length) where ordito's is centred on
@@ -292,10 +320,12 @@ def test_primitives_match_meshlib(device: str) -> None:
         mesh_ref = meshlib_to_trimesh(mesh_ml)
         mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
         assert mesh_ref.faces.shape[0] > 0, name  # non-vacuity: the reference built something
-        assert vertices_wp.size == mesh_ref.vertices.shape[0], name
-        assert faces_wp.size // 3 == mesh_ref.faces.shape[0], name
-        assert np.isclose(mesh_wp.volume, mesh_ref.volume, rtol=1e-4), name
-        assert np.isclose(mesh_wp.area, mesh_ref.area, rtol=1e-4), name
+        centred_ref = tm.Trimesh(
+            mesh_ref.vertices - [0.0, 0.0, 0.0 if name in centred_on_both else 1.0],
+            mesh_ref.faces,
+            process=False,
+        )
+        _assert_same_solid(vertices_wp, faces_wp, centred_ref)
         extent_wp = mesh_wp.bounds[1] - mesh_wp.bounds[0]
         assert np.allclose(extent_wp, mesh_ref.bounds[1] - mesh_ref.bounds[0], atol=1e-5), name
         if name in centred_on_both:
@@ -351,12 +381,13 @@ def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
 @pytest.mark.parity("revolve", "meshlib")
 def test_revolve_matches_meshlib(device: str) -> None:
     """
-    Class A, exactly: ``makeSolidOfRevolution`` sweeps the same profile into the same mesh.
+    Class B (vertices matched by position): ``makeSolidOfRevolution`` sweeps the same mesh.
 
-    Same vertex count, face count, area and bounding box on a four-point profile at 16 sections --
-    49 vertices, 80 faces, area 5.0059, box ``[-0.5, -0.5, 0] .. [0.5, 0.5, 2]``. Both revolve about
-    ``+z`` with the profile in the ``(radius, height)`` plane and both close the seam, which is what
-    the vertex count pins: a sweep that duplicated the seam ring would give 52.
+    The two order their vertices differently, so they are matched one to one by position (measured
+    within 3.3e-08) and every face must then be MeshLib's with the same winding -- on a four-point
+    profile at 16 sections, 49 vertices, 80 faces, box ``[-0.5, -0.5, 0] .. [0.5, 0.5, 2]``. Both
+    revolve about ``+z`` with the profile in the ``(radius, height)`` plane and both close the
+    seam, which is what the vertex count pins: a sweep that duplicated the seam ring would give 52.
 
     The reference is the only one in this module for ``revolve`` -- trimesh's ``revolve`` is
     ``creation.revolve``'s own model but is not benchmarked here, and open3d and pyvista have no
@@ -376,8 +407,9 @@ def test_revolve_matches_meshlib(device: str) -> None:
     assert mesh_ref.faces.shape[0] > 0  # non-vacuity
     assert vertices_wp.size == mesh_ref.vertices.shape[0]
     assert faces_wp.size // 3 == mesh_ref.faces.shape[0]
-    assert np.isclose(mesh_wp.area, mesh_ref.area, rtol=1e-4)
     assert np.allclose(mesh_wp.bounds, mesh_ref.bounds, atol=1e-5)
+    # The same mesh: vertices one to one by position (measured 3.3e-08), faces as wound triples.
+    _assert_same_solid(vertices_wp, faces_wp, mesh_ref)
 
 
 @pytest.mark.parametrize("sections", [16, 64])
@@ -510,10 +542,8 @@ def test_primitives_match_pymeshlab(device: str) -> None:
         assert np.allclose(
             _sorted_edge_lengths(mesh_wp), _sorted_edge_lengths(mesh_pml), rtol=1e-5, atol=1e-5
         ), name
-        if exact_vertices:
-            distance_np, match_np = cKDTree(mesh_pml.vertices).query(mesh_wp.vertices)
-            assert np.max(distance_np) < 1e-5, name
-            assert len(set(np.asarray(match_np).tolist())) == match_np.size, name
+        if exact_vertices:  # and then the faces too, as wound triples
+            _assert_same_solid(vertices_wp, faces_wp, mesh_pml)
 
 
 # --- table primitives -------------------------------------------------------------------
@@ -1395,11 +1425,12 @@ def test_extrude_polygon_matches_pyvista_and_open3d(device: str, ring_size: int)
 @pytest.mark.parity("extrude_polygon", "trimesh")
 def test_extrude_polygon(device: str, ring_name: str, height: float) -> None:
     """
-    Class C (same solid, not the same triangles): trimesh triangulates the caps differently.
+    Class B (vertices matched by position; caps compared per plane): only the cap diagonals differ.
 
-    Both signs of ``height`` are run, and the comparison is on the enclosed volume and outward
-    orientation rather than the face table -- an L-shaped ring admits several valid cap
-    triangulations, so equality is not available.
+    Both signs of ``height`` are run. An L-shaped ring admits several valid cap triangulations, and
+    ordito's clipper and trimesh's earcut pick different ones, so the cap faces are compared by the
+    area they tile on each plane; every vertex (exactly) and every wall face (as a wound triple)
+    must be trimesh's -- measured: 8 of 12 and 12 of 20 faces identical, the rest cap faces.
     """
     ring_np = _SQUARE_RING if ring_name == "square" else _L_RING
     vertices_wp, faces_wp = od.creation.extrude_polygon(points_to_warp_uv(ring_np, device), height)
@@ -1494,11 +1525,12 @@ _SWEEP_PATHS = {
 @pytest.mark.parity("sweep_polygon", "trimesh")
 def test_sweep_polygon(device: str, path_name: str) -> None:
     """
-    Class C (same solid): the swept volume, since the frame carried along the path is a gauge.
+    Class B (vertices matched by position; caps compared per plane): the same swept surface.
 
-    Two libraries can sweep the same profile with different twist about the path and produce
-    the same solid, so the volume and the closure are what compare; the profile is square,
-    which makes a twist difference invisible in the volume by construction.
+    The frame carried along the path is a gauge two libraries could choose differently, but
+    ordito's is unrolled from trimesh's, so the vertices match one to one (measured within 1e-7)
+    and every wall face is trimesh's as a wound triple; only the end caps' diagonals differ, and
+    the ``closed`` path, which has none, matches all 64 faces.
     """
     ring_np = np.array([[-0.25, -0.25], [0.25, -0.25], [0.25, 0.25], [-0.25, 0.25]])
     path_np = _SWEEP_PATHS[path_name]
@@ -1603,11 +1635,11 @@ def _triangle_soup(
 @pytest.mark.parametrize("case", ["z_zero", "plane", "reversed_winding"])
 def test_truncated_prisms(device: str, case: str) -> None:
     """
-    Class C (volume and body count): trimesh emits one prism per triangle in its own vertex order.
+    Class B (vertices matched by position): trimesh emits one prism per triangle in its own order.
 
-    The counts are exact -- 6 vertices and 8 faces per input triangle -- and the volume is
-    compared to trimesh's; ``body_count == 5`` is what catches prisms welded together, which
-    the volume alone would not show. Three inputs: the default ``z = 0`` plane; an explicit plane,
+    Matched by position, the prisms are trimesh's vertex for vertex (measured within 7e-8) and
+    face for face as wound triples, all 40 of them; ``body_count == 5`` is what catches prisms
+    welded together. Three inputs: the default ``z = 0`` plane; an explicit plane,
     which changes only where the prisms stop; and every source triangle reversed to face the plane,
     whose prisms need their winding reversed or the bodies come out inside-out with negative volume.
     """
@@ -1631,7 +1663,7 @@ def test_truncated_prisms(device: str, case: str) -> None:
     assert prism_v.size == 6 * 5
     assert prism_f.size // 3 == 8 * 5
     assert prism_tm.volume > 0.0
-    assert np.isclose(prism_tm.volume, mesh_tm.volume, rtol=1e-4)
+    _assert_same_solid(prism_v, prism_f, mesh_tm)
     assert prism_tm.body_count == 5
 
 

@@ -235,16 +235,15 @@ def test_require_paired_adjacency_accepts_both_and_neither(device: str) -> None:
 @pytest.mark.parity("vertex_face_adjacency", "igl")
 def test_vertex_face_adjacency_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B (row order): the same ``(vertex_faces, offsets)`` CSR, arbitrary within a row.
+    Class A under the deterministic setting: the same ``(vertex_faces, offsets)`` CSR, exactly.
 
     ``igl.vertex_triangle_adjacency(F, n)`` returns ``(VF, NI)`` -- the payload and the offsets, in
-    that order, exactly ordito's pair reversed -- so the only transform is the unpacking plus
-    sorting each row. Both give ``n_vertices + 1`` offsets, so no sentinel has to be appended.
-
-    Row order is genuinely undefined in ordito's version (a counting-sort scatter, so it is thread
-    order) and the docstring says so, which is why the rows are compared as **sets**: the scatter
-    picks each slot with a ``wp.atomic_add`` on a per-vertex cursor, so two runs on CUDA order a row
-    differently. The offsets are compared exactly: those are not order-dependent, and an off-by-one
+    that order, exactly ordito's pair -- with each row's faces in ascending order, which is the
+    order ordito's rows take from their stable corner sort when the setting is on. So the payloads
+    are compared whole, with no per-row sort. With the setting off a row is in arrival order (a
+    counting-sort scatter on a per-vertex atomic cursor), and
+    ``test_vertex_face_adjacency_rows_follow_the_deterministic_setting`` pins that it holds the same
+    faces. Both give ``n_vertices + 1`` offsets, so no sentinel has to be appended; an off-by-one
     there is the failure mode this function's consumers -- the decimator's normal-flip guard -- see
     as silent corruption.
 
@@ -257,16 +256,14 @@ def test_vertex_face_adjacency_matches_igl(request: pytest.FixtureRequest, mesh_
     faces_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
 
     payload_igl, offsets_igl = igl.vertex_triangle_adjacency(faces_np, n_vertices)
-    for payload_wp, offsets_wp in (
-        od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=n_vertices),
-        od.adjacency.vertex_face_adjacency(faces_wp),
-    ):
+    with od.config.deterministic(True):
+        answers_wp = (
+            od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=n_vertices),
+            od.adjacency.vertex_face_adjacency(faces_wp),
+        )
+    for payload_wp, offsets_wp in answers_wp:
         assert np.array_equal(offsets_wp.numpy(), np.asarray(offsets_igl).ravel())
-        bounds_np, payload_np = offsets_wp.numpy(), payload_wp.numpy()
-        for vertex in range(n_vertices):
-            row_wp = payload_np[bounds_np[vertex] : bounds_np[vertex + 1]]
-            row_igl = np.asarray(payload_igl).ravel()[bounds_np[vertex] : bounds_np[vertex + 1]]
-            assert np.array_equal(np.sort(row_wp), np.sort(row_igl))
+        assert np.array_equal(payload_wp.numpy(), np.asarray(payload_igl).ravel())
 
 
 def test_vertex_face_adjacency_rows_follow_the_deterministic_setting(
@@ -404,8 +401,10 @@ def test_face_adjacency_and_unshared_match_igl(
     numbering convention, and getting it wrong yields a table that is a *cyclic shift* of the right
     answer -- still a valid-looking set of vertex indices, and still one vertex per face.
 
-    The three fixtures cover closed (``icosahedron``) and bounded (``half_torus``, ``hemisphere``)
-    meshes, so the ``-1`` boundary entries are exercised rather than assumed away.
+    ``MESHES`` covers a closed (``sphere_irregular``) and a bounded (``saddle_graded``) mesh, so the
+    ``-1`` boundary entries are exercised rather than assumed away. The shared edge of every pair
+    is checked through ``TTi`` too: igl's edge ``TTi[f, i]`` of the neighbour is edge ``i`` of
+    ``f`` reversed, and both are ordito's ``face_adjacency_edges`` row once sorted.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_np = mesh_wp.indices.numpy().reshape(-1, 3).astype(np.int64)
@@ -445,8 +444,17 @@ def test_face_adjacency_and_unshared_match_igl(
             dtype=np.int32,
         ),
     )
-    # TTi is what makes transform 2 possible; assert it is the corner index it claims to be.
-    assert np.array_equal(corners_igl[has_neighbour] >= 0, np.ones(has_neighbour.sum(), dtype=bool))
+    # TTi is the neighbour's edge index: that edge is edge i of f reversed, and the shared edge
+    # keyed by its pair is ordito's face_adjacency_edges row.
+    shared_igl = {}
+    for f, i in zip(*np.nonzero(has_neighbour), strict=True):
+        g, j = int(neighbours_igl[f, i]), int(corners_igl[f, i])
+        edge_f = (int(faces_np[f, i]), int(faces_np[f, (i + 1) % 3]))
+        assert (int(faces_np[g, (j + 1) % 3]), int(faces_np[g, j])) == edge_f
+        shared_igl[(int(f), g)] = tuple(sorted(edge_f))
+    assert [tuple(sorted(edge)) for edge in adjacency_edges_wp.numpy().tolist()] == [
+        shared_igl[(int(a), int(b))] for a, b in adjacency_np
+    ]
 
 
 def test_face_adjacency_unshared_duplicate_faces(device: str) -> None:
@@ -507,7 +515,9 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
 
     The two implementations emit adjacency rows in different orders (sort-key order here, edge-list
     order in trimesh), so the angle arrays are matched through the face pair they belong to rather
-    than positionally.
+    than positionally. Measured agreement 5.4e-07 (``sphere_irregular``) and 7.8e-08
+    (``saddle_graded``), both devices, all of it ordito's float32 normals: trimesh is within 3e-08
+    of an exact ``atan2`` over float64 normals.
 
     Ordito against ordito on the precomputed path as well: supplying ``face_normals`` takes the same
     route as deriving them, and that result is compared against trimesh the same way.
@@ -540,8 +550,8 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
         assert np.allclose(
             [angles_wp_lookup[key] for key in keys],
             [angles_tm_lookup[key] for key in keys],
-            rtol=1e-4,
-            atol=5e-4,
+            rtol=1e-5,
+            atol=1e-5,
         )
 
 
@@ -767,7 +777,7 @@ def test_face_adjacency_projections(request: pytest.FixtureRequest, mesh_name: s
         assert projections_wp_lookup.keys() == projections_tm_lookup.keys()
         for key, projection_tm in projections_tm_lookup.items():
             projection_wp = projections_wp_lookup[key]
-            assert np.isclose(projection_wp, projection_tm, rtol=1e-4, atol=5e-4)
+            assert np.isclose(projection_wp, projection_tm, rtol=1e-5, atol=1e-5)
 
 
 def test_face_adjacency_projections_degenerate_second_face(device: str) -> None:
@@ -842,9 +852,9 @@ def test_face_adjacency_convex(request: pytest.FixtureRequest, mesh_name: str) -
     """
     Class B (dict index): the per-pair convexity flag, keyed like the projections above.
 
-    Same transform and the same reason as [`test_face_adjacency_projections`]. Non-vacuous by
-    fixture choice rather than by an assert: ``icosahedron`` is convex at every edge and
-    ``half_torus`` is not, so the boolean is exercised both ways across the parametrisation.
+    Same transform and the same reason as [`test_face_adjacency_projections`]. Non-vacuous by an
+    assert on each fixture: both ``sphere_irregular``'s bumps and ``saddle_graded``'s saddle hold
+    convex and concave pairs, so the boolean is exercised both ways on every case.
 
     Ordito against ordito on the precomputed path as well: supplying ``face_adjacency_unshared`` and
     ``face_normals`` gives the identical mask, which is compared against trimesh the same way.
@@ -852,6 +862,8 @@ def test_face_adjacency_convex(request: pytest.FixtureRequest, mesh_name: str) -
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     adjacency_tm = mesh_tm.face_adjacency
     convex_tm = mesh_tm.face_adjacency_convex
+    assert convex_tm.any()  # both answers present
+    assert not convex_tm.all()
 
     adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True

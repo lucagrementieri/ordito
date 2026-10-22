@@ -2,8 +2,8 @@
 Structural tests for ``ordito.homology``.
 
 **meshlib is the one reference that computes a basis**, through ``detectBasisTunnels``, and it is
-compared here for the only thing two bases can share: their *count*, forced by the Euler
-characteristic. potpourri3d does not bind geometry-central's homology code and neither trimesh nor
+compared here for what two bases share: the group they span, read off each loop's exact Z/2
+homology class. potpourri3d does not bind geometry-central's homology code and neither trimesh nor
 libigl computes one, so for everything else the invariants stand in for an oracle -- each loop has
 to be a simple closed walk along real mesh edges, and non-contractible. A basis is not unique, so
 nothing checks *which* loops come back: measured on a torus, ordito returns loops of 32 and 18
@@ -66,23 +66,27 @@ def test_homology_generator_count_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str, genus: int
 ) -> None:
     """
-    Class C (a count): a homology basis is not unique, so the loop *count* is all two share.
+    Class B: equal after a named transform -- each loop's Z/2 homology class, one bit per cocycle.
 
-    ``detectBasisTunnels`` returns a vector of ``EdgeId`` paths -- MeshLib's own basis of
-    non-contractible cycles -- and both libraries must find ``2 * genus`` of them. Which loops they
-    are is free: on the torus ordito returns cycles of 32 and 18 edges where MeshLib returns 72 and
-    32, and both are correct bases of the same first homology group.
+    A homology basis is not unique, so the loops themselves are not comparable: on the torus ordito
+    returns cycles of 32 and 18 edges where MeshLib's ``detectBasisTunnels`` returns 72 and 32. What
+    two bases of the same group share is the group they span. Each loop is mapped to its class in
+    ``H1(M; Z/2)`` by pairing it with ``2 * genus`` independent cocycles built from SciPy's own
+    tree-cotree decomposition (``_z2_homology_classes``), an exact integer computation. Both
+    libraries' ``(2g, 2g)`` class matrices must then have full rank over Z/2: every loop is
+    non-contractible *and* no loop is a sum of the others. Both sides span all of ``H1``, so their
+    spans are equal -- which is the comparison, and it is exact rather than a count.
 
-    So the count is the comparison and the *structure* is what makes it non-vacuous: each of
-    MeshLib's paths is checked to be a genuine closed edge walk with no repeated vertex, which is
-    the same property [`test_homology_generator_count_is_twice_the_genus`] asserts on
-    ordito's side. A reference returning ``2 * genus`` arbitrary edge lists would pass a bare count
-    and fail this.
+    Mutation probes: replacing one of ordito's loops by another loop of the same basis (a duplicate
+    generator, still simple, closed, non-contractible and correctly counted) drops ordito's rank to
+    ``2g - 1`` and fails; so does a contractible loop (a face boundary), which pairs to zero with
+    every cocycle. The old count-only comparison passed both.
 
-    The decode is the ``EdgeId`` one this suite uses throughout: ``org`` gives each step's tail and
-    the last step's ``dest`` closes the loop.
+    MeshLib's ``EdgeId`` walk is decoded as everywhere in this suite: ``org`` gives each step's
+    tail and the last step's ``dest`` closes the loop, which must be simple.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = np.asarray(mesh_tm.faces)
     loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
@@ -90,11 +94,94 @@ def test_homology_generator_count_matches_meshlib(
 
     assert len(tunnels_ml) == 2 * genus
     assert len(loops_wp) == len(tunnels_ml)
+    walks_ml: list[list[int]] = []
     for tunnel_ml in tunnels_ml:
         walk_np = [int(mesh_ml.topology.org(edge_ml)) for edge_ml in tunnel_ml]
         assert len(walk_np) >= 3
         assert len(set(walk_np)) == len(walk_np)  # simple: no vertex repeats
         assert int(mesh_ml.topology.dest(tunnel_ml[-1])) == walk_np[0]  # and closed
+        walks_ml.append(walk_np)
+
+    classes_wp = _z2_homology_classes(faces_np, [loop.numpy().tolist() for loop in loops_wp])
+    classes_ml = _z2_homology_classes(faces_np, walks_ml)
+    assert _z2_rank(classes_wp) == 2 * genus
+    assert _z2_rank(classes_ml) == 2 * genus
+
+
+def _z2_homology_classes(faces_np: np.ndarray, walks: list[list[int]]) -> np.ndarray:
+    """
+    ``(len(walks), 2g)`` boolean Z/2 homology class of each closed vertex walk, built with SciPy.
+
+    A breadth-first primal tree, then a spanning tree of the dual graph over the edges it left; the
+    ``2g`` edges in neither are the generators. Cocycle ``k`` is one on generator ``k``, zero on
+    every other generator and on the tree, and its cotree values are solved leaf to root over the
+    dual tree so every face sums to zero. A cocycle vanishes on boundaries, so its pairing with a
+    cycle depends only on the cycle's class, and the ``2g`` cocycles are independent.
+    """
+    corners = np.sort(faces_np[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
+    edges, corner_edge = np.unique(corners, axis=0, return_inverse=True)
+    corner_edge = corner_edge.reshape(-1, 3)
+    n_vertices, n_faces, n_edges = int(faces_np.max()) + 1, len(faces_np), len(edges)
+    graph = sp.coo_matrix(
+        (np.ones(n_edges), (edges[:, 0], edges[:, 1])), shape=(n_vertices, n_vertices)
+    )
+    _, parents = csgraph.breadth_first_order(graph, 0, directed=False, return_predecessors=True)
+    children = np.flatnonzero(parents >= 0)
+    edge_index = {(int(a), int(b)): e for e, (a, b) in enumerate(edges.tolist())}
+    in_tree = np.zeros(n_edges, dtype=bool)
+    for child in children.tolist():
+        parent = int(parents[child])
+        in_tree[edge_index[min(child, parent), max(child, parent)]] = True
+
+    order = np.argsort(corner_edge.ravel(), kind="stable")
+    edge_faces = np.repeat(np.arange(n_faces), 3)[order].reshape(-1, 2)
+    free = np.flatnonzero(~in_tree)
+    dual = sp.coo_matrix(
+        (np.ones(len(free)), (edge_faces[free, 0], edge_faces[free, 1])), shape=(n_faces, n_faces)
+    )
+    face_order, face_parents = csgraph.breadth_first_order(
+        csgraph.minimum_spanning_tree(dual.tocsr()), 0, directed=False, return_predecessors=True
+    )
+    dual_edge = {(int(edge_faces[e].min()), int(edge_faces[e].max())): int(e) for e in free}
+    in_cotree = np.zeros(n_edges, dtype=bool)
+    parent_edge = np.full(n_faces, -1)
+    for face in face_order[1:].tolist():
+        parent = int(face_parents[face])
+        parent_edge[face] = dual_edge[min(face, parent), max(face, parent)]
+        in_cotree[parent_edge[face]] = True
+
+    generators = np.flatnonzero(~in_tree & ~in_cotree)
+    cocycles = np.zeros((n_edges, len(generators)), dtype=bool)
+    cocycles[generators, np.arange(len(generators))] = True
+    # Leaves first: every other edge of the face is already set when its parent edge is solved.
+    for face in face_order[:0:-1].tolist():
+        face_edges = corner_edge[face]
+        others = face_edges[face_edges != parent_edge[face]]
+        cocycles[parent_edge[face]] = np.logical_xor.reduce(cocycles[others], axis=0)
+
+    classes = np.zeros((len(walks), len(generators)), dtype=bool)
+    for row, walk in enumerate(walks):
+        for a, b in itertools.pairwise([*walk, walk[0]]):
+            classes[row] ^= cocycles[edge_index[min(a, b), max(a, b)]]
+    return classes
+
+
+def _z2_rank(matrix: np.ndarray) -> int:
+    """Rank over Z/2 of a boolean matrix, by Gaussian elimination."""
+    rows = matrix.copy()
+    rank = 0
+    for column in range(rows.shape[1]):
+        pivots = np.flatnonzero(rows[rank:, column])
+        if pivots.size == 0:
+            continue
+        pivot = rank + int(pivots[0])
+        rows[[rank, pivot]] = rows[[pivot, rank]]
+        below = np.flatnonzero(rows[:, column])
+        rows[below[below != rank]] ^= rows[rank]
+        rank += 1
+        if rank == rows.shape[0]:
+            break
+    return rank
 
 
 def test_homology_generators_are_not_contractible(

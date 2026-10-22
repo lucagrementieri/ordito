@@ -184,8 +184,8 @@ def test_procrustes_matches_meshlib(device: str) -> None:
     # Non-vacuity: the reference recovered the planted motion, so it is not returning the identity.
     assert np.allclose(rotation_ml, rotation_np, rtol=1e-5, atol=1e-5)
     assert np.allclose(translation_ml, translation_np, rtol=1e-5, atol=1e-5)
-    assert np.allclose(matrix_np[:3, :3], rotation_ml, rtol=1e-4, atol=1e-4)
-    assert np.allclose(matrix_np[:3, 3], translation_ml, rtol=1e-4, atol=1e-4)
+    assert np.allclose(matrix_np[:3, :3], rotation_ml, rtol=1e-5, atol=1e-5)
+    assert np.allclose(matrix_np[:3, 3], translation_ml, rtol=1e-5, atol=1e-5)
     assert cost_wp < 1e-8  # an exact correspondence set has a zero-residual fit
 
 
@@ -495,8 +495,9 @@ def test_icp_point_to_point_matches_open3d_and_trimesh(device: str) -> None:
     Class C only in that a small rigid offset is required for it to be well posed: nearest-neighbour
     correspondence has to be unique, or the three solvers may legitimately land in different local
     minima and no comparison is meaningful. With the offset small enough (0.15 rad, 0.07
-    translation) all three recover the exact alignment and agree to **1.4e-6**, so the 1e-4 bound
-    below carries a 70x margin. A solver landing in a different minimum would miss by orders of
+    translation) all three recover the exact alignment and agree to **2.6e-06** per coordinate,
+    worst over both devices, so the bound is ``8e-6``; ordito's RMS to the target is **1.1e-06**,
+    bounded at ``3.5e-6``. A solver landing in a different minimum would miss by orders of
     magnitude, not by a tolerance.
     """
     rng = np.random.default_rng(10)
@@ -533,17 +534,17 @@ def test_icp_point_to_point_matches_open3d_and_trimesh(device: str) -> None:
         reflection=False,
     )
 
-    assert np.allclose(transformed_wp.numpy(), moved_o3d, rtol=1e-4, atol=1e-4)
-    assert np.allclose(transformed_wp.numpy(), moved_tm, rtol=1e-4, atol=1e-4)
+    assert np.allclose(transformed_wp.numpy(), moved_o3d, rtol=0.0, atol=8e-6)
+    assert np.allclose(transformed_wp.numpy(), moved_tm, rtol=0.0, atol=8e-6)
     # All three land on the target itself, so none of the above is a comparison of two failures.
-    assert _rms(transformed_wp.numpy(), target_np) < 1e-3
+    assert _rms(transformed_wp.numpy(), target_np) < 3.5e-6
     assert cost_wp < 1e-6
 
 
 @pytest.mark.parity("icp_point_cloud", "meshlib")
 def test_icp_point_to_point_matches_meshlib(device: str) -> None:
     """
-    Class A on the recovered transform: MeshLib's ``ICP`` lands on the same one, to **7.4e-07**.
+    Class A on the recovered transform: MeshLib's ``ICP`` lands on the same one, to **9.1e-07**.
 
     Compared the way the open3d and trimesh pairing above is -- by the transform, not by each
     side's own cost, since two solvers reaching a low cost independently is not a comparison. Four
@@ -562,7 +563,8 @@ def test_icp_point_to_point_matches_meshlib(device: str) -> None:
     legitimately reach different local minima and no comparison is meaningful. Both leave the same
     residual (0.1607 on this fixture, which is the sphere's own rotational near-degeneracy, not a
     failure), and that equality is asserted too: it is what says they converged to the same place
-    rather than agreeing on a transform by chance.
+    rather than agreeing on a transform by chance. Worst over both devices: the transform to
+    **9.1e-07** and the residuals to **2.7e-06** relative, bounded at ``3e-6`` and ``1e-5``.
     """
     sphere_tm = tm.creation.icosphere(subdivisions=3)
     target_np = np.ascontiguousarray(sphere_tm.vertices)
@@ -597,12 +599,12 @@ def test_icp_point_to_point_matches_meshlib(device: str) -> None:
 
     # Non-vacuity: the reference actually moved the cloud, and by more than a rounding error.
     assert np.abs(rotation_ml - np.eye(3)).max() > 1e-3
-    assert np.allclose(matrix_np[:3, :3], rotation_ml, rtol=1e-4, atol=1e-4)
-    assert np.allclose(matrix_np[:3, 3], translation_ml, rtol=1e-4, atol=1e-4)
+    assert np.allclose(matrix_np[:3, :3], rotation_ml, rtol=0.0, atol=3e-6)
+    assert np.allclose(matrix_np[:3, 3], translation_ml, rtol=0.0, atol=3e-6)
 
     # And they converged to the same place: the same residual, both below the starting offset.
     moved_ml = source_np @ rotation_ml.T + translation_ml
-    assert np.isclose(_rms(transformed_wp.numpy(), target_np), _rms(moved_ml, target_np), rtol=1e-4)
+    assert np.isclose(_rms(transformed_wp.numpy(), target_np), _rms(moved_ml, target_np), rtol=1e-5)
     assert _rms(transformed_wp.numpy(), target_np) < _rms(source_np, target_np)
 
 
@@ -622,10 +624,10 @@ def test_icp_point_to_plane_matches_open3d(
 
     Compared by the recovered alignment rather than by each side's cost, for the reason given in
     ``test_icp_point_to_point_matches_open3d_and_trimesh``. Measured worst per-point deviation
-    **1.2e-5** plain and **1.1e-5** with Tukey, against the 1e-3 bound here -- a ~90x margin. The
-    bound is looser than the point-to-point test's because the linearized point-to-plane step is
-    solved slightly differently on the two sides, so they stop at marginally different iterates;
-    both still land on the target to better than 1e-5 RMS, which the final assert pins.
+    **8.9e-07** over both kernels and both devices, against the ``3e-6`` bound here; both land on
+    the target to RMS **4.7e-07** (ordito) and 1.2e-07 (Open3D), bounded at ``1.5e-6``. A
+    linearized step solved differently on the two sides would stop at a different iterate and
+    miss these bounds by orders of magnitude.
     """
     mesh_tm, _mesh_tm_wp = sphere_irregular
     target_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
@@ -660,9 +662,9 @@ def test_icp_point_to_plane_matches_open3d(
     matrix_o3d = np.asarray(result_o3d.transformation)
     moved_o3d = (matrix_o3d[:3, :3] @ source_np.T).T + matrix_o3d[:3, 3]
 
-    assert np.allclose(transformed_wp.numpy(), moved_o3d, rtol=1e-3, atol=1e-3)
-    assert _rms(transformed_wp.numpy(), target_np) < 1e-4
-    assert _rms(moved_o3d, target_np) < 1e-4
+    assert np.allclose(transformed_wp.numpy(), moved_o3d, rtol=0.0, atol=3e-6)
+    assert _rms(transformed_wp.numpy(), target_np) < 1.5e-6
+    assert _rms(moved_o3d, target_np) < 1.5e-6
 
 
 @pytest.mark.parity("icp_point_to_plane_cloud", "open3d")
@@ -712,7 +714,8 @@ def test_icp_point_to_plane_cost_matches_open3d_evaluation(
     )
     cost_o3d = rmse_o3d**2 * len(correspondences_o3d)
     assert cost_o3d > 0.0  # non-vacuity: a zero objective would match any zero cost
-    assert np.isclose(cost_wp, cost_o3d, rtol=1e-4, atol=1e-9), (cost_wp, cost_o3d)
+    # Measured 5.2e-07 relative, worst arm and device.
+    assert np.isclose(cost_wp, cost_o3d, rtol=2e-6, atol=1e-9), (cost_wp, cost_o3d)
 
 
 @pytest.mark.parity("icp_point_to_plane_cloud", "meshlib")
@@ -733,9 +736,10 @@ def test_icp_point_to_plane_matches_meshlib(
     ordito is handed. Without them the constructor accepts the cloud and the linearized step has no
     plane to project onto.
 
-    Measured on ``sphere_irregular`` misaligned by 0.08 rad: the transforms agree to **3.0e-07**
-    and the moved clouds to **6.6e-07** per point, against a starting RMS of 0.194 -- so the 1e-4
-    bound carries a 150x margin and both sides genuinely converged (final RMS 2.9e-07 and 9.0e-08).
+    Measured on ``sphere_irregular`` misaligned by 0.08 rad, worst over both devices: the
+    transforms agree to **3.0e-07** and the moved clouds to **7.3e-07** per point, against a
+    starting RMS of 0.194 -- bounded at ``1e-6`` and ``2.5e-6`` -- and both sides genuinely
+    converged (final RMS 3.1e-07 and 9.0e-08, bounded at ``1e-6``).
     """
     mesh_tm, _mesh_wp = sphere_irregular
     target_np = np.ascontiguousarray(mesh_tm.vertices)
@@ -768,12 +772,12 @@ def test_icp_point_to_plane_matches_meshlib(
     moved_ml = source_np @ rotation_ml.T + translation_ml
 
     assert _rms(source_np, target_np) > 1e-2  # non-vacuity: the clouds start apart
-    assert np.allclose(matrix_np[:3, :3], rotation_ml, rtol=1e-4, atol=1e-4)
-    assert np.allclose(matrix_np[:3, 3], translation_ml, rtol=1e-4, atol=1e-4)
-    assert np.allclose(transformed_wp.numpy(), moved_ml, rtol=1e-4, atol=1e-4)
+    assert np.allclose(matrix_np[:3, :3], rotation_ml, rtol=0.0, atol=1e-6)
+    assert np.allclose(matrix_np[:3, 3], translation_ml, rtol=0.0, atol=1e-6)
+    assert np.allclose(transformed_wp.numpy(), moved_ml, rtol=0.0, atol=2.5e-6)
     # Both converged, rather than agreeing on a transform that fits nothing.
-    assert _rms(transformed_wp.numpy(), target_np) < 1e-4
-    assert _rms(moved_ml, target_np) < 1e-4
+    assert _rms(transformed_wp.numpy(), target_np) < 1e-6
+    assert _rms(moved_ml, target_np) < 1e-6
 
 
 def test_icp_point_to_point_mesh(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -932,8 +936,12 @@ def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
     on the RMS to the reference, on both sides, plus that the two aligned clouds agree with each
     other. ``align(return_matrix=True)`` returns ``(aligned_mesh, 4x4 matrix)`` -- and unlike
     MeshLab it *does* move the points, so the aligned mesh's ``points`` is the answer rather than a
-    layer transform. Measured mean residual **4.8e-04** recovering a 10-degree rotation of the
-    notched cube.
+    layer transform. Measured recovering a 0.30 rad rotation of the notched cube, worst over both
+    devices: RMS to the reference **4.4e-06** (ordito) and **4.2e-05** (VTK, which caps its own
+    iterations), and **4.2e-05** between the two aligned clouds; the bounds are ``1.5e-5``,
+    ``1.5e-4`` and ``1.5e-4``, against a starting RMS of 0.17. **Mutation probe:** the aligned
+    cube rotated by one further degree about its centroid sits at RMS 9.0e-03 from itself, 60x the
+    cross bound.
 
     **The fixture is chosen so the problem is well posed.** ICP has no unique answer on a
     rotationally symmetric shape: on an ``icosphere`` any rotation maps the surface onto itself, and
@@ -971,9 +979,9 @@ def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
     moved_wp = transformed_wp.numpy().astype(np.float64)
 
     assert _rms(source_np, vertices_np) > 0.1
-    assert _rms(moved_wp, vertices_np) < 1e-4
-    assert _rms(moved_pv, vertices_np) < 1e-2
-    assert _rms(moved_wp, moved_pv) < 1e-2
+    assert _rms(moved_wp, vertices_np) < 1.5e-5
+    assert _rms(moved_pv, vertices_np) < 1.5e-4
+    assert _rms(moved_wp, moved_pv) < 1.5e-4
 
 
 @pytest.mark.parity(
@@ -996,8 +1004,9 @@ def test_icp_point_to_plane_mesh_matches_meshlib(
     uses that face's plane, where the ``icp_point_to_plane_cloud`` comparisons hand both sides a
     cloud with per-vertex normals. MeshLib is the only registered reference that takes a mesh target
     at all: ``mm.MeshOrPoints`` accepts a ``Mesh`` and its ICP then queries that mesh's AABB tree.
-    Measured agreement on the transform is 5.0e-07 on ``unit_box`` and 1.3e-07 on ``half_torus``,
-    both sides converging to an RMS below 1e-06 from a start above 5e-02.
+    Measured worst over both fixtures and devices: the transforms agree to **1.6e-06** and the
+    moved clouds to **2.7e-06** per point (bound ``1e-5``), both sides converging to an RMS of at
+    most **1.3e-06** (bound ``4e-6``) from a start above 5e-02.
 
     !!! warning "The fixture must not be rotationally symmetric, and the default one is"
         Point-to-*surface* alignment has no signal for a rotation that maps the surface to
@@ -1043,12 +1052,12 @@ def test_icp_point_to_plane_mesh_matches_meshlib(
     moved_ml = source_np @ rotation_ml.T + translation_ml
 
     assert _rms(source_np, vertices_np) > 1e-2  # non-vacuity: the clouds start apart
-    assert np.allclose(matrix_np[:3, :3], rotation_ml, rtol=1e-4, atol=1e-4)
-    assert np.allclose(matrix_np[:3, 3], translation_ml, rtol=1e-4, atol=1e-4)
-    assert np.allclose(transformed_wp.numpy(), moved_ml, rtol=1e-4, atol=1e-4)
+    assert np.allclose(matrix_np[:3, :3], rotation_ml, rtol=0.0, atol=1e-5)
+    assert np.allclose(matrix_np[:3, 3], translation_ml, rtol=0.0, atol=1e-5)
+    assert np.allclose(transformed_wp.numpy(), moved_ml, rtol=0.0, atol=1e-5)
     # Both converged, rather than agreeing on a transform that fits nothing.
-    assert _rms(transformed_wp.numpy(), vertices_np) < 1e-4
-    assert _rms(moved_ml, vertices_np) < 1e-4
+    assert _rms(transformed_wp.numpy(), vertices_np) < 4e-6
+    assert _rms(moved_ml, vertices_np) < 4e-6
 
 
 @pytest.mark.parametrize("max_iterations", [0, 1, 3, 30])
@@ -1133,12 +1142,12 @@ def test_icp_point_to_plane_tukey_converges_from_outside_its_kernel(
     an explicit ``robust_scale`` normally puts the fit in: a biweight gives those correspondences
     zero weight, so ``sum w r^2`` *rises* for several iterations while the pose improves. Stopping
     on that sum -- what ``icp_point_to_plane`` did -- ended the fit after two iterations, at RMS
-    ``6.9e-2`` / ``5.1e-3`` (cloud / mesh, ``c = 0.02``, measured on ``half_torus``), against the
-    ``1e-5`` bound here; the Tukey loss it stops on now falls monotonically. On ``saddle_graded``
+    ``6.9e-2`` / ``5.1e-3`` (cloud / mesh, ``c = 0.02``, measured on ``half_torus``), far above
+    the bound here; the Tukey loss it stops on now falls monotonically. On ``saddle_graded``
     the starting residuals exceed ``c`` at 92.6 % / 80.3 % of the points (``c = 0.01`` / ``0.02``;
-    at 0.05 only 19 %, outside the regime) and the fit reaches ``1.5e-7`` to ``4.5e-7``, a 22x
-    margin under the bound. The mutation probe is restoring ``weight * r^2`` for Tukey in
-    ``robust_loss``: all four cases failed on ``half_torus``.
+    at 0.05 only 19 %, outside the regime) and the fit reaches ``1.5e-7`` to ``4.5e-7`` (Open3D at
+    most 3.7e-08), so both are bounded at ``1.5e-6``. The mutation probe is restoring
+    ``weight * r^2`` for Tukey in ``robust_loss``: all four cases failed on ``half_torus``.
     """
     mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
@@ -1170,8 +1179,8 @@ def test_icp_point_to_plane_tukey_converges_from_outside_its_kernel(
     matrix_o3d = np.asarray(result_o3d.transformation)
     moved_o3d = source_np @ matrix_o3d[:3, :3].T + matrix_o3d[:3, 3]
 
-    assert _rms(moved_o3d, vertices_np) < 1e-5
-    assert _rms(transformed_wp.numpy(), vertices_np) < 1e-5
+    assert _rms(moved_o3d, vertices_np) < 1.5e-6
+    assert _rms(transformed_wp.numpy(), vertices_np) < 1.5e-6
     # Converged means every correspondence is back inside the kernel, contributing ~r^2.
     assert cost_wp < 1e-8
 

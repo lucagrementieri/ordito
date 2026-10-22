@@ -18,6 +18,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito.triangles import CornerNormalWeighting, FaceQualityMetric
 from tests.comparisons import assert_nonconstant
+from tests.conftest import MESHES
 from tests.conversions import (
     faces_igl,
     meshlib_corner_normals_to_numpy,
@@ -372,7 +373,7 @@ def test_face_quality_against_pymeshlab(
     assert np.allclose(quality_wp.numpy(), quality_pml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parametrize(
     ("metric", "measure", "reciprocal"),
     [
@@ -409,7 +410,8 @@ def test_face_quality_against_the_verdict_measures(
     Anti-vacuity, which this comparison is unusually exposed to: of ``cell_quality``'s 28 measures
     only 12 are defined on a triangle and the other 16 come back as the constant ``-1.0`` null
     value, while ``distortion`` is a constant ``1.0`` on ordinary input. So the measure is asserted
-    to *vary* across faces before it is compared -- on ``half_torus`` it does, by construction.
+    to *vary* across faces before it is compared, on both the closed and the open fixture.
+    The reciprocal ``radius_ratio`` product is 1 to 9.4e-07 (both devices), held to 1e-05.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     quality_pv = np.asarray(trimesh_to_pyvista(mesh_tm).cell_quality(measure).cell_data[measure])
@@ -425,7 +427,7 @@ def test_face_quality_against_the_verdict_measures(
         radius_ratio_wp = od.triangles.face_quality(
             mesh_wp.points, mesh_wp.indices, metric="radius_ratio"
         )
-        assert np.allclose(radius_ratio_wp.numpy() * quality_pv, 1.0, rtol=1e-4, atol=1e-4)
+        assert np.allclose(radius_ratio_wp.numpy() * quality_pv, 1.0, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -793,7 +795,8 @@ def test_points_to_barycentric_survives_slivers(device: str, height: float) -> N
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     point_wp = points_to_warp(point_np, device)
     barycentric_wp = od.triangles.points_to_barycentric(vertices_wp, faces_wp, point_wp)
-    assert np.allclose(barycentric_wp.numpy(), barycentric_tm, rtol=1e-4, atol=1e-4)
+    # Measured 3.0e-08 at every height, both devices: the float32 rounding of the answer.
+    assert np.allclose(barycentric_wp.numpy(), barycentric_tm, rtol=1e-5, atol=1e-5)
 
 
 def test_points_to_barycentric_on_a_zero_area_triangle(device: str) -> None:

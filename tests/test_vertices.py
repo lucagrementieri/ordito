@@ -449,8 +449,8 @@ def test_vertex_defects(request: pytest.FixtureRequest, mesh_name: str) -> None:
     assert np.abs(vertex_defects_wp.numpy()).max() > 1e-2
     assert np.allclose(vertex_defects_wp.numpy(), vertex_defects_tm, rtol=1e-5, atol=1e-5)
     assert np.allclose(vertex_defects_wp.numpy(), vertex_defects_igl, rtol=1e-5, atol=1e-5)
-    assert np.allclose(vertex_defects_wp.numpy(), vertex_defects_ml, rtol=1e-4, atol=1e-5)
-    assert np.allclose(vertex_defects_wp.numpy(), gaussian_pv * lumped_pv, rtol=1e-4, atol=1e-4)
+    assert np.allclose(vertex_defects_wp.numpy(), vertex_defects_ml, rtol=1e-5, atol=1e-5)
+    assert np.allclose(vertex_defects_wp.numpy(), gaussian_pv * lumped_pv, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize(

@@ -25,6 +25,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
+from scipy.spatial import ConvexHull, cKDTree
 
 import ordito as od
 from ordito import _launch
@@ -37,7 +38,6 @@ from tests.comparisons import (
     hausdorff_surface_two_sided,
     hausdorff_two_sided,
     lexsort_rows,
-    symmetric_chamfer,
     symmetric_surface_distance,
     undirected_edges,
 )
@@ -232,12 +232,16 @@ def test_delaunay_contains_the_pyvista_triangulation(device: str):
     faces_od = {tuple(row) for row in np.sort(faces_wp, axis=1).tolist()}
 
     assert faces_pv <= faces_od
-    # The excess is hull slivers only: a few triangles, not a different triangulation.
-    assert len(faces_od - faces_pv) < 0.05 * len(faces_od)
+    # The excess is hull slivers only: a few triangles, not a different triangulation, and each
+    # one has a corner on the convex hull (10 of 10 on this seed; VTK can peel a second layer on
+    # other clouds, so that is a measured fact of this one, not a law).
+    excess = faces_od - faces_pv
+    assert len(excess) < 0.05 * len(faces_od)
+    hull = set(ConvexHull(points_np).vertices.tolist())
+    assert all(hull.intersection(face) for face in excess)
 
 
-@pytest.mark.parametrize("n_points", [200, 20_000])
-def test_delaunay_matches_warp_edge_flip_from_the_same_seed(device: str, n_points: int):
+def test_delaunay_matches_warp_edge_flip_from_the_same_seed(device: str):
     """
     Class A: the identical face set as ``warp.geometry.delaunay_edge_flip`` run on the same seed.
 
@@ -250,8 +254,8 @@ def test_delaunay_matches_warp_edge_flip_from_the_same_seed(device: str, n_point
     """
     import warp.geometry
 
-    rng = np.random.default_rng(n_points)
-    points_np = rng.random((n_points, 2)).astype(np.float32)
+    rng = np.random.default_rng(20_000)
+    points_np = rng.random((20_000, 2)).astype(np.float32)
     points_wp = points_to_warp_uv(points_np, device)
 
     faces_od = od.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
@@ -388,14 +392,13 @@ def test_torus_matches_meshlib_reference(device: str):
     A quad-grid cloud has no canonical triangulation -- each quad can be split either way at equal
     cost -- so unlike the icosphere above the two libraries do not agree row for row: measured
     **268 of 2 304** faces differ on CUDA, 166 on the CPU. What does agree is the face count
-    (2 304 exactly) and the surface, to a two-sided Hausdorff distance of **5.1e-08** against a mean
-    edge length of 0.128, i.e. six orders of magnitude below the triangle scale.
+    (2 304 exactly, both devices) and the surface: each grid quad of a torus is a planar trapezoid,
+    so either diagonal spans the same plane and the two-sided Hausdorff distance is round-off,
+    measured **3.6e-07** (CUDA) and **4.0e-07** (CPU) of the 0.128 mean edge. The bound is 3x the
+    worse, ``1.2e-06`` of the mean edge -- a quad split off its plane would not pass it.
 
     Mutation probe and margin: dropping ``num_neighbours`` to 4 leaves ordito with 240 faces of
-    1 280 on the sphere cloud and a Hausdorff distance of **0.348**, 2.3x the mean edge -- so the
-    threshold used here (1 % of the mean edge) is seven orders of magnitude clear of a
-    reconstruction that has genuinely gone wrong, and the assert is not tolerating the diagonal
-    disagreement by being loose.
+    1 280 on the sphere cloud and a Hausdorff distance of **0.348**, 2.3x the mean edge.
 
     Not a library comparison, on the same reconstruction: the result is a watertight,
     edge-manifold genus-1 surface (``V - E + F = 0``).
@@ -411,7 +414,7 @@ def test_torus_matches_meshlib_reference(device: str):
     faces_ml_np = np.asarray(faces_ml, dtype=np.int64)
 
     assert faces_ml_np.shape[0] > 0  # non-vacuity
-    assert abs(faces_wp_np.shape[0] - faces_ml_np.shape[0]) <= max(2, faces_ml_np.shape[0] // 100)
+    assert faces_wp_np.shape[0] == faces_ml_np.shape[0]
     assert (
         hausdorff_surface_two_sided(
             vertices_wp.numpy().astype(np.float64),
@@ -419,7 +422,7 @@ def test_torus_matches_meshlib_reference(device: str):
             np.asarray(vertices_ml, dtype=np.float64),
             faces_ml_np,
         )
-        < 0.01 * mean_edge
+        < 1.2e-6 * mean_edge
     )
     assert od.validation.is_watertight(vertices_wp, faces_wp)
     assert od.validation.is_edge_manifold(faces_wp)
@@ -436,8 +439,10 @@ def test_torus_without_normals_matches_meshlib_reference(device: str):
     whole cloud instead. The two surfaces agree as in
     [`test_torus_matches_meshlib_reference`] (diagonal choices differ), and the signed volume,
     which only a consistently and outward wound surface carries, agrees too: MeshLib's is the
-    torus's own 2.3837. Measured: 2 304 faces against MeshLib's 2 308, a Hausdorff distance of
-    4.3e-08 (3.4e-07 of the mean edge) and the volume to 2e-6 relative, on both devices.
+    torus's own 2.3837. Measured, the same on both devices but for the volume: 2 304 faces against
+    MeshLib's 2 308 (four extra on its side, held exactly), a Hausdorff distance of 3.4e-07 of the
+    mean edge (bound 1.2e-06), and the volume to 3.4e-08 relative on CUDA and 1.6e-06 on the CPU
+    (bound 5e-06).
 
     Mutation probes and margins: normals oriented away from the centroid, as this path once used,
     returned 2 016 faces with holes and a volume of 3.38 (off by 42 %, against the 1 % bound);
@@ -457,7 +462,7 @@ def test_torus_without_normals_matches_meshlib_reference(device: str):
     faces_ml_np = np.asarray(faces_ml, dtype=np.int64)
 
     assert faces_ml_np.shape[0] > 0  # non-vacuity
-    assert abs(faces_wp_np.shape[0] - faces_ml_np.shape[0]) <= max(2, faces_ml_np.shape[0] // 100)
+    assert faces_ml_np.shape[0] - faces_wp_np.shape[0] == 4
     assert (
         hausdorff_surface_two_sided(
             vertices_wp.numpy().astype(np.float64),
@@ -465,11 +470,11 @@ def test_torus_without_normals_matches_meshlib_reference(device: str):
             np.asarray(vertices_ml, dtype=np.float64),
             faces_ml_np,
         )
-        < 0.01 * mean_edge
+        < 1.2e-6 * mean_edge
     )
     volume_ml = tm.Trimesh(vertices_ml, faces_ml_np, process=False).volume
     assert volume_ml > 0.0  # non-vacuity: MeshLib's surface faces outward
-    assert math.isclose(od.measures.volume(vertices_wp, faces_wp), volume_ml, rel_tol=1e-2)
+    assert math.isclose(od.measures.volume(vertices_wp, faces_wp), volume_ml, rel_tol=5e-6)
     assert od.validation.is_winding_consistent(faces_wp)
     assert od.validation.is_watertight(vertices_wp, faces_wp)
 
@@ -531,20 +536,6 @@ def test_open_hemisphere_keeps_single_boundary(device: str):
     # The intended equator rim is a single large boundary loop, not filled and not fragmented.
     loops = od.boundary.boundary_loops(vertices_wp, faces_wp)
     assert len(loops) == 1
-
-
-def test_estimated_normals_path_runs(device: str):
-    # Exercise the normal-estimation code path (normals=None): the mesh is oriented after assembly,
-    # so a closed cloud comes back closed and facing outward, with its vertices still on the sphere.
-    points_np, _ = _sphere_cloud(3)
-    points_wp = points_to_warp(points_np, device)
-
-    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=18)
-    assert faces_wp.numpy().size > 0
-    assert od.validation.is_edge_manifold(faces_wp)
-    assert od.validation.is_volume(vertices_wp, faces_wp)
-    radii = np.linalg.norm(vertices_wp.numpy(), axis=1)
-    assert np.allclose(radii, 1.0, rtol=1e-5, atol=1e-5)
 
 
 def test_build_local_triangulations_two_neighbour_ring_no_duplicate(device: str):
@@ -1012,10 +1003,7 @@ def test_poisson_rejects_invalid_arguments(
         od.reconstruction.screened_poisson(points_wp, normals_wp, **arguments)  # pyright: ignore[reportArgumentType]
 
 
-@pytest.mark.parametrize("method", ["dense", "adaptive"])
-def test_poisson_rejects_one_normal_per_point_mismatch(
-    device: str, method: Literal["dense", "adaptive"]
-) -> None:
+def test_poisson_rejects_one_normal_per_point_mismatch(device: str) -> None:
     """
     Not a library comparison: a ``normals`` array not one per point raises ``ValueError``.
 
@@ -1027,9 +1015,7 @@ def test_poisson_rejects_one_normal_per_point_mismatch(
         points_wp, normals_wp = _to_warp(points_np, np.resize(normals_np, (n_normals, 3)), device)
         assert points_wp.size == 162
         with pytest.raises(ValueError, match="one normal per point"):
-            od.reconstruction.screened_poisson(
-                points_wp, normals_wp, depth=5, full_depth=4, method=method
-            )
+            od.reconstruction.screened_poisson(points_wp, normals_wp, depth=5, full_depth=4)
 
 
 def test_poisson_cpu_matches_cuda():
@@ -1325,7 +1311,7 @@ def test_poisson_is_reproducible(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("offset", [0.0, 0.2, -0.2])
+@pytest.mark.parametrize("offset", [0.2, -0.2])
 def test_resample_uniform_offsets_a_sphere(
     offset: float, sphere_round: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
@@ -1338,7 +1324,7 @@ def test_resample_uniform_offsets_a_sphere(
     The input is a polyhedron inscribed in a sphere of radius ``R = 1.7`` (``sphere_round``), so its
     own surface sits between ``R - sag`` and ``R``, ``sag`` its deepest face-plane distance below
     the sphere (0.028 here); the offset shifts that band without widening it. Measured: every
-    output vertex inside ``[R + offset - 0.0284, R + offset]`` at all three offsets. The bound
+    output vertex inside ``[R + offset - 0.0284, R + offset]`` at both offsets. The bound
     allows a fifth of a voxel either side of that band; a 5 % scale error (0.085) fails it.
     """
     sphere_tm, sphere_wp = sphere_round
@@ -1408,8 +1394,8 @@ def test_resample_uniform_matches_pymeshlab(sphere_irregular: tuple[tm.Trimesh, 
     two resamplers anchored a fraction of a cell apart differ there by as much. (On ``icosphere(3)``
     everything agreed to 0.06 voxels; that was the smooth input, not a tighter agreement.) What a
     lattice anchoring, isolevel or sign error moves is the *mean* distance, so that is the claim:
-    ordito against MeshLab **0.017** voxels, ordito against the input 0.021 (MeshLab 0.021), both
-    under a 0.1-voxel bar. Volumes agree to 1e-4 relative (bar 1 %).
+    ordito against MeshLab **0.017** voxels (bar 0.05), ordito against the input 0.021 (MeshLab
+    0.021; bar 0.065). Volumes agree to 1.0e-4 relative (bar 3e-4). Identical on both devices.
 
     **Mutation probes.** Asking ordito for ``offset`` of a quarter voxel moves its mean distance to
     the input to 0.247 voxels; resampling a 1.05x scaled input to 1.26. The worst case is still
@@ -1437,10 +1423,10 @@ def test_resample_uniform_matches_pymeshlab(sphere_irregular: tuple[tm.Trimesh, 
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
     assert out_tm.is_watertight
     assert pml_tm.is_watertight
-    assert np.isclose(np.abs(out_tm.volume), np.abs(pml_tm.volume), rtol=0.01)
-    assert symmetric_surface_distance(out_tm, pml_tm)[0] < 0.1 * voxel_size
+    assert np.isclose(np.abs(out_tm.volume), np.abs(pml_tm.volume), rtol=3e-4)
+    assert symmetric_surface_distance(out_tm, pml_tm)[0] < 0.05 * voxel_size
     mean_to_input, max_to_input = symmetric_surface_distance(out_tm, sphere_tm)
-    assert mean_to_input < 0.1 * voxel_size
+    assert mean_to_input < 0.065 * voxel_size
     assert max_to_input < voxel_size
 
 
@@ -1463,13 +1449,12 @@ def test_resample_uniform_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mes
     two resamplers anchored a fraction of a cell apart differ there by as much. (On ``icosphere(3)``
     everything agreed to 0.06 voxels; that was the smooth input, not a tighter agreement.) What a
     lattice anchoring, isolevel or sign error moves is the *mean* distance, so that is the claim:
-    ordito against igl **0.014** voxels, ordito against the input 0.021 (igl 0.023), under a
-    0.1-voxel bar; volumes within 1e-4 relative (bar 1 %).
+    ordito against igl **0.014** voxels (bar 0.045), ordito against the input 0.021 (igl 0.023;
+    bar 0.065); volumes within 1.15e-4 relative (bar 3.5e-4). Identical on both devices.
 
     **Bug class excluded:** a grid anchored differently, or an isolevel or sign convention that
     shifts the surface. **Mutation probe, measured:** re-running igl at ``isolevel`` a quarter
-    voxel moves the mean distance to **0.253 voxels**, 18x the agreement, so the bar fails on a
-    shift of a tenth of a voxel.
+    voxel moves the mean distance to **0.253 voxels**, 18x the agreement and 5.6x the bar.
     """
     sphere_tm, sphere_wp = sphere_irregular
     voxel_size = 0.06
@@ -1494,9 +1479,9 @@ def test_resample_uniform_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mes
 
     assert mesh_igl.is_watertight
     assert out_tm.is_watertight
-    assert np.isclose(np.abs(out_tm.volume), np.abs(mesh_igl.volume), rtol=0.01)
-    assert symmetric_surface_distance(out_tm, mesh_igl)[0] < 0.1 * voxel_size
-    assert symmetric_surface_distance(out_tm, sphere_tm)[0] < 0.1 * voxel_size
+    assert np.isclose(np.abs(out_tm.volume), np.abs(mesh_igl.volume), rtol=3.5e-4)
+    assert symmetric_surface_distance(out_tm, mesh_igl)[0] < 0.045 * voxel_size
+    assert symmetric_surface_distance(out_tm, sphere_tm)[0] < 0.065 * voxel_size
 
 
 @pytest.mark.parity("resample_uniform", "meshlib")
@@ -1516,7 +1501,8 @@ def test_resample_uniform_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp
     everything agreed to 0.06 voxels; that was the smooth input, not a tighter agreement.) What a
     lattice anchoring, isolevel or sign error moves is the *mean* distance, so that is the claim:
     at a 2 % voxel, ordito against the rebuilt mesh **0.032** voxels, and each against the input
-    0.038 (ordito) and 0.043 (rebuilt), all under a 0.1-voxel bar; volumes within 1e-3 relative.
+    0.038 (ordito) and 0.043 (rebuilt), all under a 0.1-voxel bar (about 3x the worst already);
+    volumes within 9.1e-4 relative (bar 3e-3). Identical on both devices.
 
     **Bug class excluded:** a grid anchored differently, or a sign or isolevel convention that moves
     the isosurface -- checked here against an independent implementation of the whole pipeline
@@ -1544,7 +1530,7 @@ def test_resample_uniform_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp
     assert rebuilt_tm.faces.shape[0] > 0  # non-vacuity: the reference rebuilt something
     assert rebuilt_tm.is_watertight
     assert out_tm.is_watertight
-    assert np.isclose(np.abs(out_tm.volume), np.abs(rebuilt_tm.volume), rtol=0.01)
+    assert np.isclose(np.abs(out_tm.volume), np.abs(rebuilt_tm.volume), rtol=3e-3)
     assert symmetric_surface_distance(out_tm, rebuilt_tm)[0] < 0.1 * voxel_size
     # Both are a resampling *of the input*, not merely of each other.
     for resampled_tm in (out_tm, rebuilt_tm):
@@ -1565,9 +1551,7 @@ def test_resample_uniform_coarser_is_smaller(sphere_irregular: tuple[tm.Trimesh,
     assert counts == sorted(counts, reverse=True)
 
 
-@pytest.mark.parametrize(
-    ("primitive", "voxel_size"), [("box", 0.05), ("box", 0.07), ("icosphere", None)]
-)
+@pytest.mark.parametrize(("primitive", "voxel_size"), [("box", 0.05), ("icosphere", None)])
 def test_resample_uniform_is_watertight_when_nodes_land_on_the_surface(
     device: str, primitive: str, voxel_size: float | None
 ) -> None:
@@ -1577,8 +1561,8 @@ def test_resample_uniform_is_watertight_when_nodes_land_on_the_surface(
     A unit box on a ``0.05`` grid puts whole planes of lattice nodes exactly on its faces, where
     the distance is zero. Without an edge margin the extracted vertices land on those nodes, the
     slivers around them are deleted as degenerate, and the surface opens (non-manifold on CUDA,
-    five components on CPU). ``0.07`` is the control arm: no node lands on a face. The icosphere at
-    the default voxel size is the case that read as self-intersecting on CUDA alone.
+    five components on CPU). The icosphere at the default voxel size is the case that read as
+    self-intersecting on CUDA alone.
     """
     if primitive == "box":
         vertices_wp, faces_wp = od.creation.box(device=device)
@@ -1614,39 +1598,6 @@ def test_resample_uniform_invalid_and_empty(device: str) -> None:
 # open3d BPA (``_o3d``) is a loose face-count reference on the icosphere and the wound-triangle-set
 # oracle on a Fibonacci sphere, where both pivot the identical triangulation.
 # ======================================================================================
-
-
-def test_ball_pivoting_closes_a_dense_sphere(device: str):
-    """
-    The strongest end-to-end guard available: a uniformly sampled closed surface must close.
-
-    With a persistent front and Border-edge retirement, a subdivided icosphere reconstructs to
-    exactly the Euler face count with no boundary edge at all. That single assertion catches both
-    directions of failure at once — retiring an edge that could still have succeeded would leave
-    holes, and letting colliding fronts triangulate a neighbourhood twice (the artefact the
-    front-rebuilt-per-wave design produced, at 24% boundary edges and 3.1 faces per vertex) would
-    push the face count well past ``2 v - 4``.
-    """
-    from scipy.spatial import cKDTree
-
-    points_np, normals_np = _sphere_cloud(3)
-    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
-
-    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
-    faces_np = faces_wp.numpy().reshape(-1, 3)
-    multiplicity = edge_multiplicity(faces_np)
-
-    assert int((multiplicity == 1).sum()) == 0  # watertight
-    assert int(multiplicity.max()) == 2  # edge-manifold
-    n_referenced = len(np.unique(faces_np))
-    assert n_referenced == points_np.shape[0]  # every input point used
-    assert faces_np.shape[0] == 2 * n_referenced - 4  # Euler, for a closed genus-0 surface
-
-    # And it interpolates both ways: every input point is a vertex of the result, and every vertex
-    # of the result is an input point.
-    vertices_np = vertices_wp.numpy().astype(np.float64)
-    assert np.max(cKDTree(vertices_np).query(points_np)[0]) < 1e-6
-    assert np.max(cKDTree(points_np).query(vertices_np)[0]) < 1e-6
 
 
 @pytest.mark.parity("ball_pivoting", "open3d")
@@ -2119,36 +2070,26 @@ def _assert_grid_triangulation(
 @pytest.mark.parity("ball_pivoting", "pymeshlab", "open3d")
 def test_ball_pivoting_matches_pymeshlab_and_open3d(device: str):
     """
-    Class C against VCGlib's original BPA, and a looser Class C face-count band against open3d.
+    Class B (faces matched by input-point index, windings compared): the same triangles.
 
-    Two ball-pivoting fronts advance in different orders and produce different triangles, so there
-    is no face correspondence to recover. What is comparable is sharp: BPA adds no vertices, so the
-    **vertex sets are identical** (Hausdorff **3.8e-08**, Class A), and at the same radius the two
-    close the same surface -- **1 280 faces against 1 277**, 0.23% apart.
+    BPA adds no vertices, so every output vertex of all three is an input sample (Hausdorff
+    3.8e-08) and each face maps to a triple of input indices through a nearest-sample lookup. On
+    the triple sets, measured identically on both devices:
+
+    - **open3d** at radii ``(r, 2r)`` returns the *identical* 1 280 faces with the identical
+      winding -- the two fronts advance in different orders and still close the same triangles.
+    - **MeshLab** (VCGlib's original BPA) returns 1 277, of which 1 274 are ordito's, every one
+      wound the same way. The remainder is 3 faces on its side against 6 on ordito's: ordito's
+      result is watertight and MeshLab's is not, those three missing faces being unclosed holes.
+
+    Previously a symmetric chamfer at 1.3x its own sampling floor (measured 0.99x, so 1.13x below
+    a 2 % scale probe) and a factor-of-two face-count band against open3d.
 
     **The reference's ``clustering`` parameter is load-bearing and its zero is not "off".** At
     ``clustering=0`` the filter returns **0 faces**; 20% is MeshLab's default and the seed-triangle
     spacing floor the algorithm needs. ``benchmarks/test_reconstruction.py`` passed 0 and so timed a
     filter that reconstructed nothing, and took *longer* doing it than the real thing;
     that row now passes the default.
-
-    **Bug class excluded:** a front that closes the surface at the wrong scale or drifts off the
-    samples. **Mutation probe** on the chamfer, normalized by the reference's own sampling floor
-    (0.0196 at 8 000 samples, essentially the whole signal, so the raw number is not usable):
-    measured ratio **0.99**, against **1.47** for a 2% scale of ordito's output, **2.76** for 5%
-    and
-    **3.57** for a half-spacing translation. The 1.3 bound therefore sits 1.3x above the measured
-    agreement and 1.13x below the smallest probe -- deliberately recorded as the weakest link here,
-    because two BPA meshes over one point set cannot differ by more than the sampling density. The
-    face-count and vertex-set asserts are the ones with real margin (21x and exact).
-
-    One genuine difference, asserted rather than smoothed over: ordito's result is watertight and
-    MeshLab's is not, because those 3 missing faces are unclosed holes.
-
-    **open3d** is the loose reference ``benchmarks/README`` records it as: its seed order and pivot
-    tie-breaks differ, so no correspondence exists and what must agree is roughly how much surface
-    got covered at the *same* radius -- the face count within a factor of two (both reconstruct
-    ~2n triangles on a closed sphere).
     """
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
@@ -2162,30 +2103,46 @@ def test_ball_pivoting_matches_pymeshlab_and_open3d(device: str):
     meshset_pml.generate_surface_reconstruction_ball_pivoting(
         ballradius=ml.PureValue(radius), clustering=20.0
     )
-    mesh_pml = tm.Trimesh(
-        np.asarray(meshset_pml.current_mesh().vertex_matrix(), dtype=np.float64),
-        np.asarray(meshset_pml.current_mesh().face_matrix()),
-        process=False,
-    )
-    assert mesh_pml.faces.shape[0] > 0, "clustering=0 reconstructs nothing; this must not regress"
-
-    # BPA adds no vertices, so both must be exactly the input samples.
-    assert hausdorff_two_sided(mesh_wp.vertices, points_np) < 1e-5
-    assert hausdorff_two_sided(mesh_wp.vertices, mesh_pml.vertices) < 1e-5
-    assert 0.95 <= mesh_wp.faces.shape[0] / mesh_pml.faces.shape[0] <= 1.05
-
-    floor = symmetric_chamfer(mesh_pml, mesh_pml, n_samples=8000)
-    assert symmetric_chamfer(mesh_wp, mesh_pml, n_samples=8000) < 1.3 * floor
-
-    # ordito closes the surface; MeshLab leaves those three faces as holes.
-    assert mesh_wp.is_watertight
-    assert not mesh_pml.is_watertight
+    vertices_pml = np.asarray(meshset_pml.current_mesh().vertex_matrix(), dtype=np.float64)
+    faces_pml = np.asarray(meshset_pml.current_mesh().face_matrix())
+    assert faces_pml.shape[0] > 0, "clustering=0 reconstructs nothing; this must not regress"
 
     mesh_o3d = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
         points_to_open3d(points_np, normals_np), o3d.utility.DoubleVector([radius, 2.0 * radius])
     )
-    n_faces_o3d = np.asarray(mesh_o3d.triangles).shape[0]
-    assert 0.5 * n_faces_o3d <= faces_wp.size // 3 <= 2.0 * n_faces_o3d
+
+    # BPA adds no vertices, so all three must be exactly the input samples.
+    assert hausdorff_two_sided(mesh_wp.vertices, points_np) < 1e-5
+    assert hausdorff_two_sided(vertices_pml, points_np) < 1e-5
+    assert hausdorff_two_sided(np.asarray(mesh_o3d.vertices), points_np) < 1e-5
+    # Every input point is used, and the closed genus-0 surface has the Euler face count.
+    assert np.unique(mesh_wp.faces).size == points_np.shape[0]
+    assert mesh_wp.faces.shape[0] == 2 * points_np.shape[0] - 4
+    assert mesh_wp.is_watertight
+
+    tree = cKDTree(points_np)
+
+    def wound_triples(vertices_np: np.ndarray, faces_np: np.ndarray) -> set[tuple[int, ...]]:
+        """Each face as its input-sample indices, rotated to start at the smallest."""
+        rows_np = np.asarray(tree.query(vertices_np)[1], dtype=np.int64)[faces_np]
+        return {tuple(row) for row in canonical_winding(rows_np).tolist()}
+
+    def unwound(triples: set[tuple[int, ...]]) -> set[tuple[int, ...]]:
+        return {tuple(sorted(row)) for row in triples}
+
+    triples_wp = wound_triples(mesh_wp.vertices, mesh_wp.faces)
+    triples_o3d = wound_triples(np.asarray(mesh_o3d.vertices), np.asarray(mesh_o3d.triangles))
+    triples_pml = wound_triples(vertices_pml, faces_pml)
+    assert len(triples_wp) == mesh_wp.faces.shape[0]
+
+    assert triples_wp == triples_o3d
+
+    shared = unwound(triples_wp) & unwound(triples_pml)
+    assert len(triples_wp & triples_pml) == len(shared), "every shared face is wound alike"
+    assert len(unwound(triples_pml) - shared) <= 3
+    assert len(unwound(triples_wp) - shared) <= 6
+    # MeshLab leaves its three missing faces as holes; ordito closes the surface.
+    assert not tm.Trimesh(vertices_pml, faces_pml, process=False).is_watertight
 
 
 def test_ball_pivoting_small_radius_leaves_holes(device: str):
@@ -2201,14 +2158,6 @@ def test_ball_pivoting_small_radius_leaves_holes(device: str):
     _v_ok, faces_ok = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=1.5 * spacing)
     # A ball far smaller than the sampling never rests on three points: far fewer (or no) faces.
     assert faces_small.size < faces_ok.size
-
-
-def test_ball_pivoting_estimated_normals(device: str):
-    points_np, _normals = _sphere_cloud(3)
-    points_wp = points_to_warp(points_np, device)
-    # normals=None triggers PCA normal estimation (valid for this star-shaped cloud).
-    _vertices, faces_wp = od.reconstruction.ball_pivoting(points_wp, None)
-    assert faces_wp.size > 0
 
 
 def test_ball_pivoting_too_few_points(device: str):

@@ -18,7 +18,12 @@ from scipy.spatial import KDTree
 
 import ordito as od
 import ordito.typing as odt
-from tests.comparisons import lexsort_rows, undirected_edges
+from tests.comparisons import (
+    assert_same_loop_set,
+    canonical_winding,
+    lexsort_rows,
+    undirected_edges,
+)
 from tests.conftest import MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -613,7 +618,7 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     request: pytest.FixtureRequest,
 ) -> None:
     """
-    Class B: the same triangles, once all three answers are lifted into the input's numbering.
+    Class A: the same compaction, element-wise -- the same vertex map, positions and faces.
 
     All three libraries compact the vertex buffer -- measured on ``sphere_irregular``'s faces above
     ``z = 0``, 875 of 996 faces referencing **461** of 500 vertices, and all three return 461. What
@@ -642,6 +647,12 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     ``compute_selection_by_condition_per_face`` *expression* over face attributes, which can
     express a contiguous range (``fi<80``) and not an arbitrary index set. Asserted on the range
     form, so the limitation is pinned and the filter is exercised on the one shape it accepts.
+
+    And all three compact the *same way*: each keeps the input's vertices in ascending order and the
+    selected faces in index order, so ordito's vertex map equals pyvista's ``vtkOriginalPointIds``
+    and open3d's position match exactly, and the lifted faces equal both references row for row
+    with their winding -- measured, both devices; the sorted-row comparison this test used to make
+    discarded the order and the winding it now pins.
 
     Non-vacuous: a strict face subset that leaves 39 vertices unreferenced, so neither an empty nor
     a whole-mesh answer would pass and every compaction is real.
@@ -685,12 +696,12 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     # All three compact to the same vertex count, which is the referenced set.
     assert positions_o3d.shape[0] == sub_vertices_wp.size
     assert extracted_pv.n_points == sub_vertices_wp.size
+    # And the same compaction element-wise: the same vertex map, so the same faces row for row.
+    assert np.array_equal(vertex_map_wp.numpy(), original_pv)
+    assert np.array_equal(vertex_map_wp.numpy(), original_o3d)
+    assert np.array_equal(sub_vertices_wp.numpy(), positions_o3d.astype(np.float32))
     for reference_faces in (faces_o3d, faces_pv):
-        assert reference_faces.shape[0] == indices_np.size
-        assert np.array_equal(
-            lexsort_rows(np.sort(reference_faces, axis=1)),
-            lexsort_rows(np.sort(faces_wp.astype(np.int64), axis=1)),
-        )
+        assert np.array_equal(reference_faces, faces_wp)
 
     # pymeshlab's selection is an expression, so only a contiguous range can be handed to it.
     half = n_faces // 2
@@ -893,14 +904,18 @@ def test_delete_region_keep_boundary_matches_meshlib(
 
     The region is a cap -- every face whose centroid is above ``z = 0.8`` -- because a *contiguous*
     region opens exactly one rim, which is what makes the loop comparison a statement rather than a
-    coincidence. Measured: both sides keep **1 148** of 1 280 faces and report **one** loop of
-    **36** vertices.
+    coincidence.
 
-    MeshLib returns the rims as directed-edge lists and ordito as vertex cycles, so the transform
-    is reading a length off each; the loop *count* and its length are the shared quantity, and the
-    survivors are compared as a face count. ``delRegionKeepBd`` mutates its mesh, so it gets a fresh
-    one, and ``keepLoneHoles=False`` is passed explicitly since it is the parameter that decides
-    whether a rim bounding nothing is reported.
+    Two named transforms. ordito compacts the survivors' vertices where MeshLib keeps the input's
+    numbering, so ordito's are mapped back by position -- exactly, distance 0, every kept vertex
+    being a copy -- and MeshLib's rims are directed-edge lists, read as the cycle of their edges'
+    origins. Then the survivors are compared as face sets with their winding
+    ([`canonical_winding`][tests.comparisons.canonical_winding]) and the rims as cycles
+    ([`assert_same_loop_set`][tests.comparisons.assert_same_loop_set]). Measured: identical faces,
+    and the same rim traversed in opposite directions, which is why the loop comparison is up to
+    direction. ``delRegionKeepBd`` mutates its
+    mesh, so it gets a fresh one, and ``keepLoneHoles=False`` is passed explicitly since it is the
+    parameter that decides whether a rim bounding nothing is reported.
     """
     mesh_tm, mesh_wp = sphere_irregular
     n_faces = mesh_tm.faces.shape[0]
@@ -918,8 +933,21 @@ def test_delete_region_keep_boundary_matches_meshlib(
     loops_ml = mm.delRegionKeepBd(mesh_ml, region_ml, False)
 
     assert kept_faces_wp.size // 3 == mesh_ml.topology.numValidFaces()
-    assert len(new_loops) == len(loops_ml)
-    assert sorted(loop.size for loop in new_loops) == sorted(len(loop_ml) for loop_ml in loops_ml)
+    distance_np, original_np = map(
+        np.asarray,
+        KDTree(np.asarray(mesh_tm.vertices)).query(kept_vertices_wp.numpy().astype(np.float64)),
+    )
+    assert float(np.max(distance_np)) == 0.0  # every kept vertex is a copy of an input one
+    valid_ml = meshlib_bitset_to_numpy(mesh_ml.topology.getValidFaces(), n_faces)
+    assert np.array_equal(
+        lexsort_rows(canonical_winding(original_np[kept_faces_wp.numpy().reshape(-1, 3)])),
+        lexsort_rows(canonical_winding(mn.getNumpyFaces(mesh_ml.topology)[valid_ml])),
+    )
+    assert len(loops_ml) > 0  # non-vacuity: the deletion opened a rim
+    assert_same_loop_set(
+        [original_np[loop.numpy()] for loop in new_loops],
+        [np.array([mesh_ml.topology.org(edge).get() for edge in loop_ml]) for loop_ml in loops_ml],
+    )
     # The rim is a real cycle in the kept mesh, which the loop lengths alone would not say.
     kept_boundary_np = od.boundary.boundary_edges(kept_vertices_wp, kept_faces_wp).numpy()
     assert len(kept_boundary_np) == sum(loop.size for loop in new_loops)
@@ -1273,8 +1301,14 @@ def test_submesh_from_vertex_mask(
     assert np.array_equal(got_faces_wp.numpy(), exp_faces_wp.numpy())
 
 
+@pytest.mark.parametrize(
+    ("mesh_name", "seed"),
+    [("grid", 40), ("sphere_irregular", 0), ("sphere_irregular", 250), ("saddle_graded", 0)],
+)
 @pytest.mark.parity("expand_vertex_mask", "pymeshlab")
-def test_expand_vertex_mask_matches_pymeshlab_dilatation(device: str):
+def test_expand_vertex_mask_matches_pymeshlab_dilatation(
+    request: pytest.FixtureRequest, device: str, mesh_name: str, seed: int
+):
     """
     Class B (face-based morphology): MeshLab dilates a *face* selection, not a vertex one.
 
@@ -1284,10 +1318,12 @@ def test_expand_vertex_mask_matches_pymeshlab_dilatation(device: str):
         seed one vertex -> transfer to faces (``inclusive=False``, any selected vertex)
         -> k x Dilate Selection -> read the *vertex* selection back
 
-    which is exactly ``expand_vertex_mask(seed, k)``. Verified to the element on a 9x9 grid for
-    ``k = 1..4``. Note ``inclusive=False`` is load-bearing: the default ``True`` selects only faces
-    whose *every* vertex is selected, which on a single-vertex seed is no faces at all and clears
-    the selection.
+    which is exactly ``expand_vertex_mask(seed, k)``. Verified to the element for ``k = 1..4`` on a
+    9x9 grid, on ``sphere_irregular`` (vertex degrees 3 to 12) from two seeds, and on
+    ``saddle_graded`` from a rim corner, where the dilation is clipped by the boundary. Note
+    ``inclusive=False`` is load-bearing: the default ``True`` selects only faces whose *every*
+    vertex is selected, which on a single-vertex seed is no faces at all and clears the
+    selection.
 
     **Erosion does not map the same way** and is deliberately not checked here: MeshLab's Erode
     Selection removes a face when any of its vertices is on the boundary of the selection, so
@@ -1296,24 +1332,28 @@ def test_expand_vertex_mask_matches_pymeshlab_dilatation(device: str):
     Different operation, not a discrepancy. ``test_vertex_morphology_on_an_irregular_mesh`` keeps
     the graph-distance oracle, ``test_expand_and_shrink_vertex_mask_match_meshlib`` the library.
     """
-    vertices_np, faces_np = _grid_mesh(9)
-    n_vertices = len(vertices_np)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+    if mesh_name == "grid":
+        vertices_np, faces_np = _grid_mesh(9)
+        mesh_tm = tm.Trimesh(vertices_np, faces_np.reshape(-1, 3), process=False)
+        faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+    else:
+        mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+        faces_wp = mesh_wp.indices
+    n_vertices = len(mesh_tm.vertices)
     seed_np = np.zeros(n_vertices, dtype=bool)
-    centre = n_vertices // 2
-    seed_np[centre] = True
+    seed_np[seed] = True
     seed_wp = wp.array(seed_np, dtype=wp.bool, device=device)
 
-    mesh_tm = tm.Trimesh(vertices_np, faces_np.reshape(-1, 3), process=False)
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
-    meshset_pml.compute_selection_by_condition_per_vertex(condselect=f"(vi == {centre})")
+    meshset_pml.compute_selection_by_condition_per_vertex(condselect=f"(vi == {seed})")
     meshset_pml.compute_selection_transfer_vertex_to_face(inclusive=False)
 
     for hops in (1, 2, 3, 4):
         meshset_pml.apply_selection_dilatation()
+        selected_pml = meshset_pml.current_mesh().vertex_selection_array()
+        assert 1 < int(selected_pml.sum()) < n_vertices  # non-vacuity: a real, partial selection
         assert np.array_equal(
-            od.selection.expand_vertex_mask(faces_wp, seed_wp, hops).numpy(),
-            meshset_pml.current_mesh().vertex_selection_array(),
+            od.selection.expand_vertex_mask(faces_wp, seed_wp, hops).numpy(), selected_pml
         )
 
 

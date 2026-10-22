@@ -78,7 +78,7 @@ def test_volume_and_moments_on_a_large_mesh(device: str, deterministic: bool) ->
     volume_m, center_wp, inertia_wp = od.measures.moments(vertices_wp, faces_wp)
     assert np.isclose(volume_wp, mesh_tm.volume, rtol=1e-5)
     assert np.isclose(volume_m, mesh_tm.volume, rtol=1e-5)
-    assert np.allclose(odt.vec3_floats(center_wp), mesh_tm.center_mass, rtol=1e-4, atol=1e-5)
+    assert np.allclose(odt.vec3_floats(center_wp), mesh_tm.center_mass, rtol=1e-5, atol=1e-5)
     scale = float(np.abs(mesh_tm.moment_inertia).max())
     assert (
         np.abs(np.asarray(inertia_wp).reshape(3, 3) - mesh_tm.moment_inertia).max() < 1e-5 * scale
@@ -177,7 +177,7 @@ def test_surface_centroid_matches_trimesh_on_a_skewed_mesh_on_both_devices(kerne
 
     centroid_wp = od.measures.surface_centroid(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(
-        np.array(odt.vec3_floats(centroid_wp)), mesh_tm.centroid, rtol=1e-4, atol=1e-4
+        np.array(odt.vec3_floats(centroid_wp)), mesh_tm.centroid, rtol=1e-5, atol=1e-5
     )
 
 
@@ -249,9 +249,9 @@ def test_moments(request: pytest.FixtureRequest, mesh_name: str):
     assert np.isclose(volume_wp, volume_igl, rtol=1e-5)
     assert np.isclose(volume_wp, mesh_tm.volume, rtol=1e-5)
     assert np.allclose(
-        odt.vec3_floats(center_wp), np.asarray(first_moment_igl) / volume_igl, rtol=1e-4, atol=1e-5
+        odt.vec3_floats(center_wp), np.asarray(first_moment_igl) / volume_igl, rtol=1e-5, atol=1e-5
     )
-    assert np.allclose(odt.vec3_floats(center_wp), mesh_tm.center_mass, rtol=1e-4, atol=1e-5)
+    assert np.allclose(odt.vec3_floats(center_wp), mesh_tm.center_mass, rtol=1e-5, atol=1e-5)
     scale = float(np.abs(np.asarray(inertia_igl)).max())
     assert (
         np.abs(np.asarray(inertia_wp).reshape(3, 3) - np.asarray(inertia_igl)).max() < 1e-5 * scale

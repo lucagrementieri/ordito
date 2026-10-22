@@ -219,6 +219,10 @@ def test_fit_line(device: str, n_points: int, seed: int) -> None:
 
     The 5 000-point arm (``5000 = 78 * 64 + 8``) runs past the tiled reduction's tile size and
     exercises both the multi-tile path and its remainder branch, which 200 points do not reach.
+
+    Measured ``1 - |dot|``, worst of both arms and both devices: **1.2e-05** against trimesh and
+    **3.0e-06** against the planted direction (the float32 sums of a 10-unit needle), so the bounds
+    are ``4e-5`` and ``1e-5``.
     """
     rng = np.random.default_rng(seed)
     # points strongly elongated along a known direction so the major axis
@@ -235,8 +239,8 @@ def test_fit_line(device: str, n_points: int, seed: int) -> None:
 
     # axis is direction-only: compare up to sign against trimesh and the
     # ground-truth direction.
-    assert np.isclose(np.abs(np.dot(np.array(axis_wp), axis_tm)), 1.0, atol=1e-4)
-    assert np.isclose(np.abs(np.dot(np.array(axis_wp), direction_np)), 1.0, atol=1e-3)
+    assert np.isclose(np.abs(np.dot(np.array(axis_wp), axis_tm)), 1.0, atol=4e-5)
+    assert np.isclose(np.abs(np.dot(np.array(axis_wp), direction_np)), 1.0, atol=1e-5)
 
 
 @pytest.mark.parametrize("precomputed_center", [False, True], ids=["derived", "precomputed"])
@@ -321,6 +325,7 @@ def test_fit_plane_matches_meshlib(device: str) -> None:
     tighter than the trimesh and MeshLab pairings above and is why this is the one asserted at
     ``1e-6``. The offset check is what makes it a plane comparison rather than a direction one --
     a fit that found the right orientation through the wrong point would pass the dot alone.
+    Measured offset error **4.0e-07** (CPU; 4.2e-08 on CUDA), so it is bounded at ``1.5e-6``.
     """
     rng = np.random.default_rng(3)
     points_np = (rng.standard_normal((500, 3)) @ np.diag([3.0, 1.0, 0.2])) + np.array(
@@ -334,7 +339,7 @@ def test_fit_plane_matches_meshlib(device: str) -> None:
 
     assert np.isclose(np.linalg.norm(normal_ml), 1.0, atol=1e-6)  # non-vacuity: a real plane
     assert np.isclose(
-        abs(float(np.dot(np.array(centroid_wp), normal_ml)) - plane_ml.d), 0.0, atol=1e-4
+        abs(float(np.dot(np.array(centroid_wp), normal_ml)) - plane_ml.d), 0.0, atol=1.5e-6
     )
     assert np.isclose(abs(float(np.dot(np.array(normal_wp), normal_ml))), 1.0, atol=1e-6)
 
@@ -354,6 +359,9 @@ def test_principal_axes_matches_meshlib(device: str) -> None:
     Its eigenvalues are of the *scatter* matrix, carrying no ``1/n``, which is ordito's convention
     too -- so this pins that convention against a second library, where the pyvista pairing above
     pins the axes alone.
+
+    Worst measured over both devices: centroid **3.5e-07**, eigenvalues **4.5e-07** relative, axes
+    ``1 - |dot|`` **1.5e-08**; the bounds are ``1e-6``, ``1.5e-6`` relative and ``1e-6``.
     """
     rng = np.random.default_rng(4)
     points_np = (rng.standard_normal((500, 3)) @ np.diag([3.0, 1.0, 0.2])) + np.array(
@@ -380,12 +388,12 @@ def test_principal_axes_matches_meshlib(device: str) -> None:
 
     assert values_ml[0] > values_ml[1] > values_ml[2] > 0.0  # non-vacuity: a separated spectrum
     assert np.allclose(
-        np.array(centroid_wp), [centroid_ml.x, centroid_ml.y, centroid_ml.z], atol=1e-4
+        np.array(centroid_wp), [centroid_ml.x, centroid_ml.y, centroid_ml.z], rtol=0.0, atol=1e-6
     )
-    assert np.allclose(np.array(eigenvalues_wp), values_ml, rtol=1e-4, atol=1e-4)
+    assert np.allclose(np.array(eigenvalues_wp), values_ml, rtol=1.5e-6, atol=0.0)
     rotation_np = np.array(rotation_wp).reshape(3, 3)
     for row in range(3):
-        assert np.isclose(abs(float(np.dot(rotation_np[row], axes_ml[row]))), 1.0, atol=1e-4)
+        assert np.isclose(abs(float(np.dot(rotation_np[row], axes_ml[row]))), 1.0, atol=1e-6)
 
 
 def test_principal_axes_is_not_fit_line(device: str) -> None:
@@ -443,7 +451,7 @@ def test_principal_axes_degenerate_spectrum(device: str) -> None:
     assert np.isclose(abs(float(np.dot(rotation_np[0], axes_pv[0]))), 1.0, atol=1e-5)
     # The degenerate pair still spans the same plane, even though the axes within it differ.
     assert np.isclose(
-        abs(float(np.dot(rotation_np[0], np.cross(axes_pv[1], axes_pv[2])))), 1.0, atol=1e-4
+        abs(float(np.dot(rotation_np[0], np.cross(axes_pv[1], axes_pv[2])))), 1.0, atol=1e-6
     )
     assert np.allclose(rotation_np @ rotation_np.T, np.eye(3), atol=1e-5)
 
@@ -481,7 +489,9 @@ def test_fit_plane(device: str, n_points: int, seed: int) -> None:
 
     The 5 000-point arm runs past the tiled reduction's tile size, the multi-tile motivation of
     [`test_fit_line`]. The centroid needs no sign fix and is compared directly, which is what
-    separates a reduction bug from an eigenvector one.
+    separates a reduction bug from an eigenvector one. Measured over both arms and devices: the
+    centroid to **1.9e-08** and ``1 - |dot|`` to **9e-08** against both references, hence the
+    ``1e-6`` bound on the normals.
     """
     rng = np.random.default_rng(seed)
     points_np = rng.standard_normal((n_points, 3))
@@ -501,10 +511,10 @@ def test_fit_plane(device: str, n_points: int, seed: int) -> None:
     points_wp = points_to_warp(points_np, device)
     normal_wp, centroid_wp = od.fit_plane(points_wp)
 
-    assert np.allclose(np.array(centroid_wp), centroid_tm, rtol=1e-4, atol=1e-4)
+    assert np.allclose(np.array(centroid_wp), centroid_tm, rtol=1e-5, atol=1e-5)
     # normal is sign-ambiguous: compare up to sign.
-    assert np.isclose(np.abs(np.dot(np.array(normal_wp), normal_tm)), 1.0, atol=1e-4)
-    assert np.isclose(np.abs(np.dot(np.array(normal_wp), normal_pml)), 1.0, atol=1e-4)
+    assert np.isclose(np.abs(np.dot(np.array(normal_wp), normal_tm)), 1.0, atol=1e-6)
+    assert np.isclose(np.abs(np.dot(np.array(normal_wp), normal_pml)), 1.0, atol=1e-6)
 
 
 @pytest.mark.parity("fit_plane", "pyvista")
@@ -519,7 +529,9 @@ def test_fit_plane_normal_matches_pyvista(device: str) -> None:
     the normal is the shared quantity, up to sign, and it agrees to ``|dot| = 1.0000004``.
 
     Both the centre and the normal come back **float32** even though pyvista stores points in
-    float64, which is why the tolerance here is ``1e-4`` rather than tighter.
+    float64, so the normal carries float32 rounding: measured ``1 - |dot|`` **3.6e-07** on both
+    devices (three float32 ulps), bounded at ``1.5e-6``. The centroid is bounded at the default
+    ``1e-5`` (measured 1.5e-06 on the CPU device).
     """
     rng = np.random.default_rng(7)
     # Nearly planar and off the origin: the normal is well determined, and the centre pyvista
@@ -535,10 +547,10 @@ def test_fit_plane_normal_matches_pyvista(device: str) -> None:
     normal_wp, centroid_wp = od.fit_plane(points_wp)
 
     assert np.isclose(
-        abs(float(np.dot(np.array(normal_wp), np.asarray(normal_pv)))), 1.0, atol=1e-4
+        abs(float(np.dot(np.array(normal_wp), np.asarray(normal_pv)))), 1.0, atol=1.5e-6
     )
     # The origins are different quantities; asserting that keeps the projection above honest.
-    assert np.allclose(np.array(centroid_wp), points_np.mean(axis=0), rtol=1e-4, atol=1e-4)
+    assert np.allclose(np.array(centroid_wp), points_np.mean(axis=0), rtol=1e-5, atol=1e-5)
     assert not np.allclose(np.asarray(centre_pv), points_np.mean(axis=0), atol=1e-2)
 
 
@@ -721,9 +733,10 @@ def test_estimate_normals_matches_open3d(device: str) -> None:
     do -- and a face-less MeshSet, since ``compute_normal_for_point_clouds`` is for datasets with no
     faces. Both parameters are the ones the benchmark passes.
 
-    MeshLab agrees essentially exactly (worst measured ``|dot|`` 0.9999999), so it gets a hard
-    bound; Open3D disagrees on a handful of points because the two break k-nearest *ties*
-    differently, which is why its assert is a fraction rather than a per-point bound.
+    Both get the same per-point bound. Open3D's ``KDTreeFlann`` neighbourhoods are checked to be
+    ordito's own, as sets, at every point -- the Fibonacci sphere has no exact k-nearest ties, so
+    there is nothing for the two searches to break differently -- and the normals then agree to
+    ``1 - |dot|`` **7.3e-08** against both references, worst over both devices.
     """
     knn = 30
     points_np = _fibonacci_sphere(2000)
@@ -742,11 +755,16 @@ def test_estimate_normals_matches_open3d(device: str) -> None:
     neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=knn, backend="bvh")
     normals_wp = od.estimate_normals(points_wp, neighbor_idx_wp)
 
+    # The same neighbourhood on both sides, so a normal disagreement is in the eigen-solve.
+    tree_o3d = o3d.geometry.KDTreeFlann(pcd)
+    neighbor_idx_np = neighbor_idx_wp.numpy()
+    for point in range(points_np.shape[0]):
+        _found, row_o3d, _squared = tree_o3d.search_knn_vector_3d(pcd.points[point], knn)
+        assert np.array_equal(np.sort(np.asarray(row_o3d)), np.sort(neighbor_idx_np[point]))
+
     # Both estimators fix the smallest-eigenvalue covariance eigenvector but leave the sign
-    # free, so compare up to sign. A few points may disagree on KNN ties; require the vast
-    # majority to align.
-    abs_dots = np.abs(np.einsum("ij,ij->i", normals_wp.numpy(), normals_o3d))
-    assert np.mean(abs_dots > 0.99) > 0.98
+    # free, so compare up to sign.
+    assert_same_up_to_sign(normals_wp.numpy(), normals_o3d, atol=1e-5)
     assert_same_up_to_sign(normals_wp.numpy(), normals_pml, atol=1e-5)
 
 
@@ -758,8 +776,9 @@ def test_estimate_normals_matches_pytorch3d(device: str) -> None:
     ``disambiguate_directions=False`` is not a convenience: with it ``True`` pytorch3d applies the
     SHOT sign rule, which ordito has no counterpart for, so the two would disagree on a
     fixture-dependent subset of points for a reason that is not about the eigenvector. Left off,
-    both sides leave the sign free and the comparison is the *subspace* -- measured min ``|dot|``
-    0.9999979 and mean 1.0 over 600 points at a 16-neighbour window.
+    both sides leave the sign free and the comparison is the *subspace* -- measured worst
+    ``1 - |dot|`` **2.4e-07** over 600 points at a 16-neighbour window (both devices), bounded at
+    ``1e-6``.
 
     Both sides get the identical neighbourhood: ordito's k-NN is what
     ``tests/test_neighbors.py::test_query_nearest_matches_pytorch3d`` pins against ``knn_points``,
@@ -779,7 +798,7 @@ def test_estimate_normals_matches_pytorch3d(device: str) -> None:
     alignment_np = np.abs(
         np.einsum("ij,ij->i", normals_wp.numpy(), normals_p3d.cpu().numpy().astype(np.float32))
     )
-    assert float(alignment_np.min()) > 0.999
+    assert float(alignment_np.min()) > 1.0 - 1e-6
 
 
 @pytest.mark.parity(
@@ -877,13 +896,43 @@ def _loop_reference(points_np: np.ndarray, k: int, scale: float = 3.0) -> np.nda
     return np.maximum(0.0, erf(plof_np / (normalizer * np.sqrt(2.0))))
 
 
+def _vcg_loop_score(probability_np: np.ndarray, scale: float = 3.0) -> np.ndarray:
+    """
+    Re-score LoOP probabilities the way VCG's ``OutlierRemoval::ComputeLoOPScore`` does.
+
+    ``probability = erf(plof / (scale * rms * sqrt(2)))`` is inverted to ``v = plof / (rms *
+    sqrt(2))``, which VCG feeds, with no ``scale``, to the Abramowitz-Stegun ``erf`` polynomial
+    with its fourth power missing: ``1 - 1 / (1 + a1 v + a2 v^2 + a3 v^3 + a4 v^4)``. A zero
+    probability is a non-positive PLOF, which VCG clamps to zero too.
+    """
+    from scipy.special import erfinv
+
+    value_np = scale * erfinv(probability_np.astype(np.float64))
+    denominator_np = (
+        1.0 + 0.278393 * value_np + 0.230389 * value_np**2 + 0.000972 * value_np**3
+    ) + 0.078108 * value_np**4
+    return np.where(probability_np > 0.0, np.maximum(0.0, 1.0 - 1.0 / denominator_np), 0.0)
+
+
 @pytest.mark.parity("outlier_probability", "pymeshlab")
 def test_outlier_probability_ranks_the_planted_outliers(device: str) -> None:
     """
-    Class A against a float64 scipy port of LoOP, Class C (a ranking plus a subset) on top.
+    Class A against a float64 scipy port of LoOP; Class B against MeshLab's per-vertex score.
 
-    The scores match the [`_loop_reference`] oracle element-wise; the 15 planted outliers must
-    then score highest, and pymeshlab's selection is compared as a set.
+    The scores match the [`_loop_reference`] oracle element-wise (measured 2.6e-07), and the 15
+    planted outliers must then score highest.
+
+    ``compute_selection_point_cloud_outliers`` leaves its score on the mesh as the
+    ``outlierScore`` vertex attribute, so MeshLab is compared per point rather than as a selected
+    set. The named transform is [`_vcg_loop_score`]: VCG's ``ComputeLoOPScore`` computes the same
+    ``sigma`` and PLOF over the same self-inclusive ``k`` nearest neighbours, but normalizes without
+    LoOP's ``lambda = 3`` and replaces ``erf`` by an Abramowitz-Stegun polynomial missing its fourth
+    power -- a defect in VCG, not a convention, so ordito keeps the published formula. Re-scored
+    that way, ordito's probabilities equal MeshLab's attribute to **3.2e-07** (both devices),
+    against the ``1e-5`` bound; a float64 scipy PLOF under the same transform reproduces it to
+    7.8e-09. The selection at ``propthreshold`` then follows exactly, and holds points the
+    published score keeps below 0.8 (the two scales differ), which is the non-vacuity check on the
+    transform.
     """
     k = 32
     n_inliers, n_outliers = 400, 15
@@ -893,21 +942,23 @@ def test_outlier_probability_ranks_the_planted_outliers(device: str) -> None:
     neighbor_idx_wp, neighbor_distance_wp = od_neighbors.query_nearest(
         points_wp, points_wp, k=k, backend="bvh"
     )
-    probability_wp = od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
-    assert np.allclose(probability_wp.numpy(), _loop_reference(points_np, k), rtol=1e-4, atol=1e-4)
-    ranked = np.argsort(-probability_wp.numpy())
+    probability_np = od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp).numpy()
+    assert np.allclose(probability_np, _loop_reference(points_np, k), rtol=1e-5, atol=1e-5)
+    ranked = np.argsort(-probability_np)
     assert set(ranked[:n_outliers].tolist()) == set(range(n_inliers, n_inliers + n_outliers))
 
-    # pymeshlab's ``compute_selection_point_cloud_outliers`` is the same LoOP score under a
-    # ``propthreshold``; it differs from this port in how its k-d tree counts the query point, so
-    # compare the *sets* rather than the scores. Everything it flags must be a planted outlier, and
-    # every point this port flags at MeshLab's own default threshold must be flagged there too.
     meshset_pml = ml.MeshSet()
     meshset_pml.add_mesh(ml.Mesh(np.ascontiguousarray(points_np, dtype=np.float64)))
     meshset_pml.compute_selection_point_cloud_outliers(propthreshold=0.8, knearest=k)
-    selected_pml = np.flatnonzero(meshset_pml.current_mesh().vertex_selection_array())
-    assert set(selected_pml.tolist()) <= set(range(n_inliers, n_inliers + n_outliers))
-    assert set(np.flatnonzero(probability_wp.numpy() > 0.8).tolist()) <= set(selected_pml.tolist())
+    mesh_pml = meshset_pml.current_mesh()
+    score_pml = mesh_pml.vertex_custom_scalar_attribute_array("outlierScore")
+    selected_pml = mesh_pml.vertex_selection_array()
+
+    rescored_np = _vcg_loop_score(probability_np)
+    assert 0 < int((score_pml > 0.0).sum()) < points_np.shape[0]  # non-vacuity: a real split
+    assert np.allclose(rescored_np, score_pml, rtol=1e-5, atol=1e-5)
+    assert np.array_equal(selected_pml, rescored_np > 0.8)
+    assert (selected_pml & (probability_np <= 0.8)).any()  # the two scales differ
 
 
 @pytest.mark.parity("statistical_outlier_mask", "open3d")
@@ -955,9 +1006,10 @@ def test_statistical_outlier_mask_matches_meshlib(device: str) -> None:
     ``findOutliers`` with ``OutlierTypeMask.SmallComponents`` labels a point an outlier when its
     connected component under a radius graph is small, which is a different question from a z-score
     on the k-NN mean distance -- so there is no correspondence to compare and the statistic is what
-    each finds. On the planted cloud both find **all 15** seeded outliers, and ordito's 13 flagged
-    points are a **subset** of MeshLib's 26: it is the more conservative of the two, with zero false
-    positives against MeshLib's 11.
+    each finds. On the planted cloud MeshLib finds **all 15** seeded outliers and ordito **13** of
+    them (the z-score misses rows 404 and 406, as Open3D's identical rule does), and ordito's 13
+    flagged points are a **subset** of MeshLib's 26: it is the more conservative of the two, with
+    zero false positives against MeshLib's 11. Both devices measure the same sets.
 
     **Bug class excluded:** a detector that flags the wrong points, or flags on the wrong scale --
     containment is what a looser threshold cannot fake, since a mask that grew arbitrarily would
@@ -992,6 +1044,7 @@ def test_statistical_outlier_mask_matches_meshlib(device: str) -> None:
     )  # non-vacuity: not "everything is an outlier"
     assert (outlier_ml & planted_np).sum() == n_outliers  # the reference found every planted one
     assert (outlier_wp & planted_np).sum() >= n_outliers - 2
+    assert not (outlier_wp & ~planted_np).any()  # and no false positive
     assert (outlier_wp & ~outlier_ml).sum() == 0  # ordito's set is contained in MeshLib's
 
 
@@ -1217,8 +1270,11 @@ def test_farthest_point_sample_matches_open3d(device: str) -> None:
     Class B (order discarded): the same *set* as ``farthest_point_down_sample``, at four counts.
 
     Open3D returns the selected points through ``SelectByIndex``, which emits them in ascending
-    index order, so its sequence is not recoverable and only the set can be compared -- the
-    transform. The sequence is pinned separately below, against a transcription of its own loop.
+    index order, so its sequence is not recoverable -- the transform is sorting ordito's sequence,
+    which is compared as an array rather than a set so a repeated index cannot hide. Each
+    reference point maps back onto its input index exactly (``SelectByIndex`` copies), and the
+    reference's order is asserted ascending, which is what makes the sort the right transform. The
+    sequence is pinned separately below, against a transcription of its own loop.
     """
     rng = np.random.default_rng(0)
     points_np = rng.random((500, 3)).astype(np.float32).astype(np.float64)
@@ -1227,13 +1283,14 @@ def test_farthest_point_sample_matches_open3d(device: str) -> None:
     points_wp = points_to_warp(points_np, device)
     for count in (1, 4, 32, 64):
         selected_o3d = np.asarray(cloud_o3d.farthest_point_down_sample(count).points)
-        index_o3d = {
-            int(np.argmin(np.linalg.norm(points_np - point, axis=1))) for point in selected_o3d
-        }
-        assert len(index_o3d) == count  # non-vacuity: the reference really returned `count` points
+        distance_o3d, index_o3d = scipy.spatial.cKDTree(points_np).query(selected_o3d)
+        assert np.max(distance_o3d) == 0.0
+        # non-vacuity: the reference really returned `count` distinct points, in index order
+        assert np.unique(index_o3d).size == count
+        assert np.all(np.diff(index_o3d) > 0)
 
         index_wp = od.farthest_point_sample(points_wp, count).numpy()
-        assert set(index_wp.tolist()) == index_o3d
+        assert np.array_equal(np.sort(index_wp), index_o3d)
 
 
 @pytest.mark.parity("farthest_point_sample", "pytorch3d")

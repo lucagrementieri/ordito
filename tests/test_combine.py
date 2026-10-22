@@ -14,6 +14,7 @@ from meshlib import mrmeshpy as mm
 from scipy.spatial import cKDTree
 
 import ordito as od
+from tests.comparisons import same_partition
 from tests.conftest import CLOSED_MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -168,7 +169,11 @@ def test_split_finds_all_eight_components_of_one_generated_mesh(
     the concatenated tests use three.
 
     Compared against ``getAllComponents`` on face counts and against trimesh's own ``split``, plus
-    the covering assert: every face in exactly one component.
+    the covering assert: every face in exactly one component. And on the partition itself, exactly:
+    each ordito component's faces are matched back to input faces by centroid (every face found,
+    to ``float32`` rounding of the mean), and the per-face labelling that gives
+    must be MeshLib's up to renaming -- the same faces together, not merely components of the same
+    sizes.
     """
     mesh_tm, mesh_wp = torus_components
     n_faces = mesh_tm.faces.shape[0]
@@ -185,9 +190,22 @@ def test_split_finds_all_eight_components_of_one_generated_mesh(
     assert sorted(faces_wp.size // 3 for _vertices_wp, faces_wp in parts_wp) == counts_ml
 
     covered_np = np.zeros(n_faces, dtype=int)
-    for component_ml in components_ml:
-        covered_np += meshlib_bitset_to_numpy(component_ml, n_faces)
+    labels_ml = np.zeros(n_faces, dtype=np.int64)
+    for label, component_ml in enumerate(components_ml):
+        member_np = meshlib_bitset_to_numpy(component_ml, n_faces)
+        covered_np += member_np
+        labels_ml[member_np] = label
     assert (covered_np == 1).all()
+
+    centroids_np = mesh_tm.triangles_center.astype(np.float32)
+    labels_wp = np.full(n_faces, -1, dtype=np.int64)
+    for label, (vertices_wp, faces_wp) in enumerate(parts_wp):
+        part_np = vertices_wp.numpy()[faces_wp.numpy().reshape(-1, 3)].mean(axis=1)
+        distance_np, face_np = cKDTree(centroids_np).query(part_np)
+        assert float(np.max(distance_np)) < 1e-6
+        labels_wp[face_np] = label
+    assert (labels_wp >= 0).all()
+    assert same_partition(labels_wp, labels_ml)
 
 
 @pytest.mark.parity("split", "open3d", "pymeshlab")

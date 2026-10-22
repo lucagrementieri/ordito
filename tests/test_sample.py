@@ -115,26 +115,28 @@ def test_sample_fibonacci_cone_invalid(device: str) -> None:
 @pytest.mark.parity("sample_surface", "trimesh", "igl")
 def test_sample_surface(request: pytest.FixtureRequest, mesh_name: str):
     """
-    Class B, three samplers against the area law they all claim: per-face frequency / area fraction.
+    Class C, three samplers against the area law they all claim: sample share per area decile.
 
     Two seeded RNGs cannot be aligned, so the comparable quantity is the *distribution* rather than
-    the samples: each library's per-face sample frequency must match that face's share of the total
-    area. All three return the face index directly, so the only transform is the ``bincount``.
+    the samples. All three return the face index directly; the faces are split into ten bins by
+    area rank ([`_quantile_bin_shares`]) and each library's share of samples per bin must match the
+    bin's share of the area. Per-face frequencies were compared before and had no power:
+    ``saddle_graded`` has 2 178 faces, so 10 000 samples put ~4.6 on a face, and a uniform-per-face
+    sampler sat within the per-face noise (1.19e-03 against the samplers' own 1.0-1.3e-03).
 
-    The bug class this excludes is a mis-weighted CDF -- sampling by face *index* or uniformly per
-    face instead of by area, which is the classic error in this routine and is invisible to a
-    count-and-on-surface check. ``half_torus`` is the fixture because its faces vary in area by
-    construction, so a uniform-per-face sampler fails the assert; on an icosahedron, where every
-    face has the same area, it would pass.
+    **Bug class excluded:** a mis-weighted CDF -- sampling uniformly per face or by face *index*
+    instead of by area, the classic error in this routine and invisible to a count-and-on-surface
+    check. ``saddle_graded``'s areas grade over three orders of magnitude, so the area deciles hold
+    0.05 % to 32 % of the area. **Measured** worst bin error, identical on both devices: ordito
+    **0.0020**, igl 0.0052, trimesh **0.0105**; bound ``0.03`` (3x trimesh). **Mutation probe:** a
+    uniform-per-face sampler reads 0.221, 7x the bound.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     count = 10_000
     n_faces = int(mesh_tm.faces.shape[0])
     face_idx_tm = tm.sample.sample_surface(mesh_tm, count, seed=0)[1]
-    freq_tm = np.bincount(face_idx_tm, minlength=n_faces) / count
 
     face_idx_wp = od.sample.sample_surface(mesh_wp.points, mesh_wp.indices, count, seed=0)[1]
-    freq_wp = np.bincount(face_idx_wp.numpy(), minlength=n_faces) / count
 
     face_idx_igl = igl.random_points_on_mesh(
         count,
@@ -142,12 +144,31 @@ def test_sample_surface(request: pytest.FixtureRequest, mesh_name: str):
         np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
         0,
     )[1]
-    freq_igl = np.bincount(face_idx_igl, minlength=n_faces) / count
 
-    freq_expected = mesh_tm.area_faces / mesh_tm.area_faces.sum()
-    assert np.allclose(freq_wp, freq_expected, rtol=0.08, atol=0.008)
-    assert np.allclose(freq_tm, freq_expected, rtol=0.08, atol=0.008)
-    assert np.allclose(freq_igl, freq_expected, rtol=0.08, atol=0.008)
+    area_np = mesh_tm.area_faces
+    expected_np = _quantile_bin_shares(np.arange(n_faces), area_np, area_np)
+    uniform_np = _quantile_bin_shares(np.arange(n_faces), area_np)
+    assert np.abs(uniform_np - expected_np).max() > 0.2  # non-vacuity: the deciles differ in area
+    for face_idx in (face_idx_wp.numpy(), np.asarray(face_idx_tm), np.asarray(face_idx_igl)):
+        assert np.abs(_quantile_bin_shares(face_idx, area_np) - expected_np).max() < 0.03
+
+
+def _quantile_bin_shares(
+    face_index_np: np.ndarray, key_np: np.ndarray, weight_np: np.ndarray | None = None
+) -> np.ndarray:
+    """
+    Return each of ten bins' share of ``face_index_np``, faces binned by the rank of ``key_np``.
+
+    With ``weight_np`` the share is weighted per entry by the face's weight instead of counted, so
+    ``_quantile_bin_shares(np.arange(n), key, weight)`` is each bin's share of the total weight.
+    """
+    n_bins = 10
+    order_np = np.argsort(key_np, kind="stable")
+    bin_np = np.empty(key_np.shape[0], dtype=np.int64)
+    bin_np[order_np] = np.arange(key_np.shape[0]) * n_bins // key_np.shape[0]
+    weights_np = None if weight_np is None else weight_np[face_index_np]
+    shares_np = np.bincount(bin_np[face_index_np], weights=weights_np, minlength=n_bins)
+    return shares_np / shares_np.sum()
 
 
 @pytest.mark.parity("sample_surface", "pytorch3d")
@@ -166,7 +187,8 @@ def test_sample_surface_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp
     excluded: any defect that preserves the surface distribution, e.g. a correlated RNG. The
     per-face proportionality assert covers the weighting half directly: ``sphere_irregular``'s face
     areas span 6 129x and the per-face counts of 20 000 samples correlate **0.985** with them (on a
-    regular icosphere the areas spanned 1.05x and the correlation was noise).
+    regular icosphere the areas spanned 1.05x and the correlation was noise), bounded at ``0.955``,
+    3x the measured shortfall from 1.
     """
     mesh_tm, mesh_wp = sphere_irregular
     torch.manual_seed(4)
@@ -191,16 +213,21 @@ def test_sample_surface_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp
     areas_np = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)[1].numpy()
     counts_np = np.bincount(face_indices_wp.numpy(), minlength=len(mesh_tm.faces))
     assert areas_np.max() / areas_np.min() > 100.0
-    assert float(np.corrcoef(counts_np, areas_np)[0, 1]) > 0.9
+    assert float(np.corrcoef(counts_np, areas_np)[0, 1]) > 0.955
 
 
 def test_sample_surface_with_face_weights(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class C (a frequency comparison): two RNGs cannot produce the same samples.
 
-    What is comparable is the *distribution* of chosen faces, so the per-face frequency is
-    compared against trimesh's under the same weights -- a linear ramp, so an implementation
-    ignoring weights gives a flat histogram and fails clearly rather than marginally.
+    What is comparable is the *distribution* of chosen faces, so ordito's and trimesh's samples
+    under the same weights -- a linear ramp over the face index -- are binned into weight deciles
+    ([`_quantile_bin_shares`]) and each bin's share must match its share of the total weight. A
+    per-face comparison has no power at ~10 samples a face.
+
+    **Measured** worst bin error, identical on both devices: ordito **0.0035**, trimesh **0.0050**;
+    bound ``0.015`` (3x trimesh). **Mutation probes:** ignoring the weights (sampling by area) reads
+    0.080 and a flat histogram 0.090, 5.4x and 6x the bound.
     """
     mesh_tm, mesh_wp = sphere_irregular
     count = 10_000
@@ -214,12 +241,9 @@ def test_sample_surface_with_face_weights(sphere_irregular: tuple[tm.Trimesh, wp
     )[1]
 
     n_faces = int(mesh_tm.faces.shape[0])
-    freq_wp = np.bincount(face_idx_wp.numpy(), minlength=n_faces) / count
-    freq_tm = np.bincount(face_idx_tm, minlength=n_faces) / count
-
-    freq_expected = weights_np / weights_np.sum()
-    assert np.allclose(freq_wp, freq_expected, rtol=0.07, atol=0.01)
-    assert np.allclose(freq_tm, freq_expected, rtol=0.07, atol=0.01)
+    expected_np = _quantile_bin_shares(np.arange(n_faces), weights_np, weights_np)
+    for face_idx in (face_idx_wp.numpy(), face_idx_tm):
+        assert np.abs(_quantile_bin_shares(face_idx, weights_np) - expected_np).max() < 0.015
 
 
 @pytest.mark.parametrize(
@@ -341,9 +365,11 @@ def test_sample_surface_poisson_disk_spacing_matches_open3d(
 
     open3d's ``sample_points_poisson_disk`` is weighted sample elimination with the same
     constants, so the two sets are statistically alike though their pools differ. Over five seeds
-    open3d's closest pair sits at 0.66-0.71 of ``r_max``; ordito's must reach 0.6 on every seed and
-    sit within 0.05 of open3d's median. The defect this excludes (local-maxima rounds without a
-    weight floor) read 0.02-0.43.
+    open3d's closest pair sits at 0.664-0.695 of ``r_max`` and ordito's at 0.668-0.693 (both
+    devices alike); ordito's must reach 0.65 on every seed and its median sit within 0.02 of
+    open3d's (measured 0.002 apart -- the bound is the seed-to-seed spread of a five-seed median,
+    not 3x a difference that is itself noise). The defect this excludes (local-maxima rounds
+    without a weight floor) read 0.02-0.43.
     """
     mesh_tm, mesh_wp = sphere_irregular
     count = 100
@@ -357,9 +383,9 @@ def test_sample_surface_poisson_disk_spacing_matches_open3d(
         o3d.utility.random.seed(seed)
         cloud_o3d = trimesh_to_open3d(mesh_tm).sample_points_poisson_disk(number_of_points=count)
         closest_o3d.append(pdist(np.asarray(cloud_o3d.points)).min() / r_max)
-    assert min(closest_o3d) > 0.6  # the reference's own spacing, so the comparison means something
-    assert min(closest_wp) > 0.6
-    assert abs(np.median(closest_wp) - np.median(closest_o3d)) < 0.05
+    assert min(closest_o3d) > 0.65  # the reference's own spacing, so the comparison means something
+    assert min(closest_wp) > 0.65
+    assert abs(np.median(closest_wp) - np.median(closest_o3d)) < 0.02
 
 
 def test_sample_surface_poisson_disk_high_init_factor(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
@@ -499,9 +525,12 @@ def test_sample_surface_poisson_disk_keeps_an_isolated_component(device: str):
     small patch on every seed measured, with the returned count still exactly ``count`` -- so
     nothing about the result's shape or spacing could show it.
 
-    Margin: the far component's area share is 1/101. MeshLab measures 0.0115-0.0152 and ordito
-    0.0050-0.0150 per seed, mean 0.0100; the band below admits all of those with ~2.5x headroom
-    either way and excludes 0 outright.
+    Margin: the far component's area share is 1/101 = 0.0099. MeshLab measures **0.0152** and
+    ordito 0.010-0.020 per seed, mean **0.0150** over five seeds (identical on both devices) -- both
+    above the area share by the same factor, since the small patch is mostly rim. ordito's mean
+    must sit within ``[0.6, 1.6]`` of MeshLab's (measured 0.99; a far count of ~3 a seed carries
+    ~30 % noise in a five-seed mean) and within ``[0.6, 2.5]`` of the area share (measured 1.52),
+    and the defect's 0 fails both outright.
     """
     vertices_np, faces_np = _two_patch_mesh()
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
@@ -528,8 +557,8 @@ def test_sample_surface_poisson_disk_keeps_an_isolated_component(device: str):
     assert min(far_counts) >= 1
 
     share_od = float(np.mean(far_counts)) / count
-    assert 0.4 * area_share <= share_od <= 2.5 * area_share
-    assert 0.4 * share_ml <= share_od <= 2.5 * share_ml
+    assert 0.6 * area_share <= share_od <= 2.5 * area_share
+    assert 0.6 * share_ml <= share_od <= 1.6 * share_ml
 
 
 def test_find_local_maxima_flags_an_independent_set(device: str):
@@ -679,18 +708,23 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     | igl, same radius | 1.000 | 1.045 | 725 |
     | MeshLab, same radius | 1.000 | 1.147 | 749 |
     | meshlib, same radius and pool | 1.000 | **1.000** | 897 |
-    | Open3D, same count | 0.933 | 1.304 | 704 |
+    | Open3D, same count, seeded | 0.933 | 1.180 | 704 |
     | uniform Monte Carlo | **0.029** | 1.943 | 704 |
     | one patch | **0.008** | **14.615** | 704 |
 
-    So assert 1 (``>= 0.85``) clears the worst reference by 9 % and both probes by 29x -- it is the
-    assert carrying the bug class. Assert 2 (worst gap ``<= 1.4``) holds for all five and separates
-    the clumped probe by 10x but the Monte-Carlo one by only 1.39x. (A "every face hit" count is no
-    coverage measure here: 704 samples cannot touch all 996 faces of a mesh whose face areas span
-    6 129x; on a 20-face icosahedron it was the third assert.)
+    Every number is identical on both devices. Assert 1 is per sampler: ordito's own closest pair
+    is the exact property below (``>= 1 - 1e-5``), the three radius-driven references must reach
+    ``0.999`` and Open3D, which is handed a count rather than a radius, ``0.85`` -- 29x above both
+    probes, the assert carrying the bug class. Assert 2 bounds ordito's worst gap at ``1.2`` (the
+    Monte-Carlo probe reads 1.62x that, the clumped one 12x) and every reference's at ``1.3``.
+    Open3D is seeded: unseeded, its worst gap moved between 1.16 and 1.32 from run to run. (A
+    "every face hit" count is no coverage measure here: 704 samples cannot touch all 996 faces of a
+    mesh whose face areas span 6 129x; on a 20-face icosahedron it was the third assert.)
 
-    igl is the **closest of the four in output**: 725 samples against ordito's 704 (3 % apart,
-    against MeshLab's 749) and the tightest coverage of the radius-driven samplers at 1.045 r.
+    Assert 3 is the radius parametrization: igl is the **closest of the four in output**, 725
+    samples against ordito's 704 (ratio 0.971, bound ``[0.9, 1.1]``), MeshLab 749 (0.940, bound
+    ``[0.82, 1.18]``, 3x its deviation), and the tightest coverage of the radius-driven samplers at
+    1.045 r.
 
     ordito's ``1.000`` in the first column is **exact rather than tolerant**, and is a property of
     the algorithm rather than of this fixture: an accepted point is never within ``r`` of another
@@ -710,6 +744,7 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     meshset_pml.generate_sampling_poisson_disk(radius=ml.PureValue(radius))
     points_pml = np.asarray(meshset_pml.current_mesh().vertex_matrix(), dtype=np.float64)
 
+    o3d.utility.random.seed(11)
     points_o3d = np.asarray(
         trimesh_to_open3d(mesh_tm).sample_points_poisson_disk(number_of_points=n_samples).points
     )
@@ -735,11 +770,15 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     closest_ml, gap_ml = _blue_noise_statistics(points_ml, radius, dense_np)
 
     # 1. The Poisson-disk property, on all five.
-    assert min(closest_wp, closest_pml, closest_o3d, closest_igl, closest_ml) >= 0.85
+    assert closest_wp >= 1.0 - 1e-5
+    assert min(closest_pml, closest_igl, closest_ml) >= 0.999
+    assert closest_o3d >= 0.85
     # 2. Space-filling, on all five.
-    assert max(gap_wp, gap_pml, gap_o3d, gap_igl, gap_ml) <= 1.4
+    assert gap_wp <= 1.2
+    assert max(gap_pml, gap_o3d, gap_igl, gap_ml) <= 1.3
     # 3. And the radius parametrization agrees: the same radius yields the same order of samples.
-    assert 0.8 <= n_samples / points_pml.shape[0] <= 1.25
+    assert 0.9 <= n_samples / np.asarray(points_igl).shape[0] <= 1.1
+    assert 0.82 <= n_samples / points_pml.shape[0] <= 1.18
     # meshlib keeps more of the pool at the same radius (measured 897 against 704, a ratio of
     # 0.78), which is a maximal-set tie-breaking difference rather than a different radius.
     assert 0.7 <= n_samples / points_ml.shape[0] <= 1.3
@@ -784,14 +823,14 @@ def test_sample_volume_uniform(sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class C (a moment): the sample mean must approach the centre of mass.
 
-    The threshold is derived rather than chosen: at 20 000 samples the per-axis standard error
-    is ~0.006, so ``atol=0.05`` is ~8 sigma (measured offset 0.011) -- clear of noise and still
-    tight enough to catch a distribution biased toward one side of the solid. Fixture premise as in
-    ``test_sample_volume_containment``.
+    At 20 000 samples the per-axis standard error is ~0.006 and the measured offset is **0.011**
+    (on ``x``, both devices), so ``atol=0.035`` is 3x the measurement and ~6 sigma -- clear of noise
+    and tight enough to catch a distribution biased toward one side of the solid. Fixture premise
+    as in ``test_sample_volume_containment``.
     """
     mesh_tm, mesh_wp = sphere_well_shaped
     points_np = od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 20_000, seed=0).numpy()
-    assert np.allclose(points_np.mean(axis=0), mesh_tm.center_mass, atol=0.05)
+    assert np.allclose(points_np.mean(axis=0), mesh_tm.center_mass, rtol=0.0, atol=0.035)
 
 
 @pytest.mark.parametrize(

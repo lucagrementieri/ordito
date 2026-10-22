@@ -178,50 +178,31 @@ def test_closest_point_on_mesh_matches_references(
     """
     200 random queries against trimesh, MeshLib and pyvista: distance, point and face index.
 
-    **trimesh, Class A on the distance, Class C on the point**: ties make the closest *point*
-    ambiguous. The distance is the well-defined quantity and is compared directly; a query
-    equidistant from two faces has two valid closest points, and Open3D diverges in the same
-    way at ~2e-4. Warp's own ``mesh_query_point_no_sign`` is off by up to
-    2.1e-5, which sets the floor here.
+    **Class A on the distance and the point against all three.** Measured on both devices, the
+    point agrees to at most **3.1e-07** with every reference on both fixtures (trimesh and pyvista
+    are float64-exact and agree with each other to 4e-16; MeshLib's float32 projection to 3.0e-07)
+    and the distance to **2.6e-07** -- the ``float32`` floor, so the shared ``1e-5`` holds with a
+    30x margin. An earlier 6e-4 point tolerance on ``saddle_graded`` recorded a CPU-side needle
+    error of ``mesh_query_point_no_sign`` that no longer reproduces on Warp 1.18; re-measure before
+    loosening it again.
 
-    **MeshLib, Class A on the distance, Class C on the point, and the face index is a tie-break
-    gauge.** ``findProjection`` returns a ``MeshProjectionResult`` carrying the squared distance,
-    the projected point and the ``FaceId`` it landed on -- so it is the only reference in this
-    module that reports all three. It is per query, so this loops on the MeshLib side and batches on
-    ordito's; the benchmark rows do the same, which is why the row prices a Python loop and says so.
-    The distances agree to **1.2e-07** and the points to **1.6e-04** on a unit-radius fixture, the
-    latter being Warp's own ``mesh_query_point_no_sign`` floor rather than a disagreement about
-    geometry (Open3D shows the same magnitude). The face index is the
-    interesting part and it is why this pair is worth having. It differs on **39 %** of 200 random
+    **The MeshLib face index is a tie-break gauge.** ``findProjection`` returns a
+    ``MeshProjectionResult`` carrying the squared distance, the projected point and the ``FaceId``
+    it landed on -- the only reference in this module that reports all three. It is per query, so
+    this loops on the MeshLib side and batches on ordito's; the benchmark rows do the same, which is
+    why the row prices a Python loop and says so. The face index differs on **39 %** of 200 random
     queries, and every one of those is a genuine tie: the two faces always share at least one corner
     (57 of 78 share two, i.e. an edge) and the distances differ by at most 1.2e-07. So the assert is
     not "the same face" -- which would be wrong to demand -- but "any disagreement is a tie", which
     is a real constraint a mis-indexed lookup would fail.
 
-    **pyvista, Class A on the distance and the point; the cell index is not comparable.**
-    ``find_closest_cell(..., return_closest_point=True)`` walks a ``vtkStaticCellLocator`` and is
-    exact in float64 -- against ``igl.point_mesh_squared_distance`` on these same queries it agrees
-    to **4.4e-16** (icosahedron) and **8.9e-16** (hemisphere) on both the distance and the point --
-    so it is the most accurate closest-point reference in this module. Against ordito: distances to
-    1.8e-07 / 2.7e-07 and points to 1.6e-07 / 9.0e-07, the ``float32`` floor. The point residual is
-    fixture-dependent and reaches **2.2e-04** on a subdivided icosphere with queries drawn from a
-    wider box, which is Warp's own ``mesh_query_point_no_sign`` limit and the same magnitude the
-    MeshLib and Open3D pairings record -- so a comparison on another fixture must not tighten this
-    tolerance without re-measuring. igl and pyvista agree on the geometry to 1e-16 and still
-    disagree on the cell for 37% / 42% of these queries, and on ``icosphere(3)`` every disagreeing
-    query's closest point has a minimum barycentric coordinate of ~1e-16: it lies exactly on a
-    shared edge. That is structural rather than a fixture accident -- for a query far outside a
-    convex mesh the nearest point is a *vertex*, since the vertex normal fans exhaust the sphere of
-    directions (their angular defects sum to 4 pi) -- so the tie fraction grows with the query
+    **pyvista's cell index is not comparable.** ``find_closest_cell(...,
+    return_closest_point=True)`` walks a ``vtkStaticCellLocator`` and is exact in float64, yet igl
+    and pyvista agree on the geometry to 1e-16 and still disagree on the cell for 37% / 42% of
+    such queries: for a query far outside a convex mesh the nearest point is a *vertex*, since the
+    vertex normal fans exhaust the sphere of directions, so the tie fraction grows with the query
     radius. The index is therefore left to the MeshLib pair, whose ``findProjection`` reports the
     face on ordito's own soup numbering.
-
-    On ``saddle_graded`` the *point* is compared at 6e-4: on the CPU device ordito's closest point
-    sits 1.9e-4 from the float64-exact one (trimesh and pyvista agree to 4e-16) while the distance
-    agrees to 1.5e-7 -- the query lands on a needle, where Warp's ``mesh_query_point_no_sign``
-    places the point along the needle no better than that (on CUDA, 1.6e-7); on
-    ``sphere_irregular`` 2.1e-7 on both devices (5.9e-5 on its 1 500-vertex form). The distances
-    keep their 1e-5.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np = _random_queries_np()
@@ -232,9 +213,8 @@ def test_closest_point_on_mesh_matches_references(
     closest_np, distances_np, faces_np = closest_wp.numpy(), distances_wp.numpy(), faces_wp.numpy()
 
     # trimesh.
-    point_tolerance = 6e-4  # both fixtures have needles; see the docstring
     closest_tm, distance_tm, _triangle_id_tm = tm.proximity.closest_point(mesh_tm, points_np)
-    assert np.allclose(closest_np, closest_tm, rtol=point_tolerance, atol=point_tolerance)
+    assert np.allclose(closest_np, closest_tm, rtol=1e-5, atol=1e-5)
     assert np.allclose(distances_np, distance_tm, rtol=1e-5, atol=1e-5)
 
     # MeshLib.
@@ -251,7 +231,7 @@ def test_closest_point_on_mesh_matches_references(
     distances_ml = np.sqrt(np.array([result.distSq for result in projections_ml]))
     faces_ml = np.array([int(result.proj.face) for result in projections_ml], dtype=np.int32)
     assert np.allclose(distances_np, distances_ml, rtol=1e-5, atol=1e-5)
-    assert np.allclose(closest_np, points_ml, rtol=1e-4, atol=max(1e-4, point_tolerance))
+    assert np.allclose(closest_np, points_ml, rtol=1e-5, atol=1e-5)
 
     # Every face disagreement is a tie: the same distance, on a face sharing a corner or an edge.
     disagree_np = faces_np != faces_ml
@@ -274,7 +254,7 @@ def test_closest_point_on_mesh_matches_references(
     distances_pv = np.linalg.norm(points_np - closest_pv, axis=1)
     assert distances_pv.min() > 0.0  # non-vacuity: no query sits on the surface
     assert np.allclose(distances_np, distances_pv, rtol=1e-5, atol=1e-5)
-    assert np.allclose(closest_np, closest_pv, rtol=point_tolerance, atol=point_tolerance)
+    assert np.allclose(closest_np, closest_pv, rtol=1e-5, atol=1e-5)
 
 
 def test_closest_point_on_mesh_ambiguous_edge(device: str) -> None:
@@ -1221,7 +1201,7 @@ def test_signed_distance_on_mesh_matches_pymeshlab_igl_and_open3d(
     ``vertex_scalar_array()``. ``signeddist=True`` is what makes it signed rather than absolute, and
     is the parameter the benchmark passes.
 
-    **igl, Class B (a named sign-rule choice)**: a direct ``allclose`` against the pseudonormal
+    **igl, Class A, with a named choice of oracle**: a direct ``allclose`` against the pseudonormal
     sign type. igl's angle-weighted pseudonormal sign is a *fourth* rule beside ordito's parity
     rays, trimesh's and MeshLab's closest-point normal, and on these three watertight fixtures it
     agrees with ordito on every sign and to 2.5-3.2e-07 in value -- so the comparison needs no
@@ -1316,7 +1296,9 @@ def test_signed_distance_on_mesh_matches_meshlib(
     assert (distances_ml > 0).any()
     assert np.allclose(distances_wp, distances_ml, rtol=1e-5, atol=1e-5)
     # The convention, stated as an assert: trimesh's sign is the other one.
-    assert np.allclose(distances_wp, -tm_proximity.signed_distance(mesh_tm, points_np), atol=1e-4)
+    assert np.allclose(
+        distances_wp, -tm_proximity.signed_distance(mesh_tm, points_np), rtol=1e-5, atol=1e-5
+    )
 
 
 @pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
@@ -1675,7 +1657,7 @@ def test_winding_number_random(
     assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES)
+@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
 @pytest.mark.parity("winding_number", "meshlib")
 def test_winding_number_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -1692,9 +1674,13 @@ def test_winding_number_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     |---|---|---|---|---|---|
     | max diff | 2.4e-02 | 5.0e-03 | 1.2e-03 | 1.1e-05 | 1.4e-06 |
 
-    ``beta=20`` is used here: two orders of magnitude inside the 1e-3 tolerance, and the default of
-    2 would fail it by 24x -- which is the point, since a comparison that passed at ``beta=2`` would
-    be tolerating the approximation rather than measuring the quantity.
+    On the fixtures here the curve flattens at ``beta=100``: 8.9e-07 on ``sphere_irregular_hollow``
+    and 1.4e-06 on ``torus_irregular``, unchanged at ``beta`` 1 000 and 1e6, so what remains is
+    MeshLib's ``float32`` exact-leaf sum and not the dipole approximation. ``beta=100`` is used and
+    the comparison is held at the shared ``1e-5`` (7x the measured worst); at ``beta=20`` it
+    reads 3.5-4.0e-06, and the default of 2 would fail it by three orders of magnitude -- which is
+    the point, since a comparison that passed at ``beta=2`` would be tolerating the approximation
+    rather than measuring the quantity.
 
     ``calcDipoles`` must run first and takes the tree, not the mesh alone; its two-argument overload
     is the one that *returns* the dipoles; the three-argument form fills a caller-owned buffer.
@@ -1709,7 +1695,7 @@ def test_winding_number_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     winding_ml = np.array(
         [
             mm.calcFastWindingNumber(
-                dipoles_ml, tree_ml, mesh_ml, mm.Vector3f(*point_np.tolist()), 20.0, mm.FaceId()
+                dipoles_ml, tree_ml, mesh_ml, mm.Vector3f(*point_np.tolist()), 100.0, mm.FaceId()
             )
             for point_np in query_np
         ]
@@ -1718,7 +1704,7 @@ def test_winding_number_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
 
     assert (winding_ml > 0.5).any()  # non-vacuity: inside and outside are both represented
     assert (winding_ml < 0.5).any()
-    assert np.allclose(winding_wp, winding_ml, rtol=1e-3, atol=1e-3)
+    assert np.allclose(winding_wp, winding_ml, rtol=1e-5, atol=1e-5)
 
 
 def test_winding_number_tiled_matches_igl_on_the_cpu() -> None:

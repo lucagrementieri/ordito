@@ -344,7 +344,7 @@ def test_transfer_onto_vertices_survives_a_sliver_source_face(device: str):
     assert np.all(np.isfinite(distance_wp.numpy()))
     assert np.all(np.isfinite(transferred_wp.numpy()))
     expected_np = closest_wp.numpy().astype(np.float64) @ direction_np
-    assert np.allclose(transferred_wp.numpy(), expected_np, rtol=1e-4, atol=1e-4)
+    assert np.allclose(transferred_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
 
 
 def test_transfer_onto_vertices_misses_stay_zero(device: str):

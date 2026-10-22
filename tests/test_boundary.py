@@ -171,8 +171,9 @@ def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str)
     edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
     assert np.array_equal(np.unique(edges_wp.numpy()), np.flatnonzero(selection_pml))
     vertices_wp = od.boundary.boundary_vertices(mesh_wp.points, mesh_wp.indices)
-    assert np.allclose(
-        vertices_wp.numpy(), mesh_tm.vertices[vertex_indices_tm], rtol=1e-4, atol=1e-4
+    # A gather of the stored float32 positions, so exact rather than close.
+    assert np.array_equal(
+        vertices_wp.numpy(), mesh_tm.vertices[vertex_indices_tm].astype(np.float32)
     )
 
 
@@ -671,28 +672,24 @@ def test_boundary_loop(request: pytest.FixtureRequest, mesh_name: str) -> None:
 @pytest.mark.parity("ears", "igl")
 def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -> None:
     """
-    Class B (an edge-numbering shift): ``ear_opp`` is offset by one between the two libraries.
+    Class A: the same ears in the same (ascending) order, with the same ``ear_opp``.
 
-    Both report an ear as ``(face, index of the non-boundary edge)`` and both find the same faces,
-    but the *edge numbering* differs and the difference is exactly a cyclic shift:
+    Both report an ear as ``(face, local index)``, and the index is libigl's on both sides: the
+    corner *opposite* the one non-boundary edge, as ``igl::on_boundary``'s columns are documented
+    ("whether opposite facet is on boundary"). ordito used to number the edge itself, from its
+    first corner -- the same answer up to a cyclic shift, ``(igl_opp + 1) % 3`` -- and now
+    returns igl's index directly, so the comparison needs no transform.
 
-    - ordito numbers local edge ``i`` as ``(faces[f, i], faces[f, (i + 1) % 3])``;
-    - libigl's ``ears`` reads its mask from ``on_boundary``, whose column ``i`` is documented as
-      "whether **opposite** facet is on boundary" -- edge ``i`` is the one *opposite vertex* ``i``,
-      i.e. ``(faces[f, (i + 1) % 3], faces[f, (i + 2) % 3])``.
-
-    So ``ordito_opp == (igl_opp + 1) % 3``, and that is the named transform. Neither convention is
-    wrong; ``boundary.ears``'s docstring states ordito's.
-
-    **This test replaces a vacuous one.** The previous version compared the two libraries on
+    **This test replaces a vacuous one.** An earlier version compared the two libraries on
     ``hemisphere`` and ``half_torus``, where *neither* returns any ear at all -- the assert was
     ``[] == []`` on both fixtures, so the numbering difference went unnoticed and any regression
     would have too. The inputs here are the smallest meshes that produce ears, and each case asserts
     the expected count first, so an implementation returning nothing fails rather than passes.
 
     The last assert is the one that does not lean on igl: for every reported ear it checks against
-    ``oriented_boundary_edges`` that the two edges *other* than ``ear_opp`` really are boundary
-    edges, under ordito's own numbering.
+    ``oriented_boundary_edges`` that the two edges touching the ``ear_opp`` corner really are
+    boundary edges and the one facing it is not. **Mutation probe:** the old edge numbering fails
+    the equality on every case (each ear's index is off by one).
     """
     faces_wp = wp.array(np.ascontiguousarray(faces_np.reshape(-1)), dtype=wp.int32, device=device)
     # Positions are irrelevant to ears (pure connectivity) but boundary_edges wants a vertex buffer.
@@ -712,42 +709,49 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
     assert ear_wp.size == expected_ears
     assert np.asarray(ear_igl).size == expected_ears
 
-    pairs_igl = np.stack([ear_igl, (np.asarray(ear_opp_igl) + 1) % 3], axis=1)
-    pairs_wp = np.stack([ear_wp.numpy(), ear_opp_wp.numpy()], axis=1)
-    assert np.array_equal(lexsort_rows(pairs_wp), lexsort_rows(pairs_igl))
+    assert np.array_equal(ear_wp.numpy(), np.asarray(ear_igl))
+    assert np.array_equal(ear_opp_wp.numpy(), np.asarray(ear_opp_igl))
     ear_bound_wp, ear_opp_bound_wp = od.boundary.ears(faces_wp, n_vertices=n_vertices)
-    pairs_bound_wp = np.stack([ear_bound_wp.numpy(), ear_opp_bound_wp.numpy()], axis=1)
-    assert np.array_equal(lexsort_rows(pairs_bound_wp), lexsort_rows(pairs_igl))
+    assert np.array_equal(ear_bound_wp.numpy(), np.asarray(ear_igl))
+    assert np.array_equal(ear_opp_bound_wp.numpy(), np.asarray(ear_opp_igl))
 
     oriented_boundary = od.boundary.oriented_boundary_edges(vertices_wp, faces_wp)
     boundary_set = {tuple(row) for row in oriented_boundary.numpy()}
     directed_edges = od.edges.faces_to_edges(faces_wp).numpy()
     for face_idx, opp in zip(ear_wp.numpy(), ear_opp_wp.numpy(), strict=True):
         f = int(face_idx)
-        for local_edge in ((int(opp) + 1) % 3, (int(opp) + 2) % 3):
+        # Local edge ``i`` runs from corner ``i``: the two leaving and entering the tip are on the
+        # boundary, the one facing it is not.
+        for local_edge in (int(opp), (int(opp) + 2) % 3):
             assert tuple(directed_edges[3 * f + local_edge]) in boundary_set
+        assert tuple(directed_edges[3 * f + (int(opp) + 1) % 3]) not in boundary_set
 
 
-def test_ears_none_on_smooth_boundary(sphere_irregular_band: tuple[tm.Trimesh, wp.Mesh]) -> None:
+@pytest.mark.parametrize(
+    ("mesh_name", "n_ears"),
+    [("saddle_graded", 2), ("torus_irregular_holes", 2), ("sphere_irregular_band", 0)],
+)
+@pytest.mark.parity("ears", "igl")
+def test_ears_match_igl_on_the_rim_fixtures(
+    request: pytest.FixtureRequest, mesh_name: str, n_ears: int
+) -> None:
     """
-    Class D exemption in test form: neither library finds an ear on the planar cut rims.
+    Class A: igl's ears and ``ear_opp`` on the boundary fixtures, element for element.
 
-    A plane cut of a triangulated surface leaves no triangle with two boundary edges on
-    ``sphere_irregular_band``'s two rims, so this is the negative half of
-    ``test_ears_match_igl`` and is kept separate from it rather than standing in for a comparison.
-    Not ``conftest.OPEN_MESHES``: ``saddle_graded`` is a split quad grid, two of whose corners are
-    single triangles -- ears, which both libraries find -- and ears are pure connectivity, so its
-    grading adds nothing ``test_ears_match_igl`` does not already cover.
+    The hand-built cases in ``test_ears_match_igl`` are the smallest meshes with ears; these are
+    the real rims. ``saddle_graded`` is a split quad grid two of whose corners are single
+    triangles, ``torus_irregular_holes`` has two triangles with two edges on its smallest holes,
+    and ``sphere_irregular_band``'s planar cut rims have none -- the negative arm, which used to
+    stand alone as a Class D exemption and is now one case of the comparison. The counts are
+    asserted first, so an implementation returning nothing fails the two positive arms.
     """
-    mesh_tm, mesh_wp = sphere_irregular_band
-    faces_np = mesh_tm.faces.astype(np.int64)
-
-    ear_igl, _ear_opp_igl = igl.ears(faces_np)
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    ear_igl, ear_opp_igl = igl.ears(mesh_tm.faces.astype(np.int64))
     ear_wp, ear_opp_wp = od.boundary.ears(mesh_wp.indices)
 
-    assert np.asarray(ear_igl).size == 0
-    assert ear_wp.shape == (0,)
-    assert ear_opp_wp.shape == (0,)
+    assert np.asarray(ear_igl).size == n_ears
+    assert np.array_equal(ear_wp.numpy(), np.asarray(ear_igl))
+    assert np.array_equal(ear_opp_wp.numpy(), np.asarray(ear_opp_igl))
 
 
 def test_boundary_queries_watertight(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:

@@ -82,7 +82,7 @@ def test_load_mesh_data_roundtrip(tmp_path: Path, device: str):
 )
 def test_load_mesh_matches_pytorch3d(tmp_path: Path, device: str):
     """
-    Class B: ``pytorch3d.io.load_ply`` reads the same file to the same buffers after a float cast.
+    Class A: ``pytorch3d.io.load_ply`` reads the same file to the same buffers, bit for bit.
 
     Both sides parse the *same* PLY, so the only thing between them is storage: pytorch3d returns
     float32 verts and int64 faces where meshio hands ordito float64 that ``wp.vec3`` narrows, and

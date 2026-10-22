@@ -1148,16 +1148,10 @@ def ears(
     """
     Find ear faces (triangles with exactly two boundary edges).
 
-    For each ear face, ``ear_opp`` is the local index of the non-boundary edge, where local edge
-    ``i`` is ``(faces[f, i], faces[f, (i + 1) % 3])``.
-
-    !!! note "``igl::ears`` numbers the edge differently"
-
-        The same quantity in ``igl.ears`` is indexed *opposite-vertex* style -- edge ``i`` is the
-        one facing vertex ``i``, ``(faces[f, (i + 1) % 3], faces[f, (i + 2) % 3])`` -- because it
-        reads its mask from ``igl::on_boundary``, whose columns are documented that way. The two
-        agree on *which* faces are ears and differ on the index by a cyclic shift:
-        ``ordito_opp == (igl_opp + 1) % 3``.
+    For each ear face, ``ear_opp`` is the local index of the corner opposite the non-boundary
+    edge -- the ear's tip -- so the interior edge is
+    ``(faces[f, (ear_opp + 1) % 3], faces[f, (ear_opp + 2) % 3])``. This is ``igl.ears``'
+    numbering, edge ``i`` being the one facing corner ``i``.
 
     Parameters
     ----------
@@ -1179,8 +1173,8 @@ def ears(
         ``(n_ears,)`` face indices of ear triangles on ``faces.device``, ascending. Empty when no
         ears exist.
     ear_opp : wp.array[wp.int32]
-        ``(n_ears,)`` local edge index of the interior edge for each ear face, same length as
-        ``ear``.
+        ``(n_ears,)`` local index of the corner opposite each ear face's interior edge, same length
+        as ``ear``.
 
     Raises
     ------
@@ -1201,7 +1195,7 @@ def ears(
     vertices, faces = od.creation.grid(count=(2, 2))
     ear, ear_opp = od.boundary.ears(faces)
     print(ear.numpy().tolist())  # [0, 1]
-    print(ear_opp.numpy().tolist())  # [2, 0]
+    print(ear_opp.numpy().tolist())  # [1, 2]
     print(faces.numpy().tolist())  # [0, 2, 3, 0, 3, 1]
     ```
     """

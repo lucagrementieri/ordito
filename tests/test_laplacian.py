@@ -121,7 +121,7 @@ def test_face_gradients_matches_igl_and_pyvista(
         ],
         axis=1,
     )
-    assert np.allclose(averaged_np, gradients_pv, rtol=1e-4, atol=1e-4)
+    assert np.allclose(averaged_np, gradients_pv, rtol=1e-5, atol=1e-5)
 
 
 def test_face_gradients_pyvista_reference_is_tangential() -> None:
@@ -465,9 +465,12 @@ def test_cotmatrix_and_mass_match_pytorch3d(sphere_well_shaped: tuple[tm.Trimesh
     assert np.allclose(1.0 / inv_areas_p3d, 3.0 * np.diag(mass_np), rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("laplacian_equal_weight", "pytorch3d")
 @pytest.mark.parity("laplacian_inverse_distance", "pytorch3d")
-def test_laplacian_operators_match_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_laplacian_operators_match_pytorch3d(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
     """
     Class B: the two ``ops`` graph Laplacians are ordito's two ``equal_weight`` branches.
 
@@ -483,8 +486,16 @@ def test_laplacian_operators_match_pytorch3d(sphere_irregular: tuple[tm.Trimesh,
     That second measurement is why there is no ``edge_weights=`` keyword to add here: pytorch3d's
     ``norm_laplacian`` *is* ``laplacian(equal_weight=False)``, and ``filter_taubin`` already takes
     it through ``laplacian_operator=``.
+
+    On the open fixture pytorch3d's ``edges_packed`` is the **undirected** 1-ring, which is
+    ordito's ``symmetric=True`` branch: equal there to **0.0** (uniform) and **1.2e-07**
+    (inverse-distance), against **0.5 / 0.95** for the default directed operator, whose rim rows
+    drop the neighbour each rim vertex only reaches backwards -- asserted, so the branch choice is
+    pinned from both sides. On the closed fixture the two branches coincide and the default is
+    the one compared.
     """
-    mesh_tm, mesh_wp = sphere_irregular
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    symmetric = not mesh_tm.is_watertight
     n_vertices = len(mesh_tm.vertices)
     mesh_p3d = trimesh_to_pytorch3d(mesh_tm)
     verts_p3d, edges_p3d = mesh_p3d.verts_packed(), mesh_p3d.edges_packed()
@@ -496,11 +507,22 @@ def test_laplacian_operators_match_pytorch3d(sphere_irregular: tuple[tm.Trimesh,
     normalized_p3d = inverse_p3d / np.where(row_sums_p3d == 0.0, 1.0, row_sums_p3d)
 
     uniform_np = bsr_to_dense(
-        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True), n_vertices
+        od.laplacian.laplacian(
+            mesh_wp.points, mesh_wp.indices, equal_weight=True, symmetric=symmetric
+        ),
+        n_vertices,
     )
     inverse_np = bsr_to_dense(
-        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=False), n_vertices
+        od.laplacian.laplacian(
+            mesh_wp.points, mesh_wp.indices, equal_weight=False, symmetric=symmetric
+        ),
+        n_vertices,
     )
+    if symmetric:
+        directed_np = bsr_to_dense(
+            od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True), n_vertices
+        )
+        assert np.abs(directed_np - uniform_p3d - np.eye(n_vertices)).max() > 0.1
 
     assert np.array_equal(np.diag(uniform_p3d), np.full(n_vertices, -1.0, dtype=np.float32))
     assert np.array_equal(uniform_np, uniform_p3d + np.eye(n_vertices))
@@ -792,7 +814,7 @@ def test_robust_laplacian_matches_igl_intrinsic_assembly(
 
     dense_igl = np.asarray(laplacian_igl.todense())
     assert np.allclose(
-        bsr_to_dense(laplacian_wp, len(mesh_tm.vertices)), dense_igl, rtol=1e-4, atol=1e-5
+        bsr_to_dense(laplacian_wp, len(mesh_tm.vertices)), dense_igl, rtol=1e-5, atol=1e-5
     )
 
 
@@ -821,7 +843,7 @@ def test_robust_laplacian_matches_igl_intrinsic_delaunay(
     assert np.allclose(
         bsr_to_dense(laplacian_wp, n_vertices),
         np.asarray(laplacian_igl.todense()),
-        rtol=1e-4,
+        rtol=1e-5,
         atol=1e-5,
     )
 
@@ -1052,7 +1074,7 @@ def test_connection_laplacian_matches_potpourri3d(
     assert abs(connection_wp - connection_wp.conj().T).max() < 1e-9
 
     # Gauge-invariant 1: the magnitudes are the cotangent weights, phases removed.
-    assert sparse_allclose(abs(connection_wp), abs(connection_pp), rtol=1e-4, atol=1e-5)
+    assert sparse_allclose(abs(connection_wp), abs(connection_pp), rtol=1e-5, atol=1e-5)
     # Gauge-invariant 2: the spectrum, since a gauge change is a diagonal unitary conjugation. So is
     # a principal block's -- the conjugation restricted to it is still diagonal and unitary -- which
     # keeps the dense eigensolve to the leading 1 024 vertices: on the 68 x 68 ``saddle_graded``
@@ -1061,7 +1083,7 @@ def test_connection_laplacian_matches_potpourri3d(
     assert np.allclose(
         np.linalg.eigvalsh(connection_wp[block, block].toarray()),
         np.linalg.eigvalsh(connection_pp[block, block].toarray()),
-        rtol=1e-4,
+        rtol=1e-5,
         atol=1e-5,
     )
 

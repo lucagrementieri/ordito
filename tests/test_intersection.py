@@ -22,7 +22,7 @@ from vtkmodules.vtkFiltersGeneral import vtkClipClosedSurface
 import ordito as od
 from ordito.constants import TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
-from tests.comparisons import hausdorff_two_sided, lexsort_rows
+from tests.comparisons import assert_nearest_bijection, hausdorff_two_sided, lexsort_rows
 from tests.conftest import MESHES, OPEN_MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -326,7 +326,7 @@ def test_plane_and_mesh_sections_match_meshlib(
     assert np.isclose(
         float(np.linalg.norm(crossing_wp[:, 1] - crossing_wp[:, 0], axis=1).sum()),
         sum(float(np.linalg.norm(np.diff(c, axis=0), axis=1).sum()) for c in contours_np),
-        rtol=1e-4,
+        rtol=1e-5,
     )
 
 
@@ -1371,32 +1371,43 @@ def test_triangle_pair_answers_do_not_depend_on_the_capacity(
     assert od.validation.is_self_intersecting(dome_wp, max_triangle_collisions=1)
 
 
-def _sliced_meshes_equivalent(
+def _assert_sliced_meshes_equivalent(
     vertices_a_np: np.ndarray,
     faces_a_np: np.ndarray,
     vertices_b_np: np.ndarray,
     faces_b_np: np.ndarray,
     plane_normal: np.ndarray,
     plane_origin: np.ndarray,
-    *,
-    rtol: float = 1e-5,
-    atol: float = 1e-5,
-) -> bool:
-    if len(faces_a_np) != len(faces_b_np):
-        return False
+) -> None:
+    """
+    Assert two sliced meshes hold the same triangles, winding included, up to face order.
+
+    Each triangle is matched by its centroid (a nearest-neighbour bijection), and the matched pair
+    must then agree corner for corner at ``1e-5`` under one of the three *cyclic* rotations -- so a
+    flipped triangle, a different quad diagonal or a missing face fails. The vertex counts must
+    agree too, which pins the duplication convention along the cut.
+    """
+    assert len(faces_a_np) == len(faces_b_np)
+    assert len(vertices_a_np) == len(vertices_b_np)
     if len(faces_a_np) == 0:
         # A plane that touches without cutting (test_slice_mesh_with_plane_on_plane) leaves both
-        # sides with no faces and nothing left to compare -- trimesh's own .bounds is None for a
-        # zero-face mesh, so the checks below cannot run on this case at all.
-        return len(vertices_a_np) == 0 and len(vertices_b_np) == 0
-    mesh_a_tm = tm.Trimesh(vertices_a_np, faces_a_np, process=False)
-    mesh_b_tm = tm.Trimesh(vertices_b_np, faces_b_np, process=False)
-    if not np.allclose(mesh_a_tm.bounds, mesh_b_tm.bounds, rtol=rtol, atol=atol):
-        return False
-    if not np.isclose(mesh_a_tm.area, mesh_b_tm.area, rtol=1e-4, atol=1e-4):
-        return False
-    dots_b_np = np.dot(plane_normal, (mesh_b_tm.vertices - plane_origin).T)
-    return bool(np.min(dots_b_np) >= -max(TOLERANCE_MERGE, 1e-5))
+        # sides with no faces and nothing left to compare.
+        return
+    corners_a_np = np.asarray(vertices_a_np, dtype=np.float64)[faces_a_np]
+    corners_b_np = np.asarray(vertices_b_np, dtype=np.float64)[faces_b_np]
+    match_np = assert_nearest_bijection(corners_b_np.mean(axis=1), corners_a_np.mean(axis=1), 1e-5)
+    matched_a_np = corners_a_np[match_np]
+    rotations_agree_np = np.stack(
+        [
+            np.isclose(
+                np.roll(matched_a_np, shift, axis=1), corners_b_np, rtol=1e-5, atol=1e-5
+            ).all(axis=(1, 2))
+            for shift in range(3)
+        ]
+    )
+    assert rotations_agree_np.any(axis=0).all()
+    dots_b_np = np.dot(corners_b_np.reshape(-1, 3) - plane_origin, plane_normal)
+    assert np.min(dots_b_np) >= -max(TOLERANCE_MERGE, 1e-5)
 
 
 def _box_corner_plane(mesh_tm: tm.Trimesh) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -1436,7 +1447,12 @@ def test_slice_mesh_with_plane_matches_trimesh(
     expected_face_count: int | None,
 ) -> None:
     """
-    Class B: cross-sections against ``slice_faces_plane``, compared as canonical winding rows.
+    Class B: cross-sections against ``slice_faces_plane``, triangle for triangle up to face order.
+
+    The named transform is the face order alone: every triangle is matched by centroid and must
+    agree corner for corner, winding included, and the vertex counts must agree -- ordito follows
+    trimesh in giving each cut face its own crossing points, so the slice is open along the cut on
+    both sides.
 
     ``box_corner`` and ``box_top`` share the ``unit_box`` fixture and pin the retriangulation on
     flat faces with clean corners -- one crossing three faces at once, the case where the
@@ -1446,7 +1462,7 @@ def test_slice_mesh_with_plane_matches_trimesh(
     cut meets many small faces and, on ``hemisphere``, an existing boundary.
     ``on_plane`` is the boundary between *cut* and *miss*, where a strict-versus-inclusive side
     test changes the answer -- trimesh's convention is the reference, and both sides end up
-    empty, which ``_sliced_meshes_equivalent`` now handles directly rather than needing its own
+    empty, which ``_assert_sliced_meshes_equivalent`` handles directly rather than needing a
     separate assertion.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -1459,7 +1475,7 @@ def test_slice_mesh_with_plane_matches_trimesh(
         )
         vertices_wp_np = vertices_wp.numpy()
         faces_wp_np = faces_wp.numpy().reshape(-1, 3)
-        assert _sliced_meshes_equivalent(
+        _assert_sliced_meshes_equivalent(
             vertices_tm, faces_tm, vertices_wp_np, faces_wp_np, plane_normal_np, plane_origin_np
         )
         if expected_face_count is not None:
@@ -2160,7 +2176,7 @@ def test_clip_mesh_with_field_section_is_the_marching_triangles_curve(
     rim_segments_np = positions_np[rim_edges_np]
     rim_length = float(np.linalg.norm(rim_segments_np[:, 1] - rim_segments_np[:, 0], axis=1).sum())
     contour_length = _total_length([curve.numpy().astype(np.float64) for curve in curves], closed)
-    assert np.isclose(rim_length, contour_length, rtol=1e-4)
+    assert np.isclose(rim_length, contour_length, rtol=1e-5)
 
 
 def test_clip_mesh_with_field_accepts_a_float64_field(

@@ -230,11 +230,11 @@ def test_graph_laplacian_matches_igl(request: pytest.FixtureRequest, mesh_name: 
 @pytest.mark.parity("harmonic_conditioning", "igl")
 def test_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """
-    Class A: the same boundary constraints in, the same interior UVs out, at ``1e-4``.
+    Class A: the same boundary constraints in, the same interior UVs out.
 
     Both sides receive the identical circle map, so nothing about the boundary is under test here --
-    the comparison isolates the interior solve. The tolerance is the CG stop, not a disagreement:
-    igl factorizes where ordito iterates.
+    the comparison isolates the interior solve. igl factorizes where ordito iterates and verifies;
+    measured 1.3e-07 at worst on both fixtures and devices, so the standard tolerance holds.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)
@@ -248,7 +248,7 @@ def test_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     )
     uv_igl = igl.harmonic(vertices_np, faces_np, boundary_np, boundary_uv_np, 1)
 
-    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
+    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-5, atol=1e-5)
 
 
 def _polyharmonic_reference(
@@ -293,9 +293,12 @@ def _polyharmonic_reference(
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular_cap", "sphere_irregular_band"])
 def test_polyharmonic_matches_reference(request: pytest.FixtureRequest, mesh_name: str, k: int):
     """
-    Class B: igl's operators with the barycentric mass, solved directly, at ``1e-4``.
+    Class B: igl's operators with the barycentric mass, solved directly.
 
-    The named transform is the mass: igl.harmonic's default is Voronoi. ``k == 3`` is solved by a
+    The named transform is the mass: igl.harmonic's default is Voronoi. ``k == 2`` agrees to
+    7.0e-08 and holds the standard ``1e-5``; ``k == 3`` reaches 1.3e-04 (CUDA, ``cap``; 4.4e-05 to
+    6.8e-05 elsewhere) because its system squares the biharmonic one's conditioning, which igl
+    flags as not numerically robust, so it keeps ``1e-4``. ``k == 3`` is solved by a
     factorization; its conjugate gradient used to stop at its tolerance 1e-5 to 1e-2 of the range
     away from the answer on these fixtures.
     """
@@ -311,20 +314,21 @@ def test_polyharmonic_matches_reference(request: pytest.FixtureRequest, mesh_nam
     )
     uv_ref = _polyharmonic_reference(vertices_np, faces_np, boundary_np, boundary_uv_np, k)
 
-    assert np.allclose(uv_wp.numpy(), uv_ref, rtol=1e-4, atol=1e-4)
+    tolerance = 1e-5 if k == 2 else 1e-4
+    assert np.allclose(uv_wp.numpy(), uv_ref, rtol=tolerance, atol=tolerance)
 
 
 def test_biharmonic_on_a_graded_patch_matches_a_direct_solve(device: str):
     """
-    Class B against ``_polyharmonic_reference`` on the graded saddle, at 1 % of the UV range.
+    Class B against ``_polyharmonic_reference`` on the graded saddle, at 2e-4 of the UV range.
 
     The graded patch's biharmonic system is past what conjugate gradient reaches in ``float64``: it
     stalled for its whole iteration cap and returned a map 0.76 of the range away on this fixture
     (0.29 on the 68 x 68 one, 0.54 on ``benchmarks``' 133 x 133), with no warning. The solve is
-    verified now and falls back to a factorization: measured 4.4e-5 of the range, so the bound is
-    over 200x off the agreement and 76x under the defect. On the benchmark mesh the answer is
-    itself ambiguous at the percent level (direct solves under four SuperLU orderings disagree by
-    0.6 to 2.2 %), which is why this runs on the smaller fixture.
+    verified now and falls back to a factorization: measured 3.5e-05 (CUDA) / 5.8e-05 (CPU) of the
+    range, so the bound is 3x the worse device and 3 800x under the defect. On the benchmark mesh
+    the answer is itself ambiguous at the percent level (direct solves under four SuperLU orderings
+    disagree by 0.6 to 2.2 %), which is why this runs on the smaller fixture.
     """
     vertices_np, faces_np = saddle_graded_arrays()
     vertices_wp, faces_wp = numpy_to_warp(
@@ -343,7 +347,7 @@ def test_biharmonic_on_a_graded_patch_matches_a_direct_solve(device: str):
     )
 
     assert np.ptp(uv_ref) > 1.0
-    assert np.abs(uv_wp.numpy() - uv_ref).max() < 0.01 * np.ptp(uv_ref)
+    assert np.abs(uv_wp.numpy() - uv_ref).max() < 2e-4 * np.ptp(uv_ref)
 
 
 def test_biharmonic_is_deterministic(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
@@ -400,7 +404,8 @@ def test_tutte_matches_igl_reference(request: pytest.FixtureRequest, mesh_name: 
         )
     )
 
-    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
+    # Measured 3.8e-08 at worst, both devices.
+    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-5, atol=1e-5)
 
 
 def test_tutte_disk_is_fold_free(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
@@ -452,7 +457,7 @@ def test_arap_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     )
     uv_igl = _arap_igl(vertices_np, faces_np, boundary_np, boundary_uv_np, uv_init_np, 10)
 
-    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
+    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-5, atol=1e-5)
 
 
 def test_arap_free_boundary_matches_igl(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
@@ -478,14 +483,15 @@ def test_arap_free_boundary_matches_igl(saddle_graded: tuple[tm.Trimesh, wp.Mesh
     )
     uv_igl = _arap_igl(vertices_np, faces_np, fixed_np, fixed_uv_np, uv_init_np, 4)
 
-    # float32-UV drift vs igl's float64 grows slowly; four iterations stays well under 1e-3.
-    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-3, atol=1e-3)
+    # float32-UV drift vs igl's float64 grows slowly; four iterations stay inside the standard 1e-5
+    # on both devices.
+    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-5, atol=1e-5)
 
 
 def test_arap_default_tolerance_tracks_a_tight_solve(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     # ``arap`` defaults its inner CG to 1e-7 rather than the 1e-8 the other solvers use: its global
     # solves are inner steps of a truncated outer iteration. Guard that the looser default still
-    # tracks a tight solve two orders below it, far inside the 1e-4 gate the igl oracles use. The
+    # tracks a tight solve two orders below it, at the 1e-5 gate the igl oracles use. The
     # pinned rows must equal the prescribed UV exactly (they are re-enforced every iteration).
     _, mesh_wp = saddle_graded
     boundary_wp, boundary_uv_wp, uv_init_wp = _harmonic_warm_start(mesh_wp)
@@ -565,7 +571,7 @@ def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
         vertices_np, faces_np, pins_np.astype(np.int64), pins_uv_np.astype(np.float64)
     )
 
-    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
+    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-5, atol=1e-5)
 
 
 def test_lscm_closed_mesh_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
@@ -590,7 +596,7 @@ def test_lscm_closed_mesh_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mes
         vertices_np, faces_np, pins_np.astype(np.int64), pins_uv_np.astype(np.float64)
     )
 
-    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
+    assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-5, atol=1e-5)
 
 
 def test_lscm_is_fold_free(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):

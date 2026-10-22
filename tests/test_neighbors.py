@@ -798,16 +798,18 @@ def test_query_nearest_matches_pytorch3d(
 @pytest.mark.parity("query_ball_hashgrid", "pytorch3d")
 def test_query_ball_matches_pytorch3d(device: str, backend: Literal["bvh", "hashgrid"]) -> None:
     """
-    Class B: ``ops.ball_query`` after removing its ``K`` cap, compared as **sets** per query.
+    Class B: ``ops.ball_query`` after removing its ``K`` cap, compared per query in index order.
 
     Two named transforms, both forced by pytorch3d's fixed-width output. It returns a dense
     ``(N, P, K)`` block padded with ``-1``, so ``K`` has to be passed at or above the largest true
     neighbour count -- **26** on this cloud, and a smaller ``K`` is a silent truncation rather than
-    an error. And the fill order is ascending **index**, not ascending distance (verified), so only
-    the set is comparable; ``return_sorted`` has no counterpart to pin against.
+    an error. And the fill order is ascending **index**, not ascending distance (asserted below),
+    so the second transform sorts ordito's row by index; ``return_sorted`` has no counterpart to
+    pin against. Rows are compared as arrays rather than sets, so a repeated neighbour cannot hide,
+    and the distances ride along: pytorch3d's are **squared**, so their square root is compared.
 
     The cap is asserted not to bite, which is the anti-vacuity check that matters here: a ``K``
-    swallowing every row would make the set comparison trivially true on the truncated prefix.
+    swallowing every row would make the row comparison trivially true on the truncated prefix.
     Some rows are legitimately **empty** at this radius (the cloud is Gaussian, so the tails are
     sparse), which is why the second assert is on the total rather than on the per-row minimum.
     """
@@ -819,7 +821,8 @@ def test_query_ball_matches_pytorch3d(device: str, backend: Literal["bvh", "hash
         points_to_torch(queries_np, device), points_to_torch(points_np, device), K=40, radius=radius
     )
     indices_p3d = ball_p3d.idx[0].cpu().numpy()
-    flat_wp, _, offsets_wp = od.neighbors.query_ball_with_offsets(
+    squared_p3d = ball_p3d.dists[0].cpu().numpy()
+    flat_wp, distances_wp, offsets_wp = od.neighbors.query_ball_with_offsets(
         points_to_warp(points_np, device),
         points_to_warp(queries_np, device),
         radius,
@@ -829,10 +832,19 @@ def test_query_ball_matches_pytorch3d(device: str, backend: Literal["bvh", "hash
     counts_p3d = (indices_p3d >= 0).sum(axis=1)
     assert counts_p3d.max() < 40, "the K cap truncated a row; raise it"
     assert int(counts_p3d.sum()) > queries_np.shape[0]
-    flat_np, offsets_np = flat_wp.numpy(), offsets_wp.numpy()
+    flat_np, distances_np, offsets_np = flat_wp.numpy(), distances_wp.numpy(), offsets_wp.numpy()
     for query in range(queries_np.shape[0]):
-        assert set(flat_np[offsets_np[query] : offsets_np[query + 1]].tolist()) == set(
-            indices_p3d[query][indices_p3d[query] >= 0].tolist()
+        found_p3d = indices_p3d[query] >= 0
+        row_p3d = indices_p3d[query][found_p3d]
+        assert np.all(np.diff(row_p3d) > 0)  # pytorch3d fills in ascending index order
+        row_wp = slice(offsets_np[query], offsets_np[query + 1])
+        order_wp = np.argsort(flat_np[row_wp])
+        assert np.array_equal(flat_np[row_wp][order_wp], row_p3d)
+        assert np.allclose(
+            distances_np[row_wp][order_wp],
+            np.sqrt(squared_p3d[query][found_p3d]),
+            rtol=1e-5,
+            atol=1e-5,
         )
 
 
@@ -844,8 +856,10 @@ def test_query_ball_matches_open3d(device: str, backend: Literal["bvh", "hashgri
     Class A on the neighbour sets: ``fixed_radius_search`` against the ``*_with_offsets`` form.
 
     Open3D returns the same CSR-like ``(indices, distances, offsets)`` triple ordito's offsets
-    form does, with squared distances. Per-query neighbour *sets* are compared (order within a
-    radius query is not part of either contract), and the counts vector is compared exactly. The
+    form does, with squared distances. Each query's row is compared after sorting both sides by
+    index (order within a radius query is not part of either contract) -- as arrays, so a repeated
+    neighbour cannot hide -- and its distances against the square root of Open3D's, row-aligned by
+    that sort; the counts vector is compared exactly. The
     cloud is random, so no point sits at exactly the radius and the two libraries' boundary rules
     (Open3D's radius searches are exclusive at exactly ``r``; ordito's inclusive) cannot differ.
     """
@@ -857,26 +871,36 @@ def test_query_ball_matches_open3d(device: str, backend: Literal["bvh", "hashgri
     points_wp = points_to_warp(points, device)
     queries_wp = points_to_warp(queries, device)
     query_ball_with_offsets = partial(od.neighbors.query_ball_with_offsets, backend=backend)
-    neighbors_wp, _distances_wp, offsets_wp = query_ball_with_offsets(points_wp, queries_wp, radius)
+    neighbors_wp, distances_wp, offsets_wp = query_ball_with_offsets(points_wp, queries_wp, radius)
 
     nns_o3d = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(points))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
     assert nns_o3d.fixed_radius_index(radius)
-    indices_o3d, _squared_o3d, offsets_o3d = nns_o3d.fixed_radius_search(
+    indices_o3d, squared_o3d, offsets_o3d = nns_o3d.fixed_radius_search(
         o3d.core.Tensor(queries),  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
         radius,
     )
     indices_o3d = indices_o3d.numpy()
+    squared_o3d = squared_o3d.numpy()
     offsets_o3d = offsets_o3d.numpy()
 
     neighbors_np = neighbors_wp.numpy()
+    distances_np = distances_wp.numpy()
     bounds_np = offsets_wp.numpy()
     assert int(bounds_np[-1]) == neighbors_np.size
     starts_np, ends_np = bounds_np[:-1], bounds_np[1:]
     assert np.array_equal(ends_np - starts_np, np.diff(offsets_o3d))
     for query_index in range(queries.shape[0]):
-        set_wp = set(neighbors_np[starts_np[query_index] : ends_np[query_index]])
-        set_o3d = set(indices_o3d[offsets_o3d[query_index] : offsets_o3d[query_index + 1]])
-        assert set_wp == set_o3d
+        row_wp = slice(starts_np[query_index], ends_np[query_index])
+        row_o3d = slice(offsets_o3d[query_index], offsets_o3d[query_index + 1])
+        order_wp = np.argsort(neighbors_np[row_wp])
+        order_o3d = np.argsort(indices_o3d[row_o3d])
+        assert np.array_equal(neighbors_np[row_wp][order_wp], indices_o3d[row_o3d][order_o3d])
+        assert np.allclose(
+            distances_np[row_wp][order_wp],
+            np.sqrt(squared_o3d[row_o3d][order_o3d]),
+            rtol=1e-5,
+            atol=1e-5,
+        )
     assert neighbors_np.size > 0  # non-vacuous: the radius actually finds neighbours
 
 
@@ -1150,7 +1174,7 @@ def test_query_nearest_clustered(device: str, backend: Literal["bvh", "hashgrid"
         indices_wp, distances_wp = query_nearest(points_wp, queries_wp, k=k)
         query_distances_np, query_indices_np = KDTree(points).query(queries, k=k)
         assert np.array_equal(indices_wp.numpy(), np.asarray(query_indices_np))
-        assert np.allclose(distances_wp.numpy(), query_distances_np, rtol=1e-5, atol=1e-4)
+        assert np.allclose(distances_wp.numpy(), query_distances_np, rtol=1e-5, atol=1e-5)
 
 
 def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> None:
@@ -2037,9 +2061,10 @@ def test_query_ball_matches_meshlib(device: str, backend: Literal["bvh", "hashgr
     Class B: ``findPointsInBall`` reports its neighbours through a *callback*, one at a time.
 
     Two transforms, both forced by the interface. The results arrive by callback rather than as an
-    array, so they are accumulated in Python and the answer is a *set* per query -- which is all
-    either contract promises for a radius query. And the callback's ``distSq`` is squared, so the
-    square root is the second transform, the same one the open3d comparison above makes.
+    array, so they are accumulated in Python and each query's row is compared sorted by index --
+    order is all either contract leaves free for a radius query, and an array comparison rather
+    than a set one keeps a repeated neighbour visible. And the callback's ``distSq`` is squared, so
+    the square root is the second transform, the same one the open3d comparison above makes.
 
     ``Ball3f`` is likewise built from a centre and a **squared** radius (``radiusSq``), which is the
     field a call written against a plain radius would silently get wrong by a square -- so the
@@ -2090,7 +2115,7 @@ def test_query_ball_matches_meshlib(device: str, backend: Literal["bvh", "hashgr
         order_ml = np.argsort(indices_ml)
         order_wp = np.argsort(neighbours_wp[query_index].numpy())
 
-        assert set(neighbours_wp[query_index].list()) == set(indices_ml.tolist())
+        assert np.array_equal(neighbours_wp[query_index].numpy()[order_wp], indices_ml[order_ml])
         assert np.allclose(
             distances_wp[query_index].numpy()[order_wp],
             np.sqrt(squared_ml[order_ml]),
@@ -2159,7 +2184,8 @@ def test_query_nearest_matches_meshlib(
     takes only a ``PointCloud`` and a neighbour count -- there is no separate query set -- so the
     comparison is the cloud against itself; it **excludes** each point from its own neighbour list,
     so ordito is asked for ``k + 1`` and its first column (the point itself, at distance 0) is
-    dropped; and its rows are *not* distance-ordered, so the two are compared as sets per row.
+    dropped; and its rows are *not* distance-ordered, so both rows are sorted by index and compared
+    as arrays (a set would hide a repeated neighbour).
 
     The flat ``Buffer_VertId`` is reshaped to ``(n_points, k)`` -- there is no shape on the returned
     buffer, only ``n * k`` ids in row-major order, so a wrong ``k`` reshapes silently into a
@@ -2191,8 +2217,7 @@ def test_query_nearest_matches_meshlib(
 
     assert np.array_equal(indices_np[:, 0], np.arange(points_np.shape[0]))  # the self column
     assert neighbours_ml.shape == (points_np.shape[0], k)
-    for row_wp, row_ml in zip(indices_np[:, 1:], neighbours_ml, strict=True):
-        assert set(row_wp.tolist()) == set(row_ml.tolist())
+    assert np.array_equal(np.sort(indices_np[:, 1:], axis=1), np.sort(neighbours_ml, axis=1))
 
     if k != 1:
         return
