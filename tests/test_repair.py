@@ -16,6 +16,7 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 from pymeshfix import _meshfix
+from scipy.spatial import KDTree
 
 import ordito as od
 from benchmarks.meshes import BUILDERS
@@ -2565,39 +2566,55 @@ def _aspect_degenerate_count(
     return int((~(aspect < critical)).sum())
 
 
-# (mesh, critical aspect ratio, max_deviation over the bounding-box diagonal). The saddle's
-# graded needles all clear at the looser bound, which is where a broken collapse selection shows;
-# the sphere at the tight bound keeps most of its degenerate faces in both libraries, which is
-# where a broken deviation bound shows.
+def _input_vertex_faces(
+    vertices_np: np.ndarray, output: tm.Trimesh, tolerance: float
+) -> set[tuple[int, ...]]:
+    # The output's faces as sorted triples of input vertex indices: every output vertex must sit
+    # on an input vertex (both libraries collapse into an endpoint and never move one).
+    distance, index = KDTree(vertices_np).query(np.asarray(output.vertices))
+    assert np.max(distance) <= tolerance
+    rows = np.sort(np.asarray(index)[np.asarray(output.faces)], axis=1)
+    return {tuple(row) for row in rows.tolist()}
+
+
+# (mesh, critical aspect ratio, max_deviation over the bounding-box diagonal, least face overlap).
+# The saddle's graded needles all clear, which is where a broken collapse selection shows; the
+# sphere at the tight bound keeps most of its degenerate faces in both libraries, which is where a
+# broken deviation bound shows.
 @pytest.mark.parity("fix_degeneracies", "meshlib")
 @pytest.mark.parametrize(
-    ("mesh_name", "critical", "relative_deviation"),
-    [("saddle_graded", 100.0, 1e-3), ("sphere_irregular", 100.0, 1e-4)],
+    ("mesh_name", "critical", "relative_deviation", "min_overlap"),
+    [("saddle_graded", 100.0, 1e-3, 0.8), ("sphere_irregular", 100.0, 1e-4, 0.95)],
 )
 def test_fix_degeneracies_matches_meshlib(
     request: pytest.FixtureRequest,
     mesh_name: str,
     critical: float,
     relative_deviation: float,
+    min_overlap: float,
     device: str,
 ) -> None:
     """
-    Class C: MeshLib's ``fixMeshDegeneracies`` in ``Decimate`` mode picks different moves.
+    Class C: MeshLib's ``fixMeshDegeneracies`` (``Decimate``): the same moves, another order.
 
-    Both remove degenerate faces by local moves bounded by ``maxDeviation``, but MeshLib decimates
-    the neighbourhood with a quadric while ordito flips caps and collapses needles to edge
-    midpoints, so the outputs share no triangulation (on the saddle MeshLib keeps 1 848 of 2 178
-    faces, ordito 2 027). What is asserted is the contract both state:
+    Both grow a region three rings around the degenerate faces, flip toward Delaunay within the
+    deviation and angle bounds, and collapse every region edge up to ``maxDeviation`` into an
+    endpoint, shortest first. MeshLib runs one serial queue; ordito commits conflict-free batches
+    ranked by length within each neighbourhood, so where many edges tie (the saddle's graded rows)
+    the two keep different vertices: 986 and 1 020 of 1 156, with no edge under the bound left in
+    either. Asserted:
 
+    - every output vertex is an input vertex, and the two outputs share at least ``min_overlap``
+      of their faces (intersection over union; measured 0.839 on the saddle, 0.996 on the sphere);
     - ordito leaves no more degenerate faces than MeshLib, judged by one aspect-ratio rule on both
       (saddle 0 and 0 of 198; sphere 31 and 31 of 33);
-    - each output stays within ``max_deviation`` of the input surface (ordito 4e-8 and 3.1e-5 of
+    - each output stays within ``max_deviation`` of the input surface (ordito 3.2e-7 and 3.5e-5 of
       the diagonal against bounds of 1e-3 and 1e-4) and within twice it of the other output.
 
-    Mutation probes: with the collapse selection disabled the saddle keeps all **198** degenerate
-    faces (MeshLib: 0); with the deviation tests in both moves removed the sphere's output moves
-    **9.4e-4** of the diagonal from its input, 9x the 1e-4 bound, where it measures 3.1e-5 (3.3x
-    under it).
+    Mutation probes: with the collapses disabled the saddle's overlap falls to **0.74** (and it
+    keeps all 198 degenerate faces); with the flips unbounded by ``max_deviation`` the sphere's
+    falls to **0.66** and its output moves 5.6e-3 of the diagonal from its input, 56x the bound;
+    collapsing to the edge midpoint puts saddle vertices 3.3e-4 off the input, 110x the tolerance.
     """
     mesh_tm, _mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.asarray(mesh_tm.vertices)
@@ -2619,6 +2636,11 @@ def test_fix_degeneracies_matches_meshlib(
     params_ml.mode = mm.FixMeshDegeneraciesParams.Mode.Decimate
     mm.fixMeshDegeneracies(mesh_ml, params_ml)
     fixed_ml = meshlib_to_trimesh(mesh_ml)
+
+    tolerance = 1e-6 * diagonal
+    faces_ml = _input_vertex_faces(vertices_np, fixed_ml, tolerance)
+    faces_wp_set = _input_vertex_faces(vertices_np, fixed_tm, tolerance)
+    assert len(faces_ml & faces_wp_set) / len(faces_ml | faces_wp_set) >= min_overlap
 
     degenerate_in = _aspect_degenerate_count(vertices_np, faces_np, critical, device)
     degenerate_ml = _aspect_degenerate_count(fixed_ml.vertices, fixed_ml.faces, critical, device)
@@ -4125,6 +4147,11 @@ _INVALID_ARGUMENT_CASES = [
         "fix_degeneracies_aspect",
         lambda v, f: od.repair.fix_degeneracies(v, f, 0.0, critical_aspect_ratio=0.5),
         "critical_aspect_ratio must be at least 1",
+    ),
+    (
+        "fix_degeneracies_rings",
+        lambda v, f: od.repair.fix_degeneracies(v, f, 0.0, region_rings=-1),
+        "region_rings must be non-negative",
     ),
     (
         "fix_degeneracies_angle",

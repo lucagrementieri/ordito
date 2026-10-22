@@ -122,6 +122,10 @@ _DECIMATION_RECAPTURE_FACES = 250_000
 # removing it: calls that flip at all run a handful of rounds, and the replays repay it.
 _FLIP_CAPTURE_FROM_ROUND = 1
 
+# The claim table's value at an unclaimed vertex (``kernel_remesh.UNCLAIMED_KEY``), for the host's
+# reset between ``_collapse_pass`` rounds.
+_UNCLAIMED_KEY = 2**63 - 1
+
 
 def isotropic_remesh(
     vertices: wp.array[wp.vec3],
@@ -383,7 +387,7 @@ def isotropic_remesh(
                 current_vertices.size,
                 device,
             )
-            current_vertices, current_faces, incidence = _collapse_pass(
+            current_vertices, current_faces, incidence, _low = _collapse_pass(
                 current_vertices, current_faces, low, high, feature, grouping=grouping
             )
         elif grouping is not None:
@@ -615,7 +619,10 @@ def _collapse_pass(
     max_passes: int = 5,
     grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None,
     degeneracy: wp.vec3 | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], _EdgeIncidence | None]:
+    rounds: int = 1,
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], _EdgeIncidence | None, wp.array[wp.float32] | None
+]:
     """
     Collapse short edges as a conflict-free independent set; returns compacted (vertices, faces).
 
@@ -623,16 +630,21 @@ def _collapse_pass(
     against a sizing field, which are compacted alongside the vertices at the end of each pass
     rather than re-sampled, keeping the whole loop free of closest-point queries.
 
-    ``degeneracy``, ``(tiny_edge_length, max_deviation, critical_aspect_ratio)``, replaces the
-    bands as the selection (``kernel_remesh.collapse_fixes_degeneracy``): the edges collapsed are
-    the short sides of degenerate faces, within the deviation bound, and the bands are not read.
-    The link condition and the fold veto hold either way.
+    ``degeneracy``, ``(tiny_edge_length, max_length, critical_aspect_ratio)``, replaces the bands
+    as the selection (``kernel_remesh.collapse_candidates``): every edge of the region no longer
+    than ``max_length`` (or ``tiny_edge_length``) is a candidate, collapsed into one endpoint.
+    ``low`` is then the region instead of a band -- per vertex, positive inside, ``0.0`` for
+    everywhere -- so the same compaction carries it, and ``high`` is not read.
 
     The third return is the edge grouping of the returned faces when the loop has one in hand --
     it stopped on a pass that committed nothing, so the faces it grouped are the ones it returns --
     and ``None`` otherwise, so the next stage can classify the same faces without regrouping them.
     ``grouping`` is ``edges_unique``'s ``(unique_edges, inverse)`` of ``faces`` on entry, when the
-    caller has it.
+    caller has it. The fourth is ``low``'s table compacted onto the returned vertices (``None``
+    for a scalar).
+
+    ``rounds`` is the count of independent sets committed per topology rebuild: a rebuild is most
+    of a pass, so a caller whose passes commit few collapses each trades it for cheap rounds.
     """
     device = vertices.device
     # A uniform band reaches the kernels as its scalar and a null table, which they read in place
@@ -730,18 +742,26 @@ def _collapse_pass(
         # candidate kernel itself, so it would fuse -- but a pass is a topology rebuild plus a
         # handful of launches around one readback, and this is one of them. The claim/commit pair
         # after it is not fusible at all.
-        _launch.launch(
-            kernel_remesh.claim_collapse_key,
-            dim=m,
-            inputs=[survivor, removed, ring_offsets, ring_neighbors, claim],
-            device=device,
-        )
-        _launch.launch(
-            kernel_remesh.commit_collapses,
-            dim=m,
-            inputs=[survivor, removed, target_pos, claim, remap, positions, count],
-            device=device,
-        )
+        # ``rounds`` independent sets per rebuild, the later ones re-claiming the candidates the
+        # earlier commits left untouched (``kernel_remesh.claim_collapse_key``'s ``locked``); one
+        # round needs no lock table.
+        locked = _launch.zeros(n_vertices, dtype=wp.int32, device=device) if rounds > 1 else None
+        for round_index in range(rounds):
+            if round_index > 0:
+                _launch.fill_(claim, _UNCLAIMED_KEY)
+            _launch.launch(
+                kernel_remesh.claim_collapse_key,
+                dim=m,
+                inputs=[survivor, removed, ring_offsets, ring_neighbors, locked, claim],
+                device=device,
+            )
+            _launch.launch(
+                kernel_remesh.commit_collapses,
+                dim=m,
+                inputs=[survivor, removed, target_pos, claim, ring_offsets, ring_neighbors],
+                outputs=[remap, positions, count, locked],
+                device=device,
+            )
         # Drop the faces the collapses degenerated and the vertices no face names any more, in one
         # scan and one compaction: the positions and both length bands are compacted together, so
         # neither band is re-sampled. Issued before the commit count is read, so one copy carries
@@ -761,7 +781,7 @@ def _collapse_pass(
         low_bands = None if kept_low is None else _live_prefix(kept_low, n_kept)
         high_bands = None if kept_high is None else _live_prefix(kept_high, n_kept)
 
-    return vertices, faces, current
+    return vertices, faces, current, low_bands
 
 
 def _live_prefix(buffer: wp.array[odt.DType], count: int) -> wp.array[odt.DType]:
@@ -3072,7 +3092,6 @@ def flip_by_objective(
                 metric_flag,
                 planar_cos,
                 wp.float32(aspect_threshold),
-                wp.float32(0.0),
                 out_flip,
                 out_quad,
             ],

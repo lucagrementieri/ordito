@@ -1001,9 +1001,15 @@ def test_fix_degeneracies(bench_case: BenchCase) -> None:
     Remove the faces of aspect ratio 100 and above within a thousandth of the diagonal.
 
     The ``quality`` axis is what the group is about: its needle fixture is the input with work to
-    do. MeshLib runs in ``Decimate`` mode, the one that matches ordito's moves (no subdivision or
-    patching), and mutates its mesh, so the mesh is rebuilt inside the timed callable and the row
-    carries the build.
+    do, and ``saddle`` has none, so its ordito row times the early exit. MeshLib runs in
+    ``Decimate`` mode, the one that matches ordito's moves (no subdivision or patching), and
+    mutates its mesh, so the mesh is rebuilt inside the timed callable and the row carries the
+    build.
+
+    On ``saddle_graded`` the call is host-bound collapse passes: about twenty topology rebuilds of
+    ~0.45 ms each, because the candidates crowd into the graded rows, where each commit locks its
+    neighbourhood. Two independent sets per rebuild took it from 27 passes to 20 (1.25x); more
+    sets found nothing new, the rest of a row waiting on edges only a rebuild creates.
     """
     vertices_np = bench_case.vertices_np
     max_deviation = 1e-3 * float(np.linalg.norm(vertices_np.max(axis=0) - vertices_np.min(axis=0)))

@@ -236,14 +236,9 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "API no caller outside the two needs"
     ),
     ("repair", "remesh._collapse_pass"): (
-        "fix_degeneracies collapses only the short sides of degenerate faces, through the "
+        "fix_degeneracies collapses only the short edges around degenerate faces, through the "
         "independent-set collapse engine with its degeneracy selection; isotropic_remesh, the "
         "engine's public form, also splits, flips and smooths every edge of the mesh"
-    ),
-    ("repair", "remesh._flip_interior_edges"): (
-        "fix_degeneracies flips with its own deviation-bounded candidate rule; flip_by_objective, "
-        "the engine's public form, takes no deviation bound, so a flip could move the surface "
-        "past the caller's limit"
     ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "
@@ -561,6 +556,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``isotropic_remesh``'s fused topology fill: ``cursor`` is the spent count buffer counting each
     # CSR row's free slots down, ``graph.scatter_neighbor_lists``' argument of that name.
     ("remesh", "fill_edge_topology"): frozenset({"cursor"}),
+    # The collapse pass's candidate list, retired in place between its independent-set rounds:
+    # the claim drops a candidate a committed neighbour locked, the commit the committed one.
+    ("remesh", "claim_collapse_key"): frozenset({"survivor"}),
+    ("remesh", "commit_collapses"): frozenset({"survivor"}),
     # ``intrinsic_delaunay``'s halfedge-twin flip engine mutates the mesh it was handed rather than
     # producing a fresh one each round: ``edge_lengths`` is the caller's own metric, read pre-flip
     # and overwritten in the same launch, and ``twin`` is the incrementally-maintained twin table
