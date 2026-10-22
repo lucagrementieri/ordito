@@ -1,4 +1,11 @@
-# ordito
+---
+title: ordito
+---
+
+<h1 class="ordito-wordmark">
+  <img src="assets/wordmark.svg#only-light" alt="ordito">
+  <img src="assets/wordmark-dark.svg#only-dark" alt="ordito">
+</h1>
 
 **ordito** is a GPU-first triangular mesh processing library built on
 [NVIDIA Warp](https://github.com/NVIDIA/warp). It provides mesh geometry, connectivity, queries,

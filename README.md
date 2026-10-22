@@ -1,4 +1,7 @@
-<img src="https://raw.githubusercontent.com/lucagrementieri/ordito/main/docs/assets/ordito.svg" alt="ordito" height="96">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lucagrementieri/ordito/main/docs/assets/wordmark-dark.svg">
+  <img src="https://raw.githubusercontent.com/lucagrementieri/ordito/main/docs/assets/wordmark.svg" alt="ordito" height="96">
+</picture>
 
 [![PyPI](https://img.shields.io/pypi/v/ordito)](https://pypi.org/project/ordito/)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/ordito/)
