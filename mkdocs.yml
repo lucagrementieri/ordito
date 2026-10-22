@@ -19,6 +19,7 @@ docs_dir: docs
 
 theme:
   name: material
+  custom_dir: docs/.overrides
   logo: assets/ordito.svg
   favicon: assets/ordito.svg
   features:

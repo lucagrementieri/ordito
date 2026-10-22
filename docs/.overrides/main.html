@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{#- Link previews (Open Graph and Twitter cards): every page shares the social preview card that
+    .github/make_wordmark.py generates, with the page's own title and description. -#}
+{% block extrahead %}
+  {%- set title = config.site_name if not page.url else page.title ~ " - " ~ config.site_name -%}
+  {%- set description = page.meta["description"] if "description" in page.meta else config.site_description -%}
+  {%- set image = config.site_url ~ "assets/social-preview.png" -%}
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="{{ config.site_name }}">
+  <meta property="og:title" content="{{ title | striptags }}">
+  <meta property="og:description" content="{{ description }}">
+  <meta property="og:url" content="{{ page.canonical_url }}">
+  <meta property="og:image" content="{{ image }}">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="ordito: GPU mesh processing on NVIDIA Warp">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{ title | striptags }}">
+  <meta name="twitter:description" content="{{ description }}">
+  <meta name="twitter:image" content="{{ image }}">
+{% endblock %}
