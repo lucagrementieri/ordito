@@ -35,6 +35,7 @@ from ordito.kernels.grouping import (
 from ordito.kernels.predicates import (
     delone_metrics,
     dihedral_angle,
+    flip_within_deviation,
     is_unfold_quadrangle_convex,
     law_of_cosines_angle,
     mincircle_diameter_sq,
@@ -2017,6 +2018,50 @@ def vertex_band(bands: wp.array[wp.float32], uniform: wp.float32, v: wp.int32) -
     return uniform
 
 
+# What makes an edge a collapse candidate in ``collapse_candidates``: shorter than its length band
+# (``isotropic_remesh``), or the short edge of a degenerate face, collapsible within a deviation
+# bound (``repair.fix_degeneracies``).
+COLLAPSE_SELECT_LENGTH = wp.constant(wp.int32(0))
+COLLAPSE_SELECT_DEGENERATE = wp.constant(wp.int32(1))
+
+
+@wp.func
+def collapse_fixes_degeneracy(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    k: wp.int32,
+    length: wp.float32,
+    placement: wp.int32,
+    degeneracy: wp.vec3,
+) -> wp.bool:
+    # Is unique edge ``k`` worth collapsing to remove a degeneracy? ``degeneracy`` is
+    # ``(tiny_edge_length, max_deviation, critical_aspect_ratio)``. A tiny edge always is. Any
+    # other edge must be the shortest side of an incident face whose aspect ratio (circumradius over
+    # twice the inradius) reaches the critical one, and the collapse must move the surface by at
+    # most ``max_deviation``: a midpoint placement moves each endpoint by half the edge, so the
+    # linearly interpolated displacement of every surface point is at most that; a pinned one moves
+    # the removed endpoint by the whole edge.
+    if length <= degeneracy[0]:
+        return True
+    moved = length
+    if placement == COLLAPSE_FREE:
+        moved = wp.float32(0.5) * length
+    if moved > degeneracy[1]:
+        return False
+    for j in range(wp.min(edge_face_count[k], 2)):
+        i0, i1, i2 = corner_triple(faces, edge_faces[k, j])
+        p0 = vertices[i0]
+        p1 = vertices[i1]
+        p2 = vertices[i2]
+        shortest = wp.min(wp.min(wp.length(p1 - p0), wp.length(p2 - p1)), wp.length(p0 - p2))
+        # ``not (aspect < critical)`` also takes a NaN ratio as degenerate.
+        if length <= shortest and not (triangle_aspect_ratio(p0, p1, p2) < degeneracy[2]):
+            return True
+    return False
+
+
 @wp.kernel(enable_backward=False)
 def collapse_candidates(
     unique_edges: wp.array2d[wp.int32],
@@ -2024,6 +2069,7 @@ def collapse_candidates(
     faces: wp.array[wp.int32],
     feature_count: wp.array[wp.int32],
     edge_face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     vertex_face_offsets: wp.array[wp.int32],
@@ -2032,6 +2078,8 @@ def collapse_candidates(
     high: wp.array[wp.float32],
     low_uniform: wp.float32,
     high_uniform: wp.float32,
+    select: wp.int32,
+    degeneracy: wp.vec3,
     out_survivor: wp.array[wp.int32],
     out_removed: wp.array[wp.int32],
     out_pos: wp.array[wp.vec3],
@@ -2039,6 +2087,10 @@ def collapse_candidates(
     out_remap: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
 ) -> None:
+    # ``select`` picks the candidates: ``COLLAPSE_SELECT_LENGTH`` reads the length bands below,
+    # ``COLLAPSE_SELECT_DEGENERATE`` reads ``degeneracy`` instead (``collapse_fixes_degeneracy``)
+    # and skips the band walks. The survivor rule, link condition and fold veto are shared.
+    #
     # ``low`` and ``high`` are per *vertex* against an adaptive sizing field; a uniform target
     # passes them empty and its two bands as ``low_uniform`` / ``high_uniform`` (``vertex_band``),
     # so one code path serves both with no constant field allocated. An edge's own band is the
@@ -2057,10 +2109,12 @@ def collapse_candidates(
     out_survivor[k] = -1
     u = unique_edges[k, 0]
     v = unique_edges[k, 1]
-    low_u = vertex_band(low, low_uniform, u)
-    low_v = vertex_band(low, low_uniform, v)
-    if unique_edge_length(vertices, unique_edges, k) >= wp.float32(0.5) * (low_u + low_v):
-        return
+    length = unique_edge_length(vertices, unique_edges, k)
+    if select == COLLAPSE_SELECT_LENGTH:
+        low_u = vertex_band(low, low_uniform, u)
+        low_v = vertex_band(low, low_uniform, v)
+        if length >= wp.float32(0.5) * (low_u + low_v):
+            return
     is_boundary = edge_face_count[k] == 1
 
     # Choose the surviving vertex and its target position; this decimator places a free collapse at
@@ -2071,6 +2125,11 @@ def collapse_candidates(
     p = wp.lerp(vertices[u], vertices[v], 0.5)
     if placement == COLLAPSE_PINNED:
         p = vertices[s]
+    # The degeneracy selection has no length band: its deviation bound replaces the band walks.
+    if select == COLLAPSE_SELECT_DEGENERATE and not collapse_fixes_degeneracy(
+        vertices, faces, edge_face_count, edge_faces, k, length, placement, degeneracy
+    ):
+        return
 
     if not satisfies_link_condition(offsets, columns, u, v, is_boundary):
         return
@@ -2084,15 +2143,16 @@ def collapse_candidates(
     # *survivor* to the midpoint as well, so every edge from ``s``'s own neighbours to ``p`` is
     # equally new and equally able to overshoot the band. Under ``COLLAPSE_PINNED`` the survivor
     # keeps its position and its ring is unchanged, which is the case one walk covers.
-    for i in range(offsets[r], offsets[r + 1]):
-        w = columns[i]
-        if w != s and wp.length(p - vertices[w]) > vertex_band(high, high_uniform, w):
-            return
-    if placement == COLLAPSE_FREE:
-        for i in range(offsets[s], offsets[s + 1]):
+    if select == COLLAPSE_SELECT_LENGTH:
+        for i in range(offsets[r], offsets[r + 1]):
             w = columns[i]
-            if w != r and wp.length(p - vertices[w]) > vertex_band(high, high_uniform, w):
+            if w != s and wp.length(p - vertices[w]) > vertex_band(high, high_uniform, w):
                 return
+        if placement == COLLAPSE_FREE:
+            for i in range(offsets[s], offsets[s + 1]):
+                w = columns[i]
+                if w != r and wp.length(p - vertices[w]) > vertex_band(high, high_uniform, w):
+                    return
 
     # The fold veto (``collapse_folds_a_face``), last because every test above rejects more
     # cheaply.
@@ -3341,6 +3401,7 @@ def compact_surviving_faces(
 OBJECTIVE_PLANARITY = wp.constant(wp.int32(0))  # improve triangle shape on a near-planar quad
 OBJECTIVE_CURVATURE = wp.constant(wp.int32(1))  # pick whichever diagonal bends the surface less
 OBJECTIVE_T_VERTEX = wp.constant(wp.int32(2))  # break up a sliver whose apex sits on the far edge
+OBJECTIVE_DEGENERACY = wp.constant(wp.int32(3))  # a T-vertex flip within a deviation bound
 
 # Relative margin a flip must beat the current diagonal by. Without it a quad whose two diagonals
 # score equally (every quad of a regular grid) flips back and forth forever, one pass each way.
@@ -3363,6 +3424,7 @@ def objective_flip_candidates(
     metric: wp.int32,
     planar_cos: wp.float32,
     aspect_threshold: wp.float32,
+    max_deviation: wp.float32,
     out_flip: wp.array[wp.bool],
     out_quad: wp.array2d[wp.int32],
 ) -> None:
@@ -3403,7 +3465,7 @@ def objective_flip_candidates(
     if not is_unfold_quadrangle_convex(apd, bpd, cpd, dpd):
         return
 
-    if objective == OBJECTIVE_T_VERTEX:
+    if objective == OBJECTIVE_T_VERTEX or objective == OBJECTIVE_DEGENERACY:
         # A T-vertex shows up as a sliver: one apex sits (nearly) on the opposite edge, which drives
         # the circumradius-to-inradius ratio through the roof. Flip only when the sliver is *that*
         # bad and the flip actually improves it, so a merely thin triangle is left alone.
@@ -3411,6 +3473,10 @@ def objective_flip_candidates(
         if not (old_worst > aspect_threshold):  # also excludes a NaN ratio
             return
         new_worst = wp.max(triangle_aspect_ratio(ap, bp, dp), triangle_aspect_ratio(dp, bp, cp))
+        if objective == OBJECTIVE_DEGENERACY and not flip_within_deviation(
+            ap, bp, cp, dp, planar_cos, max_deviation
+        ):
+            return
         out_flip[k] = new_worst < old_worst
         return
 

@@ -993,6 +993,44 @@ def test_collapse_small_triangles(bench_case: BenchCase) -> None:
     assert kept_vertices.size <= bench_case.n_vertices
 
 
+@pytest.mark.benchmark(group="fix_degeneracies")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_fix_degeneracies(bench_case: BenchCase) -> None:
+    """
+    Remove the faces of aspect ratio 100 and above within a thousandth of the diagonal.
+
+    The ``quality`` axis is what the group is about: its needle fixture is the input with work to
+    do. MeshLib runs in ``Decimate`` mode, the one that matches ordito's moves (no subdivision or
+    patching), and mutates its mesh, so the mesh is rebuilt inside the timed callable and the row
+    carries the build.
+    """
+    vertices_np = bench_case.vertices_np
+    max_deviation = 1e-3 * float(np.linalg.norm(vertices_np.max(axis=0) - vertices_np.min(axis=0)))
+    if bench_case.kind == "meshlib":
+        new_mesh_ml = bench_case.new_mesh_ml
+        params_ml = mm.FixMeshDegeneraciesParams()
+        params_ml.maxDeviation = max_deviation
+        params_ml.criticalTriAspectRatio = 100.0
+        params_ml.mode = mm.FixMeshDegeneraciesParams.Mode.Decimate
+
+        def fix_ml() -> int:
+            mesh_ml = new_mesh_ml()
+            mm.fixMeshDegeneracies(mesh_ml, params_ml)
+            return mesh_ml.topology.numValidFaces()
+
+        assert 0 < bench_case.run(fix_ml, rounds=3) <= bench_case.n_faces
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _fixed_vertices, fixed_faces = bench_case.run(
+        lambda: od.repair.fix_degeneracies(
+            vertices, faces, max_deviation, critical_aspect_ratio=100.0
+        ),
+        rounds=3,
+    )
+    assert 0 < fixed_faces.size <= faces.size
+
+
 @pytest.mark.benchmark(group="remove_tunnels")
 @pytest.mark.benchaxis("genus")
 @pytest.mark.benchlibs("ordito")

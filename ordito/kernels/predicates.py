@@ -500,6 +500,23 @@ def triangle_aspect_ratio(a: Any, b: Any, c: Any) -> wp.Float:
 
 
 @wp.func
+def flip_within_deviation(
+    a: Any, b: Any, c: Any, d: Any, bend_cos: wp.Float, max_deviation: wp.Float
+):
+    # May the diagonal a-c of a convex quad become b-d without moving the surface by more than
+    # ``max_deviation`` or leaving a crease sharper than ``bend_cos`` across the new diagonal? Both
+    # triangulations interpolate the same four corners, so they part furthest where the diagonals
+    # cross, by the distance between the two diagonals' lines. The bend is read on the new pair:
+    # the old pair holds a sliver, whose normal is noise.
+    across = wp.cross(c - a, d - b)
+    across_length = wp.length(across)
+    if across_length > type(across_length)(0.0):
+        if wp.abs(wp.dot(b - a, across)) > max_deviation * across_length:
+            return False
+    return wp.dot(triangle_normal(a, b, d), triangle_normal(d, b, c)) >= bend_cos
+
+
+@wp.func
 def unfold_on_plane(b: Any, c: Any, d: Any, to_left: wp.bool):
     # Place ``c`` in the plane relative to the already-placed 2D point ``d``, preserving the angle
     # and length of the 3D pair (b, c).

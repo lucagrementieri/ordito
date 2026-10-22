@@ -77,10 +77,15 @@ from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import polyline as kernel_polyline
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import remesh as kernel_remesh
 from ordito.kernels import repair as kernel_repair
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import selection as kernel_selection
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
+from ordito.remesh import (
+    _collapse_pass,  # pyright: ignore[reportPrivateUsage]
+    _flip_interior_edges,  # pyright: ignore[reportPrivateUsage]
+)
 from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPrivateUsage]
 from ordito.validation import (
     _closed_signed_volume,  # pyright: ignore[reportPrivateUsage]
@@ -92,6 +97,11 @@ from ordito.validation import (
 # bounding-box diagonal. The same order as ``offset.offset_mesh``'s automatic floor, and the field
 # it allocates is cubic in it; a caller who needs the surface resolved finer passes ``voxel_size``.
 _VOXEL_REBUILD_RESOLUTION = 128
+
+# Passes per ``fix_degeneracies`` round: the collapse passes stop early on one that commits nothing,
+# the flip rounds on one that flips nothing, so both only bound a round.
+_DEGENERACY_COLLAPSE_PASSES = 10
+_DEGENERACY_FLIP_ROUNDS = 10
 
 # ``remove_tunnels``' search through the basis vertices: the ball rows a root starts with, how much
 # wider a root whose ball outgrew them is searched again, the scratch entries one launch may
@@ -1429,6 +1439,7 @@ def collapse_small_triangles(
     --------
     [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces]
     [`face_nondegenerate_mask`][ordito.triangles.face_nondegenerate_mask]
+    [`fix_degeneracies`][ordito.repair.fix_degeneracies]
 
     Notes
     -----
@@ -1527,6 +1538,198 @@ def collapse_small_triangles(
         )
 
     return current_vertices, current_faces
+
+
+def fix_degeneracies(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_deviation: float,
+    *,
+    tiny_edge_length: float = 0.0,
+    critical_aspect_ratio: float = 1e4,
+    max_angle_change: float = 60.0,
+    max_iter: int = 10,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Remove needle and cap triangles and tiny edges by bounded edge flips and collapses.
+
+    A triangle is *degenerate* when its aspect ratio (circumradius over twice the inradius, the
+    ``aspect_ratio`` of [`face_quality`][ordito.triangles.face_quality]) reaches
+    ``critical_aspect_ratio``. Two local moves remove one, each only when it moves the surface by at
+    most ``max_deviation``:
+
+    - **Flip** the diagonal of the quad holding the degenerate triangle when that improves the
+      worse of its two triangles: this is what fixes a *cap*, whose apex sits on its long edge. The
+      new diagonal must not form a crease sharper than ``max_angle_change``.
+    - **Collapse** the degenerate triangle's shortest edge to its midpoint: this is what fixes a
+      *needle*, whose short edge has nothing to flip to. An edge no longer than
+      ``tiny_edge_length`` collapses whatever its faces' shape and the deviation bound.
+
+    Flip rounds and collapse passes alternate until neither changes the mesh, so a degeneracy that
+    one move only shifts onto a neighbour is followed there. The surface keeps its topology: a
+    collapse that would pinch a handle or a sheet shut (the link condition) or fold a neighbouring
+    face is skipped, and boundary vertices only slide along the boundary.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions. Never modified.
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer.
+    max_deviation
+        Largest distance, in mesh units, one flip or collapse may move the surface. ``0`` permits
+        only exact moves (a flip across a planar quad, a collapse of a zero-length edge) and the
+        ``tiny_edge_length`` collapses.
+    tiny_edge_length
+        Edges no longer than this collapse even between well-shaped faces and past
+        ``max_deviation``.
+    critical_aspect_ratio
+        Aspect ratio from which a triangle counts as degenerate (``1`` is equilateral).
+    max_angle_change
+        Largest dihedral angle, in **degrees**, a flip may leave across its new diagonal.
+    max_iter
+        Cap on the alternating flip-and-collapse rounds.
+
+    Returns
+    -------
+    vertices : wp.array[wp.vec3]
+        ``(n_new_vertices,)`` vertex positions, compacted from index zero when a collapse ran.
+    faces : wp.array[wp.int32]
+        ``(3 * n_new_faces,)`` flat triangle index buffer.
+
+    Raises
+    ------
+    ValueError
+        If ``max_deviation`` or ``tiny_edge_length`` is negative, ``critical_aspect_ratio`` is
+        below ``1``, or ``max_angle_change`` is outside ``[0, 180]``.
+    RuntimeError
+        If ``vertices`` and ``faces`` are not all on one device.
+
+    See Also
+    --------
+    [`collapse_small_triangles`][ordito.repair.collapse_small_triangles]
+    [`flip_t_vertices`][ordito.repair.flip_t_vertices]
+    [`ordito.remesh.isotropic_remesh`][ordito.remesh.isotropic_remesh]
+
+    Notes
+    -----
+    The flips and collapses each commit a conflict-free independent set per pass, so the moves of
+    one pass are applied together but never overlap. ``max_deviation`` bounds each move against the
+    mesh it is applied to, not against the input: a vertex moved by two successive collapses can
+    drift by up to twice the bound. A degenerate triangle neither move can fix within the bound (a
+    cap on the boundary, a needle whose collapse would fold a neighbour) is left in place.
+
+    Examples
+    --------
+    Sliding a grid vertex up to its neighbour makes two needles; the fix collapses their short
+    edge:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.grid(count=(4, 4))
+    positions = vertices.numpy()
+    positions[6] = positions[5] + [0.0, 1e-5, 0.0]
+    needled = wp.array(positions, dtype=wp.vec3)
+    new_vertices, new_faces = od.repair.fix_degeneracies(needled, faces, 1e-3)
+    print(new_vertices.shape, new_faces.shape[0] // 3)  # (15,) 16
+    print(f"{od.triangles.face_quality(new_vertices, new_faces).numpy().max():.1f}")  # 3.7
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    if max_deviation < 0.0:
+        raise ValueError(f"max_deviation must be non-negative, got {max_deviation}")
+    if tiny_edge_length < 0.0:
+        raise ValueError(f"tiny_edge_length must be non-negative, got {tiny_edge_length}")
+    if critical_aspect_ratio < 1.0:
+        raise ValueError(f"critical_aspect_ratio must be at least 1, got {critical_aspect_ratio}")
+    if not 0.0 <= max_angle_change <= 180.0:
+        raise ValueError(f"max_angle_change must be in [0, 180] degrees, got {max_angle_change}")
+
+    if faces.size == 0:
+        return _launch.clone(vertices), _launch.clone(faces)
+    degeneracy = wp.vec3(tiny_edge_length, max_deviation, critical_aspect_ratio)
+    bend_cos = wp.float32(math.cos(math.radians(max_angle_change)))
+    # Only the boundary is a feature: a degenerate face's normal is noise, so a dihedral test would
+    # freeze exactly the vertices that must move.
+    feature = wp.float32(math.pi)
+    current_vertices = vertices
+    current_faces = _launch.clone(faces)
+    for _ in range(max_iter):
+        n_faces = current_faces.size
+        flips = _flip_degenerate_faces(
+            current_vertices, current_faces, critical_aspect_ratio, max_deviation, bend_cos
+        )
+        current_vertices, current_faces, _incidence = _collapse_pass(
+            current_vertices,
+            current_faces,
+            0.0,
+            0.0,
+            feature,
+            max_passes=_DEGENERACY_COLLAPSE_PASSES,
+            degeneracy=degeneracy,
+        )
+        if flips == 0 and current_faces.size == n_faces:
+            break
+    if current_vertices is vertices:
+        current_vertices = _launch.clone(vertices)
+    return current_vertices, current_faces
+
+
+def _flip_degenerate_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    critical_aspect_ratio: float,
+    max_deviation: float,
+    bend_cos: wp.float32,
+) -> int:
+    """
+    Flip, in place, every quad diagonal that improves a degenerate triangle within the bounds.
+
+    The ``t_vertex`` objective of [`flip_by_objective`][ordito.remesh.flip_by_objective] plus the
+    deviation and bend gates (``kernel_remesh.flip_within_deviation``). Returns the flip count.
+    """
+    device = faces.device
+
+    def launch(
+        adjacency: odt.Array2dInt32,
+        adjacency_edges: odt.Array2dInt32,
+        unshared: odt.Array2dInt32,
+        sorted_keys: wp.array[wp.uint64],
+        edge_set: wp.array[wp.uint64],
+        edge_set_mask: wp.int32,
+        key_base: wp.uint64,
+        out_flip: wp.array[wp.bool],
+        out_quad: odt.Array2dInt32,
+    ) -> None:
+        _launch.launch(
+            kernel_remesh.objective_flip_candidates,
+            dim=int(adjacency.shape[0]),
+            inputs=[
+                vertices,
+                faces,
+                adjacency,
+                adjacency_edges,
+                unshared,
+                None,
+                sorted_keys,
+                edge_set,
+                edge_set_mask,
+                key_base,
+                kernel_remesh.OBJECTIVE_DEGENERACY,
+                wp.int32(0),
+                bend_cos,
+                wp.float32(critical_aspect_ratio),
+                wp.float32(max_deviation),
+                out_flip,
+                out_quad,
+            ],
+            device=device,
+        )
+
+    return _flip_interior_edges(faces, vertices.size, launch, _DEGENERACY_FLIP_ROUNDS)
 
 
 @overload

@@ -42,6 +42,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | **Repair** | |
 | make a broken mesh a closed solid in one call | [`repair.make_solid`][ordito.repair.make_solid] |
 | merge duplicate vertices, drop degenerate or unused elements | [`repair.remove_duplicated_vertices`][ordito.repair.remove_duplicated_vertices], [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces], [`remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices] |
+| fix needle and cap triangles within a deviation bound | [`repair.fix_degeneracies`][ordito.repair.fix_degeneracies], [`collapse_small_triangles`][ordito.repair.collapse_small_triangles] |
 | fix the winding, or point normals outward | [`repair.make_winding_consistent`][ordito.repair.make_winding_consistent], [`make_normals_outward`][ordito.repair.make_normals_outward] |
 | remove small floating pieces | [`repair.remove_small_components`][ordito.repair.remove_small_components] |
 | fill holes | [`holes`][ordito.holes]: [`fill_small`][ordito.holes.fill_small], [`fill_min_weight`][ordito.holes.fill_min_weight], [`fill_smooth`][ordito.holes.fill_smooth] |

@@ -235,6 +235,16 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "read back, and take a convex ring's fan unwritten; a public return of either would be "
         "API no caller outside the two needs"
     ),
+    ("repair", "remesh._collapse_pass"): (
+        "fix_degeneracies collapses only the short sides of degenerate faces, through the "
+        "independent-set collapse engine with its degeneracy selection; isotropic_remesh, the "
+        "engine's public form, also splits, flips and smooths every edge of the mesh"
+    ),
+    ("repair", "remesh._flip_interior_edges"): (
+        "fix_degeneracies flips with its own deviation-bounded candidate rule; flip_by_objective, "
+        "the engine's public form, takes no deviation bound, so a flip could move the surface "
+        "past the caller's limit"
+    ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "
         "rebuilds connectivity as well, which reconstruction must not do to a fresh triangulation"

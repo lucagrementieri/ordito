@@ -2557,6 +2557,104 @@ def test_collapse_small_triangles_matches_meshlib(
     )
 
 
+def _aspect_degenerate_count(
+    vertices_np: np.ndarray, faces_np: np.ndarray, critical: float, device: str
+) -> int:
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    aspect = od.triangles.face_quality(vertices_wp, faces_wp, metric="aspect_ratio").numpy()
+    return int((~(aspect < critical)).sum())
+
+
+# (mesh, critical aspect ratio, max_deviation over the bounding-box diagonal). The saddle's
+# graded needles all clear at the looser bound, which is where a broken collapse selection shows;
+# the sphere at the tight bound keeps most of its degenerate faces in both libraries, which is
+# where a broken deviation bound shows.
+@pytest.mark.parity("fix_degeneracies", "meshlib")
+@pytest.mark.parametrize(
+    ("mesh_name", "critical", "relative_deviation"),
+    [("saddle_graded", 100.0, 1e-3), ("sphere_irregular", 100.0, 1e-4)],
+)
+def test_fix_degeneracies_matches_meshlib(
+    request: pytest.FixtureRequest,
+    mesh_name: str,
+    critical: float,
+    relative_deviation: float,
+    device: str,
+) -> None:
+    """
+    Class C: MeshLib's ``fixMeshDegeneracies`` in ``Decimate`` mode picks different moves.
+
+    Both remove degenerate faces by local moves bounded by ``maxDeviation``, but MeshLib decimates
+    the neighbourhood with a quadric while ordito flips caps and collapses needles to edge
+    midpoints, so the outputs share no triangulation (on the saddle MeshLib keeps 1 848 of 2 178
+    faces, ordito 2 027). What is asserted is the contract both state:
+
+    - ordito leaves no more degenerate faces than MeshLib, judged by one aspect-ratio rule on both
+      (saddle 0 and 0 of 198; sphere 31 and 31 of 33);
+    - each output stays within ``max_deviation`` of the input surface (ordito 4e-8 and 3.1e-5 of
+      the diagonal against bounds of 1e-3 and 1e-4) and within twice it of the other output.
+
+    Mutation probes: with the collapse selection disabled the saddle keeps all **198** degenerate
+    faces (MeshLib: 0); with the deviation tests in both moves removed the sphere's output moves
+    **9.4e-4** of the diagonal from its input, 9x the 1e-4 bound, where it measures 3.1e-5 (3.3x
+    under it).
+    """
+    mesh_tm, _mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices)
+    faces_np = np.asarray(mesh_tm.faces)
+    diagonal = float(np.linalg.norm(vertices_np.max(axis=0) - vertices_np.min(axis=0)))
+    max_deviation = relative_deviation * diagonal
+
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    fixed_tm = warp_to_trimesh(
+        *od.repair.fix_degeneracies(
+            vertices_wp, faces_wp, max_deviation, critical_aspect_ratio=critical
+        )
+    )
+
+    mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
+    params_ml = mm.FixMeshDegeneraciesParams()
+    params_ml.maxDeviation = max_deviation
+    params_ml.criticalTriAspectRatio = critical
+    params_ml.mode = mm.FixMeshDegeneraciesParams.Mode.Decimate
+    mm.fixMeshDegeneracies(mesh_ml, params_ml)
+    fixed_ml = meshlib_to_trimesh(mesh_ml)
+
+    degenerate_in = _aspect_degenerate_count(vertices_np, faces_np, critical, device)
+    degenerate_ml = _aspect_degenerate_count(fixed_ml.vertices, fixed_ml.faces, critical, device)
+    degenerate_wp = _aspect_degenerate_count(fixed_tm.vertices, fixed_tm.faces, critical, device)
+    assert degenerate_ml < degenerate_in  # the reference had work to do and did some
+    assert degenerate_wp <= degenerate_ml
+
+    def deviation(a: tm.Trimesh, b: tm.Trimesh) -> float:
+        return hausdorff_surface_two_sided(a.vertices, a.faces, b.vertices, b.faces)
+
+    assert deviation(mesh_tm, fixed_ml) <= max_deviation
+    assert deviation(mesh_tm, fixed_tm) <= max_deviation
+    assert deviation(fixed_tm, fixed_ml) <= 2.0 * max_deviation
+
+
+def test_fix_degeneracies_collapses_a_tiny_edge_only_when_asked(device: str) -> None:
+    """
+    Not a library comparison: the tiny-edge rule is a length threshold, independent of shape.
+
+    One grid vertex slid halfway to its neighbour leaves a 0.1 edge between faces of aspect ratio
+    under 3, far from degenerate, while every other edge is at least 0.2. Only a
+    ``tiny_edge_length`` above 0.1 collapses it, removing its two faces and nothing else.
+    """
+    vertices_wp, faces_wp = od.creation.grid(count=(6, 6), device=device)
+    vertices_np = vertices_wp.numpy()
+    vertices_np[14] = 0.5 * (vertices_np[14] + vertices_np[15])
+    shrunk_wp = wp.array(vertices_np, dtype=wp.vec3, device=device)
+    _same_vertices, same_faces = od.repair.fix_degeneracies(shrunk_wp, faces_wp, 0.0)
+    assert np.array_equal(same_faces.numpy(), faces_wp.numpy())
+    fewer_vertices, fewer_faces = od.repair.fix_degeneracies(
+        shrunk_wp, faces_wp, 0.0, tiny_edge_length=0.15
+    )
+    assert fewer_faces.size == faces_wp.size - 6
+    assert fewer_vertices.size == vertices_wp.size - 1
+
+
 # ---------------------------------------------------------------------------
 # Geometric defects: bad faces, folds and T-vertices (pymeshlab reference)
 # ---------------------------------------------------------------------------
@@ -4012,6 +4110,26 @@ _INVALID_ARGUMENT_CASES = [
         "components_two_mins",
         lambda v, f: od.repair.remove_small_components(v, f, min_area=1.0, min_diameter=1.0),
         "exactly one",
+    ),
+    (
+        "fix_degeneracies_deviation",
+        lambda v, f: od.repair.fix_degeneracies(v, f, -1.0),
+        "max_deviation must be non-negative",
+    ),
+    (
+        "fix_degeneracies_tiny_edge",
+        lambda v, f: od.repair.fix_degeneracies(v, f, 0.0, tiny_edge_length=-1.0),
+        "tiny_edge_length must be non-negative",
+    ),
+    (
+        "fix_degeneracies_aspect",
+        lambda v, f: od.repair.fix_degeneracies(v, f, 0.0, critical_aspect_ratio=0.5),
+        "critical_aspect_ratio must be at least 1",
+    ),
+    (
+        "fix_degeneracies_angle",
+        lambda v, f: od.repair.fix_degeneracies(v, f, 0.0, max_angle_change=200.0),
+        r"max_angle_change must be in \[0, 180\]",
     ),
     (
         "flip_t_vertices_threshold",

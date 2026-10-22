@@ -614,6 +614,7 @@ def _collapse_pass(
     feature: wp.float32,
     max_passes: int = 5,
     grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None,
+    degeneracy: wp.vec3 | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], _EdgeIncidence | None]:
     """
     Collapse short edges as a conflict-free independent set; returns compacted (vertices, faces).
@@ -621,6 +622,11 @@ def _collapse_pass(
     ``low`` and ``high`` are the length bands: scalars for a uniform target, or per-vertex tables
     against a sizing field, which are compacted alongside the vertices at the end of each pass
     rather than re-sampled, keeping the whole loop free of closest-point queries.
+
+    ``degeneracy``, ``(tiny_edge_length, max_deviation, critical_aspect_ratio)``, replaces the
+    bands as the selection (``kernel_remesh.collapse_fixes_degeneracy``): the edges collapsed are
+    the short sides of degenerate faces, within the deviation bound, and the bands are not read.
+    The link condition and the fold veto hold either way.
 
     The third return is the edge grouping of the returned faces when the loop has one in hand --
     it stopped on a pass that committed nothing, so the faces it grouped are the ones it returns --
@@ -635,6 +641,12 @@ def _collapse_pass(
     high_bands = high if isinstance(high, wp.array) else None
     low_uniform = wp.float32(0.0 if isinstance(low, wp.array) else low)
     high_uniform = wp.float32(0.0 if isinstance(high, wp.array) else high)
+    select = (
+        kernel_remesh.COLLAPSE_SELECT_LENGTH
+        if degeneracy is None
+        else kernel_remesh.COLLAPSE_SELECT_DEGENERATE
+    )
+    degeneracy = wp.vec3() if degeneracy is None else degeneracy
     # Slot 0 is one commit counter for the whole loop, never reset: it accumulates across passes and
     # a pass committed nothing exactly when it did not move. Slots 1-2 are the pass's compaction
     # counts (``_compact_remapped_faces``), so the pass reads all three in one copy.
@@ -691,6 +703,7 @@ def _collapse_pass(
                 faces,
                 feature_count,
                 incidence.face_count,
+                incidence.faces,
                 ring_offsets,
                 ring_neighbors,
                 face_offsets,
@@ -699,6 +712,8 @@ def _collapse_pass(
                 high_bands,
                 low_uniform,
                 high_uniform,
+                select,
+                degeneracy,
                 survivor,
                 removed,
                 target_pos,
@@ -3057,6 +3072,7 @@ def flip_by_objective(
                 metric_flag,
                 planar_cos,
                 wp.float32(aspect_threshold),
+                wp.float32(0.0),
                 out_flip,
                 out_quad,
             ],
