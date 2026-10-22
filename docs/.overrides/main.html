@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{#- Link previews (Open Graph and Twitter cards): every page shares the social preview card that
+{#- Link previews (Open Graph and Twitter cards): every page shares the 1200 x 630 card that
     .github/make_wordmark.py generates, with the page's own title and description. -#}
 {% block extrahead %}
   {%- set title = (page.meta["title"] if "title" in page.meta else page.title) ~ " - " ~ config.site_name -%}
@@ -8,7 +8,7 @@
   {#- mike deploys each version with site_url set to that version's directory, with no trailing
       slash, so the separator is added only when it is missing. -#}
   {%- set base = config.site_url if config.site_url[-1:] == "/" else config.site_url ~ "/" -%}
-  {%- set image = base ~ "assets/social-preview.png" -%}
+  {%- set image = base ~ "assets/og-image.png" -%}
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="{{ config.site_name }}">
   <meta property="og:title" content="{{ title | striptags }}">
@@ -16,8 +16,8 @@
   <meta property="og:url" content="{{ page.canonical_url }}">
   <meta property="og:image" content="{{ image }}">
   <meta property="og:image:type" content="image/png">
-  <meta property="og:image:width" content="1280">
-  <meta property="og:image:height" content="640">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="ordito: GPU mesh processing on NVIDIA Warp">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="{{ title | striptags }}">

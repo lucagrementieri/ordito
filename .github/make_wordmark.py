@@ -1,13 +1,13 @@
-"""Build the ordito wordmark and the GitHub social preview from the ring mark.
+"""Build the ordito wordmark and the link-preview cards from the ring mark.
 
 The ring (``docs/assets/ordito.svg``) is the initial O; "rdito" and the tagline are Outfit
 (SIL OFL 1.1, https://github.com/google/fonts/tree/main/ofl/outfit) converted to outlines, so no
-font is needed to view the result. Re-run after changing the ring::
+font is needed to view the result. It writes ``wordmark.svg``,
+``wordmark-dark.svg``, the GitHub social preview ``social-preview.png`` and the docs' Open Graph
+card ``og-image.png`` into ``docs/assets``. Re-run after changing the ring::
 
     curl -Lo /tmp/Outfit.ttf "https://github.com/google/fonts/raw/main/ofl/outfit/Outfit%5Bwght%5D.ttf"
-    uv run --group bench python .github/make_wordmark.py . /tmp/Outfit.ttf 600 /tmp
-    uv run --group bench python -c "import cairosvg; cairosvg.svg2png(url='/tmp/social.svg', \\
-        write_to='docs/assets/social-preview.png', output_width=1280)"
+    uv run --group bench python .github/make_wordmark.py . /tmp/Outfit.ttf 600
 """
 
 import re
@@ -107,21 +107,41 @@ def outline(text: str, weight: float) -> tuple[str, float]:
     return pen.getCommands(), adv
 
 
-# GitHub social preview, 1280 x 640: the dark wordmark over the docs header green, a tagline below.
-W, H = 1280, 640
-mark_w = 860
-k = mark_w / width
-mark_h = height * k
-tag_d, tag_adv = outline("GPU mesh processing on NVIDIA Warp", 400)
-tag_k = 44 / upm
-inner = re.search(r"<svg[^>]*>(.*)</svg>", wordmark("#F2F5EC", ""), re.S).group(1)
-inner = re.sub(r"<title>.*?</title>|<!--.*?-->", "", inner, flags=re.S)
-mark_y = (H - mark_h) / 2 - 50
-social = (
-    f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}">'
-    f'<rect width="{W}" height="{H}" fill="#15200A"/>'
-    f'<g transform="translate({(W - mark_w) / 2:.2f} {mark_y:.2f}) scale({k:.5f})">{inner}</g>'
-    f'<path fill="#B5C99A" transform="translate({(W - tag_adv * tag_k) / 2:.2f} '
-    f'{mark_y + mark_h + 70:.2f}) scale({tag_k:.5f} {-tag_k:.5f})" d="{tag_d}"/></svg>'
-)
-(Path(sys.argv[4]) / "social.svg").write_text(social)
+def social_card(card_w: int, card_h: int) -> str:
+    """Return a link-preview card: the dark wordmark, the tagline and the install command."""
+    mark_w = 0.66 * card_w
+    k = mark_w / width
+    mark_h = height * k
+    tag_d, tag_adv = outline("GPU mesh processing on NVIDIA Warp", 400)
+    cta_d, cta_adv = outline("pip install ordito", 500)
+    tag_k, cta_k = 0.034 * card_w / upm, 0.03 * card_w / upm
+    inner = re.search(r"<svg[^>]*>(.*)</svg>", wordmark("#F2F5EC", ""), re.S).group(1)
+    inner = re.sub(r"<title>.*?</title>|<!--.*?-->", "", inner, flags=re.S)
+    mark_y = (card_h - mark_h) / 2 - 0.12 * card_h
+    tag_y = mark_y + mark_h + 0.11 * card_h
+    cta_y = tag_y + 0.13 * card_h
+    # The install command sits in a pill outlined in the brand green, as the card's call to action.
+    pill_w, pill_h = cta_adv * cta_k + 0.05 * card_w, 0.1 * card_h
+    pill_x, pill_y = (card_w - pill_w) / 2, cta_y - 0.072 * card_h
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {card_w} {card_h}">'
+        f'<rect width="{card_w}" height="{card_h}" fill="#15200A"/>'
+        f'<g transform="translate({(card_w - mark_w) / 2:.2f} {mark_y:.2f}) scale({k:.5f})">'
+        f"{inner}</g>"
+        f'<path fill="#B5C99A" transform="translate({(card_w - tag_adv * tag_k) / 2:.2f} '
+        f'{tag_y:.2f}) scale({tag_k:.5f} {-tag_k:.5f})" d="{tag_d}"/>'
+        f'<rect x="{pill_x:.2f}" y="{pill_y:.2f}" width="{pill_w:.2f}" height="{pill_h:.2f}" '
+        f'rx="{pill_h / 2:.2f}" fill="none" stroke="#76B900" stroke-width="3"/>'
+        f'<path fill="#98C000" transform="translate({(card_w - cta_adv * cta_k) / 2:.2f} '
+        f'{cta_y:.2f}) scale({cta_k:.5f} {-cta_k:.5f})" d="{cta_d}"/></svg>'
+    )
+
+
+# GitHub asks for 1280 x 640 (Settings -> Social preview); Open Graph consumers for 1.91:1,
+# 1200 x 630, which the docs pages name as their og:image.
+import cairosvg  # noqa: E402
+
+for name, size in [("social-preview.png", (1280, 640)), ("og-image.png", (1200, 630))]:
+    cairosvg.svg2png(
+        bytestring=social_card(*size).encode(), write_to=str(out / name), output_width=size[0]
+    )
