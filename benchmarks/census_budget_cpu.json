@@ -3486,22 +3486,20 @@
  },
  "benchmarks/test_repair.py::test_fix_degeneracies[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 16,
-   "alloc": 33,
+   "launch": 1,
+   "alloc": 4,
    "h2h": 2,
-   "readback": 4,
-   "scan": 4,
-   "sort": 2
+   "readback": 1
   }
  },
  "benchmarks/test_repair.py::test_fix_degeneracies[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 200,
-   "alloc": 338,
-   "h2h": 1,
-   "readback": 42,
-   "scan": 56,
-   "sort": 22
+   "launch": 298,
+   "alloc": 461,
+   "h2h": 3,
+   "readback": 52,
+   "scan": 68,
+   "sort": 26
   }
  },
  "benchmarks/test_remesh.py::test_flip_by_objective[saddle-ordito-cpu-curvature]": {

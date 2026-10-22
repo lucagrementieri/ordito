@@ -218,6 +218,51 @@ def reduce_largest_group(counts: wp.array[wp.int32], out_best: wp.array[wp.int64
         wp.atomic_max(out_best, 0, pack_ranked_key(counts[group], group))
 
 
+@wp.kernel
+def mark_degeneracy_seeds(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    critical_aspect_ratio: wp.float32,
+    tiny_edge_length: wp.float32,
+    out_vertex_mask: wp.array[wp.bool],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # Mark the corners of every face ``fix_degeneracies`` must repair -- aspect ratio at or above
+    # the critical one, or a side no longer than the tiny length -- and count those faces, so the
+    # caller reads one word to learn there is nothing to do. ``out_vertex_mask`` starts cleared;
+    # concurrent writes all store ``True``.
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    p0 = vertices[i0]
+    p1 = vertices[i1]
+    p2 = vertices[i2]
+    shortest = wp.min(wp.min(wp.length(p1 - p0), wp.length(p2 - p1)), wp.length(p0 - p2))
+    # ``not (aspect < critical)`` also takes a NaN ratio as degenerate.
+    if triangle_aspect_ratio(p0, p1, p2) < critical_aspect_ratio and shortest > tiny_edge_length:
+        return
+    out_vertex_mask[i0] = True
+    out_vertex_mask[i1] = True
+    out_vertex_mask[i2] = True
+    wp.atomic_add(out_count, 0, 1)
+
+
+@wp.func
+def region_weight(inside: wp.bool) -> wp.float32:
+    # A vertex mask as the per-vertex table the collapse passes compact: positive inside.
+    return wp.where(inside, wp.float32(1.0), wp.float32(0.0))
+
+
+@wp.kernel
+def faces_in_vertex_region(
+    faces: wp.array[wp.int32], region: wp.array[wp.float32], out_mask: wp.array[wp.bool]
+) -> None:
+    # A face is in ``fix_degeneracies``' region when its three corners are, the rule the collapse
+    # candidates apply (``remesh.edge_faces_in_region``).
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    out_mask[f] = region[i0] > 0.0 and region[i1] > 0.0 and region[i2] > 0.0
+
+
 @wp.kernel(enable_backward=False)
 def small_triangle_collapse_edges(
     vertices: wp.array[wp.vec3],
@@ -1422,7 +1467,8 @@ def _declare_map_kernels() -> None:
     and what forks a ``wp.map`` module; only this module's *own* forking ops belong here (the shared
     builtins are declared there).
 
-    Two ops: ``is_interior_degree3``, mapped over ``(ring_offsets[:-1], ring_offsets[1:],
+    Three ops: ``region_weight``, mapped over ``fix_degeneracies``' grown vertex mask, and
+    ``is_interior_degree3``, mapped over ``(ring_offsets[:-1], ring_offsets[1:],
     is_boundary)`` by ``repair.flatten_degree3_vertices``, and ``is_interior_degree3_in_region``,
     the same with the caller's ``region`` mask. The length-1 rows are not speculative -- a ring CSR
     over a one-vertex mesh makes both offset slices length 1, and the broadcast mask is part of the
@@ -1432,6 +1478,8 @@ def _declare_map_kernels() -> None:
     declare_map_signatures(
         [
             (is_interior_degree3, (dense(wp.int32), dense(wp.int32), dense(wp.bool)), wp.bool),
+            (region_weight, (dense(wp.bool),), wp.float32),
+            (region_weight, (single(wp.bool),), wp.float32),
             (is_interior_degree3, (single(wp.int32), single(wp.int32), single(wp.bool)), wp.bool),
             (
                 is_interior_degree3_in_region,

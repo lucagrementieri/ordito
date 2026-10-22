@@ -3805,24 +3805,22 @@
  },
  "benchmarks/test_repair.py::test_fix_degeneracies[saddle-ordito-cuda]": {
   "counts": {
-   "launch": 16,
-   "alloc": 33,
-   "memset": 6,
+   "launch": 1,
+   "alloc": 4,
+   "memset": 2,
    "d2d": 2,
-   "d2h": 4,
-   "scan": 4,
-   "sort": 2
+   "d2h": 1
   }
  },
  "benchmarks/test_repair.py::test_fix_degeneracies[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 202,
-   "alloc": 338,
-   "memset": 52,
-   "d2d": 1,
-   "d2h": 42,
-   "scan": 56,
-   "sort": 22
+   "launch": 284,
+   "alloc": 442,
+   "memset": 100,
+   "d2d": 3,
+   "d2h": 50,
+   "scan": 65,
+   "sort": 25
   }
  },
  "benchmarks/test_remesh.py::test_flip_by_objective[saddle-ordito-cuda-curvature]": {

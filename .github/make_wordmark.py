@@ -112,7 +112,7 @@ def social_card(card_w: int, card_h: int) -> str:
     mark_w = 0.66 * card_w
     k = mark_w / width
     mark_h = height * k
-    tag_d, tag_adv = outline("GPU mesh processing on NVIDIA Warp", 400)
+    tag_d, tag_adv = outline("GPU mesh processing in Python", 400)
     cta_d, cta_adv = outline("pip install ordito", 500)
     tag_k, cta_k = 0.034 * card_w / upm, 0.03 * card_w / upm
     inner = re.search(r"<svg[^>]*>(.*)</svg>", wordmark("#F2F5EC", ""), re.S).group(1)

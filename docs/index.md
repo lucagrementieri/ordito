@@ -1,5 +1,5 @@
 ---
-title: GPU mesh processing on NVIDIA Warp
+title: GPU mesh processing in Python
 ---
 
 <h1 class="ordito-wordmark">
