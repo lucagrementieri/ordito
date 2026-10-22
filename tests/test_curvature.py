@@ -31,6 +31,36 @@ def test_principal_curvature(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> No
     assert np.allclose(pv2_wp.numpy(), pv2_igl, atol=1e-3, rtol=1e-3)
 
 
+@pytest.mark.parity("principal_curvature", "igl")
+@pytest.mark.parametrize("supplied", ["both", "normals_only"])
+def test_principal_curvature_with_supplied_face_tables(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], supplied: str
+) -> None:
+    """
+    Class A: with the face normals and areas handed over, the curvatures are still libigl's.
+
+    The pair is used only when both halves are given; a lone ``face_normals`` is ignored and the
+    function derives both, so either way the answer must match ``igl.principal_curvature``.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.array(mesh_tm.faces, dtype=np.int32)
+    _, _, pv1_igl, pv2_igl, _ = igl.principal_curvature(vertices_np, faces_np, useKring=False)
+
+    face_normals_wp, face_areas_wp = od.triangles.face_normals_and_areas(
+        mesh_wp.points, mesh_wp.indices
+    )
+    _, _, pv1_wp, pv2_wp = od.curvature.principal_curvature(
+        mesh_wp.points,
+        mesh_wp.indices,
+        frame_independent=False,
+        face_normals=face_normals_wp,
+        face_areas=face_areas_wp if supplied == "both" else None,
+    )
+    assert np.allclose(pv1_wp.numpy(), pv1_igl, atol=1e-3, rtol=1e-3)
+    assert np.allclose(pv2_wp.numpy(), pv2_igl, atol=1e-3, rtol=1e-3)
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_principal_curvature_graded(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -190,6 +220,38 @@ def test_discrete_gaussian_curvature(request: pytest.FixtureRequest, mesh_name: 
     assert np.allclose(gauss_curvature_wp.numpy(), gauss_curvature_tm, rtol=1e-5, atol=1e-5)
 
 
+def test_discrete_gaussian_curvature_edge_cases(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: the face-angle table check, and the empty inputs.
+
+    A face-angle table with the wrong row count raises before any launch; no query point gives no
+    value, and a mesh with no vertex gives every query a zero measure.
+    """
+    _, mesh_wp = saddle_graded
+    device = mesh_wp.device
+    angles_wp = od.triangles.face_angles(mesh_wp.points, mesh_wp.indices)
+    points_wp = odt.as_dense(mesh_wp.points[:3])
+    with pytest.raises(ValueError, match="face_angles must have one row per triangle"):
+        od.curvature.discrete_gaussian_curvature(
+            points_wp,
+            mesh_wp.points,
+            mesh_wp.indices,
+            odt.as_array2d(odt.as_dense(angles_wp[:2]), wp.float32),
+            0.5,
+        )
+    no_points_wp = wp.zeros(0, dtype=wp.vec3, device=device)
+    no_value = od.curvature.discrete_gaussian_curvature(
+        no_points_wp, mesh_wp.points, mesh_wp.indices, angles_wp, 0.5
+    )
+    assert no_value.numpy().tolist() == []
+    no_faces_wp = wp.zeros(0, dtype=wp.int32, device=device)
+    no_angles_wp = odt.empty_2d((0, 3), wp.float32, device=device)
+    zero = od.curvature.discrete_gaussian_curvature(
+        points_wp, wp.zeros(0, dtype=wp.vec3, device=device), no_faces_wp, no_angles_wp, 0.5
+    )
+    assert np.array_equal(zero.numpy(), np.zeros(3, dtype=np.float32))
+
+
 @pytest.mark.parametrize("radius", [2.0, 0.5])
 @pytest.mark.parity("discrete_mean_curvature", "trimesh")
 def test_discrete_mean_curvature(
@@ -221,6 +283,52 @@ def test_discrete_mean_curvature(
     # Non-vacuous on the curved fixture: a constant reference would pass any per-vertex bug.
     assert_nonconstant(mean_curvature_tm, tol=1e-3)
     assert np.allclose(mean_curvature_wp.numpy(), mean_curvature_tm, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parity("discrete_mean_curvature", "trimesh")
+def test_discrete_mean_curvature_with_supplied_adjacency(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Class A: a caller's ``face_adjacency`` pair gives trimesh's measure, as derived ones do."""
+    mesh_tm, mesh_wp = sphere_irregular
+    radius = 0.5
+    points_tm = mesh_tm.vertices[:64]
+    mean_curvature_tm = tm.curvature.discrete_mean_curvature_measure(mesh_tm, points_tm, radius)
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
+        mesh_wp.indices, return_edges=True
+    )
+    mean_curvature_wp = od.curvature.discrete_mean_curvature(
+        points_to_warp(points_tm, mesh_wp.device),
+        mesh_wp.points,
+        mesh_wp.indices,
+        radius,
+        face_adjacency=adjacency_wp,
+        face_adjacency_edges=adjacency_edges_wp,
+    )
+    assert_nonconstant(mean_curvature_tm, tol=1e-3)
+    assert np.allclose(mean_curvature_wp.numpy(), mean_curvature_tm, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("case", ["no_points", "no_faces", "no_adjacent_pair"])
+def test_discrete_mean_curvature_without_a_dihedral(device: str, case: str) -> None:
+    """
+    Not a library comparison: no shared edge means no bending, so the measure is zero.
+
+    The mean-curvature measure sums dihedral angles over shared edges inside the ball. A lone
+    triangle has no shared edge, a mesh with no face has none either, and no query point gives no
+    value. trimesh's measure is no oracle here: its edge tree raises on an empty edge set.
+    """
+    vertices_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    points_np = np.array([[0.2, 0.2, 0.0], [0.0, 0.0, 0.0]])
+    faces_np = np.zeros(0, dtype=np.int32) if case == "no_faces" else np.arange(3, dtype=np.int32)
+    queries_np = np.zeros((0, 3)) if case == "no_points" else points_np
+    measure_wp = od.curvature.discrete_mean_curvature(
+        points_to_warp(queries_np, device),
+        points_to_warp(vertices_np, device),
+        wp.array(faces_np, dtype=wp.int32, device=device),
+        2.0,
+    )
+    assert np.array_equal(measure_wp.numpy(), np.zeros(len(queries_np), dtype=np.float32))
 
 
 @pytest.mark.skipif(

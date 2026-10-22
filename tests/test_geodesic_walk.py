@@ -195,6 +195,35 @@ def test_trace_from_vertex_matches_potpourri3d(
     assert walked >= 12
 
 
+def test_trace_from_vertex_accepts_precomputed_rings(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: precomputed ``rings`` with no ``twins`` give the default call's trace.
+
+    Pins the entry point that derives only the twins from the faces; the trace itself is compared
+    with potpourri3d in ``test_trace_from_vertex_matches_potpourri3d``. Non-vacuity: every ray walks
+    more than one point.
+    """
+    _, mesh_wp = sphere_irregular
+    device = mesh_wp.points.device
+    rng = np.random.default_rng(7)
+    starts_wp = wp.array(rng.integers(0, mesh_wp.points.size, 16), dtype=wp.int32, device=device)
+    directions_wp = wp.array(
+        0.3 * rng.standard_normal((16, 3)).astype(np.float32), dtype=wp.vec3, device=device
+    )
+    rings = od.halfedge.vertex_one_rings(mesh_wp.indices, n_vertices=mesh_wp.points.size)
+    points_wp, offsets_wp = od.geodesic_walk.trace_from_vertex(
+        mesh_wp.points, mesh_wp.indices, starts_wp, directions_wp
+    )
+    ringed_points_wp, ringed_offsets_wp = od.geodesic_walk.trace_from_vertex(
+        mesh_wp.points, mesh_wp.indices, starts_wp, directions_wp, rings=rings
+    )
+    assert np.all(np.diff(offsets_wp.numpy()) > 1)
+    assert np.array_equal(ringed_offsets_wp.numpy(), offsets_wp.numpy())
+    assert np.allclose(ringed_points_wp.numpy(), points_wp.numpy(), rtol=1e-5, atol=1e-5)
+
+
 def _normalized_edge_direction(
     mesh_tm: tm.Trimesh, normal: np.ndarray, vertex: int, k: int
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -420,6 +449,7 @@ def test_trace_from_face_zero_direction_is_a_single_point(
 
 
 def test_trace_empty(device: str) -> None:
+    """Not a library comparison: both tracers return no point and ``[0]`` offsets for no ray."""
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     empty_int = warp_empty(0, wp.int32, device)
@@ -429,6 +459,11 @@ def test_trace_empty(device: str) -> None:
     )
     assert points_wp.shape == (0,)
     assert offsets_wp.list() == [0]
+    face_points_wp, face_offsets_wp = od.geodesic_walk.trace_from_face(
+        vertices_wp, faces_wp, empty_int, empty_vec, empty_vec
+    )
+    assert face_points_wp.shape == (0,)
+    assert face_offsets_wp.list() == [0]
 
 
 # --------------------------------------------------------------------------------------
@@ -924,7 +959,7 @@ def test_descend_field_accepts_the_precomputed_pair_values_first(
 
 
 def test_descend_field_guards_and_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a library comparison: the length guard and the empty batch."""
+    """Not a library comparison: the two length guards and the empty batch."""
     _, mesh_wp = sphere_irregular
     device = mesh_wp.points.device
     values_wp = wp.zeros(3, dtype=wp.float64, device=device)
@@ -937,6 +972,14 @@ def test_descend_field_guards_and_empty(sphere_irregular: tuple[tm.Trimesh, wp.M
         )
 
     field_wp = wp.zeros(mesh_wp.points.size, dtype=wp.float64, device=device)
+    with pytest.raises(ValueError, match="gradients must have one entry per face"):
+        od.geodesic_walk.descend_field(
+            mesh_wp.points,
+            mesh_wp.indices,
+            field_wp,
+            wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device),
+            gradients=wp.zeros(3, dtype=wp.vec3d, device=device),
+        )
     points_wp, offsets_wp = od.geodesic_walk.descend_field(
         mesh_wp.points, mesh_wp.indices, field_wp, warp_empty(0, wp.int32, device)
     )

@@ -246,6 +246,34 @@ def test_filter_laplacian_implicit_on_open_meshes(
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("lamb", [0.0, 0.5, 50.0])
+def test_filter_laplacian_implicit_with_volume_constraint_matches_trimesh(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], lamb: float
+) -> None:
+    """
+    Class A: the implicit filter with the volume rescale after every pass, against trimesh.
+
+    Each of the three ``lamb`` takes another branch: ``0`` is the identity system (two fixed-point
+    steps reproduce the input), ``0.5`` the fixed-point iteration and ``50`` the BiCGSTAB fallback,
+    and both solves are followed by the anchored rescale that ``volume_constraint`` adds.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    smoothed_wp = od.smoothing.filter_laplacian(
+        mesh_wp.points,
+        mesh_wp.indices,
+        lamb=lamb,
+        iterations=3,
+        implicit_time_integration=True,
+        volume_constraint=True,
+    )
+    mesh_ref = mesh_tm.copy()
+    tms.filter_laplacian(
+        mesh_ref, lamb=lamb, iterations=3, implicit_time_integration=True, volume_constraint=True
+    )
+    assert (np.abs(mesh_ref.vertices - mesh_tm.vertices).max() > 1e-3) == (lamb > 0.0)
+    assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-4, atol=1e-4)
+
+
 def test_filter_laplacian_implicit_duplicate_built_operator(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -1588,6 +1616,46 @@ def test_smooth_region_matches_meshlib(device: str, edge_weights: str):
     assert np.array_equal(result_wp.numpy()[~free_np], v_wp.numpy()[~free_np])
 
 
+@pytest.mark.parity("smooth_region", "meshlib")
+def test_smooth_region_cotan_off_mode_matches_meshlib(device: str) -> None:
+    """
+    Class A on the positions: the cotangent solve with the deterministic setting off.
+
+    The off mode sums each edge's cotangents with ``float32`` atomics instead of the exact
+    ``float64`` sum, a different kernel every other test skips (``tests/conftest.py`` turns the
+    setting on); the answer must still be ``positionVertsSmoothly``'s, at the tolerance of
+    ``test_smooth_region_matches_meshlib``.
+    """
+    vertices_np, faces_np, free_np, v_wp, f_wp, free_wp = _sphere_region_wp(device)
+    with od.config.deterministic(False):
+        result_wp = od.smoothing.smooth_region(v_wp, f_wp, free_wp, edge_weights="cotan")
+
+    mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
+    mm.positionVertsSmoothly(
+        mesh_ml,
+        mn.vertBitSetFromBools(cast("Buffer", free_np)),
+        mm.EdgeWeights.Cotan,
+        mm.VertexMass.Unit,
+    )
+    verts_ml = mn.getNumpyVerts(mesh_ml)
+    assert np.abs(verts_ml - vertices_np).max() > 1e-3  # the reference moved something
+    assert np.allclose(result_wp.numpy(), verts_ml, rtol=1e-4, atol=1e-4)
+
+
+def test_smooth_region_rejects_unknown_edge_weights_and_skips_a_faceless_mesh(device: str) -> None:
+    """
+    Not a library comparison: an unknown weighting is refused, and no faces means no system.
+
+    With no faces no free vertex has an equation, so every position comes back exactly.
+    """
+    vertices_np, _faces_np, _free_np, v_wp, f_wp, free_wp = _sphere_region_wp(device)
+    with pytest.raises(ValueError, match="edge_weights must be 'unit' or 'cotan', got 'mean'"):
+        od.smoothing.smooth_region(v_wp, f_wp, free_wp, edge_weights="mean")
+    no_faces = warp_empty(0, wp.int32, device)
+    result_np = od.smoothing.smooth_region(v_wp, no_faces, free_wp).numpy()
+    assert np.array_equal(result_np, vertices_np.astype(np.float32))
+
+
 def test_smooth_region_is_reproducible_on_non_manifold_edges(device: str) -> None:
     """
     Not a parity assert: under the deterministic setting repeated cotangent solves agree exactly.
@@ -1791,6 +1859,91 @@ def test_refine_and_smooth_region_moves_only_the_vertices_subdivision_added(devi
         np.zeros(n_vertices_before, dtype=displacement_np.dtype),
     )
     assert np.all(displacement_np[n_vertices_before:] > 1e-9)
+
+
+def test_refine_and_smooth_region_natural_smoothing_stays_near_the_seam(device: str) -> None:
+    """
+    Not a library comparison: no reference exposes this finisher, so its contract is the oracle.
+
+    ``natural_smooth`` re-solves a band around the patch's seam (5 rings out, 2 back) on top of the
+    rim-pinned and boundary-smoothing solves. Its contract: connectivity is the subdivision's, some
+    pre-existing vertices near the seam move (the band reaches past the new ones), and every vertex
+    more than 5 rings from a seam vertex keeps its subdivided position bit for bit.
+    """
+    vertices_wp, faces_wp, patch_wp, n_vertices_before = _patch_to_refine(device)
+    max_edge = float(od.edges.mean_edge_length(vertices_wp, faces_wp)) * 0.6
+    smoothed_wp, smoothed_faces_wp, _patch = od.smoothing.refine_and_smooth_region(
+        vertices_wp,
+        faces_wp,
+        n_vertices_before,
+        patch_wp,
+        max_edge=max_edge,
+        max_edge_splits=3,
+        max_angle_change_after_flip=0.5,
+        smooth_curvature=True,
+        smooth_boundary=True,
+        natural_smooth=True,
+        edge_weights="cotan",
+    )
+    subdivided_wp, subdivided_faces_wp, subdivided_patch_wp = od.remesh.subdivide_region_to_size(
+        vertices_wp, faces_wp, patch_wp, max_edge=max_edge, max_splits=3, max_angle_change=0.5
+    )
+    faces_np = subdivided_faces_wp.numpy().reshape(-1, 3)
+    assert np.array_equal(smoothed_faces_wp.numpy().reshape(-1, 3), faces_np)
+
+    patch_np = subdivided_patch_wp.numpy()
+    n_vertices = subdivided_wp.size
+    seam_np = np.zeros(n_vertices, dtype=bool)
+    seam_np[np.intersect1d(faces_np[patch_np].ravel(), faces_np[~patch_np].ravel())] = True
+    band_np = seam_np.copy()
+    for _ in range(5):
+        band_np[faces_np[band_np[faces_np].any(axis=1)].ravel()] = True
+    assert not band_np.all()  # the band leaves part of the sphere out
+
+    smoothed_np = smoothed_wp.numpy()
+    subdivided_np = subdivided_wp.numpy()
+    assert np.array_equal(smoothed_np[~band_np], subdivided_np[~band_np])
+    moved_np = np.abs(smoothed_np - subdivided_np).max(axis=1) > 1e-6
+    assert moved_np[:n_vertices_before].any()
+    assert np.isfinite(smoothed_np).all()
+
+
+def test_refine_and_smooth_region_by_density_keeps_the_density_refinement(device: str) -> None:
+    """
+    Class A: ``refine="density"`` connectivity is ``refine_region_to_density``'s, bit for bit.
+
+    The smoothing passes move positions only, so the faces and the patch mask must be exactly the
+    density refinement's; an unknown ``refine`` is refused by name.
+    """
+    vertices_wp, faces_wp, patch_wp, n_vertices_before = _patch_to_refine(device)
+    refined_wp, refined_faces_wp, refined_patch_wp = od.smoothing.refine_and_smooth_region(
+        vertices_wp,
+        faces_wp,
+        n_vertices_before,
+        patch_wp,
+        max_edge=1.0,
+        smooth_curvature=True,
+        refine="density",
+        **_REFINE_KWARGS,
+    )
+    density_wp, density_faces_wp, density_patch_wp = od.remesh.refine_region_to_density(
+        vertices_wp, faces_wp, patch_wp, max_angle_change=0.5
+    )
+    assert refined_wp.size == density_wp.size
+    assert np.array_equal(refined_faces_wp.numpy(), density_faces_wp.numpy())
+    assert np.array_equal(refined_patch_wp.numpy(), density_patch_wp.numpy())
+
+    with pytest.raises(ValueError, match="unknown refine 'area'"):
+        od.smoothing.refine_and_smooth_region(
+            vertices_wp,
+            faces_wp,
+            n_vertices_before,
+            patch_wp,
+            max_edge=1.0,
+            smooth_curvature=True,
+            refine=cast("Literal['max_edge', 'density']", "area"),
+            **_REFINE_KWARGS,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2312,6 +2465,19 @@ def test_filter_normals_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) ->
         od.smoothing.filter_normals(mesh_wp.points, mesh_wp.indices, threshold=-1.0)
 
 
+def test_filter_normals_zero_iterations_returns_a_copy_of_the_given_normals(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Not a library comparison: no pass leaves the supplied field as it was, in a new buffer."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    out_wp = od.smoothing.filter_normals(
+        mesh_wp.points, mesh_wp.indices, iterations=0, face_normals=normals_wp, face_areas=areas_wp
+    )
+    assert out_wp.ptr != normals_wp.ptr
+    assert np.array_equal(out_wp.numpy(), normals_wp.numpy())
+
+
 @pytest.mark.parity("filter_two_step", "pymeshlab")
 def test_filter_two_step_matches_pymeshlab_on_crease_preservation(device: str) -> None:
     """
@@ -2420,6 +2586,38 @@ def test_filter_two_step_leaves_a_flat_patch_alone(device: str) -> None:
     assert np.allclose(smoothed_wp.numpy(), grid_vertices_wp.numpy(), rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("deterministic_on", [True, False], ids=["on", "off"])
+def test_filter_two_step_without_normal_filtering_is_a_fixed_point(
+    device: str, deterministic_on: bool
+) -> None:
+    """
+    Not a library comparison: fitting vertices to their own faces' normals moves nothing.
+
+    With ``normal_iterations=0`` the target field is the geometric one, and every vertex already
+    lies in the plane of each incident face, so each fit step is zero up to rounding, under either
+    deterministic setting (the off mode leaves the vertex -> face rows in fill order). The noise
+    makes the mesh far from a fixed point of the ordinary filter, which is checked too.
+    """
+    mesh_tm = _noisy_icosphere(3, 0.02)
+    mesh_wp = trimesh_to_warp(mesh_tm, device)
+    with od.config.deterministic(deterministic_on):
+        fitted_wp = od.smoothing.filter_two_step(
+            mesh_wp.points, mesh_wp.indices, normal_iterations=0
+        )
+        filtered_wp = od.smoothing.filter_two_step(mesh_wp.points, mesh_wp.indices)
+    assert np.allclose(fitted_wp.numpy(), mesh_wp.points.numpy(), rtol=1e-5, atol=1e-5)
+    assert np.abs(filtered_wp.numpy() - mesh_wp.points.numpy()).max() > 1e-3
+
+
+def test_filter_two_step_rejects_a_threshold_outside_a_half_turn(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Not a library comparison: the crease threshold is an angle in ``[0, 180]`` degrees."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    with pytest.raises(ValueError, match=r"threshold must be in \[0, 180\] degrees, got 200"):
+        od.smoothing.filter_two_step(mesh_wp.points, mesh_wp.indices, threshold=200.0)
+
+
 @pytest.mark.parametrize("iterations", [1, 5])
 @pytest.mark.parity("filter_sharpen", "pymeshlab")
 def test_filter_sharpen_matches_pymeshlab(device: str, iterations: int) -> None:
@@ -2494,11 +2692,47 @@ def test_filter_sharpen_zero_weight_is_the_identity(
     assert np.allclose(out_wp.numpy(), mesh_wp.points.numpy(), rtol=1e-6, atol=1e-6)
 
 
+def test_filter_sharpen_zero_iterations_scales_by_the_original_weight(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: with no smoothing pass the detail is zero.
+
+    The unsharp mask is ``weight_original * p + weight * (p - smooth(p))``, and zero passes leave
+    ``smooth(p) = p``, so the answer is ``weight_original * p`` exactly whatever ``weight`` is.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    out_wp = od.smoothing.filter_sharpen(
+        mesh_wp.points, mesh_wp.indices, weight=0.7, weight_original=2.0, iterations=0
+    )
+    assert np.array_equal(out_wp.numpy(), 2.0 * mesh_wp.points.numpy())
+
+
 # (name, callable) pairs; each callable takes (vertices, faces) and returns the smoothed vertex
 # array a vertex-position filter produces. filter_scalar_laplacian is not among these: it smooths
 # a per-vertex scalar field rather than positions and takes a values array first, a genuinely
 # different signature rather than a boilerplate variation.
 _SMOOTHING_VERTEX_FILTER_CASES = [
+    (
+        "filter_laplacian",
+        lambda v, f, iterations: od.smoothing.filter_laplacian(v, f, iterations=iterations),
+    ),
+    (
+        "filter_humphrey",
+        lambda v, f, iterations: od.smoothing.filter_humphrey(v, f, iterations=iterations),
+    ),
+    (
+        "relax_keep_volume",
+        lambda v, f, iterations: od.smoothing.relax_keep_volume(v, f, iterations=iterations),
+    ),
+    (
+        "filter_mut_dif_laplacian",
+        lambda v, f, iterations: od.smoothing.filter_mut_dif_laplacian(v, f, iterations=iterations),
+    ),
+    (
+        "filter_implicit_fairing",
+        lambda v, f, iterations: od.smoothing.filter_implicit_fairing(v, f, iterations=iterations),
+    ),
     (
         "filter_taubin",
         lambda v, f, iterations: od.smoothing.filter_taubin(v, f, iterations=iterations),

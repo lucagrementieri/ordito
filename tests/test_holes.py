@@ -2477,6 +2477,28 @@ def test_stitch_smooth_watertight(device: str):
     assert np.allclose(verts_np[:n_v0], np.concatenate([va.numpy(), vb.numpy()]), atol=1e-6)
 
 
+def test_stitch_smooth_triangulate_only_is_stitch_min_weight(device: str):
+    """
+    Ordito against ordito: ``triangulate_only`` stops after the band ``stitch_min_weight`` builds.
+
+    ``stitch_smooth``'s MeshLib comparison (below) covers the full pipeline; this pins the early
+    exit to its first stage bit for bit, and its patch mask to exactly the appended band faces.
+    """
+    (va, fa), (vb, fb) = _hemisphere_pair(device)
+    band_vertices, band_faces, patch = od.holes.stitch_smooth(
+        va, fa, vb, fb, triangulate_only=True, return_patch=True
+    )
+    ref_vertices, ref_faces = od.holes.stitch_min_weight(va, fa, vb, fb)
+
+    assert np.array_equal(band_vertices.numpy(), ref_vertices.numpy())
+    assert np.array_equal(band_faces.numpy(), ref_faces.numpy())
+    n_before = (fa.size + fb.size) // 3
+    patch_np = patch.numpy()
+    assert patch_np.size == band_faces.size // 3 > n_before  # non-vacuity: a band was added
+    assert not patch_np[:n_before].any()
+    assert patch_np[n_before:].all()
+
+
 @pytest.mark.parity(
     "stitch_smooth",
     "meshlib",
@@ -3127,6 +3149,37 @@ def test_bridge_edges_smooth_opposed_edges_stay_finite(device: str) -> None:
     assert np.isfinite(areas_wp.numpy()).all()
 
 
+def test_bridge_edges_smooth_one_segment_is_bridge_edges(device: str) -> None:
+    """
+    Ordito against ordito: a ``sampling_step`` longer than the gap gives ``bridge_edges``' patch.
+
+    Only ``bridge_edges_smooth`` has a MeshLib oracle (above); this pins its one-segment branch,
+    where the strip has no interior samples, to the flat patch of
+    [`bridge_edges`][ordito.holes.bridge_edges]: the same vertices and the same appended faces.
+    """
+    vertices_np = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.5, -1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.5, 2.0, 0.0],
+        ]
+    )
+    faces_np = np.array([[0, 1, 2], [3, 5, 4]], dtype=np.int64)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+
+    smooth_vertices_wp, smooth_faces_wp = od.holes.bridge_edges_smooth(
+        vertices_wp, faces_wp, (0, 1), (4, 3), 100.0
+    )
+    flat_faces_wp = od.holes.bridge_edges(vertices_wp, faces_wp, (0, 1), (4, 3))
+
+    assert np.array_equal(smooth_vertices_wp.numpy(), vertices_np.astype(np.float32))
+    assert smooth_faces_wp.size == faces_wp.size + 6  # non-vacuity: two patch triangles
+    assert np.array_equal(smooth_faces_wp.numpy(), flat_faces_wp.numpy())
+
+
 # Not ``saddle_graded``: its rim edges 0 and 12 lie along one side of the grid, where the smooth
 # strip and the chord nearly coincide -- ordito's strip is 0.066 from MeshLib's but the flat patch
 # only 0.126, under the 0.227 bound, so the comparison could not fail a chord-spanning strip there.
@@ -3424,6 +3477,9 @@ _INVALID_ARGUMENT_CASES = [
     "stitch_smooth_watertight",
     "stitch_loops_two_vertex_loop",
     "join_closest_components_negative_max_joins",
+    "stitch_smooth_edge_weights",
+    "stitch_smooth_refine",
+    "bridge_edges_smooth_sampling_step",
 ]
 
 
@@ -3470,6 +3526,18 @@ def test_invalid_arguments_raise(request: pytest.FixtureRequest, device: str, ca
         tiny_loop = wp.array(np.array([0, 1], dtype=np.int32), dtype=wp.int32, device=device)
         with pytest.raises(ValueError, match="at least 3 vertices"):
             od.holes.stitch_loops(va, fa, loop_a, vb, fb, tiny_loop)
+    elif case in {"stitch_smooth_edge_weights", "stitch_smooth_refine"}:
+        (_, _, va, fa), (_, _, vb, fb) = _capsule_halves(device, 8, 8)
+        if case == "stitch_smooth_edge_weights":
+            with pytest.raises(ValueError, match="edge_weights must be 'cotan' or 'unit'"):
+                od.holes.stitch_smooth(va, fa, vb, fb, edge_weights="nope")
+        else:
+            with pytest.raises(ValueError, match="unknown refine 'nope'"):
+                od.holes.stitch_smooth(va, fa, vb, fb, refine="nope")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+    elif case == "bridge_edges_smooth_sampling_step":
+        _, mesh_wp = request.getfixturevalue("saddle_graded")
+        with pytest.raises(ValueError, match="sampling_step must be positive"):
+            od.holes.bridge_edges_smooth(mesh_wp.points, mesh_wp.indices, (0, 1), (2, 3), 0.0)
     else:
         mesh_tm = _open_shells_tm(request.getfixturevalue("saddle_graded"), 2)
         vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)

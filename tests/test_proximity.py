@@ -142,6 +142,34 @@ def test_query_mesh_aabb_with_offsets(device: str) -> None:
         assert np.array_equal(got_np, expected_np)
 
 
+def test_query_mesh_aabb_with_offsets_guards_empty_and_miss(device: str) -> None:
+    """
+    Not a library comparison: the two ``ValueError`` guards, no query, and boxes that hit nothing.
+
+    No query returns no candidate and ``[0]`` offsets; queries far from the mesh return no
+    candidate and all-zero offsets, while a box around the mesh is asserted to hit, so the empty
+    answer is the query's and not the mesh's.
+    """
+    vertices_wp = points_to_warp(np.eye(3, dtype=np.float32), device)
+    mesh = wp.Mesh(points=vertices_wp, indices=wp.array([0, 1, 2], dtype=wp.int32, device=device))
+    near_wp = points_to_warp(np.zeros((2, 3), dtype=np.float32), device)
+    far_wp = points_to_warp(np.full((2, 3), 10.0, dtype=np.float32), device)
+    beyond_wp = points_to_warp(np.full((3, 3), 11.0, dtype=np.float32), device)
+    with pytest.raises(ValueError, match="same length"):
+        od.proximity.query_mesh_aabb_with_offsets(mesh, near_wp, beyond_wp)
+    with pytest.raises(ValueError, match="max_hits must be >= 1"):
+        od.proximity.query_mesh_aabb_with_offsets(mesh, near_wp, far_wp, max_hits=0)
+    empty_wp = warp_empty(0, wp.vec3, device)
+    candidates_wp, offsets_wp = od.proximity.query_mesh_aabb_with_offsets(mesh, empty_wp, empty_wp)
+    assert (candidates_wp.size, offsets_wp.list()) == (0, [0])
+    candidates_wp, offsets_wp = od.proximity.query_mesh_aabb_with_offsets(
+        mesh, far_wp, odt.as_dense(beyond_wp[:2])
+    )
+    assert (candidates_wp.size, offsets_wp.list()) == (0, [0, 0, 0])
+    candidates_wp, offsets_wp = od.proximity.query_mesh_aabb_with_offsets(mesh, near_wp, far_wp)
+    assert (candidates_wp.list(), offsets_wp.list()) == ([0, 0], [0, 1, 2])
+
+
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("closest_point_on_mesh", "meshlib", "pyvista")
 def test_closest_point_on_mesh_matches_references(
@@ -1555,7 +1583,7 @@ def test_signed_distance_grid_guards_and_conventions(
     device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
-    Not a library comparison: the two guards, and that ``bounds`` overrides the mesh's own box.
+    Not a library comparison: the guards, and that ``bounds`` overrides the mesh's own box.
 
     The ``mesh=`` argument is forwarded rather than interpreted, so
     ``signed_distance_on_mesh``'s rule about ``sign_mode="winding"`` (the mesh must carry
@@ -1571,6 +1599,12 @@ def test_signed_distance_grid_guards_and_conventions(
         od.proximity.signed_distance_grid(vertices_wp, faces_wp, 0.1, pad=-1)
     with pytest.raises(ValueError, match="at least one face"):
         od.proximity.signed_distance_grid(vertices_wp, warp_empty(0, wp.int32, device), 0.1)
+    with pytest.raises(ValueError, match="voxel_size > 0"):
+        od.proximity.signed_distance_grid(vertices_wp, faces_wp, -0.1)
+    with pytest.raises(ValueError, match="sign_mode must be"):
+        od.proximity.signed_distance_grid(
+            vertices_wp, faces_wp, 0.1, sign_mode=cast("Literal['parity', 'winding']", "solid")
+        )
     with pytest.raises(ValueError, match="support_winding_number"):
         od.proximity.signed_distance_grid(
             vertices_wp, faces_wp, 0.1, sign_mode="winding", mesh=mesh_wp

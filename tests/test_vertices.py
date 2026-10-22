@@ -380,6 +380,36 @@ def test_vertex_normals_are_reproducible(saddle_graded: tuple[tm.Trimesh, wp.Mes
         assert np.array_equal(runs[0], other)
 
 
+def test_vertex_normals_guards_and_faceless_mwselr(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the argument guards and the face-free ``"mwselr"`` contract.
+
+    No reference raises on these inputs. An unknown weighting, weights with ``"mwselr"`` and a
+    per-face table one row short each raise the documented ``ValueError``; a mesh with no faces has
+    no incident normal to average, so every vertex keeps the documented zero row.
+    """
+    mesh_tm, mesh_wp = saddle_graded
+    vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
+    with pytest.raises(ValueError, match="weighting must be"):
+        od.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="cotangent")  # pyright: ignore[reportArgumentType]
+    face_weights_wp = wp.ones(len(mesh_tm.faces), dtype=wp.float32, device=mesh_wp.device)
+    with pytest.raises(ValueError, match='not accepted with weighting="mwselr"'):
+        od.vertices.vertex_normals(
+            vertices_wp, mesh_wp.indices, weighting="mwselr", face_weights=face_weights_wp
+        )
+    short_normals_wp = points_to_warp(mesh_tm.face_normals[:-1], mesh_wp.device)
+    with pytest.raises(ValueError, match="face_normals must have one row per triangle"):
+        od.vertices.vertex_normals(
+            vertices_wp, mesh_wp.indices, weighting="mwselr", face_normals=short_normals_wp
+        )
+
+    no_faces_wp = wp.zeros(0, dtype=wp.int32, device=mesh_wp.device)
+    normals_np = od.vertices.vertex_normals(vertices_wp, no_faces_wp, weighting="mwselr").numpy()
+    assert np.array_equal(normals_np, np.zeros((len(mesh_tm.vertices), 3), dtype=np.float32))
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
 @pytest.mark.parity("vertex_defects", "trimesh", "igl", "meshlib", "pyvista")
 def test_vertex_defects(request: pytest.FixtureRequest, mesh_name: str) -> None:

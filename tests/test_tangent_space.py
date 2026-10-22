@@ -115,6 +115,58 @@ def test_vertex_tangent_frames_derived_normals_match_supplied(
     assert np.array_equal(derived[1].numpy(), supplied[1].numpy())
 
 
+def test_vertex_tangent_frames_accept_precomputed_rings(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``rings`` from ``vertex_one_rings`` give the frames built without them.
+
+    The potpourri3d comparison pins the frame; this pins that a caller-supplied ring table is the
+    one the function would derive, read the same way.
+    """
+    _, mesh_wp = sphere_irregular
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    rings = od.halfedge.vertex_one_rings(faces, n_vertices=vertices.size)
+    derived = od.tangent_space.vertex_tangent_frames(vertices, faces)
+    supplied = od.tangent_space.vertex_tangent_frames(vertices, faces, rings=rings)
+    for derived_part, supplied_part in zip(derived, supplied, strict=True):
+        assert np.array_equal(derived_part.numpy(), supplied_part.numpy())
+
+
+@pytest.mark.parametrize("with_normals", [False, True], ids=["derived", "supplied"])
+def test_vertex_tangent_frames_without_vertices(device: str, with_normals: bool) -> None:
+    """Not a library comparison: no vertex gives three empty arrays, the given normals unchanged."""
+    vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
+    faces_wp = wp.zeros(0, dtype=wp.int32, device=device)
+    normals_wp = wp.zeros(0, dtype=wp.vec3, device=device) if with_normals else None
+    basis_x, basis_y, normals = od.tangent_space.vertex_tangent_frames(
+        vertices_wp, faces_wp, normals=normals_wp
+    )
+    assert basis_x.numpy().shape == basis_y.numpy().shape == normals.numpy().shape == (0, 3)
+    assert (normals is normals_wp) is with_normals
+
+
+def test_vertex_tangent_frames_without_faces(device: str) -> None:
+    """
+    Not a library comparison: vertices no face references still get finite orthonormal frames.
+
+    With no face there is no angle-weighted normal to scatter, so every vertex takes the isolated
+    vertex's fallback; the frame must be unit, orthogonal and orthogonal to the returned normal.
+    """
+    vertices_wp = wp.array(
+        np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [-4.0, 0.5, 2.0]]), dtype=wp.vec3, device=device
+    )
+    faces_wp = wp.zeros(0, dtype=wp.int32, device=device)
+    basis_x_wp, basis_y_wp, normals_wp = od.tangent_space.vertex_tangent_frames(
+        vertices_wp, faces_wp
+    )
+    basis_x, basis_y, normals = basis_x_wp.numpy(), basis_y_wp.numpy(), normals_wp.numpy()
+    assert np.allclose(np.linalg.norm(basis_x, axis=1), 1.0, rtol=1e-5, atol=1e-5)
+    assert np.allclose(np.linalg.norm(basis_y, axis=1), 1.0, rtol=1e-5, atol=1e-5)
+    assert np.allclose((basis_x * basis_y).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
+    assert np.allclose((basis_x * normals).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
+
+
 # ---------------------------------------------------------------------------
 # halfedge_tangent_angles
 # ---------------------------------------------------------------------------
@@ -250,6 +302,41 @@ def test_halfedge_transport_angles_are_antisymmetric(
     assert np.allclose(round_trip, 0.0, rtol=1e-5, atol=1e-5)
 
 
+def test_halfedge_tangent_angles_without_faces(device: str) -> None:
+    """Not a library comparison: a mesh with no face has no halfedge to measure."""
+    vertices_wp = wp.array(np.eye(3), dtype=wp.vec3, device=device)
+    faces_wp = wp.zeros(0, dtype=wp.int32, device=device)
+    angles_wp = od.tangent_space.halfedge_tangent_angles(vertices_wp, faces_wp)
+    assert angles_wp.numpy().tolist() == []
+    rho_wp = od.tangent_space.halfedge_transport_angles(vertices_wp, faces_wp)
+    assert rho_wp.numpy().tolist() == []
+
+
+def test_halfedge_transport_angles_from_supplied_tangent_angles(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: handing over the tangent angles, with or without twins, changes nothing.
+
+    The holonomy test above carries the oracle on the derived path; the supplied ``tangent_angles``
+    path derives only the twins (or takes them too), and must transport through the same angles.
+    """
+    _, mesh_wp = sphere_irregular
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    derived = od.tangent_space.halfedge_transport_angles(vertices, faces).numpy()
+    tangent_angles = od.tangent_space.halfedge_tangent_angles(vertices, faces)
+    twins = od.halfedge.halfedge_twins(faces)
+    without_twins = od.tangent_space.halfedge_transport_angles(
+        vertices, faces, tangent_angles=tangent_angles
+    )
+    with_twins = od.tangent_space.halfedge_transport_angles(
+        vertices, faces, twins=twins, tangent_angles=tangent_angles
+    )
+    assert np.ptp(derived) > 1e-3
+    assert np.array_equal(without_twins.numpy(), derived)
+    assert np.array_equal(with_twins.numpy(), derived)
+
+
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("face_tangent_frames", "igl")
 def test_face_tangent_frames_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -284,10 +371,42 @@ def test_face_tangent_frames_matches_igl(request: pytest.FixtureRequest, mesh_na
     assert np.allclose(normal_wp.numpy(), normal_igl, rtol=1e-5, atol=1e-5)
 
 
-def test_face_tangent_frames_empty(device: str) -> None:
+@pytest.mark.parity("face_tangent_frames", "igl")
+def test_face_tangent_frames_with_supplied_normals_matches_igl(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A: given igl's own face normals, the frame is ``igl.local_basis``'s, element-wise.
+
+    A supplied ``normals`` takes a separate kernel from the derived path above; it must build the
+    same first-edge frame about the normal it is handed, and return that array itself.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    basis_x_igl, basis_y_igl, normal_igl = igl.local_basis(
+        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+        np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
+    )
+    normals_wp = wp.array(
+        np.asarray(normal_igl, dtype=np.float32), dtype=wp.vec3, device=mesh_wp.device
+    )
+    basis_x_wp, basis_y_wp, returned_wp = od.tangent_space.face_tangent_frames(
+        mesh_wp.points, mesh_wp.indices, normals=normals_wp
+    )
+    assert returned_wp is normals_wp
+    assert np.allclose(basis_x_wp.numpy(), basis_x_igl, rtol=1e-5, atol=1e-5)
+    assert np.allclose(basis_y_wp.numpy(), basis_y_igl, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("with_normals", [False, True], ids=["derived", "supplied"])
+def test_face_tangent_frames_empty(device: str, with_normals: bool) -> None:
+    """Not a library comparison: no face gives three empty arrays, the given normals unchanged."""
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    basis_x, basis_y, normals = od.tangent_space.face_tangent_frames(vertices_wp, faces_wp)
+    normals_wp = wp.zeros(0, dtype=wp.vec3, device=device) if with_normals else None
+    basis_x, basis_y, normals = od.tangent_space.face_tangent_frames(
+        vertices_wp, faces_wp, normals=normals_wp
+    )
+    assert (normals is normals_wp) is with_normals
     assert basis_x.shape == (0,)
     assert basis_y.shape == (0,)
     assert normals.shape == (0,)

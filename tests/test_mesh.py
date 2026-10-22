@@ -275,6 +275,28 @@ def test_body_count_matches_trimesh(request: pytest.FixtureRequest, mesh_name: s
     )
 
 
+def test_scalar_properties_of_a_mesh_with_no_faces(device: str) -> None:
+    """
+    Class A on two of the four: a vertex-only mesh against ``trimesh`` on the same empty input.
+
+    ``euler_characteristic`` is 0 and ``is_watertight`` is ``True`` (no open edge), as
+    ``trimesh.Trimesh`` answers. ``body_count`` is 0 where trimesh answers 3: trimesh counts each
+    unreferenced vertex as a body, while ordito counts face components (an index-map difference,
+    the same as on any mesh with unreferenced vertices). ``halfedge_transport_angles`` holds one
+    angle per half-edge, so none.
+    """
+    vertices_np = np.eye(3, dtype=np.float32)
+    mesh_tm = tm.Trimesh(vertices_np, np.zeros((0, 3), dtype=np.int64), process=False)
+    mesh = od.Trimesh(
+        wp.array(vertices_np, dtype=wp.vec3, device=device), warp_empty(0, wp.int32, device)
+    )
+    assert mesh.euler_characteristic == int(mesh_tm.euler_number) == 0
+    assert mesh.is_watertight == bool(mesh_tm.is_watertight)
+    assert mesh.is_watertight
+    assert mesh.body_count == 0
+    assert mesh.halfedge_transport_angles.size == 0
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_faces_unique_edges_indexes_edges_unique(
     request: pytest.FixtureRequest, mesh_name: str
@@ -701,11 +723,16 @@ def test_predicates_match_trimesh(
     ``boy_surface``. ``is_winding_consistent`` and ``is_volume`` (the conjunction trimesh calls
     ``is_volume``) answer ``True`` on the closed orientable fixtures; the open fixtures, the
     non-orientable ones and ``half_flipped_sphere`` supply the ``False`` branches. A predicate
-    asserted on one branch only tests one case, so the expected answers are asserted too.
+    asserted on one branch only tests one case, so the expected answers are asserted too. The
+    characteristic is asserted twice: from a cold cache, and after ``edges_unique`` is cached, when
+    it counts the cached edges instead of calling the free function.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.euler_characteristic == int(mesh_tm.euler_number)
+    warm = od.Trimesh.from_warp_mesh(mesh_wp)
+    _ = warm.edges_unique
+    assert warm.euler_characteristic == int(mesh_tm.euler_number)
     assert mesh.is_winding_consistent == bool(mesh_tm.is_winding_consistent)
     assert mesh.is_volume == bool(mesh_tm.is_volume)
 
@@ -1448,3 +1475,5 @@ def test_mesh_arguments_resolves_both_forms(sphere_irregular: tuple[tm.Trimesh, 
         resolve("f", mesh, mesh_wp.points, a, (b, None, None), 2)
     with pytest.raises(TypeError, match="vertices and faces"):
         resolve("f", None, None, mesh_wp.indices, (a, b, None), 2)
+    with pytest.raises(TypeError, match="vertices given by position and by keyword"):
+        resolve("f", mesh_wp.points, mesh_wp.points, mesh_wp.indices, (a, b, None), 2)

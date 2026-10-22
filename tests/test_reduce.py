@@ -257,6 +257,14 @@ def _mask_2d(device: str) -> wp.array[wp.bool]:
 _REJECTED_CALLS: list[tuple[str, Callable[[str], object], str]] = [
     *(
         (
+            f"{name}_empty",
+            lambda device, fn=fn: fn(warp_empty(0, wp.int32, device)),
+            f"{name} requires a non-empty array",
+        )
+        for name, fn in (("min", _MIN), ("max", _MAX))
+    ),
+    *(
+        (
             f"{name}_1d_axis",
             lambda device, fn=fn: fn(_ints_1d(device), axis=0),
             "requires axis=None for a 1D array",
@@ -322,6 +330,68 @@ _REJECTED_CALLS: list[tuple[str, Callable[[str], object], str]] = [
         ),
         "requires rank-1",
     ),
+    (
+        "weighted_sum_empty",
+        lambda device: od_reduce.weighted_sum(
+            warp_empty(0, wp.float32, device), warp_empty(0, wp.float32, device)
+        ),
+        "non-empty arrays",
+    ),
+    *(
+        (
+            f"{name}_vec3_rank2",
+            lambda device, fn=fn: fn(wp.zeros((2, 2), dtype=wp.vec3, device=device)),
+            "1D array|rank-1 wp.vec3",
+        )
+        for name, fn in (("minmax", _MINMAX), ("sum", _SUM))
+    ),
+    (
+        "sum_bool_empty",
+        lambda device: _SUM(warp_empty(0, wp.bool, device)),
+        "sum requires a non-empty array",
+    ),
+    *(
+        (
+            f"{name}_bool_empty",
+            lambda device, fn=fn: fn(warp_empty(0, wp.bool, device)),
+            f"{name} requires a non-empty array",
+        )
+        for name, fn in (("any", _ANY), ("all", _ALL))
+    ),
+    *(
+        (
+            f"{name}_bool_rank3",
+            lambda device, fn=fn: fn(wp.zeros((2, 2, 2), dtype=wp.bool, device=device)),
+            "requires a 1D or 2D array",
+        )
+        for name, fn in (("any", _ANY), ("all", _ALL))
+    ),
+    *(
+        (
+            f"{name}_rank3",
+            lambda device, fn=fn: fn(wp.zeros((2, 2, 2), dtype=wp.int32, device=device)),
+            "requires a 1D or 2D array",
+        )
+        for name, fn in (("min", _MIN), ("max", _MAX))
+    ),
+    *(
+        (
+            f"{name}_1d_axis",
+            lambda device, fn=fn: fn(wp.zeros(4, dtype=wp.int32, device=device), axis=0),
+            "requires axis=None for a 1D array",
+        )
+        for name, fn in (("min", _MIN), ("max", _MAX))
+    ),
+    (
+        "median_rank2",
+        lambda device: od_reduce.median(_ints_2d(device)),
+        "median requires a 1D array",
+    ),
+    (
+        "median_empty",
+        lambda device: od_reduce.median(warp_empty(0, wp.float32, device)),
+        "median requires a non-empty array",
+    ),
 ]
 
 
@@ -335,7 +405,8 @@ def test_invalid_reductions_raise(device: str, call: Callable[[str], object], ma
     An ``axis`` on a rank-1 array, an axis outside ``{0, 1, None}`` on a rank-2 one (instead of
     silently reading as ``axis=0``), any ``axis`` or an empty input on a ``wp.vec3`` array, and
     ``weighted_sum`` arguments of unequal length or rank 2 (instead of reading the leading
-    dimension).
+    dimension). Empty and rank-3 inputs, a rank-2 ``wp.vec3`` array, and a ``median`` of an empty
+    or rank-2 array are each rejected by name.
     """
     with pytest.raises(ValueError, match=match):
         call(device)
@@ -1028,6 +1099,24 @@ _REJECTED_GROUP_SUMS: list[tuple[str, Callable[[str], object], type, str]] = [
         ),
         TypeError,
         "int32 indices",
+    ),
+    (
+        "rank-2 indices",
+        lambda device: od_reduce.scatter_sum(
+            wp.zeros(4, dtype=wp.float32, device=device),
+            wp.zeros((2, 2), dtype=wp.int32, device=device),
+        ),
+        ValueError,
+        "rank-1 indices",
+    ),
+    (
+        "int64 offsets",
+        lambda device: od_reduce.segment_sum(
+            wp.zeros(3, dtype=wp.float32, device=device),
+            wp.array([0, 3], dtype=wp.int64, device=device),
+        ),
+        TypeError,
+        "int32 offsets, got int64",
     ),
     (
         "offsets not closed by n",

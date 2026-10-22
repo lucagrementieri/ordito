@@ -275,6 +275,28 @@ def test_open_and_close_polyline(
     assert np.allclose(result_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize(
+    ("points", "expected"),
+    [
+        pytest.param([], False, id="empty"),
+        pytest.param([[1.0, 2.0, 3.0]], False, id="one-point"),
+        pytest.param([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]], True, id="two-coincident-points"),
+        pytest.param([[1.0, 2.0, 3.0], [1.0, 2.0, 4.0]], False, id="two-distinct-points"),
+    ],
+)
+def test_is_closed_short_polylines(device: str, points: list[list[float]], expected: bool) -> None:
+    """
+    Not a library comparison: fewer than two points never close; two coincident points do.
+
+    The one- and empty-point inputs take the host early return, the two-point inputs the device
+    predicate, so both answers are pinned on each side of the ``n < 2`` floor.
+    """
+    polyline_wp = (
+        points_to_warp(np.asarray(points), device) if points else warp_empty(0, wp.vec3, device)
+    )
+    assert od.polyline.is_closed(polyline_wp) is expected
+
+
 # --- length (meshlib / pyvista oracles) ---
 
 
@@ -415,6 +437,23 @@ def test_polyline_normal_far_from_the_origin(device: str) -> None:
     assert np.arccos(np.clip(normal_np @ exact_np, -1.0, 1.0)) < 1e-3
 
 
+def test_polyline_normal_of_a_straight_line_is_zero(device: str) -> None:
+    """
+    Not a library comparison: a collinear polyline encloses no area, so it has no normal.
+
+    Newell's sum vanishes on a line, and the documented answer is the zero vector rather than a
+    ``NaN`` from normalizing it; a bent copy of the same points gets a unit normal, so the zero
+    answer is not a constant output.
+    """
+    line_np = np.outer(np.linspace(0.0, 3.0, 5), [1.0, 2.0, -0.5])
+    normal = od.polyline.polyline_normal(points_to_warp(line_np, device))
+    assert np.array_equal(np.array(list(normal)), np.zeros(3, dtype=np.float32))
+    bent_np = line_np.copy()
+    bent_np[2] += [0.0, 0.0, 1.0]
+    bent = od.polyline.polyline_normal(points_to_warp(bent_np, device))
+    assert np.isclose(np.linalg.norm(np.array(list(bent))), 1.0, atol=1e-5)
+
+
 # --- angles (NumPy reference; trimesh vector_angle cross-check) ---
 
 
@@ -552,6 +591,13 @@ def test_distance_to_empty_polyline_is_infinite(device: str) -> None:
     distances_wp = od.polyline.polyline_point_distance(points_wp, empty_wp)
 
     assert np.array_equal(distances_wp.numpy(), np.full(5, np.inf, dtype=np.float32))
+
+
+def test_distance_from_no_points_is_empty(device: str) -> None:
+    """Not a library comparison: no query points give no distances, whatever the curve."""
+    polyline_wp = points_to_warp(_random_open_polyline(43), device)
+    distances_wp = od.polyline.polyline_point_distance(warp_empty(0, wp.vec3, device), polyline_wp)
+    assert distances_wp.numpy().tolist() == []
 
 
 @pytest.mark.parametrize("closed", [False, True])
@@ -775,6 +821,14 @@ def test_cumulative_arc_length_last_entry_is_total_length(device: str) -> None:
     )
 
 
+@pytest.mark.parametrize("n_points", [0, 1])
+def test_cumulative_arc_length_without_a_segment(device: str, n_points: int) -> None:
+    """Not a library comparison: a lone vertex sits at arc length 0; no vertex has no entry."""
+    polyline_wp = points_to_warp(np.ones((n_points, 3)), device)
+    cumulative_wp = od.polyline.cumulative_arc_length(polyline_wp)
+    assert np.array_equal(cumulative_wp.numpy(), np.zeros(n_points, dtype=np.float32))
+
+
 # --- downsample (NumPy reference) ---
 
 
@@ -881,6 +935,13 @@ def test_downsample_polyline_above_the_doubling_threshold(device: str) -> None:
     # Consecutive kept points are at least a step apart in arc length.
     arc_np = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(points_np, axis=0), axis=1))])
     assert np.all(np.diff(arc_np[matches]) >= step - 1e-4)
+
+
+def test_downsample_single_point_is_returned_unchanged(device: str) -> None:
+    """Not a library comparison: a polyline with no segment has nothing to drop."""
+    single_wp = points_to_warp(np.array([[0.5, -1.0, 2.0]]), device)
+    kept_wp = od.polyline.polyline_downsample(single_wp, 0.25)
+    assert np.array_equal(kept_wp.numpy(), single_wp.numpy())
 
 
 @pytest.mark.parity("polyline_downsample", "meshlib")
@@ -1013,19 +1074,23 @@ def _planar_circle(n: int, radius: float) -> np.ndarray:
     return np.stack([radius * np.cos(angle), radius * np.sin(angle), np.zeros(n)], axis=1)
 
 
+@pytest.mark.parametrize("n_points", [24, 3000], ids=["one-block", "several-blocks"])
 @pytest.mark.parametrize("closed", [False, True])
 @pytest.mark.parametrize("reduction", ["min", "max", "mean", "median"])
 def test_polyline_radius_explicit_plane_matches_reference(
-    device: str, reduction: Literal["min", "max", "mean", "median"], closed: bool
+    device: str, reduction: Literal["min", "max", "mean", "median"], closed: bool, n_points: int
 ) -> None:
     """
     Not a library comparison: ``_radius_np`` on a sampled circle, open and ``closed=True``.
+
+    A circle longer than one reduction block (``ITEMS_PER_BLOCK_1D``) takes the two-launch form
+    (frame pass, then a block-strided reduction) instead of the single-block kernel.
 
     ``closed=True`` adds the seam segment: on a *sampled circle* stored without its closing point
     the open form misses the arc between the last and first sample entirely, so the closed form is
     compared against the reference fed the explicitly closed points.
     """
-    pts_np = _planar_circle(24, radius=2.0)
+    pts_np = _planar_circle(n_points, radius=2.0)
     center_np = np.zeros(3)
     normal_np = np.array([0.0, 0.0, 1.0])
     radius_wp = od.polyline.polyline_radius(
@@ -1135,6 +1200,31 @@ def test_polyline_radius_with_an_explicit_plane_needs_no_fit(
             ),
             "three points",
             id="normal-two-points",
+        ),
+        pytest.param(
+            lambda device: od.polyline.polyline_centroid(
+                points_to_warp(np.array([[0.0, 0.0, 0.0]]), device)
+            ),
+            "polyline_centroid requires at least two points",
+            id="centroid-one-point",
+        ),
+        pytest.param(
+            lambda device: od.polyline.polyline_normal(
+                points_to_warp(
+                    np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]]), device
+                )
+            ),
+            "polyline_normal requires at least three points",
+            id="normal-closed-three-points",
+        ),
+        pytest.param(
+            lambda device: od.polyline.polyline_radius(
+                points_to_warp(np.array([[0.0, 0.0, 0.0]]), device),
+                center=wp.vec3(0.0, 0.0, 0.0),
+                normal=wp.vec3(0.0, 0.0, 1.0),
+            ),
+            "polyline_radius requires at least two points",
+            id="radius-one-point",
         ),
         pytest.param(
             lambda device: od.polyline.polyline_radius(
@@ -1422,6 +1512,30 @@ def test_triangulate_from_offsets_without_loops(device: str) -> None:
     )
     assert faces_wp.shape == (0, 3)
     assert face_offsets_wp.numpy().tolist() == [0]
+
+
+def test_triangulate_from_offsets_with_only_degenerate_loops(device: str) -> None:
+    """
+    Not a library comparison: loops of fewer than three points reserve no faces.
+
+    Every loop is a point or a segment, so no face row is reserved and each loop's face range is
+    empty; a third loop with a triangle in the same call gets its one face, so the empty answer is
+    not a constant output.
+    """
+    short_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    faces_wp, face_offsets_wp = od.polyline.polyline_triangulate_from_offsets(
+        points_to_warp(short_np, device), wp.array([0, 1, 3], dtype=wp.int32, device=device)
+    )
+    assert faces_wp.shape == (0, 3)
+    assert face_offsets_wp.numpy().tolist() == [0, 0, 0]
+
+    with_triangle_np = np.vstack([short_np, [[0.0, 2.0, 0.0], [1.0, 2.0, 0.0], [0.0, 3.0, 0.0]]])
+    faces_wp, face_offsets_wp = od.polyline.polyline_triangulate_from_offsets(
+        points_to_warp(with_triangle_np, device),
+        wp.array([0, 1, 3, 6], dtype=wp.int32, device=device),
+    )
+    assert face_offsets_wp.numpy().tolist() == [0, 0, 0, 1]
+    assert sorted(faces_wp.numpy()[0].tolist()) == [3, 4, 5]
 
 
 # --- simplify (Ramer-Douglas-Peucker, NumPy reference) ---

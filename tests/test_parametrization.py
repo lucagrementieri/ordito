@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 from collections.abc import Callable
 from typing import Any, cast
@@ -173,6 +174,16 @@ def test_map_vertices_to_circle_single_vertex_loop(device: str):
     boundary_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
     circle_wp = od.parametrization.map_vertices_to_circle(vertices_wp, boundary_wp)
     assert np.isfinite(circle_wp.numpy()).all()
+
+
+def test_map_vertices_to_circle_empty_loop(device: str):
+    """Not a library comparison: an empty loop maps to an empty ``wp.vec2`` buffer, not a raise."""
+    vertices_wp = wp.array(np.eye(3, dtype=np.float32), dtype=wp.vec3, device=device)
+    circle_wp = od.parametrization.map_vertices_to_circle(
+        vertices_wp, warp_empty(0, wp.int32, device)
+    )
+    assert circle_wp.dtype == wp.vec2
+    assert circle_wp.shape == (0,)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
@@ -662,6 +673,26 @@ def test_solvers_on_an_empty_mesh(device: str, solver: str):
     assert uv_wp.numpy().size == 0
 
 
+@pytest.mark.parametrize("method", ["harmonic", "tutte"])
+def test_fixed_boundary_maps_on_an_empty_mesh_and_a_bad_power(device: str, method: str):
+    """
+    Not a library comparison: the empty mesh maps to nothing, and a power below one raises.
+
+    ``igl.harmonic`` rejects ``k=0`` with an assertion rather than a message; ordito's
+    ``ValueError`` names the method and the power, and is raised before the empty-mesh return.
+    """
+    vertices_wp = warp_empty(0, wp.vec3, device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    pins_wp = warp_empty(0, wp.int32, device)
+    pins_uv_wp = warp_empty(0, wp.vec2, device)
+    function = getattr(od.parametrization, method)
+    uv_wp = function(vertices_wp, faces_wp, pins_wp, pins_uv_wp)
+    assert uv_wp.dtype == wp.vec2
+    assert uv_wp.shape == (0,)
+    with pytest.raises(ValueError, match=rf"{method} power k must be >= 1, got 0"):
+        function(vertices_wp, faces_wp, pins_wp, pins_uv_wp, k=0)
+
+
 def _short_boundary_uv(mesh_wp: wp.Mesh) -> tuple[wp.array[wp.int32], wp.array[wp.vec2]]:
     boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
     return boundary_wp, wp.zeros(boundary_wp.size - 1, dtype=wp.vec2, device=mesh_wp.device)
@@ -850,6 +881,43 @@ def test_fixed_vertex_solver_ignores_a_factorization_of_another_fixed_set(
     assert np.allclose(
         own, od.parametrization.harmonic(vertices, faces, loop, circle).numpy(), atol=1e-5
     )
+
+
+def test_fixed_vertex_solver_keeps_one_factorization_per_method_and_outlives_nothing(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the solver's ownership rules, which no reference has.
+
+    Factoring ``(method, k)`` again for another fixed set releases the first factorization, so the
+    solver then holds exactly what a fresh solver factoring only the second set holds. An empty
+    mesh factors trivially. A solver whose ``Trimesh`` was collected raises rather than reading a
+    dead mesh: the solver holds its mesh weakly.
+    """
+    _, mesh_wp = sphere_irregular_cap
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    loop = od.boundary.longest_boundary_loop(vertices, faces)
+    shorter = wp.array(loop.numpy()[:-1], dtype=wp.int32, device=loop.device)
+    mesh = od.Trimesh(vertices, faces)
+    solver = mesh.fixed_vertex_solver()
+    assert solver.factor("harmonic", loop)
+    first_nbytes = solver.nbytes
+    assert first_nbytes > 0
+    assert solver.factor("harmonic", shorter)
+    fresh_mesh = od.Trimesh(vertices, faces)
+    assert fresh_mesh.fixed_vertex_solver().factor("harmonic", shorter)
+    assert solver.nbytes == fresh_mesh.fixed_vertex_solver().nbytes
+
+    empty = od.Trimesh(
+        warp_empty(0, wp.vec3, vertices.device), warp_empty(0, wp.int32, vertices.device)
+    )
+    assert empty.fixed_vertex_solver().factor("tutte", warp_empty(0, wp.int32, vertices.device))
+    assert empty.fixed_vertex_solver().nbytes == 0
+
+    del mesh
+    gc.collect()
+    with pytest.raises(RuntimeError, match="its Trimesh no longer exists"):
+        solver.factor("harmonic", loop)
 
 
 @pytest.mark.parametrize(("k", "discards"), [(1, False), (3, True)])

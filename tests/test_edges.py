@@ -718,6 +718,60 @@ def test_empty_faces(device: str, case: str) -> None:
     assert compute(faces_wp, verts_wp) == expected
 
 
+def test_edge_entry_points_on_their_less_travelled_paths(device: str) -> None:
+    """
+    Class A against trimesh, plus the guards: the paths the fixture tests do not take.
+
+    Two triangles sharing an edge (five unique edges, all lengths distinct). The unvalidated
+    ``edges_unique`` with no ``n_vertices`` packs at the pair radix rather than reducing the
+    faces, and must return the validated rows exactly; ``edges_unique_length`` with an explicit
+    count and ``mean_unique_edge_length(validate=False)`` must equal trimesh's unique lengths. The
+    guards raise the documented messages, and every empty table (no faces, no supplied rows)
+    answers empty or ``0.0`` rather than launching.
+    """
+    vertices_np = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.5, 1.7, 0.4]], dtype=np.float32
+    )
+    faces_np = np.array([[0, 1, 2], [2, 1, 3]], dtype=np.int32)
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    lengths_tm = np.sort(mesh_tm.edges_unique_length)
+    assert lengths_tm.shape == (5,)
+    assert np.unique(lengths_tm).size == 5
+
+    unique_wp, inverse_wp = od.edges.edges_unique(faces_wp)
+    unchecked_wp, unchecked_inverse_wp = od.edges.edges_unique(faces_wp, validate=False)
+    assert np.array_equal(unchecked_wp.numpy(), unique_wp.numpy())
+    assert np.array_equal(unchecked_inverse_wp.numpy(), inverse_wp.numpy())
+    assert_unordered_rows_equal(unique_wp.numpy(), mesh_tm.edges_unique)
+
+    counted_wp = od.edges.edges_unique_length(vertices_wp, faces_wp, n_vertices=4)
+    assert np.allclose(np.sort(counted_wp.numpy()), lengths_tm, rtol=1e-5, atol=1e-5)
+    mean_wp = od.edges.mean_unique_edge_length(vertices_wp, faces_wp, validate=False)
+    assert np.isclose(mean_wp, lengths_tm.mean(), rtol=1e-5, atol=1e-5)
+
+    negative_rows_wp = odt.as_array2d(
+        wp.array([[-1, 2], [0, 1]], dtype=wp.int32, device=device), wp.int32
+    )
+    with pytest.raises(ValueError, match="non-negative, got a minimum of -1"):
+        od.edges.edges_unique(faces_wp, edges_sorted=negative_rows_wp, n_vertices=4)
+    with pytest.raises(ValueError, match="n_vertices must be positive, got 0"):
+        od.edges.edges_unique(faces_wp, n_vertices=0)
+
+    no_rows_wp = odt.empty_2d((0, 2), wp.int32, device=device)
+    no_edges_wp, no_inverse_wp = od.edges.edges_unique(
+        faces_wp, edges_sorted=no_rows_wp, n_vertices=4, validate=False
+    )
+    assert no_edges_wp.shape == (0, 2)
+    assert no_inverse_wp.shape == (0,)
+    assert od.edges.edges_length(vertices_wp, faces_wp, edges_in=no_rows_wp).shape == (0,)
+
+    no_faces_wp = warp_empty(0, wp.int32, device)
+    assert od.edges.edges_unique_length(vertices_wp, no_faces_wp).shape == (0,)
+    assert od.edges.face_edge_lengths(vertices_wp, no_faces_wp).shape == (0, 3)
+    assert od.edges.mean_unique_edge_length(vertices_wp, no_faces_wp) == 0.0
+
+
 def test_mean_edge_length_arrival_order_agrees_with_the_default(device: str) -> None:
     """
     Ordito against ordito: determinism off returns the default's mean to rounding.

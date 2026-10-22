@@ -253,6 +253,35 @@ def test_query_ball_count_matches_scipy_and_the_list_form(
     assert indices_wp.size == int(counts_np.sum())
 
 
+def test_query_ball_count_and_offsets_on_their_degenerate_forms(device: str) -> None:
+    """
+    Class B against ``scipy.spatial.KDTree.query_ball_point``: one bare query, rows sorted.
+
+    A bare ``wp.vec3`` query to ``query_ball_with_offsets`` is one row whose index set must equal
+    SciPy's ball (sorted on both sides), with offsets ``[0, count]``. Against an empty cloud every
+    query's count is ``0`` (SciPy's empty tree answers empty balls too).
+    """
+    rng = np.random.default_rng(5)
+    points_np = rng.random((200, 3), dtype=np.float32)
+    query_np = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+    radius = 0.2
+    ball_np = np.sort(KDTree(points_np).query_ball_point(query_np, radius))
+    assert ball_np.size > 1
+
+    points_wp = points_to_warp(points_np, device)
+    indices_wp, distances_wp, offsets_wp = od.neighbors.query_ball_with_offsets(
+        points_wp, wp.vec3(*query_np.tolist()), radius
+    )
+    assert np.array_equal(np.sort(indices_wp.numpy()), ball_np)
+    assert offsets_wp.numpy().tolist() == [0, ball_np.size]
+    expected_np = np.linalg.norm(points_np[indices_wp.numpy()] - query_np, axis=1)
+    assert np.allclose(distances_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+
+    queries_wp = points_to_warp(points_np[:7], device)
+    counts_wp = od.neighbors.query_ball_count(warp_empty(0, wp.vec3, device), queries_wp, radius)
+    assert np.array_equal(counts_wp.numpy(), np.zeros(7, dtype=np.int32))
+
+
 @pytest.mark.parametrize("copy", [False, True])
 def test_query_ball_is_its_packed_form_split(device: str, copy: bool) -> None:
     """
@@ -1087,6 +1116,20 @@ def test_query_nearest_empty(device: str, backend: Literal["bvh", "hashgrid"], k
         assert distances.shape == distances_np.shape
         assert np.array_equal(distances.numpy(), distances_np.astype(np.float32))
         assert np.array_equal(indices.numpy(), np.full(distances_np.shape, -1, dtype=np.int32))
+
+
+def test_query_nearest_rejects_bad_parameters(device: str) -> None:
+    """
+    Not a library comparison: ``k`` and ``max_radius`` guards raise their documented messages.
+
+    ``KDTree.query`` rejects ``k=0`` as well; the claim is ordito's own message, raised before any
+    index is built.
+    """
+    points_wp = points_to_warp(np.random.default_rng(0).random((8, 3), dtype=np.float32), device)
+    with pytest.raises(ValueError, match="k must be >= 1"):
+        od.neighbors.query_nearest(points_wp, points_wp, 0)
+    with pytest.raises(ValueError, match="max_radius must be >= 0"):
+        od.neighbors.query_nearest(points_wp, points_wp, 2, max_radius=-1.0)
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
@@ -1961,6 +2004,27 @@ def test_geodesic_ball_neighborhoods_overflow_warns(device: str) -> None:
         _, offsets_wp, _ = od.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
     # Clamped, not crashed: every per-vertex count fits within the fixed capacity.
     assert np.diff(offsets_wp.numpy()).max() <= 512
+
+
+def test_geodesic_ball_without_faces_is_each_vertex_alone(device: str) -> None:
+    """
+    Not a library comparison: with no edge to walk, every ball holds its own vertex only.
+
+    MeshLib's ball needs a topology to start from. A face-free vertex set has an empty adjacency,
+    so vertex ``i``'s row is ``[i]`` at any radius; an empty vertex set returns the one ``[0]``
+    offset of the CSR form and no rows.
+    """
+    vertices_wp = points_to_warp(np.random.default_rng(1).random((4, 3), dtype=np.float32), device)
+    no_faces_wp = warp_empty(0, wp.int32, device)
+    neighbors_wp, offsets_wp, _ = od.neighbors.geodesic_ball(vertices_wp, no_faces_wp, 10.0)
+    assert neighbors_wp.numpy().tolist() == [0, 1, 2, 3]
+    assert offsets_wp.numpy().tolist() == [0, 1, 2, 3, 4]
+
+    empty_wp = warp_empty(0, wp.vec3, device)
+    neighbors_wp, offsets_wp, reference_wp = od.neighbors.geodesic_ball(empty_wp, no_faces_wp, 1.0)
+    assert neighbors_wp.shape == (0,)
+    assert offsets_wp.numpy().tolist() == [0]
+    assert reference_wp.shape == (0,)
 
 
 @pytest.mark.parametrize("radius_scale", [3.0, 100.0], ids=["ball", "clipped"])

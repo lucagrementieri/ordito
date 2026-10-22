@@ -15,6 +15,7 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import ordito as od
+import ordito.typing as odt
 from tests.comparisons import assert_nonconstant
 from tests.conversions import (
     meshlib_scalars_to_numpy,
@@ -977,6 +978,11 @@ _INVALID_ARGUMENT_CASES: list[tuple[str, Callable[[wp.Mesh], object], str]] = [
         lambda m: od.visibility.shape_diameter(m, m.points, trim=-1.0),
         "trim must be non-negative",
     ),
+    (
+        "thickness-method",
+        lambda m: od.visibility.thickness(m, m.points, method="sphere"),  # pyright: ignore[reportArgumentType]
+        r"method must be one of \['max_sphere', 'ray'\], got 'sphere'",
+    ),
 ]
 
 
@@ -1016,3 +1022,35 @@ def test_visibility_queries_check_normals_and_return_empty(
         result = query(mesh_wp, points_wp)
         for part in result if isinstance(result, tuple) else (result,):
             assert part.shape == (0,)
+
+
+@pytest.mark.parametrize("method", ["max_sphere", "ray"])
+@pytest.mark.parametrize("n_points", [0, 3], ids=["empty", "points"])
+def test_thickness_checks_normals_and_returns_empty(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    method: Literal["max_sphere", "ray"],
+    n_points: int,
+) -> None:
+    """
+    Not a parity assert: an empty ``points`` gives an empty thickness, and still checks ``normals``.
+
+    Both methods resolve ``normals`` before their empty early return, so a wrong-length array is
+    rejected whatever the query count; with points the measure is finite and positive inside the
+    closed fixture, so the empty answer is not a constant output.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    points_wp = (
+        odt.as_dense(mesh_wp.points[:n_points])
+        if n_points
+        else warp_empty(0, wp.vec3, mesh_wp.device)
+    )
+    with pytest.raises(ValueError, match="one entry per point"):
+        od.visibility.thickness(
+            mesh_wp,
+            points_wp,
+            normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device),
+            method=method,
+        )
+    thickness_np = od.visibility.thickness(mesh_wp, points_wp, method=method).numpy()
+    assert thickness_np.shape == (n_points,)
+    assert (np.isfinite(thickness_np) & (thickness_np > 0.0)).all()

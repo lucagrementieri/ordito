@@ -105,8 +105,9 @@ def test_translation_and_scale_matrices_match_trimesh() -> None:
             "finite, non-zero normal",
         ),
         (lambda: od.transform.scale_matrix((1.0, 2.0)), "scalar or length-3"),
+        (lambda: od.transform.translation_matrix((1.0, 2.0)), "offset must be length-3"),
     ],
-    ids=["zero_axis", "nan_axis", "zero_normal", "nan_normal", "scale_length"],
+    ids=["zero_axis", "nan_axis", "zero_normal", "nan_normal", "scale_length", "offset_length"],
 )
 def test_matrix_builders_reject_degenerate_arguments(
     build: Callable[[], object], message: str
@@ -181,6 +182,24 @@ def test_transforms_accept_a_device_matrix(
 
 
 @pytest.mark.parametrize(
+    "apply",
+    [od.transform.transform_points, od.transform.transform_vectors, od.transform.transform_normals],
+    ids=["points", "vectors", "normals"],
+)
+def test_transforms_of_no_vectors_are_empty(
+    device: str, apply: Callable[..., wp.array[wp.vec3]]
+) -> None:
+    """
+    Not a library comparison: an empty input maps to an empty output, into ``out`` when given.
+
+    The empty early return hands back the caller's ``out`` itself, as the non-empty path does.
+    """
+    out = warp_empty(0, wp.vec3, device)
+    assert apply(warp_empty(0, wp.vec3, device), _ROTATION, out=out) is out
+    assert apply(warp_empty(0, wp.vec3, device), _ROTATION).numpy().shape == (0, 3)
+
+
+@pytest.mark.parametrize(
     ("call", "message"),
     [
         (
@@ -222,6 +241,24 @@ def test_transforms_accept_a_device_matrix(
             ),
             "out_faces must have length",
         ),
+        (
+            lambda points, device: od.transform.transform_mesh(
+                points,
+                wp.array([0, 1, 2], dtype=wp.int32, device=device),
+                _ROTATION,
+                out_vertices=warp_empty(2, wp.vec3, device),
+            ),
+            "out must have length",
+        ),
+        (
+            lambda points, device: od.transform.transform_mesh(
+                points,
+                wp.array([0, 1, 2, 2, 3, 4], dtype=wp.int32, device=device),
+                wp.array([_ROTATION], dtype=wp.mat44, device=device),
+                out_faces=warp_empty(3, wp.int32, device),
+            ),
+            "out_faces must have length",
+        ),
     ],
     ids=[
         "out_scalar_matrix",
@@ -230,6 +267,8 @@ def test_transforms_accept_a_device_matrix(
         "as_mat44_two",
         "as_mat44_empty",
         "out_faces",
+        "out_vertices_host_matrix",
+        "out_faces_device_matrix",
     ],
 )
 def test_mismatched_lengths_raise(
@@ -398,6 +437,43 @@ def test_transform_mesh_matches_trimesh_apply_transform(
     assert np.array_equal(faces_wp.numpy().reshape(-1, 3), moved_tm.faces)
 
 
+@pytest.mark.parametrize("in_place", [False, True], ids=["allocated", "in_place"])
+@pytest.mark.parametrize("on_device", [False, True], ids=["host_matrix", "device_matrix"])
+@pytest.mark.parametrize("kind", ["rigid", "reflection"])
+def test_transform_mesh_matrix_forms_match_trimesh(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], kind: str, on_device: bool, in_place: bool
+) -> None:
+    """
+    Class A: every matrix form and face mode of ``transform_mesh`` against ``apply_transform``.
+
+    A host matrix runs the one-launch form, whose faces are reversed, copied, or left alone when
+    ``out_faces`` is the input buffer; a ``(1,)`` device matrix runs the two-pass form, which
+    reverses or copies, and skips the copy in place. A rigid motion keeps the winding and the
+    reflection reverses it, so both face answers are exercised in every form.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    device = mesh_wp.device
+    matrix = TRANSFORMS[3][1] if kind == "reflection" else _ROTATION
+    assert od.transform.reverses_orientation(matrix) is (kind == "reflection")
+    faces_wp = wp.clone(mesh_wp.indices)
+    vertices_wp = wp.clone(mesh_wp.points)
+    matrix_arg: wp.mat44 | wp.array[wp.mat44] = (
+        wp.array([matrix], dtype=wp.mat44, device=device) if on_device else matrix
+    )
+
+    out_vertices = vertices_wp if in_place else None
+    out_faces = faces_wp if in_place else None
+    new_vertices_wp, new_faces_wp = od.transform.transform_mesh(
+        vertices_wp, faces_wp, matrix_arg, out_vertices=out_vertices, out_faces=out_faces
+    )
+    moved_tm = mesh_tm.copy()
+    moved_tm.apply_transform(np.array(matrix, dtype=np.float64).reshape(4, 4))
+
+    assert (new_faces_wp is faces_wp) is in_place
+    assert np.allclose(new_vertices_wp.numpy(), moved_tm.vertices, rtol=1e-5, atol=1e-5)
+    assert np.array_equal(new_faces_wp.numpy().reshape(-1, 3), moved_tm.faces)
+
+
 def test_transform_mesh_keeps_volume_positive(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: the reason the winding flip exists, stated as an invariant.
@@ -442,6 +518,12 @@ _CLASSIFY_EDGE_CASES = [
     # (AM-GM). ``diag(1000, 1, 1)`` is the module's own `AFFINE` example, determinant 1000, and was
     # misclassified `SINGULAR` before the singular-value-ratio test replaced that one.
     ("anisotropic_scale", od.transform.scale_matrix((1000.0, 1.0, 1.0)), TransformKind.AFFINE),
+    # An all-zero linear block has no largest singular value to compare the smallest against.
+    (
+        "zero_linear",
+        wp.mat44(0.0, 0, 0, 1.0, 0, 0.0, 0, 2.0, 0, 0, 0.0, 3.0, 0, 0, 0, 1.0),
+        TransformKind.SINGULAR,
+    ),
     # ``wp.transform_point`` drops the ``w`` divide, so nothing downstream of a non-affine bottom
     # row is meaningful and the bottom rung is the honest answer.
     (

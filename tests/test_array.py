@@ -249,6 +249,47 @@ def test_pack_1d_arrays_copy_false_aliases_a_boundary_loop_pack(
     assert offsets_wp.numpy()[-1] == packed_wp.size
 
 
+@pytest.mark.parametrize(
+    ("dtype", "dtype_np", "sizes"),
+    [
+        pytest.param(wp.int32, np.int32, "mixed", id="int32-one-launch"),
+        pytest.param(wp.vec3, np.float32, "mixed", id="vec3-one-launch"),
+        pytest.param(wp.uint8, np.uint8, "mixed", id="uint8-copy-loop"),
+        pytest.param(wp.int32, np.int32, "empty", id="int32-all-empty"),
+    ],
+)
+def test_pack_1d_arrays_past_the_one_launch_threshold_matches_numpy(
+    device: str, dtype: type, dtype_np: type, sizes: str
+) -> None:
+    """
+    Class A: ``np.concatenate`` and a ``cumsum`` of the lengths, over forty separate allocations.
+
+    Forty segments is past ``PACK_SEGMENTS_KERNEL_FROM``, so ``int32`` and ``vec3`` take the
+    one-launch word copy, ``uint8`` (not whole 4-byte words) the per-segment copy loop at the same
+    count, and forty empty segments the descriptor-less early exit. The segments are fresh
+    allocations, so the ``copy=False`` alias path cannot answer instead.
+    """
+    assert od.array.PACK_SEGMENTS_KERNEL_FROM <= 40
+    rng = np.random.default_rng(23)
+    lengths = rng.integers(0, 9, size=40) if sizes == "mixed" else np.zeros(40, dtype=np.int64)
+    width = 3 if dtype is wp.vec3 else 1
+    parts_np = [
+        (
+            rng.integers(0, 200, size=(int(n), width))
+            if width > 1
+            else rng.integers(0, 200, int(n))
+        ).astype(dtype_np)
+        for n in lengths
+    ]
+    parts_wp = [wp.array(part, dtype=dtype, device=device) for part in parts_np]
+
+    packed_wp, offsets_wp = od.array.pack_1d_arrays(parts_wp)
+    flat_np = np.concatenate(parts_np)
+    assert flat_np.shape[0] == int(lengths.sum())
+    assert np.array_equal(packed_wp.numpy(), flat_np)
+    assert np.array_equal(offsets_wp.numpy(), np.cumsum([0, *lengths.tolist()]).astype(np.int32))
+
+
 def test_split_views_share_storage_and_copies_do_not(device: str) -> None:
     """Default segments alias the packed buffer; ``copy=True`` detaches them."""
     flat_wp = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
@@ -622,12 +663,23 @@ def test_pack_1d_wp_arrays_vec3(device: str):
     assert np.array_equal(offsets.numpy(), np.array([0, 2, 3], dtype=np.int32))
 
 
-def test_sort_rows(device: str):
+@pytest.mark.parametrize("n_cols", [1, 4, 12])
+@pytest.mark.parametrize(("dtype", "dtype_np"), [(wp.float32, np.float32), (wp.int32, np.int32)])
+def test_sort_rows(device: str, n_cols: int, dtype: type, dtype_np: type) -> None:
+    """
+    Class A: ``np.sort(axis=1)``, on both sides of ``SORT_ROWS_INSERTION_MAX_COLS``.
+
+    Four columns take the in-register insertion sort, twelve the segmented radix sort, and one
+    column is the no-op early return; the integer rows carry duplicates within a row.
+    """
+    assert 4 <= od.array.SORT_ROWS_INSERTION_MAX_COLS < 12
     rng = np.random.default_rng(42)
-    data = rng.random(size=(32, 4), dtype=np.float32)
+    data = rng.integers(-50, 50, size=(32, n_cols)).astype(dtype_np)
+    if dtype is wp.float32:
+        data = rng.random(size=(32, n_cols), dtype=np.float32) - np.float32(0.5)
     sorted_data_np = np.sort(data, axis=1)
 
-    data_wp = odt.as_array2d(wp.array(data, dtype=wp.float32, device=device), wp.float32)
+    data_wp = odt.as_array2d(wp.array(data, dtype=dtype, device=device), dtype)
     od.array.sort_rows(data_wp)
     assert np.array_equal(data_wp.numpy(), sorted_data_np)
 
@@ -662,6 +714,52 @@ def test_triplet_buffers_feed_a_sparse_build(device: str) -> None:
     assert odt.has_blocks(matrix_wp, wp.float64)
     assert np.array_equal(matrix_wp.offsets.numpy()[:4], np.arange(4))
     assert np.allclose(matrix_wp.values.numpy().reshape(-1), np.ones(3))
+
+
+def test_csr_from_keys_matches_scipy(device: str) -> None:
+    """
+    Class B: ``scipy.sparse.coo_matrix(...).tocsr()``, values summed through ``starts``.
+
+    Random duplicated keys plus sentinels (``n_rows * n_cols``, which must be dropped). Offsets and
+    columns are compared directly; the per-entry value is rebuilt by summing the payload's values
+    over ``order[starts[e] : starts[e + 1]]`` and compared with scipy's summed duplicates, and each
+    run's payloads must be in ascending (written) order.
+    """
+    n_rows, n_cols, count = 6, 5, 80
+    rng = np.random.default_rng(31)
+    rows_np = rng.integers(0, n_rows, size=count)
+    cols_np = rng.integers(0, n_cols, size=count)
+    sentinel_np = rng.random(count) < 0.15
+    keys_np = np.where(sentinel_np, n_rows * n_cols, rows_np * n_cols + cols_np).astype(np.uint64)
+    values_np = rng.random(count)
+
+    keys_wp, order_wp = od.array.csr_key_buffers(count, device)
+    wp.copy(keys_wp, wp.array(keys_np, dtype=wp.uint64, device=device))
+    wp.copy(order_wp, wp.array(np.arange(count, dtype=np.int32), dtype=wp.int32, device=device))
+    offsets_wp, columns_wp, starts_wp = od.array.csr_from_keys(
+        keys_wp, order_wp, count, n_rows, n_cols
+    )
+
+    kept = ~sentinel_np
+    csr_sp = scipy.sparse.coo_matrix(
+        (values_np[kept], (rows_np[kept], cols_np[kept])), shape=(n_rows, n_cols)
+    ).tocsr()
+    csr_sp.sum_duplicates()
+    csr_sp.sort_indices()
+    nnz = csr_sp.nnz
+    assert 0 < nnz < kept.sum()
+    offsets_np = offsets_wp.numpy()
+    assert np.array_equal(offsets_np, csr_sp.indptr)
+    assert np.array_equal(columns_wp.numpy()[:nnz], csr_sp.indices)
+    starts_np = starts_wp.numpy()
+    order_np = order_wp.numpy()
+    summed_np = np.array(
+        [values_np[order_np[starts_np[e] : starts_np[e + 1]]].sum() for e in range(nnz)]
+    )
+    assert np.allclose(summed_np, csr_sp.data, rtol=1e-5, atol=1e-5)
+    for e in range(nnz):
+        run_np = order_np[starts_np[e] : starts_np[e + 1]]
+        assert np.all(np.diff(run_np) > 0)
 
 
 @pytest.mark.parametrize("dtype", [wp.float32, wp.float64, wp.int32])
@@ -1013,6 +1111,25 @@ def test_isin_integer_dtypes_sparse(device: str, dtype_wp: type, dtype_np: type)
 
 
 @pytest.mark.parity("flatnonzero", "numpy")
+def test_isin_single_test_value_on_the_sorted_branch(device: str) -> None:
+    """
+    Class A: ``np.isin`` with one test value whose span forbids the membership table.
+
+    A value range of two billion sends ``isin`` to the binary-search branch, and a one-element
+    test set is already sorted, so it is searched as given; both answers occur in the input.
+    """
+    elements_np = np.array([7, 2_000_000_000, -5, 7, 0], dtype=np.int32)
+    test_np = np.array([2_000_000_000], dtype=np.int32)
+    mask_wp = od.array.isin(
+        wp.array(elements_np, dtype=wp.int32, device=device),
+        wp.array(test_np, dtype=wp.int32, device=device),
+    )
+    mask_np = np.isin(elements_np, test_np)
+    assert mask_np.any()
+    assert not mask_np.all()
+    assert np.array_equal(mask_wp.numpy(), mask_np)
+
+
 def test_flatnonzero(device: str) -> None:
     """Class A: the same indices ``np.flatnonzero`` returns, for the same mask."""
     rng = np.random.default_rng(11)
@@ -1657,6 +1774,11 @@ _EMPTY_INPUT_CASES = [
     "indices_to_mask",
     "gather",
     "trim_to_count",
+    "split_copy_all_empty_segments",
+    "empty_square_bsr",
+    "csr_from_keys",
+    "flatnonzero_empty",
+    "copyto",
 ]
 
 
@@ -1709,6 +1831,28 @@ def test_empty_inputs(device: str, case: str) -> None:
     elif case == "gather":
         rows_wp = wp.array(np.zeros((4, 2), dtype=np.int32), dtype=wp.int32, device=device)
         assert od.array.gather(rows_wp, empty_wp).shape == (0, 2)
+    elif case == "split_copy_all_empty_segments":
+        segments_wp = od.array.split(
+            empty_wp, wp.zeros(41, dtype=wp.int32, device=device), copy=True
+        )
+        assert [segment.size for segment in segments_wp] == [0] * 40
+    elif case == "empty_square_bsr":
+        matrix = od.array.empty_square_bsr(5, wp.float64, device)
+        assert matrix.shape == (5, 5)
+        assert matrix.nnz_sync() == 0
+        assert np.array_equal(matrix.offsets.numpy()[:6], np.zeros(6, dtype=np.int32))
+    elif case == "csr_from_keys":
+        keys_wp, order_wp = od.array.csr_key_buffers(0, device)
+        offsets_wp, columns_wp, starts_wp = od.array.csr_from_keys(keys_wp, order_wp, 0, 3, 4)
+        assert np.array_equal(offsets_wp.numpy(), np.zeros(4, dtype=np.int32))
+        assert columns_wp.shape == (0,)
+        assert np.array_equal(starts_wp.numpy(), np.zeros(1, dtype=np.int32))
+    elif case == "flatnonzero_empty":
+        assert od.array.flatnonzero(warp_empty(0, wp.bool, device)).shape == (0,)
+    elif case == "copyto":
+        dst_wp = warp_empty(0, wp.float32, device)
+        od.array.copyto(dst_wp, empty_wp)
+        assert dst_wp.shape == (0,)
     else:
         n_out, (trimmed_wp,) = od.array.trim_to_count(
             wp.zeros(1, dtype=wp.int32, device=device),
@@ -1727,6 +1871,22 @@ _INVALID_ARGUMENT_CASES = [
     "flatnonzero_rank2",
     "copyto_shape_mismatch",
     "copyto_strided_rank2_conversion",
+    "arange_repeat_negative_count",
+    "arange_repeat_zero_repeats",
+    "sort_pair_indices_negative",
+    "concatenate_empty",
+    "pack_1d_arrays_empty",
+    "pack_1d_arrays_rank2",
+    "concatenate_single_rank2",
+    "split_rank2_array",
+    "split_rank2_offsets",
+    "allclose_mismatched_lengths",
+    "sort_rows_float64",
+    "bsr_from_csr_offsets_length",
+    "bsr_from_csr_columns_values",
+    "csr_from_triplets_mismatched_lengths",
+    "csr_transpose_blocks",
+    "index_sparse_data_size",
 ]
 
 
@@ -1773,6 +1933,94 @@ def test_invalid_arguments_raise(device: str, case: str) -> None:
                 wp.zeros(4, dtype=wp.float32, device=device),
                 wp.zeros(3, dtype=wp.int32, device=device),
             )
+    elif case == "arange_repeat_negative_count":
+        with pytest.raises(ValueError, match="count must be non-negative"):
+            od.array.arange_repeat(-1, 3, device)
+    elif case == "arange_repeat_zero_repeats":
+        with pytest.raises(ValueError, match="repeats must be positive"):
+            od.array.arange_repeat(6, 0, device)
+    elif case == "sort_pair_indices_negative":
+        with pytest.raises(ValueError, match="n must be non-negative"):
+            od.array.sort_pair_indices(-2, -1, device)
+    elif case == "concatenate_empty":
+        with pytest.raises(ValueError, match="arrays must be non-empty"):
+            od.array.concatenate([])
+    elif case == "pack_1d_arrays_empty":
+        with pytest.raises(ValueError, match="arrays must be non-empty"):
+            od.array.pack_1d_arrays([])
+    elif case == "pack_1d_arrays_rank2":
+        parts = [
+            wp.zeros(2, dtype=wp.int32, device=device),
+            wp.zeros((2, 2), dtype=wp.int32, device=device),
+        ]
+        with pytest.raises(ValueError, match="rank-1 arrays, got ndim=2 at index 1"):
+            od.array.pack_1d_arrays(parts)
+    elif case == "concatenate_single_rank2":
+        with pytest.raises(ValueError, match="rank-1 arrays, got ndim=2"):
+            od.array.concatenate([wp.zeros((2, 2), dtype=wp.int32, device=device)])
+    elif case == "split_rank2_array":
+        with pytest.raises(ValueError, match="rank-1 array, got ndim=2"):
+            od.array.split(
+                wp.zeros((2, 2), dtype=wp.int32, device=device),
+                wp.zeros(1, dtype=wp.int32, device=device),
+            )
+    elif case == "split_rank2_offsets":
+        with pytest.raises(ValueError, match="rank-1 offsets, got ndim=2"):
+            od.array.split(
+                wp.zeros(4, dtype=wp.int32, device=device),
+                wp.zeros((2, 2), dtype=wp.int32, device=device),
+            )
+    elif case == "allclose_mismatched_lengths":
+        with pytest.raises(ValueError, match="equal lengths, got 3 and 4"):
+            od.array.allclose(
+                wp.zeros(3, dtype=wp.float32, device=device),
+                wp.zeros(4, dtype=wp.float32, device=device),
+            )
+    elif case == "sort_rows_float64":
+        table_wp = odt.as_array2d(wp.zeros((3, 4), dtype=wp.float64, device=device), wp.float64)
+        with pytest.raises(TypeError, match="int32 or float32"):
+            od.array.sort_rows(table_wp)  # pyright: ignore[reportArgumentType]
+    elif case == "bsr_from_csr_offsets_length":
+        with pytest.raises(ValueError, match="n_rows \\+ 1 = 3 entries, got 2"):
+            od.array.bsr_from_csr(
+                2,
+                2,
+                wp.zeros(2, dtype=wp.int32, device=device),
+                warp_empty(0, wp.int32, device),
+                warp_empty(0, wp.float32, device),
+            )
+    elif case == "bsr_from_csr_columns_values":
+        with pytest.raises(ValueError, match="one element per entry"):
+            od.array.bsr_from_csr(
+                2,
+                2,
+                wp.zeros(3, dtype=wp.int32, device=device),
+                wp.zeros(2, dtype=wp.int32, device=device),
+                wp.zeros(3, dtype=wp.float32, device=device),
+            )
+    elif case == "csr_from_triplets_mismatched_lengths":
+        with pytest.raises(ValueError, match="equal length"):
+            od.array.csr_from_triplets(
+                2,
+                2,
+                wp.zeros(3, dtype=wp.int32, device=device),
+                wp.zeros(2, dtype=wp.int32, device=device),
+                wp.zeros(3, dtype=wp.float32, device=device),
+            )
+    elif case == "csr_transpose_blocks":
+        matrix = od.array.bsr_from_csr(
+            2,
+            2,
+            wp.zeros(3, dtype=wp.int32, device=device),
+            warp_empty(0, wp.int32, device),
+            warp_empty(0, wp.mat22, device),
+        )
+        with pytest.raises(ValueError, match="1x1 blocks"):
+            od.array.csr_transpose(matrix)
+    elif case == "index_sparse_data_size":
+        faces_wp = odt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32)
+        with pytest.raises(ValueError, match="same size as indices, got 5 and 6"):
+            od.array.index_sparse(4, faces_wp, wp.zeros(5, dtype=wp.float32, device=device))
     else:
         table_wp = wp.zeros((3, 4), dtype=wp.int32, device=device)
         with pytest.raises(ValueError, match="contiguous"):

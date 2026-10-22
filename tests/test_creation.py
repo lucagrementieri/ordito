@@ -1233,6 +1233,47 @@ def test_revolve_matches_trimesh(device: str) -> None:
     )
 
 
+def _axis_touching_profile(n_points: int, scale: float) -> np.ndarray:
+    """Return an open profile touching the axis at every fourth point, interior ones included."""
+    height_np = np.linspace(0.0, 3.0, n_points)
+    radius_np = np.where(np.arange(n_points) % 4 == 0, 0.0, 0.5 + 0.4 * np.sin(3.0 * height_np))
+    # Rounded to ``float32`` so both sides apply the area threshold to the same profile.
+    return (scale * np.column_stack((radius_np, height_np))).astype(np.float32).astype(np.float64)
+
+
+@pytest.mark.parametrize(
+    "profile_np",
+    [
+        pytest.param(_axis_touching_profile(9, 1.0), id="short-interior-axis"),
+        pytest.param(_axis_touching_profile(101, 2e-3), id="long-tiny"),
+        pytest.param(
+            np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]), id="closed-on-axis"
+        ),
+    ],
+)
+def test_revolve_profile_touching_the_axis_matches_trimesh(
+    device: str, profile_np: np.ndarray
+) -> None:
+    """
+    Class B (unreferenced vertices dropped): profiles off the clean template match trimesh.
+
+    An interior on-axis point, a closed profile through the axis, or a long profile small enough
+    for the absolute area threshold to bite mid-profile (the vectorised area filter) each drop
+    template triangles, which must be exactly the ones trimesh drops.
+    """
+    mesh_tm = tm.creation.revolve(profile_np, sections=12)
+    full = 2 * 12 * (profile_np.shape[0] - 1)
+    assert 0 < mesh_tm.faces.shape[0] < full  # non-vacuity: some dropped, not all
+    vertices_wp, faces_wp = od.creation.revolve(points_to_warp_uv(profile_np, device), sections=12)
+    # A ring whose triangles all drop stays in the buffer, unreferenced; trimesh drops it.
+    used_np, faces_np = np.unique(faces_wp.numpy(), return_inverse=True)
+    _assert_same_faces(
+        points_to_warp(vertices_wp.numpy()[used_np], device),
+        wp.array(faces_np.astype(np.int32), dtype=wp.int32, device=device),
+        mesh_tm,
+    )
+
+
 @pytest.mark.parametrize("cap", [False, True])
 def test_revolve_partial_revolution(device: str, cap: bool) -> None:
     profile_np = np.array([[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0], [0.5, 0.0]])
@@ -1249,6 +1290,16 @@ def test_revolve_partial_revolution(device: str, cap: bool) -> None:
         assert od.validation.is_volume(vertices_wp, faces_wp)
     else:
         _assert_same_faces(vertices_wp, faces_wp, mesh_tm)
+
+
+def test_revolve_partial_default_sections_matches_trimesh(device: str) -> None:
+    """Class A on the faces: a partial revolution scales the default wedge count as trimesh does."""
+    profile_np = np.array([[0.5, 0.0], [1.0, 0.0], [1.0, 1.0]])
+    mesh_tm = tm.creation.revolve(profile_np, angle=np.pi / 2.0)
+    assert mesh_tm.faces.shape[0] == 2 * 2 * 8  # non-vacuity: a quarter of the 32-wedge default
+    _assert_same_faces(
+        *od.creation.revolve(points_to_warp_uv(profile_np, device), angle=np.pi / 2.0), mesh_tm
+    )
 
 
 @pytest.mark.parametrize("repeat_first", [False, True])
@@ -1897,6 +1948,16 @@ def test_invalid_arguments_raise(device: str) -> None:
         od.creation.random_hills(x_variance=0.0, device=device)
     with pytest.raises(ValueError, match="at least 2"):
         od.creation.random_hills(u_resolution=1, device=device)
+    with pytest.raises(ValueError, match=r"count must be \(2,\) int"):
+        od.creation.uv_sphere(count=(8, 8, 8), device=device)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match=r"count must be \(2,\) int"):
+        od.creation.capsule(count=(8,), device=device)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="sections must be at least 1"):
+        od.creation.torus(1.0, 0.25, major_sections=0, device=device)
+    with pytest.raises(ValueError, match="faces size must be a multiple of 3"):
+        od.creation.truncated_prisms(
+            points_to_warp(np.eye(3), device), wp.array([0, 1], dtype=wp.int32, device=device)
+        )
 
 
 @pytest.mark.parametrize(

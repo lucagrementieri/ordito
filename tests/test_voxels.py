@@ -483,6 +483,83 @@ def test_voxel_down_sample_mean_is_reproducible(
     assert np.array_equal(first, second)
 
 
+def test_voxel_down_sample_spanning_root_tiles_matches_numpy(device: str):
+    """
+    Class B: ``voxel_down_sample`` equals a NumPy group-by over floored cells, after ``lexsort``.
+
+    The cloud spans more than one 4096-cell NanoVDB root tile (and negative cells) under a
+    caller-supplied origin, so the row order takes the second, root-tile sort pass. ``max`` is
+    exact, so the comparison does not depend on summation order.
+    """
+    rng = np.random.default_rng(31)
+    centres_np = np.array([[-7000.0, 0.0, 0.0], [0.0, 0.0, 0.0], [9000.0, 50.0, -6000.0]])
+    points_np = (centres_np[rng.integers(0, 3, 3000)] + rng.uniform(0.0, 6.0, (3000, 3))).astype(
+        np.float32
+    )
+    voxel_size, origin = 2.0, wp.vec3(0.5, -0.5, 0.25)
+    pooled_wp = od.voxels.voxel_down_sample(
+        points_to_warp(points_np, device), voxel_size, origin=origin, pooling="max"
+    )
+
+    keys_np = np.floor((points_np - np.array(origin, dtype=np.float32)) / voxel_size).astype(
+        np.int64
+    )
+    pooled_np = _group_reduce_np(keys_np, points_np.astype(np.float64), np.maximum)
+    assert np.ptp(keys_np[:, 0]) > 4096  # non-vacuity: more than one root tile
+    assert pooled_np.shape[0] > 3
+    assert np.allclose(
+        lexsort_rows(pooled_wp.numpy()), lexsort_rows(pooled_np), rtol=1e-5, atol=1e-5
+    )
+
+
+@pytest.mark.parametrize("pooling", ["min", "max"])
+def test_pool_by_voxel_extrema_match_numpy(device: str, pooling: Literal["min", "max"]):
+    """
+    Class B: ``min`` / ``max`` pooling equals a NumPy group-by, matched through cell rows.
+
+    The payload is independent of the positions, every voxel but one is reached, and one point lies
+    outside the grid, so a sentinel bucket leak, a missed reset of an unreached voxel (it must read
+    zero, not ``+-inf``) or a swapped reduction all fail.
+    """
+    rng = np.random.default_rng(32)
+    points_np = rng.uniform(0.0, 3.0, (500, 3)).astype(np.float32)
+    values_np = rng.normal(size=(500, 3)).astype(np.float32)
+    cells_np = np.floor(points_np).astype(np.int32)
+    grid_cells_np = np.vstack((np.unique(cells_np, axis=0), [[9, 9, 9]])).astype(np.int32)
+    grid = od.voxels.from_cells(
+        wp.array(grid_cells_np, dtype=wp.int32, device=device), 1.0, wp.vec3(0.0, 0.0, 0.0)
+    )
+    outside_np = np.array([[-5.0, -5.0, -5.0]], dtype=np.float32)
+    pooled_wp = od.voxels.pool_by_voxel(
+        grid,
+        points_to_warp(np.vstack((points_np, outside_np)), device),
+        points_to_warp(np.vstack((values_np, [[100.0, 100.0, 100.0]])), device),
+        pooling=pooling,
+    ).numpy()
+
+    ufunc = np.minimum if pooling == "min" else np.maximum
+    pooled_np = _group_reduce_np(cells_np.astype(np.int64), values_np.astype(np.float64), ufunc)
+    rows = [tuple(c) for c in od.voxels.cells(grid).numpy().tolist()]
+    reference = {
+        tuple(c): v for c, v in zip(np.unique(cells_np, axis=0).tolist(), pooled_np, strict=True)
+    }
+    reference[(9, 9, 9)] = np.zeros(3)
+    assert len(reference) == 28  # non-vacuity: 27 reached voxels plus the unreached one
+    expected_np = np.array([reference[row] for row in rows])
+    assert np.allclose(pooled_wp, expected_np, rtol=1e-5, atol=1e-5)
+
+
+def _group_reduce_np(
+    keys_np: npt.NDArray[np.int64], values_np: npt.NDArray[np.float64], ufunc: np.ufunc
+) -> npt.NDArray[np.float64]:
+    """Reduce ``values_np`` rows over equal ``keys_np`` rows, in ``np.unique`` row order."""
+    _unique, inverse = np.unique(keys_np, axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    order = np.argsort(inverse, kind="stable")
+    starts = np.flatnonzero(np.r_[True, np.diff(inverse[order]) != 0])
+    return ufunc.reduceat(values_np[order], starts, axis=0)
+
+
 def test_pool_by_voxel_ignores_outside_points(device: str):
     """Points outside the grid contribute nothing, and voxels with no point pool to zero."""
     cells_np = np.array([[0, 0, 0], [5, 5, 5]], dtype=np.int32)
@@ -1803,6 +1880,31 @@ def test_every_entry_point_survives_an_empty_input(device: str):
         assert int(od.voxels.voxel_corners(grid)[0].shape[0]) == 0
         assert od.voxels.to_boxes(grid)[1].size == 0
     assert od.voxels.voxel_down_sample(no_points).size == 0
+    # Empty queries against a non-empty grid, and a union with one empty side.
+    one = od.voxels.from_cells(
+        odt.as_array2d(wp.array([[1, 2, 3]], dtype=wp.int32, device=device), wp.int32),
+        1.0,
+        wp.vec3(0.0, 0.0, 0.0),
+    )
+    assert int(od.voxels.cell_indices(no_points, 1.0, origin=wp.vec3()).shape[0]) == 0
+    assert od.voxels.occupancy_at_points(one, no_points).size == 0
+    assert od.voxels.occupancy_at_cells(one, empty_cells).size == 0
+    assert int(od.voxels.revoxelize(grids[2], 0.5).get_active_stats().voxel_count) == 0
+    assert (
+        int(
+            od.voxels.from_dense(
+                odt.as_array3d(wp.zeros((0, 2, 2), dtype=wp.bool, device=device), wp.bool),
+                1.0,
+                wp.vec3(),
+            )
+            .get_active_stats()
+            .voxel_count
+        )
+        == 0
+    )
+    for a, b in ((one, grids[2]), (grids[2], one), (grids[2], grids[2])):
+        expected = [] if a is b else [[1, 2, 3]]
+        assert od.voxels.cells(od.voxels.union(a, b)).numpy().tolist() == expected
     # An empty cloud splats to a zero field and a zero density, not an error.
     field_wp, density_wp = od.voxels.splat_onto_grid(
         no_points, wp.zeros(0, dtype=wp.float32, device=device), (4, 4, 4)
@@ -1924,6 +2026,25 @@ def test_invalid_arguments_raise(device: str):
         od.voxels.splat_onto_grid(points, values, (4, 4, 4), min_weight=0.0)
     with pytest.raises(ValueError, match="rank-3 lattice"):
         od.voxels.sample_grid_trilinear(values, points)  # pyright: ignore[reportArgumentType]  # deliberately rank 1
+    # The remaining documented guards on sizes and budgets.
+    with pytest.raises(ValueError, match="max_candidates must be positive"):
+        od.voxels.voxelize_mesh(
+            triangle, wp.array([0, 1, 2], dtype=wp.int32, device=device), 0.5, max_candidates=0
+        )
+    with pytest.raises(ValueError, match="cell_indices requires voxel_size > 0"):
+        od.voxels.cell_indices(points, 0.0, origin=wp.vec3())
+    with pytest.raises(ValueError, match="revoxelize requires voxel_size > 0"):
+        od.voxels.revoxelize(grid, 0.0)
+    with pytest.raises(ValueError, match="max_cells must be positive"):
+        od.voxels.revoxelize(grid, 0.5, max_cells=0)
+    with pytest.raises(ValueError, match="three positive integers"):
+        od.voxels.to_dense(grid, shape=(1, 0, 1))
+    with pytest.raises(ValueError, match="from_dense requires voxel_size > 0"):
+        od.voxels.from_dense(
+            odt.as_array3d(wp.zeros((1, 1, 1), dtype=wp.bool, device=device), wp.bool),
+            0.0,
+            wp.vec3(),
+        )
 
 
 def _assert_surfaces_within(surface_a: tm.Trimesh, surface_b: tm.Trimesh, tolerance: float) -> None:

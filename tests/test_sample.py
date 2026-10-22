@@ -27,6 +27,7 @@ from tests.conversions import (
     meshlib_bitset_to_numpy,
     numpy_to_warp,
     points_to_meshlib,
+    points_to_warp,
     trimesh_to_open3d,
     trimesh_to_pymeshlab,
     trimesh_to_pytorch3d,
@@ -221,6 +222,41 @@ def test_sample_surface_with_face_weights(sphere_irregular: tuple[tm.Trimesh, wp
     assert np.allclose(freq_tm, freq_expected, rtol=0.07, atol=0.01)
 
 
+@pytest.mark.parametrize(
+    ("case", "match"),
+    [
+        pytest.param("short_weights", "face_weight length must match", id="short_weights"),
+        pytest.param("zero_weights", "total face weight must be positive", id="zero_weights"),
+        pytest.param("no_faces", "mesh has no faces", id="no_faces"),
+    ],
+)
+def test_sample_surface_rejects(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], case: str, match: str
+) -> None:
+    """
+    Not a library comparison: the three inputs ``sample_surface`` documents it refuses.
+
+    A ``face_weight`` one entry short, an all-zero ``face_weight`` (no CDF to invert) and a mesh
+    with no faces, each raised by name rather than drawing from a garbage CDF. The short weights
+    raise even at ``count == 0``, before the empty short-circuit.
+    """
+    _, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    device = vertices_wp.device
+    n_faces = faces_wp.size // 3
+    count = 10
+    face_weight = None
+    if case == "short_weights":
+        face_weight = wp.ones(n_faces - 1, dtype=wp.float32, device=device)
+        count = 0
+    elif case == "zero_weights":
+        face_weight = wp.zeros(n_faces, dtype=wp.float32, device=device)
+    else:
+        faces_wp = warp_empty(0, wp.int32, device)
+    with pytest.raises(ValueError, match=match):
+        od.sample.sample_surface(vertices_wp, faces_wp, count, face_weight=face_weight, seed=0)
+
+
 def test_sample_surface_poisson_disk_count_and_on_surface(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ):
@@ -366,6 +402,82 @@ def test_sample_surface_poisson_disk_high_init_factor(sphere_irregular: tuple[tm
     )
     assert pts.shape == (count,)
     assert fids.shape == (count,)
+
+
+def test_sample_surface_poisson_disk_rejects_init_factor_below_one(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Not a library comparison: a pool below ``count`` is refused, even at ``count == 0``."""
+    _, mesh_wp = sphere_irregular
+    for count in (0, 10):
+        with pytest.raises(ValueError, match=r"init_factor must be >= 1, got 0\.5"):
+            od.sample.sample_surface_poisson_disk(
+                mesh_wp.points, mesh_wp.indices, count, init_factor=0.5
+            )
+
+
+def test_sample_surface_poisson_disk_draws_only_from_weighted_faces(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: no reference Poisson sampler takes per-face weights.
+
+    The pool is drawn by ``face_weight``, so with zero weight on every face below the equator no
+    survivor may sit on one, and exactly ``count`` survive. Excludes ignoring the weights (half the
+    samples would land on the zero-weight half) and drawing the pool by area instead.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    upper_np = mesh_tm.triangles_center[:, 2] > mesh_tm.center_mass[2]
+    assert 0 < upper_np.sum() < upper_np.size
+    weights_wp = wp.array(
+        upper_np.astype(np.float32), dtype=wp.float32, device=mesh_wp.points.device
+    )
+    count = 60
+    points_wp, faces_wp = od.sample.sample_surface_poisson_disk(
+        mesh_wp.points, mesh_wp.indices, count, face_weight=weights_wp, seed=2
+    )
+    faces_np = faces_wp.numpy()
+    assert faces_np.shape == (count,)
+    assert upper_np[faces_np].all()
+    _, dists, _ = tm.proximity.closest_point(mesh_tm, points_wp.numpy())
+    assert np.all(dists < 1e-4)
+
+
+def _scattered_triangles(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """Build 100 right triangles of leg 0.01, spaced 1.0 apart along ``x``."""
+    leg = 0.01
+    triangle_np = np.array([[0.0, 0.0, 0.0], [leg, 0.0, 0.0], [0.0, leg, 0.0]])
+    vertices_np = np.concatenate([triangle_np + np.array([float(i), 0.0, 0.0]) for i in range(100)])
+    faces_np = np.arange(300, dtype=np.int32).reshape(-1, 3)
+    return numpy_to_warp(vertices_np, faces_np, device)
+
+
+@pytest.mark.parametrize(
+    ("count", "init_factor"),
+    [pytest.param(2, 1.5, id="isolated_pool"), pytest.param(10, 30.0, id="crowded_pool")],
+)
+def test_sample_surface_poisson_disk_spreads_over_scattered_triangles(
+    device: str, count: int, init_factor: float
+) -> None:
+    """
+    Not a library comparison: no reference exposes the elimination's tie handling.
+
+    100 tiny triangles 1.0 apart, against an ``r_max`` of a few leg lengths: two pool points share
+    a neighbourhood only when they share a triangle, and every in-triangle distance is below
+    ``r_min``, so the clamped weights tie exactly. ``isolated_pool`` draws three points on three
+    triangles, so no point has a neighbour and no point is a local maximum: the round must rank the
+    whole alive set. ``crowded_pool`` draws ~3 points a triangle; the early rounds delete the
+    crowded ones and the last round again meets an alive set with no neighbours. Either way the
+    answer is exactly ``count`` samples, no two on one triangle (two there are within ``r_max``,
+    while a triangle with one survivor was always available).
+    """
+    vertices_wp, faces_wp = _scattered_triangles(device)
+    _, face_index_wp = od.sample.sample_surface_poisson_disk(
+        vertices_wp, faces_wp, count, init_factor=init_factor, seed=0
+    )
+    face_index_np = face_index_wp.numpy()
+    assert face_index_np.shape == (count,)
+    assert np.unique(face_index_np).size == count
 
 
 def _two_patch_mesh() -> tuple[np.ndarray, np.ndarray]:
@@ -751,6 +863,20 @@ def test_sample_volume_rejects(
         vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     with pytest.raises(ValueError, match=match):
         od.sample.sample_volume(vertices_wp, faces_wp, 100)
+
+
+def test_sample_volume_rejects_a_faceless_mesh_only_when_sampling(device: str) -> None:
+    """
+    Not a library comparison: a mesh with no faces encloses nothing to sample.
+
+    It passes the watertight gate vacuously, so ``count == 0`` returns an empty buffer, and any
+    positive count raises by name rather than reading an empty CDF.
+    """
+    vertices_wp = points_to_warp(np.eye(3), device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    assert od.sample.sample_volume(vertices_wp, faces_wp, 0).shape == (0,)
+    with pytest.raises(ValueError, match="mesh has no faces; cannot sample its volume"):
+        od.sample.sample_volume(vertices_wp, faces_wp, 5)
 
 
 @pytest.mark.parametrize("sampler", ["fibonacci_sphere", "poisson_disk", "blue_noise", "volume"])

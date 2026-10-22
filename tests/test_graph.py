@@ -12,6 +12,7 @@ import scipy.sparse as sp
 import scipy.sparse.csgraph as csgraph
 import trimesh as tm
 import warp as wp
+import warp.sparse as wps
 from meshlib import mrmeshpy as mm
 
 import ordito as od
@@ -191,6 +192,15 @@ def test_edges_to_neighbor_lists_from_counts_is_the_counted_form(
     for start, stop in itertools.pairwise(offsets_np):
         assert np.array_equal(np.sort(neighbors_np[start:stop]), np.sort(expected_np[start:stop]))
     assert np.array_equal(counts_wp.numpy(), np.zeros(n_vertices, dtype=np.int32))
+
+
+def test_edges_to_neighbor_lists_from_counts_without_edges(device: str) -> None:
+    """Not a library comparison: no edges give empty rows, one offset per node plus the total."""
+    edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
+    counts_wp = wp.zeros(4, dtype=wp.int32, device=device)
+    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists_from_counts(edges_wp, counts_wp)
+    assert neighbors_wp.numpy().tolist() == []
+    assert offsets_wp.numpy().tolist() == [0, 0, 0, 0, 0]
 
 
 @pytest.mark.parametrize(("node_count", "n_edges"), [(64, 24), (2048, 2047)])
@@ -434,6 +444,51 @@ def test_connected_component_labels_empty_edges(device: str, node_count: int) ->
     assert np.array_equal(labels_wp.numpy(), labels_exp)
 
 
+def test_connected_component_labels_infers_the_node_count(device: str) -> None:
+    """
+    Class B (same partition): with ``node_count`` omitted, the labels cover the largest endpoint.
+
+    scipy is handed the same bound (largest index plus one), so a node count inferred too small or
+    too large changes the label array's length; the edges leave several components and node 3 is
+    isolated, so the inferred count must not stop at the last node an edge names in order.
+    """
+    edges_np = np.array([[0, 1], [1, 2], [4, 5], [7, 6]], dtype=np.int32)
+    labels_wp = od.graph.connected_component_labels_from_edges(_edges_wp(edges_np, device))
+    labels_exp = _scipy_component_labels(edges_np, 8)
+    assert np.unique(labels_exp).shape[0] > 1
+    assert labels_wp.shape == (8,)
+    assert same_partition(labels_wp.numpy(), labels_exp)
+    with pytest.raises(ValueError, match="node_count must be non-negative, got -1"):
+        od.graph.connected_component_labels_from_edges(_edges_wp(edges_np, device), node_count=-1)
+
+
+@pytest.mark.parametrize("node_count", [0, 1])
+def test_connected_component_labels_of_at_most_one_node(device: str, node_count: int) -> None:
+    """Not a library comparison: a lone node is its own component, and no node has no label."""
+    edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
+    adjacency = od.graph.edges_to_csr(node_count, edges_wp)
+    labels_wp = od.graph.connected_component_labels(adjacency)
+    assert np.array_equal(labels_wp.numpy(), np.zeros(node_count, dtype=np.int32))
+
+
+def test_connected_component_labels_rejects_a_malformed_adjacency(device: str) -> None:
+    """
+    Not a library comparison: a non-square or blocked matrix is not an adjacency, and raises.
+
+    Both checks read the matrix's shape metadata only, before any launch.
+    """
+    non_square = wps.bsr_zeros(3, 4, wp.float32, device=device)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match=r"adjacency must be square, got shape \(3, 4\)"):
+        od.graph.connected_component_labels(
+            non_square  # pyright: ignore[reportArgumentType]
+        )
+    blocked = wps.bsr_zeros(3, 3, wp.mat22, device=device)  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match=r"adjacency must use 1x1 blocks"):
+        od.graph.connected_component_labels(
+            blocked  # pyright: ignore[reportArgumentType]
+        )
+
+
 @pytest.mark.parametrize("stale_nnz", [0, 1000], ids=["undercounted", "overcounted"])
 def test_connected_component_labels_ignores_a_stale_nnz(device: str, stale_nnz: int) -> None:
     """
@@ -519,12 +574,16 @@ def test_connected_component_parity_contradiction_terminates(device: str) -> Non
     assert violated.sum() >= 1
 
 
-def test_connected_component_parity_no_edges(device: str) -> None:
+@pytest.mark.parametrize("node_count", [7, 0], ids=["isolated_nodes", "zero_nodes"])
+def test_connected_component_parity_no_edges(device: str, node_count: int) -> None:
+    """Not a library comparison: with no edge every node is its own even-parity component."""
     edges_wp = odt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.zeros(0, dtype=wp.int32, device=device)
-    labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 7)
-    assert np.array_equal(labels_wp.numpy(), np.arange(7, dtype=np.int32))
-    assert np.array_equal(parity_wp.numpy(), np.zeros(7, dtype=np.int32))
+    labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(
+        edges_wp, signs_wp, node_count
+    )
+    assert np.array_equal(labels_wp.numpy(), np.arange(node_count, dtype=np.int32))
+    assert np.array_equal(parity_wp.numpy(), np.zeros(node_count, dtype=np.int32))
 
 
 @pytest.mark.parametrize(
@@ -533,8 +592,9 @@ def test_connected_component_parity_no_edges(device: str) -> None:
         ([[0, 0]] * 4, 3, 4, "signs must have length 4"),
         ([[0, 10]], 1, 5, "edge indices must lie in"),
         ([[-1, 2]], 1, 5, "edge indices must lie in"),
+        ([[0, 1]], 1, -1, "node_count must be non-negative, got -1"),
     ],
-    ids=["signs_length", "endpoint_range", "endpoint_negative"],
+    ids=["signs_length", "endpoint_range", "endpoint_negative", "node_count_negative"],
 )
 def test_connected_component_parity_validates_its_input(
     device: str, edges: list[list[int]], n_signs: int, node_count: int, message: str
@@ -818,6 +878,16 @@ def test_successor_cycles_from_table_matches_the_walk(device: str, length: int) 
     assert np.array_equal(offsets_wp.numpy(), offsets_np)
 
 
+@pytest.mark.parametrize("empty", ["tails", "table"])
+def test_successor_cycles_from_table_without_nodes(device: str, empty: str) -> None:
+    """Not a library comparison: no tails or no table give no cycles and the one-entry offsets."""
+    tails_wp = wp.array([0, 1] if empty == "table" else [], dtype=wp.int32, device=device)
+    next_wp = wp.array([1, 0] if empty == "tails" else [], dtype=wp.int32, device=device)
+    flat_wp, offsets_wp = od.graph.successor_cycles_from_table(tails_wp, next_wp)
+    assert flat_wp.numpy().tolist() == []
+    assert offsets_wp.numpy().tolist() == [0]
+
+
 def test_successor_cycles_from_table_paired_keeps_one_mirror(device: str) -> None:
     """
     Not a library comparison: the paired mode is ordito's own dart encoding, so the oracle is built.
@@ -974,6 +1044,13 @@ def test_shortest_path_envelope_respects_the_bound(
     assert (jumps_np <= lengths_np / threshold + 1e-4).all()
     # Every minimum survives: the smallest value in the field is untouched.
     assert np.isclose(saturated_np.min(), values_np.min(), rtol=1e-5, atol=1e-5)
+
+
+def test_shortest_path_envelope_of_an_empty_graph(device: str) -> None:
+    """Not a library comparison: a graph with no node has no value to cap."""
+    adjacency = od.graph.edges_to_csr(0, odt.empty_2d((0, 2), wp.int32, device=device))
+    capped_wp = od.graph.shortest_path_envelope(adjacency, warp_empty(0, wp.float32, device))
+    assert capped_wp.numpy().tolist() == []
 
 
 def test_shortest_path_envelope_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:

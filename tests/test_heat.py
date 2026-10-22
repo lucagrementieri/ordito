@@ -33,6 +33,7 @@ Comparing tangent fields across libraries needs care in two places, and both are
 from __future__ import annotations
 
 import functools
+import gc
 import logging
 import warnings
 from collections.abc import Callable
@@ -1865,6 +1866,38 @@ def test_diffuse_tangent_field_rejects_a_source_of_the_wrong_length(
         assert built == expected
 
 
+def test_diffuse_tangent_field_rejects_ambiguous_arguments(device: str) -> None:
+    """
+    Not a library comparison: each documented ``TypeError`` of the overloaded entry point fires.
+
+    A missing ``source``; a `Trimesh` with a ``system`` or a ``preconditioner``; a ``system`` both
+    by position and by keyword; ``t`` with a ``system``; and neither a mesh nor a system. A valid
+    call on the same inputs succeeds and is non-zero, so the inputs are not what is rejected.
+    """
+    mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=1), device)
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    system, _, _, preconditioner = mesh.vector_heat_operators
+    source_np = np.zeros((mesh_wp.points.size, 2))
+    source_np[0] = (1.0, 0.0)
+    source_wp = wp.array(source_np, dtype=wp.vec2d, device=device)
+    # Each rejected call is ill-typed on purpose, so it goes through an untyped alias.
+    diffuse = cast("Any", od.heat.diffuse_tangent_field)
+    with pytest.raises(TypeError, match="source is required"):
+        diffuse(mesh)
+    with pytest.raises(TypeError, match="no system or preconditioner"):
+        diffuse(mesh, source_wp, system=system)
+    with pytest.raises(TypeError, match="no system or preconditioner"):
+        diffuse(mesh, source_wp, preconditioner=preconditioner)
+    with pytest.raises(TypeError, match="by position and by keyword"):
+        diffuse(system, source_wp, system=system)
+    with pytest.raises(TypeError, match="pass a Trimesh"):
+        diffuse(system, source_wp, t=0.1)
+    with pytest.raises(TypeError, match="pass a Trimesh"):
+        diffuse(source=source_wp)
+    diffused_np = diffuse(system=system, source=source_wp).numpy()
+    assert np.linalg.norm(diffused_np, axis=1).max() > 0.0
+
+
 def test_heat_solves_reject_a_field_on_another_device() -> None:
     """
     Not a library comparison: a field on another device than the mesh raises ``RuntimeError``.
@@ -2009,6 +2042,35 @@ def test_diffuse_stacked_factors_a_small_stack_whole(
     assert np.allclose(stacked_np[1], stacked_np[0], rtol=1e-5, atol=1e-6 * scale)
     mesh.release_factorizations()
     assert solver.nbytes == 0
+
+
+def test_heat_solver_guards_its_mesh_and_fields(device: str) -> None:
+    """
+    Not a library comparison: the ``HeatSolver`` guards raise with their documented messages.
+
+    A robust solver has no vector operators (``ValueError``); a ``diffuse`` whose ``solution`` is
+    not shaped as ``rhs`` raises before solving (``ValueError``), while the matching call solves to
+    a field that is largest at its source; and a solver whose mesh was collected raises
+    ``RuntimeError`` rather than reading a dead mesh.
+    """
+    mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=1), device)
+    n = mesh_wp.points.size
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    with pytest.raises(ValueError, match="no use_robust variant"):
+        _ = mesh.heat_solver(use_robust=True).vector_operators
+    solver = mesh.heat_solver()
+    rhs_np = np.zeros(n)
+    rhs_np[3] = 1.0
+    rhs_wp = wp.array(rhs_np, dtype=wp.float64, device=device)
+    with pytest.raises(ValueError, match=r"HeatSolver\.diffuse: rhs must hold"):
+        solver.diffuse(rhs_wp, wp.zeros(n - 1, dtype=wp.float64, device=device))
+    solution_wp = wp.zeros(n, dtype=wp.float64, device=device)
+    solver.diffuse(rhs_wp, solution_wp)
+    assert int(np.argmax(solution_wp.numpy())) == 3
+    orphan = od.Trimesh(mesh_wp.points, mesh_wp.indices).heat_solver()
+    gc.collect()
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        orphan.diffuse(rhs_wp, solution_wp)
 
 
 def test_heat_solver_factor_prepares_both_systems(

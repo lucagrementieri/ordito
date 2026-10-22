@@ -30,6 +30,7 @@ from tests.conversions import (
     trimesh_to_open3d,
     trimesh_to_pymeshlab,
     trimesh_to_pyvista,
+    trimesh_to_warp,
     warp_empty,
 )
 
@@ -278,6 +279,12 @@ def test_region_boundary_edges_bucketed_match_the_key_sort(
             id="exclude_fully_selected_components",
         ),
         pytest.param("submesh_from_face_mask", "one entry per face", id="submesh_from_face_mask"),
+        pytest.param(
+            "delete_region_keep_boundary", "one entry per face", id="delete_region_keep_boundary"
+        ),
+        pytest.param(
+            "submesh_from_vertex_mask", "vertex_mask length", id="submesh_from_vertex_mask"
+        ),
     ],
 )
 def test_masks_of_the_wrong_length_are_rejected(
@@ -298,6 +305,14 @@ def test_masks_of_the_wrong_length_are_rejected(
         ),
         "submesh_from_face_mask": lambda: od.selection.submesh_from_face_mask(
             wp.zeros(n_vertices, dtype=wp.vec3, device=device), faces_wp, short_face_mask
+        ),
+        "delete_region_keep_boundary": lambda: od.selection.delete_region_keep_boundary(
+            wp.zeros(n_vertices, dtype=wp.vec3, device=device), faces_wp, short_face_mask
+        ),
+        "submesh_from_vertex_mask": lambda: od.selection.submesh_from_vertex_mask(
+            wp.zeros(n_vertices, dtype=wp.vec3, device=device),
+            faces_wp,
+            wp.zeros(n_vertices - 1, dtype=wp.bool, device=device),
         ),
     }
     with pytest.raises(ValueError, match=message):
@@ -554,7 +569,12 @@ def test_exclude_fully_selected_components_compressed_forest(
 
 
 def test_face_selections_of_nothing_are_empty(device: str) -> None:
-    """No face index, no face group or no vertex index: an empty submesh, packing or face list."""
+    """
+    Not a library comparison: selecting nothing, or from no faces, gives an empty answer.
+
+    No face index (with and without ``return_index``), no face group or no vertex index; and a
+    mesh with no faces through the seam, vertex-mask and component entry points.
+    """
     vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([0, 1, 2, 0, 2, 3], dtype=np.int32), dtype=wp.int32, device=device)
     empty_wp = warp_empty(0, wp.int32, device)
@@ -574,6 +594,23 @@ def test_face_selections_of_nothing_are_empty(device: str) -> None:
 
     face_indices_wp = od.selection.face_indices_from_vertex_indices(faces_wp, empty_wp)
     assert face_indices_wp.shape == (0,)
+
+    indexed_vertices_wp, indexed_faces_wp, index_wp = od.selection.submesh_from_face_indices(
+        vertices_wp, faces_wp, empty_wp, return_index=True
+    )
+    assert (indexed_vertices_wp.size, indexed_faces_wp.size, index_wp.size) == (0, 0, 0)
+
+    # A mesh with no faces: no seam edge, no face to keep, no component to exclude.
+    assert od.selection.region_boundary_edges(empty_wp, warp_empty(0, wp.bool, device)).shape == (
+        0,
+        2,
+    )
+    no_face_vertices_wp, no_face_faces_wp = od.selection.submesh_from_vertex_mask(
+        vertices_wp, empty_wp, wp.ones(4, dtype=wp.bool, device=device)
+    )
+    assert (no_face_vertices_wp.size, no_face_faces_wp.size) == (0, 0)
+    no_vertex_mask_wp = warp_empty(0, wp.bool, device)
+    assert od.selection.exclude_fully_selected_components(empty_wp, no_vertex_mask_wp, 0).size == 0
 
 
 @pytest.mark.parity("submesh_from_face_indices", "open3d", "pyvista")
@@ -963,6 +1000,58 @@ def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
     assert loops == []
     assert np.array_equal(kept_faces_wp.numpy(), mesh_wp.indices.numpy())
     assert kept_vertices_wp.size == mesh_wp.points.size
+
+
+def test_delete_region_keep_boundary_of_whole_components_reports_no_rim(device: str) -> None:
+    """
+    Not a library comparison: deleting a whole component opens no rim on what survives.
+
+    Two disjoint open grids: deleting all of one leaves the other with its own rim only, which is
+    not new, in the list form and the packed form (``[0]`` offsets); deleting both leaves nothing.
+    The surviving grid's rim is asserted present, so the empty answer is a claim about novelty, not
+    an absent boundary. Two disjoint closed spheres: deleting one leaves a closed survivor with no
+    loop at all.
+    """
+    vertices_np, faces_np = _grid_mesh(4)
+    n_vertices, n_faces = len(vertices_np), len(faces_np) // 3
+    pair_vertices_np = np.vstack([vertices_np, vertices_np + np.array([0.0, 0.0, 5.0])])
+    pair_faces_np = np.concatenate([faces_np, faces_np + n_vertices])
+    vertices_wp = wp.array(pair_vertices_np, dtype=wp.vec3, device=device)
+    faces_wp = wp.array(pair_faces_np, dtype=wp.int32, device=device)
+    first_wp = wp.array(np.arange(2 * n_faces) < n_faces, dtype=wp.bool, device=device)
+    kept_vertices_wp, kept_faces_wp, loops = od.selection.delete_region_keep_boundary(
+        vertices_wp, faces_wp, first_wp
+    )
+    assert loops == []
+    assert kept_faces_wp.size == 3 * n_faces
+    assert od.boundary.boundary_vertex_indices(kept_vertices_wp, kept_faces_wp).size == 12
+    assert np.allclose(np.unique(kept_vertices_wp.numpy()[:, 2]), [5.0])
+    _, packed_faces_wp, packed_loops_wp, packed_offsets_wp = (
+        od.selection.delete_region_keep_boundary_with_offsets(vertices_wp, faces_wp, first_wp)
+    )
+    assert np.array_equal(packed_faces_wp.numpy(), kept_faces_wp.numpy())
+    assert packed_loops_wp.size == 0
+    assert packed_offsets_wp.list() == [0]
+    all_vertices_wp, all_faces_wp, all_loops = od.selection.delete_region_keep_boundary(
+        vertices_wp, faces_wp, wp.ones(2 * n_faces, dtype=wp.bool, device=device)
+    )
+    assert (all_vertices_wp.size, all_faces_wp.size, all_loops) == (0, 0, [])
+
+    sphere_tm = tm.creation.icosphere(subdivisions=1)
+    spheres_tm = cast(
+        "tm.Trimesh",
+        tm.util.concatenate([sphere_tm, sphere_tm.copy().apply_translation([5.0, 0, 0])]),
+    )
+    n_sphere_faces = len(sphere_tm.faces)
+    spheres_wp = trimesh_to_warp(spheres_tm, device)
+    sphere_mask_wp = wp.array(
+        np.arange(2 * n_sphere_faces) < n_sphere_faces, dtype=wp.bool, device=device
+    )
+    _, closed_faces_wp, closed_loops = od.selection.delete_region_keep_boundary(
+        spheres_wp.points, spheres_wp.indices, sphere_mask_wp
+    )
+    assert closed_loops == []
+    assert closed_faces_wp.size == 3 * n_sphere_faces
 
 
 def test_delete_region_keep_boundary_reports_only_new_rims(
@@ -1399,6 +1488,38 @@ def test_face_indices_from_vertex_indices(
     # Two empty face lists compare equal, which is what the "all" branch used to do.
     assert face_indices_ref_np.size > 0
     assert np.array_equal(face_indices_wp.numpy(), face_indices_ref_np)
+
+
+def test_selection_menus_and_zero_hops(device: str) -> None:
+    """
+    Not a library comparison: an unknown ``face_mode`` raises, and zero hops return a copy.
+
+    ``face_mode`` is validated by both entry points taking it; ``expand_vertex_mask`` and
+    ``shrink_vertex_mask`` at ``hops=0`` return the input mask's values in a new array.
+    """
+    vertices_np, faces_np = _grid_mesh(3)
+    vertices_wp = wp.array(vertices_np, dtype=wp.vec3, device=device)
+    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="face_mode must be"):
+        od.selection.submesh_from_vertex_mask(
+            vertices_wp,
+            faces_wp,
+            wp.ones(9, dtype=wp.bool, device=device),
+            face_mode=cast("Literal['all', 'any']", "most"),
+        )
+    with pytest.raises(ValueError, match="face_mode must be"):
+        od.selection.face_indices_from_vertex_indices(
+            faces_wp,
+            wp.array([0], dtype=wp.int32, device=device),
+            face_mode=cast("Literal['all', 'any']", "most"),
+        )
+    mask_np = np.zeros(9, dtype=bool)
+    mask_np[4] = True
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
+    for morphology in (od.selection.expand_vertex_mask, od.selection.shrink_vertex_mask):
+        unchanged_wp = morphology(faces_wp, mask_wp, 0)
+        assert unchanged_wp.ptr != mask_wp.ptr
+        assert np.array_equal(unchanged_wp.numpy(), mask_np)
 
 
 def _assert_edge_key_order(rows_np: np.ndarray) -> None:

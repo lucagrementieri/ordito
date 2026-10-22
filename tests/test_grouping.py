@@ -29,6 +29,8 @@ group_test_data = (
     (np.array([-1, 3, 2, -3, 4, 2, -1, 2, 2, 2], dtype=np.int64), 4, []),
     # High-bit uint64 keys sort natively as unsigned (after low keys) in Warp 1.18.
     (np.array([2**63 + 5, 1, 2**63 + 5, 1], dtype=np.uint64), 2, [[1, 3], [0, 2]]),
+    # ``int16`` is not radix-sortable, so it is widened into the sort buffer first.
+    (np.array([-7, 300, -7, 2, 300], dtype=np.int16), 2, [[0, 2], [1, 4]]),
 )
 
 
@@ -44,7 +46,7 @@ def _int_rows(rows_np: np.ndarray | list[list[int]], device: str) -> odt.Array2d
 def test_group(
     device: str, values_np: np.ndarray, length: int, expected_rows: list[list[int]]
 ) -> None:
-    """Class A against a hand-written expectation, over the four key dtypes the radix sort takes."""
+    """Class A against a hand-written expectation: the radix-sort key dtypes and a widened one."""
     groups_np = np.array(expected_rows, dtype=np.int32).reshape(-1, length)
 
     values_wp = wp.array(values_np, device=device)
@@ -184,6 +186,44 @@ def test_unique_1d_max_value(device: str, dtype: type) -> None:
     assert np.array_equal(counts_wp.numpy(), counts_np)
 
 
+@pytest.mark.parametrize(
+    "dtype", [wp.int16, wp.uint8, wp.float16, wp.float64], ids=lambda d: d.__name__
+)
+def test_unique_1d_hash_dtypes_match_numpy(device: str, dtype: type) -> None:
+    """
+    Class A against ``numpy.unique``, on the hash-table branch's two key conversions.
+
+    ``float64`` is read as ``int64`` keys through a zero-copy view; the sub-32-bit dtypes are
+    bit-converted into ``int32`` keys, sorted in a widened dtype and narrowed back, which is where
+    a sign or width slip would misorder negatives or corrupt the returned values. The empty input
+    returns empty arrays of the input dtype.
+    """
+    dtype_np = wp.dtype_to_numpy(dtype)
+    rng = np.random.default_rng(29)
+    low = 0 if dtype == wp.uint8 else -40
+    data_np = rng.integers(low, 40, size=300).astype(dtype_np)
+    unique_np, inverse_np, counts_np = np.unique(data_np, return_inverse=True, return_counts=True)
+    assert 1 < unique_np.size < data_np.size
+
+    data_wp = wp.array(data_np, dtype=dtype, device=device)
+    unique_wp, inverse_wp, counts_wp = od.grouping.unique_1d(
+        data_wp, return_inverse=True, return_counts=True
+    )
+    assert unique_wp.dtype == dtype
+    assert np.array_equal(unique_wp.numpy(), unique_np)
+    assert np.array_equal(inverse_wp.numpy(), inverse_np.ravel())
+    assert np.array_equal(counts_wp.numpy(), counts_np)
+
+    counts_only_wp = od.grouping.unique_1d(data_wp, return_counts=True)[1]
+    assert np.array_equal(counts_only_wp.numpy(), counts_np)
+
+    empty_unique_wp, empty_inverse_wp, empty_counts_wp = od.grouping.unique_1d(
+        warp_empty(0, dtype, device), return_inverse=True, return_counts=True
+    )
+    assert empty_unique_wp.dtype == dtype
+    assert empty_unique_wp.size == empty_inverse_wp.size == empty_counts_wp.size == 0
+
+
 def test_unique_rows_inverse_counts(device: str):
     data_np = np.array([[0, 1], [2, 3], [0, 1], [2, 3], [4, 5]], dtype=np.int32)
     data_wp = wp.array(data_np, dtype=wp.int32, device=device)
@@ -235,6 +275,57 @@ def test_unique_rows_vec3(device: str):
         assert np.allclose(
             unique_wp.numpy()[inverse_wp.numpy()[i]], data_np[i], rtol=1e-5, atol=1e-5
         )
+
+
+def test_hashed_occurrence_counts_match_numpy(device: str) -> None:
+    """
+    Class B (slot order, sort of the non-zero slots) against ``numpy.unique(return_counts=True)``.
+
+    The table's slots are unordered and empty slots count zero, so the multiset of non-zero counts
+    is the comparable answer; the counts must also sum to the key count.
+    """
+    rng = np.random.default_rng(47)
+    keys_np = rng.integers(0, 2**40, size=25).astype(np.uint64)[rng.integers(0, 25, size=400)]
+    counts_np = np.unique(keys_np, return_counts=True)[1]
+    assert counts_np.max() > 1
+
+    counts_wp = od.grouping.hashed_occurrence_counts(
+        wp.array(keys_np, dtype=wp.uint64, device=device)
+    ).numpy()
+    assert counts_wp.sum() == keys_np.size
+    assert np.array_equal(np.sort(counts_wp[counts_wp > 0]), np.sort(counts_np))
+
+
+@pytest.mark.parametrize("layout", ["width5", "strided"])
+def test_unique_rows_without_a_row_vector_view_matches_numpy(device: str, layout: str) -> None:
+    """
+    Class B (row order, ``lexsort``) against ``numpy.unique(axis=0)``, on the gather fallback.
+
+    A five-column table has no integer-vector view and a column-strided one is not contiguous, so
+    both dedup through the key core and gather the representatives. Beyond the set, the inverse
+    must map every input row onto an equal unique row, and the counts must sum per class.
+    """
+    rng = np.random.default_rng(37)
+    width, high = (5, 2) if layout == "width5" else (6, 3)
+    base_np = rng.integers(0, high, size=(60, width)).astype(np.int32)
+    base_wp = _int_rows(base_np, device)
+    if layout == "width5":
+        data_np, data_wp = base_np, base_wp
+    else:
+        data_np = base_np[:, ::2]
+        data_wp = odt.as_array2d(odt.as_dense(base_wp[:, ::2]), wp.int32)
+        assert not data_wp.is_contiguous
+    unique_np, counts_np = np.unique(data_np, axis=0, return_counts=True)
+    assert 1 < unique_np.shape[0] < data_np.shape[0]
+
+    unique_wp, inverse_wp, counts_wp = od.grouping.unique_rows(
+        data_wp, return_inverse=True, return_counts=True
+    )
+    unique_rows_np = unique_wp.numpy()
+    assert np.array_equal(lexsort_rows(unique_rows_np), lexsort_rows(unique_np))
+    assert np.array_equal(unique_rows_np[inverse_wp.numpy()], data_np)
+    assert np.array_equal(np.sort(counts_wp.numpy()), np.sort(counts_np))
+    assert np.array_equal(np.bincount(inverse_wp.numpy()), counts_wp.numpy())
 
 
 @pytest.mark.parametrize(
@@ -324,12 +415,36 @@ def test_unique_faces(device: str):
     assert same_partition(inverse, np.asarray(inverse_igl).ravel())
 
 
+def test_unique_faces_with_max_index_matches_the_inferred_bound(device: str) -> None:
+    """
+    Ordito against ordito: a caller-supplied ``max_index`` skips the reduction, not the answer.
+
+    ``test_unique_faces`` holds the library comparison; this pins the keyword path to the inferred
+    one at the tight bound and at a looser one, on faces with duplicates up to orientation.
+    """
+    rng = np.random.default_rng(41)
+    faces_np = rng.integers(0, 6, size=(40, 3)).astype(np.int32)
+    faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
+    unique_wp, inverse_wp = od.grouping.unique_faces(faces_wp, return_inverse=True)
+    n_unique = np.unique(np.sort(faces_np, axis=1), axis=0).shape[0]
+    assert unique_wp.size == 3 * n_unique < faces_np.size
+    for max_index in (int(faces_np.max()) + 1, 1000):
+        bounded_wp, bounded_inverse_wp = od.grouping.unique_faces(
+            faces_wp, return_inverse=True, max_index=max_index
+        )
+        assert np.array_equal(bounded_wp.numpy(), unique_wp.numpy())
+        assert np.array_equal(bounded_inverse_wp.numpy(), inverse_wp.numpy())
+    assert np.array_equal(od.grouping.unique_faces(faces_wp).numpy(), unique_wp.numpy())
+
+
 def test_row_operations_on_empty_input(device: str) -> None:
     """
     Empty faces and empty rows reach each function's own empty-input path.
 
     ``hash_indices_rows`` must not reach ``reduce.minmax``, which raises on an empty array, and
     ``group_int_rows`` must not crash inside that default validation on its way to ``group``.
+    ``unique_rows`` keeps each supported dtype and row width, and the remaining row functions
+    return empty arrays of their documented dtype.
     """
     unique_wp, inverse_wp = od.grouping.unique_faces(
         warp_empty(0, wp.int32, device), return_inverse=True
@@ -345,6 +460,31 @@ def test_row_operations_on_empty_input(device: str) -> None:
     assert packed_unvalidated_wp.shape == (0,)
 
     assert od.grouping.group_int_rows(empty_wp, 2).shape == (0, 2)
+    short_wp = wp.array(np.array([4, 4], dtype=np.int32), dtype=wp.int32, device=device)
+    assert od.grouping.group(short_wp, 3).shape == (0, 3)
+    assert od.grouping.group(short_wp, 0).shape == (0, 0)
+
+    assert od.grouping.unique_faces(warp_empty(0, wp.int32, device)).size == 0
+    empty_tables = (
+        odt.as_array2d(warp_empty((0, 4), wp.int32, device), wp.int32),
+        odt.as_array2d(warp_empty((0, 3), wp.float32, device), wp.float32),
+        warp_empty(0, wp.vec3, device),
+    )
+    for table_wp in empty_tables:
+        unique_rows_wp, rows_inverse_wp, rows_counts_wp = od.grouping.unique_rows(
+            table_wp, return_inverse=True, return_counts=True
+        )
+        assert unique_rows_wp.dtype == table_wp.dtype
+        assert unique_rows_wp.shape == table_wp.shape
+        assert rows_inverse_wp.size == rows_counts_wp.size == 0
+
+    assert od.grouping.first_occurrence_indices(warp_empty(0, wp.int32, device)).size == 0
+    assert od.grouping.hash_vector_rows(warp_empty(0, wp.vec3, device), epsilon=0.1).size == 0
+    edge_keys_wp = od.grouping.sorted_undirected_edge_keys(
+        odt.as_array2d(warp_empty((0, 2), wp.int32, device), wp.int32), 4
+    )
+    assert edge_keys_wp.shape == (0,)
+    assert edge_keys_wp.dtype == wp.uint64
 
 
 def test_first_occurrence_indices_matches_numpy_return_index(device: str) -> None:
@@ -508,7 +648,9 @@ def test_invalid_arguments_raise(device: str) -> None:
     Not a library comparison: each documented ``ValueError``, raised with its message.
 
     ``unique_1d``'s ``max_value`` takes non-negative integer data only; ``hash_rows`` packs only its
-    dtypes and width-3 ``float32``; ``hash_indices_rows`` range-checks against ``max_index``.
+    dtypes and width-3 ``float32``; ``hash_indices_rows`` range-checks against
+    ``max_index``; ``unique_faces`` takes a positive ``max_index`` and non-negative faces;
+    ``unique_1d`` takes rank-1 data.
     """
     ints_wp = wp.array(np.arange(4, dtype=np.int32), dtype=wp.int32, device=device)
     floats_wp = wp.array(np.arange(4, dtype=np.float32), dtype=wp.float32, device=device)
@@ -532,6 +674,14 @@ def test_invalid_arguments_raise(device: str) -> None:
 
     with pytest.raises(ValueError, match="max_index must be positive, got 0"):
         _ = od.grouping.hash_indices_rows(indices_wp, max_index=0)
+
+    with pytest.raises(ValueError, match="max_index must be positive, got 0"):
+        _ = od.grouping.unique_faces(ints_wp, max_index=0)
+    negative_faces_wp = wp.array(np.array([0, 1, -2], np.int32), dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="faces must be non-negative, got a minimum of -2"):
+        _ = od.grouping.unique_faces(negative_faces_wp)
+    with pytest.raises(ValueError, match="rank-1 array, got ndim=2"):
+        _ = od.grouping.unique_1d(wp.zeros((2, 2), dtype=wp.int32, device=device))
 
 
 def test_hash_indices_rows_unvalidated(device: str) -> None:
@@ -583,3 +733,25 @@ def _pack_indices_rows_np(indices_np: np.ndarray, max_index: int | None = None) 
     """CPU reference for ``pack_indices``: mixed-radix sum with wrapping ``uint64`` math."""
     radix = np.max(indices_np) + 1 if max_index is None else max_index
     return np.sum(indices_np * np.power(radix, np.arange(indices_np.shape[1])), axis=1)
+
+
+def test_sorted_undirected_edge_keys_matches_numpy(device: str) -> None:
+    """
+    Not a library comparison: no reference packs edge keys; the NumPy packing is the oracle.
+
+    Each row packs as ``min + max * n_vertices`` whichever endpoint comes first, and the keys come
+    back sorted. Rows appear in both orientations and repeated, so a packing that kept the given
+    order would give the reversed rows different keys, and an unsorted result would fail the
+    comparison with ``np.sort``.
+    """
+    n_vertices = 50
+    rng = np.random.default_rng(43)
+    edges_np = rng.integers(0, n_vertices, size=(200, 2)).astype(np.int32)
+    edges_np[100:] = edges_np[:100, ::-1]
+    keys_np = np.sort(
+        edges_np.min(axis=1).astype(np.uint64)
+        + edges_np.max(axis=1).astype(np.uint64) * np.uint64(n_vertices)
+    )
+    keys_wp = od.grouping.sorted_undirected_edge_keys(_int_rows(edges_np, device), n_vertices)
+    assert keys_wp.dtype == wp.uint64
+    assert np.array_equal(keys_wp.numpy(), keys_np)

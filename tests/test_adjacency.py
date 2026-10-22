@@ -149,6 +149,21 @@ def test_face_adjacency_edges_paired_rejects_an_odd_face_count(device: str) -> N
             [(0,)],
             id="face_adjacency_convex",
         ),
+        pytest.param(
+            lambda faces_wp, _: (od.adjacency.face_adjacency(faces_wp),), [(0, 2)], id="pairs-only"
+        ),
+        pytest.param(
+            lambda faces_wp, _: od.adjacency.vertex_face_adjacency_from_counts(
+                faces_wp, wp.zeros(4, dtype=wp.int32, device=faces_wp.device)
+            ),
+            [(0,), (5,)],
+            id="vertex_face_adjacency_from_counts",
+        ),
+        pytest.param(
+            lambda faces_wp, _: (od.adjacency.face_connected_component_labels(faces_wp),),
+            [(0,)],
+            id="face_connected_component_labels",
+        ),
     ],
 )
 def test_empty_mesh_gives_empty_tables(
@@ -159,7 +174,8 @@ def test_empty_mesh_gives_empty_tables(
     """
     Each table on an empty face buffer has its documented shape with no rows.
 
-    ``vertex_face_adjacency`` at ``n_vertices=0`` still returns its one ``[0]`` offset.
+    ``vertex_face_adjacency`` at ``n_vertices=0`` still returns its one ``[0]`` offset, and
+    ``vertex_face_adjacency_from_counts`` its ``n_vertices + 1`` offsets.
     """
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     vertices_wp = warp_empty(0, wp.vec3, device)
@@ -513,6 +529,24 @@ def test_face_adjacency_unshared_duplicate_faces(device: str) -> None:
     assert np.array_equal(unshared_wp.numpy(), off_edge_np)
 
 
+def test_face_adjacency_unshared_rejects_a_misaligned_pair(device: str) -> None:
+    """
+    Not a library comparison: a supplied pair whose two tables disagree in length raises.
+
+    The kernel reads row ``i`` of both tables, so an edges table one row short is an out-of-bounds
+    read; the guard names both counts. The aligned pair is accepted, so the guard is not vacuous.
+    """
+    faces_wp = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32, device=device)
+    adjacency_wp, edges_wp = od.adjacency.face_adjacency(faces_wp, return_edges=True)
+    assert od.adjacency.face_adjacency_unshared(
+        faces_wp, adjacency_wp, edges_wp
+    ).numpy().tolist() == [[0, 3]]
+    with pytest.raises(ValueError, match="row counts must match, got 1 and 0"):
+        od.adjacency.face_adjacency_unshared(
+            faces_wp, adjacency_wp, odt.empty_2d((0, 2), wp.int32, device=device)
+        )
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_adjacency_angles", "trimesh")
 def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -557,6 +591,93 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
             rtol=1e-4,
             atol=5e-4,
         )
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_dihedral_tables_derive_the_adjacency_they_are_not_given(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: every derived-adjacency path equals the supplied-adjacency answer.
+
+    The supplied path carries the trimesh oracle (``test_face_adjacency_angles``,
+    ``test_face_adjacency_projections``, ``test_face_adjacency_convex``). With no adjacency the
+    angles come straight off the sorted halfedge pairs (with or without supplied normals), and the
+    projections and the convexity mask derive the ``(face_adjacency, face_adjacency_edges)`` pair
+    themselves, either straight off the sorted pairs (nothing supplied) or through
+    ``face_adjacency`` (only the normals supplied); each must return the supplied answer row for
+    row, since all enumerate the pairs in ``face_adjacency``'s order.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    adjacency_wp, edges_wp = od.adjacency.face_adjacency(faces_wp, return_edges=True)
+    face_normals_wp, _ = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)
+
+    angles_np = od.adjacency.face_adjacency_angles(
+        vertices_wp, faces_wp, face_adjacency=adjacency_wp
+    ).numpy()
+    assert np.ptp(angles_np) > 1e-3
+    derived_angles_np = od.adjacency.face_adjacency_angles(vertices_wp, faces_wp).numpy()
+    normals_only_np = od.adjacency.face_adjacency_angles(
+        vertices_wp, faces_wp, face_normals=face_normals_wp
+    ).numpy()
+    assert np.allclose(derived_angles_np, angles_np, rtol=1e-5, atol=1e-5)
+    assert np.allclose(normals_only_np, angles_np, rtol=1e-5, atol=1e-5)
+
+    projections_np = od.adjacency.face_adjacency_projections(
+        vertices_wp, faces_wp, face_adjacency=adjacency_wp, face_adjacency_edges=edges_wp
+    ).numpy()
+    assert np.ptp(projections_np) > 1e-6
+    convex_np = od.adjacency.face_adjacency_convex(
+        vertices_wp, faces_wp, face_adjacency=adjacency_wp, face_adjacency_edges=edges_wp
+    ).numpy()
+    for normals in (None, face_normals_wp):
+        assert np.allclose(
+            od.adjacency.face_adjacency_projections(
+                vertices_wp, faces_wp, face_normals=normals
+            ).numpy(),
+            projections_np,
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        assert np.array_equal(
+            od.adjacency.face_adjacency_convex(vertices_wp, faces_wp, face_normals=normals).numpy(),
+            convex_np,
+        )
+
+
+def test_dihedral_tables_of_a_lone_triangle_are_empty(device: str) -> None:
+    """
+    Not a library comparison: a face with no neighbour has no dihedral row to report.
+
+    trimesh returns empty tables here too, but through an unrelated code path; the claim is ordito's
+    early returns. A single triangle has faces but no adjacency, so every per-pair table is empty
+    whether the adjacency is derived or supplied empty, and the shared-edge table matches.
+    """
+    vertices_wp = wp.array(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+        dtype=wp.vec3,
+        device=device,
+    )
+    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    adjacency_wp, edges_wp = od.adjacency.face_adjacency(faces_wp, return_edges=True)
+    assert adjacency_wp.shape == (0, 2)
+    assert edges_wp.shape == (0, 2)
+    assert od.adjacency.face_adjacency_angles(vertices_wp, faces_wp).shape == (0,)
+    assert od.adjacency.face_adjacency_angles(
+        vertices_wp, faces_wp, face_adjacency=adjacency_wp
+    ).shape == (0,)
+    normal_wp = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
+    no_faces_wp = warp_empty(0, wp.int32, device)
+    for faces in (faces_wp, no_faces_wp):
+        for normals in (None, normal_wp):
+            projections_wp = od.adjacency.face_adjacency_projections(
+                vertices_wp, faces, face_normals=normals
+            )
+            convex_wp = od.adjacency.face_adjacency_convex(vertices_wp, faces, face_normals=normals)
+            assert projections_wp.shape == (0,)
+            assert convex_wp.shape == (0,)
+            assert convex_wp.dtype == wp.bool
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular_hollow", "saddle_graded"])
@@ -1021,3 +1142,10 @@ def test_sorted_face_edge_keys(
     )
     assert np.array_equal(order_wp.numpy(), order_np)
     assert np.array_equal(sorted_wp.numpy(), keys_np[order_np])
+
+
+def test_sorted_face_edge_keys_rejects_a_non_positive_vertex_count(device: str) -> None:
+    """Not a library comparison: the documented ``n_vertices`` guard, with its message."""
+    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="n_vertices must be positive, got 0"):
+        od.adjacency.sorted_face_edge_keys(faces_wp, n_vertices=0)

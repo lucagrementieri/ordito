@@ -162,6 +162,23 @@ def test_segments_with_plane_axis_aligned(device: str) -> None:
     )
 
 
+def test_segments_with_plane_guards_and_empty(device: str) -> None:
+    """
+    Not a library comparison: mismatched endpoint arrays raise, and no segment gives no answer.
+
+    The shape guard stops a read past the shorter array; an empty batch returns empty points and
+    an empty mask rather than launching.
+    """
+    normal, origin = wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)
+    two_wp = points_to_warp(np.zeros((2, 3), dtype=np.float32), device)
+    three_wp = points_to_warp(np.zeros((3, 3), dtype=np.float32), device)
+    with pytest.raises(ValueError, match="same shape"):
+        od.intersection.segments_with_plane(two_wp, three_wp, normal, origin)
+    empty_wp = warp_empty(0, wp.vec3, device)
+    points_wp, valid_wp = od.intersection.segments_with_plane(empty_wp, empty_wp, normal, origin)
+    assert (points_wp.size, valid_wp.size) == (0, 0)
+
+
 def _axis_planes(mesh_tm: tm.Trimesh) -> list[tuple[np.ndarray, np.ndarray]]:
     """Three axis-aligned planes through the centroid; none can miss the mesh."""
     mid_np = 0.5 * (mesh_tm.bounds[0] + mesh_tm.bounds[1])
@@ -1220,6 +1237,8 @@ def test_face_box_candidates_finds_every_overlapping_box(
         assert np.array_equal(candidates_np[face], overlap_np)
     # Non-vacuity: the old default capacity would have overflowed.
     assert max(overlap_np.size for overlap_np in expected_np) > 16
+    with pytest.raises(ValueError, match="capacity must be >= 1"):
+        od.intersection.face_box_candidates(mesh_wp.points, mesh_wp.indices, other_wp, capacity=0)
 
 
 def test_face_box_candidates_overflow_is_sized_by_the_excess(device: str) -> None:
@@ -2235,6 +2254,38 @@ def test_intersection_empty_mesh_is_a_noop(
     result = intersection_fn(vertices_wp, faces_wp)
     for got_wp, expected_shape in zip(result, expected_shapes, strict=True):
         assert got_wp.shape == expected_shape
+
+
+def test_intersection_faceless_mesh_is_empty(device: str) -> None:
+    """
+    Not a library comparison: a mesh with vertices but no faces cuts and crosses nothing.
+
+    The zero-vertex case is the test above; here the vertex buffer is not empty, so each operator
+    must still return no segment, no face and (for the clips) no vertex, with the per-face arrays
+    ``return_faces`` and ``split_faces_along_field`` owe empty too, and a second mesh against it
+    crosses nowhere.
+    """
+    vertices_wp = wp.array(np.eye(3, dtype=np.float32), dtype=wp.vec3, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    values_wp = wp.array(np.array([-1.0, 1.0, 2.0], dtype=np.float32), device=device)
+    normal, origin = wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)
+    segments_wp, segment_faces_wp = od.intersection.mesh_with_plane(
+        vertices_wp, faces_wp, normal, origin, return_faces=True
+    )
+    assert (segments_wp.shape, segment_faces_wp.size) == ((0, 2), 0)
+    for kept_vertices_wp, kept_faces_wp in (
+        od.intersection.slice_mesh_with_plane(vertices_wp, faces_wp, normal, origin),
+        od.intersection.clip_mesh_with_field(vertices_wp, faces_wp, values_wp, cap=True),
+    ):
+        assert (kept_vertices_wp.size, kept_faces_wp.size) == (0, 0)
+    split_vertices_wp, split_faces_wp, positive_wp = od.intersection.split_faces_along_field(
+        vertices_wp, faces_wp, values_wp
+    )
+    assert np.array_equal(split_vertices_wp.numpy(), vertices_wp.numpy())
+    assert (split_faces_wp.size, positive_wp.size) == (0, 0)
+    triangle_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), device=device)
+    crossing_wp = od.intersection.mesh_with_mesh(vertices_wp, triangle_wp, vertices_wp, faces_wp)
+    assert crossing_wp.shape == (0, 2)
 
 
 def _off_vertex_isovalue(mesh_tm: tm.Trimesh) -> float:

@@ -1980,6 +1980,10 @@ _INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
         lambda device: od.farthest_point_sample(_four_zeros(device), 2, start=4),
         "start",
     ),
+    "vector_angle_length_mismatch": (
+        lambda device: od.vector_angle(_four_zeros(device), warp_empty(0, wp.vec3, device)),
+        "same length",
+    ),
 }
 
 
@@ -1996,6 +2000,32 @@ def _empty_cloud(device: str) -> wp.array[wp.vec3]:
 
 
 _EMPTY_CALLS: dict[str, tuple[Callable[[str], np.ndarray], np.ndarray]] = {
+    # The centroid, line and plane of no points are the zero vectors, not a division by zero.
+    "centroid": (lambda device: od.centroid(_empty_cloud(device)).numpy()[0], np.zeros(3)),
+    "fit_line": (lambda device: np.array(od.fit_line(_empty_cloud(device))), np.zeros(3)),
+    "fit_plane": (
+        lambda device: np.array([np.array(v) for v in od.fit_plane(_empty_cloud(device))]),
+        np.zeros((2, 3)),
+    ),
+    "estimate_normals": (
+        lambda device: od.estimate_normals(
+            _empty_cloud(device), odt.empty_2d((0, 8), wp.int32, device=device)
+        ).numpy(),
+        np.zeros((0, 3)),
+    ),
+    "outlier_probability": (
+        lambda device: od.outlier_probability(
+            odt.empty_2d((0, 8), wp.int32, device=device),
+            odt.empty_2d((0, 8), wp.float32, device=device),
+        ).numpy(),
+        np.zeros(0),
+    ),
+    "radial_sort": (
+        lambda device: od.radial_sort(
+            _empty_cloud(device), wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0)
+        ).numpy(),
+        np.zeros((0, 3)),
+    ),
     # The sum over no points is the zero matrix, not garbage.
     "gram_matrix": (
         lambda device: od.gram_matrix(_empty_cloud(device)).numpy()[0],

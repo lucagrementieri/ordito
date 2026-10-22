@@ -13,6 +13,7 @@ import warp as wp
 
 import ordito as od
 from tests.conftest import MESHES
+from tests.conversions import warp_empty
 
 # ---------------------------------------------------------------------------
 # halfedge_twins
@@ -493,6 +494,33 @@ def test_vertex_one_rings_return_twins_matches_the_two_calls(
     assert passed_through_wp is twins_wp
 
 
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_vertex_one_rings_bucketed_walk_matches_the_sorted_walk(
+    request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the bucketed pairing's ring walk equals the key-sorted pairing's.
+
+    Not a library comparison: the ring order is ordito's own convention, and its oracle is
+    ``test_vertex_one_ring_neighbor_counts_match_trimesh`` on the sorted path. The bucketed path
+    (CUDA by default, opened on the CPU here) hands the walk its degrees and starts from the
+    pairing instead of counting them over the twins, so every ring, offset, boundary flag and
+    twin must come out identical, on the closed and open fixtures.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_vertices = len(mesh_tm.vertices)
+    sorted_rings = od.halfedge.vertex_one_rings(
+        mesh_wp.indices, n_vertices=n_vertices, return_twins=True
+    )
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    bucketed_rings = od.halfedge.vertex_one_rings(
+        mesh_wp.indices, n_vertices=n_vertices, return_twins=True
+    )
+    assert sorted_rings[0].size == mesh_wp.indices.size
+    for bucketed_wp, sorted_wp in zip(bucketed_rings, sorted_rings, strict=True):
+        assert np.array_equal(bucketed_wp.numpy(), sorted_wp.numpy())
+
+
 def test_vertex_one_rings_isolated_vertex_is_empty(device: str) -> None:
     # Vertex 3 is unreferenced: it gets an empty ring rather than a bogus one.
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
@@ -575,6 +603,26 @@ def test_require_matching_twins_rejects_a_table_that_is_not_the_opposite_halfedg
         with pytest.raises(ValueError, match=match):
             call(corrupted_wp)
         call(genuine_wp)  # the genuine table is accepted
+
+
+def test_require_matching_twins_called_directly(device: str) -> None:
+    """
+    Not a library comparison: the validator's own entry point, on its trivially valid inputs.
+
+    No reference exposes a caller-supplied twin table. ``None`` (nothing supplied) and an empty
+    mesh with an empty table are accepted without a launch; the same call rejects a one-triangle
+    table claiming a twin, so the accepting arms are not vacuous.
+    """
+    faces_wp = _faces([0, 1, 2], device)
+    od.halfedge.require_matching_twins(faces_wp, None)
+    od.halfedge.require_matching_twins(
+        warp_empty(0, wp.int32, device), warp_empty(0, wp.int32, device)
+    )
+    od.halfedge.require_matching_twins(faces_wp, wp.full(3, -1, dtype=wp.int32, device=device))
+    with pytest.raises(ValueError, match="opposite halfedge"):
+        od.halfedge.require_matching_twins(
+            faces_wp, wp.array([1, 0, -1], dtype=wp.int32, device=device)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -732,3 +780,39 @@ def test_key_ordered_halfedges_validates(sphere_irregular: tuple[tm.Trimesh, wp.
         od.halfedge.key_ordered_halfedges(
             mesh_wp.indices, wp.zeros(2 * n, dtype=wp.int32, device=device), 0
         )
+
+
+def test_key_ordered_halfedges_single_class_and_empty_selection(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the key order is ordito's convention, recomputed by NumPy.
+
+    A single class needs no ``n_vertices``: the sort then packs at the pair radix, which must give
+    the same stable ascending key order as the vertex-count radix. An empty selection returns an
+    empty order with no sort.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    device = mesh_wp.indices.device
+    faces_np = np.asarray(mesh_tm.faces)
+    n_vertices = len(mesh_tm.vertices)
+    edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
+    keys_np = edges_np[:, 0] + edges_np[:, 1] * n_vertices
+    flags_np = (np.random.default_rng(3).random(faces_np.size) < 0.4).astype(np.int32)
+    order_np = np.argsort(keys_np, kind="stable")
+    expected = order_np[flags_np[order_np] == 1]
+    inclusive = wp.array(np.cumsum(flags_np).astype(np.int32), dtype=wp.int32, device=device)
+    halfedges = od.halfedge.key_ordered_halfedges(
+        mesh_wp.indices, inclusive, int(flags_np.sum())
+    ).numpy()
+    assert expected.size > 0
+    assert np.array_equal(halfedges, expected)
+
+    none_flagged = wp.zeros(faces_np.size, dtype=wp.int32, device=device)
+    assert od.halfedge.key_ordered_halfedges(mesh_wp.indices, none_flagged, 0).shape == (0,)
+    _, key_order = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices, return_key_order=True)
+    assert key_order is not None
+    from_order = od.halfedge.key_ordered_halfedges(
+        mesh_wp.indices, none_flagged, 0, key_order=key_order
+    )
+    assert from_order.shape == (0,)

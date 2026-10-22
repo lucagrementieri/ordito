@@ -10,6 +10,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
+import ordito.typing as odt
 from tests.comparisons import canonical_winding, undirected_edges
 from tests.conftest import CLOSED_MESHES, MESHES, OPEN_MESHES
 from tests.conversions import (
@@ -360,6 +361,32 @@ def test_edge_manifold_mask(
         assert np.array_equal(mask_wp.numpy(), edge_manifold_bf.all(axis=1))
     else:
         assert np.array_equal(od.validation.face_watertight_mask(mesh_wp.indices).numpy(), mask_np)
+
+
+def test_edge_manifold_mask_checks_faces_against_a_given_vertex_count(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A against the NumPy edge-count reference, plus the range check against ``n_vertices``.
+
+    With a bound given and ``validate=True`` the mask checks every index against it: one index
+    equal to the vertex count raises, and the valid buffer's mask equals the reference, checked or
+    not.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    n_vertices = len(mesh_tm.vertices)
+    faces_np = mesh_tm.faces.astype(np.int32)
+    mask_wp = od.validation.edge_manifold_mask(mesh_wp.indices, n_vertices=n_vertices)
+    assert np.array_equal(mask_wp.numpy(), _edge_manifold_mask_np(faces_np, True))
+    bad_np = faces_np.ravel().copy()
+    bad_np[4] = n_vertices
+    bad_wp = wp.array(bad_np, dtype=wp.int32, device=mesh_wp.device)
+    with pytest.raises(ValueError, match=r"faces must reference vertex indices in \[0, 500\)"):
+        od.validation.edge_manifold_mask(bad_wp, n_vertices=n_vertices)
+    unchecked_wp = od.validation.edge_manifold_mask(
+        mesh_wp.indices, n_vertices=n_vertices, validate=False
+    )
+    assert np.array_equal(unchecked_wp.numpy(), mask_wp.numpy())
 
 
 @pytest.mark.parametrize("allow_boundary_edges", [True, False])
@@ -1354,6 +1381,36 @@ def test_face_orientation_bits_are_reproducible_on_non_orientable_input(
     assert bool(frustrated_np.any()) is (mesh_name != "sphere_irregular")
 
 
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_orientation_bits_arrival_order_agree_with_the_deterministic_bits(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: with the setting off, the bits are the deterministic ones up to a flip.
+
+    The oracle for the deterministic bits is ``_minimum_forest_parity`` above. On an orientable,
+    connected, half-flipped mesh the potential is unique up to complementing it, so the
+    arrival-order bits (``face_orientation_bits`` and ``face_flip_mask``) must equal the
+    deterministic ones or their complement, and satisfy every adjacency row.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = _flip_half(np.asarray(mesh_tm.faces))
+    _, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_np, mesh_wp.device)
+    with od.config.deterministic(True):
+        fixed_np = od.validation.face_orientation_bits(faces_wp)[0].numpy()
+        fixed_flip_np = od.validation.face_flip_mask(faces_wp).numpy()
+    with od.config.deterministic(False):
+        orient_wp, signed_edges_wp, signs_wp, _ = od.validation.face_orientation_bits(faces_wp)
+        arrival_flip_np = od.validation.face_flip_mask(faces_wp).numpy()
+    orient_np, edges_np = orient_wp.numpy(), signed_edges_wp.numpy()
+    assert bool(fixed_np.any())
+    assert not ((orient_np[edges_np[:, 0]] ^ orient_np[edges_np[:, 1]]) != signs_wp.numpy()).any()
+    assert np.array_equal(orient_np, fixed_np) or np.array_equal(orient_np, 1 - fixed_np)
+    assert np.array_equal(arrival_flip_np, fixed_flip_np) or np.array_equal(
+        arrival_flip_np, ~fixed_flip_np
+    )
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("is_watertight", "open3d", "trimesh")
 def test_is_watertight_matches_open3d_and_trimesh(
@@ -1609,6 +1666,42 @@ def test_empty_mesh(device: str) -> None:
     assert od.validation.face_watertight_mask(faces_wp).size == 0
     assert od.validation.face_flip_mask(faces_wp).size == 0
     assert od.validation.face_defective_mask(vertices_wp, faces_wp).shape == (0,)
+    assert od.validation.is_watertight(vertices_wp, faces_wp) is True
+
+
+def test_single_triangle_has_no_adjacency_to_test(device: str) -> None:
+    """
+    Not a library comparison: a lone face's adjacency-based answers on an empty adjacency.
+
+    trimesh and open3d agree on these answers but take no comparable path. One triangle has faces
+    and no shared edge, so the winding mask has no edge group (empty), the orientation bits are a
+    zero for the face with an empty signed graph, and the vertex-manifold test on a supplied empty
+    adjacency pair is ``True``. A collision budget below one raises once there are two faces to
+    test.
+    """
+    vertices_wp = wp.array(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+        dtype=wp.vec3,
+        device=device,
+    )
+    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    winding_wp = od.validation.edge_winding_consistent_mask(faces_wp)
+    assert winding_wp.shape == (0,)
+    assert winding_wp.dtype == wp.bool
+    orient_wp, signed_edges_wp, signs_wp, m = od.validation.face_orientation_bits(faces_wp)
+    assert orient_wp.numpy().tolist() == [0]
+    assert signed_edges_wp.shape == (0, 2)
+    assert signs_wp.shape == (0,)
+    assert m == 0
+    no_pairs_wp = odt.empty_2d((0, 2), wp.int32, device=device)
+    assert od.validation.is_vertex_manifold(
+        faces_wp, face_adjacency=no_pairs_wp, face_adjacency_edges=no_pairs_wp
+    )
+    two_faces_wp = wp.array([0, 1, 2, 0, 2, 1], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="max_triangle_collisions must be >= 1"):
+        od.validation.face_self_intersecting_mask(
+            vertices_wp, two_faces_wp, max_triangle_collisions=0
+        )
 
 
 def test_is_self_intersecting_fewer_than_two_faces(device: str) -> None:

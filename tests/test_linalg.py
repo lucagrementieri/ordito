@@ -322,6 +322,31 @@ def test_min_quad_with_fixed_solves_no_right_hand_side(device: str, solver: str)
     assert solution_wp.shape == (0, n_free)
 
 
+def test_min_quad_with_fixed_data_solves_new_values_by_its_factorization(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve`` of the dense interior block, for repeated solves.
+
+    A precomputed system is factored, so each ``solve`` only forms a new right-hand side; the
+    answer for scaled pinned values is the scaled answer. Released, it iterates instead and still
+    reaches the same solution.
+    """
+    matrix_wp, fixed_wp, values_wp, expected_np = _pinned_grid(device)
+    data = od.linalg.min_quad_with_fixed_precompute(matrix_wp, fixed_wp)
+    assert data.factored
+    for scale in (1.0, -2.5):
+        scaled_wp = odt.as_array2d(
+            wp.array(scale * values_wp.numpy(), dtype=wp.float64, device=device), wp.float64
+        )
+        solution_wp, _, n_free = data.solve(scaled_wp)
+        assert n_free == expected_np.shape[1]
+        assert np.allclose(solution_wp.numpy(), scale * expected_np, rtol=1e-9, atol=1e-9)
+    data.release()
+    assert not data.factored
+    assert data.nbytes == 0
+    solution_wp, _, _ = data.solve(values_wp)
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-6, atol=1e-6)
+
+
 def test_min_quad_with_fixed_data_matches_only_its_own_mask(device: str) -> None:
     """
     Not a library comparison: ``matches`` compares pinned sets, on one flag reused uncleared.
@@ -1003,6 +1028,32 @@ def test_solve_spd_columns_does_not_iterate_on_past_an_indefinite_operator(
     assert len(runs) == 1
 
 
+def test_solve_spd_columns_iterates_past_its_rent_when_nothing_can_be_factored(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: an operator over budget goes back to iterating.
+
+    Two rounds cannot converge on the grid, and with ``CHOLESKY_MEMORY_BUDGET`` too small to factor
+    the operator the solve keeps iterating up to its cap instead of warning: the result is the
+    converged answer with no factorization held.
+    """
+    matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device, k=12, n_rhs=2)
+    monkeypatch.setattr(od.linalg, "CG_FACTOR_AFTER_ROUNDS", 2)
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    solution_wp = odt.as_array2d(wp.zeros_like(rhs_wp), wp.float64)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        od.linalg.solve_spd_columns(
+            matrix_wp, rhs_wp, solution_wp, tol=1e-12, check_every=1, factorization=held
+        )
+    assert held.factorization is None
+    assert np.allclose(
+        solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-8, atol=1e-8
+    )
+
+
 def test_solve_spd_columns_rejects_another_operators_factorization(device: str) -> None:
     """A factorization is matched to its operator by identity, as in ``solve_spd_settled``."""
     matrix_wp, rhs_wp, _, _ = _grid_laplacian_system(device)
@@ -1044,6 +1095,81 @@ def test_solve_spd_settled_solves_by_a_held_factorization(device: str) -> None:
     assert held.nbytes == 0
 
 
+def test_solve_spd_settled_rejects_an_unsupported_system(device: str) -> None:
+    """
+    Not a library comparison: each guard of ``solve_spd_settled`` raises with its message.
+
+    Another operator's factorization, a preconditioner with columns, and a single column under a
+    preconditioner other than its own Jacobi are refused before any solve.
+    """
+    matrix_wp, rhs_wp, _, _ = _spd_system(device, n=16, n_rhs=2)
+    other_wp, _, _, _ = _spd_system(device, n=16, n_rhs=2)
+    rhs_1d = odt.as_dense(rhs_wp[0])
+    with pytest.raises(ValueError, match="another operator than matrix"):
+        od.linalg.solve_spd_settled(
+            matrix_wp,
+            rhs_1d,
+            wp.zeros_like(rhs_1d),
+            factorization=od.linalg.OperatorFactorization(other_wp),
+            check_rounds=4,
+            change_tolerance=1e-8,
+            settle_rounds=64,
+        )
+    with pytest.raises(ValueError, match="with no preconditioner argument"):
+        od.linalg.solve_spd_settled(
+            matrix_wp,
+            rhs_wp,
+            wp.zeros_like(rhs_wp),
+            preconditioner=od.linalg.jacobi_preconditioner(matrix_wp),
+            check_rounds=4,
+            change_tolerance=1e-8,
+            settle_rounds=64,
+        )
+    with pytest.raises(ValueError, match="under its own Jacobi"):
+        od.linalg.solve_spd_settled(
+            matrix_wp,
+            rhs_1d,
+            wp.zeros_like(rhs_1d),
+            preconditioner=od.linalg.chebyshev_preconditioner(matrix_wp),
+            check_rounds=4,
+            change_tolerance=1e-8,
+            settle_rounds=64,
+        )
+
+
+@pytest.mark.parametrize("factorable", [True, False], ids=["factored", "over-budget"])
+def test_solve_spd_settled_falls_back_on_a_rejected_iterate(
+    device: str, monkeypatch: pytest.MonkeyPatch, factorable: bool
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: an iterate settled too early is replaced by a factor.
+
+    A change tolerance of ten settles after the first check, far from the solution; the
+    backward-error check rejects it and a factorization answers to ``1e-12``. When the operator
+    cannot be factored (``CHOLESKY_MEMORY_BUDGET`` too small) the iterate is returned with a
+    warning, and it is measurably not the solution.
+    """
+    matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
+    rhs_1d = odt.as_dense(rhs_wp[0])
+    expected_np = np.linalg.solve(dense_np, rhs_np[0])
+    if not factorable:
+        monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
+    solution_wp = wp.zeros(rhs_1d.shape[0], dtype=wp.float64, device=device)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        od.linalg.solve_spd_settled(
+            matrix_wp, rhs_1d, solution_wp, check_rounds=1, change_tolerance=10.0, settle_rounds=1
+        )
+    error = np.abs(solution_wp.numpy() - expected_np).max()
+    messages = [str(warning.message) for warning in caught]
+    if factorable:
+        assert error < 1e-12
+        assert messages == []
+    else:
+        assert error > 1e-4
+        assert any("no factorization of the operator can be built" in m for m in messages)
+
+
 def test_solve_spd_warns_when_it_runs_out_of_iterations(device: str) -> None:
     """
     A conjugate gradient that stops on ``maxiter`` rather than on ``tol`` says so.
@@ -1065,6 +1191,38 @@ def test_solve_spd_warns_when_it_runs_out_of_iterations(device: str) -> None:
             matrix, rhs, solution, tol=1e-14, maxiter=2, name="test_solve_spd"
         )
     assert int(iterations) >= 2
+
+
+def test_solve_spd_applies_another_operators_preconditioner_through_warp(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: another operator's preconditioner still solves.
+
+    A Jacobi operator built for an equal but distinct matrix is not this module's own for
+    ``matrix``, so the solve goes through ``warp.optim.linear.cg`` and the batched engine is never
+    reached; the answer is the same.
+    """
+    matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
+    twin_wp, _, _, _ = _spd_system(device)
+    rhs_1d = odt.as_dense(rhs_wp[0])
+    solution_wp = wp.zeros(rhs_1d.shape[0], dtype=wp.float64, device=device)
+    assert (
+        od.linalg._batched_preconditioner_kind(
+            matrix_wp, rhs_1d, od.linalg.jacobi_preconditioner(twin_wp)
+        )
+        is None
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        od.linalg.solve_spd(
+            matrix_wp,
+            rhs_1d,
+            solution_wp,
+            tol=1e-12,
+            preconditioner=od.linalg.jacobi_preconditioner(twin_wp),
+        )
+    assert np.allclose(
+        solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np[0]), rtol=1e-8, atol=1e-8
+    )
 
 
 def test_solve_spd_is_quiet_when_it_converges(device: str) -> None:

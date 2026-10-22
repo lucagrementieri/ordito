@@ -1306,6 +1306,34 @@ def test_laplacian_symmetric_flag(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> 
     assert np.allclose(directed_dense.sum(axis=1), 1.0)
 
 
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
+def test_laplacian_from_given_edges_matches_trimesh(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A: the operator assembled from caller-supplied unique edges, against ``trimesh``.
+
+    Passing ``edges=`` takes the triplet route (``laplacian_entries`` then a row normalization)
+    instead of the face pattern, so it is pinned against the same reference as the default route:
+    the inverse-distance weighting, whose default adjacency is symmetric. ``laplacian_entries``
+    resolves that default itself, so its triplet count is also checked: both directions of every
+    unique edge.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    edges_wp, _ = od.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
+    rows_wp, _, _ = od.laplacian.laplacian_entries(
+        mesh_wp.points, mesh_wp.indices, equal_weight=False, edges=edges_wp
+    )
+    assert rows_wp.size == 2 * len(mesh_tm.edges_unique)
+
+    operator_coo_tm = tms.laplacian_calculation(mesh_tm, equal_weight=False)
+    assert operator_coo_tm is not None
+    operator_wp = bsr_to_csr(
+        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=False, edges=edges_wp)
+    )
+    assert sparse_allclose(operator_wp, operator_coo_tm.tocsr(), rtol=1e-5, atol=1e-5)
+
+
 # -----------------------------------------------------------------------------------------
 # mass_matrix_entries and mass_matrix
 # -----------------------------------------------------------------------------------------
@@ -1433,3 +1461,98 @@ def test_operators_float64_match_float32(request: pytest.FixtureRequest, mesh_na
         matrix_f64 = builder(points, indices, dtype=wp.float64)
         assert matrix_f64.values.dtype == wp.float64
         assert sparse_allclose(bsr_to_csr(matrix_f64), bsr_to_csr(matrix_f32), rtol=1e-5, atol=1e-5)
+
+
+def test_operators_on_a_faceless_mesh(device: str) -> None:
+    """
+    Not a library comparison: three vertices and no faces size every operator by the vertices.
+
+    Each builder returns before its first launch: the per-face tables are empty ``(0, 3)``, the
+    mollifier adds nothing, every square operator is ``3 x 3`` with no stored entry and the lumped
+    mass is zero. A ``0 x 0`` operator would break a caller's dimensions (igl sizes by ``len(V)``
+    too, ``test_cotmatrix_empty_mesh``), and a ``wp.empty`` mass would hand back garbage.
+    """
+    vertices_wp = points_to_warp(np.eye(3), device)
+    faces_wp = wp.array(np.zeros(0, dtype=np.int32), dtype=wp.int32, device=device)
+
+    assert od.laplacian.cotmatrix_entries(vertices_wp, faces_wp).shape == (0, 3)
+    no_lengths = odt.as_array2d(wp.zeros((0, 3), dtype=wp.float32, device=device), wp.float32)
+    assert od.laplacian.cotmatrix_entries_intrinsic(no_lengths).shape == (0, 3)
+    lengths_wp, delta = od.laplacian.mollify_intrinsic(vertices_wp, faces_wp)
+    assert lengths_wp.shape == (0, 3)
+    assert delta == 0.0
+
+    operators = [
+        od.laplacian.robust_laplacian(vertices_wp, faces_wp),
+        od.laplacian.connection_laplacian(vertices_wp, faces_wp),
+        od.laplacian.laplacian(vertices_wp, faces_wp),
+        od.laplacian.graph_laplacian(vertices_wp, faces_wp),
+    ]
+    for operator in operators:
+        assert (operator.nrow, operator.ncol) == (3, 3)
+        assert operator.nnz_sync() == 0
+
+    mass_np = od.laplacian.mass_matrix_entries(vertices_wp, faces_wp).numpy()
+    assert np.array_equal(mass_np, np.zeros(3, dtype=np.float32))
+    no_vertices = points_to_warp(np.zeros((0, 3)), device)
+    empty_mass = od.laplacian.mass_matrix(no_vertices, faces_wp)
+    assert (empty_mass.nrow, empty_mass.ncol) == (0, 0)
+
+
+def test_operators_reject_precomputed_inputs_of_the_wrong_size(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: a precomputed per-face table one face short is refused by name.
+
+    ``cotmatrix`` and ``connection_laplacian`` take ``cot_entries``, ``connection_laplacian`` also
+    ``transport_angles``, and the mass builders ``face_areas``; each is indexed per face, so a short
+    one would read past its end. ``laplacian_entries`` likewise refuses edges naming a vertex that
+    does not exist.
+    """
+    _, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    device = vertices_wp.device
+    n_faces = faces_wp.size // 3
+    short_cot = odt.as_array2d(
+        wp.zeros((n_faces - 1, 3), dtype=wp.float32, device=device), wp.float32
+    )
+    with pytest.raises(ValueError, match=r"cot_entries must have shape \(n_faces, 3\)"):
+        od.laplacian.cotmatrix(vertices_wp, faces_wp, cot_entries=short_cot)
+    with pytest.raises(ValueError, match=r"cot_entries must have shape \(n_faces, 3\)"):
+        od.laplacian.connection_laplacian(vertices_wp, faces_wp, cot_entries=short_cot)
+    short_angles = wp.zeros(3 * n_faces - 1, dtype=wp.float32, device=device)
+    with pytest.raises(ValueError, match="transport_angles must have length 3 \\* n_faces"):
+        od.laplacian.connection_laplacian(vertices_wp, faces_wp, transport_angles=short_angles)
+    short_areas = wp.zeros(n_faces - 1, dtype=wp.float32, device=device)
+    with pytest.raises(ValueError, match=f"face_areas must have length n_faces={n_faces}"):
+        od.laplacian.mass_matrix_entries(vertices_wp, faces_wp, face_areas=short_areas)
+    bad_edges = odt.as_array2d(
+        wp.array(np.array([[0, vertices_wp.size]], dtype=np.int32), dtype=wp.int32, device=device),
+        wp.int32,
+    )
+    with pytest.raises(ValueError, match="edges must reference vertex indices"):
+        od.laplacian.laplacian_entries(vertices_wp, faces_wp, symmetric=True, edges=bad_edges)
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parity("mass_matrix_entries", "igl")
+def test_mass_matrix_entries_float64_areas_off_mode_matches_igl(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B: with the deterministic setting off, ``float64`` areas take the atomic scatter.
+
+    The transform is taking ``igl.massmatrix``'s diagonal, as in
+    ``test_mass_matrix_assembled_matches_igl``; this pins the off-mode branch every test otherwise
+    skips (``tests/conftest.py`` turns the setting on), against the same oracle.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    areas = od.array.astype(od.triangles.face_normals_and_areas(vertices, faces)[1], wp.float64)
+    mass_igl = igl.massmatrix(*mesh_igl(mesh_tm), igl.MASSMATRIX_TYPE_BARYCENTRIC).diagonal()
+    with od.config.deterministic(False):
+        mass_wp = od.laplacian.mass_matrix_entries(
+            vertices, faces, dtype=wp.float64, face_areas=areas
+        )
+    assert np.allclose(mass_wp.numpy(), mass_igl, rtol=1e-5, atol=1e-5)

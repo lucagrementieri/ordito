@@ -4,6 +4,7 @@ import igl
 import numpy as np
 import pymeshlab as ml
 import pytest
+import scipy.sparse as sp
 import trimesh as tm
 import warp as wp
 
@@ -43,6 +44,21 @@ def test_average_onto_faces(request: pytest.FixtureRequest, mesh_name: str):
     face_values_wp = od.interpolation.average_onto_faces(mesh_wp.indices, vertex_values_wp)
     assert np.allclose(face_values_wp.numpy(), face_values_igl, rtol=1e-5, atol=1e-5)
     assert np.allclose(face_values_wp.numpy(), face_values_pv, rtol=1e-5, atol=1e-5)
+
+
+def test_average_onto_faces_without_faces_is_empty(device: str) -> None:
+    """
+    Not a library comparison: a face-free buffer has no face to average onto.
+
+    igl rejects an empty ``F``; the documented contract is an empty ``float32`` field on the values'
+    device, rather than a launch of zero threads or an exception.
+    """
+    vertex_values_wp = wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device=device)
+    face_values_wp = od.interpolation.average_onto_faces(
+        warp_empty(0, wp.int32, device), vertex_values_wp
+    )
+    assert face_values_wp.dtype == wp.float32
+    assert face_values_wp.numpy().size == 0
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -93,6 +109,19 @@ def test_average_onto_vertices(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(vertex_values_wp.numpy(), vertex_values_pv, rtol=1e-5, atol=1e-5)
 
 
+def test_average_onto_vertices_rejects_a_misaligned_face_field(device: str) -> None:
+    """
+    Not a library comparison: a face field of the wrong length raises before any scatter.
+
+    The scatter indexes ``face_values`` by face, so one entry short would be an out-of-bounds read
+    on the last face; the guard names both counts.
+    """
+    faces_wp = wp.array([0, 1, 2, 1, 3, 2], dtype=wp.int32, device=device)
+    face_values_wp = wp.array([1.0], dtype=wp.float32, device=device)
+    with pytest.raises(ValueError, match="one entry per face, got 1 for 2 faces"):
+        od.interpolation.average_onto_vertices(4, faces_wp, face_values_wp)
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("average_from_edges_onto_vertices", "igl")
 def test_average_from_edges_onto_vertices(request: pytest.FixtureRequest, mesh_name: str):
@@ -129,6 +158,28 @@ def test_average_from_edges_onto_vertices(request: pytest.FixtureRequest, mesh_n
         n_vertices, mesh_wp.indices, edges_wp, orientation_wp, edge_values_wp
     )
     assert np.allclose(vertex_values_wp.numpy(), vertex_values_igl, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("bad_table", ["edges", "edges_orientation"])
+def test_average_from_edges_onto_vertices_rejects_misshapen_tables(
+    device: str, bad_table: str
+) -> None:
+    """
+    Not a library comparison: either per-face edge table of the wrong shape raises, naming itself.
+
+    Both tables are read at ``[f, j]`` for every face; a table built for another mesh would be an
+    out-of-bounds read, so each is checked against ``(n_faces, 3)`` on its own.
+    """
+    faces_wp = wp.array([0, 1, 2, 1, 3, 2], dtype=wp.int32, device=device)
+    good_np = np.array([[0, 1, 2], [3, 4, 1]], dtype=np.int32)
+    good_wp = odt.as_array2d(wp.array(good_np, dtype=wp.int32, device=device), wp.int32)
+    short_wp = odt.as_array2d(wp.array(good_np[:1], dtype=wp.int32, device=device), wp.int32)
+    edges_wp, orientation_wp = (short_wp, good_wp) if bad_table == "edges" else (good_wp, short_wp)
+    edge_values_wp = wp.ones(5, dtype=wp.float32, device=device)
+    with pytest.raises(ValueError, match=rf"{bad_table} must be \(2, 3\), one row per face"):
+        od.interpolation.average_from_edges_onto_vertices(
+            4, faces_wp, edges_wp, orientation_wp, edge_values_wp
+        )
 
 
 def _transfer_meshes(device: str) -> tuple[tm.Trimesh, tm.Trimesh]:
@@ -358,6 +409,66 @@ def test_transfer_onto_vertices_empty(device: str):
     )
     assert np.array_equal(transferred_wp.numpy(), np.zeros(3, dtype=np.float32))
     assert np.isinf(distance_wp.numpy()).all()
+
+
+@pytest.mark.parametrize("dtype", [wp.float32, wp.vec3])
+def test_transfer_through_operator_matches_scipy(device: str, dtype: type) -> None:
+    """
+    Class A: the operator applied to a field equals scipy's sparse product, per component.
+
+    A random sparse ``(n_out, n_source)`` operator with an empty row and duplicate triplets (summed
+    on assembly, as scipy's COO conversion sums them); the empty row must come back as the additive
+    identity, not left unwritten. The zero-row and zero-column operators return zeros of the
+    operator's row count.
+    """
+    rng = np.random.default_rng(11)
+    n_out, n_source, n_triplets = 40, 25, 160
+    rows_np = rng.integers(0, n_out, n_triplets).astype(np.int32)
+    rows_np[rows_np == 7] = 8  # row 7 stays empty
+    cols_np = rng.integers(0, n_source, n_triplets).astype(np.int32)
+    weights_np = rng.uniform(-1.0, 1.0, n_triplets).astype(np.float32)
+    operator_sp = sp.coo_matrix(
+        (weights_np.astype(np.float64), (rows_np, cols_np)), shape=(n_out, n_source)
+    ).tocsr()
+    operator = od.array.csr_from_triplets(
+        n_out,
+        n_source,
+        wp.array(rows_np, dtype=wp.int32, device=device),
+        wp.array(cols_np, dtype=wp.int32, device=device),
+        wp.array(weights_np, dtype=wp.float32, device=device),
+    )
+
+    width = 1 if dtype == wp.float32 else 3
+    field_np = rng.uniform(-2.0, 2.0, (n_source, width)).astype(np.float32)
+    field_wp = wp.array(field_np if width > 1 else field_np[:, 0], dtype=dtype, device=device)
+    moved_sp = np.asarray(operator_sp @ field_np.astype(np.float64))
+    assert np.ptp(moved_sp) > 1e-3
+    assert np.all(moved_sp[7] == 0.0)
+    moved_wp = od.interpolation.transfer_through_operator(field_wp, operator)
+    assert np.allclose(moved_wp.numpy().reshape(n_out, width), moved_sp, rtol=1e-5, atol=1e-5)
+
+    empty_rows = od.array.csr_from_triplets(
+        0,
+        n_source,
+        warp_empty(0, wp.int32, device),
+        warp_empty(0, wp.int32, device),
+        warp_empty(0, wp.float32, device),
+    )
+    assert od.interpolation.transfer_through_operator(field_wp, empty_rows).numpy().size == 0
+    empty_cols = od.array.csr_from_triplets(
+        n_out,
+        0,
+        warp_empty(0, wp.int32, device),
+        warp_empty(0, wp.int32, device),
+        warp_empty(0, wp.float32, device),
+    )
+    no_field_wp = wp.zeros(0, dtype=dtype, device=device)
+    zeros_np = od.interpolation.transfer_through_operator(no_field_wp, empty_cols).numpy()
+    assert np.array_equal(zeros_np.reshape(n_out, width), np.zeros((n_out, width)))
+    with pytest.raises(ValueError, match="operator has 25 columns but values has 24 entries"):
+        od.interpolation.transfer_through_operator(
+            wp.zeros(n_source - 1, dtype=dtype, device=device), operator
+        )
 
 
 def _scattered_cloud(
