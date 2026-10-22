@@ -100,3 +100,13 @@
 .md-typeset .ordito-hero.grid.cards > ul > li {
   padding: 0.4rem;
 }
+
+/* The landing page's title is the wordmark (assets/wordmark*.svg), one image per scheme. */
+.md-typeset h1.ordito-wordmark {
+  margin-bottom: 0.8em;
+}
+
+.md-typeset h1.ordito-wordmark img {
+  height: 3.2rem;
+  width: auto;
+}
