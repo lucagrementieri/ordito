@@ -243,17 +243,20 @@ def triangulate_point_cloud(
     (vertices are the input points). Non-manifold and degenerate faces are dropped and small
     boundary holes are filled.
 
-    Orientation relies on **trusted normals** rather than on a sequential propagation pass, which
-    is what keeps the assembly parallel: supply ``normals`` for arbitrary geometry, or leave them
-    ``None`` to estimate them by PCA oriented outward from the cloud centroid (valid for
-    star-shaped clouds only — see [`estimate_normals`][ordito.points.estimate_normals]).
+    Supplied ``normals`` are **trusted**: each face is wound to agree with them, so an
+    inward-facing cloud gives an inward-facing mesh. Leave them ``None`` to estimate them by PCA
+    ([`estimate_normals`][ordito.points.estimate_normals]); their signs are then ignored, and the
+    assembled mesh is given a consistent winding and, where it is closed, faces outward
+    ([`make_normals_outward`][ordito.repair.make_normals_outward]). This holds for any closed,
+    orientable surface, not only for a cloud that is star-shaped about its centroid.
 
     Parameters
     ----------
     points
         ``(n,)`` point positions on the target device.
     normals
-        ``(n,)`` oriented unit normals. When ``None``, normals are estimated.
+        ``(n,)`` oriented unit normals. When ``None``, unoriented normals are estimated and the
+        result's orientation is derived from the mesh.
     num_neighbours
         Number of nearest neighbours used per point when ``radius <= 0``. Defaults to
         ``max_neighbours`` when neither ``num_neighbours`` nor ``radius`` is set.
@@ -342,6 +345,7 @@ def triangulate_point_cloud(
     # Dense (n, k+1) nearest-neighbour table; slot 0 is the point itself and is skipped in-kernel.
     neighbor_idx, neighbor_dist = od.neighbors.query_nearest(points, points, k=k + 1, bounds=bounds)
 
+    oriented = normals is not None
     if normals is None:
         normals = od.points.estimate_normals(points, neighbor_idx)
 
@@ -359,6 +363,9 @@ def triangulate_point_cloud(
             wp.float32(radius),
             wp.float32(crit_angle),
             wp.float32(boundary_angle),
+            kernel_reconstruction.NORMALS_ORIENTED
+            if oriented
+            else kernel_reconstruction.NORMALS_UNORIENTED,
             out_tris,
             fan_counts,
         ],
@@ -376,10 +383,13 @@ def triangulate_point_cloud(
     if faces.size == 0:
         return _launch.clone(points), faces
     # Every face carries a distinct vertex set, so the duplicate-resolution stage has nothing to do.
-    # Orientation is not re-derived (``orient=False``): the fans are wound from the trusted normals,
-    # and ``make_normals_outward`` would rewind a whole inward-normal cloud's mesh outward, silently
-    # breaking that contract.
-    return _clean_reconstruction(points, faces, crit_hole_length, orient=False, deduplicate=False)
+    # Trusted normals keep their winding (``orient=False``): ``make_normals_outward`` would rewind a
+    # whole inward-normal cloud's mesh outward, silently breaking that contract. Estimated normals
+    # have no sign to keep, so the mesh is oriented instead: each fan was wound by its own center's
+    # normal, and the representative faces disagree wherever those signs did.
+    return _clean_reconstruction(
+        points, faces, crit_hole_length, orient=not oriented, deduplicate=False
+    )
 
 
 def _box_diagonal(bounds: tuple[wp.vec3, wp.vec3]) -> float:

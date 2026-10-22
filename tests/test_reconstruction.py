@@ -59,9 +59,13 @@ from tests.conversions import (
 
 
 def _meshlib_triangulate(
-    points_np: np.ndarray, normals_np: np.ndarray, num_neighbours: int
+    points_np: np.ndarray, normals_np: np.ndarray | None, num_neighbours: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Reconstruct a reference mesh via MeshLib, returning ``(vertices, faces)`` numpy arrays."""
+    """
+    Reconstruct a reference mesh via MeshLib, returning ``(vertices, faces)`` numpy arrays.
+
+    With ``normals_np=None`` MeshLib estimates and orients the normals itself.
+    """
     cloud_ml = points_to_meshlib(points_np, normals_np)
     params_ml = mm.TriangulationParameters()
     params_ml.numNeighbours = num_neighbours
@@ -72,6 +76,25 @@ def _meshlib_triangulate(
 def _sphere_cloud(subdivisions: int) -> tuple[np.ndarray, np.ndarray]:
     sphere_tm = tm.creation.icosphere(subdivisions=subdivisions, radius=1.0)
     return (sphere_tm.vertices.astype(np.float64), sphere_tm.vertex_normals.astype(np.float64))
+
+
+def _torus_grid_cloud() -> tuple[np.ndarray, np.ndarray, float]:
+    """Return a quad-grid torus's vertices and normals, and its mean edge length."""
+    torus_tm = tm.creation.torus(
+        major_radius=1.0, minor_radius=0.35, major_sections=48, minor_sections=24
+    )
+    mean_edge = float(
+        np.linalg.norm(
+            torus_tm.vertices[torus_tm.edges_unique[:, 0]]
+            - torus_tm.vertices[torus_tm.edges_unique[:, 1]],
+            axis=1,
+        ).mean()
+    )
+    return (
+        torus_tm.vertices.astype(np.float64),
+        torus_tm.vertex_normals.astype(np.float64),
+        mean_edge,
+    )
 
 
 def _to_warp(points_np: np.ndarray, normals_np: np.ndarray, device: str):
@@ -364,9 +387,9 @@ def test_torus_matches_meshlib_reference(device: str):
 
     A quad-grid cloud has no canonical triangulation -- each quad can be split either way at equal
     cost -- so unlike the icosphere above the two libraries do not agree row for row: measured
-    **575 of 2 304** faces differ. What does agree is the face count (2 304 exactly) and the
-    surface, to a two-sided Hausdorff distance of **5.1e-08** against a mean edge length of 0.128,
-    i.e. seven orders of magnitude below the triangle scale.
+    **268 of 2 304** faces differ on CUDA, 166 on the CPU. What does agree is the face count
+    (2 304 exactly) and the surface, to a two-sided Hausdorff distance of **5.1e-08** against a mean
+    edge length of 0.128, i.e. six orders of magnitude below the triangle scale.
 
     Mutation probe and margin: dropping ``num_neighbours`` to 4 leaves ordito with 240 faces of
     1 280 on the sphere cloud and a Hausdorff distance of **0.348**, 2.3x the mean edge -- so the
@@ -377,19 +400,8 @@ def test_torus_matches_meshlib_reference(device: str):
     Not a library comparison, on the same reconstruction: the result is a watertight,
     edge-manifold genus-1 surface (``V - E + F = 0``).
     """
-    torus_tm = tm.creation.torus(
-        major_radius=1.0, minor_radius=0.35, major_sections=48, minor_sections=24
-    )
-    points_np = torus_tm.vertices.astype(np.float64)
-    normals_np = torus_tm.vertex_normals.astype(np.float64)
+    points_np, normals_np, mean_edge = _torus_grid_cloud()
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
-    mean_edge = float(
-        np.linalg.norm(
-            torus_tm.vertices[torus_tm.edges_unique[:, 0]]
-            - torus_tm.vertices[torus_tm.edges_unique[:, 1]],
-            axis=1,
-        ).mean()
-    )
 
     vertices_ml, faces_ml = _meshlib_triangulate(points_np, normals_np, 16)
     vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
@@ -414,6 +426,54 @@ def test_torus_matches_meshlib_reference(device: str):
     assert od.measures.euler_characteristic(faces_wp) == 0
 
 
+@pytest.mark.parity("triangulate_point_cloud_unoriented", "meshlib")
+def test_torus_without_normals_matches_meshlib_reference(device: str):
+    """
+    Class C (a surface distance and a volume): neither side is given normals.
+
+    The torus is not star-shaped about its centroid, so normals pointed away from the centroid
+    disagree in sign across each side of the tube; MeshLib orients its estimated normals over the
+    whole cloud instead. The two surfaces agree as in
+    [`test_torus_matches_meshlib_reference`] (diagonal choices differ), and the signed volume,
+    which only a consistently and outward wound surface carries, agrees too: MeshLib's is the
+    torus's own 2.3837. Measured: 2 304 faces against MeshLib's 2 308, a Hausdorff distance of
+    4.3e-08 (3.4e-07 of the mean edge) and the volume to 2e-6 relative, on both devices.
+
+    Mutation probes and margins: normals oriented away from the centroid, as this path once used,
+    returned 2 016 faces with holes and a volume of 3.38 (off by 42 %, against the 1 % bound);
+    reading each neighbour's normal on the center's side alone still left eight five-edge holes
+    (2 280 faces), because a flipped center normal reverses its fan's ring and the Delone profit,
+    rounded in ring order, then picked the other diagonal of the grid's exactly tied quads.
+
+    Not a library comparison, on the same reconstruction: consistently wound and closed.
+    """
+    points_np, _, mean_edge = _torus_grid_cloud()
+
+    vertices_ml, faces_ml = _meshlib_triangulate(points_np, None, 16)
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
+        points_to_warp(points_np, device), num_neighbours=16
+    )
+    faces_wp_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
+    faces_ml_np = np.asarray(faces_ml, dtype=np.int64)
+
+    assert faces_ml_np.shape[0] > 0  # non-vacuity
+    assert abs(faces_wp_np.shape[0] - faces_ml_np.shape[0]) <= max(2, faces_ml_np.shape[0] // 100)
+    assert (
+        hausdorff_surface_two_sided(
+            vertices_wp.numpy().astype(np.float64),
+            faces_wp_np,
+            np.asarray(vertices_ml, dtype=np.float64),
+            faces_ml_np,
+        )
+        < 0.01 * mean_edge
+    )
+    volume_ml = tm.Trimesh(vertices_ml, faces_ml_np, process=False).volume
+    assert volume_ml > 0.0  # non-vacuity: MeshLib's surface faces outward
+    assert math.isclose(od.measures.volume(vertices_wp, faces_wp), volume_ml, rel_tol=1e-2)
+    assert od.validation.is_winding_consistent(faces_wp)
+    assert od.validation.is_watertight(vertices_wp, faces_wp)
+
+
 def test_open_hemisphere_keeps_single_boundary(device: str):
     sphere_tm = tm.creation.icosphere(subdivisions=4, radius=1.0)
     upper = sphere_tm.vertices[:, 2] >= -1e-9
@@ -431,15 +491,15 @@ def test_open_hemisphere_keeps_single_boundary(device: str):
 
 
 def test_estimated_normals_path_runs(device: str):
-    # Exercise the normal-estimation code path (normals=None). Global orientation of PCA normals is
-    # a documented best-effort step, so we check the pipeline runs and yields an edge-manifold mesh
-    # whose vertices still lie on the sphere -- not full watertightness.
+    # Exercise the normal-estimation code path (normals=None): the mesh is oriented after assembly,
+    # so a closed cloud comes back closed and facing outward, with its vertices still on the sphere.
     points_np, _ = _sphere_cloud(3)
     points_wp = points_to_warp(points_np, device)
 
     vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=18)
     assert faces_wp.numpy().size > 0
     assert od.validation.is_edge_manifold(faces_wp)
+    assert od.validation.is_volume(vertices_wp, faces_wp)
     radii = np.linalg.norm(vertices_wp.numpy(), axis=1)
     assert np.allclose(radii, 1.0, rtol=1e-5, atol=1e-5)
 
@@ -483,6 +543,7 @@ def test_build_local_triangulations_two_neighbour_ring_no_duplicate(device: str)
             wp.float32(0.0),
             wp.float32(math.pi / 2.0),
             wp.float32(2.0 * math.pi - 0.01),
+            kernel_reconstruction.NORMALS_ORIENTED,
             out_tris_wp,
             out_counts_wp,
         ],
@@ -531,6 +592,7 @@ def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
             wp.float32(0.0),
             wp.float32(math.pi / 2.0),
             wp.float32(0.9 * math.pi),
+            kernel_reconstruction.NORMALS_ORIENTED,
             out_tris_wp,
             out_counts_wp,
         ],

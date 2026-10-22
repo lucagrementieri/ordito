@@ -22,6 +22,7 @@ from ordito.kernels.array import (
     pack_triangle_key,
     ravel_index,
     scanned_count,
+    sort3,
     sorted_run_start,
     to_vec2d,
     trilinear_cell,
@@ -30,7 +31,7 @@ from ordito.kernels.array import (
     update_argmax,
 )
 from ordito.kernels.predicates import (
-    delone_metrics,
+    circumcircle_diameter_sq,
     is_unfold_quadrangle_convex,
     orient2d,
     project_out_normal,
@@ -49,6 +50,11 @@ MAX_NEIGHBOURS = 64
 CRITICAL_ASPECT_RATIO = wp.constant(wp.float32(1e3))
 # Neighbour filter: drop a neighbour whose oriented normal opposes the center normal.
 NORMAL_FILTER_DOT = wp.constant(wp.float32(-0.3))
+
+# ``build_local_triangulations``' selector: the normals are trusted (oriented) or carry an
+# arbitrary sign per point (unoriented).
+NORMALS_UNORIENTED = wp.int32(0)
+NORMALS_ORIENTED = wp.int32(1)
 
 
 # --------------------------------------------------------------------------------------
@@ -241,9 +247,31 @@ def lexicographic_triangulation(
 
 
 @wp.func
-def delone_flip_profit_sq(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> wp.float32:
-    # Empty-circumcircle (Delone) profit of flipping diagonal AC to BD.
-    metric_ac, metric_bd = delone_metrics(a, b, c, d)
+def circumcircle_diameter_sq_of(
+    points: wp.array[wp.vec3], i: wp.int32, j: wp.int32, k: wp.int32
+) -> wp.float32:
+    # A triangle's squared circumdiameter, rounded the same way whichever fan asks: the corners go
+    # in index order, not in the asking fan's ring order.
+    lo, mid, hi = sort3(i, j, k)
+    return circumcircle_diameter_sq(points[lo], points[mid], points[hi])
+
+
+@wp.func
+def delone_flip_profit_sq(
+    points: wp.array[wp.vec3], a: wp.int32, b: wp.int32, c: wp.int32, d: wp.int32
+) -> wp.float32:
+    # Empty-circumcircle (Delone) profit of flipping diagonal AC to BD: the metrics of
+    # ``predicates.delone_metrics``, over vertex indices instead of positions, so that each triangle
+    # is rounded by its vertex set. A quad grid's two diagonals tie exactly, and the rounded
+    # profit's sign then picks one: in ring order that sign follows the center normal's (the ring
+    # runs the other way round under a flipped one), so two fans differing in it chose different
+    # diagonals and agreed on no triangle.
+    metric_ac = wp.max(
+        circumcircle_diameter_sq_of(points, a, c, d), circumcircle_diameter_sq_of(points, c, a, b)
+    )
+    metric_bd = wp.max(
+        circumcircle_diameter_sq_of(points, b, d, a), circumcircle_diameter_sq_of(points, d, b, c)
+    )
     return metric_ac - metric_bd
 
 
@@ -304,6 +332,16 @@ def cycle_prev(nbr: wp.array[wp.int32], m: wp.int32, i: wp.int32) -> wp.int32:
 # Fan edge-removal weight: the priority with which a fan edge is dropped
 # --------------------------------------------------------------------------------------
 @wp.func
+def neighbour_normal(n_center: wp.vec3, n: wp.vec3, oriented: wp.int32) -> wp.vec3:
+    # An unoriented normal's sign is arbitrary, so a fan reads it on its center's side: within
+    # one fan the normals then agree as trusted ones would, and the fans' windings, which may
+    # disagree between centers, are made consistent on the assembled mesh.
+    if oriented == NORMALS_UNORIENTED and wp.dot(n_center, n) < 0.0:
+        return -n
+    return n
+
+
+@wp.func
 def edge_removal_weight(
     center: wp.int32,
     i: wp.int32,
@@ -315,6 +353,7 @@ def edge_removal_weight(
     ang: wp.array[wp.float32],
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
+    oriented: wp.int32,
 ) -> wp.vec2:
     # Returns (weight, stable) with stable encoded as result[1] > 0.5.
     stable = wp.vec2(0.0, 1.0)
@@ -373,15 +412,16 @@ def edge_removal_weight(
         return wp.vec2(FLOAT32_INF_CONSTANT, 0.0)
 
     # flip possibility: trusted normals allow a flip across a fold, else require convexity
+    c_norm = neighbour_normal(n_center, normals[cv], oriented)
     flip = False
-    if wp.dot(n_center, normals[cv]) < 0.0:
+    if wp.dot(n_center, c_norm) < 0.0:
         flip = True
     else:
         flip = is_unfold_quadrangle_convex(a, b, c, d)
     if not flip:
         return stable
 
-    delone_prof = delone_flip_profit_sq(a, b, c, d)
+    delone_prof = delone_flip_profit_sq(points, av, bv, cv, dv)
     if delone_prof == 0.0 and wp.min(av, cv) > wp.min(bv, dv):
         delone_prof = -1.0
     angle_prof = tris_angle_profit(a, b, c, d, crit_angle)
@@ -403,7 +443,6 @@ def edge_removal_weight(
     weight += plane_dist / norm_val
 
     # trusted-normal agreement bonuses
-    c_norm = normals[cv]
     weight += 5.0 * (1.0 - wp.dot(n_center, c_norm))
     tri_norm = wp.normalize(wp.cross(ab, ac) + wp.cross(ac, ad))
     tri_norm_weight = wp.dot(tri_norm, c_norm)
@@ -426,6 +465,7 @@ def build_local_triangulations(
     radius: wp.float32,
     crit_angle: wp.float32,
     boundary_angle: wp.float32,
+    oriented: wp.int32,
     out_tris: wp.array3d[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
@@ -475,7 +515,8 @@ def build_local_triangulations(
         pn = points[nb]
         if pn[0] == a[0] and pn[1] == a[1] and pn[2] == a[2]:
             continue  # coincident with center
-        if wp.dot(n_center, normals[nb]) < NORMAL_FILTER_DOT:
+        # Only an oriented normal can oppose the center's: an unoriented one is read on its side.
+        if oriented == NORMALS_ORIENTED and wp.dot(n_center, normals[nb]) < NORMAL_FILTER_DOT:
             continue
         nbr[m] = nb
         m += 1
@@ -557,7 +598,7 @@ def build_local_triangulations(
             if nbr[i] < 0:
                 continue
             res = edge_removal_weight(
-                v, i, m, border, crit_angle, normalizer_sq, nbr, ang, points, normals
+                v, i, m, border, crit_angle, normalizer_sq, nbr, ang, points, normals, oriented
             )
             if res[1] > 0.5:
                 continue  # stable, cannot remove
@@ -595,7 +636,7 @@ def build_local_triangulations(
         cidx = nbr[nxt]
         pb = points[bidx]
         pc = points[cidx]
-        # orient so the face normal agrees with the (trusted) center normal
+        # orient so the face normal agrees with the center normal
         if wp.dot(wp.cross(pb - a, pc - a), n_center) < 0.0:
             bidx, cidx = cidx, bidx
         if slot < cap:

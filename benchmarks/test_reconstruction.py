@@ -319,6 +319,35 @@ def test_triangulate_point_cloud(bench_case: BenchCase) -> None:
     assert int(faces.shape[0]) > 0
 
 
+@pytest.mark.benchmark(group="triangulate_point_cloud_unoriented")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_triangulate_point_cloud_unoriented(bench_case: BenchCase) -> None:
+    """
+    The same local triangulation of a bare cloud: each side estimates its own normals.
+
+    meshlib orients its estimated normals over the cloud before triangulating; ordito ignores
+    their signs and orients the assembled mesh instead, so this row prices that winding pass and
+    the normal estimation on top of the oriented row.
+    """
+    skip_larger_than(bench_case, "bunny", "local triangulation above bunny dominates the suite")
+    if bench_case.kind == "meshlib":
+        from meshlib import mrmeshnumpy as mn
+
+        cloud_ml = mn.pointCloudFromPoints(
+            cast("Buffer", np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64))
+        )
+        parameters_ml = mm.TriangulationParameters()
+        parameters_ml.numNeighbours = _NUM_NEIGHBOURS
+        mesh_ml = bench_case.run(lambda: mm.triangulatePointCloud(cloud_ml, parameters_ml))
+        assert mesh_ml.topology.numValidFaces() > 0
+        return
+    points = bench_case.vertices_wp
+    _vertices, faces = bench_case.run(
+        lambda: od.reconstruction.triangulate_point_cloud(points, num_neighbours=_NUM_NEIGHBOURS)
+    )
+    assert int(faces.shape[0]) > 0
+
+
 @pytest.mark.benchmark(group="ball_pivoting")
 @pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
 def test_ball_pivoting(bench_case: BenchCase) -> None:
