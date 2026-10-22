@@ -1,5 +1,5 @@
 ---
-title: ordito
+title: GPU mesh processing on NVIDIA Warp
 ---
 
 <h1 class="ordito-wordmark">

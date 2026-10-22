@@ -3,9 +3,12 @@
 {#- Link previews (Open Graph and Twitter cards): every page shares the social preview card that
     .github/make_wordmark.py generates, with the page's own title and description. -#}
 {% block extrahead %}
-  {%- set title = config.site_name if not page.url else page.title ~ " - " ~ config.site_name -%}
+  {%- set title = (page.meta["title"] if "title" in page.meta else page.title) ~ " - " ~ config.site_name -%}
   {%- set description = page.meta["description"] if "description" in page.meta else config.site_description -%}
-  {%- set image = config.site_url ~ "assets/social-preview.png" -%}
+  {#- mike deploys each version with site_url set to that version's directory, with no trailing
+      slash, so the separator is added only when it is missing. -#}
+  {%- set base = config.site_url if config.site_url[-1:] == "/" else config.site_url ~ "/" -%}
+  {%- set image = base ~ "assets/social-preview.png" -%}
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="{{ config.site_name }}">
   <meta property="og:title" content="{{ title | striptags }}">
