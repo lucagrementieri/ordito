@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Triangular mesh library based on NVIDIA Warp">
+        <meta name="description" content="GPU-first triangle mesh processing for Python: geometry, topology, repair, remeshing, geodesics and reconstruction on NVIDIA Warp.">
       
       
       
@@ -68,17 +68,17 @@
     <meta property="og:type" content="website">
   <meta property="og:site_name" content="ordito">
   <meta property="og:title" content="reconstruction - ordito">
-  <meta property="og:description" content="Triangular mesh library based on NVIDIA Warp">
+  <meta property="og:description" content="GPU-first triangle mesh processing for Python: geometry, topology, repair, remeshing, geodesics and reconstruction on NVIDIA Warp.">
   <meta property="og:url" content="https://lucagrementieri.github.io/ordito/stable/api/ordito/reconstruction/">
-  <meta property="og:image" content="https://lucagrementieri.github.io/ordito/stableassets/social-preview.png">
+  <meta property="og:image" content="https://lucagrementieri.github.io/ordito/stable/assets/social-preview.png">
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1280">
   <meta property="og:image:height" content="640">
   <meta property="og:image:alt" content="ordito: GPU mesh processing on NVIDIA Warp">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="reconstruction - ordito">
-  <meta name="twitter:description" content="Triangular mesh library based on NVIDIA Warp">
-  <meta name="twitter:image" content="https://lucagrementieri.github.io/ordito/stableassets/social-preview.png">
+  <meta name="twitter:description" content="GPU-first triangle mesh processing for Python: geometry, topology, repair, remeshing, geodesics and reconstruction on NVIDIA Warp.">
+  <meta name="twitter:image" content="https://lucagrementieri.github.io/ordito/stable/assets/social-preview.png">
 
   </head>
   
@@ -4548,10 +4548,12 @@ optimised toward a Delaunay-like fan (<code>build_local_triangulations</code>); 
 two or three of these local triangulations are kept and assembled into a triangle-soup mesh
 (vertices are the input points). Non-manifold and degenerate faces are dropped and small
 boundary holes are filled.</p>
-<p>Orientation relies on <strong>trusted normals</strong> rather than on a sequential propagation pass, which
-is what keeps the assembly parallel: supply <code>normals</code> for arbitrary geometry, or leave them
-<code>None</code> to estimate them by PCA oriented outward from the cloud centroid (valid for
-star-shaped clouds only — see <a class="autorefs autorefs-internal" title="estimate_normals" href="../points/#ordito.points.estimate_normals"><code>estimate_normals</code></a>).</p>
+<p>Supplied <code>normals</code> are <strong>trusted</strong>: each face is wound to agree with them, so an
+inward-facing cloud gives an inward-facing mesh. Leave them <code>None</code> to estimate them by PCA
+(<a class="autorefs autorefs-internal" title="estimate_normals" href="../points/#ordito.points.estimate_normals"><code>estimate_normals</code></a>); their signs are then ignored, and the
+assembled mesh is given a consistent winding and, where it is closed, faces outward
+(<a class="autorefs autorefs-internal" title="make_normals_outward" href="../repair/#ordito.repair.make_normals_outward"><code>make_normals_outward</code></a>). This holds for any closed,
+orientable surface, not only for a cloud that is star-shaped about its centroid.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -4590,7 +4592,8 @@ star-shaped clouds only — see <a class="autorefs autorefs-internal" title="est
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(n,)</code> oriented unit normals. When <code>None</code>, normals are estimated.</p>
+                <p><code>(n,)</code> oriented unit normals. When <code>None</code>, unoriented normals are estimated and the
+result's orientation is derived from the mesh.</p>
               </div>
             </td>
             <td>
@@ -4963,7 +4966,17 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 <span class="normal">379</span>
 <span class="normal">380</span>
 <span class="normal">381</span>
-<span class="normal">382</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
+<span class="normal">382</span>
+<span class="normal">383</span>
+<span class="normal">384</span>
+<span class="normal">385</span>
+<span class="normal">386</span>
+<span class="normal">387</span>
+<span class="normal">388</span>
+<span class="normal">389</span>
+<span class="normal">390</span>
+<span class="normal">391</span>
+<span class="normal">392</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -4984,17 +4997,20 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 <span class="sd">    (vertices are the input points). Non-manifold and degenerate faces are dropped and small</span>
 <span class="sd">    boundary holes are filled.</span>
 
-<span class="sd">    Orientation relies on **trusted normals** rather than on a sequential propagation pass, which</span>
-<span class="sd">    is what keeps the assembly parallel: supply ``normals`` for arbitrary geometry, or leave them</span>
-<span class="sd">    ``None`` to estimate them by PCA oriented outward from the cloud centroid (valid for</span>
-<span class="sd">    star-shaped clouds only — see [`estimate_normals`][ordito.points.estimate_normals]).</span>
+<span class="sd">    Supplied ``normals`` are **trusted**: each face is wound to agree with them, so an</span>
+<span class="sd">    inward-facing cloud gives an inward-facing mesh. Leave them ``None`` to estimate them by PCA</span>
+<span class="sd">    ([`estimate_normals`][ordito.points.estimate_normals]); their signs are then ignored, and the</span>
+<span class="sd">    assembled mesh is given a consistent winding and, where it is closed, faces outward</span>
+<span class="sd">    ([`make_normals_outward`][ordito.repair.make_normals_outward]). This holds for any closed,</span>
+<span class="sd">    orientable surface, not only for a cloud that is star-shaped about its centroid.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
 <span class="sd">    points</span>
 <span class="sd">        ``(n,)`` point positions on the target device.</span>
 <span class="sd">    normals</span>
-<span class="sd">        ``(n,)`` oriented unit normals. When ``None``, normals are estimated.</span>
+<span class="sd">        ``(n,)`` oriented unit normals. When ``None``, unoriented normals are estimated and the</span>
+<span class="sd">        result's orientation is derived from the mesh.</span>
 <span class="sd">    num_neighbours</span>
 <span class="sd">        Number of nearest neighbours used per point when ``radius &lt;= 0``. Defaults to</span>
 <span class="sd">        ``max_neighbours`` when neither ``num_neighbours`` nor ``radius`` is set.</span>
@@ -5083,6 +5099,7 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
     <span class="c1"># Dense (n, k+1) nearest-neighbour table; slot 0 is the point itself and is skipped in-kernel.</span>
     <span class="n">neighbor_idx</span><span class="p">,</span> <span class="n">neighbor_dist</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">query_nearest</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="n">k</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">)</span>
 
+    <span class="n">oriented</span> <span class="o">=</span> <span class="n">normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">normals</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbor_idx</span><span class="p">)</span>
 
@@ -5100,6 +5117,9 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">radius</span><span class="p">),</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">crit_angle</span><span class="p">),</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">boundary_angle</span><span class="p">),</span>
+            <span class="n">kernel_reconstruction</span><span class="o">.</span><span class="n">NORMALS_ORIENTED</span>
+            <span class="k">if</span> <span class="n">oriented</span>
+            <span class="k">else</span> <span class="n">kernel_reconstruction</span><span class="o">.</span><span class="n">NORMALS_UNORIENTED</span><span class="p">,</span>
             <span class="n">out_tris</span><span class="p">,</span>
             <span class="n">fan_counts</span><span class="p">,</span>
         <span class="p">],</span>
@@ -5117,10 +5137,13 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
     <span class="k">if</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">points</span><span class="p">),</span> <span class="n">faces</span>
     <span class="c1"># Every face carries a distinct vertex set, so the duplicate-resolution stage has nothing to do.</span>
-    <span class="c1"># Orientation is not re-derived (``orient=False``): the fans are wound from the trusted normals,</span>
-    <span class="c1"># and ``make_normals_outward`` would rewind a whole inward-normal cloud's mesh outward, silently</span>
-    <span class="c1"># breaking that contract.</span>
-    <span class="k">return</span> <span class="n">_clean_reconstruction</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">crit_hole_length</span><span class="p">,</span> <span class="n">orient</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">deduplicate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="c1"># Trusted normals keep their winding (``orient=False``): ``make_normals_outward`` would rewind a</span>
+    <span class="c1"># whole inward-normal cloud's mesh outward, silently breaking that contract. Estimated normals</span>
+    <span class="c1"># have no sign to keep, so the mesh is oriented instead: each fan was wound by its own center's</span>
+    <span class="c1"># normal, and the representative faces disagree wherever those signs did.</span>
+    <span class="k">return</span> <span class="n">_clean_reconstruction</span><span class="p">(</span>
+        <span class="n">points</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">crit_hole_length</span><span class="p">,</span> <span class="n">orient</span><span class="o">=</span><span class="ow">not</span> <span class="n">oriented</span><span class="p">,</span> <span class="n">deduplicate</span><span class="o">=</span><span class="kc">False</span>
+    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -5544,17 +5567,7 @@ taken from it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">449</span>
-<span class="normal">450</span>
-<span class="normal">451</span>
-<span class="normal">452</span>
-<span class="normal">453</span>
-<span class="normal">454</span>
-<span class="normal">455</span>
-<span class="normal">456</span>
-<span class="normal">457</span>
-<span class="normal">458</span>
-<span class="normal">459</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">459</span>
 <span class="normal">460</span>
 <span class="normal">461</span>
 <span class="normal">462</span>
@@ -5788,7 +5801,17 @@ taken from it.</p>
 <span class="normal">690</span>
 <span class="normal">691</span>
 <span class="normal">692</span>
-<span class="normal">693</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
+<span class="normal">693</span>
+<span class="normal">694</span>
+<span class="normal">695</span>
+<span class="normal">696</span>
+<span class="normal">697</span>
+<span class="normal">698</span>
+<span class="normal">699</span>
+<span class="normal">700</span>
+<span class="normal">701</span>
+<span class="normal">702</span>
+<span class="normal">703</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6284,17 +6307,7 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2096</span>
-<span class="normal">2097</span>
-<span class="normal">2098</span>
-<span class="normal">2099</span>
-<span class="normal">2100</span>
-<span class="normal">2101</span>
-<span class="normal">2102</span>
-<span class="normal">2103</span>
-<span class="normal">2104</span>
-<span class="normal">2105</span>
-<span class="normal">2106</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2106</span>
 <span class="normal">2107</span>
 <span class="normal">2108</span>
 <span class="normal">2109</span>
@@ -6415,7 +6428,17 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="normal">2224</span>
 <span class="normal">2225</span>
 <span class="normal">2226</span>
-<span class="normal">2227</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+<span class="normal">2227</span>
+<span class="normal">2228</span>
+<span class="normal">2229</span>
+<span class="normal">2230</span>
+<span class="normal">2231</span>
+<span class="normal">2232</span>
+<span class="normal">2233</span>
+<span class="normal">2234</span>
+<span class="normal">2235</span>
+<span class="normal">2236</span>
+<span class="normal">2237</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6859,17 +6882,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2230</span>
-<span class="normal">2231</span>
-<span class="normal">2232</span>
-<span class="normal">2233</span>
-<span class="normal">2234</span>
-<span class="normal">2235</span>
-<span class="normal">2236</span>
-<span class="normal">2237</span>
-<span class="normal">2238</span>
-<span class="normal">2239</span>
-<span class="normal">2240</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2240</span>
 <span class="normal">2241</span>
 <span class="normal">2242</span>
 <span class="normal">2243</span>
@@ -7026,7 +7039,17 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">2394</span>
 <span class="normal">2395</span>
 <span class="normal">2396</span>
-<span class="normal">2397</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">2397</span>
+<span class="normal">2398</span>
+<span class="normal">2399</span>
+<span class="normal">2400</span>
+<span class="normal">2401</span>
+<span class="normal">2402</span>
+<span class="normal">2403</span>
+<span class="normal">2404</span>
+<span class="normal">2405</span>
+<span class="normal">2406</span>
+<span class="normal">2407</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
