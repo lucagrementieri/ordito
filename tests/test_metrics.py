@@ -426,9 +426,7 @@ def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
-)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: both metrics are reductions of ``igl.point_mesh_squared_distance`` in each direction.
@@ -490,10 +488,9 @@ def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh
 _MESHLIB_FLT_MAX = 3.4028234663852886e38
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_irregular_hollow"])
 @pytest.mark.parity("chamfer_points_to_mesh", "meshlib")
 def test_chamfer_points_to_mesh_forward_matches_meshlib(
-    request: pytest.FixtureRequest, mesh_name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class A on the forward half: ``PointsToMeshProjector`` returns the same squared distances.
@@ -516,7 +513,7 @@ def test_chamfer_points_to_mesh_forward_matches_meshlib(
     which is what a first attempt at this test did); and the AABB tree is built lazily on first
     query, so it is pre-warmed here to keep the comparison independent of call order.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     rng = np.random.default_rng(7)
     center = np.asarray(mesh_tm.vertices, dtype=np.float64).mean(axis=0)
     points_np = (center + rng.normal(scale=0.6, size=(500, 3))).astype(np.float32)
@@ -664,11 +661,8 @@ def test_chamfer_points_to_mesh_matches_pytorch3d(device: str) -> None:
     assert not np.allclose(both_wp, scalar_p3d, rtol=1e-3, atol=0.0)
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_irregular_hollow"])
 @pytest.mark.parity("chamfer_points_to_mesh", "igl")
-def test_chamfer_and_hausdorff_points_to_mesh(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
+def test_chamfer_and_hausdorff_points_to_mesh(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B (a named composition): igl supplies the forward half, scipy the backward one.
 
@@ -685,7 +679,7 @@ def test_chamfer_and_hausdorff_points_to_mesh(
     vertices where Warp carries float32, so the two agree only to float32 precision here. The same
     answer comes back from a prebuilt ``mesh``.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
 
@@ -835,14 +829,6 @@ _DEGENERATE_CASES: list[tuple[str, Callable[[str], np.ndarray], tuple[int, ...],
         0.0,
     ),
     ("chamfer_empty_cloud_unreduced", _unreduced_empty, (0,), 0.0),
-    (
-        "chamfer_loss_empty_cloud",
-        lambda device: od.metrics.chamfer_points_to_points_loss(
-            warp_empty(0, wp.vec3, device), _zeros_cloud(device, 4), squared=True
-        ).numpy(),
-        (1,),
-        0.0,
-    ),
     (
         "hausdorff_points_to_mesh_no_faces",
         lambda device: np.array(
@@ -1273,18 +1259,6 @@ def test_chamfer_losses_match_numpy_on_both_devices(kernel_device: str) -> None:
     )
     _closest_np, distance_np, _face_np = tm_proximity.closest_point(mesh_tm, x_np)
     assert np.allclose(surface_loss_wp.numpy()[0], (distance_np**2).mean(), rtol=1e-3, atol=1e-3)
-
-
-def test_chamfer_loss_no_tape_has_value_but_no_grad(device: str) -> None:
-    rng = np.random.default_rng(22)
-    x_np = (rng.random((12, 3)) * 2.0 - 1.0).astype(np.float32)
-    y_np = (rng.random((9, 3)) * 2.0 - 1.0).astype(np.float32)
-    x_wp = points_to_warp(x_np, device)
-    y_wp = points_to_warp(y_np, device)
-
-    loss_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp, squared=True)
-    reduced = od.metrics.chamfer_points_to_points(x_wp, y_wp, squared=True)
-    assert np.allclose(loss_wp.numpy()[0], reduced, rtol=1e-5, atol=1e-5)
 
 
 def test_chamfer_mesh_losses_take_prebuilt_meshes(

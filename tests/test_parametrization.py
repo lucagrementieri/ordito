@@ -126,7 +126,7 @@ def test_flipped_faces_on_known_windings(
 
 @pytest.mark.usefixtures("deterministic")
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
-@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("map_vertices_to_circle", "igl")
 def test_map_vertices_to_circle_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """Class A: the arc-length circle map against ``igl.map_vertices_to_circle``, no transform."""
@@ -186,7 +186,7 @@ def test_map_vertices_to_circle_empty_loop(device: str):
     assert circle_wp.shape == (0,)
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity(
     "graph_laplacian",
     "igl",

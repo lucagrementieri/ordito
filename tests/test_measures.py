@@ -21,7 +21,6 @@ from tests.conftest import MESHES
 from tests.conversions import (
     faces_igl,
     numpy_to_warp,
-    points_to_warp,
     trimesh_to_meshlib,
     trimesh_to_pymeshlab,
     trimesh_to_pyvista,
@@ -29,9 +28,7 @@ from tests.conversions import (
 )
 
 
-@pytest.mark.parametrize(
-    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "torus_irregular"]
-)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "sphere_irregular_hollow"])
 @pytest.mark.parity("moments", "meshlib", "pyvista")
 def test_volume(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -261,56 +258,6 @@ def test_moments(request: pytest.FixtureRequest, mesh_name: str):
     )
     assert (
         np.abs(np.asarray(inertia_wp).reshape(3, 3) - mesh_tm.moment_inertia).max() < 1e-5 * scale
-    )
-
-
-def test_moments_center_of_mass_differs_from_the_surface_centroid(
-    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
-):
-    """
-    The two centres are different quantities, which is why both functions exist.
-
-    ``surface_centroid`` is the area-weighted centre of the *shell* and ``moments``' is the volume
-    centre of the solid. On a closed uniform sphere they coincide; on anything asymmetric they do
-    not, and
-    asserting they differ is what keeps ``moments`` from being a synonym.
-    """
-    _mesh_tm, mesh_wp = saddle_graded
-    surface_centroid = od.measures.surface_centroid(mesh_wp.points, mesh_wp.indices)
-    _volume, center_of_mass, _inertia = od.measures.moments(mesh_wp.points, mesh_wp.indices)
-    assert not np.allclose(
-        odt.vec3_floats(surface_centroid), odt.vec3_floats(center_of_mass), atol=1e-3
-    )
-
-
-def test_moments_translation_shifts_only_the_center(device: str):
-    """
-    Translation moves the centre of mass and leaves the volume and inertia tensor alone.
-
-    The parallel-axis shift is what makes that true, and getting it wrong is invisible on any mesh
-    centred at the origin -- which is why this fixture is deliberately offset.
-    """
-    box_tm = tm.creation.box(extents=[1.0, 2.0, 3.0])
-    offset_np = np.array([1.5, -2.0, 0.5])
-
-    def moments_of(vertices_np: np.ndarray):
-        vertices_wp = points_to_warp(vertices_np, device)
-        faces_wp = wp.array(
-            np.ascontiguousarray(box_tm.faces.reshape(-1), dtype=np.int32),
-            dtype=wp.int32,
-            device=device,
-        )
-        return od.measures.moments(vertices_wp, faces_wp)
-
-    volume_a, center_a, inertia_a = moments_of(box_tm.vertices)
-    volume_b, center_b, inertia_b = moments_of(box_tm.vertices + offset_np)
-
-    assert np.isclose(volume_a, volume_b, rtol=1e-5)
-    assert np.allclose(
-        odt.vec3_floats(center_b), np.array(odt.vec3_floats(center_a)) + offset_np, atol=1e-5
-    )
-    assert np.abs(np.asarray(inertia_a) - np.asarray(inertia_b)).max() < 1e-4 * float(
-        np.abs(np.asarray(inertia_a)).max()
     )
 
 

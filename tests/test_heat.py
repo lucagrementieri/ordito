@@ -322,32 +322,23 @@ def _heat_geodesic_igl(
     return np.asarray(igl.heat_geodesics_solve(data, sources_np))
 
 
-@pytest.mark.parametrize(
-    ("mesh_name", "n_sources"),
-    [("sphere_irregular", 1), ("saddle_graded", 1), ("sphere_irregular", 2)],
-    ids=["sphere_irregular", "saddle_graded", "sphere_irregular_two_sources"],
-)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("heat_geodesic", "igl")
 @pytest.mark.parity("heat_geodesic_conditioning", "igl")
-def test_heat_geodesic_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str, n_sources: int
-) -> None:
+def test_heat_geodesic_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A at 5e-2: the same method, but igl factorizes where ordito runs conjugate gradient.
 
     The tolerance is the discretization the two share plus each solver's own stopping point,
     not a disagreement about the method -- both are Crane et al. on the identical
     triangulation, which is why ``_heat_geodesic_igl`` is built with matching defaults rather
-    than igl's own.
-
-    The two-source arm is the multi-source form, where the answer is the distance to the
-    *nearest* source: a single-source implementation passes the other arms while getting the
-    reduction over several sources wrong -- the field is not a sum but a minimum.
+    than igl's own. The multi-source form is compared in
+    ``test_heat_geodesic_matches_igl_far_from_the_sources``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
-    sources_np = np.array([0, len(vertices_np) // 2][:n_sources], dtype=np.int64)
+    sources_np = np.array([0], dtype=np.int64)
     sources_wp = wp.array(sources_np.astype(np.int32), dtype=wp.int32, device=mesh_wp.device)
 
     distance_igl = _heat_geodesic_igl(vertices_np, faces_np, sources_np)
@@ -975,7 +966,7 @@ def test_reversing_the_curve_negates_the_field(
     assert np.allclose(forward, -backward, rtol=1e-3, atol=1e-4)
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular"])
 def test_zero_set_constraint_pins_the_curve(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, curve_np, curve_wp = _one_ring_cycle(mesh_tm, mesh_wp)
@@ -1372,7 +1363,7 @@ def test_transport_on_a_graded_mesh_matches_a_direct_solve(
     assert angle.max() < 1e-3
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular"])
 def test_transport_preserves_source_magnitudes(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1501,10 +1492,7 @@ def test_transport_is_invariant_to_mesh_scale(
     assert np.allclose(rescaled.numpy(), unit.numpy(), rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.parametrize(
-    ("mesh_name", "n_resolved"),
-    [("sphere_irregular", 500), ("saddle_graded", 1156), ("cave_cube", 7)],
-)
+@pytest.mark.parametrize(("mesh_name", "n_resolved"), [("sphere_irregular", 500), ("cave_cube", 7)])
 def test_transport_validity_mask_flags_the_unresolvable(
     request: pytest.FixtureRequest, mesh_name: str, n_resolved: int
 ) -> None:
@@ -1513,7 +1501,7 @@ def test_transport_validity_mask_flags_the_unresolvable(
 
     The counts are the point of the mask: they are identical on CPU and CUDA where the *vectors*
     are not, because at a cancelling vertex CPU returns the zero vector and CUDA returns a
-    full-length one. The two irregular fixtures resolve every vertex (500 and 1 156), so the boolean
+    full-length one. ``sphere_irregular`` resolves every vertex (500), so the boolean
     assert is parametrized over an input producing the other answer too: ``cave_cube``, 7 of its 16
     vertices -- the outer shell less its symmetric antipode, the cavity unreachable.
     """

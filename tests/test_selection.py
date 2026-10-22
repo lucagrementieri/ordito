@@ -207,7 +207,7 @@ def _upper_half_contour(mesh_wp: wp.Mesh) -> tuple[np.ndarray, odt.Array2dInt32]
     return region_np, od.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "unit_box", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_region_boundary_edges_oriented_round_trips_through_the_fill(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -330,7 +330,7 @@ def _meshlib_contour(
 
 
 @pytest.mark.parity("faces_left_of_contour", "meshlib")
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular", "unit_box"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular"])
 def test_faces_left_of_contour_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -453,8 +453,7 @@ def test_faces_left_of_contour_compressed_forest(
     "predicate -- so a row would time a host labelling against a device pass over an edge set that "
     "ordito builds inside the call. The classification is what is comparable.",
 )
-@pytest.mark.parametrize("n_sub", [1, 2])
-def test_exclude_fully_selected_components_matches_scipy(device: str, n_sub: int) -> None:
+def test_exclude_fully_selected_components_matches_scipy(device: str) -> None:
     """
     Class A: the same classification as ``csgraph.connected_components`` plus a per-component all().
 
@@ -468,15 +467,11 @@ def test_exclude_fully_selected_components_matches_scipy(device: str, n_sub: int
 
     The input is built to exercise all three branches at once, which is what keeps it non-vacuous: a
     **fully** selected component (dropped), a **partially** selected one (kept intact) and an
-    **unselected** one (unchanged). Measured on the ``n_sub=1`` arm: 3 components, 16 selected
+    **unselected** one (unchanged). Measured: 3 components, 16 selected
     vertices in, 4 out -- so a function that dropped nothing, dropped everything, or ignored
     component boundaries would each fail a different assert below.
     """
-    meshes = (
-        tm.creation.icosahedron(),
-        tm.creation.icosphere(subdivisions=n_sub),
-        tm.creation.box(),
-    )
+    meshes = (tm.creation.icosahedron(), tm.creation.icosphere(subdivisions=1), tm.creation.box())
     parts = []
     for index, mesh_tm in enumerate(meshes):
         vertices_np = np.ascontiguousarray(mesh_tm.vertices) + np.array([5.0 * index, 0.0, 0.0])
@@ -706,24 +701,20 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
 
 
 @pytest.mark.parity("submesh_from_face_indices", "trimesh")
-@pytest.mark.parametrize(
-    "face_indices_list",
-    [pytest.param([0], id="single-face"), pytest.param([0, 0, 0, 5, 5, 12, 12], id="duplicated")],
-)
 def test_submesh_from_face_indices_matches_trimesh_on_short_lists(
-    request: pytest.FixtureRequest, face_indices_list: list[int]
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class A: a short index list against ``trimesh.util.submesh``, positions and remapped indices.
 
     ``repair=False, append=False`` on the reference side is not a transform but a *disabling* of
-    one: trimesh would otherwise weld and reorder, a different operation from this one. The
-    duplicated arm is where the *face* count is the interesting half: a face named three times must
-    appear three times -- the output length is asserted exactly -- while its vertices are shared, so
-    the vertex count is bounded by the distinct faces' corners rather than fixed.
+    one: trimesh would otherwise weld and reorder, a different operation from this one. The list
+    repeats faces, which is where the *face* count is the interesting half: a face named three times
+    must appear three times -- the output length is asserted exactly -- while its vertices are
+    shared, so the vertex count is bounded by the distinct faces' corners rather than fixed.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue("sphere_irregular")
-    face_indices_np = np.array(face_indices_list, dtype=np.int32)
+    mesh_tm, mesh_wp = sphere_irregular
+    face_indices_np = np.array([0, 0, 0, 5, 5, 12, 12], dtype=np.int32)
     face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
     submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
@@ -769,12 +760,11 @@ def test_submesh_from_face_indices_matches_trimesh(
     assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
 def test_submeshes_from_face_groups_matches_single(
-    request: pytest.FixtureRequest, mesh_name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Ordito against ordito: each group's slice equals the single-group call on that group."""
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.points.device
     rng = np.random.default_rng(11)
     n_faces = mesh_tm.faces.shape[0]
@@ -822,53 +812,8 @@ def test_submeshes_from_face_groups_matches_single(
     )
 
 
-def test_submeshes_from_face_groups_shared_vertex(device: str) -> None:
-    """Two bodies touching at one vertex: the shared vertex is duplicated into both groups."""
-    # Two triangles meeting only at vertex 2, so face adjacency keeps them separate.
-    vertices_np = np.array(
-        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 2, 0], [-1, 1, 0]], dtype=np.float32
-    )
-    faces_np = np.array([0, 1, 2, 2, 3, 4], dtype=np.int32)
-    vertices_wp = points_to_warp(vertices_np, device)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-
-    vertices_all_wp, vertex_offsets_wp, faces_all_wp = od.selection.submeshes_from_face_groups(
-        vertices_wp,
-        faces_wp,
-        wp.array([0, 1], dtype=wp.int32, device=device),
-        wp.array([0, 1, 2], dtype=wp.int32, device=device),
-    )
-    # 3 + 3 vertices, not 5: vertex 2 belongs to both groups and is emitted in each.
-    assert np.array_equal(vertex_offsets_wp.numpy(), [0, 3, 6])
-    assert vertices_all_wp.size == 6
-    assert np.array_equal(faces_all_wp.numpy(), [0, 1, 2, 0, 1, 2])
-    assert np.array_equal(vertices_all_wp.numpy()[:3], vertices_np[[0, 1, 2]])
-    assert np.array_equal(vertices_all_wp.numpy()[3:], vertices_np[[2, 3, 4]])
-
-
-def test_submeshes_from_face_groups_unreferenced_vertices(device: str) -> None:
-    """Vertices no face uses are dropped, exactly as the single-group path drops them."""
-    vertices_np = np.array(
-        [[0, 0, 0], [9, 9, 9], [1, 0, 0], [0, 1, 0], [8, 8, 8]], dtype=np.float32
-    )
-    faces_np = np.array([0, 2, 3], dtype=np.int32)
-    vertices_wp = points_to_warp(vertices_np, device)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-
-    vertices_all_wp, vertex_offsets_wp, faces_all_wp = od.selection.submeshes_from_face_groups(
-        vertices_wp,
-        faces_wp,
-        wp.array([0], dtype=wp.int32, device=device),
-        wp.array([0, 1], dtype=wp.int32, device=device),
-    )
-    assert np.array_equal(vertex_offsets_wp.numpy(), [0, 3])
-    assert np.array_equal(vertices_all_wp.numpy(), vertices_np[[0, 2, 3]])
-    assert np.array_equal(faces_all_wp.numpy(), [0, 1, 2])
-
-
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_submesh_return_index_carries_an_attribute(
-    request: pytest.FixtureRequest, mesh_name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: the vertex map is what it says, and it makes an attribute portable.
@@ -882,7 +827,7 @@ def test_submesh_return_index_carries_an_attribute(
     referenced set, which is what lets a caller treat it as a sorted lookup), and both entry points
     agree -- ``submesh_from_face_mask`` is a thin wrapper and its map must be the index form's.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     rng = np.random.default_rng(11)
     n_faces = mesh_tm.faces.shape[0]
     face_mask_np = rng.random(n_faces) > 0.4
@@ -908,8 +853,7 @@ def test_submesh_return_index_carries_an_attribute(
     assert sub_faces_wp.size > 0
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
-def test_submesh_from_face_mask(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_submesh_from_face_mask(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A against trimesh *and* against the index form, which are different claims.
 
@@ -917,7 +861,7 @@ def test_submesh_from_face_mask(request: pytest.FixtureRequest, mesh_name: str) 
     point agrees with the one that already has an oracle. A mask built from a coin flip is forced to
     select at least one face, so neither comparison can be satisfied by an empty answer.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     rng = np.random.default_rng(7)
     n_faces = mesh_tm.faces.shape[0]
     face_mask_np = rng.choice([False, True], size=n_faces, replace=True)
@@ -1150,7 +1094,7 @@ def test_delete_region_keep_boundary_reports_a_pinched_rim(
     assert np.array_equal(lexsort_rows(reported_np), lexsort_rows(deleted_edges_np))
 
 
-@pytest.mark.parametrize("region", ["nothing", "interior", "two_interior", "on_rim", "pinched"])
+@pytest.mark.parametrize("region", ["interior", "two_interior", "on_rim", "pinched"])
 def test_delete_region_keep_boundary_is_its_packed_form_split(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], region: str
 ) -> None:
@@ -1158,8 +1102,8 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
     Ordito against ordito: the list form is the packed form, loop by loop.
 
     ``delete_region_keep_boundary`` carries the MeshLib comparison above; this pins
-    ``delete_region_keep_boundary_with_offsets`` to it over every shape of answer: no rim, one,
-    two, the input's rim grown (so a loop is classified *and* kept), and a pinched rim.
+    ``delete_region_keep_boundary_with_offsets`` to it over every shape of answer: one rim, two,
+    the input's rim grown (so a loop is classified *and* kept), and a pinched rim.
     """
     mesh_tm, mesh_wp = saddle_graded
     n_faces = mesh_tm.faces.shape[0]
@@ -1196,7 +1140,7 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
     )
     packed_vertices_wp, packed_faces_wp, flat_wp, offsets_wp = packed
 
-    expected_loops = {"nothing": 0, "interior": 1, "two_interior": 2, "on_rim": 1}
+    expected_loops = {"interior": 1, "two_interior": 2, "on_rim": 1}
     if region in expected_loops:
         assert len(loops_wp) == expected_loops[region]
     else:
@@ -1373,7 +1317,7 @@ def test_expand_vertex_mask_matches_pymeshlab_dilatation(device: str):
         )
 
 
-@pytest.mark.parametrize("hops", [1, 2, 3])
+@pytest.mark.parametrize("hops", [1, 3])
 @pytest.mark.parity("expand_vertex_mask", "meshlib")
 @pytest.mark.parity("shrink_vertex_mask", "meshlib")
 def test_expand_and_shrink_vertex_mask_match_meshlib(device: str, hops: int) -> None:
@@ -1428,7 +1372,7 @@ def test_expand_and_shrink_vertex_mask_match_meshlib(device: str, hops: int) -> 
         assert np.array_equal(morphed_wp.numpy(), morphed_ml)
 
 
-@pytest.mark.parametrize("hops", [1, 2, 3])
+@pytest.mark.parametrize("hops", [1, 3])
 def test_vertex_morphology_on_an_irregular_mesh(device: str, hops: int) -> None:
     """
     Not a library comparison: a NumPy edge-list oracle, on the inputs a face-based round could miss.

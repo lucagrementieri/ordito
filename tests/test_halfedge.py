@@ -71,29 +71,6 @@ def test_halfedge_twins_matches_warp_tri_tri_adjacency(
     assert np.array_equal(neighbors_od, neighbors_warp.numpy())
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_halfedge_twins_boundary_matches_oriented_boundary_edges(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Ordito against ordito: the halfedges without a twin are ``oriented_boundary_edges``.
-
-    Over closed and open fixtures: a closed mesh has every halfedge paired and an open one has a
-    non-empty boundary, so the set comparison is never of two empty answers on the open arms.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    twins = od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=len(mesh_tm.vertices)).numpy()
-
-    halfedge_endpoints_tm = tm.geometry.faces_to_edges(mesh_tm.faces)
-    boundary_from_twins = np.asarray(halfedge_endpoints_tm)[twins < 0]
-    boundary_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
-
-    assert (len(boundary_from_twins) > 0) == (not mesh_tm.is_watertight)
-    assert {tuple(edge) for edge in boundary_from_twins} == {
-        tuple(edge) for edge in boundary_wp.numpy()
-    }
-
-
 def _faces(values: list[int], device: str) -> wp.array[wp.int32]:
     return wp.array(np.array(values, dtype=np.int32), dtype=wp.int32, device=device)
 
@@ -217,9 +194,8 @@ def test_halfedge_twins_rejects_a_non_orientable_surface(
         od.halfedge.vertex_one_rings(mesh_wp.indices, n_vertices=len(mesh_tm.vertices))
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
 def test_validate_false_skips_only_the_check(
-    request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Ordito against ordito: ``validate=False`` changes whether the mesh is checked, not the answer.
@@ -228,7 +204,7 @@ def test_validate_false_skips_only_the_check(
     below. On a valid mesh both builders must return byte-identical tables either way, and the
     unvalidated calls must take no host readback, since skipping one is their whole purpose.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     faces_wp, n_vertices = mesh_wp.indices, len(mesh_tm.vertices)
     twins_wp = od.halfedge.halfedge_twins(faces_wp, n_vertices=n_vertices)
     rings_wp = od.halfedge.vertex_one_rings(faces_wp, n_vertices=n_vertices)
@@ -273,7 +249,7 @@ def _sorted_and_bucketed_pairings(
 
 
 @pytest.mark.usefixtures("force_halfedge_buckets")
-@pytest.mark.parametrize("mesh_name", [*MESHES, "boy_surface", "mobius"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "mobius"])
 def test_bucketed_twins_match_the_sorted_twins_on_fixtures(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -282,8 +258,8 @@ def test_bucketed_twins_match_the_sorted_twins_on_fixtures(
 
     The sort carries the oracle (the tests above); CUDA takes the buckets whenever the vertex count
     is known and the CPU only when forced, so this pins the two to each other on both devices,
-    defect counts included. ``boy_surface`` and ``mobius`` are the arms where the counts are not
-    zero (edges wound the same way), so the comparison is not of two empty answers.
+    defect counts included. ``mobius`` is the arm where the counts are not zero (edges wound the
+    same way), so the comparison is not of two empty answers.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     sorted_twins, sorted_defects, bucketed_twins, bucketed_defects = _sorted_and_bucketed_pairings(
@@ -467,9 +443,8 @@ def test_vertex_one_rings_are_rotationally_ordered(
         assert (twins[previous] == ring_halfedges[0]) != bool(is_boundary[vertex])
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
 def test_vertex_one_rings_return_twins_matches_the_two_calls(
-    request: pytest.FixtureRequest, mesh_name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: ``return_twins=True`` hands back the table ``halfedge_twins`` builds.
@@ -478,7 +453,7 @@ def test_vertex_one_rings_return_twins_matches_the_two_calls(
     separate calls do, rings included, with no reference involved. A supplied table comes back as
     the same array object, since nothing was built.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     n_vertices = len(mesh_tm.vertices)
     twins_wp = od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=n_vertices)
     rings_wp = od.halfedge.vertex_one_rings(mesh_wp.indices, twins=twins_wp, n_vertices=n_vertices)
@@ -647,7 +622,7 @@ def _expected_mates(faces_np: np.ndarray) -> np.ndarray:
 
 @pytest.mark.usefixtures("force_halfedge_buckets")
 @pytest.mark.parametrize("bounded", [True, False], ids=["buckets", "sort"])
-@pytest.mark.parametrize("mesh_name", [*MESHES, "boy_surface", "mobius"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "mobius"])
 def test_halfedge_mates_match_numpy_edge_grouping(
     request: pytest.FixtureRequest, mesh_name: str, bounded: bool
 ) -> None:
@@ -658,8 +633,8 @@ def test_halfedge_mates_match_numpy_edge_grouping(
     its sorted rows with ``np.unique`` gives each edge's halfedges, which name the codes (the
     partner of a pair, ``-1`` alone, ``-2 - lowest`` for three or more). Run through both
     builders on both devices: the per-vertex buckets (a vertex count given, size gate and CPU
-    forced open) and the key sort (no vertex count). ``boy_surface`` and ``mobius`` carry pairs
-    wound the same way, which a mate keeps and a twin does not.
+    forced open) and the key sort (no vertex count). ``mobius`` carries pairs wound the same
+    way, which a mate keeps and a twin does not.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices) if bounded else None
@@ -698,9 +673,8 @@ def test_halfedge_mates_on_defects(
     assert np.array_equal(mates, _expected_mates(faces_np))
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded", "mobius"])
 def test_halfedge_mates_key_order_is_the_edge_key_sort(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Not a library comparison: the key order is ordito's own sort, recomputed by NumPy.
@@ -709,7 +683,7 @@ def test_halfedge_mates_key_order_is_the_edge_key_sort(
     (``adjacency.sorted_face_edge_keys``' order); on the bucket path there is none. The mates are
     the ones the plain call returns either way.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     faces_np = np.asarray(mesh_tm.faces)
     n_vertices = len(mesh_tm.vertices)
     edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)

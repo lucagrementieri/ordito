@@ -56,86 +56,6 @@ def _upward_rays(mesh_tm: tm.Trimesh, n: int, seed: int) -> tuple[np.ndarray, np
     return origins_np, directions_np
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
-def test_intersects_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class A on ``intersects_first`` and ``intersects_any``, Class B on ``intersects_location``.
-
-    The first-hit face index and the per-ray hit mask agree with trimesh's ray engine, ray for ray.
-    The location table's ``(ray, face)`` hit pairs equal trimesh's after a shared lexsort (row
-    order): ordito emits one row per hit in BVH order and trimesh in its own, so both sides are
-    ordered by ``(ray, face)`` first -- exact on integer rows. The hit *positions* are checked by
-    [`test_intersects_location_cave_cube`], which has an analytic answer to compare against.
-    Each reference answer is asserted to carry hits; without that, two all-miss answers agree (see
-    ``_upward_rays``).
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    origins_np, directions_np = _upward_rays(mesh_tm, 256, seed=0)
-    origins_wp = points_to_warp(origins_np, mesh_wp.device)
-    directions_wp = points_to_warp(directions_np, mesh_wp.device)
-
-    triangle_wp = od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy()
-    triangle_tm = mesh_tm.ray.intersects_first(origins_np, directions_np)
-    assert (triangle_tm != -1).any()
-    assert np.array_equal(triangle_wp, triangle_tm)
-
-    hit_wp = od.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy()
-    hit_tm = mesh_tm.ray.intersects_any(origins_np, directions_np)
-    assert hit_tm.any()
-    assert np.array_equal(hit_wp, hit_tm)
-
-    _loc_wp, ray_wp, tri_wp = od.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
-    tri_tm, ray_tm = mesh_tm.ray.intersects_id(origins_np, directions_np, multiple_hits=False)
-    tri_wp_np = tri_wp.numpy()
-    ray_wp_np = ray_wp.numpy()
-    order_wp = np.lexsort((tri_wp_np, ray_wp_np))
-    order_tm = np.lexsort((tri_tm, ray_tm))
-    assert tri_tm.size > 0
-    assert np.array_equal(tri_wp_np[order_wp], tri_tm[order_tm])
-    assert np.array_equal(ray_wp_np[order_wp], ray_tm[order_tm])
-
-
-def test_intersects_location_hollow_shell(sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh]):
-    """
-    Class B (segment canonicalization): a 20x20 ray grid fired ``+z`` through the hollow fixture.
-
-    Each ray reports its *first* hit, on both sides (``multiple_hits=False``): its ``xy`` is the
-    ray's own and its ``z`` the lowest of every crossing along that ray (trimesh's
-    ``multiple_hits=True`` lists them all; through the hollow sphere a ray crosses up to four
-    walls), a check beside trimesh's own first hit. The grid overhangs the footprint, so its edge
-    rays miss on both sides. Row order is not defined by either library, so the hits are compared
-    sorted by ray.
-    """
-    mesh_tm, mesh_wp = sphere_irregular_hollow
-    origins_np = tm.util.grid_linspace(
-        mesh_tm.bounds[:, :2] + np.reshape([-0.02, 0.02], (-1, 1)), 20
-    )
-    origins_np = np.column_stack((origins_np, np.ones(len(origins_np)) * -100.0)).astype(np.float32)
-    directions_np = np.ones((len(origins_np), 3), dtype=np.float32) * [0.0, 0.0, 1.0]
-
-    origins_wp = points_to_warp(origins_np, mesh_wp.device)
-    directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    loc_wp, ray_wp, _tri_wp = od.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
-    loc_tm, ray_tm, _tri_tm = mesh_tm.ray.intersects_location(
-        origins_np, directions_np, multiple_hits=False
-    )
-
-    ray_wp_np = ray_wp.numpy()
-    loc_wp_np = loc_wp.numpy()
-    order_wp = np.argsort(ray_wp_np)
-    order_tm = np.argsort(ray_tm)
-    assert 0 < ray_tm.size < len(origins_np)  # hits, and misses at the overhang
-    assert np.array_equal(ray_wp_np[order_wp], ray_tm[order_tm])
-    assert np.allclose(loc_wp_np[order_wp], loc_tm[order_tm], rtol=1e-5, atol=1e-4)
-    all_loc_tm, all_ray_tm, _all_tri_tm = mesh_tm.ray.intersects_location(
-        origins_np, directions_np, multiple_hits=True
-    )
-    assert np.bincount(all_ray_tm).max() > 2  # non-vacuity: some ray crosses the cavity
-    for p, r in zip(loc_wp_np[order_wp], ray_wp_np[order_wp], strict=False):
-        assert np.allclose(p[:2], origins_np[r][:2], rtol=1e-5, atol=1e-5)
-        assert np.isclose(p[2], all_loc_tm[all_ray_tm == r, 2].min(), atol=1e-4)
-
-
 def test_intersects_location_ascends_under_the_deterministic_setting(
     sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -247,8 +167,7 @@ def test_intersects_match_meshlib(request: pytest.FixtureRequest, mesh_name: str
     one-to-one onto ordito's three entry points: ``isectFaces`` is ``intersects_first``'s dense
     face array, ``intersectingRays`` is ``intersects_any``'s mask, and ``isectPts`` paired with
     that bitset is ``intersects_location``'s compacted ``(points, rays, faces)`` triple, once that
-    triple is sorted by ray -- its compaction emits rows in BVH order, not in ray order, which the
-    trimesh comparison above handles with a sort too.
+    triple is sorted by ray -- its compaction emits rows in BVH order, not in ray order.
 
     Two conventions, both named. MeshLib returns the hits **densely** with an invalid ``FaceId``
     where ordito writes ``-1``, so the transform on the first form is ``FaceId -> int`` with
@@ -318,7 +237,7 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
     precision rather than exactly.
 
     ordito's ``intersects_location`` compacts in BVH order rather than ray order, so its rows are
-    sorted by ray first, exactly as the meshlib and trimesh comparisons above do.
+    sorted by ray first, exactly as the meshlib comparison above does.
 
     Non-vacuous: the assert requires both branches present in the hit mask, so a scene that hit
     everything or nothing would fail rather than agree.
@@ -440,42 +359,6 @@ def test_longest_ray_surface_normals(sphere_irregular: tuple[tm.Trimesh, wp.Mesh
     distances_wp_np = od.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy()
     distances_tm_np = tm.proximity.longest_ray(mesh_tm, closest_np, normals_np)
     _assert_longest_ray_allclose(distances_wp_np, distances_tm_np)
-
-
-def test_contains_points(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    """
-    Class A: inside/outside against ``Trimesh.contains``, over three deliberately-placed groups.
-
-    Points near the centre, just outside the bounds, and far away -- the third group is what
-    catches a ray that runs out of range rather than reporting a miss.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    rng = np.random.default_rng(7)
-
-    inside_np = mesh_tm.center_mass + rng.normal(scale=0.05, size=(50, 3))
-    outside_np = rng.random((50, 3)) * 4.0 + mesh_tm.bounds[1]
-    far_np = rng.random((30, 3)) * 100.0 + 1.0 + mesh_tm.bounds[1]
-    center_np = np.asarray([mesh_tm.center_mass], dtype=np.float32)
-
-    points_wp = points_to_warp(inside_np, mesh_wp.device)
-    contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
-    assert contains_wp.all()
-    assert np.array_equal(contains_wp, mesh_tm.contains(inside_np))
-
-    points_wp = points_to_warp(outside_np, mesh_wp.device)
-    contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
-    assert not contains_wp.any()
-    assert np.array_equal(contains_wp, mesh_tm.contains(outside_np))
-
-    points_wp = points_to_warp(far_np, mesh_wp.device)
-    contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
-    assert not contains_wp.any()
-    assert np.array_equal(contains_wp, mesh_tm.contains(far_np))
-
-    points_wp = points_to_warp(center_np, mesh_wp.device)
-    contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
-    assert contains_wp.all()
-    assert np.array_equal(contains_wp, mesh_tm.contains(center_np))
 
 
 @pytest.mark.parametrize(

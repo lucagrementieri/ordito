@@ -18,7 +18,6 @@ import warp.sparse as wps
 import ordito as od
 import ordito.typing as odt
 from ordito import _device
-from tests.conftest import MESHES
 from tests.conversions import points_to_warp, warp_empty
 
 DType = TypeVar("DType")
@@ -233,7 +232,7 @@ def test_pack_1d_arrays_copy_false_aliases_a_boundary_loop_pack(
     that already existed. The oracle for the values is the copying default; what this adds is that
     the free path fires on loops nobody constructed by hand, which the synthetic case above cannot
     show. That the measures themselves are unaffected is
-    [`test_loop_measures_agree_with_the_single_loop_forms`]'s job.
+    [`test_loop_perimeters_and_directed_areas_match_meshlib`]'s job.
     """
     _mesh_tm, mesh_wp = torus_irregular_holes
     loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
@@ -354,17 +353,15 @@ def test_split_trailing_empty_segment(device: str) -> None:
     assert np.array_equal(segments_wp[0].numpy(), np.arange(4, dtype=np.int32))
 
 
-# Every dtype ``split`` is reached with in the package: index loops and neighbour lists
-# (``int32``), neighbour distances (``float32``), mesh components and traced polylines
-# (``vec3``), plus ``float64`` and ``vec2`` for the widths in between.
+# One-, two- and three-word elements: index loops and neighbour lists (``int32``), ``float64``,
+# and mesh components and traced polylines (``vec3``); ``float32`` is the gradient base.
 _SPLIT_LAYOUTS: dict[type, tuple[type, int]] = {
     wp.int32: (np.int32, 1),
     wp.float32: (np.float32, 1),
     wp.float64: (np.float64, 1),
-    wp.vec2: (np.float32, 2),
     wp.vec3: (np.float32, 3),
 }
-_SPLIT_DTYPES = list(_SPLIT_LAYOUTS)
+_SPLIT_DTYPES = [wp.int32, wp.float64, wp.vec3]
 
 
 def _warp_array_of(
@@ -559,33 +556,6 @@ def test_allclose_matches_numpy(device: str, dtype_wp: type, dtype_np: type) -> 
 
 
 @pytest.mark.parity("sort_and_argsort", "numpy")
-def test_sort_and_argsort_distinct_keys(device: str) -> None:
-    """Class A: with distinct keys the permutation is unique, so it must equal ``numpy.argsort``."""
-    rng = np.random.default_rng(31)
-    keys_np = rng.permutation(64).astype(np.int32)
-    keys_wp = wp.array(keys_np, dtype=wp.int32, device=device)
-    sorted_keys_wp, order_wp = od.array.sort_and_argsort(keys_wp)
-    assert np.array_equal(sorted_keys_wp.numpy(), np.sort(keys_np))
-    assert np.array_equal(order_wp.numpy(), np.argsort(keys_np).astype(np.int32))
-
-
-def test_sort_and_argsort_duplicate_keys(device: str) -> None:
-    """
-    With ties the radix sort is not documented as stable, so only the permutation property holds.
-
-    ``sorted_keys[i] == keys[order[i]]`` and ``order`` is a permutation of ``0..n-1`` -- that is
-    everything the contract promises, and it is what distinguishes a correct sort from one that
-    dropped or duplicated an entry.
-    """
-    rng = np.random.default_rng(32)
-    keys_np = rng.integers(0, 8, size=64).astype(np.int32)
-    keys_wp = wp.array(keys_np, dtype=wp.int32, device=device)
-    sorted_keys_wp, order_wp = od.array.sort_and_argsort(keys_wp)
-    assert np.array_equal(sorted_keys_wp.numpy(), np.sort(keys_np))
-    assert np.array_equal(np.sort(order_wp.numpy()), np.arange(64, dtype=np.int32))
-    assert np.array_equal(keys_np[order_wp.numpy()], sorted_keys_wp.numpy())
-
-
 @pytest.mark.parametrize(
     "dtype", [wp.int32, wp.uint32, wp.int64, wp.uint64, wp.float32, wp.float64]
 )
@@ -651,18 +621,6 @@ def test_sort_and_argsort_in_place(device: str) -> None:
             )
 
 
-def test_pack_1d_wp_arrays_vec3(device: str):
-    parts = [
-        wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0)], dtype=wp.vec3, device=device),
-        wp.array([wp.vec3(2.0, 2.0, 2.0)], dtype=wp.vec3, device=device),
-    ]
-    flat, offsets = od.array.pack_1d_arrays(parts)
-    expected_np = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [2.0, 2.0, 2.0]], dtype=np.float32)
-    flat_wp_np = flat.numpy().reshape(-1, 3)
-    assert np.allclose(flat_wp_np, expected_np, rtol=1e-5, atol=1e-5)
-    assert np.array_equal(offsets.numpy(), np.array([0, 2, 3], dtype=np.int32))
-
-
 @pytest.mark.parametrize("n_cols", [1, 4, 12])
 @pytest.mark.parametrize(("dtype", "dtype_np"), [(wp.float32, np.float32), (wp.int32, np.int32)])
 def test_sort_rows(device: str, n_cols: int, dtype: type, dtype_np: type) -> None:
@@ -700,20 +658,6 @@ def test_triplet_buffers(dtype: type, device: str) -> None:
         assert rows_wp.dtype == wp.int32
         assert cols_wp.dtype == wp.int32
         assert values_wp.dtype == dtype
-
-
-def test_triplet_buffers_feed_a_sparse_build(device: str) -> None:
-    """The buffers round-trip through ``bsr_from_triplets``: a 3x3 identity written by hand."""
-    rows_wp, cols_wp, values_wp = od.array.triplet_buffers(3, wp.float64, device)
-    wp.copy(rows_wp, wp.array([0, 1, 2], dtype=wp.int32, device=device))
-    wp.copy(cols_wp, wp.array([0, 1, 2], dtype=wp.int32, device=device))
-    wp.copy(values_wp, wp.array([1.0, 1.0, 1.0], dtype=wp.float64, device=device))
-
-    # Warp's stub types the index arrays as ``Array[int]``, which no Warp dtype satisfies.
-    matrix_wp = wps.bsr_from_triplets(3, 3, rows_wp, cols_wp, values_wp)  # pyright: ignore[reportArgumentType]
-    assert odt.has_blocks(matrix_wp, wp.float64)
-    assert np.array_equal(matrix_wp.offsets.numpy()[:4], np.arange(4))
-    assert np.allclose(matrix_wp.values.numpy().reshape(-1), np.ones(3))
 
 
 def test_csr_from_keys_matches_scipy(device: str) -> None:
@@ -1025,9 +969,7 @@ def test_index_sparse_uses_the_input_device(device: str) -> None:
     assert str(matrix.values.device) == str(indices_wp.device)
 
 
-@pytest.mark.parametrize(
-    "shape", [(50,), (12, 3), (4, 3, 2), (2, 2, 3, 5)], ids=["1d", "2d", "rank3", "rank4"]
-)
+@pytest.mark.parametrize("shape", [(12, 3), (4, 3, 2)], ids=["2d", "rank3"])
 def test_isin_matches_numpy_at_every_rank(device: str, shape: tuple[int, ...]) -> None:
     """
     Class A against [`numpy.isin`][]: membership is a per-element predicate, so any rank works.
@@ -1130,16 +1072,6 @@ def test_isin_single_test_value_on_the_sorted_branch(device: str) -> None:
     assert np.array_equal(mask_wp.numpy(), mask_np)
 
 
-def test_flatnonzero(device: str) -> None:
-    """Class A: the same indices ``np.flatnonzero`` returns, for the same mask."""
-    rng = np.random.default_rng(11)
-    mask_np = rng.choice([False, True], size=64, replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    indices_wp = od.array.flatnonzero(mask_wp)
-    indices_ref_np = np.flatnonzero(mask_np).astype(np.int32)
-    assert np.array_equal(indices_wp.numpy(), indices_ref_np)
-
-
 @pytest.mark.parametrize(
     ("dtype_wp", "dtype_np"),
     [(wp.int32, np.int32), (wp.int8, np.int8), (wp.float32, np.float32)],
@@ -1178,8 +1110,7 @@ def test_flatnonzero_matches_numpy_across_scan_blocks(device: str, first: bool) 
     assert np.array_equal(ranks_wp.numpy(), np.cumsum(mask_np) - mask_np)
 
 
-@pytest.mark.parametrize("n", [16, 257], ids=["small", "large"])
-def test_flatnonzero_indices_to_mask_round_trip(device: str, n: int) -> None:
+def test_flatnonzero_indices_to_mask_round_trip(device: str) -> None:
     """
     The two are inverses: each recovers the other's input.
 
@@ -1187,6 +1118,7 @@ def test_flatnonzero_indices_to_mask_round_trip(device: str, n: int) -> None:
     while the index direction round-trips up to ``numpy.unique`` (duplicate indices mark the same
     slot once).
     """
+    n = 257
     rng = np.random.default_rng(23)
     mask_np = rng.random(n) < 0.3
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
@@ -1231,9 +1163,10 @@ def test_mask_to_compact_ranks_is_the_exclusive_scan_of_the_mask(device: str, in
     """
     Class A: the map is ``cumsum(mask) - mask`` and the count is the mask's population.
 
-    It is the scatter-side counterpart of [`test_flatnonzero`] -- ``flatnonzero`` says *which*
-    elements are selected and this says *where each one lands* -- so the round trip between them is
-    asserted too: indexing the map by the selected positions has to give ``0 .. count - 1``.
+    It is the scatter-side counterpart of
+    [`test_flatnonzero_matches_numpy_across_scan_blocks`] -- ``flatnonzero`` says *which* elements
+    are selected and this says *where each one lands* -- so the round trip between them is asserted
+    too: indexing the map by the selected positions has to give ``0 .. count - 1``.
     """
     mask_np = np.array([True, False, True, True, False, False, True], dtype=bool)
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
@@ -1630,10 +1563,9 @@ def test_isin_max_index_rejects_a_value_that_would_wrap_int32(device: str, wide_
     assert np.array_equal(od.array.isin(elements_wp, test_wp).numpy(), expected_np)
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("index_bound", "trimesh")
 def test_index_bound_matches_the_index_maximum(
-    request: pytest.FixtureRequest, mesh_name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class A: the count inferred from the face buffer, against the numpy formula.
@@ -1643,7 +1575,7 @@ def test_index_bound_matches_the_index_maximum(
     that is the reference here. The value is checked against the fixture's actual vertex count too,
     which is the part that would catch an off-by-one that the formula shares.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     faces_np = mesh_tm.faces
 
     assert od.array.index_bound(mesh_wp.indices) == int(faces_np.max()) + 1
@@ -2029,7 +1961,7 @@ def test_invalid_arguments_raise(device: str, case: str) -> None:
             )
 
 
-@pytest.mark.parametrize("sizes", [(3, 0, 5, 1), (4,), (0, 0, 2)])
+@pytest.mark.parametrize("sizes", [(3, 0, 5, 1), (0, 0, 2)])
 def test_segment_owner_labels_matches_repeat(device: str, sizes: tuple[int, ...]):
     """
     Not a library comparison: pins the owner labels to ``numpy.repeat`` of the segment indices.

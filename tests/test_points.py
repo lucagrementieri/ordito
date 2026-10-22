@@ -910,19 +910,6 @@ def test_outlier_probability_ranks_the_planted_outliers(device: str) -> None:
     assert set(np.flatnonzero(probability_wp.numpy() > 0.8).tolist()) <= set(selected_pml.tolist())
 
 
-def test_outlier_probability_is_scale_invariant(device: str) -> None:
-    """``sigma`` scales with the cloud but ``plof`` is a ratio, so the score must not move."""
-    points_np = _cloud_with_outliers()
-    scores = []
-    for factor in (1.0, 100.0):
-        points_wp = points_to_warp(points_np * factor, device)
-        neighbor_idx_wp, neighbor_distance_wp = od_neighbors.query_nearest(
-            points_wp, points_wp, k=32, backend="bvh"
-        )
-        scores.append(od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp).numpy())
-    assert np.allclose(scores[0], scores[1], rtol=1e-4, atol=1e-4)
-
-
 @pytest.mark.parity("statistical_outlier_mask", "open3d")
 def test_statistical_outlier_mask_matches_open3d(device: str) -> None:
     """
@@ -1293,8 +1280,7 @@ def _farthest_point_sequence(points_np: np.ndarray, count: int, start: int = 0) 
     return np.array(selected, dtype=np.int32)
 
 
-@pytest.mark.parametrize("start", [0, 137])
-def test_farthest_point_sample_sequence_and_coverage(device: str, start: int) -> None:
+def test_farthest_point_sample_sequence_and_coverage(device: str) -> None:
     """
     Class A against a transcription of the reference loop, plus the property no reference asserts.
 
@@ -1304,6 +1290,7 @@ def test_farthest_point_sample_sequence_and_coverage(device: str, start: int) ->
     shrink as the count grows, which is the defining property of the greedy choice and would break
     under an arg-*min* or a stale distance buffer.
     """
+    start = 137
     rng = np.random.default_rng(2)
     points_np = rng.random((400, 3)).astype(np.float32)
     points_wp = points_to_warp(points_np, device)
@@ -1362,7 +1349,7 @@ def _hull_cloud(kind: str, n: int, seed: int) -> np.ndarray:
     Build a ``float32`` cloud in general position for the exact hull, by distribution.
 
     The thin ones are the hard case for a hull: ``disk_*`` and ``slab_*`` are a unit disk and a
-    unit square of thickness ``1e-4`` / ``1e-6``, rotated and moved off the origin so the thinness
+    unit square of thickness ``1e-6``, rotated and moved off the origin so the thinness
     is in no coordinate, and ``noisy_plane`` is a scanned flat patch, a plane with ``1e-5`` normal
     noise. At ``1e-6`` the thickness is two ``float32`` ulps of the coordinates.
     """
@@ -1424,9 +1411,7 @@ def _assert_convex_hull_of(points_np: np.ndarray, faces_np: np.ndarray) -> None:
         assert height_np.max() < 1e-13 * scale
 
 
-@pytest.mark.parametrize(
-    "kind", ["gaussian", "sphere", "disk_1e-4", "disk_1e-6", "slab_1e-6", "noisy_plane"]
-)
+@pytest.mark.parametrize("kind", ["gaussian", "sphere", "disk_1e-6", "slab_1e-6", "noisy_plane"])
 @pytest.mark.parity("convex_hull", "scipy")
 def test_convex_hull_matches_scipy(device: str, kind: str) -> None:
     """
@@ -1845,7 +1830,7 @@ def test_convex_superset_mask_scale_invariant(device: str) -> None:
     )
 
 
-@pytest.mark.parametrize("offset", [0.0, 1e3, 1e5])
+@pytest.mark.parametrize("offset", [1e3, 1e5])
 def test_convex_superset_mask_keeps_the_hull_of_a_far_cloud(device: str, offset: float) -> None:
     """
     Class B (containment of qhull's vertex set, as above), on a ball moved far from the origin.

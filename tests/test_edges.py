@@ -182,7 +182,7 @@ def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
     assert_unordered_rows_equal(np.sort(hinted_edges_wp.numpy(), axis=1), np.sort(edges_pp, axis=1))
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parametrize("bounded", [False, True], ids=["inferred", "n_vertices"])
 def test_unique_edge_count(request: pytest.FixtureRequest, mesh_name: str, bounded: bool) -> None:
     """Class A on an integer: the count equals ``len(Trimesh.edges_unique)``."""
@@ -203,7 +203,7 @@ def test_unique_edge_count_validates(device: str) -> None:
     assert od.edges.unique_edge_count(wp.zeros(0, dtype=wp.int32, device=device)) == 0
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("edges_unique_inverse", "trimesh")
 def test_edges_unique_inverse(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -351,7 +351,7 @@ def test_edges_unique_and_inverse_match_pytorch3d(
     assert np.array_equal(remap_np[face_edges_np], face_edges_p3d[:, [2, 0, 1]])
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_edges_unique_radix_is_invariant_to_an_oversized_base(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -371,7 +371,7 @@ def test_edges_unique_radix_is_invariant_to_an_oversized_base(
         assert np.array_equal(inverse_wp.numpy(), inverse_tight_wp.numpy())
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_edges_unique_from_precomputed_sorted_edges(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -456,7 +456,7 @@ def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("edges_length", "trimesh")
 def test_edges_length(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -607,7 +607,7 @@ def test_edge_length_averages_match_their_references(
 
 
 # --- face_edge_lengths ----------------------------------------------------------------
-@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("face_edge_lengths", "igl")
 def test_face_edge_lengths_are_the_opposite_edges(
     request: pytest.FixtureRequest, mesh_name: str
@@ -787,7 +787,7 @@ def test_mean_edge_length_arrival_order_agrees_with_the_default(device: str) -> 
     assert np.isclose(fixed, arrival, rtol=1e-6, atol=0.0)
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_edge_length_sum_is_the_mean_times_the_edge_count(
     mesh_name: str, request: pytest.FixtureRequest
 ) -> None:

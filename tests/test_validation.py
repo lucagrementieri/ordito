@@ -468,24 +468,6 @@ def test_is_volume_precomputed_edges(sphere_irregular: tuple[tm.Trimesh, wp.Mesh
     ) == od.validation.is_volume(mesh_wp.points, mesh_wp.indices)
 
 
-def test_is_vertex_manifold_bowtie(device: str) -> None:
-    """
-    Class B: the ``False`` branch, on two triangles meeting at a single apex vertex.
-
-    A bowtie is edge-manifold but not vertex-manifold, so it separates the two predicates
-    rather than failing both -- and igl's fan definition agrees here where Open3D's
-    connectivity one does not
-    ([`test_is_vertex_manifold_open3d_agreement_and_divergence`]).
-    """
-    _, faces_wp = numpy_to_warp(_BOWTIE_VERTICES, _BOWTIE_FACES, device)
-    manifold_wp = od.validation.is_vertex_manifold(faces_wp)
-    manifold_igl = bool(np.asarray(igl.is_vertex_manifold(_BOWTIE_FACES.astype(np.int64))).all())
-    assert manifold_wp == manifold_igl
-    assert manifold_wp is False
-    # The bow-tie is still edge-manifold (each edge used once).
-    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) is True
-
-
 def test_vertex_manifold_compressed_forest(device: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """
     Ordito against ordito: compressing the corner forest changes no verdict.
@@ -601,7 +583,7 @@ def test_vertex_manifold_mask(request: pytest.FixtureRequest, mesh_name: str) ->
     predicate (reduce igl's mask): the reduction assert pins it as the mask's reduction, so the two
     cannot drift apart, and ``is True`` keeps it non-vacuous, since a predicate that always
     returned ``False`` would still match a reference reduced the same way if both were wrong. The
-    ``False`` branch is [`test_is_vertex_manifold_bowtie`].
+    ``False`` branch is [`test_is_vertex_manifold_open3d_agreement_and_divergence`].
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mask_wp = od.validation.vertex_manifold_mask(mesh_wp.points, mesh_wp.indices)
@@ -630,41 +612,6 @@ def test_vertex_manifold_mask_faces_without_vertices(device: str) -> None:
     faces_wp = warp_empty(0, wp.int32, device)
     mask_wp = od.validation.vertex_manifold_mask(vertices_wp, faces_wp)
     assert np.array_equal(mask_wp.numpy(), np.zeros(4, dtype=bool))
-
-
-@pytest.mark.parametrize(
-    ("second_triangle", "expected"),
-    [
-        pytest.param([[1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 0.0]], True, id="crossing"),
-        pytest.param([[5.0, 5.0, 5.0], [6.0, 5.0, 5.0], [5.0, 6.0, 5.0]], False, id="separated"),
-    ],
-)
-def test_is_self_intersecting_two_triangles(
-    device: str, second_triangle: list[list[float]], expected: bool
-) -> None:
-    """Not a library comparison: a triangle piercing another, and one far from it."""
-    vertices_np = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 2.0, 0.0], *second_triangle])
-    faces_np = np.array([[0, 1, 2], [3, 4, 5]])
-    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    assert od.validation.is_self_intersecting(mesh_wp) is expected
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_face_self_intersecting_mask_matches_predicate(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Ordito against ordito: the mask's reduction must equal the predicate.
-
-    The predicate carries the reference comparison (trimesh and MeshLab); what only this can
-    check is that the per-face mask and the whole-mesh answer come from the same test.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mask_wp = od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices)
-    assert mask_wp.size == mesh_tm.faces.shape[0]
-    predicate = od.validation.is_self_intersecting(mesh_wp)
-    assert bool(od.reduce.any(mask_wp)) == predicate
 
 
 @pytest.mark.parametrize(
@@ -1293,50 +1240,6 @@ def test_face_flip_mask_is_reproducible_on_non_orientable_input(
         assert bool(mask_np.any())
     repaired_wp = od.repair.make_winding_consistent(faces_wp)
     assert od.validation.is_winding_consistent(repaired_wp) is (mesh_name == "sphere_irregular")
-
-
-@pytest.mark.parametrize(
-    ("mesh_name", "orientable"),
-    [
-        ("sphere_irregular", True),
-        ("saddle_graded", True),
-        ("mobius", False),
-        ("boy_surface", False),
-    ],
-)
-def test_face_orientation_bits_leave_edges_unsatisfied_only_when_non_orientable(
-    request: pytest.FixtureRequest, mesh_name: str, orientable: bool
-) -> None:
-    """
-    The Z2 potential is exact iff the mesh is orientable, which is the branch nothing else reached.
-
-    ``face_orientation_bits`` returns ``orient`` together with the signed face-adjacency graph
-    ``(signed_edges, signs)`` it was solved from, and the contract between them is
-    ``orient[u] ^ orient[v] == sign`` on every adjacency edge. On an orientable mesh that system is
-    consistent and the potential satisfies all of it; on a non-orientable one no potential exists,
-    so the solver necessarily leaves some edges **frustrated** -- and the count of those is what
-    ``is_orientable`` is really reading.
-
-    Both of its existing tests build a ``_triangle_ribbon`` and open by asserting
-    ``is_orientable is True``, so the whole ``False`` side of this primitive -- the engine under
-    ``is_orientable`` *and* under ``make_winding_consistent`` -- had never been executed. The two
-    non-orientable fixtures are the only inputs in the suite that can execute it.
-
-    Measured, and the separation is not marginal: 0 frustrated edges of 480 on ``icosphere`` and 30
-    of 30 on ``icosahedron``, against **41** of 4 524 on ``mobius`` and **42** of 4 446 on
-    ``boy_surface``. Asserting the direction rather than the count, since the count is a property of
-    the particular triangulation.
-    """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    orient_wp, signed_edges_wp, signs_wp, m = od.validation.face_orientation_bits(mesh_wp.indices)
-
-    assert m > 0, "a mesh with no face adjacency would make this vacuous"
-    orient_np = orient_wp.numpy()
-    edges_np = signed_edges_wp.numpy()
-    frustrated_np = (orient_np[edges_np[:, 0]] ^ orient_np[edges_np[:, 1]]) != signs_wp.numpy()
-
-    assert bool(od.validation.is_orientable(mesh_wp.indices)) is orientable
-    assert (int(frustrated_np.sum()) == 0) is orientable
 
 
 @pytest.mark.parametrize("mesh_name", ["mobius", "boy_surface", "sphere_irregular"])

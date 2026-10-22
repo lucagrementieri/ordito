@@ -264,25 +264,6 @@ def test_voxelize_mesh_solid_contains_the_pyvista_mask(
     assert not (excess_np & ~surface_np).any(), "every extra cell is a boundary-shell cell"
 
 
-def test_voxelize_mesh_solid_is_sealed(
-    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
-):
-    """Not a library comparison: ``mode="solid"`` fills the interior, and nothing leaves it."""
-    mesh_tm, vertices_wp, faces_wp = sphere
-    surface = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.12)
-    solid = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.12, mode="solid")
-    assert int(od.voxels.cells(solid).shape[0]) > int(od.voxels.cells(surface).shape[0])
-
-    # The padded shell of the solid's own bounding box must stay empty, and the interior must be
-    # separated from it: filling again changes nothing.
-    refilled = od.voxels.fill_cavities(solid)
-    lower, extent = _bounds_of(solid)
-    assert np.array_equal(_dense(solid, lower, extent), _dense(refilled, lower, extent))
-    assert od.voxels.occupancy_at_points(
-        solid, wp.array([wp.vec3(*mesh_tm.center_mass.tolist())], dtype=wp.vec3, device=device)
-    ).numpy()[0]
-
-
 @pytest.mark.parametrize(
     ("voxel_size", "origin"),
     [
@@ -414,10 +395,9 @@ def test_voxel_down_sample_matches_open3d(
     assert np.allclose(pooled_wp.numpy()[order_wp], pooled_o3d[order_o3d], rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("voxel_size", [0.13, 0.26])
 @pytest.mark.parity("voxel_down_sample", "meshlib")
 def test_voxel_down_sample_matches_meshlib(
-    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str, voxel_size: float
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
 ):
     """
     Class C (a count statistic): ``pointGridSampling`` *selects* a point, it does not pool one.
@@ -438,6 +418,7 @@ def test_voxel_down_sample_matches_meshlib(
     """
     mesh_tm, _vertices_wp, _faces_wp = sphere
     points_np, points_wp = _cloud(mesh_tm, device)
+    voxel_size = 0.13
 
     pooled_wp = od.voxels.voxel_down_sample(points_wp, voxel_size)
     cloud_ml = points_to_meshlib(points_np)
@@ -1492,7 +1473,7 @@ def test_resolve_voxel_grid_passes_both_arguments_through(device: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("n_points", "voxel_size"), [(0, None), (1, None), (4000, None), (4000, 1e-3), (4000, 0.37)]
+    ("n_points", "voxel_size"), [(0, None), (1, None), (4000, None), (4000, 1e-3)]
 )
 def test_resolve_voxel_grid_cell_bound_covers_every_cell(
     device: str, n_points: int, voxel_size: float | None

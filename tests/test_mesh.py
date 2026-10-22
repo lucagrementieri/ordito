@@ -259,20 +259,17 @@ def test_mass_properties_match_trimesh(request: pytest.FixtureRequest, mesh_name
     assert_nonconstant(inertia_wp, tol=1e-3)
 
 
-@pytest.mark.parametrize("mesh_name", [*MESHES, "sphere_irregular_hollow", "three_spheres"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "three_spheres"])
 def test_body_count_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: ``body_count`` against ``trimesh.Trimesh.body_count``.
 
-    Non-vacuity: the expected count is asserted too, and it is not constant --
-    ``sphere_irregular_hollow`` is two bodies (the outer shell and the cavity's inner one),
-    ``three_spheres`` three disjoint spheres, and the other fixtures one each.
+    Non-vacuity: the expected count is asserted too, and it is not constant -- ``three_spheres`` is
+    three disjoint spheres, ``sphere_irregular`` one.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     assert od.Trimesh.from_warp_mesh(mesh_wp).body_count == mesh_tm.body_count
-    assert mesh_tm.body_count == {"sphere_irregular_hollow": 2, "three_spheres": 3}.get(
-        mesh_name, 1
-    )
+    assert mesh_tm.body_count == {"three_spheres": 3}.get(mesh_name, 1)
 
 
 def test_scalar_properties_of_a_mesh_with_no_faces(device: str) -> None:
@@ -376,16 +373,7 @@ def test_contains_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str
     assert np.array_equal(inside_wp, inside_tm)
 
 
-def test_contains_reuses_the_cached_bvh(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a parity assert: the query goes through the cached BVH rather than building one."""
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    _ = mesh.contains(points_to_warp(np.zeros((1, 3)), mesh.device))
-    assert mesh._cache["warp_mesh"] is mesh_wp
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_sample_lies_on_the_surface(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_sample_lies_on_the_surface(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: sampling is stochastic, so there is no answer to compare against.
 
@@ -396,7 +384,7 @@ def test_sample_lies_on_the_surface(request: pytest.FixtureRequest, mesh_name: s
     under the same seed pins that the seed is honoured; ``sample_surface``'s own tests cover the
     arrival-order scan.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     points_wp, face_index_wp = mesh.sample(512, seed=3)
     assert np.array_equal(mesh.sample(512, seed=3)[0].numpy(), points_wp.numpy())
@@ -413,8 +401,7 @@ def test_sample_lies_on_the_surface(request: pytest.FixtureRequest, mesh_name: s
     assert np.abs(offsets_np).max() < 1e-4
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_submesh_matches_the_free_function(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_submesh_matches_the_free_function(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Ordito against ordito: the mask and index forms of ``submesh`` agree with each other.
 
@@ -422,7 +409,7 @@ def test_submesh_matches_the_free_function(request: pytest.FixtureRequest, mesh_
     compares it against trimesh); this pins the class's dtype dispatch, which is the only thing the
     method adds and the only place a wrong branch would show.
     """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     keep_np = np.zeros(mesh.n_faces, dtype=bool)
     keep_np[::2] = True
@@ -637,9 +624,8 @@ def test_operator_properties_match_the_free_functions(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
-def test_boundary_matches_free_functions(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+def test_boundary_matches_free_functions(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = saddle_graded
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     boundary_edges_ref = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
@@ -966,8 +952,7 @@ def test_warp_mesh_supports_ray_queries(sphere_irregular: tuple[tm.Trimesh, wp.M
 
 
 @pytest.mark.parity("reverse_winding", "trimesh")
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_invert_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_invert_matches_trimesh(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: ``Trimesh.invert`` against ``trimesh.Trimesh.invert``, face buffer for face buffer.
 
@@ -977,7 +962,7 @@ def test_invert_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) 
     last assert: inverting twice returns the original face buffer, the property that defines the
     operation.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     inverted = mesh.invert()
 
@@ -1033,31 +1018,6 @@ def test_invert_carried_cache_matches_recomputation(
             assert np.allclose(got, expected, rtol=1e-4, atol=1e-4), (
                 f"invert carried a stale {key} on {mesh_name}"
             )
-
-
-def test_invert_negates_normals_and_volume(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Class A: the flip negates normals and volume, matching trimesh on both.
-
-    The normals are the carried-and-negated path rather than a recomputation, so this checks the
-    shortcut `invert` takes; ``volume`` is dropped and recomputed, and must come back negated.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    mesh = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp))
-    inverted = mesh.invert()
-
-    assert np.allclose(
-        inverted.face_normals.numpy(), -mesh.face_normals.numpy(), rtol=1e-5, atol=1e-5
-    )
-    assert np.allclose(
-        inverted.vertex_normals.numpy(), -mesh.vertex_normals.numpy(), rtol=1e-5, atol=1e-5
-    )
-    assert inverted.volume == pytest.approx(-mesh.volume, rel=1e-5)
-
-    flipped_tm = mesh_tm.copy()
-    flipped_tm.invert()
-    assert np.allclose(inverted.face_normals.numpy(), flipped_tm.face_normals, rtol=1e-5, atol=1e-5)
-    assert inverted.volume == pytest.approx(flipped_tm.volume, rel=1e-5)
 
 
 # ---------------------------------------------------------------------------

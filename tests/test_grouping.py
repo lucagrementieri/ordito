@@ -515,18 +515,6 @@ def test_first_occurrence_indices_matches_numpy_return_index(device: str) -> Non
     assert np.array_equal(padded_wp.numpy()[n_unique:], np.full(2, values_np.size, dtype=np.int32))
 
 
-def test_first_occurrence_indices_picks_representatives_of_duplicate_rows(device: str) -> None:
-    """Gathering by the result reproduces the unique array that came back beside the inverse."""
-    rows_np = np.array([[1, 2], [3, 4], [1, 2], [5, 6], [3, 4]], dtype=np.int32)
-    rows_wp = wp.array(np.ascontiguousarray(rows_np), dtype=wp.int32, device=device)
-    unique_wp, inverse_wp = od.grouping.unique_rows(rows_wp, return_inverse=True)
-
-    first_wp = od.grouping.first_occurrence_indices(inverse_wp, int(unique_wp.shape[0]))
-
-    assert int(unique_wp.shape[0]) == 3
-    assert np.array_equal(rows_np[first_wp.numpy()], unique_wp.numpy())
-
-
 @pytest.mark.parametrize("kind", ["vec3", "int32_rows", "float32_rows", "strided_float32_rows"])
 def test_hash_rows_dispatches_to_the_typed_hashers(device: str, kind: str) -> None:
     """

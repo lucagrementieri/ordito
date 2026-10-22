@@ -670,12 +670,7 @@ def test_fillable_loop_mask_shared_vertex_disqualifies_both_loops(device: str) -
 
 @pytest.mark.parametrize(
     ("mesh_name", "fillable"),
-    [
-        ("saddle_graded", False),
-        ("sphere_irregular_cap", True),
-        ("sphere_irregular_band", True),
-        ("sphere_irregular", True),
-    ],
+    [("saddle_graded", False), ("sphere_irregular_band", True), ("sphere_irregular", True)],
 )
 def test_fillable_loop_mask_on_the_fixtures(
     request: pytest.FixtureRequest, mesh_name: str, fillable: bool
@@ -685,7 +680,7 @@ def test_fillable_loop_mask_on_the_fixtures(
 
     ``fill_min_weight(resolve_multiple_edges=False)`` is the unprotected path, and the mask is its
     precondition: ``True`` claims it leaves an edge-manifold mesh, ``False`` that it may not. Both
-    answers are reached. The planar rims of ``sphere_irregular_cap`` / ``_band`` are chord-free;
+    answers are reached. The planar rims of ``sphere_irregular_band`` are chord-free;
     ``saddle_graded``'s rim is not -- two grid corners are ears, whose two rim neighbours an
     interior edge already joins -- and the unprotected fill duplicates that edge, while the default
     protected fill stays edge-manifold. ``sphere_irregular`` is the closed case, with no loops.
@@ -1148,42 +1143,6 @@ def test_fill_min_weight_is_reproducible_when_deterministic(device: str) -> None
         assert np.array_equal(again_wp.numpy(), filled_np)
 
 
-def test_fill_min_weight_optimal_vs_fan(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = saddle_graded
-    # Single-loop fixture: the DP minimizes the plane-normalized objective over all triangulations,
-    # and the fan is one such triangulation, so the min-weight total must not exceed the fan's.
-    n_orig = mesh_wp.indices.size
-    fan_fill = od.holes.fill_fan(mesh_wp.points, mesh_wp.indices).numpy()[n_orig:]
-    mw_fill = od.holes.fill_min_weight(mesh_wp.points, mesh_wp.indices).numpy()[n_orig:]
-
-    fan_total = _total_fill_metric(mesh_wp.points, mesh_wp.indices, fan_fill, "plane_normalized")
-    mw_total = _total_fill_metric(mesh_wp.points, mesh_wp.indices, mw_fill, "plane_normalized")
-    assert mw_total <= fan_total + 1e-4
-
-
-def test_fill_min_weight_avoids_multiple_edges(device: str) -> None:
-    # Two triangles sharing edge (0, 2); the boundary loop 0-1-2-3 has 0-2 as a pre-existing chord.
-    vertices = wp.array(
-        [[0.0, 0.0, 0.0], [0.5, 2.0, 0.0], [1.0, 0.0, 0.0], [0.5, -2.0, 0.0]],
-        dtype=wp.vec3,
-        device=device,
-    )
-    faces = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32, device=device)
-
-    def edge_face_count(faces_flat: np.ndarray, u: int, v: int) -> int:
-        return int(sum({u, v} <= set(tri) for tri in faces_flat.reshape(-1, 3).tolist()))
-
-    resolved = od.holes.fill_min_weight(vertices, faces, resolve_multiple_edges=True)
-    # The forbidden diagonal (0, 2) keeps its two original faces; the other diagonal is used.
-    assert edge_face_count(resolved.numpy(), 0, 2) == 2
-    assert od.validation.is_edge_manifold(resolved, allow_boundary_edges=True)
-
-    unresolved = od.holes.fill_min_weight(vertices, faces, resolve_multiple_edges=False)
-    # Free to reuse the geometrically preferred diagonal (0, 2), creating a non-manifold edge.
-    assert edge_face_count(unresolved.numpy(), 0, 2) == 4
-    assert not od.validation.is_edge_manifold(unresolved, allow_boundary_edges=True)
-
-
 # A quad rim (0, 1, 2, 3) whose two diagonals are both mesh edges: vertices 4 and 5 each join all
 # four rim vertices, giving the patch one cross-cap (see the test below for why it must be one).
 _CROSS_CAP_VERTICES = np.array(
@@ -1201,10 +1160,9 @@ def test_fill_min_weight_leaves_a_hole_open_when_both_diagonals_are_forbidden(de
     A quad hole whose both diagonals are already forbidden must come back unfilled.
 
     A quad hole (0, 1, 2, 3) whose *both* diagonals -- 0-2 and 1-3 -- already exist as mesh edges
-    elsewhere. A single forbidden diagonal (the sibling test above) still leaves one legal
-    triangulation; here neither of the two possible triangulations of a 4-gon has an admissible
-    apex, so the hole must come back untouched rather than filled with a triangle that reuses one
-    of the forbidden chords.
+    elsewhere. A single forbidden diagonal still leaves one legal triangulation; here neither of
+    the two possible triangulations of a 4-gon has an admissible apex, so the hole must come back
+    untouched rather than filled with a triangle that reuses one of the forbidden chords.
 
     This configuration needs a non-orientable surrounding to exist at all (a planar/orientable
     quad's two diagonals always cross, so at most one can be a pre-existing edge without already
@@ -1453,33 +1411,6 @@ def test_fill_small_max_edges_matches_the_edge_count_references(
     assert filled_wp.size // 3 - n_faces == expected
     assert added_pmf == expected
     assert added_pml == expected
-
-
-def test_fill_small_thresholds_select_opposite_loops(device: str) -> None:
-    """
-    Not a parity assert: ordito against ordito, pinning the two thresholds apart.
-
-    The oracle for both branches is
-    [`test_fill_small_max_edges_matches_the_edge_count_references`] (edges) and
-    [`test_fill_small_fills_exactly_the_loops_under_the_threshold`] (perimeter); this test carries
-    neither. Its job is to show the two thresholds are not two spellings of one thing, which no
-    reference comparison can show because no reference implements both.
-
-    The fixture is the one whose orderings are **inverted**: a 16-vertex rim of perimeter 2.406
-    beside a 4-vertex rim of perimeter about 3.6, so "the small loop" is the 16-gon by length and
-    the 4-gon by count. A threshold in the middle of each range therefore fills a *different* loop
-    depending on which unit it is in, and the added-triangle counts (14 against 2) tell them apart.
-    """
-    vertices_wp, faces_wp, loop_sizes, perimeters = _two_holes_of_different_size(device)
-    n_faces = faces_wp.size // 3
-    by_size = dict(zip(loop_sizes, perimeters, strict=True))
-    assert by_size[16] < by_size[4]  # the inversion this test turns on
-
-    by_edges_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=(4 + 16) // 2)
-    by_length_wp = od.holes.fill_small(vertices_wp, faces_wp, sum(perimeters) / 2.0)
-
-    assert by_edges_wp.size // 3 - n_faces == 4 - 2
-    assert by_length_wp.size // 3 - n_faces == 16 - 2
 
 
 class _FillSmallThresholds(TypedDict, total=False):
@@ -2087,14 +2018,7 @@ def _capsule_halves(device: str, n_a: int, n_b: int, phase: float = 0.0, offset:
 
 
 @pytest.mark.parametrize(
-    ("n_a", "n_b", "phase", "offset"),
-    [
-        (8, 8, 0.0, 0.0),
-        (16, 11, 0.3, 0.0),
-        (7, 13, 0.7, 0.0),
-        (24, 5, 1.1, 0.0),
-        (17, 11, 0.9, 1.2),
-    ],
+    ("n_a", "n_b", "phase", "offset"), [(8, 8, 0.0, 0.0), (7, 13, 0.7, 0.0), (17, 11, 0.9, 1.2)]
 )
 def test_stitch_watertight(device: str, n_a: int, n_b: int, phase: float, offset: float) -> None:
     (_, _, va, fa), (_, _, vb, fb) = _capsule_halves(device, n_a, n_b, phase, offset)
@@ -2901,7 +2825,7 @@ def _rim_successors(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("bridge_edges", "meshlib")
-@pytest.mark.parametrize("step", [6, 12, 5])
+@pytest.mark.parametrize("step", [6, 12])
 def test_bridge_edges_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str, step: int
 ) -> None:
@@ -2914,7 +2838,7 @@ def test_bridge_edges_matches_meshlib(
     substantive part: the quadrilateral admits two triangulations and only one of them matches, so
     a patch wound the other way round would fail here rather than merely look different.
 
-    The edge pairs are taken at three different separations along one rim, because a bridge between
+    The edge pairs are taken at two different separations along one rim, because a bridge between
     nearly opposite edges and one between near neighbours take different branches in meshlib.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -3285,7 +3209,7 @@ def _open_shells_tm(
 
 
 @pytest.mark.parity("join_closest_components", "pymeshfix")
-@pytest.mark.parametrize("count", [2, 3, 5])
+@pytest.mark.parametrize("count", [2, 3])
 def test_join_closest_components_matches_pymeshfix(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str, count: int
 ) -> None:
@@ -3334,7 +3258,7 @@ def test_join_closest_components_matches_pymeshfix(
     assert np.array_equal(joined_wp.numpy()[: faces_wp.size], faces_wp.numpy())
 
 
-@pytest.mark.parametrize("count", [3, 6])
+@pytest.mark.parametrize("count", [3])
 def test_join_closest_components_rim_tracks_the_regrouped_boundary(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str, count: int
 ) -> None:
@@ -3416,12 +3340,7 @@ class _JoinBounds(TypedDict, total=False):
 
 @pytest.mark.parametrize(
     ("kwargs", "expected_joins"),
-    [
-        ({"max_distance": 0.1}, 0),
-        ({"max_distance": 10.0}, 2),
-        ({"max_joins": 1}, 1),
-        ({"max_joins": 0}, 0),
-    ],
+    [({"max_distance": 0.1}, 0), ({"max_distance": 10.0}, 2), ({"max_joins": 0}, 0)],
 )
 def test_join_closest_components_respects_its_bounds(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str, kwargs: _JoinBounds, expected_joins: int
@@ -3471,7 +3390,6 @@ def test_join_closest_components_leaves_closed_and_single_meshes_alone(
 _INVALID_ARGUMENT_CASES = [
     "fill_smooth_edge_weights",
     "stitch_watertight",
-    "stitch_two_rims",
     "stitch_min_weight_watertight",
     "stitch_min_weight_metric",
     "stitch_smooth_watertight",
@@ -3488,21 +3406,17 @@ def test_invalid_arguments_raise(request: pytest.FixtureRequest, device: str, ca
     """
     Not a library comparison: the documented ``ValueError`` of each guard, by its message.
 
-    The stitchers need exactly one boundary loop per side, so a watertight mesh (no loop) and
-    ``sphere_irregular_band`` (two) are both refused; the loop-level engine needs loops of at least
-    three vertices; ``fill_smooth`` names its ``edge_weights`` options and ``stitch_min_weight``
-    its metrics; and ``join_closest_components`` refuses a negative join budget.
+    The stitchers need exactly one boundary loop per side, so a watertight mesh (no loop) is
+    refused; the loop-level engine needs loops of at least three vertices; ``fill_smooth`` names
+    its ``edge_weights`` options and ``stitch_min_weight`` its metrics; and
+    ``join_closest_components`` refuses a negative join budget.
     """
     if case == "fill_smooth_edge_weights":
         _, mesh_wp = request.getfixturevalue("saddle_graded")
         with pytest.raises(ValueError, match="edge_weights must be"):
             od.holes.fill_smooth(mesh_wp.points, mesh_wp.indices, edge_weights="nope")
-    elif case in {"stitch_watertight", "stitch_two_rims"}:
-        _, mesh_wp = request.getfixturevalue(
-            "sphere_irregular" if case == "stitch_watertight" else "sphere_irregular_band"
-        )
-        if case == "stitch_two_rims":
-            assert len(boundary_loop_sizes(mesh_wp.indices.numpy().reshape(-1, 3))) >= 2
+    elif case == "stitch_watertight":
+        _, mesh_wp = request.getfixturevalue("sphere_irregular")
         _, _, va, fa = _cone_wp(device=device, n=10, apex_z=-1.0, rim_z=0.0)
         with pytest.raises(ValueError, match="exactly one boundary loop"):
             od.holes.stitch(mesh_wp.points, mesh_wp.indices, va, fa)

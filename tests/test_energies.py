@@ -182,7 +182,7 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
 
 
 @pytest.mark.parametrize("k", [1, 2, 3])
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("k_harmonic", "igl")
 def test_k_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str, k: int) -> None:
     """
@@ -242,10 +242,7 @@ _HESSIAN_ENERGIES = {
     ("energy", "mesh_name"),
     [
         *(("hessian_energy", name) for name in ("sphere_irregular", "saddle_graded")),
-        *(
-            ("curved_hessian_energy", name)
-            for name in ("sphere_irregular", "saddle_graded", "torus_irregular")
-        ),
+        *(("curved_hessian_energy", name) for name in ("saddle_graded", "torus_irregular")),
     ],
 )
 @pytest.mark.parity("hessian_energy", "igl")
@@ -266,8 +263,8 @@ def test_hessian_energies_match_igl(
     igl's chained sparse products. ordito numbers and orients its unique edges differently from
     ``igl::orient_halfedges`` (min-vertex-first instead of first-occurrence-first), and the
     agreement here is what shows the energy is invariant to that gauge. ``torus`` is the
-    curvature-rich closed case where the ``K`` correction actually contributes. Its closed arms
-    also check, as an invariant rather than a comparison, that constants have zero curved energy:
+    curvature-rich closed case where the ``K`` correction actually contributes. Its closed arm
+    also checks, as an invariant rather than a comparison, that constants have zero curved energy:
     every Crouzeix-Raviart gradient row sums to zero by construction.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)

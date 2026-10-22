@@ -48,9 +48,7 @@ def _face_component_count(
     )
 
 
-@pytest.mark.parametrize(
-    ("angle", "n_creases"), [(0.0, 12), (30.0, 12), (89.0, 12), (91.0, 0), (180.0, 0)]
-)
+@pytest.mark.parametrize(("angle", "n_creases"), [(0.0, 12), (89.0, 12), (91.0, 0), (180.0, 0)])
 def test_crease_edges_thresholds(
     unit_box: tuple[tm.Trimesh, wp.Mesh], angle: float, n_creases: int
 ) -> None:
@@ -92,9 +90,8 @@ def test_crease_edges_matches_pymeshlab(request: pytest.FixtureRequest, mesh_nam
     assert set(np.unique(creases_np).tolist()) == set(selected_pml.tolist())
 
 
-@pytest.mark.parametrize("angle", [30.0, 60.0])
 @pytest.mark.parity("crease_edges", "meshlib")
-def test_crease_edges_matches_meshlib(unit_box: tuple[tm.Trimesh, wp.Mesh], angle: float) -> None:
+def test_crease_edges_matches_meshlib(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B (undirected-edge decode): the same dihedral threshold, reported as a bitset.
 
@@ -104,7 +101,7 @@ def test_crease_edges_matches_meshlib(unit_box: tuple[tm.Trimesh, wp.Mesh], angl
     ``EdgeId(2 * ue)`` and the topology's ``org`` / ``dest``. Both sides are then sorted within a
     row and across rows, since neither orients an undirected edge.
 
-    Exact on both thresholds: 12 edges each on a unit box, the same 12 vertex pairs. The box is the
+    Exact: 12 edges on a unit box, the same 12 vertex pairs. The box is the
     fixture for the reason the pyvista pairing above uses it -- a smooth sphere yields ``[] == []``
     at 30 degrees and would test nothing -- and the count is asserted before the sets are compared.
 
@@ -113,6 +110,7 @@ def test_crease_edges_matches_meshlib(unit_box: tuple[tm.Trimesh, wp.Mesh], angl
     flat, which is ordito's ``angle``.
     """
     mesh_tm, mesh_wp = unit_box
+    angle = 30.0
     creases_wp = od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=angle)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)

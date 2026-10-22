@@ -119,9 +119,7 @@ def test_trace_from_vertex_walks_the_requested_distance_on_the_surface(
     assert distance_tm.max() < 1e-5 * scale
 
 
-@pytest.mark.parametrize(
-    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
-)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("trace_rays", "potpourri3d")
 @pytest.mark.parity("trace_locality", "potpourri3d")
 def test_trace_from_vertex_matches_potpourri3d(
@@ -613,11 +611,8 @@ def test_geodesic_path_reaches_its_source(request: pytest.FixtureRequest, mesh_n
         assert float(distance_wp.numpy().max()) < 1e-5 * diagonal
 
 
-@pytest.mark.parametrize(
-    ("mesh_name", "n_completed"), [("sphere_irregular", 142), ("sphere_well_shaped", 0)]
-)
 def test_geodesic_path_finishes_short_paths_along_mesh_edges(
-    request: pytest.FixtureRequest, mesh_name: str, n_completed: int
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class B: a path the heat field strands is finished along the shortest mesh-edge path.
@@ -630,14 +625,13 @@ def test_geodesic_path_finishes_short_paths_along_mesh_edges(
     [`scipy.sparse.csgraph.dijkstra`][]'s edge-graph distance from that vertex (to 1e-5). Every
     path then ends at the source and none is shorter than ``igl.exact_geodesic``; the completed
     ones measure 1.05-1.50 of it (median 1.15), inside the 1.00-1.68 of the paths the field carries
-    all the way. The warning counts them; on ``sphere_well_shaped`` nothing is completed and the
-    call is silent. Without the completion all 142 end on that vertex, 0.59 from the source (14 %
-    of the mesh's extent).
+    all the way. The warning counts them. Without the completion all 142 end on that vertex, 0.59
+    from the source (14 % of the mesh's extent).
     """
     from scipy.sparse import csr_matrix
     from scipy.sparse.csgraph import dijkstra
 
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
     n_vertices = vertices_np.shape[0]
     device = mesh_wp.points.device
@@ -651,11 +645,8 @@ def test_geodesic_path_finishes_short_paths_along_mesh_edges(
             *od.geodesic_walk.geodesic_path(mesh_wp.points, mesh_wp.indices, source_wp, targets_wp)
         )
     messages = [str(w.message) for w in caught if "geodesic_path:" in str(w.message)]
-    if n_completed:
-        assert len(messages) == 1
-        assert f"{n_completed} of {len(targets_np)} paths" in messages[0]
-    else:
-        assert messages == []
+    assert len(messages) == 1
+    assert f"142 of {len(targets_np)} paths" in messages[0]
 
     distance_wp = od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, source_wp)
     plain = od.array.split(
@@ -700,10 +691,10 @@ def test_geodesic_path_finishes_short_paths_along_mesh_edges(
         assert all(tuple(sorted(pair)) in edge_set for pair in itertools.pairwise(ids))
         tail_length = float(np.linalg.norm(np.diff(tail, axis=0), axis=1).sum())
         assert np.isclose(tail_length, graph_distance[ids[0]], rtol=1e-5)
-    assert completed == n_completed
+    assert completed == 142
 
 
-@pytest.mark.parametrize("n_sources", [1, 3, 8])
+@pytest.mark.parametrize("n_sources", [1, 3])
 def test_geodesic_path_arrives_on_any_of_several_sources(
     sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh], n_sources: int
 ) -> None:

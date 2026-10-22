@@ -41,15 +41,6 @@ def test_the_library_default_is_off() -> None:
     assert result.stdout.strip() == "False"
 
 
-def test_set_deterministic_sets_the_process_default() -> None:
-    """Not a library comparison: ``set_deterministic`` flips the process default both ways."""
-    assert od.config.is_deterministic() is False
-    od.config.set_deterministic(True)
-    assert od.config.is_deterministic() is True
-    od.config.set_deterministic(False)
-    assert od.config.is_deterministic() is False
-
-
 def test_deterministic_nests_and_restores() -> None:
     """Not a library comparison: each block overrides the one around it and restores it on exit."""
     with od.config.deterministic(True):

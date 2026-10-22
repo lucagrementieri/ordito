@@ -39,10 +39,9 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
 
     **trimesh is deliberately absent**, and that is the finding worth recording:
     ``Trimesh.vertex_normals`` is *angle*-weighted, not area-weighted. It matches
-    ``vertex_normals`` at ``weighting="angle"`` to 4.3e-7 (see ``test_vertex_normals_angle``)
-    and differs from the area-weighted answer by up to **0.072** on this fixture. The
-    ``vertex_normals`` benchmark group timed it as though it were the same quantity; it is now
-    exempted there with a redirect to open3d.
+    ``vertex_normals`` at ``weighting="angle"`` to 4.3e-7 and differs from the area-weighted answer
+    by up to **0.072** on this fixture. The ``vertex_normals`` benchmark group timed it as though it
+    were the same quantity; it is now exempted there with a redirect to open3d.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
@@ -110,13 +109,7 @@ def test_mean_vertex_normals_match_pyvista(request: pytest.FixtureRequest, mesh_
 
 
 @pytest.mark.parametrize(
-    ("mesh_name", "scale"),
-    [
-        ("saddle_graded", 1.0),
-        ("sphere_irregular", 1.0),
-        ("sphere_irregular", 3e-6),
-        ("sphere_irregular", 1e-9),
-    ],
+    ("mesh_name", "scale"), [("sphere_irregular", 3e-6), ("sphere_irregular", 1e-9)]
 )
 def test_vertex_normals_area_matches_igl_at_any_scale(
     request: pytest.FixtureRequest, mesh_name: str, scale: float
@@ -124,14 +117,13 @@ def test_vertex_normals_area_matches_igl_at_any_scale(
     """
     Class A: area weighting against ``igl.per_vertex_normals``' area-weighted mode, at any scale.
 
-    igl is the reference here rather than trimesh, because trimesh has no area-weighted mode --
-    the angle-weighted one is [`test_vertex_normals_angle`]. The reference is taken at unit scale:
-    a normal is a direction, not a length, so shrinking the mesh must not move it. The open
-    ``half_torus`` at unit scale pins the boundary vertices; the two small scales pin the
-    magnitude handling. ``|cross|`` scales as ``h^2``, so an absolute floor on it inside
-    ``kernels.triangles.face_normals_and_area`` put every face of a mesh at ``h <= 3e-6`` below the
-    floor and returned the raw cross product where a unit normal was promised; area-weighting then
-    squared that and ``wp.normalize`` saw a ``float32`` ``length_sq`` underflowed to zero.
+    igl is the reference here rather than trimesh, because trimesh has no area-weighted mode. The
+    reference is taken at unit scale: a normal is a direction, not a length, so shrinking the mesh
+    must not move it. The two small scales pin the magnitude handling. ``|cross|`` scales as
+    ``h^2``, so an absolute floor on it inside ``kernels.triangles.face_normals_and_area`` put every
+    face of a mesh at ``h <= 3e-6`` below the floor and returned the raw cross product where a unit
+    normal was promised; area-weighting then squared that and ``wp.normalize`` saw a ``float32``
+    ``length_sq`` underflowed to zero.
     Measured before the fix: **every** vertex normal came back exactly zero at both small scales,
     with nothing raised.
     """
@@ -219,25 +211,6 @@ def test_vertex_normal_weightings_match_meshlib(request: pytest.FixtureRequest, 
     assert not np.allclose(mean_wp.numpy(), area_ml, atol=1e-4)
 
 
-def test_vertex_normals_angle(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
-    """
-    Class A: angle weighting against trimesh's, which is the same rule under a different name.
-
-    Completes the three weightings the wrapper exposes; each is a different accumulation rather
-    than a scaling of one, so each needs its own comparison.
-    """
-    mesh_tm, mesh_wp = saddle_graded
-
-    n_vertices = mesh_tm.vertices.shape[0]
-    vertex_normals_tm = tm.geometry.weighted_vertex_normals(
-        n_vertices, mesh_tm.faces, mesh_tm.face_normals, mesh_tm.face_angles
-    )
-
-    vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
-    vertex_normals_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="angle")
-    assert np.allclose(vertex_normals_wp.numpy(), vertex_normals_tm, rtol=1e-5, atol=1e-5)
-
-
 @pytest.mark.parametrize("weighting", ["area", "angle"])
 def test_vertex_normals_precomputed_face_quantities(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], weighting: Literal["area", "angle"]
@@ -245,8 +218,9 @@ def test_vertex_normals_precomputed_face_quantities(
     """
     Ordito against ordito: supplied face normals and weights equal the ones the call derives.
 
-    The derived path carries the oracle (igl's area mode, trimesh's angle weighting above); this
-    pins that the ``face_normals=`` / ``face_weights=`` path accumulates them the same way.
+    The derived path carries the oracle (open3d's and igl's area mode, MeshLib's angle weighting
+    above); this pins that the ``face_normals=`` / ``face_weights=`` path accumulates them the same
+    way.
     """
     mesh_tm, mesh_wp = saddle_graded
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)

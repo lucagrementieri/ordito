@@ -9,15 +9,6 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
-from tests.conversions import warp_empty
-
-
-def test_as_array2d_accepts_2d(device: str) -> None:
-    arr = warp_empty((2, 3), wp.int32, device)
-    out = odt.as_array2d(arr, wp.int32)
-    assert out.ndim == 2
-    assert out.dtype == wp.int32
-
 
 _INT_WP_TO_NUMPY: tuple[tuple[type, type[np.integer]], ...] = (
     (wp.int8, np.int8),

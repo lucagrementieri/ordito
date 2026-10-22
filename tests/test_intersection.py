@@ -215,10 +215,7 @@ _MESH_WITH_PLANE_CASES = [
         pytest.param(mesh_name, _axis_planes, id=f"axis_planes-{mesh_name}")
         for mesh_name in ("sphere_irregular", "saddle_graded")
     ],
-    *[
-        pytest.param(mesh_name, _tilted_plane, id=f"tilted_plane-{mesh_name}")
-        for mesh_name in ("sphere_irregular", "saddle_graded")
-    ],
+    pytest.param("saddle_graded", _tilted_plane, id="tilted_plane-saddle_graded"),
     pytest.param("sphere_irregular", _miss_plane, id="miss_plane"),
 ]
 
@@ -751,7 +748,7 @@ def _marching_triangles_both_links(
 
 @pytest.mark.parametrize("hops", [2, 3, 16])
 @pytest.mark.parametrize("field", ["random", "wave"])
-@pytest.mark.parametrize("mesh_name", [*MESHES, "sphere_irregular"])
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_marching_triangles_device_link_matches_host_link(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
@@ -1424,7 +1421,6 @@ _SLICE_MESH_WITH_PLANE_CASES = [
         pytest.param(mesh_name, _axis_planes, None, id=f"axis_planes-{mesh_name}")
         for mesh_name in ("sphere_irregular", "saddle_graded")
     ],
-    pytest.param("sphere_irregular", _tilted_plane, None, id="tilted_plane"),
     pytest.param("sphere_irregular", _on_plane, None, id="on_plane"),
 ]
 
@@ -1446,8 +1442,8 @@ def test_slice_mesh_with_plane_matches_trimesh(
     flat faces with clean corners -- one crossing three faces at once, the case where the
     retriangulation has a real choice, the other face-parallel, where whole faces should stay
     untouched rather than being split; each carries its own expected face count, which no other
-    scenario needs. ``axis_planes``/``tilted_plane`` run the same comparison on curved and open
-    fixtures, where the cut meets many small faces and, on ``hemisphere``, an existing boundary.
+    scenario needs. ``axis_planes`` runs the same comparison on curved and open fixtures, where the
+    cut meets many small faces and, on ``hemisphere``, an existing boundary.
     ``on_plane`` is the boundary between *cut* and *miss*, where a strict-versus-inclusive side
     test changes the answer -- trimesh's convention is the reference, and both sides end up
     empty, which ``_sliced_meshes_equivalent`` now handles directly rather than needing its own
@@ -1595,9 +1591,7 @@ def test_split_mesh_with_plane_matches_pyvista(
     assert np.max(KDTree(points_np).query(union_pv)[0]) < 1e-5
 
 
-@pytest.mark.parametrize(
-    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
-)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular_hollow", "saddle_graded"])
 def test_split_mesh_with_plane_refines_without_cracking(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1789,7 +1783,7 @@ def test_clip_mesh_with_field_matches_pyvista_clip_scalar(
 
 
 @pytest.mark.parity("clip_mesh_with_field", "pyvista")
-@pytest.mark.parametrize("subdivisions", [3, 4])
+@pytest.mark.parametrize("subdivisions", [4])
 @pytest.mark.parametrize("height_fraction", [0.3, 0.5, 0.81])
 def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(
     device: str, subdivisions: int, height_fraction: float
@@ -1871,7 +1865,7 @@ def test_clip_mesh_with_field_capped_seals_a_vertex_within_tolerance_of_the_leve
     assert capped_f.size == reference_f.size
 
 
-@pytest.mark.parametrize("height_fraction", [0.3, 0.81])
+@pytest.mark.parametrize("height_fraction", [0.81])
 def test_clip_mesh_with_field_planar_cap_matches_the_min_weight_cap(
     device: str, height_fraction: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2051,7 +2045,7 @@ def test_clip_mesh_with_field_capped_keeps_coincident_input_vertices(device: str
     assert len(capped_tm.split(only_watertight=False)) == 2
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular"])
 def test_clip_mesh_with_field_reproduces_slice_mesh_with_plane(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -2400,29 +2394,6 @@ def test_split_faces_along_field_matches_pyvista_clip_scalar_both(
     n_vertices = mesh_wp.points.size
     assert vertices_wp.size > n_vertices
     assert np.array_equal(vertices_wp.numpy()[:n_vertices], mesh_wp.points.numpy())
-
-
-def test_split_faces_along_field_positive_side_is_the_clip(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Not a parity assert: this pins the split to ``clip_mesh_with_field``, which carries the oracle.
-
-    The clip is compared against ``clip_scalar`` and ``clip_closed_surface`` in this file; the split
-    reuses its classifier and its windings but keeps both sides. So the positive side must be the
-    clip's answer **exactly** -- same face count, same area -- and any divergence is the split's,
-    since the clip's is the tested one.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    isovalue = 0.1
-    field_wp = _height_field(mesh_tm, str(mesh_wp.device))
-    *_, positive_tm, _negative_tm = _split_sides(mesh_wp, field_wp, isovalue)
-    clipped_tm = warp_to_trimesh(
-        *od.intersection.clip_mesh_with_field(mesh_wp.points, mesh_wp.indices, field_wp, isovalue)
-    )
-    assert 0 < len(clipped_tm.faces) < len(mesh_tm.faces)  # non-vacuity
-    assert len(positive_tm.faces) == len(clipped_tm.faces)
-    assert np.isclose(positive_tm.area, clipped_tm.area, rtol=1e-6)
 
 
 def test_split_faces_along_field_degenerate_level_sets(

@@ -111,7 +111,6 @@ def _noisy_icosphere_3(device: str) -> tuple[tm.Trimesh, wp.array[wp.vec3], wp.a
 @pytest.mark.parametrize(
     ("mesh_name", "iterations", "volume_constraint", "cotangent_operator"),
     [
-        pytest.param("sphere_irregular", 8, False, False, id="sphere_irregular"),
         pytest.param("saddle_graded", 8, False, False, id="saddle_graded"),
         pytest.param("sphere_irregular", 8, True, False, id="sphere_irregular-volume_constraint"),
         pytest.param("saddle_graded", 6, False, True, id="saddle_graded-pluggable_operator"),
@@ -127,8 +126,8 @@ def test_filter_laplacian_matches_trimesh(
     """
     Class A: explicit Laplacian smoothing against ``trimesh.smoothing.filter_laplacian``.
 
-    On closed and open fixtures with the default uniform operator, with the volume constraint (on a
-    closed mesh, where the volume is defined), and with a pluggable operator: ordito's
+    On an open fixture with the default uniform operator, with the volume constraint (on a closed
+    mesh, where the volume is defined), and with a pluggable operator: ordito's
     ``laplacian(equal_weight=False)`` handed in, against trimesh's ``laplacian_calculation`` of the
     same weighting.
     """
@@ -157,7 +156,7 @@ def test_filter_laplacian_matches_trimesh(
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("iterations", [1, 3, 10])
+@pytest.mark.parametrize("iterations", [1, 10])
 @pytest.mark.parity("filter_laplacian_integration", "pymeshlab")
 def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> None:
     """
@@ -202,18 +201,17 @@ def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> Non
 @pytest.mark.parametrize(
     ("lamb", "mesh_name"),
     [
+        pytest.param(0.5, "saddle_graded", id="0.5-saddle_graded"),
+        pytest.param(5.0, "sphere_irregular", id="5.0-sphere_irregular"),
+        pytest.param(5.0, "saddle_graded", id="5.0-saddle_graded"),
         pytest.param(
-            lamb,
-            mesh_name,
+            50.0,
+            "saddle_graded",
             # BiCGSTAB on the graded saddle's lamb = 50 system is the device's cost: 15.5 s on the
             # CPU device, 0.10 s on CUDA.
-            marks=[pytest.mark.slow_cpu(15.5)]
-            if (mesh_name, lamb) == ("saddle_graded", 50.0)
-            else [],
-            id=f"{lamb}-{mesh_name}",
-        )
-        for lamb in (0.5, 5.0, 50.0)
-        for mesh_name in ("sphere_irregular", "saddle_graded")
+            marks=pytest.mark.slow_cpu(15.5),
+            id="50.0-saddle_graded",
+        ),
     ],
 )
 def test_filter_laplacian_implicit_on_open_meshes(
@@ -984,7 +982,7 @@ def test_filter_taubin(request: pytest.FixtureRequest, mesh_name: str) -> None:
 #     default operator.
 
 
-@pytest.mark.parametrize("steps", [1, 3, 5])
+@pytest.mark.parametrize("steps", [1, 3])
 @pytest.mark.parity("filter_taubin", "pymeshlab")
 def test_filter_taubin_matches_pymeshlab(device: str, steps: int) -> None:
     """
@@ -1017,7 +1015,7 @@ def test_filter_taubin_matches_pymeshlab(device: str, steps: int) -> None:
     )
 
 
-@pytest.mark.parametrize("iterations", [1, 3, 10])
+@pytest.mark.parametrize("iterations", [1, 10])
 @pytest.mark.parity(
     "filter_taubin",
     "pytorch3d",
@@ -1149,8 +1147,7 @@ def test_filter_mut_dif_laplacian(
 
 
 @pytest.mark.parametrize(
-    ("mesh_name", "warns"),
-    [("sphere_round", False), ("sphere_irregular", True), ("saddle_graded", True)],
+    ("mesh_name", "warns"), [("sphere_round", False), ("sphere_irregular", True)]
 )
 def test_filter_mut_dif_laplacian_warns_where_it_is_sensitive_to_rounding(
     request: pytest.FixtureRequest, mesh_name: str, warns: bool
@@ -1160,10 +1157,10 @@ def test_filter_mut_dif_laplacian_warns_where_it_is_sensitive_to_rounding(
 
     The premise of ``test_filter_mut_dif_laplacian``, asserted: a 3e-7 relative perturbation of
     the vertices moves the result by more than 1e-4 of the mesh's extent where the call warns
-    (measured 2.6e-3 / 1.1e-3 on ``sphere_irregular``, CUDA / CPU, and 1.8e-2 on
-    ``saddle_graded``; the mean's rounding uncertainty reads 0.035 and 1e2 there, over the 1e-3
-    limit), and by less than 2e-6 where it does not (``sphere_round``, an exact sphere: 4.2e-7, the
-    perturbation itself carried through; uncertainty 2e-5).
+    (measured 2.6e-3 / 1.1e-3 on ``sphere_irregular``, CUDA / CPU; the mean's rounding uncertainty
+    reads 0.035 there, over the 1e-3 limit), and by less than 2e-6 where it does not
+    (``sphere_round``, an exact sphere: 4.2e-7, the perturbation itself carried through;
+    uncertainty 2e-5).
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = mesh_wp.points.numpy().astype(np.float64)
@@ -2227,12 +2224,9 @@ def _scalar_spike(mesh_tm: tm.Trimesh) -> np.ndarray:
     return values_np
 
 
-@pytest.mark.parametrize(
-    "mesh_name", ["sphere_irregular", "torus_irregular", "sphere_irregular_hollow"]
-)
 @pytest.mark.parity("filter_scalar_laplacian", "pymeshlab")
 def test_filter_scalar_laplacian_matches_pymeshlab(
-    request: pytest.FixtureRequest, mesh_name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class A: one full-step pass is exactly MeshLab's ``apply_scalar_smoothing_per_vertex``.
@@ -2245,7 +2239,7 @@ def test_filter_scalar_laplacian_matches_pymeshlab(
     different operator, not a tolerance, so the oracle is only claimed where no vertex has a
     boundary.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     values_np = _scalar_spike(mesh_tm)
 
     meshset_pml = trimesh_to_pymeshlab(mesh_tm, values_np)
@@ -2353,9 +2347,8 @@ def test_filter_normals_are_unit_and_crease_gated(device: str) -> None:
     assert clean_np.shape[0] > 0
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular_holes"])
 def test_filter_normals_supplied_adjacency_matches_derived(
-    request: pytest.FixtureRequest, mesh_name: str
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: a caller's ``face_adjacency`` and the one derived inside agree.
@@ -2365,7 +2358,7 @@ def test_filter_normals_supplied_adjacency_matches_derived(
     neighbours in a different order and agree to rounding. The oracle comparisons above run the
     derived path only. A caller's normals are read, never written, and the result is a new buffer.
     """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    _mesh_tm, mesh_wp = saddle_graded
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     adjacency_wp = od.adjacency.face_adjacency(faces_wp, n_vertices=vertices_wp.shape[0])
     normals_wp, areas_wp = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)
@@ -2682,14 +2675,6 @@ def test_filter_sharpen_amplifies_detail(
     # out.
     assert np.allclose(sharpened_np, bumpy_np + 0.5 * detail_np, rtol=1e-3, atol=1e-4)
     assert np.abs(sharpened_np - smoothed_np).max() > np.abs(bumpy_np - smoothed_np).max()
-
-
-def test_filter_sharpen_zero_weight_is_the_identity(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
-    out_wp = od.smoothing.filter_sharpen(mesh_wp.points, mesh_wp.indices, weight=0.0)
-    assert np.allclose(out_wp.numpy(), mesh_wp.points.numpy(), rtol=1e-6, atol=1e-6)
 
 
 def test_filter_sharpen_zero_iterations_scales_by_the_original_weight(

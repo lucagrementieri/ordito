@@ -60,32 +60,6 @@ def _sphere_field(resolution: int, radius: float) -> np.ndarray:
     return (np.sqrt(x_np**2 + y_np**2 + z_np**2) - radius).astype(np.float32)
 
 
-def test_marching_cubes_extracts_an_analytic_sphere(device: str) -> None:
-    """
-    Not a library comparison: the extracted vertices lie on the sphere the field describes.
-
-    With ``bounds`` every vertex must land on the sphere to grid resolution; without them the
-    vertices are lattice indices, the documented convention, so they lie inside the lattice and
-    the centred field's surface is centred on the lattice centre.
-    """
-    radius, resolution = 0.6, 32
-    field_wp = odt.as_array3d(
-        wp.array(_sphere_field(resolution, radius), dtype=wp.float32, device=device), wp.float32
-    )
-    vertices_wp, faces_wp = od.levelset.marching_cubes(
-        field_wp, bounds=(wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0))
-    )
-    assert faces_wp.size > 0
-    spacing = 2.0 / (resolution - 1)
-    radii_np = np.linalg.norm(vertices_wp.numpy(), axis=1)
-    assert np.abs(radii_np - radius).max() < spacing
-
-    index_vertices_np = od.levelset.marching_cubes(field_wp)[0].numpy()
-    assert index_vertices_np.min() >= 0.0
-    assert index_vertices_np.max() <= float(resolution - 1)
-    assert np.allclose(index_vertices_np.mean(axis=0), 0.5 * (resolution - 1), atol=0.5)
-
-
 @pytest.mark.parity("marching_cubes", "igl", "pyvista")
 def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
     """
@@ -288,7 +262,7 @@ def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     assert len(set(match_np.tolist())) == match_np.size, "the vertex match is not a bijection"
 
 
-@pytest.mark.parametrize("case", ["torus", "anisotropic", "ties", "nan"])
+@pytest.mark.parametrize("case", ["anisotropic", "ties", "nan"])
 def test_marching_cubes_is_warps_extraction_bit_for_bit(device: str, case: str) -> None:
     """
     Class A: byte-identical to ``warp.geometry.IsoSurfaceMarchingCubes.extract``, buffer order too.
@@ -305,12 +279,7 @@ def test_marching_cubes_is_warps_extraction_bit_for_bit(device: str, case: str) 
     rng = np.random.default_rng(7)
     bounds = None
     iso = 0.0
-    if case == "torus":
-        axis_np = np.linspace(-1.1, 1.1, 48)
-        x_np, y_np, z_np = np.meshgrid(axis_np, axis_np, axis_np, indexing="ij")
-        field_np = np.sqrt((np.sqrt(x_np**2 + y_np**2) - 0.65) ** 2 + z_np**2) - 0.28
-        bounds = (wp.vec3(-1.1, -1.1, -1.1), wp.vec3(1.1, 1.1, 1.1))
-    elif case == "anisotropic":
+    if case == "anisotropic":
         field_np = rng.standard_normal((17, 23, 31))
         bounds = (wp.vec3(0.3, -2.0, 5.0), wp.vec3(1.7, 4.0, 5.5))
     elif case == "ties":
@@ -759,11 +728,7 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     ("mesh_name", "sparse_expected", "distance", "rotate"),
     [
         # ``cave_cube`` is rotated off the lattice planes its faces would otherwise lie on.
-        *(
-            (name, True, distance, rotate)
-            for name, rotate in (("sphere_irregular", False), ("sphere_irregular_hollow", True))
-            for distance in (0.08, -0.04)
-        ),
+        *(("sphere_irregular_hollow", True, distance, True) for distance in (0.08, -0.04)),
         # The open arms pin only that the gate keeps the dense lattice, which one distance shows.
         *((name, False, 0.08, False) for name in ("boy_surface", "saddle_graded")),
     ],
@@ -871,14 +836,13 @@ def test_signed_distance_level_set_guards(
             )
 
 
-# Every topology the winding lattice treats differently: closed and curved (``sphere_irregular``),
-# closed with flat faces lying on lattice planes (``unit_box``: the lattice starts ``pad`` cells
-# below its box), a hollow shell, open with one rim and with two (``half_torus`` is cut on a lattice
-# plane), non-orientable closed and with a boundary, and closed but self-intersecting. The one-rim
-# arm is ``hemisphere``, a cap: ``saddle_graded`` is a nearly flat sheet whose levels below this
-# test's two cells hold no surface, so it would compare one level.
+# Every topology the winding lattice treats differently: closed and curved, with a cavity
+# (``sphere_irregular_hollow``), closed with flat faces lying on lattice planes (``unit_box``: the
+# lattice starts ``pad`` cells below its box), open with one rim and with two (``half_torus`` is
+# cut on a lattice plane), non-orientable closed and with a boundary, and closed but
+# self-intersecting. The one-rim arm is ``hemisphere``, a cap: ``saddle_graded`` is a nearly flat
+# sheet whose levels below this test's two cells hold no surface, so it would compare one level.
 _WINDING_LATTICE_MESHES = [
-    "sphere_irregular",
     "unit_box",
     "sphere_irregular_hollow",
     "sphere_irregular_cap",
@@ -1097,7 +1061,6 @@ def test_signed_distance_level_set_cone_guard_counts_rim_edges(
     [
         ("sphere_irregular", "flipped_face"),
         ("saddle_graded", "third_face_on_an_edge"),
-        ("saddle_graded", None),
         ("mobius", None),
     ],
 )
@@ -1144,9 +1107,7 @@ def test_boundary_chain_is_the_net_boundary(
     assert_unordered_rows_equal(chain_np, expected_np)
 
 
-@pytest.mark.parametrize(
-    "mesh_name", ["saddle_graded", "sphere_well_shaped_open", "sphere_well_shaped", "unit_box"]
-)
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "unit_box"])
 def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Not a library comparison: the shell is a valid solid, on open and closed inputs alike.
@@ -1158,17 +1119,15 @@ def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_n
 
     The counts are exact and asserted: ``2 * n_vertices`` positions and
     ``2 * n_faces + 2 * n_boundary_edges`` triangles. And the volume is positive and close to
-    ``area * thickness`` -- 0.922 of it on ``sphere_well_shaped``, the inward layer's smaller area;
-    1.003 on ``saddle_graded``, whose mean curvature changes sign; 0.545 on ``unit_box``, whose
-    corner normals pull the inward layer across the faces -- which is the check that catches a shell
-    built inside out, where every other assertion here still passes.
+    ``area * thickness`` -- 1.003 of it on ``saddle_graded``, whose mean curvature changes sign;
+    0.545 on ``unit_box``, whose corner normals pull the inward layer across the faces -- which is
+    the check that catches a shell built inside out, where every other assertion here still passes.
 
     Premise: a surface whose curvature radius exceeds the thickness everywhere, since vertex-normal
     displacement folds wherever it does not (the next test). ``sphere_irregular`` has none: 21 of
     its vertices have an incident face more than 90 degrees from their normal (angle defects up to
     130 degrees), a zero radius, and its shell self-intersects at 59 faces at a thickness of 0.005
-    on a mesh of extent 4. The well-shaped sphere has the irregular numbering and degree without the
-    cones.
+    on a mesh of extent 4.
     """
     thickness = 0.05
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)

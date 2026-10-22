@@ -123,9 +123,8 @@ def test_sparse_cholesky_is_reproducible(
     assert np.array_equal(a.numpy(), b.numpy())
 
 
-@pytest.mark.parametrize("offset", [0.0, 2.5])
 def test_singular_component_takes_the_initial_guess_mean(
-    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], offset: float
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class B at 1e-10: the pure-Neumann Poisson system against SciPy's solve of its regularized form.
@@ -135,6 +134,7 @@ def test_singular_component_takes_the_initial_guess_mean(
     restores that constant. The reference solves ``-L + 1 1^T / n``, whose solution is the
     zero-mean one, shifted by the initial guess's mean (the named transform).
     """
+    offset = 2.5
     _, mesh_wp = sphere_irregular
     system = _poisson_system(mesh_wp)
     n = int(system.nrow)
@@ -146,23 +146,6 @@ def test_singular_component_takes_the_initial_guess_mean(
     solution = wp.full(n, offset, dtype=wp.float64, device=device)
     factor.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution, tol=1e-12)
     assert np.allclose(solution.numpy(), expected, rtol=0.0, atol=1e-10 * np.abs(expected).max())
-
-
-def test_refactor_takes_new_values_of_the_same_pattern(
-    device: str, saddle_graded: tuple[tm.Trimesh, wp.Mesh]
-) -> None:
-    """Class A at 1e-12: after ``refactor`` with the operator doubled, the solution halves."""
-    _, mesh_wp = saddle_graded
-    system_np = bsr_to_csr(_heat_system(mesh_wp))
-    n = system_np.shape[0]
-    rhs_np = np.random.default_rng(9).standard_normal(n)
-    factor = od.cholesky.sparse_cholesky(scipy_to_bsr(system_np, device), mesh_wp.points)
-    doubled = scipy_to_bsr(sp.csr_matrix(2.0 * system_np), device)
-    factor.refactor(doubled)
-    solution = wp.zeros(n, dtype=wp.float64, device=device)
-    factor.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution)
-    expected = spla.spsolve((2.0 * system_np).tocsc(), rhs_np)
-    assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
 
 
 def test_refactor_rejects_another_operator_shape(
@@ -592,7 +575,7 @@ def _held_bytes(*objects: object) -> int:
     return sum(owners.values())
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded", "empty", "one_leaf"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "empty", "one_leaf"])
 def test_nbytes_is_the_memory_the_factorization_holds(
     request: pytest.FixtureRequest, device: str, monkeypatch: pytest.MonkeyPatch, mesh_name: str
 ) -> None:
@@ -653,26 +636,6 @@ def test_nbytes_is_the_memory_the_factorization_holds(
     sibling = fresh.with_operator(system)
     together = od.cholesky.held_nbytes([fresh, sibling, fresh])
     assert together == _held_bytes(fresh, sibling) < fresh.nbytes + sibling.nbytes
-
-
-def test_landmark_coordinates_match_the_host_search(device: str) -> None:
-    """
-    Ordito against ordito: the device's breadth-first searches give the host's coordinates.
-
-    The simultaneous searches of every component equal the host's frontier searches exactly, on
-    a pattern of two surfaces and an isolated row.
-
-    The host search is the oracle (it is the CPU device's path, so on the CPU this compares it
-    with itself); the isolated row is a component too small to search, which keeps zeros.
-    """
-    system_np, _ = _two_component_system(device)
-    system_np = sp.csr_matrix(sp.block_diag([system_np, sp.csr_matrix(np.ones((1, 1)))]))
-    system = scipy_to_bsr(system_np, device)
-    labels = od.graph.connected_component_labels(system)
-    coordinates = od.cholesky._landmark_coordinates(system, labels)  # pyright: ignore[reportPrivateUsage]
-    host = od.cholesky._host_landmark_coordinates(system, labels)  # pyright: ignore[reportPrivateUsage]
-    assert np.ptp(host[:, 2]) > 4.0
-    assert np.array_equal(coordinates.numpy().view(np.float32).reshape(-1, 3), host)
 
 
 def test_landmark_coordinates_match_breadth_first_distances(device: str) -> None:

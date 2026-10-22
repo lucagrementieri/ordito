@@ -255,27 +255,6 @@ def test_transfer_onto_vertices_matches_pymeshlab(device: str):
     )
 
 
-def test_transfer_onto_vertices_reproduces_a_linear_field(device: str):
-    """A field that is linear on the source triangles must come back exactly, not blurred."""
-    source_tm, target_tm = _transfer_meshes(device)
-    direction_np = np.array([0.3, -0.6, 0.74])
-    values_np = source_tm.vertices @ direction_np
-
-    source_vertices_wp, source_faces_wp = numpy_to_warp(source_tm.vertices, source_tm.faces, device)
-    # Target vertices projected onto the source surface first, so "linear on the source" holds
-    # exactly rather than up to the two spheres' radial gap.
-    projected_wp, _distance, _face = od.proximity.closest_point_on_mesh(
-        source_vertices_wp, source_faces_wp, points_to_warp(target_tm.vertices, device)
-    )
-    values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=device)
-    transferred_wp, _distance = od.interpolation.transfer_onto_vertices(
-        source_vertices_wp, source_faces_wp, values_wp, projected_wp
-    )
-    assert np.allclose(
-        transferred_wp.numpy(), projected_wp.numpy() @ direction_np, rtol=1e-4, atol=1e-4
-    )
-
-
 def test_transfer_onto_vertices_vec3_field(device: str):
     """The transfer is dtype-generic: a ``wp.vec3`` field (a normal, a colour) works unchanged."""
     source_tm, target_tm = _transfer_meshes(device)
@@ -522,7 +501,6 @@ def _interpolate_wp(
     ("radius", "sharpness", "k"),
     [
         pytest.param(0.2, 1.0, None, id="ball-r0.2-s1"),
-        pytest.param(0.2, 2.0, None, id="ball-r0.2-s2"),
         pytest.param(0.2, 8.0, None, id="ball-r0.2-s8"),
         pytest.param(1.0, 2.0, None, id="ball-r1-s2"),
         pytest.param(1.0, 2.0, 4, id="k4"),

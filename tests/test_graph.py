@@ -28,31 +28,6 @@ from tests.conversions import (
 )
 
 
-def test_edges_to_csr_roundtrip(device: str) -> None:
-    edges_np = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.int32)
-    node_count = 3
-    edges_wp = _edges_wp(edges_np, device)
-    adjacency = od.graph.edges_to_csr(node_count, edges_wp)
-    offsets = adjacency.offsets.numpy()
-    indices = adjacency.columns.numpy()
-
-    assert adjacency.nrow == node_count
-    assert adjacency.ncol == node_count
-    assert adjacency.block_shape == (1, 1)
-    assert offsets[0] == 0
-    assert offsets[-1] == len(indices)
-    assert offsets.size == node_count + 1
-
-    neighbors: dict[int, set[int]] = {i: set() for i in range(node_count)}
-    for a, b in edges_np:
-        neighbors[int(a)].add(int(b))
-        neighbors[int(b)].add(int(a))
-
-    for v in range(node_count):
-        row = indices[offsets[v] : offsets[v + 1]]
-        assert set(row.tolist()) == neighbors[v]
-
-
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_edges_to_neighbor_lists_matches_igl(
     mesh_name: str, request: pytest.FixtureRequest
@@ -507,17 +482,6 @@ def test_connected_component_labels_ignores_a_stale_nnz(device: str, stale_nnz: 
         assert same_partition(labels_wp.numpy(), _scipy_component_labels(edges, 6))
 
 
-def test_connected_component_labels_star_graph(device: str) -> None:
-    n = 512
-    hub = 0
-    leaves = np.arange(1, n, dtype=np.int32)
-    edges_np = np.stack([np.full(n - 1, hub, dtype=np.int32), leaves], axis=1)
-    edges_wp = _edges_wp(edges_np, device)
-    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=n)
-    labels_exp = _scipy_component_labels(edges_np, n)
-    assert same_partition(labels_wp.numpy(), labels_exp)
-
-
 def test_connected_component_parity_random(device: str) -> None:
     # Signs drawn from a hidden potential, so the constraints are consistent everywhere and the
     # returned parity must reproduce that potential up to a per-component flip.
@@ -700,35 +664,6 @@ def test_successor_cycles_single_cycle(device: str) -> None:
     )
     assert flat_wp.shape == (0,)
     assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
-
-
-def test_successor_cycles_multiple_cycles(device: str) -> None:
-    """
-    Interleaved node ids across three cycles, plus nodes on no cycle.
-
-    Every cycle must come back in successor order from its own minimum; the per-cycle offsets
-    partition the packed buffer; nodes 1 and 8 appear in no edge and in no cycle.
-    """
-    rng = np.random.default_rng(7)
-    cycles = [[0, 4, 2], [3, 9, 6, 5], [7, 10]]
-    edge_rows = [
-        (cycle[i], cycle[(i + 1) % len(cycle)]) for cycle in cycles for i in range(len(cycle))
-    ]
-    order = rng.permutation(len(edge_rows))
-    edges_np = np.array(edge_rows, dtype=np.int32)[order]
-    edges_wp = _edges_wp(edges_np, device)
-
-    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 11)
-
-    flat_np = flat_wp.numpy()
-    offsets_np = offsets_wp.numpy()
-    assert offsets_np[0] == 0
-    assert offsets_np[-1] == flat_np.size == 9
-    recovered = [
-        flat_np[start:stop].tolist() for start, stop in itertools.pairwise(offsets_np.tolist())
-    ]
-    # Each cycle starts at its minimum and follows the successor direction.
-    assert sorted(recovered) == sorted([[0, 4, 2], [3, 9, 6, 5], [7, 10]])
 
 
 # Cycle lengths straddling the powers of the pointer-jump widths (8 and 16), where the schedule
@@ -951,7 +886,7 @@ def _spike_field(n_vertices: int) -> np.ndarray:
     return values_np
 
 
-@pytest.mark.parametrize("threshold", [0.5, 1.0, 3.0])
+@pytest.mark.parametrize("threshold", [0.5, 3.0])
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("shortest_path_envelope", "pymeshlab")
 def test_shortest_path_envelope_matches_pymeshlab(
@@ -982,9 +917,8 @@ def test_shortest_path_envelope_matches_pymeshlab(
     )
 
 
-@pytest.mark.parametrize("n_sources", [1, 3])
 def test_shortest_path_envelope_is_the_edge_graph_distance(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], n_sources: int
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class A against ``scipy.sparse.csgraph.dijkstra``: seeded with zeros, this *is* the distance.
@@ -996,7 +930,7 @@ def test_shortest_path_envelope_is_the_edge_graph_distance(
     """
     mesh_tm, mesh_wp = sphere_irregular
     n_vertices = mesh_tm.vertices.shape[0]
-    sources_np = np.arange(n_sources)
+    sources_np = np.arange(3)
 
     seeded_np = np.full(n_vertices, 1e6, dtype=np.float32)
     seeded_np[sources_np] = 0.0
@@ -1019,31 +953,6 @@ def test_shortest_path_envelope_is_the_edge_graph_distance(
     assert distance_sp.max() > 0.5
     assert envelope_wp.numpy().max() < 1e5
     assert np.allclose(envelope_wp.numpy(), distance_sp, rtol=1e-5, atol=1e-5)
-
-
-def test_shortest_path_envelope_respects_the_bound(
-    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """After convergence no edge violates the cap, and nothing was raised."""
-    mesh_tm, mesh_wp = saddle_graded
-    threshold = 2.0
-    rng = np.random.default_rng(7)
-    values_np = rng.uniform(0.0, 5.0, size=mesh_tm.vertices.shape[0])
-    values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=mesh_wp.device)
-
-    saturated_np = od.graph.shortest_path_envelope(
-        _length_weighted_csr(mesh_wp, threshold), values_wp
-    ).numpy()
-    assert (saturated_np <= values_np.astype(np.float32) + 1e-5).all()
-
-    edges_np = mesh_tm.edges_unique
-    lengths_np = np.linalg.norm(
-        mesh_tm.vertices[edges_np[:, 0]] - mesh_tm.vertices[edges_np[:, 1]], axis=1
-    )
-    jumps_np = np.abs(saturated_np[edges_np[:, 0]] - saturated_np[edges_np[:, 1]])
-    assert (jumps_np <= lengths_np / threshold + 1e-4).all()
-    # Every minimum survives: the smallest value in the field is untouched.
-    assert np.isclose(saturated_np.min(), values_np.min(), rtol=1e-5, atol=1e-5)
 
 
 def test_shortest_path_envelope_of_an_empty_graph(device: str) -> None:

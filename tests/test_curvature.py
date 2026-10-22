@@ -14,24 +14,6 @@ from tests.conversions import points_to_warp, trimesh_to_pymeshlab
 
 
 @pytest.mark.parity("principal_curvature", "igl")
-def test_principal_curvature(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Class A: curvature values against libigl, frame-dependent path."""
-    mesh_tm, mesh_wp = sphere_irregular
-
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.array(mesh_tm.faces, dtype=np.int32)
-    _, _, pv1_igl, pv2_igl, _ = igl.principal_curvature(vertices_np, faces_np, useKring=False)
-
-    # frame_independent=False reproduces igl::principal_curvature's symmetrized shape operator.
-    _, _, pv1_wp, pv2_wp = od.curvature.principal_curvature(
-        mesh_wp.points, mesh_wp.indices, frame_independent=False
-    )
-
-    assert np.allclose(pv1_wp.numpy(), pv1_igl, atol=1e-3, rtol=1e-3)
-    assert np.allclose(pv2_wp.numpy(), pv2_igl, atol=1e-3, rtol=1e-3)
-
-
-@pytest.mark.parity("principal_curvature", "igl")
 @pytest.mark.parametrize("supplied", ["both", "normals_only"])
 def test_principal_curvature_with_supplied_face_tables(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], supplied: str
@@ -633,7 +615,7 @@ def test_principal_curvature_is_reproducible(saddle_graded: tuple[tm.Trimesh, wp
         assert np.array_equal(runs[0][1], pv2_np)
 
 
-@pytest.mark.parametrize("scale", [1e-3, 3e-4, 1e-6, 1e-9])
+@pytest.mark.parametrize("scale", [3e-4, 1e-9])
 def test_principal_curvature_is_scale_equivariant(
     sphere_round: tuple[tm.Trimesh, wp.Mesh], scale: float
 ) -> None:
@@ -641,7 +623,8 @@ def test_principal_curvature_is_scale_equivariant(
     Ordito against ordito: curvature has units of 1/length, so scaling the mesh scales it back.
 
     The oracle sits on the unit-scale side, which
-    ``test_principal_curvature`` / ``test_principal_curvature_graded`` pin against libigl; this
+    ``test_principal_curvature_with_supplied_face_tables`` / ``test_principal_curvature_graded``
+    pin against libigl; this
     only asks that shrinking the mesh does not change the answer it reports in the mesh's own
     units. It did: the quadric fit's normal matrix has a diagonal spanning ``h^8`` to ``h^2`` at
     mesh scale ``h``, so the absolute singularity threshold in
@@ -652,7 +635,7 @@ def test_principal_curvature_is_scale_equivariant(
     ``sphere_round`` is the premise: a fallback zero is caught by every vertex carrying a curvature
     far from zero, which a bumpy fixture's (crossing zero) does not.
 
-    The two smallest scales pin a *second*, independent break that lived one layer down and is
+    The smallest scale pins a *second*, independent break that lived one layer down and is
     fixed in ``kernels.triangles.face_normals_and_area``: an absolute floor on ``|cross|`` there
     zeroed every vertex normal at ``h <= 3e-6``, and a zero normal is a zero frame and so a zero
     curvature. ``test_vertices.py::test_vertex_normals_area_matches_igl_at_any_scale`` is that

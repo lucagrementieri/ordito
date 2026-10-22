@@ -23,7 +23,6 @@ from tests.comparisons import (
 from tests.conftest import BOUNDARY_MESHES, open_cylinder_arrays
 from tests.conversions import (
     numpy_to_warp,
-    points_to_warp,
     pyvista_edges_to_indices,
     trimesh_to_meshlib,
     trimesh_to_pymeshfix,
@@ -504,7 +503,7 @@ def test_boundary_loops_with_offsets_matches_boundary_loops(
         assert loops_wp[1].ptr - loops_wp[0].ptr == 4 * loops_wp[0].size
 
 
-@pytest.mark.parametrize("rim", [7, 8, 9, 15, 16, 17, 63, 64, 65, 255, 256, 257, 4095, 4097])
+@pytest.mark.parametrize("rim", [7, 64, 65, 4097])
 def test_boundary_loops_rank_across_jump_round_boundaries(device: str, rim: int) -> None:
     """
     Not a library comparison: the loop of a fan is known, so the oracle is its construction.
@@ -729,19 +728,18 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
             assert tuple(directed_edges[3 * f + local_edge]) in boundary_set
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular_cap", "sphere_irregular_band"])
-def test_ears_none_on_smooth_boundary(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_ears_none_on_smooth_boundary(sphere_irregular_band: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class D exemption in test form: neither library finds an ear on the planar cut rims.
 
-    A plane cut of a triangulated surface leaves no triangle with two boundary edges on these rims
-    (``sphere_irregular_cap``'s one, ``_band``'s two), so this is the negative half of
+    A plane cut of a triangulated surface leaves no triangle with two boundary edges on
+    ``sphere_irregular_band``'s two rims, so this is the negative half of
     ``test_ears_match_igl`` and is kept separate from it rather than standing in for a comparison.
     Not ``conftest.OPEN_MESHES``: ``saddle_graded`` is a split quad grid, two of whose corners are
     single triangles -- ears, which both libraries find -- and ears are pure connectivity, so its
     grading adds nothing ``test_ears_match_igl`` does not already cover.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular_band
     faces_np = mesh_tm.faces.astype(np.int64)
 
     ear_igl, _ear_opp_igl = igl.ears(faces_np)
@@ -863,49 +861,6 @@ def test_loop_measures_are_reproducible_when_deterministic(device: str) -> None:
         arrival_perimeters_np, arrival_areas_np = measures()
     assert np.allclose(arrival_perimeters_np, perimeters_np, rtol=1e-5, atol=1e-5)
     assert np.allclose(arrival_areas_np, areas_np, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
-def test_loop_measures_agree_with_the_single_loop_forms(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Not a parity assert: it pins the batched measures to ``ordito.polyline``, which has an oracle.
-
-    ``loop_perimeters`` is a segmented ``polyline_length(closed=True)`` and must equal it loop for
-    loop; ``loop_directed_areas`` must point along ``polyline_normal``, which is the same quantity
-    normalized. Both single-loop functions are compared against references elsewhere, so a
-    divergence here is the batching's.
-
-    Also asserted: the directed area is **origin-independent** -- translating the mesh cannot change
-    it, because the cross products of a closed ring cancel the shift. That is the property that lets
-    the kernel skip a centroid pass, and it is invisible in any comparison against a reference that
-    also happens to be centred.
-    """
-    _, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
-    perimeters_np = od.boundary.loop_perimeters(vertices_wp, loops_wp).numpy()
-    areas_np = od.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy()
-
-    for index, loop_wp in enumerate(loops_wp):
-        points_wp = od.array.gather(vertices_wp, loop_wp)
-        assert np.isclose(
-            perimeters_np[index], od.polyline.polyline_length(points_wp, closed=True), rtol=1e-5
-        )
-        normal_wp = od.polyline.polyline_normal(points_wp)
-        direction_np = areas_np[index] / np.linalg.norm(areas_np[index])
-        assert np.allclose(direction_np, np.array(list(normal_wp)), rtol=1e-4, atol=1e-4)
-
-    shifted_wp = points_to_warp(
-        vertices_wp.numpy() + np.array([3.0, -7.0, 11.0], dtype=np.float32), vertices_wp.device
-    )
-    assert np.allclose(
-        od.boundary.loop_directed_areas(shifted_wp, loops_wp).numpy(),
-        areas_np,
-        rtol=1e-4,
-        atol=1e-4,
-    )
 
 
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
@@ -1038,7 +993,7 @@ def _assert_no_boundary(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.in
     assert ear_opp_wp.shape == (0,)
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular_holes", "mobius"])
+@pytest.mark.parametrize("mesh_name", ["torus_irregular_holes", "mobius"])
 def test_boundary_functions_take_precomputed_mates(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:

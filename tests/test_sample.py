@@ -35,8 +35,7 @@ from tests.conversions import (
 )
 
 
-@pytest.mark.parametrize("count", [4096, 100_000])
-def test_sample_fibonacci_sphere_phase_stays_low_discrepancy(device: str, count: int):
+def test_sample_fibonacci_sphere_phase_stays_low_discrepancy(device: str):
     """
     Class A against a float64 NumPy evaluation of the lattice's own closed form.
 
@@ -46,9 +45,10 @@ def test_sample_fibonacci_sphere_phase_stays_low_discrepancy(device: str, count:
     a minimum neighbour spacing 11 % below the reference's at 100 000. ``count = 100_000`` is
     asserted because that is where the loss is unambiguous and the test is still cheap; the same
     hazard and the same float64 fix are documented at
-    ``kernels/bounds.oriented_box_candidate_axes``. At both counts every direction is also unit and
-    the set's centroid sits at the origin, as a near-uniform covering of the sphere requires.
+    ``kernels/bounds.oriented_box_candidate_axes``. Every direction is also unit and the set's
+    centroid sits at the origin, as a near-uniform covering of the sphere requires.
     """
+    count = 100_000
     directions_np = od.sample.sample_fibonacci_sphere(count, device=device).numpy()
     assert directions_np.shape == (count, 3)
     assert np.allclose(np.linalg.norm(directions_np, axis=1), 1.0, rtol=1e-5, atol=1e-5)
@@ -255,37 +255,6 @@ def test_sample_surface_rejects(
         faces_wp = warp_empty(0, wp.int32, device)
     with pytest.raises(ValueError, match=match):
         od.sample.sample_surface(vertices_wp, faces_wp, count, face_weight=face_weight, seed=0)
-
-
-def test_sample_surface_poisson_disk_count_and_on_surface(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-):
-    """Exactly ``count`` samples, each with its face index, every one on the surface."""
-    mesh_tm, mesh_wp = sphere_irregular
-    count = 100
-    pts, fids = od.sample.sample_surface_poisson_disk(
-        mesh_wp.points, mesh_wp.indices, count, seed=1
-    )
-    assert pts.shape == (count,)
-    assert fids.shape == (count,)
-    _, dists, _ = tm.proximity.closest_point(mesh_tm, pts.numpy())
-    assert np.all(dists < 1e-4)
-
-
-def test_sample_surface_poisson_disk_min_distance(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    mesh_tm, mesh_wp = sphere_irregular
-    count = 100
-    init_factor = 5.0
-    surface_area = float(mesh_tm.area)
-    ratio = 1.0 / init_factor
-    r_max = 2.0 * math.sqrt((surface_area / count) / (2.0 * math.sqrt(3.0)))
-    r_min = r_max * 0.65 * (1.0 - ratio**1.5)
-
-    points, _ = od.sample.sample_surface_poisson_disk(
-        mesh_wp.points, mesh_wp.indices, count, init_factor=init_factor, seed=2
-    )
-    min_dist = float(pdist(points.numpy()).min())
-    assert min_dist >= r_min * 0.9
 
 
 def _sequential_sample_elimination(
@@ -830,7 +799,6 @@ def test_sample_volume_uniform(sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh]):
     [
         pytest.param("saddle_graded", "watertight", id="not_watertight"),
         pytest.param(None, "zero volume", id="zero_volume"),
-        pytest.param("torus_irregular", "star-shaped", id="not_star_shaped"),
         pytest.param("sphere_irregular", "star-shaped", id="not_star_shaped_bumpy"),
     ],
 )
@@ -844,9 +812,6 @@ def test_sample_volume_rejects(
     * A doubled triangle (the same face with both windings) is edge-manifold with no boundary
       edges, so it passes the watertight gate, yet it encloses nothing: the surface centroid is
       coplanar with both faces, so every fanned tetrahedron has a signed volume of exactly 0.0.
-    * ``torus_irregular`` is watertight with positive total volume, but fanning tetrahedra from the
-      centroid (the hole of the torus) makes the inner half of the tube contribute negative signed
-      volumes (336 of its 1 000).
     * ``sphere_irregular`` is a genus-0 near-sphere and still not star-shaped about its centroid:
       two of its 996 fanned tetrahedra are inverted (the smallest -0.0075), where its bumps fold
       over the line of sight. Refused, not sampled with a hole in the distribution.

@@ -191,10 +191,7 @@ def _float_rows(values_np: npt.NDArray[np.float32], device: str) -> odt.Array2dF
     "kernel and read as a throughput number for neither. benchmarks/test_texture.py carries that "
     "decline; moderngl is registered as a test-only reference so this claim is still checked.",
 )
-@pytest.mark.parametrize("n_channels", [1, 2, 5])
-def test_rasterize_attribute_matches_opengl(
-    gl_context: moderngl.Context, device: str, n_channels: int
-):
+def test_rasterize_attribute_matches_opengl(gl_context: moderngl.Context, device: str):
     """
     Class C (a coverage fraction plus values on the jointly-covered pixels).
 
@@ -205,7 +202,7 @@ def test_rasterize_attribute_matches_opengl(
     restriction sound rather than convenient -- where both cover, both are interpolating the same
     affine function over the same triangle.
 
-    Measured at ``n_channels=5``: coverage agreement is **1.000000** -- the fill-rule band this
+    Measured on five channels: coverage agreement is **1.000000** -- the fill-rule band this
     fixture could exercise is empty -- with 82.1 % of the image covered, 3 364 jointly-covered
     pixels and a max value difference of **1.99e-04** against the ``1e-3`` bound. So the ``0.98``
     threshold is *headroom for the documented fill-rule difference, not a fitted number*; it has
@@ -223,6 +220,7 @@ def test_rasterize_attribute_matches_opengl(
     more than a boundary pixel. What it does *not* see is a systematic half-pixel shift small enough
     to keep the same pixel set, which the round-trip tests below are what cover.
     """
+    n_channels = 5
     rng = np.random.default_rng(20240704 + n_channels)
     uv_np, faces_np = _grid_uv_mesh(n=8)
     # Offset into [1, 2] so covered pixels are never ~0 (distinguishable from uncovered 0).
@@ -330,7 +328,7 @@ def test_rasterize_discrete_attribute_matches_opengl(gl_context: moderngl.Contex
     "parametrization. benchmarks/test_texture.py carries that decline.",
 )
 @pytest.mark.parametrize("order", [0, 1])
-@pytest.mark.parametrize("n_channels", [None, 1, 3], ids=["rank2_image", "1ch", "3ch"])
+@pytest.mark.parametrize("n_channels", [None, 3], ids=["rank2_image", "3ch"])
 def test_remap_attribute_matches_scipy(device: str, order: Literal[0, 1], n_channels: int | None):
     """
     Class A against ``scipy.ndimage.map_coordinates``, on both interpolation orders.

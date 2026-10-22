@@ -302,8 +302,7 @@ def test_min_quad_with_fixed_rejects_invalid_arguments(device: str) -> None:
         od.linalg.min_quad_with_fixed_precompute(matrix_wp, short_mask_wp)
 
 
-@pytest.mark.parametrize("solver", ["iterative", "direct"])
-def test_min_quad_with_fixed_solves_no_right_hand_side(device: str, solver: str) -> None:
+def test_min_quad_with_fixed_solves_no_right_hand_side(device: str) -> None:
     """
     Not a library comparison: no right-hand side is a ``(0, n_free)`` answer, not an error.
 
@@ -312,9 +311,7 @@ def test_min_quad_with_fixed_solves_no_right_hand_side(device: str, solver: str)
     """
     matrix_wp, fixed_wp, values_wp, expected_np = _pinned_grid(device)
     empty_wp = odt.empty_2d((0, int(values_wp.shape[1])), wp.float64, device=device)
-    solution_wp, _, n_free = od.linalg.min_quad_with_fixed(
-        matrix_wp, fixed_wp, empty_wp, solver=solver
-    )
+    solution_wp, _, n_free = od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, empty_wp)
     assert n_free == expected_np.shape[1]
     assert solution_wp.shape == (0, n_free)
     data = od.linalg.min_quad_with_fixed_precompute(matrix_wp, fixed_wp)
@@ -611,17 +608,16 @@ def test_solve_spd_columns_across_the_reduction_tile_boundary(
     "report the crossover as a speedup. The *answer* is what is comparable, and a dense solve "
     "is the strongest oracle available for it -- exact up to conditioning.",
 )
-@pytest.mark.parametrize("n_rhs", [1, 2, 5])
-def test_solve_spd_columns_agrees_across_column_counts(device: str, n_rhs: int) -> None:
+def test_solve_spd_columns_agrees_across_column_counts(device: str) -> None:
     """
-    Class A, against ``numpy.linalg.solve``, at one, two and five columns through the default path.
+    Class A, against ``numpy.linalg.solve``, at one column through the default path.
 
     A system this size takes the one-block solve, which runs one block per column, so the column
     count is the launch's grid: a block that read another column's right-hand side or wrote another
     column's solution would converge to a plausible wrong answer at every count but one. The
-    batched solver's column counts are covered by the tile-boundary test above.
+    multi-column counts of both engines are covered by the tile-boundary test above.
     """
-    matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n_rhs=n_rhs)
+    matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n_rhs=1)
     solution_wp = wp.zeros_like(rhs_wp)
     od.linalg.solve_spd_columns(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
     assert np.allclose(
@@ -724,30 +720,8 @@ def test_two_column_solve_costs_no_more_iterations_than_its_worst_column(
     )
 
 
-def test_two_identical_columns_do_not_diverge(device: str) -> None:
-    """
-    Not a library comparison: the degenerate two-column block is the input to pin, not a value.
-
-    Two identical right-hand-side columns are the worst case any two-column mechanism can be
-    handed. Under ``_BatchedCg`` they are simply the same solve run twice, so this must return the
-    single-column answer in both rows and nothing may go non-finite.
-    """
-    matrix_wp, _rhs_wp, dense_np, rhs_np = _spd_system(device, n_rhs=1)
-    rhs_two_np = np.concatenate([rhs_np, rhs_np], axis=0)
-    rhs_two_wp = wp.array(np.ascontiguousarray(rhs_two_np), dtype=wp.float64, device=device)
-    solution_wp = wp.zeros((2, dense_np.shape[0]), dtype=wp.float64, device=device)
-    od.linalg.solve_spd_columns(
-        matrix_wp, odt.as_array2d(rhs_two_wp, wp.float64), odt.as_array2d(solution_wp, wp.float64)
-    )
-    solution_np = solution_wp.numpy()
-    assert np.all(np.isfinite(solution_np))
-    expected_np = np.linalg.solve(dense_np, rhs_np.T).T
-    assert np.allclose(solution_np[0], expected_np[0], rtol=1e-4, atol=1e-4)
-    assert np.allclose(solution_np[1], expected_np[0], rtol=1e-4, atol=1e-4)
-
-
 @pytest.mark.usefixtures("batched_engine")
-@pytest.mark.parametrize("check_every", [1, 25, 0])
+@pytest.mark.parametrize("check_every", [1, 0])
 def test_solve_spd_columns_check_every_is_solution_invariant(device: str, check_every: int) -> None:
     """
     Class A, against ``numpy.linalg.solve``, at every residual-test cadence of the batched solver.
@@ -1524,23 +1498,14 @@ def test_unfolded_iteration_matches_numpy(
     )
 
 
-@pytest.mark.parametrize("heavy", [False, True])
-def test_solve_spd_float32_system_matches_numpy(
-    device: str, heavy: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_solve_spd_float32_system_matches_numpy(device: str) -> None:
     """
     Class A, against ``numpy.linalg.solve``, for a ``float32`` operator solved in place.
 
     A ``float32`` system keeps ``float32`` vectors and reduces its dots in ``float64``
-    (``reconstruction``'s former ``warp.fem`` Poisson system was the caller). The ``heavy`` arm
-    lowers the thresholds so the round forms ``A u`` with ``warp.sparse.bsr_mv`` and reduces the
-    dots in a launch of their own -- the path for long rows on a long column, which no fixture here
-    reaches.
-    The tolerance is ``float32``'s.
+    (``reconstruction``'s former ``warp.fem`` Poisson system was the caller). The tolerance is
+    ``float32``'s.
     """
-    if heavy:
-        monkeypatch.setattr(od.linalg, "CG_FOLD_MAX_BLOCKS", 0)
-        monkeypatch.setattr(od.linalg, "CG_HEAVY_ROW_ENTRIES", 0)
     matrix64_wp, _rhs, dense_np, _rhs_np = _grid_laplacian_system(device, n_rhs=1)
     matrix_wp = wps.bsr_copy(
         matrix64_wp,

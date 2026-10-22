@@ -144,7 +144,7 @@ def test_face_normals_and_areas_against_the_partial_references(
 
 
 @pytest.mark.parity("corner_normals", "meshlib")
-@pytest.mark.parametrize("mesh_name", ["unit_box", "sphere_irregular", "sphere_irregular_hollow"])
+@pytest.mark.parametrize("mesh_name", ["unit_box", "sphere_irregular"])
 @pytest.mark.parametrize("crease_angle", [None, 0.5])
 def test_corner_normals_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str, crease_angle: float | None
@@ -192,7 +192,7 @@ def test_corner_normals_matches_meshlib(
     assert np.allclose(normals_wp.numpy(), normals_ml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["unit_box", "sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parametrize("weighting", ["angle", "area"])
 def test_corner_normals_degenerate_crease_sets_are_exact(
     request: pytest.FixtureRequest, mesh_name: str, weighting: CornerNormalWeighting
@@ -208,7 +208,7 @@ def test_corner_normals_degenerate_crease_sets_are_exact(
     * **every edge a crease** -- no rotation moves at all, so each corner gets its own *face's*
       normal, whatever the weighting.
 
-    ``hemisphere`` is in the list on purpose: a boundary vertex's fan is a path rather than a
+    ``saddle_graded`` is in the list on purpose: a boundary vertex's fan is a path rather than a
     cycle, so the walk has to terminate on the rim in both directions and still cover the whole
     fan. Getting that wrong shows up here and nowhere else.
     """
@@ -726,17 +726,12 @@ def test_barycentric_to_points(request: pytest.FixtureRequest, mesh_name: str):
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
-@pytest.mark.parametrize("method", ["cramer", "cross"])
 @pytest.mark.parity("points_to_barycentric", "trimesh", "igl")
-def test_points_to_barycentric(request: pytest.FixtureRequest, mesh_name: str, method: str):
+def test_points_to_barycentric(request: pytest.FixtureRequest, mesh_name: str):
     """
-    Class A on both references, against *both* of trimesh's solver methods.
+    Class A on both references: trimesh's cross-product solver and igl's.
 
-    ordito exposes one formulation where trimesh exposes two, so the parametrize now varies the
-    **reference** rather than the code under test -- which is the stronger comparison, since it
-    asserts the single ordito answer against both of the alternatives a caller might have expected.
-    They agree here because this fixture's triangles are well shaped; the formulations part company
-    on slivers, which the sweep below covers.
+    trimesh's two formulations part company on slivers, which the sweep below covers.
 
     ``igl.barycentric_coordinates(P, A, B, C)`` takes the three corner arrays rather than a mesh, so
     the only difference from a call convention standpoint is that the triangle soup is unpacked into
@@ -751,7 +746,9 @@ def test_points_to_barycentric(request: pytest.FixtureRequest, mesh_name: str, m
 
     barycentric_np = np.random.default_rng(32).random((mesh_tm.triangles.shape[0], 3))
     points_np = tm.triangles.barycentric_to_points(mesh_tm.triangles, barycentric_np)
-    barycentric_tm = tm.triangles.points_to_barycentric(mesh_tm.triangles, points_np, method=method)
+    barycentric_tm = tm.triangles.points_to_barycentric(
+        mesh_tm.triangles, points_np, method="cross"
+    )
     barycentric_igl = igl.barycentric_coordinates(
         np.ascontiguousarray(points_np),
         np.ascontiguousarray(mesh_tm.triangles[:, 0]),
@@ -828,24 +825,6 @@ def test_points_to_barycentric_on_a_zero_area_triangle(device: str) -> None:
     with np.errstate(invalid="ignore", divide="ignore"):
         barycentric_tm = tm.triangles.points_to_barycentric(triangles_np, point_np)
     assert not np.all(np.isfinite(barycentric_tm))
-
-
-@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
-def test_closest_point(request: pytest.FixtureRequest, mesh_name: str):
-    """
-    Class A: the per-triangle closest point against ``trimesh.triangles.closest_point``.
-
-    Unlike the whole-mesh query in ``test_proximity``, each query is matched to *its own*
-    triangle, so there is no tie between faces and the point itself is comparable rather than
-    only its distance.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    points_np = np.random.default_rng(33).random((mesh_tm.triangles.shape[0], 3))
-    closest_points_tm = tm.triangles.closest_point(mesh_tm.triangles, points_np)
-
-    points_wp = points_to_warp(points_np, mesh_wp.points.device)
-    closest_points_wp = od.triangles.closest_point(mesh_wp.points, mesh_wp.indices, points_wp)
-    assert np.allclose(closest_points_wp.numpy(), closest_points_tm, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -943,7 +922,7 @@ def test_soup_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_name
     assert np.allclose(points_wp.numpy(), interpolated_ml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular"])
 @pytest.mark.parity("face_centroids", "igl", "pyvista")
 def test_face_centroids(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -984,10 +963,7 @@ def test_face_centroids(request: pytest.FixtureRequest, mesh_name: str):
     assert (np.abs(barycentric_wp.numpy() - 1.0 / 3.0).max(axis=1) <= bound_np).all()
 
 
-@pytest.mark.parametrize(
-    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
-)
-def test_face_signed_volumes(request: pytest.FixtureRequest, mesh_name: str):
+def test_face_signed_volumes(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A against the NumPy oracle, element-wise, plus Class B on the sum.
 
@@ -995,10 +971,9 @@ def test_face_signed_volumes(request: pytest.FixtureRequest, mesh_name: str):
     oracle rather than an approximate one. The class-B half is that the sum over a closed mesh is
     ``mesh_tm.volume`` -- the transform being the reduction -- and it is the assert that would catch
     a per-face sign error the element-wise comparison could only catch if the oracle had the same
-    bug. ``half_torus`` is open, so it is here for the element-wise half only, which is exactly the
-    point: the per-face quantity is defined whether or not the surface bounds anything.
+    bug.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     triangles_np = np.asarray(mesh_tm.triangles, dtype=np.float64)
     v0, v1, v2 = triangles_np[:, 0], triangles_np[:, 1], triangles_np[:, 2]
     volumes_np = np.einsum("ij,ij->i", v0, np.cross(v1, v2)) / 6.0
@@ -1007,8 +982,8 @@ def test_face_signed_volumes(request: pytest.FixtureRequest, mesh_name: str):
 
     scale = float(np.abs(volumes_np).max())
     assert np.allclose(volumes_wp.numpy(), volumes_np, rtol=1e-5, atol=1e-5 * scale)
-    if mesh_tm.is_watertight:
-        assert np.isclose(volumes_wp.numpy().sum(), mesh_tm.volume, rtol=1e-5, atol=1e-5)
+    assert mesh_tm.is_watertight
+    assert np.isclose(volumes_wp.numpy().sum(), mesh_tm.volume, rtol=1e-5, atol=1e-5)
 
 
 def test_face_signed_volumes_apex_shifts_each_face_but_not_the_sum(

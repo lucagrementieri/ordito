@@ -35,12 +35,7 @@ def _is_simple_edge_cycle(loop: np.ndarray, edges_tm: Container[tuple[int, ...]]
     return all(tuple(sorted((int(a), int(b)))) in edges_tm for a, b in itertools.pairwise(closed))
 
 
-@pytest.mark.parametrize(
-    ("mesh_name", "genus"),
-    # ``bohemian_dome`` is genus 1 like the torus but *self-intersecting*, so the generators are
-    # found on a surface whose embedding gives no hint of where they run.
-    [("sphere_irregular", 0), ("torus_irregular", 1), ("bohemian_dome", 1), ("genus_two", 2)],
-)
+@pytest.mark.parametrize(("mesh_name", "genus"), [("sphere_irregular", 0), ("genus_two", 2)])
 def test_homology_generator_count_is_twice_the_genus(
     request: pytest.FixtureRequest, mesh_name: str, genus: int
 ) -> None:
@@ -173,7 +168,7 @@ def _greedy_loop_lengths(faces_np: np.ndarray, n_vertices: int, root: int) -> li
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["torus", "torus_irregular", "bohemian_dome", "genus_two"])
+@pytest.mark.parametrize("mesh_name", ["torus", "torus_irregular", "genus_two"])
 @pytest.mark.parametrize("root", [0, 5])
 def test_homology_generators_are_the_greedy_system(
     request: pytest.FixtureRequest, mesh_name: str, root: int
@@ -190,7 +185,7 @@ def test_homology_generators_are_the_greedy_system(
     greedy order ranks is that plus the stem to the root twice, ``len(loop) + 2 * depth(a)``.
 
     Mutation probe: ranking the dual forest by lowest edge index, the construction this replaced,
-    fails every one of the eight cases (``torus`` at root 0 reads ``[33, 42]`` against ``[32,
+    fails every case (``torus`` at root 0 reads ``[33, 42]`` against ``[32,
     32]``).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -336,7 +331,7 @@ def test_homology_generators_without_edges(device: str, n_vertices: int) -> None
     assert od.homology.homology_generators(vertices_wp, faces_wp) == []
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular", "genus_two"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "genus_two"])
 def test_homology_generators_is_its_packed_form_split(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:

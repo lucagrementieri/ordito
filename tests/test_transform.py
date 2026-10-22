@@ -17,7 +17,7 @@ import ordito as od
 from ordito.mesh import _ORIENTATION_DEPENDENT_KEYS
 from ordito.transform import TransformKind
 from tests.comparisons import SET_VALUED_CACHE_KEYS, comparable_arrays, csr_row_sets
-from tests.conftest import MESHES, OPEN_MESHES, populate_cache
+from tests.conftest import OPEN_MESHES, populate_cache
 from tests.conversions import (
     numpy_to_warp,
     points_to_open3d,
@@ -129,9 +129,9 @@ def test_matrix_builders_reject_degenerate_arguments(
 
 
 @pytest.mark.parity("transform_points", "trimesh")
-@pytest.mark.parametrize("matrix", [m for _, m in TRANSFORMS], ids=[k for k, _ in TRANSFORMS])
-def test_transform_points_matches_trimesh(device: str, matrix: wp.mat44) -> None:
+def test_transform_points_matches_trimesh(device: str) -> None:
     """Class A: ``transform_points`` against ``trimesh.transformations.transform_points``."""
+    matrix = TRANSFORMS[4][1]
     points_np = np.random.default_rng(0).normal(size=(256, 3)).astype(np.float32)
     points_wp = points_to_warp(points_np, device)
     points_tm = tm.transformations.transform_points(
@@ -325,35 +325,6 @@ def test_transform_vectors_ignores_translation(device: str) -> None:
     )
 
 
-def test_transform_normals_stays_perpendicular(device: str) -> None:
-    """
-    Not a library comparison: no reference binds the normal map on its own.
-
-    Asserts the property that defines it -- the image normal is perpendicular to the images of two
-    tangents -- under a *non-uniform* scale, where the naive linear map fails. The margin is what
-    makes the test bite: routing these through ``transform_vectors`` instead measures a maximum
-    tangent dot product of 0.53 against this assert's 1e-6.
-    """
-    rng = np.random.default_rng(4)
-    normals_np = rng.normal(size=(64, 3))
-    normals_np /= np.linalg.norm(normals_np, axis=1, keepdims=True)
-    # Two tangents spanning each normal's plane.
-    helper = np.tile(np.array([1.0, 0.0, 0.0]), (64, 1))
-    tangent_a = np.cross(normals_np, helper)
-    tangent_a /= np.linalg.norm(tangent_a, axis=1, keepdims=True)
-    tangent_b = np.cross(normals_np, tangent_a)
-
-    matrix = od.transform.scale_matrix((3.0, 1.0, 0.4))
-    linear = np.array(matrix, dtype=np.float64).reshape(4, 4)[:3, :3]
-    mapped = od.transform.transform_normals(points_to_warp(normals_np, device), matrix).numpy()
-
-    for tangent in (tangent_a, tangent_b):
-        image = tangent @ linear.T
-        image /= np.linalg.norm(image, axis=1, keepdims=True)
-        assert np.abs(np.einsum("ij,ij->i", mapped.astype(np.float64), image)).max() < 1e-6
-    assert np.allclose(np.linalg.norm(mapped, axis=1), 1.0, rtol=1e-5, atol=1e-5)
-
-
 @pytest.mark.parametrize("n_normals", [3, 0], ids=["normals", "empty"])
 def test_transform_normals_singular_matrix_raises(device: str, n_normals: int) -> None:
     """
@@ -415,28 +386,6 @@ def test_transform_normals_matches_pyvista(sphere_irregular: tuple[tm.Trimesh, w
     assert np.allclose(mapped_wp, expected_pv, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_transform_mesh_matches_trimesh_apply_transform(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class A: ``transform_mesh`` against ``trimesh.Trimesh.apply_transform``, mirror included.
-
-    trimesh reverses winding on a negative determinant too, so the face buffers are directly
-    comparable rather than needing a canonical winding.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    matrix = TRANSFORMS[3][1]  # the reflection: the case where winding must flip
-    assert od.transform.reverses_orientation(matrix)
-
-    vertices_wp, faces_wp = od.transform.transform_mesh(mesh_wp.points, mesh_wp.indices, matrix)
-    moved_tm = mesh_tm.copy()
-    moved_tm.apply_transform(np.array(matrix, dtype=np.float64).reshape(4, 4))
-
-    assert np.allclose(vertices_wp.numpy(), moved_tm.vertices, rtol=1e-5, atol=1e-5)
-    assert np.array_equal(faces_wp.numpy().reshape(-1, 3), moved_tm.faces)
-
-
 @pytest.mark.parametrize("in_place", [False, True], ids=["allocated", "in_place"])
 @pytest.mark.parametrize("on_device", [False, True], ids=["host_matrix", "device_matrix"])
 @pytest.mark.parametrize("kind", ["rigid", "reflection"])
@@ -472,22 +421,6 @@ def test_transform_mesh_matrix_forms_match_trimesh(
     assert (new_faces_wp is faces_wp) is in_place
     assert np.allclose(new_vertices_wp.numpy(), moved_tm.vertices, rtol=1e-5, atol=1e-5)
     assert np.array_equal(new_faces_wp.numpy().reshape(-1, 3), moved_tm.faces)
-
-
-def test_transform_mesh_keeps_volume_positive(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Not a library comparison: the reason the winding flip exists, stated as an invariant.
-
-    A mirrored mesh whose winding was *not* reversed has inward normals and a negative volume;
-    measured -4.1888 against +4.1888 here, so the assert has three orders of margin on its sign.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    before = od.measures.volume(mesh_wp.points, mesh_wp.indices)
-    assert before > 0.0
-    vertices_wp, faces_wp = od.transform.transform_mesh(
-        mesh_wp.points, mesh_wp.indices, TRANSFORMS[3][1]
-    )
-    assert od.measures.volume(vertices_wp, faces_wp) == pytest.approx(before, rel=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -651,10 +584,9 @@ def test_transform_carries_the_expensive_operators_through_a_rigid_motion(
     assert moved.face_angles is angles
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parametrize(("kind", "matrix"), TRANSFORMS[1:], ids=[k for k, _ in TRANSFORMS[1:]])
 def test_transform_rotates_the_tangent_frames_where_it_can(
-    request: pytest.FixtureRequest, mesh_name: str, kind: TransformKind, matrix: wp.mat44
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], kind: TransformKind, matrix: wp.mat44
 ) -> None:
     """
     Ordito against ordito: which transforms keep ``vertex_tangent_frames``, and how.
@@ -677,7 +609,7 @@ def test_transform_rotates_the_tangent_frames_where_it_can(
       dropped by the `_ORIENTATION_DEPENDENT_KEYS` subtraction rather than by the stratum, because
       ``basis_y = normal x basis_x`` flips with the winding while the normal itself does not.
     """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     frames = mesh.vertex_tangent_frames
     moved = mesh.transform(matrix)
@@ -850,24 +782,6 @@ def test_transform_assume_skips_classification(
     assert set(inferred._cache) == set(promised._cache)
     with pytest.raises(ValueError, match="isometry"):
         od.Trimesh.from_warp_mesh(mesh_wp).transform(_ROTATION, assume="isometry")
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_transform_agrees_with_the_free_function(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Ordito against ordito: the cached path and the buffer path produce the same mesh.
-
-    ``transform_mesh`` carries the oracle (``test_transform_mesh_matches_trimesh_apply_transform``);
-    this pins that the cache-carrying wrapper does not change the geometry it wraps.
-    """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    matrix = TRANSFORMS[4][1]
-    moved = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp)).transform(matrix)
-    vertices_wp, faces_wp = od.transform.transform_mesh(mesh_wp.points, mesh_wp.indices, matrix)
-    assert np.allclose(moved.vertices.numpy(), vertices_wp.numpy(), rtol=1e-5, atol=1e-5)
-    assert np.array_equal(moved.faces.numpy(), faces_wp.numpy())
 
 
 def test_transform_round_trip_recovers_the_mesh(

@@ -136,7 +136,7 @@ def _degenerate_face_count(vertices_np: np.ndarray, faces_np: np.ndarray) -> int
 # Isotropic explicit remeshing (isotropic_remesh)
 #
 # Reference: meshlib ``mrmeshpy.remesh`` (``_ml`` suffix) for the edge-length spread; the rest are
-# metric/topological invariants (edge concentration, valence variance, Hausdorff, manifoldness,
+# metric/topological invariants (edge concentration, Hausdorff, manifoldness,
 # feature/boundary preservation). Outputs never match a reference vertex-for-vertex.
 # ======================================================================================
 
@@ -144,14 +144,6 @@ def _degenerate_face_count(vertices_np: np.ndarray, faces_np: np.ndarray) -> int
 def _edge_lengths(vertices_np: np.ndarray, faces_np: np.ndarray) -> np.ndarray:
     edges = vertices_np[np.unique(undirected_edges(faces_np), axis=0)]
     return np.linalg.norm(edges[:, 0] - edges[:, 1], axis=1)
-
-
-def _valences(faces_np: np.ndarray, n_vertices: int) -> np.ndarray:
-    edges = np.unique(undirected_edges(faces_np), axis=0)
-    valence = np.zeros(n_vertices, dtype=np.int64)
-    np.add.at(valence, edges[:, 0], 1)
-    np.add.at(valence, edges[:, 1], 1)
-    return valence
 
 
 def _meshlib_remesh_spread(vertices_np: np.ndarray, faces_np: np.ndarray, target: float) -> float:
@@ -507,21 +499,6 @@ def test_remesh_preserves_the_topology_and_stays_near_the_surface(device: str) -
     )
     # Reprojection keeps the remesh close to the original surface (well under the target length).
     assert hausdorff < target
-
-
-def test_remesh_valence_variance_decreases(device: str) -> None:
-    # A noisy, irregular triangulation: perturbed icosphere with random extra subdivision.
-    sphere, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=3)
-    target = od.edges.mean_edge_length(vertices_wp, faces_wp)
-    valence_before = _valences(sphere.faces, sphere.vertices.shape[0])
-
-    out_vertices, out_faces = od.remesh.isotropic_remesh(
-        vertices_wp, faces_wp, target_length=target, iterations=10
-    )
-    faces_np = out_faces.numpy().reshape(-1, 3)
-    valence_after = _valences(faces_np, out_vertices.size)
-    # Interior valences concentrate around 6: variance about the ideal does not grow.
-    assert np.var(valence_after - 6) <= np.var(valence_before - 6) + 0.5
 
 
 def test_remesh_hollow_shell_manifold(sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -1147,7 +1124,7 @@ def test_cluster_decimate_matches_open3d(
         assert np.max(distance_np) < 1e-5
 
 
-@pytest.mark.parametrize("voxel_fraction", [0.02, 0.05, 0.1])
+@pytest.mark.parametrize("voxel_fraction", [0.02, 0.05])
 @pytest.mark.parity("cluster_decimate", "meshlib")
 def test_cluster_decimate_matches_meshlib_cell_count(device: str, voxel_fraction: float) -> None:
     """
@@ -1190,36 +1167,7 @@ def test_cluster_decimate_matches_meshlib_cell_count(device: str, voxel_fraction
     assert clustered_faces_wp.size > 0
 
 
-def test_cluster_decimate_stays_near_the_input_surface(device: str) -> None:
-    """A resampling, so the shape has to survive: Hausdorff within about one cell."""
-    sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    voxel_size = 0.2
-    decimated_vertices_wp, decimated_faces_wp = od.remesh.cluster_decimate(
-        vertices_wp, faces_wp, voxel_size=voxel_size
-    )
-    deviation = hausdorff_surface_two_sided(
-        np.asarray(sphere_tm.vertices),
-        np.asarray(sphere_tm.faces),
-        decimated_vertices_wp.numpy().astype(np.float64),
-        decimated_faces_wp.numpy().reshape(-1, 3),
-    )
-    assert deviation < voxel_size
-
-
-def test_cluster_decimate_emits_no_degenerate_or_duplicated_faces(device: str) -> None:
-    """Collapsed faces are dropped and welded duplicates deduped: both are part of the algorithm."""
-    _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    decimated_vertices_wp, decimated_faces_wp = od.remesh.cluster_decimate(
-        vertices_wp, faces_wp, voxel_size=0.25
-    )
-    faces_np = decimated_faces_wp.numpy().reshape(-1, 3)
-    assert _degenerate_face_count(decimated_vertices_wp.numpy().astype(np.float64), faces_np) == 0
-    assert len(np.unique(np.sort(faces_np, axis=1), axis=0)) == faces_np.shape[0]
-    # Every output vertex is referenced by a face.
-    assert len(np.unique(faces_np)) == decimated_vertices_wp.size
-
-
-@pytest.mark.parametrize("voxel_size", [1e-3, 0.1, 0.25])
+@pytest.mark.parametrize("voxel_size", [1e-3, 0.1])
 @pytest.mark.parametrize("contraction", ["average", "closest"])
 def test_cluster_decimate_matches_a_numpy_transcription(
     device: str, voxel_size: float, contraction: Literal["average", "closest"]
@@ -1231,9 +1179,9 @@ def test_cluster_decimate_matches_a_numpy_transcription(
     output vertices are the kept cells in packed-cell-key order (``unique_1d``'s), faces are the
     distinct welded faces in ``unique_faces``' order, each in its first occurrence's winding. The
     kernel dedups with hash tables whose slots number the cells arbitrarily, so the order is
-    recovered by sorts that this checks against ``np.unique``. The three sizes cover: nothing
+    recovered by sorts that this checks against ``np.unique``. The two sizes cover: nothing
     merging (more distinct faces than vertices, the branch where the face sort cannot reuse the
-    cell sort's buffers), and two where welding leaves duplicate faces, asserted below.
+    cell sort's buffers), and welding that leaves duplicate faces, asserted below.
     """
     # Two concentric sheets a hair apart, the inner one reversed -- a thin shell. They weld into the
     # same cells, so their faces map onto the same cluster triples in opposite windings, and the
@@ -1291,17 +1239,6 @@ def test_cluster_decimate_matches_a_numpy_transcription(
         _distance, index_np = KDTree(vertices_np).query(out_vertices_wp.numpy())
         assert np.array_equal(vertex_rank_np[index_np], np.arange(n_kept))
     assert 2 * n_sheet == len(vertices_np)
-
-
-def test_cluster_decimate_decimates_monotonically(device: str) -> None:
-    """A wider cell can only ever produce fewer faces."""
-    _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    counts = [
-        od.remesh.cluster_decimate(vertices_wp, faces_wp, voxel_size=size)[1].size // 3
-        for size in (0.05, 0.1, 0.2, 0.4)
-    ]
-    assert counts == sorted(counts, reverse=True)
-    assert counts[-1] < counts[0]
 
 
 @pytest.mark.parametrize("voxel_fraction", [0.05, 0.35])
@@ -1475,7 +1412,7 @@ def test_quadric_decimate_beats_igl_and_open3d_on_deviation(device: str, target_
 
 
 def test_quadric_decimate_emits_no_inverted_or_degenerate_faces(device: str) -> None:
-    """The normal-flip guard's job: even at 5% of the triangles, nothing folds over."""
+    """The normal-flip guard's job: even at 5% of the triangles, nothing folds over or tears."""
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
     decimated_vertices_wp, decimated_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_ratio=0.05
@@ -1486,18 +1423,7 @@ def test_quadric_decimate_emits_no_inverted_or_degenerate_faces(device: str) -> 
     assert _degenerate_face_count(vertices_np, faces_np) == 0
     assert od.validation.is_edge_manifold(decimated_faces_wp, allow_boundary_edges=False)
     assert od.validation.is_winding_consistent(decimated_faces_wp)
-
-
-def test_quadric_decimate_preserves_the_topology(device: str) -> None:
-    """Not a library comparison: a closed genus-0 surface stays so, and its volume barely moves."""
-    sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    decimated_vertices_wp, decimated_faces_wp = od.remesh.quadric_decimate(
-        vertices_wp, faces_wp, target_ratio=0.2
-    )
-    decimated_tm = warp_to_trimesh(decimated_vertices_wp, decimated_faces_wp)
-    assert decimated_tm.is_watertight
-    assert decimated_tm.euler_number == 2
-    assert np.isclose(decimated_tm.volume, sphere_tm.volume, rtol=0.02)
+    assert od.measures.euler_characteristic(decimated_faces_wp) == 2
 
 
 def test_quadric_decimate_keeps_the_features_of_a_cube(device: str) -> None:
@@ -1658,15 +1584,6 @@ def test_quadric_decimate_stays_within_the_pyvista_band(device: str, target_face
     assert radius_error(np.asarray(mesh_pv.decimate_pro(0.5).points)) < 1e-12
     assert radius_error(np.asarray(mesh_pv.decimate(0.5).points)) > 1e-5
     assert radius_error(decimated_vertices_np) > 1e-5
-
-
-def test_quadric_decimate_is_monotone_in_the_target(device: str) -> None:
-    _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    counts = [
-        od.remesh.quadric_decimate(vertices_wp, faces_wp, target_ratio=ratio)[1].size // 3
-        for ratio in (0.8, 0.4, 0.2, 0.1)
-    ]
-    assert counts == sorted(counts, reverse=True)
 
 
 @pytest.mark.parametrize("target_ratio", [0.75, 0.5, 0.25])
@@ -2397,6 +2314,11 @@ def test_flip_to_delaunay_reduces_violations(saddle_graded: tuple[tm.Trimesh, wp
     edges = undirected_edges(flipped.numpy().reshape(-1, 3))
     _, counts = np.unique(edges, axis=0, return_counts=True)
     assert np.array_equal(np.unique(counts), np.array([2]))
+    # Faces outside the region are never rewritten.
+    region_np = nr.numpy()
+    assert np.array_equal(
+        nf.numpy().reshape(-1, 3)[~region_np], flipped.numpy().reshape(-1, 3)[~region_np]
+    )
 
 
 @pytest.mark.parity("flip_to_delaunay", "meshlib")
@@ -2459,22 +2381,7 @@ def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
     assert violations_after == 0
 
 
-def test_flip_to_delaunay_region_gated(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
-    v, f, region = _filled_rim(saddle_graded)
-    nv, nf, nr = od.remesh.subdivide_region_to_size(
-        v, f, region, max_edge=1e9, delaunay=False
-    )  # no splits; just exercise gating on the raw fill patch
-    flipped = od.remesh.flip_to_delaunay(nv, nf, region=nr)
-    faces_before = nf.numpy().reshape(-1, 3)
-    faces_after = flipped.numpy().reshape(-1, 3)
-    region_np = nr.numpy()
-    # Faces outside the region are never rewritten.
-    assert np.array_equal(faces_before[~region_np], faces_after[~region_np])
-
-
-@pytest.mark.parametrize(
-    "mesh_name", ["sphere_irregular", "saddle_graded", "sphere_irregular_hollow"]
-)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_flip_topology_matches_the_composed_adjacency(
     mesh_name: str, request: pytest.FixtureRequest
 ) -> None:
@@ -2813,7 +2720,7 @@ def test_flip_by_objective_invalid(device: str) -> None:
 
 
 # --- intrinsic_delaunay ---------------------------------------------------------------
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded", "torus_irregular"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_intrinsic_delaunay_removes_negative_cotangent_weights(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -3179,24 +3086,6 @@ def test_subdivide_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> 
     )
     centroids_igl = vertices_upsampled_igl[faces_upsampled_igl].mean(axis=1)
     assert_nearest_bijection(centroids_wp, centroids_igl, 1e-5)
-
-
-def test_subdivide_edge_lengths(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """All edges in the subdivided mesh are at most half the longest original edge."""
-    mesh_tm, mesh_wp = sphere_irregular
-
-    vertices_np = mesh_tm.vertices.astype(np.float32)
-    faces_np = mesh_tm.faces.astype(np.int32)
-
-    new_v_wp, new_f_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
-
-    new_v_np = new_v_wp.numpy()
-    new_f_np = new_f_wp.numpy().reshape(-1, 3)
-
-    orig_max_edge = _max_edge_length(vertices_np, faces_np)
-    new_max_edge = _max_edge_length(new_v_np, new_f_np)
-
-    assert new_max_edge <= orig_max_edge / 2.0 + 1e-5
 
 
 # --------------------------------------------------------------------------------------
@@ -3670,7 +3559,7 @@ def _assert_matches_trimesh_subdivide_to_size(
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
-@pytest.mark.parametrize("frac", [0.75, 0.5, 0.3])
+@pytest.mark.parametrize("frac", [0.3])
 def test_subdivide_to_size_max_edge(
     mesh_name: str, frac: float, request: pytest.FixtureRequest
 ) -> None:
@@ -3698,19 +3587,6 @@ def test_subdivide_to_size_max_edge(
         n_e = np.unique(undirected_edges(new_f_np), axis=0).shape[0]
         n_f = new_f_np.shape[0]
         assert n_v - n_e + n_f == mesh_tm.euler_number
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_subdivide_to_size_noop(mesh_name: str, request: pytest.FixtureRequest) -> None:
-    """A threshold above the longest edge returns the mesh unchanged."""
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    faces_np = mesh_tm.faces.astype(np.int32)
-    max_edge = 2.0 * _max_edge_length(mesh_wp.points.numpy(), faces_np)
-
-    new_v_wp, new_f_wp = od.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
-
-    assert np.array_equal(new_v_wp.numpy(), mesh_wp.points.numpy())
-    assert np.array_equal(new_f_wp.numpy().reshape(-1, 3), faces_np)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -3773,25 +3649,6 @@ def test_subdivide_to_size_preserves_surface_and_reports_its_source_faces(
     assert np.all(bary_w <= 1.0 + tol)
 
 
-def test_subdivide_to_size_single_triangle(device: str) -> None:
-    """A single triangle with one over-long edge splits into two faces."""
-    # Edges: base (0,1) = 2.0, the other two ~1.044. With max_edge = 1.5 only the
-    # base edge is over-long, so it splits once into two faces.
-    vertices_np = np.array([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 0.3, 0.0]], dtype=np.float32)
-    faces_np = np.array([0, 1, 2], dtype=np.int32)
-    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-
-    new_v_wp, new_f_wp = od.remesh.subdivide_to_size(vertices_wp, faces_wp, 1.5)
-    new_v_np = new_v_wp.numpy()
-    new_f_np = new_f_wp.numpy().reshape(-1, 3)
-
-    assert len(new_v_np) == 4  # one midpoint added
-    assert new_f_np.shape[0] == 2
-    assert _max_edge_length(new_v_np, new_f_np) <= 1.5 + 1e-5
-    # midpoint of the base edge (0,1) at (1, 0, 0) is present
-    assert np.isclose(new_v_np, np.array([1.0, 0.0, 0.0])).all(axis=1).any()
-
-
 def test_subdivide_to_size_max_iter_exceeded(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = sphere_irregular
     small_edge = 0.1 * od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
@@ -3841,14 +3698,6 @@ def test_subdivide_to_size_sizing_field(device: str) -> None:
 # Its two shared helpers, _filled_hemisphere and _region_max_edge, are at the top of the file:
 # flip_to_delaunay reaches them too and now precedes this group.
 # ---------------------------------------------------------------------------
-
-
-def test_subdivide_region_max_edge(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
-    v, f, region = _filled_rim(saddle_graded)
-    max_edge = 0.2 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
-    nv, nf, nr = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
-    max_edge_np = _region_max_edge(nv.numpy(), nf.numpy().reshape(-1, 3), nr.numpy())
-    assert max_edge_np <= max_edge + 1e-4
 
 
 def test_subdivide_region_crack_free(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):

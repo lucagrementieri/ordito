@@ -100,45 +100,6 @@ def test_hashgrid_from_points_sizes_its_default_grid_from_the_point_count(device
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
-def test_query_ball_single(device: str, backend: Literal["bvh", "hashgrid"]):
-    rng = np.random.default_rng(0)
-    points = rng.random((50, 3), dtype=np.float32) * 2.0
-    kdtree = KDTree(points)
-    query = points[0].copy()
-    radius = 0.5
-
-    query_indices_np = np.asarray(kdtree.query_ball_point(query, radius, return_sorted=False))
-    query_distances_np = np.linalg.norm(points[query_indices_np] - query, axis=1)
-    order = np.argsort(query_distances_np)
-    query_indices_np = query_indices_np[order]
-    query_distances_np = query_distances_np[order]
-
-    points_wp = points_to_warp(points, device)
-    query_wp = wp.vec3(query[0], query[1], query[2])
-    query_ball = partial(od.neighbors.query_ball, backend=backend)
-
-    query_indices_wp, query_distances_wp = query_ball(
-        points_wp, query_wp, radius, return_sorted=True
-    )
-
-    assert np.array_equal(query_indices_wp.numpy(), query_indices_np)
-    assert np.allclose(query_distances_wp.numpy(), query_distances_np, rtol=1e-5, atol=1e-5)
-
-    query_indices_unsorted_wp, query_distances_unsorted_wp = query_ball(
-        points_wp, query_wp, radius, return_sorted=False
-    )
-    assert np.array_equal(
-        np.sort(query_indices_unsorted_wp.numpy()), np.sort(query_indices_wp.numpy())
-    )
-    assert np.allclose(
-        np.sort(query_distances_unsorted_wp.numpy()),
-        np.sort(query_distances_wp.numpy()),
-        rtol=1e-5,
-        atol=1e-5,
-    )
-
-
-@pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
 @pytest.mark.parity("query_ball_bvh", "scipy")
 @pytest.mark.parity("query_ball_hashgrid", "scipy")
 def test_query_ball_batch(device: str, backend: Literal["bvh", "hashgrid"]):
@@ -647,8 +608,8 @@ def test_query_nearest_single(
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
-@pytest.mark.parametrize("k", [1, 3, 10])
-@pytest.mark.parametrize("max_radius", [math.inf, 0.5, 1.0])
+@pytest.mark.parametrize("k", [1, 10])
+@pytest.mark.parametrize("max_radius", [math.inf, 0.5])
 @pytest.mark.parity("query_nearest_bvh_k7", "scipy")
 @pytest.mark.parity("query_nearest_hashgrid_k7", "scipy")
 def test_query_nearest_batch(

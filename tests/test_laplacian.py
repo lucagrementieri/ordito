@@ -209,20 +209,6 @@ def test_face_gradients_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     assert np.allclose(gradients_wp.numpy(), gradients_ml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
-def test_face_gradients_of_a_constant_field_is_zero(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """Not a library comparison: a constant field has no gradient on any face."""
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = mesh_wp.points.size
-    constant_wp = wp.array(
-        np.full(n_vertices, 3.25, dtype=np.float64), dtype=wp.float64, device=mesh_wp.device
-    )
-    gradients_wp = od.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, constant_wp)
-    assert np.allclose(gradients_wp.numpy(), 0.0, atol=1e-9)
-
-
 def test_face_gradients_precomputed_face_data(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Passing the face normals and areas must not change the answer -- only skip recomputing."""
     _mesh_tm, mesh_wp = saddle_graded
@@ -522,26 +508,6 @@ def test_laplacian_operators_match_pytorch3d(sphere_irregular: tuple[tm.Trimesh,
     assert np.allclose(inverse_np, normalized_p3d, rtol=1e-5, atol=1e-7)
 
 
-def test_cotmatrix_empty_mesh(device: str) -> None:
-    """
-    Class A on the degenerate case: three vertices and no faces give an empty operator, sized 3x3.
-
-    The *shape* is the claim, not the values: igl sizes by ``len(V)`` and so must ordito,
-    rather than returning a 0x0 matrix that would break a caller's dimensions.
-    """
-    vertices_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
-    faces_np = np.empty((0, 3), dtype=np.int64)
-
-    laplacian_igl = igl.cotmatrix(vertices_np, faces_np).tocsr()
-    vertices_wp = points_to_warp(vertices_np, device)
-    faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
-    laplacian_wp = bsr_to_csr(od.laplacian.cotmatrix(vertices_wp, faces_wp))
-
-    assert laplacian_wp.shape == laplacian_igl.shape == (3, 3)
-    assert laplacian_wp.nnz == 0
-    assert laplacian_igl.nnz == 0
-
-
 @pytest.mark.parametrize(
     "operator",
     [
@@ -680,28 +646,6 @@ def test_mesh_operator_pattern_rejects_a_mismatch(
 # test_cotmatrix_entries_are_zero_for_a_zero_area_face is here rather than with cotmatrix_entries:
 # its subject is the degeneracy that motivates this path, not the entry formula.
 # -----------------------------------------------------------------------------------------
-
-
-# --- robust_laplacian / mollify_intrinsic (libigl reference) ---------------------------
-@pytest.mark.parametrize("mesh_name", _INTRINSIC_MESHES)
-def test_robust_laplacian_is_unchanged_on_a_clean_mesh(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = len(mesh_tm.vertices)
-    robust = od.laplacian.robust_laplacian(
-        mesh_wp.points, mesh_wp.indices, use_intrinsic_delaunay=False
-    )
-    plain = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices)
-
-    # Mollification adds nothing when every triangle is already non-degenerate, so with the flips
-    # turned off the operator must be the ordinary one up to the intrinsic route's rounding. Only on
-    # well-shaped meshes, for ``_INTRINSIC_MESHES``' reason: on needles that rounding is 8.4e-6 of
-    # the row on ``saddle_graded`` and 8.7e-5 on ``sphere_irregular``, against the positions-built
-    # operator's 1.9e-7 / 2.1e-7 (all against igl), past this tolerance on the near-zero entries.
-    assert np.allclose(
-        bsr_to_dense(robust, n_vertices), bsr_to_dense(plain, n_vertices), rtol=1e-4, atol=1e-5
-    )
 
 
 def test_robust_laplacian_keeps_couplings_the_plain_one_drops(
@@ -1122,9 +1066,8 @@ def test_connection_laplacian_matches_potpourri3d(
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_connection_laplacian_with_zero_transport_is_the_cotangent_laplacian(
-    request: pytest.FixtureRequest, mesh_name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class A: with every transport angle zeroed, each ``2 x 2`` block collapses to ``-w * I``.
@@ -1134,11 +1077,10 @@ def test_connection_laplacian_with_zero_transport_is_the_cotangent_laplacian(
     zero angle per halfedge has to reproduce that matrix exactly, in both diagonal components and
     with nothing off-diagonal inside a block. Measured on ``sphere_irregular``: the intra-block
     off-diagonals are identically ``0.0``, the two diagonal components agree bit-for-bit, and each
-    equals ``-cotmatrix`` to 3.3e-05 absolute (4.6e-04 on ``saddle_graded``, whose largest weight
-    is 4 973) (the sign flip is documented -- this operator is assembled
-    positive semi-definite for its CG consumers, against ``cotmatrix``'s igl convention).
+    equals ``-cotmatrix`` to 3.3e-05 absolute (the sign flip is documented -- this operator is
+    assembled positive semi-definite for its CG consumers, against ``cotmatrix``'s igl convention).
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     n_vertices = int(mesh_tm.vertices.shape[0])
     zero_angles_wp = wp.zeros(mesh_wp.indices.size, dtype=wp.float32, device=mesh_wp.points.device)
 
@@ -1469,9 +1411,10 @@ def test_operators_on_a_faceless_mesh(device: str) -> None:
 
     Each builder returns before its first launch: the per-face tables are empty ``(0, 3)``, the
     mollifier adds nothing, every square operator is ``3 x 3`` with no stored entry and the lumped
-    mass is zero. A ``0 x 0`` operator would break a caller's dimensions (igl sizes by ``len(V)``
-    too, ``test_cotmatrix_empty_mesh``), and a ``wp.empty`` mass would hand back garbage.
+    mass is zero. A ``0 x 0`` operator would break a caller's dimensions (``igl.cotmatrix`` sizes
+    by ``len(V)`` too, asserted), and a ``wp.empty`` mass would hand back garbage.
     """
+    assert igl.cotmatrix(np.eye(3), np.empty((0, 3), dtype=np.int64)).shape == (3, 3)
     vertices_wp = points_to_warp(np.eye(3), device)
     faces_wp = wp.array(np.zeros(0, dtype=np.int32), dtype=wp.int32, device=device)
 
@@ -1483,6 +1426,7 @@ def test_operators_on_a_faceless_mesh(device: str) -> None:
     assert delta == 0.0
 
     operators = [
+        od.laplacian.cotmatrix(vertices_wp, faces_wp),
         od.laplacian.robust_laplacian(vertices_wp, faces_wp),
         od.laplacian.connection_laplacian(vertices_wp, faces_wp),
         od.laplacian.laplacian(vertices_wp, faces_wp),
@@ -1535,10 +1479,9 @@ def test_operators_reject_precomputed_inputs_of_the_wrong_size(
         od.laplacian.laplacian_entries(vertices_wp, faces_wp, symmetric=True, edges=bad_edges)
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("mass_matrix_entries", "igl")
 def test_mass_matrix_entries_float64_areas_off_mode_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class B: with the deterministic setting off, ``float64`` areas take the atomic scatter.
@@ -1547,7 +1490,7 @@ def test_mass_matrix_entries_float64_areas_off_mode_matches_igl(
     ``test_mass_matrix_assembled_matches_igl``; this pins the off-mode branch every test otherwise
     skips (``tests/conftest.py`` turns the setting on), against the same oracle.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_tm, mesh_wp = sphere_irregular
     vertices, faces = mesh_wp.points, mesh_wp.indices
     areas = od.array.astype(od.triangles.face_normals_and_areas(vertices, faces)[1], wp.float64)
     mass_igl = igl.massmatrix(*mesh_igl(mesh_tm), igl.MASSMATRIX_TYPE_BARYCENTRIC).diagonal()

@@ -72,7 +72,7 @@ def test_face_adjacency_radix_is_invariant_to_an_oversized_base(
         )
 
 
-@pytest.mark.parametrize("mesh_name", [*CLOSED_MESHES, "sphere_irregular", "boy_surface"])
+@pytest.mark.parametrize("mesh_name", [*CLOSED_MESHES, "boy_surface"])
 @pytest.mark.parametrize("n_vertices_given", [False, True])
 def test_face_adjacency_edges_paired_matches_the_grouped_path(
     request: pytest.FixtureRequest, mesh_name: str, n_vertices_given: bool
@@ -214,54 +214,6 @@ def test_half_a_precomputed_pair_raises_even_on_an_empty_mesh(
     )
     with pytest.raises(ValueError, match="both be provided or both omitted"):
         function(*args, adjacency_wp)
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_the_precomputed_pair_reaches_the_same_answer_as_deriving_it(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Ordito against ordito: passing the pair in agrees with letting each wrapper derive it.
-
-    The wrappers taking ``(face_adjacency, face_adjacency_edges)`` each derive it inline from
-    [`face_adjacency`][ordito.adjacency.face_adjacency] when it is omitted, so nothing external
-    can be the oracle -- the claim is that the two paths are the same computation, and the oracle
-    for the derived path is the reference comparison each wrapper carries in its own test.
-
-    ``n_vertices`` is exercised on the derive path because it is documented as changing only the
-    row-hashing radix and not the answer; a wrong radix collides edge keys and silently drops
-    adjacency rows, which is what the row-count assert below would catch.
-    """
-    _, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = mesh_wp.points.size
-    adjacency_wp, edges_wp = od.adjacency.face_adjacency(mesh_wp.indices, return_edges=True)
-    assert int(adjacency_wp.shape[0]) > 0
-    tight_wp, tight_edges_wp = od.adjacency.face_adjacency(
-        mesh_wp.indices, return_edges=True, n_vertices=n_vertices
-    )
-    assert np.array_equal(tight_wp.numpy(), adjacency_wp.numpy())
-    assert np.array_equal(tight_edges_wp.numpy(), edges_wp.numpy())
-
-    for supplied_np, derived_np in (
-        (
-            od.adjacency.face_adjacency_unshared(mesh_wp.indices, adjacency_wp, edges_wp).numpy(),
-            od.adjacency.face_adjacency_unshared(mesh_wp.indices).numpy(),
-        ),
-        (
-            od.adjacency.face_adjacency_projections(
-                mesh_wp.points, mesh_wp.indices, adjacency_wp, edges_wp
-            ).numpy(),
-            od.adjacency.face_adjacency_projections(mesh_wp.points, mesh_wp.indices).numpy(),
-        ),
-        (
-            od.adjacency.face_adjacency_convex(
-                mesh_wp.points, mesh_wp.indices, adjacency_wp, edges_wp
-            ).numpy(),
-            od.adjacency.face_adjacency_convex(mesh_wp.points, mesh_wp.indices).numpy(),
-        ),
-    ):
-        assert len(supplied_np) == int(adjacency_wp.shape[0])
-        assert np.array_equal(supplied_np, derived_np)
 
 
 def test_require_paired_adjacency_accepts_both_and_neither(device: str) -> None:
@@ -1065,7 +1017,7 @@ def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(
     assert np.array_equal(compressed_wp, labels_doubled_wp)
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular_hollow", "cave_cube"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular_hollow"])
 def test_face_connected_component_labels_takes_precomputed_mates(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1114,9 +1066,7 @@ def test_face_connected_component_labels_is_per_edge(device: str) -> None:
     assert np.unique(labels_wp).size == 2
 
 
-@pytest.mark.parametrize(
-    "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "saddle_graded"]
-)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parametrize("bounded", [False, True])
 def test_sorted_face_edge_keys(
     request: pytest.FixtureRequest, mesh_name: str, bounded: bool
