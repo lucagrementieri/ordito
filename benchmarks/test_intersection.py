@@ -191,7 +191,6 @@ def _plane_ml(bench_case: BenchCase) -> mm.Plane3f:
 
 @pytest.mark.benchmark(group="mesh_with_plane")
 @pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
-@pytest.mark.censusmeshes("sphere_small")
 def test_mesh_with_plane(bench_case: BenchCase) -> None:
     """
     Cross-section segments of a mid-mesh plane: a full face sweep plus a compaction.
@@ -231,7 +230,6 @@ def test_mesh_with_plane(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="slice_mesh_with_plane")
 @pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
-@pytest.mark.censusmeshes("sphere_small")
 def test_slice_mesh_with_plane(bench_case: BenchCase) -> None:
     """
     Keep the positive-normal half of the mesh: classify every face, then re-triangulate cuts.
@@ -274,7 +272,6 @@ def test_slice_mesh_with_plane(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="split_mesh_with_plane")
 @pytest.mark.benchlibs("ordito", "pyvista", "meshlib")
-@pytest.mark.censusmeshes("sphere_small")
 @pytest.mark.parity("split_mesh_with_plane", "pyvista")
 def test_split_mesh_with_plane(bench_case: BenchCase) -> None:
     """
@@ -345,7 +342,6 @@ def _plane_field(bench_case: BenchCase) -> tuple[wp.array[wp.float32], np.ndarra
 
 @pytest.mark.benchmark(group="split_faces_along_field")
 @pytest.mark.benchlibs("ordito", "pyvista")
-@pytest.mark.censusmeshes("sphere_small")
 def test_split_faces_along_field(bench_case: BenchCase) -> None:
     """
     The both-sides cut: same classify-and-compact sweep, but every face is kept and relabelled.
@@ -392,7 +388,6 @@ def test_split_faces_along_field(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="clip_mesh_with_field")
 @pytest.mark.benchlibs("ordito", "pyvista")
-@pytest.mark.censusmeshes("sphere_small")
 @pytest.mark.parametrize("cap", [False, True])
 def test_clip_mesh_with_field(bench_case: BenchCase, cap: bool) -> None:
     """

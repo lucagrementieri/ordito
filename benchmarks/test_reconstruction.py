@@ -405,7 +405,6 @@ def test_ball_pivoting(bench_case: BenchCase) -> None:
 )
 @pytest.mark.benchmark(group="screened_poisson")
 @pytest.mark.benchlibs("ordito", "meshlib")
-@pytest.mark.censusmeshes("sphere_small")
 @pytest.mark.parametrize("depth", _POISSON_DEPTHS)
 @pytest.mark.parametrize("method", ["dense", "adaptive"])
 def test_screened_poisson(

@@ -521,6 +521,7 @@ def test_stitch_min_weight(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="fillable_loop_mask")
 @pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.censusmesh("saddle_small")
 def test_fillable_loop_mask(bench_case: BenchCase) -> None:
     """
     Which rims a min-weight fill can close: one face pass, plus one readback of the rims.
@@ -572,6 +573,7 @@ def test_fillable_loop_mask(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="extend_hole")
 @pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.censusmesh("saddle_small")
 def test_extend_hole(bench_case: BenchCase) -> None:
     """
     Project every rim to a plane and bridge to it: two launches over the rim, plus two copies.
@@ -622,6 +624,7 @@ def test_extend_hole(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="build_bottom")
 @pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.censusmesh("saddle_small")
 def test_build_bottom(bench_case: BenchCase) -> None:
     """
     The same band as ``extend_hole``, with the plane fitted to each rim instead of given.
@@ -666,6 +669,7 @@ def test_build_bottom(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="bridge_edges")
 @pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.censusmesh("saddle_small")
 def test_bridge_edges(bench_case: BenchCase) -> None:
     """
     Two triangles, so this times the *validation* and the buffer copy, not the patch.
@@ -718,6 +722,7 @@ def test_bridge_edges(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="bridge_edges_smooth")
 @pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.censusmesh("saddle_small")
 def test_bridge_edges_smooth(bench_case: BenchCase) -> None:
     """
     The curved strip: the same validation as ``bridge_edges``, plus a fixed-size spline.

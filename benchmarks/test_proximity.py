@@ -363,6 +363,7 @@ def _crease_edges_wp(bench_case: BenchCase) -> odt.Array2dInt32:
 
 @pytest.mark.benchmark(group="closest_point_on_edges")
 @pytest.mark.benchlibs("ordito", "pyvista")
+@pytest.mark.censusmesh("tangle_torus_small")
 def test_closest_point_on_edges(bench_case: BenchCase) -> None:
     """
     The **wireframe** closest-point query: the same queries against the mesh's crease edges.

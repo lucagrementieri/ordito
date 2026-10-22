@@ -790,7 +790,6 @@ _SUBDIVISIONS = [1, 3]
 
 @pytest.mark.benchmark(group="convex_hull")
 @pytest.mark.benchlibs("ordito", "scipy", "trimesh", "open3d", "pymeshlab")
-@pytest.mark.censusmeshes("sphere_small")
 def test_convex_hull(bench_case: BenchCase) -> None:
     """
     The exact hull against qhull, directly and through the three mesh wrappers.

@@ -195,6 +195,7 @@ def test_ears(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="loop_perimeters")
 @pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.censusmesh("saddle_small")
 def test_loop_perimeters(bench_case: BenchCase) -> None:
     """
     Both loop measures at once: one segmented launch over every rim of the mesh.
@@ -240,6 +241,7 @@ def test_loop_perimeters(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="loop_directed_areas")
 @pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.censusmesh("saddle_small")
 def test_loop_directed_areas(bench_case: BenchCase) -> None:
     """
     The vector measure of the same loops, read against the scalar one above.
