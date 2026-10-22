@@ -597,25 +597,26 @@ def mark_kept_components(
 
 
 @wp.kernel
-def flip_faces_by_component_volume(
+def flip_faces_by_component_sign(
     faces: wp.array[wp.int32],
     labels: wp.array[wp.int32],
-    component_volume: wp.array[wp.float32],
-    volume_sums: GroupSumPass,
+    component_sum: wp.array[wp.float32],
+    component_sums: GroupSumPass,
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # ``make_volume(multibody=True)``'s orientation pass: a face is reversed when the component it
-    # belongs to encloses a negative signed volume, i.e. is wound inward.
+    # A face is reversed when its component's sum is negative. ``make_volume(multibody=True)``
+    # sums the signed volume, so an inward-wound component flips; ``triangulate_point_cloud``
+    # sums the normal at the component's farthest corner along its direction from the box centre.
     #
-    # The component's volume is read through this face's own label rather than gathered into a
+    # The component's sum is read through this face's own label rather than gathered into a
     # per-face buffer first: the Python-scope form was an ``indexedarray`` view, a ``wp.map`` to
     # materialise a face-sized flag array, and then this pass to consume it -- two launches and a
     # buffer for a value one indirection away. Measured 1.15x on ``make_volume(multibody=True)``.
-    # The volume is read through ``reduce.read_group_sum`` likewise, so the exact group sum needs
-    # no finish launch.
+    # The sum is read through ``reduce.read_group_sum`` likewise, so the exact group sum needs no
+    # finish launch.
     f = wp.int32(wp.tid())
-    volume = read_group_sum(component_volume, volume_sums, labels[f])
-    write_face_winding(faces, f, volume < wp.float32(0.0), out_faces)
+    total = read_group_sum(component_sum, component_sums, labels[f])
+    write_face_winding(faces, f, total < wp.float32(0.0), out_faces)
 
 
 @wp.kernel

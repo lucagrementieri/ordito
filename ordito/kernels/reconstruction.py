@@ -19,6 +19,7 @@ from ordito.kernels.algorithms.conjugate_gradient import (
 from ordito.kernels.array import (
     is_positive_finite,
     ordered_float_bits,
+    pack_farthest_key,
     pack_triangle_key,
     ravel_index,
     scanned_count,
@@ -28,6 +29,7 @@ from ordito.kernels.array import (
     trilinear_cell,
     trilinear_corner,
     trilinear_weight,
+    unpack_ranked_index,
     update_argmax,
 )
 from ordito.kernels.predicates import (
@@ -35,10 +37,19 @@ from ordito.kernels.predicates import (
     is_unfold_quadrangle_convex,
     orient2d,
     project_out_normal,
+    triangle_area_vector,
     triangle_aspect_ratio,
     vector_angle,
 )
-from ordito.kernels.reduce import block_chunk_1d, block_sum, store_sum_and_count, term_sum_1d
+from ordito.kernels.reduce import (
+    GroupSumPass,
+    block_chunk_1d,
+    block_sum,
+    store_sum_and_count,
+    term_sum_1d,
+)
+from ordito.kernels.scatter import scatter_add
+from ordito.kernels.triangles import corner_triple
 
 wp.set_module_options({"enable_backward": False})
 
@@ -704,6 +715,51 @@ def emit_repeated_triangles(
     slot = sorted_slots[i]
     for c in range(3):
         out_faces[3 * row + c] = tris[slot, c]
+
+
+# --------------------------------------------------------------------------------------
+# Orientation without normals: each component faces away from the bounding-box centre at its
+# corner farthest from it
+# --------------------------------------------------------------------------------------
+@wp.kernel
+def farthest_component_corners(
+    points: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    center: wp.vec3,
+    out_farthest: wp.array[wp.int64],
+) -> None:
+    # Each corner bids for its face's component: the largest distance from ``center`` wins, the
+    # lowest vertex on a tie (``array.pack_farthest_key``), whatever the arrival order.
+    # ``out_farthest`` arrives holding ``-1``, below every key.
+    f = wp.int32(wp.tid())
+    group = labels[f]
+    a, b, c = corner_triple(faces, f)
+    wp.atomic_max(out_farthest, group, pack_farthest_key(wp.length_sq(points[a] - center), a))
+    wp.atomic_max(out_farthest, group, pack_farthest_key(wp.length_sq(points[b] - center), b))
+    wp.atomic_max(out_farthest, group, pack_farthest_key(wp.length_sq(points[c] - center), c))
+
+
+@wp.kernel
+def scatter_farthest_corner_normal(
+    points: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    center: wp.vec3,
+    farthest: wp.array[wp.int64],
+    sums: GroupSumPass,
+    out_normal_sums: wp.array[wp.float32],
+) -> None:
+    # A face touching its component's farthest corner adds its area vector's component along that
+    # corner's direction from ``center`` (``scatter.scatter_add``, per the deterministic setting):
+    # the sum is negative exactly when the component's fan there faces the centre.
+    f = wp.int32(wp.tid())
+    group = labels[f]
+    corner = unpack_ranked_index(farthest[group])
+    a, b, c = corner_triple(faces, f)
+    if corner == a or corner == b or corner == c:
+        area = triangle_area_vector(points[a], points[b], points[c])
+        scatter_add(out_normal_sums, sums, group, wp.dot(area, points[corner] - center))
 
 
 # ======================================================================================

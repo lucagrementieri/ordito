@@ -474,6 +474,49 @@ def test_torus_without_normals_matches_meshlib_reference(device: str):
     assert od.validation.is_watertight(vertices_wp, faces_wp)
 
 
+@pytest.mark.parity("triangulate_point_cloud_unoriented", "meshlib")
+@pytest.mark.parametrize("seed", [0, 1])
+def test_open_cloud_without_normals_faces_like_meshlib(device: str, seed: int):
+    """
+    Class B (faces matched by vertex set, windings compared): an open surface faces MeshLib's way.
+
+    A closed surface has an outside; an open one does not, so without normals the side it faces
+    is a convention. MeshLib's (``autoOrientLocalTriangulations``) turns each connected component
+    away from the cloud's bounding-box centre at the component's point farthest from that centre.
+    The cloud is a sine-wave sheet, not convex, longer on one side so that the farthest point is
+    unique, and shuffled by ``seed`` so that the point order is not the answer. Every face the two
+    triangulations share by vertex set must carry the same winding: measured 1 445 and 1 411 shared
+    faces of MeshLib's 1 919 on CUDA, 1 385 and 1 343 on the CPU (the grid's diagonals differ
+    elsewhere), and all six shuffles 0-5 agree on both devices.
+
+    Mutation probe: keeping only the consistent winding, each component following its
+    lowest-indexed face, reversed every shared face for shuffles 0 and 5 of 0-5 and passed the
+    rest; shuffle 0 fails and shuffle 1 passes, so a constant answer cannot pass both.
+    """
+    x, y = np.meshgrid(np.arange(-2.0, 2.61, 0.1), np.arange(-1.0, 1.01, 0.1))
+    sheet_np = np.stack([x.ravel(), y.ravel(), 0.4 * np.sin(np.pi * x.ravel())], axis=1)
+    points_np = sheet_np[np.random.default_rng(seed).permutation(sheet_np.shape[0])]
+
+    _vertices_ml, faces_ml = _meshlib_triangulate(points_np, None, 18)
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
+        points_to_warp(points_np, device), num_neighbours=18
+    )
+    # Both index the input cloud, so the face sets are comparable without a vertex remap.
+    assert np.allclose(vertices_wp.numpy(), points_np, rtol=1e-5, atol=1e-5)
+    faces_wp_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
+    faces_ml_np = np.asarray(faces_ml, dtype=np.int64)
+    assert faces_ml_np.shape[0] > 0  # non-vacuity
+
+    def row_set(rows: np.ndarray) -> set[tuple[int, ...]]:
+        return {tuple(row) for row in rows.tolist()}
+
+    shared = row_set(np.sort(faces_wp_np, axis=1)) & row_set(np.sort(faces_ml_np, axis=1))
+    agreeing = row_set(canonical_winding(faces_wp_np)) & row_set(canonical_winding(faces_ml_np))
+    assert len(shared) >= 0.6 * faces_ml_np.shape[0]
+    assert len(agreeing) == len(shared)
+    assert od.validation.is_winding_consistent(faces_wp)
+
+
 def test_open_hemisphere_keeps_single_boundary(device: str):
     sphere_tm = tm.creation.icosphere(subdivisions=4, radius=1.0)
     upper = sphere_tm.vertices[:, 2] >= -1e-9

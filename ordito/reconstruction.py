@@ -45,6 +45,7 @@ from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import remesh as kernel_remesh
+from ordito.kernels import repair as kernel_repair
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
 from ordito.kernels.algorithms import poisson_band as kernel_poisson_band
@@ -245,10 +246,11 @@ def triangulate_point_cloud(
 
     Supplied ``normals`` are **trusted**: each face is wound to agree with them, so an
     inward-facing cloud gives an inward-facing mesh. Leave them ``None`` to estimate them by PCA
-    ([`estimate_normals`][ordito.points.estimate_normals]); their signs are then ignored, and the
-    assembled mesh is given a consistent winding and, where it is closed, faces outward
-    ([`make_normals_outward`][ordito.repair.make_normals_outward]). This holds for any closed,
-    orientable surface, not only for a cloud that is star-shaped about its centroid.
+    ([`estimate_normals`][ordito.points.estimate_normals]); their signs are then ignored, and each
+    connected component of the assembled mesh is wound consistently and faces away from the
+    cloud's bounding-box centre at its point farthest from that centre. A closed, orientable surface
+    therefore faces outward whatever its shape; an open one, which has no outside, faces the side
+    that convention picks.
 
     Parameters
     ----------
@@ -385,10 +387,15 @@ def triangulate_point_cloud(
     # Every face carries a distinct vertex set, so the duplicate-resolution stage has nothing to do.
     # Trusted normals keep their winding (``orient=False``): ``make_normals_outward`` would rewind a
     # whole inward-normal cloud's mesh outward, silently breaking that contract. Estimated normals
-    # have no sign to keep, so the mesh is oriented instead: each fan was wound by its own center's
-    # normal, and the representative faces disagree wherever those signs did.
+    # have no sign to keep, so the mesh is oriented instead (each fan was wound by its own center's
+    # normal, and the representative faces disagree wherever those signs did): away from the box
+    # centre at each component's farthest corner.
+    if oriented:
+        return _clean_reconstruction(
+            points, faces, crit_hole_length, orient=False, deduplicate=False
+        )
     return _clean_reconstruction(
-        points, faces, crit_hole_length, orient=not oriented, deduplicate=False
+        points, faces, crit_hole_length, away_from=_box_center(bounds), deduplicate=False
     )
 
 
@@ -401,6 +408,13 @@ def _box_diagonal(bounds: tuple[wp.vec3, wp.vec3]) -> float:
     lower = np.array(bounds[0], dtype=np.float32)
     upper = np.array(bounds[1], dtype=np.float32)
     return float(np.linalg.norm(upper - lower))
+
+
+def _box_center(bounds: tuple[wp.vec3, wp.vec3]) -> wp.vec3:
+    """Centre of a box, from its ``float32`` corners."""
+    lower = np.array(bounds[0], dtype=np.float32)
+    upper = np.array(bounds[1], dtype=np.float32)
+    return wp.vec3(*(np.float32(0.5) * (lower + upper)))
 
 
 def _repeated_oriented_triangles(
@@ -2803,6 +2817,7 @@ def _clean_reconstruction(
     crit_hole_length: float,
     *,
     orient: bool = True,
+    away_from: wp.vec3 | None = None,
     deduplicate: bool = True,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
@@ -2813,9 +2828,11 @@ def _clean_reconstruction(
     since both hole filling and ``boundary_loops`` assume a manifold boundary. ``crit_hole_length``
     follows the public convention: ``0`` skips hole filling, a negative value means ``0.1 x`` the
     point-cloud bounding-box diagonal. ``orient=False`` keeps the incoming winding for callers
-    that already have a trusted orientation. ``deduplicate=False`` skips the duplicate-resolution
-    stage for a caller whose faces already carry pairwise distinct vertex sets *in ascending
-    unoriented-key order* -- the order that stage emits -- so the result is unchanged.
+    that already have a trusted orientation. ``away_from`` replaces the outward orientation with
+    ``_face_away_from``'s, which also decides open components. ``deduplicate=False`` skips the
+    duplicate-resolution stage for a caller whose faces already carry pairwise distinct vertex
+    sets *in ascending unoriented-key order* -- the order that stage emits -- so the result is
+    unchanged.
     """
     if faces.size == 0:
         return _launch.clone(points), faces
@@ -2827,7 +2844,9 @@ def _clean_reconstruction(
     vertices, faces = od.repair.remove_degenerate_and_non_manifold_faces(points, faces)
 
     if faces.size > 0:
-        if orient:
+        if away_from is not None:
+            faces = _face_away_from(vertices, faces, away_from)
+        elif orient:
             faces = od.repair.make_normals_outward(vertices, faces)
         if crit_hole_length != 0.0:
             hole_length = crit_hole_length
@@ -2835,3 +2854,47 @@ def _clean_reconstruction(
                 hole_length = 0.1 * od.bounds.enclosing_diagonal(points)
             faces = od.holes.fill_small(vertices, faces, hole_length)
     return vertices, faces
+
+
+def _face_away_from(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], center: wp.vec3
+) -> wp.array[wp.int32]:
+    """
+    Wind each component consistently, facing away from ``center`` at its farthest corner.
+
+    The orientation of a cloud without normals: each component's corner farthest from the box
+    centre, the lowest vertex on a tie, keeps a normal pointing away from the centre, and the rest
+    of the component follows it. Unlike an outward
+    test by signed volume it decides an open component too; on a closed one it agrees, since the
+    surface lies inside the sphere through its farthest point. Nonempty ``faces``.
+    """
+    n_faces = faces.size // 3
+    device = faces.device
+    faces = od.repair.make_winding_consistent(faces, n_vertices=vertices.size)
+    labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+    farthest = _launch.full(n_faces, -1, dtype=wp.int64, device=device)
+    _launch.launch(
+        kernel_reconstruction.farthest_component_corners,
+        dim=n_faces,
+        inputs=[vertices, faces, labels, center],
+        outputs=[farthest],
+        device=device,
+    )
+    # A component can hold every face, so ``n_faces`` terms bound any one sum.
+    sums = _launch.group_sums(n_faces, wp.float32, n_faces, device, fused=True)
+    _launch.launch_group_sums(
+        kernel_reconstruction.scatter_farthest_corner_normal,
+        dim=n_faces,
+        inputs=[vertices, faces, labels, center, farthest],
+        sums=sums,
+        device=device,
+    )
+    out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.flip_faces_by_component_sign,
+        dim=n_faces,
+        inputs=[faces, labels, sums.out, sums.launch_pass],
+        outputs=[out_faces],
+        device=device,
+    )
+    return out_faces

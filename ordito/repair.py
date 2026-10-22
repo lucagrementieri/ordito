@@ -2701,7 +2701,7 @@ def _outward_faces(
         # One launch: each face reads its own component's signed volume through its label, where
         # gathering that into a per-face flag buffer first cost a map, a launch and the buffer.
         _launch.launch(
-            kernel_repair.flip_faces_by_component_volume,
+            kernel_repair.flip_faces_by_component_sign,
             dim=n_faces,
             inputs=[faces, labels, volumes, volume_sums, out_faces],
             device=device,
