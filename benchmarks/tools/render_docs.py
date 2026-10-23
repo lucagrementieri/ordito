@@ -206,7 +206,8 @@ def svg_chart(bars: list[Bar], *, label: str, subject_fill: bool = False) -> str
 
     axis_y = _TOP + len(bars) * _ROW
     out = [
-        f'<svg class="bench-chart" viewBox="0 0 {_WIDTH} {axis_y + _AXIS}" role="img" '
+        f'<svg class="bench-chart" width="{_WIDTH}" height="{axis_y + _AXIS}" '
+        f'viewBox="0 0 {_WIDTH} {axis_y + _AXIS}" role="img" '
         f'aria-label="{html.escape(label)}">'
     ]
     for exponent in range(e_lo, e_hi + 1):
