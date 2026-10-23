@@ -7707,7 +7707,7 @@ hold one vector per vertex.</p>
         <p>Diffuse a tangent field and <code>n_scalars</code> scalar fields as one solve.</p>
 <p>The two systems do not interact and settle at the same round, so they run as one solve
 over the block-diagonal stack <code>[vector system; heat system x n_scalars]</code>
-(<a class="autorefs autorefs-internal" title="block_diag" href="../linalg/#ordito.linalg.block_diag"><code>block_diag</code></a>), in the launches of one.</p>
+(<a class="autorefs autorefs-internal" title="block_diag" href="../array/#ordito.array.block_diag"><code>block_diag</code></a>), in the launches of one.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -7865,7 +7865,7 @@ hold <code>(2 + n_scalars) * n_vertices</code> entries.</p>
 
 <span class="sd">    The two systems do not interact and settle at the same round, so they run as one solve</span>
 <span class="sd">    over the block-diagonal stack ``[vector system; heat system x n_scalars]``</span>
-<span class="sd">    ([`block_diag`][ordito.linalg.block_diag]), in the launches of one.</span>
+<span class="sd">    ([`block_diag`][ordito.array.block_diag]), in the launches of one.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -7893,7 +7893,7 @@ hold <code>(2 + n_scalars) * n_vertices</code> entries.</p>
         <span class="c1"># its distinct blocks -- the vector and heat systems' own factorization slots, so a</span>
         <span class="c1"># factorization either already holds is reused and one built here serves their solves.</span>
         <span class="n">vector_system</span><span class="p">,</span> <span class="n">scalar</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">vector_operators</span>
-        <span class="n">stack</span> <span class="o">=</span> <span class="n">twl</span><span class="o">.</span><span class="n">block_diag</span><span class="p">((</span><span class="n">vector_system</span><span class="p">,</span> <span class="o">*</span><span class="p">(</span><span class="n">scalar</span><span class="p">[</span><span class="mi">0</span><span class="p">],)</span> <span class="o">*</span> <span class="n">n_scalars</span><span class="p">))</span>
+        <span class="n">stack</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">block_diag</span><span class="p">((</span><span class="n">vector_system</span><span class="p">,</span> <span class="o">*</span><span class="p">(</span><span class="n">scalar</span><span class="p">[</span><span class="mi">0</span><span class="p">],)</span> <span class="o">*</span> <span class="n">n_scalars</span><span class="p">))</span>
         <span class="n">kept</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_systems</span><span class="p">[</span><span class="n">role</span><span class="p">]</span> <span class="o">=</span> <span class="n">_KeptSystem</span><span class="p">(</span>
             <span class="n">_StackedFactorization</span><span class="p">(</span>
                 <span class="n">stack</span><span class="p">,</span>

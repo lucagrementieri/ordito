@@ -111,10 +111,13 @@
   width: auto;
 }
 
-/* Benchmark charts (inline SVG from benchmarks/render_docs.py). The accent-vs-muted pairs are the
-   ones benchmarks/plot_comparison.py validated: ordito takes the brand accent, every reference one
-   muted gray; text keeps the page's own ink. A chart is drawn at its native width (one viewBox
-   unit per pixel) and shrinks on a narrower column. */
+/* Benchmark charts (inline SVG from benchmarks/tools/render_docs.py): ordito takes the brand
+   accent, every reference one muted gray; text keeps the page's own ink. Both pairs went through
+   the dataviz palette validator. Light: worst pair dE 17.0 under CVD, 20.6 normal; the gray's
+   2.74:1 contrast is in the warning band, relieved by every bar's direct value label. Dark: CVD
+   and contrast pass; the accent's lightness flag (0.713 > 0.67) is accepted to stay on the brand
+   green. A chart is drawn at its native width (one viewBox unit per pixel) and shrinks on a
+   narrower column. */
 [data-md-color-scheme="default"] {
   --bench-subject: #4f8000;
   --bench-reference: #9a9a9a;
@@ -124,6 +127,9 @@
   --bench-reference: #7a7a7a;
 }
 .bench-figure {
+  /* Material makes a figure fit-content, which leaves the chart no width to resolve against: the
+     SVG then falls back to a fixed height and a chart with fewer rows renders wider. */
+  width: 100%;
   margin: 1em 0;
 }
 .bench-chart {

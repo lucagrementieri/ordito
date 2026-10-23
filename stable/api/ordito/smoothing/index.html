@@ -12686,7 +12686,7 @@ place:</p>
             <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">values</span><span class="p">,</span> <span class="n">rhs</span><span class="p">,</span> <span class="n">solution_2d</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
-        <span class="n">system</span> <span class="o">=</span> <span class="n">twl</span><span class="o">.</span><span class="n">bsr_with_values</span><span class="p">(</span><span class="n">template</span><span class="p">,</span> <span class="n">values</span><span class="p">)</span>
+        <span class="n">system</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">bsr_with_values</span><span class="p">(</span><span class="n">template</span><span class="p">,</span> <span class="n">values</span><span class="p">)</span>
         <span class="c1"># One batched solve advances all three columns together; ``M - lamb L`` over the whole mesh</span>
         <span class="c1"># (or its interior block) is a solve long enough for the polynomial preconditioner.</span>
         <span class="n">fairing</span><span class="o">.</span><span class="n">solve</span><span class="p">(</span><span class="n">system</span><span class="p">,</span> <span class="n">rhs</span><span class="p">,</span> <span class="n">solution_2d</span><span class="p">,</span> <span class="n">maxiter</span><span class="o">=</span><span class="mi">10</span> <span class="o">*</span> <span class="n">n_rows</span><span class="p">)</span>
