@@ -45,7 +45,62 @@ Shelving decisions that are not obvious from the section titles:
     * [potpourri3d](migrating-from/potpourri3d.md)
     * [PyTorch3D](migrating-from/pytorch3d.md)
 * [Performance](performance.md)
-* [Benchmarks](benchmarks.md)
+* [Benchmarks](benchmarks/index.md)
+    * Primitives & creation
+        * [creation](benchmarks/creation.md)
+    * Mesh structure & topology
+        * [mesh](benchmarks/mesh.md)
+        * [vertices](benchmarks/vertices.md)
+        * [edges](benchmarks/edges.md)
+        * [triangles](benchmarks/triangles.md)
+        * [adjacency](benchmarks/adjacency.md)
+        * [boundary](benchmarks/boundary.md)
+        * [selection](benchmarks/selection.md)
+        * [validation](benchmarks/validation.md)
+        * [homology](benchmarks/homology.md)
+        * [tangent_space](benchmarks/tangent_space.md)
+    * Measures & shape descriptors
+        * [measures](benchmarks/measures.md)
+        * [curvature](benchmarks/curvature.md)
+        * [bounds](benchmarks/bounds.md)
+        * [visibility](benchmarks/visibility.md)
+    * Mesh editing & repair
+        * [transform](benchmarks/transform.md)
+        * [repair](benchmarks/repair.md)
+        * [holes](benchmarks/holes.md)
+        * [combine](benchmarks/combine.md)
+        * [remesh](benchmarks/remesh.md)
+        * [smoothing](benchmarks/smoothing.md)
+        * [seams](benchmarks/seams.md)
+        * [levelset](benchmarks/levelset.md)
+    * Spatial queries
+        * [proximity](benchmarks/proximity.md)
+        * [ray](benchmarks/ray.md)
+        * [neighbors](benchmarks/neighbors.md)
+        * [intersection](benchmarks/intersection.md)
+        * [metrics](benchmarks/metrics.md)
+    * Point clouds, voxels & reconstruction
+        * [points](benchmarks/points.md)
+        * [sample](benchmarks/sample.md)
+        * [voxels](benchmarks/voxels.md)
+        * [reconstruction](benchmarks/reconstruction.md)
+        * [registration](benchmarks/registration.md)
+    * Operators & solvers
+        * [laplacian](benchmarks/laplacian.md)
+        * [energies](benchmarks/energies.md)
+        * [linalg](benchmarks/linalg.md)
+        * [interpolation](benchmarks/interpolation.md)
+        * [parametrization](benchmarks/parametrization.md)
+    * Geodesics & heat-method solvers
+        * [geodesic_walk](benchmarks/geodesic_walk.md)
+        * [heat](benchmarks/heat.md)
+    * Curves
+        * [polyline](benchmarks/polyline.md)
+    * Arrays & infrastructure
+        * [array](benchmarks/array.md)
+        * [reduce](benchmarks/reduce.md)
+        * [grouping](benchmarks/grouping.md)
+        * [graph](benchmarks/graph.md)
 * [API Reference](reference.md)
     * Primitives & creation
         * [creation](api/ordito/creation.md)

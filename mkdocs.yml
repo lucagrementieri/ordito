@@ -14,16 +14,15 @@ docs_dir: docs
 # `api/ordito/<module>/`); the nav, including the themed shelving of those pages, is the committed
 # `docs/SUMMARY.md`. A plain `zensical build` / `serve` needs no pre-build step.
 #
-# No `exclude_docs:` here, though MkDocs had one for `assets/benchmarks/*.md` -- Zensical has no
-# whole-file exclusion setting. Those sidecar tables carry `search: exclude: true` front matter
-# instead (emitted by `benchmarks/plot_comparison.py`), which keeps them out of the search index;
-# they are still built as unlinked pages, which nothing links to and the nav never shows.
+# Zensical has no whole-file exclusion setting, so a generated page that should stay out of the
+# search index says so in its own front matter (`search: exclude: true`): the per-module pages
+# under `benchmarks/`, written by `benchmarks/render_docs.py`.
 
 theme:
   name: material
   custom_dir: docs/.overrides
-  logo: assets/ordito.svg
-  favicon: assets/ordito.svg
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
   features:
     - navigation.tabs
     - navigation.sections

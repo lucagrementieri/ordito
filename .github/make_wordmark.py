@@ -1,6 +1,6 @@
 """Build the ordito wordmark and the link-preview cards from the ring mark.
 
-The ring (``docs/assets/ordito.svg``) is the initial O; "rdito" and the tagline are Outfit
+The ring (``docs/assets/logo.svg``) is the initial O; "rdito" and the tagline are Outfit
 (SIL OFL 1.1, https://github.com/google/fonts/tree/main/ofl/outfit) converted to outlines, so no
 font is needed to view the result. It writes ``wordmark.svg``,
 ``wordmark-dark.svg``, the GitHub social preview ``social-preview.png`` and the docs' Open Graph
@@ -26,7 +26,7 @@ glyphs = font.getGlyphSet()
 cmap = font.getBestCmap()
 upm = font["head"].unitsPerEm
 
-ring_svg = (repo / "docs/assets/ordito.svg").read_text()
+ring_svg = (repo / "docs/assets/logo.svg").read_text()
 ring_paths = "".join(re.findall(r"<path [^>]*/>", ring_svg))
 rx, ry, rw, rh = map(float, re.search(r'viewBox="([^"]*)"', ring_svg).group(1).split())
 
@@ -77,7 +77,7 @@ def wordmark(fill: str, note: str) -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.1f} {height:.1f}" '
         f'role="img" aria-label="ordito">\n'
         f"  <title>ordito</title>\n"
-        f"  <!-- {note} The O is the ring mark (ordito.svg), scaled to the extent of the\n"
+        f"  <!-- {note} The O is the ring mark (logo.svg), scaled to the extent of the\n"
         f"       font's own capital O; the letters are Outfit (SIL OFL 1.1) converted to\n"
         f"       outlines, so the wordmark renders the same with no font installed. -->\n"
         f'  <g transform="{ring_tf}">{ring_paths}</g>\n'

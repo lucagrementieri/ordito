@@ -33,6 +33,7 @@ from __future__ import annotations
 from pathlib import Path
 
 PNG_DIR = Path(__file__).parent / "png"
+CLEAR_DIR = Path(__file__).parent / "png-clear"
 
 # id -> (png filename under png/, or None for a text-only fallback; display label)
 _REGISTRY: dict[str, tuple[str | None, str]] = {
@@ -61,6 +62,12 @@ def logo_path(library_id: str) -> Path | None:
     """Return the PNG path for `library_id`'s logo, or `None` if it has no vendored mark."""
     filename, _ = _REGISTRY.get(library_id, (None, library_id))
     return (PNG_DIR / filename) if filename is not None else None
+
+
+def clear_logo_path(library_id: str) -> Path | None:
+    """Return the transparent (chip-less) PNG for `library_id`'s logo, or `None` if it has none."""
+    filename, _ = _REGISTRY.get(library_id, (None, library_id))
+    return (CLEAR_DIR / filename) if filename is not None else None
 
 
 def display_label(library_id: str) -> str:

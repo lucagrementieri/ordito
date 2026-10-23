@@ -4,8 +4,8 @@ Render `benchmarks/aggregate.py` cells as comparison histograms, each library na
 One PNG pair (light + dark) per cell, each competing library identified by its own logo rather
 than a generic categorical color:
 
-    uv run python benchmarks/plot_comparison.py <json_dir> --out docs/assets/benchmarks/
-    uv run python benchmarks/plot_comparison.py <json_dir> --out docs/assets/benchmarks/ --hero
+    uv run python benchmarks/plot_comparison.py <json_dir> --out /tmp/charts
+    uv run python benchmarks/plot_comparison.py <json_dir> --out /tmp/charts --hero
     uv run python benchmarks/plot_comparison.py <json_dir> --out /tmp/charts --group cotmatrix
 
 Design, and why (the summary that matters for reading the code below):
@@ -36,7 +36,6 @@ Design, and why (the summary that matters for reading the code below):
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import re
 import sys
@@ -60,7 +59,8 @@ from assets.logos import registry
 # fastest and slowest library on one operation are exactly the case a linear axis hides.
 LOG_SCALE_RATIO = 15.0
 
-# The curated documentation set. Three things pick a cell, in this order:
+# A curated set of standalone PNG cards (the docs pages themselves are drawn by `render_docs.py`,
+# as inline SVG). Three things pick a cell, in this order:
 #
 # 1. **Breadth.** How many independent reference libraries compute the same quantity. A cell with
 #    five of them is a field comparison; a cell with one is a duel, and a reader cannot tell a
@@ -329,20 +329,12 @@ def render_cell(
 
 
 def _provenance(json_dir: Path) -> str:
-    """One caption line: hardware/Warp version (this process) plus the run's own commit/date."""
+    """One caption line naming the hardware; no commit or date, which would only age the chart."""
+    del json_dir
     device_name = "CPU"
     if wp.is_cuda_available():
         device_name = wp.get_device("cuda:0").name
-    commit, when = "unknown", "unknown date"
-    for path in sorted(json_dir.glob("*.json")):
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
-        commit = data.get("commit_info", {}).get("id", commit)[:7]
-        when = data.get("datetime", when)[:10]
-        break
-    return f"{device_name} · warp-lang {wp.config.version} · commit {commit} · {when}"
+    return f"{device_name} · warp-lang {wp.config.version}"
 
 
 def main(argv: list[str] | None = None) -> None:

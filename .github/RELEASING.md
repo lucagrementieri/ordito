@@ -94,15 +94,17 @@ uv run zensical build --strict
 
 Only if a benchmarked function changed since the last release:
 
-- [ ] Re-run the benchmark suite and regenerate the hero charts. Both scripts take a **directory**
-      of `--benchmark-json` files, not a single file, so collect the run into one:
+- [ ] Re-run the benchmark suite with every reference library and regenerate the benchmark pages.
+      Both scripts take a **directory** of `--benchmark-json` files, one per module:
 
       ```bash
       mkdir -p /tmp/bench-run
-      uv run pytest benchmarks --benchmark-json=/tmp/bench-run/results.json
+      for f in benchmarks/test_*.py; do
+        uv run pytest "$f" --device=cuda --bench-all-libs \
+            --benchmark-json="/tmp/bench-run/$(basename "$f" .py).json" -q
+      done
       uv run python benchmarks/aggregate.py /tmp/bench-run     # read the suspect report first
-      uv run python benchmarks/plot_comparison.py /tmp/bench-run \
-          --out docs/assets/benchmarks/ --hero
+      uv run python benchmarks/render_docs.py /tmp/bench-run   # docs/benchmarks*.md
       ```
 
 - [ ] `aggregate.py`'s suspect report (on by default at 1.5x; tune with `--suspect`) is clean, or

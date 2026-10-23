@@ -1,4 +1,4 @@
-/* Palette of the green-and-yellow mark (docs/assets/ordito.svg),
+/* Palette of the green-and-yellow mark (docs/assets/logo.svg),
    whose darkest tone is NVIDIA green #76B900. The header is a near-black green in both schemes,
    because every mark tone clears 7:1 against it while the yellows clear under 2:1 against white.
 
@@ -109,4 +109,92 @@
 .md-typeset h1.ordito-wordmark img {
   height: 3.2rem;
   width: auto;
+}
+
+/* Benchmark charts (inline SVG from benchmarks/render_docs.py). The accent-vs-muted pairs are the
+   ones benchmarks/plot_comparison.py validated: ordito takes the brand accent, every reference one
+   muted gray; text keeps the page's own ink. A chart is drawn at its native width (one viewBox
+   unit per pixel) and shrinks on a narrower column. */
+[data-md-color-scheme="default"] {
+  --bench-subject: #4f8000;
+  --bench-reference: #9a9a9a;
+}
+[data-md-color-scheme="slate"] {
+  --bench-subject: #76b900;
+  --bench-reference: #7a7a7a;
+}
+.bench-figure {
+  margin: 1em 0;
+}
+.bench-chart {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  font-family: var(--md-text-font-family), sans-serif;
+}
+.bench-chart .bench-subject {
+  fill: var(--bench-subject);
+}
+.bench-chart .bench-reference {
+  fill: var(--bench-reference);
+}
+.bench-chart .bench-label,
+.bench-chart .bench-value {
+  fill: var(--md-default-fg-color);
+  font-size: 12px;
+}
+/* A halo in the page colour keeps a value label legible where a gridline runs through it. */
+.bench-chart .bench-value {
+  paint-order: stroke;
+  stroke: var(--md-default-bg-color);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.bench-chart .bench-tick {
+  fill: var(--md-default-fg-color--light);
+  font-size: 10px;
+}
+.bench-chart .bench-grid {
+  stroke: var(--md-default-fg-color--lightest);
+  stroke-width: 1;
+}
+.bench-chart .bench-baseline {
+  stroke: var(--md-default-fg-color--light);
+  stroke-width: 1;
+}
+.bench-chart g:hover rect {
+  opacity: 0.8;
+}
+/* Logos are transparent; two marks need a tint to show on one of the themes. PyTorch3D's is pure
+   white, Open3D's mostly black. */
+[data-md-color-scheme="default"] .bench-chart .bench-logo-pytorch3d {
+  filter: invert(0.75);
+}
+[data-md-color-scheme="slate"] .bench-chart .bench-logo-open3d {
+  filter: invert(1);
+}
+.bench-figure figcaption {
+  font-size: 0.7rem;
+  color: var(--md-default-fg-color--light);
+  max-width: 640px;
+  margin: 0.2em 0 0;
+  text-align: left;
+}
+/* A run stopped at the time limit: the bar is a lower bound, drawn paler. */
+.bench-chart .bench-timeout {
+  fill-opacity: 0.4;
+}
+/* A run that crashed or ran out of memory: no time, so no bar, only a red cross. */
+[data-md-color-scheme="default"] {
+  --bench-failed: #c62828;
+}
+[data-md-color-scheme="slate"] {
+  --bench-failed: #ef5350;
+}
+.bench-chart .bench-failed {
+  stroke: var(--bench-failed);
+  stroke-width: 2;
+  stroke-linecap: round;
+  fill: none;
 }

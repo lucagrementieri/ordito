@@ -58,7 +58,7 @@ The GPU wins as soon as there is enough work to fill it, from tens of thousands 
 ## How to reproduce a number
 
 Every timing this project publishes — in its README, in a release's changelog, or on the
-[Benchmarks](benchmarks.md) page — comes from `benchmarks/`, built on
+[Benchmarks](benchmarks/index.md) page — comes from `benchmarks/`, built on
 [pytest-benchmark](https://pytest-benchmark.readthedocs.io) and run against nine established
 geometry-processing libraries. Eight run on the CPU; PyTorch3D also has CUDA kernels, so it is
 timed on both devices and is the suite's only GPU-against-GPU comparison. Anyone can run the same
@@ -77,7 +77,7 @@ are compared for which operation, and why a handful of comparisons are excluded 
 algorithm answering a related-but-not-identical question, a parameter one library's API doesn't
 expose — every exclusion is written down at the point it's made, not left implicit).
 
-See [Benchmarks](benchmarks.md) for a curated set of these comparisons rendered as charts, each
+See [Benchmarks](benchmarks/index.md) for a curated set of these comparisons rendered as charts, each
 library named by its own logo.
 
 ## Where ordito is not the fastest option
@@ -86,5 +86,5 @@ A speed claim means something only next to the library it is compared with, the 
 but also its number of components, its boundary length and its triangle shapes) and the hardware.
 Not every operation benefits from a GPU. A few functions have little parallel work at realistic
 sizes, such as a sequential dynamic program over one small boundary loop, and a fast
-single-threaded C++ implementation beats them. The [Benchmarks](benchmarks.md) page shows those
+single-threaded C++ implementation beats them. The [Benchmarks](benchmarks/index.md) page shows those
 cases alongside the others.
