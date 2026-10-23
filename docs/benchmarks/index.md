@@ -449,7 +449,7 @@ for f in benchmarks/test_*.py; do
     --benchmark-json="results/$(basename "$f" .py).json" -q
 done
 
-uv run python benchmarks/render_docs.py results
+uv run python -m benchmarks.tools.render_docs results
 ```
 
 The last command redraws every chart on this page and on the module pages from your own run. Absolute times depend on the hardware; the ratios are what carries over. See

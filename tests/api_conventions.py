@@ -159,7 +159,7 @@ _EXTRA_TEST_FILES = frozenset(
         "api_conventions",  # this gate
         "map_uniform_probe",  # a Warp-behaviour probe, not a module's coverage
         "array_indexing_probe",  # ditto: Python-scope gather semantics
-        "aggregate",  # covers benchmarks.aggregate, the loss-table loader -- tooling, not a module
+        "aggregate",  # covers benchmarks.results and benchmarks.tools.aggregate: tooling
         "launch",  # covers ordito._launch, the private launcher every wrapper module calls
         "docs_examples",  # runs the README's and docs/ pages' code blocks, which span modules
         "examples",  # covers the examples/ gallery package (pages in step with code), not ordito

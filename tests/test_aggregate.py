@@ -1,4 +1,4 @@
-"""Regression tests for `benchmarks.aggregate`, the shared loss-table/chart data loader."""
+"""Regression tests for `benchmarks.results` and `benchmarks.tools.aggregate`."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import TypedDict
 
-import benchmarks.aggregate as agg
+import benchmarks.tools.aggregate as agg
+from benchmarks import results
 
 
 class _Stats(TypedDict):
@@ -53,7 +54,8 @@ def test_load_groups_by_module_group_mesh_and_rest(tmp_path: Path) -> None:
         ],
     )
 
-    cells, modules, _suspects = agg.load(str(tmp_path))
+    loaded = results.load(tmp_path)
+    cells, modules = loaded.cells, loaded.modules
 
     assert modules == {"test_edges": 3}
     bunny_key = ("test_edges", "faces_to_edges", "bunny", ())
@@ -72,7 +74,7 @@ def test_load_keys_distinct_rest_params_into_separate_cells(tmp_path: Path) -> N
         ],
     )
 
-    cells, _modules, _suspects = agg.load(str(tmp_path))
+    cells = results.load(tmp_path).cells
 
     assert len(cells) == 2
     full_key = ("test_heat", "heat_geodesic", "sphere", (("setup", "full"),))
@@ -87,7 +89,8 @@ def test_load_skips_a_row_with_no_library(tmp_path: Path) -> None:
     del row["params"]["library"]
     _write_benchmark_json(tmp_path / "test_edges.json", [row])
 
-    cells, modules, _suspects = agg.load(str(tmp_path))
+    loaded = results.load(tmp_path)
+    cells, modules = loaded.cells, loaded.modules
 
     assert modules == {"test_edges": 1}
     assert cells == {}
@@ -100,7 +103,7 @@ def test_load_tolerates_an_unreadable_json_file(tmp_path: Path) -> None:
         tmp_path / "test_edges.json", [_row("faces_to_edges", "ordito-cuda", 0.001)]
     )
 
-    _cells, modules, _suspects = agg.load(str(tmp_path))
+    modules = results.load(tmp_path).modules
 
     assert "test_broken" not in modules
     assert modules == {"test_edges": 1}
@@ -112,7 +115,7 @@ def test_load_flags_a_median_well_above_its_own_minimum_as_suspect(tmp_path: Pat
     row["stats"]["min"] = 3.0
     _write_benchmark_json(tmp_path / "test_levelset.json", [row])
 
-    _cells, _modules, suspects = agg.load(str(tmp_path))
+    suspects = results.load(tmp_path).suspects
 
     assert len(suspects) == 1
     assert suspects[0].ratio == 3.0
@@ -121,7 +124,7 @@ def test_load_flags_a_median_well_above_its_own_minimum_as_suspect(tmp_path: Pat
 
 
 def test_compare_picks_the_fastest_reference_and_ignores_excluded_libraries() -> None:
-    cells: dict[agg.CellKey, dict[str, float]] = {
+    cells: dict[results.CellKey, dict[str, float]] = {
         ("test_x", "op", "mesh", ()): {
             "ordito-cuda": 0.010,
             "ordito-cpu": 0.050,
@@ -144,7 +147,7 @@ def test_compare_picks_the_fastest_reference_and_ignores_excluded_libraries() ->
 
 
 def test_compare_skips_a_cell_with_no_ordito_cuda_row_or_no_reference() -> None:
-    cells: dict[agg.CellKey, dict[str, float]] = {
+    cells: dict[results.CellKey, dict[str, float]] = {
         ("test_x", "op", "a", ()): {"trimesh": 0.010},  # no ordito-cuda
         ("test_x", "op", "b", ()): {"ordito-cuda": 0.010},  # no reference
         ("test_x", "op", "c", ()): {"ordito-cuda": 0.010, "trimesh": 0.020},  # comparable

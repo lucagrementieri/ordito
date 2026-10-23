@@ -1,10 +1,10 @@
 """
 Time both ordito targets, as two processes, so the CPU rows are not inflated.
 
-``uv run python benchmarks/devices.py`` runs a CUDA pass and then a ``ordito-cpu`` pass, and the
-CPU pass is spawned with ``CUDA_VISIBLE_DEVICES=""``. The variable is the whole point: **Warp's CPU
-work costs more once CUDA has been initialised in the process**, and the charge behaves like a
-per-launch one, so the factor scales with launch count rather than with work:
+``uv run python -m benchmarks.tools.devices`` runs a CUDA pass and then a ``ordito-cpu`` pass,
+and the CPU pass is spawned with ``CUDA_VISIBLE_DEVICES=""``. The variable is the whole point:
+**Warp's CPU work costs more once CUDA has been initialised in the process**, and the charge
+behaves like a per-launch one, so the factor scales with launch count rather than with work:
 
 - a few big kernels -- ``edges_unique`` barely notices, a few tens of percent;
 - an iterative solver pays more than an order of magnitude, and so does a whole test module built
@@ -30,9 +30,9 @@ unaffected -- they never touch Warp.
 
 Usage
 -----
-``uv run python benchmarks/devices.py``
+``uv run python -m benchmarks.tools.devices``
     CUDA pass (``ordito-cuda`` + every reference), then a CUDA-hidden ``ordito-cpu`` pass.
-``uv run python benchmarks/devices.py -- --size=small -k edges``
+``uv run python -m benchmarks.tools.devices -- --size=small -k edges``
     Everything after ``--`` is forwarded to both pytest invocations.
 
 Pass ``--benchmark-json=<path>`` and the two passes write ``<path>.cuda.json`` and
@@ -109,7 +109,7 @@ def _run(label: str, device: str, hide_cuda: bool, extra: list[str]) -> tuple[st
 def main(argv: list[str] | None = None) -> int:
     """Run both ordito target passes and summarize them."""
     parser = argparse.ArgumentParser(
-        prog="python benchmarks/devices.py",
+        prog="python -m benchmarks.tools.devices",
         description="Time both ordito targets as two processes, the CPU one with CUDA hidden.",
     )
     parser.add_argument(

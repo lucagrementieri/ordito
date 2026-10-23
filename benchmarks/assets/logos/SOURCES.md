@@ -2,7 +2,7 @@
 
 Every file under `svg/` and `raster/` is copied verbatim from the project it identifies (or
 fetched from that project's own public site) — none is redrawn or modified beyond the
-square-canvas centering `render.py` applies at rasterization time. See `NOTICE.md` for the
+cropping and scaling `render.py` applies at rasterization time. See `NOTICE.md` for the
 licensing/trademark statement these vendored marks are subject to.
 
 | File | Source | Note |

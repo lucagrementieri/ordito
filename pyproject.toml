@@ -59,10 +59,9 @@ Repository = "https://github.com/lucagrementieri/ordito"
 io = ["meshio>=5.0"]
 
 [dependency-groups]
-# ``cairosvg`` and ``matplotlib`` are ``plot_comparison.py``'s only extras over the plain
-# ``aggregate.py`` text tables: rasterizing a vendored SVG logo to a fixed-size PNG once
-# (``benchmarks/assets/logos/render.py``) and drawing the comparison charts. Neither is a runtime
-# dependency of ordito itself.
+# ``cairosvg`` rasterizes the vendored library logos for the benchmark charts, once
+# (``benchmarks/assets/logos/render.py``); ``matplotlib`` draws the ``examples/`` gallery. Neither
+# is a runtime dependency of ordito itself.
 bench = [
     "cairosvg>=2.7",
     "matplotlib>=3.9",

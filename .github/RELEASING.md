@@ -103,8 +103,8 @@ Only if a benchmarked function changed since the last release:
         uv run pytest "$f" --device=cuda --bench-all-libs \
             --benchmark-json="/tmp/bench-run/$(basename "$f" .py).json" -q
       done
-      uv run python benchmarks/aggregate.py /tmp/bench-run     # read the suspect report first
-      uv run python benchmarks/render_docs.py /tmp/bench-run   # docs/benchmarks*.md
+      uv run python -m benchmarks.tools.aggregate /tmp/bench-run    # read the suspect report first
+      uv run python -m benchmarks.tools.render_docs /tmp/bench-run  # docs/benchmarks*.md
       ```
 
 - [ ] `aggregate.py`'s suspect report (on by default at 1.5x; tune with `--suspect`) is clean, or

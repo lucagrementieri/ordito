@@ -38,7 +38,7 @@ uv run pytest benchmarks/
 
 # 4. Optional: also time ordito-cpu. This runs two processes, and the CPU one starts with CUDA
 #    hidden (see "Never time ordito-cpu in a CUDA-initialised process" below).
-uv run python benchmarks/devices.py
+uv run python -m benchmarks.tools.devices
 ```
 
 **Saving and summarising results.** Write one JSON per module, so a crash or a stuck row loses only
@@ -49,12 +49,12 @@ mkdir -p results
 for f in benchmarks/test_*.py; do
   uv run pytest "$f" --benchmark-json="results/$(basename "$f" .py).json"
 done
-uv run python -m benchmarks.aggregate results   # unstable cells (median > 1.5x min) first, then the loss table
-uv run python benchmarks/plot_comparison.py results --out charts/
-uv run python benchmarks/render_docs.py results     # redraws the pages under docs/benchmarks/
+uv run python -m benchmarks.tools.aggregate results    # unstable cells (median > 1.5x min) first, then the loss table
+uv run python -m benchmarks.tools.render_docs results  # redraws the pages under docs/benchmarks/
+uv run python -m benchmarks.tools.tables results       # after a --bench-all-libs round: the skip tables
 ```
 
-With `benchmarks/devices.py`, the same `--benchmark-json=<path>` flag writes `<path>.cuda.json` and
+With `benchmarks.tools.devices`, the same `--benchmark-json=<path>` flag writes `<path>.cuda.json` and
 `<path>.cpu.json`.
 
 **What makes a run comparable:**
@@ -250,7 +250,7 @@ uv run pytest benchmarks/test_combine.py --device=cuda
 CUDA_VISIBLE_DEVICES="" uv run pytest benchmarks/test_edges.py --device=cpu --size=medium
 
 # Both ordito targets, correctly: two processes, the CPU one with CUDA hidden.
-uv run python benchmarks/devices.py
+uv run python -m benchmarks.tools.devices
 ```
 
 ### Never time `ordito-cpu` in a CUDA-initialised process
@@ -279,7 +279,7 @@ The default `--device=auto` is unaffected: it selects `ordito-cpu` only when the
 device.
 
 `CUDA_VISIBLE_DEVICES` must be set before the process starts, so this can only be fixed by a second
-process — `benchmarks/devices.py` runs the CUDA pass (with every reference) and then a CUDA-hidden
+process — `benchmarks/tools/devices.py` runs the CUDA pass (with every reference) and then a CUDA-hidden
 `-k ordito-cpu` pass. The narrowing matters: the CPU references are included in *every* pass, so an
 unnarrowed second pass would time them twice and duplicate the rows. `tests/devices.py` is the same
 idea for the test suite.
@@ -320,32 +320,37 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
 
 | flag | default | meaning |
 |---|---|---|
-| `--device` | `auto` | `ordito` target(s): `auto`/`cpu`/`cuda`/`both`. `auto` = cuda if available, else cpu. The CPU references (trimesh / igl / open3d / scipy / numpy / potpourri3d / pymeshlab / pyvista / meshlib / pymeshfix) always run, and so does `pytorch3d-cuda` whenever the installed pytorch3d has a working CUDA extension (pytorch3d has no host row at all) — this flag selects among *ordito's* targets, not the references'. **`cpu`/`both` on a GPU box inflate the `ordito-cpu` rows and warn** — use `benchmarks/devices.py`. Registered in the repo-root `conftest.py`, shared with `tests/`. |
+| `--device` | `auto` | `ordito` target(s): `auto`/`cpu`/`cuda`/`both`. `auto` = cuda if available, else cpu. The CPU references (trimesh / igl / open3d / scipy / numpy / potpourri3d / pymeshlab / pyvista / meshlib / pymeshfix) always run, and so does `pytorch3d-cuda` whenever the installed pytorch3d has a working CUDA extension (pytorch3d has no host row at all) — this flag selects among *ordito's* targets, not the references'. **`cpu`/`both` on a GPU box inflate the `ordito-cpu` rows and warn** — use `benchmarks.tools.devices`. Registered in the repo-root `conftest.py`, shared with `tests/`. |
 | `--size` | `all` | comma-separated size categories for the **scan** sweep (`small,medium,large,extralarge,huge`). Naming a size also lifts the CPU cap for it. Has no effect on axis-driven groups. |
 | `--cpu-max-size` | `large` | CPU-bound libraries (every reference, plus `ordito-cpu`) skip scan meshes larger than this unless the size is named in `--size`. |
 | `--no-size-caps` | off | makes every `skip_larger_than` cap a no-op. With an explicit `--size small,medium,large,extralarge,huge` (which also lifts `--cpu-max-size`) every library runs on every mesh. |
-| `--round-budget` | off | seconds: time one warm-up call per row and cut its rounds to fit (at least one). For the uncapped sweep, where a reference call on `lucy` can take minutes. |
 
 ## The uncapped sweep: every library on every mesh
 
 A default run keeps the CPU references off the two largest scan meshes and honours every
 `skip_larger_than` cap, so it never shows how far apart the libraries get at 28 M triangles.
-[`sweep.py`](sweep.py) lifts both and times only the rows a previous run has no time for, each
+[`tools/sweep.py`](tools/sweep.py) lifts both and times only the rows a previous run has no time for, each
 under a wall-clock limit:
 
 ```bash
 # after a full --bench-all-libs run into results/
-uv run python benchmarks/sweep.py run sweep/ --done results/            # resumable; hours
-uv run python benchmarks/sweep.py merge results/ sweep/ merged/
-uv run python benchmarks/render_docs.py merged/
+uv run python -m benchmarks.tools.sweep run sweep/ --done results/       # resumable; hours
+uv run python -m benchmarks.tools.sweep merge results/ sweep/ merged/
+uv run python -m benchmarks.tools.render_docs merged/
 ```
 
 - **A row runs at most `--timeout` seconds (600), setup included.** One that runs past it is
   recorded as a timeout, and its module restarts at the next row. A long call into a compiled
   library cannot be interrupted, so the limit ends the process; [`sweep_plugin.py`](sweep_plugin.py)
   saves every row as it finishes, so nothing else is lost.
-- **A slow row runs fewer rounds** (`--round-budget`, 60 s of timed rounds after one warm-up call),
-  so a reference that takes minutes a call still gets a number.
+- **A slow row runs fewer rounds**: every row is cut to the rounds that fit 60 s (`ROUND_BUDGET`
+  in `conftest.py`, at least one), so a reference that takes minutes a call still gets a number. A
+  row on a device (ordito, pytorch3d-cuda) sizes its rounds from an untimed warm-up call, which
+  compiles its kernels; a CPU reference compiles nothing, so its first call is already a round.
+- **A row whose cell timed out or ran out of memory on a smaller scan mesh is not run**: it is
+  recorded as the same failure, predicted, and the docs label it so. A crash or an error predicts
+  nothing, since it can come from the input's shape rather than its size, and neither does a
+  measured time: cost often follows something other than the face count (`sweep_plugin.py`).
 - **A row that leaves no time is classified**: a process the kernel killed counts as out of memory,
   an abort or segfault as a crash, a failed assertion or exception as an error.
   `merge` writes them, with the timeouts, to `incomplete.jsonl`; the docs draw a timeout as a

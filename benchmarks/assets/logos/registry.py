@@ -24,8 +24,7 @@ never anything but a thin binding over the same MeshLab filters the desktop app 
 ``SOURCES.md``, and the caption in any chart that plots it.
 
 A library gaining a mark later is a one-line change here plus a new source under ``svg/`` (or
-``raster/``, for a project with no SVG to vendor) and a ``render.py`` re-run -- nothing in
-``plot_comparison.py`` needs to change.
+``raster/``, for a project with no SVG to vendor) and a ``render.py`` re-run.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ from __future__ import annotations
 from pathlib import Path
 
 PNG_DIR = Path(__file__).parent / "png"
-CLEAR_DIR = Path(__file__).parent / "png-clear"
 
 # id -> (png filename under png/, or None for a text-only fallback; display label)
 _REGISTRY: dict[str, tuple[str | None, str]] = {
@@ -59,23 +57,12 @@ _REGISTRY: dict[str, tuple[str | None, str]] = {
 
 
 def logo_path(library_id: str) -> Path | None:
-    """Return the PNG path for `library_id`'s logo, or `None` if it has no vendored mark."""
+    """Return the PNG of `library_id`'s logo, or `None` if it has no vendored mark."""
     filename, _ = _REGISTRY.get(library_id, (None, library_id))
     return (PNG_DIR / filename) if filename is not None else None
-
-
-def clear_logo_path(library_id: str) -> Path | None:
-    """Return the transparent (chip-less) PNG for `library_id`'s logo, or `None` if it has none."""
-    filename, _ = _REGISTRY.get(library_id, (None, library_id))
-    return (CLEAR_DIR / filename) if filename is not None else None
 
 
 def display_label(library_id: str) -> str:
     """Return the human-readable label for `library_id`, falling back to the id itself."""
     _, label = _REGISTRY.get(library_id, (None, library_id))
     return label
-
-
-def is_subject(library_id: str) -> bool:
-    """Whether `library_id` is ordito itself rather than a reference library."""
-    return library_id.startswith("ordito")

@@ -16,7 +16,7 @@ docs_dir: docs
 #
 # Zensical has no whole-file exclusion setting, so a generated page that should stay out of the
 # search index says so in its own front matter (`search: exclude: true`): the per-module pages
-# under `benchmarks/`, written by `benchmarks/render_docs.py`.
+# under `benchmarks/`, written by `benchmarks/tools/render_docs.py`.
 
 theme:
   name: material

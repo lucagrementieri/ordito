@@ -4,7 +4,7 @@ The marks under `svg/` and `png/` in this directory — trimesh, Open3D, PyVista
 PyTorch3D, NumPy, SciPy, and any other project logo added alongside them — are the trademarks or
 registered trademarks of their respective owners. They are reproduced here **solely to visually
 identify the corresponding software in a factual, non-commercial performance comparison** (the
-charts `benchmarks/plot_comparison.py` generates), exactly as a project's name appears in prose
+charts `benchmarks/tools/render_docs.py` draws on the documentation's benchmark pages), exactly as a project's name appears in prose
 elsewhere in this repository and its documentation. See `SOURCES.md` for where each file came
 from.
 

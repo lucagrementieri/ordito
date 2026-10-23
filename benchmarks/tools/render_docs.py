@@ -1,9 +1,9 @@
 """
 Render the benchmark documentation from a directory of ``--benchmark-json`` files.
 
-    uv run python benchmarks/render_docs.py <json_dir>
+    uv run python -m benchmarks.tools.render_docs <json_dir>
 
-Writes, from the cells `aggregate.load` reads:
+Writes, from the cells `results.load` reads:
 
 - ``docs/benchmarks/<module>.md``, generated whole, for every module with at least one function a
   reference library also computes: a summary chart of the module, then one chart per such function
@@ -23,13 +23,14 @@ is logarithmic, the usual scale for ratios, so 10x slower and 10x faster sit at 
 from 1x. A function's chart shows the input with the most libraries measured on it (then the
 largest); the table below it has the rest.
 
-**Rows that left no time.** ``sweep.py merge`` writes ``incomplete.jsonl`` beside the JSON files:
-one ``{"module", "group", "params", "status", "detail", "limit"}`` object per row it stopped at its
-time limit (``timeout``), or that crashed, ran out of memory or failed (``crash``, ``oom``,
-``error``). A timeout is drawn at the limit, paler, labelled ``> 10 min``: the library took at
-least that long, and the averages count it at the limit, so a library with such runs is at least
-as slow as its bar says. A row with no time at all gets no bar: it is listed under the timed bars
-with a red cross and what happened, and the averages leave it out.
+**Rows that left no time.** ``tools/sweep.py merge`` writes ``incomplete.jsonl`` beside the JSON
+files: one object per row it stopped at its time limit (``timeout``), or that crashed, ran out of
+memory or failed (``crash``, ``oom``, ``error``), each possibly ``predicted`` from a smaller mesh
+rather than run. A timeout is drawn at the limit, paler, labelled ``> 10 min``: the library took
+at least that long, and the averages count it at the limit, so a library with such runs is at
+least as slow as its bar says. A row with no time at all gets no bar: it is listed under the timed
+bars with a red cross and what happened, and the averages leave it out. A predicted row says so in
+its label.
 
 **The summary charts.** A library's bar is the geometric mean, over the functions both implement, of
 its per-function ratio, itself the geometric mean over the inputs both were measured on. Averaging
@@ -38,7 +39,8 @@ per-module chart uses, on each input, the fastest library measured on it.
 
 Charts are inline SVG: a few kilobytes each, recoloured by the site's light/dark switch through CSS
 classes (``docs/stylesheets/extra.css``), with a native hover tooltip per bar. The accent and gray
-are ``plot_comparison.py``'s validated pair; every bar carries its value as a direct label.
+are a pair validated for colour-vision deficiency in both themes; every bar carries its value as a
+direct label.
 """
 
 from __future__ import annotations
@@ -51,17 +53,16 @@ import math
 import re
 import shutil
 import struct
-import sys
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-import aggregate
-from assets.logos import registry
-from meshes import ALL_MESHES_BY_NAME
+from benchmarks import results
+from benchmarks.assets.logos import registry
+from benchmarks.meshes import ALL_MESHES_BY_NAME
+from benchmarks.results import SUBJECT, CellKey, format_duration, is_reference
 
-SUBJECT = "ordito-cuda"
-_REPO = Path(__file__).resolve().parent.parent
+_REPO = Path(__file__).resolve().parent.parent.parent
 _DOCS = _REPO / "docs"
 _PAGES = _DOCS / "benchmarks"
 _MAIN_PAGE = _PAGES / "index.md"
@@ -104,55 +105,65 @@ class Bar:
     failed: bool = False
 
 
-# Rows that left no time, filled by ``load``: ``(cell, library)`` stopped at the time limit, and
-# ``(cell, library) -> (status, detail)`` for the ones that crashed, ran out of memory or failed.
-_TIMED_OUT: set[tuple[aggregate.CellKey, str]] = set()
-_FAILED: dict[tuple[aggregate.CellKey, str], tuple[str, str]] = {}
+@dataclass
+class Data:
+    """
+    The cells to draw: each measured median, plus each timed-out row at its limit.
+
+    ``incomplete`` holds every row that left no time and was not measured by another run; a
+    timeout among them is also in ``cells``, at its limit.
+    """
+
+    cells: dict[CellKey, dict[str, float]]
+    incomplete: dict[tuple[CellKey, str], results.Incomplete] = field(default_factory=dict)
+
+    def __getitem__(self, key: CellKey) -> dict[str, float]:
+        return self.cells[key]
+
+    def __iter__(self) -> Iterator[CellKey]:
+        return iter(self.cells)
+
+    def failures(self, key: CellKey) -> list[tuple[str, str]]:
+        """Return ``(library, what happened)`` for each library of a cell that left no time."""
+        return sorted(
+            (library, describe_failure(entry))
+            for (failed_key, library), entry in self.incomplete.items()
+            if failed_key == key and entry.status != "timeout"
+        )
+
+    def timeout(self, key: CellKey, library: str) -> results.Incomplete | None:
+        """Return the timeout a cell's library was stopped at instead of measured, if any."""
+        entry = self.incomplete.get((key, library))
+        return entry if entry is not None and entry.status == "timeout" else None
+
+    @property
+    def any_timeout(self) -> bool:
+        """Whether any row was stopped at the time limit."""
+        return any(entry.status == "timeout" for entry in self.incomplete.values())
 
 
-def load(json_dir: Path) -> dict[aggregate.CellKey, dict[str, float]]:
+def load(json_dir: Path) -> Data:
     """Read the cells, adding each timed-out row at its limit and noting each failed one."""
-    cells, _modules, _suspects = aggregate.load(str(json_dir))
-    incomplete = json_dir / "incomplete.jsonl"
-    lines = incomplete.read_text().splitlines() if incomplete.exists() else []
-    for line in filter(str.strip, lines):
-        entry = json.loads(line)
-        params = dict(entry["params"])
-        library = params.pop("library")
-        mesh_name = params.pop("mesh_name", None)
-        rest = tuple(sorted((k, str(v)) for k, v in params.items()))
-        key: aggregate.CellKey = (entry["module"], entry["group"], mesh_name, rest)
-        if library in cells.get(key, {}):
+    data = Data(results.load(json_dir).cells)
+    for (key, library), entry in results.load_incomplete(json_dir).items():
+        if library in data.cells.get(key, {}):
             continue  # measured after all, by another run
-        if entry["status"] == "timeout":
-            cells[key][library] = float(entry["limit"])
-            _TIMED_OUT.add((key, library))
-        else:
-            _FAILED[(key, library)] = (entry["status"], entry["detail"])
-    return cells
+        data.incomplete[(key, library)] = entry
+        if entry.status == "timeout":
+            assert entry.limit is not None
+            data.cells[key][library] = entry.limit
+    return data
 
 
-def failures(key: aggregate.CellKey) -> list[tuple[str, str]]:
-    """Return ``(library, what happened)`` for each library of a cell that left no time."""
-    return sorted(
-        (library, describe_failure(*status))
-        for (failed_key, library), status in _FAILED.items()
-        if failed_key == key
-    )
-
-
-def describe_failure(status: str, detail: str) -> str:
+def describe_failure(entry: results.Incomplete) -> str:
     """Say in a few words what happened to a row that left no time."""
-    if status == "oom":
-        return "out of memory"
-    if status == "crash":
-        return f"crashed ({detail})"
-    return "failed"
-
-
-def timed_out(key: aggregate.CellKey, library: str) -> bool:
-    """Whether a cell's library was stopped at the time limit instead of measured."""
-    return (key, library) in _TIMED_OUT
+    if entry.status == "oom":
+        what = "out of memory"
+    elif entry.status == "crash":
+        what = f"crashed ({entry.detail})"
+    else:
+        what = "failed"
+    return f"{what} (predicted)" if entry.predicted else what
 
 
 def format_limit(seconds: float) -> str:
@@ -160,13 +171,11 @@ def format_limit(seconds: float) -> str:
     return f"> {seconds / 60:g} min" if seconds >= 60 else f"> {format_duration(seconds)}"
 
 
-def format_duration(seconds: float) -> str:
-    """Format one duration in whichever unit reads most naturally for its own magnitude."""
-    if seconds < 1e-3:
-        return f"{seconds * 1e6:.1f} µs"
-    if seconds < 1.0:
-        return f"{seconds * 1e3:.2f} ms"
-    return f"{seconds:.3f} s"
+def limit_text(timeout: results.Incomplete) -> str:
+    """Format a timed-out row's time, ``> 10 min``, marking one that was predicted."""
+    assert timeout.limit is not None
+    text = format_limit(timeout.limit)
+    return f"{text} (predicted)" if timeout.predicted else text
 
 
 def format_ratio(ratio: float) -> str:
@@ -208,7 +217,7 @@ def svg_chart(bars: list[Bar], *, label: str, subject_fill: bool = False) -> str
             f'<text class="bench-tick" x="{x:.1f}" y="{axis_y + 13}" text-anchor="middle">'
             f"{10.0**exponent:g}x</text>"
         )
-    logos = [registry.clear_logo_path(bar.library) if bar.library else None for bar in bars]
+    logos = [registry.logo_path(bar.library) if bar.library else None for bar in bars]
     # Reserve the logo column whenever one row has a logo, so every label ends at the same x.
     text_x = left - 6 - (_LOGO_WIDTH + 6 if any(logos) else 0)
     for i, (bar, logo) in enumerate(zip(bars, logos, strict=True)):
@@ -265,51 +274,45 @@ def _logo_size(path: Path) -> tuple[float, float]:
 
 # --- data -----------------------------------------------------------------------------------------
 
-Cells = dict[aggregate.CellKey, dict[str, float]]
 GroupKey = tuple[str, str]
 
 
-def is_reference(library: str) -> bool:
-    """Whether a library id is a reference rather than ordito on some device."""
-    return not registry.is_subject(library)
-
-
-def compared(cells: Cells, key: aggregate.CellKey) -> bool:
+def compared(data: Data, key: CellKey) -> bool:
     """Whether a cell has ordito-cuda and a reference timed, or tried and failed, beside it."""
-    row = cells[key]
-    return SUBJECT in row and (any(map(is_reference, row)) or bool(failures(key)))
+    row = data[key]
+    return SUBJECT in row and (any(map(is_reference, row)) or bool(data.failures(key)))
 
 
-def by_group(cells: Cells) -> dict[GroupKey, list[aggregate.CellKey]]:
+def by_group(data: Data) -> dict[GroupKey, list[CellKey]]:
     """Group cell keys by ``(module, group)``, in the order the JSON lists them."""
-    groups: dict[GroupKey, list[aggregate.CellKey]] = collections.defaultdict(list)
-    for key in cells:
+    groups: dict[GroupKey, list[CellKey]] = collections.defaultdict(list)
+    for key in data:
         groups[(key[0], key[1])].append(key)
     return groups
 
 
-def _size(key: aggregate.CellKey) -> int:
+def _size(key: CellKey) -> int:
     """Return a cell's mesh size in faces, or 0 for a mesh-free cell."""
     spec = ALL_MESHES_BY_NAME.get(key[2] or "")
     return int(spec["n_faces"]) if spec is not None else 0
 
 
-def representative(cells: Cells, keys: list[aggregate.CellKey]) -> aggregate.CellKey | None:
+def representative(data: Data, keys: list[CellKey]) -> CellKey | None:
     """Pick the group's widest comparison: most references, then the largest mesh."""
-    candidates = [key for key in keys if compared(cells, key)]
+    candidates = [key for key in keys if compared(data, key)]
     if not candidates:
         return None
     return max(
         candidates,
         key=lambda key: (
-            sum(map(is_reference, cells[key])) + len(failures(key)),
+            sum(map(is_reference, data[key])) + len(data.failures(key)),
             _size(key),
             -keys.index(key),
         ),
     )
 
 
-def cell_caption(key: aggregate.CellKey) -> str:
+def cell_caption(key: CellKey) -> str:
     """Name a cell's input: the mesh with its face count, then the other parameters."""
     parts: list[str] = []
     spec = ALL_MESHES_BY_NAME.get(key[2] or "")
@@ -319,7 +322,7 @@ def cell_caption(key: aggregate.CellKey) -> str:
     return " · ".join(parts).replace(",", "\N{THIN SPACE}")
 
 
-def cell_name(key: aggregate.CellKey) -> str:
+def cell_name(key: CellKey) -> str:
     """Name a cell compactly for a table row."""
     parts = [key[2]] if key[2] is not None else []
     parts.extend(f"{name}={value}" for name, value in key[3])
@@ -331,13 +334,13 @@ def geomean(values: list[float]) -> float:
     return math.exp(sum(map(math.log, values)) / len(values))
 
 
-def library_ratios(cells: Cells, groups: list[list[aggregate.CellKey]]) -> dict[str, list[float]]:
+def library_ratios(data: Data, groups: list[list[CellKey]]) -> dict[str, list[float]]:
     """Per reference library, its per-function geometric-mean time ratio to ordito-cuda."""
     out: dict[str, list[float]] = collections.defaultdict(list)
     for keys in groups:
         ratios: dict[str, list[float]] = collections.defaultdict(list)
         for key in keys:
-            row = cells[key]
+            row = data[key]
             if SUBJECT not in row:
                 continue
             for library, seconds in row.items():
@@ -348,12 +351,12 @@ def library_ratios(cells: Cells, groups: list[list[aggregate.CellKey]]) -> dict[
     return out
 
 
-def fastest_ratios(cells: Cells, keys: list[aggregate.CellKey]) -> list[float]:
+def fastest_ratios(data: Data, keys: list[CellKey]) -> list[float]:
     """Per input of one function, the fastest reference's time over ordito-cuda's."""
     return [
-        min(t for lib, t in cells[key].items() if is_reference(lib)) / cells[key][SUBJECT]
+        min(t for lib, t in data[key].items() if is_reference(lib)) / data[key][SUBJECT]
         for key in keys
-        if SUBJECT in cells[key] and any(map(is_reference, cells[key]))
+        if SUBJECT in data[key] and any(map(is_reference, data[key]))
     ]
 
 
@@ -409,23 +412,24 @@ def ratio_table(per_library: dict[str, list[float]], noun: str) -> list[str]:
     return lines
 
 
-def summary_block(cells: Cells) -> str:
+def summary_block(data: Data) -> str:
     """Render the main page's per-library chart over every function, with its table."""
-    per = library_ratios(cells, list(by_group(cells).values()))
+    per = library_ratios(data, list(by_group(data).values()))
     chart = svg_chart(ratio_bars(per, "functions"), label="Time of each library relative to ordito")
     return _figure(
         chart,
         "Time relative to ordito (CUDA), geometric mean over every function both implement; in "
-        "parentheses, the number of functions. Log scale." + (_LIMIT_NOTE if _TIMED_OUT else ""),
+        "parentheses, the number of functions. Log scale."
+        + (_LIMIT_NOTE if data.any_timeout else ""),
         ratio_table(per, "functions"),
     )
 
 
-def modules_block(cells: Cells, pages: set[str]) -> str:
+def modules_block(data: Data, pages: set[str]) -> str:
     """Render the main page's per-module chart against the fastest reference, with its table."""
     per: dict[str, list[float]] = collections.defaultdict(list)
-    for (module, _group), keys in by_group(cells).items():
-        ratios = fastest_ratios(cells, keys)
+    for (module, _group), keys in by_group(data).items():
+        ratios = fastest_ratios(data, keys)
         if ratios and module.removeprefix("test_") in pages:
             per[module.removeprefix("test_")].append(geomean(ratios))
     rows = sorted(((geomean(v), m, v) for m, v in per.items()), reverse=True)
@@ -454,9 +458,9 @@ def modules_block(cells: Cells, pages: set[str]) -> str:
     )
 
 
-def cell_figure(cells: Cells, key: aggregate.CellKey, *, link: str | None = None) -> str:
+def cell_figure(data: Data, key: CellKey, *, link: str | None = None) -> str:
     """Render one input of one function: every library's time relative to ordito's, sorted."""
-    row = cells[key]
+    row = data[key]
     base = row[SUBJECT]
     entries = sorted((t, lib) for lib, t in row.items() if lib == SUBJECT or is_reference(lib))
     bars: list[Bar] = []
@@ -464,17 +468,23 @@ def cell_figure(cells: Cells, key: aggregate.CellKey, *, link: str | None = None
     for seconds, lib in entries:
         name = registry.display_label(lib)
         ratio = seconds / base
-        if timed_out(key, lib):
-            time_text, ratio_text = format_limit(seconds), f"> {format_ratio(ratio)}"
-            tooltip = f"{name}: stopped at the {format_limit(seconds)[2:]} limit"
+        timeout = data.timeout(key, lib)
+        if timeout is not None:
+            time_text, ratio_text = limit_text(timeout), f"> {format_ratio(ratio)}"
+            limit = format_limit(seconds)[2:]
+            tooltip = (
+                f"{name}: not run, {timeout.detail}, so over the {limit} limit"
+                if timeout.predicted
+                else f"{name}: stopped at the {limit} limit"
+            )
         else:
             time_text, ratio_text = format_duration(seconds), format_ratio(ratio)
             tooltip = f"{name}: {time_text}, {ratio_text} ordito's time"
         bars.append(
-            Bar(name, ratio, lib, tooltip, f"{ratio_text} · {time_text}", timed_out(key, lib))
+            Bar(name, ratio, lib, tooltip, f"{ratio_text} · {time_text}", timeout is not None)
         )
         table.append(f"| {name} | {time_text} | {ratio_text} |")
-    for lib, what in failures(key):
+    for lib, what in data.failures(key):
         name = registry.display_label(lib)
         bars.append(Bar(name, 1.0, lib, f"{name}: {what}", what, failed=True))
         table.append(f"| {name} | {what} | |")
@@ -503,23 +513,23 @@ def _figure(chart: str, caption: str, table: list[str]) -> str:
     return "\n".join(lines)
 
 
-def group_table(cells: Cells, keys: list[aggregate.CellKey]) -> list[str]:
+def group_table(data: Data, keys: list[CellKey]) -> list[str]:
     """Every input of one function: one row per input, one column per library."""
-    failed = {key: dict(failures(key)) for key in keys}
+    failed = {key: dict(data.failures(key)) for key in keys}
     libraries = sorted(
-        {lib for key in keys for lib in cells[key] if lib == SUBJECT or is_reference(lib)}
+        {lib for key in keys for lib in data[key] if lib == SUBJECT or is_reference(lib)}
         | {lib for what in failed.values() for lib in what},
         key=lambda lib: (lib != SUBJECT, registry.display_label(lib).lower()),
     )
     header = "| Input | " + " | ".join(registry.display_label(lib) for lib in libraries) + " |"
     lines = [header, "|---" * (len(libraries) + 1) + "|"]
     for key in sorted(keys, key=lambda key: (_size(key), keys.index(key))):
-        row = cells[key]
+        row = data[key]
         values = [
             failed[key].get(lib, "")
             if lib not in row
-            else format_limit(row[lib])
-            if timed_out(key, lib)
+            else limit_text(timeout)
+            if (timeout := data.timeout(key, lib)) is not None
             else format_duration(row[lib])
             for lib in libraries
         ]
@@ -528,19 +538,19 @@ def group_table(cells: Cells, keys: list[aggregate.CellKey]) -> list[str]:
 
 
 def module_page(
-    cells: Cells, module: str, groups: list[tuple[GroupKey, list[aggregate.CellKey]]], machine: str
+    data: Data, module: str, groups: list[tuple[GroupKey, list[CellKey]]], machine: str
 ) -> str:
     """Render one module's page: its summary chart, one chart per compared function, the rest."""
-    with_reference = [(g, keys) for g, keys in groups if representative(cells, keys) is not None]
-    alone = [(g, keys) for g, keys in groups if representative(cells, keys) is None]
-    per = library_ratios(cells, [keys for _g, keys in with_reference])
+    with_reference = [(g, keys) for g, keys in groups if representative(data, keys) is not None]
+    alone = [(g, keys) for g, keys in groups if representative(data, keys) is None]
+    per = library_ratios(data, [keys for _g, keys in with_reference])
     out = [
         "---",
         "search:",
         "  exclude: true",
         "---",
         "",
-        "<!-- Generated by benchmarks/render_docs.py; edit that script, not this file. -->",
+        "<!-- Generated by benchmarks/tools/render_docs.py; edit that script, not this file. -->",
         "",
         f"# {module}",
         "",
@@ -558,16 +568,16 @@ def module_page(
             svg_chart(ratio_bars(per, "functions"), label=f"{module}: time relative to ordito"),
             f"Time relative to ordito (CUDA), geometric mean over the {module} functions both "
             "implement; in parentheses, the number of functions. Log scale."
-            + (_LIMIT_NOTE if _TIMED_OUT else ""),
+            + (_LIMIT_NOTE if data.any_timeout else ""),
             ratio_table(per, "functions"),
         ),
         "",
     ]
     for (_module, group), keys in with_reference:
-        key = representative(cells, keys)
+        key = representative(data, keys)
         assert key is not None
-        out += [f"## `{group}`", "", cell_figure(cells, key), ""]
-        out += ['??? note "All inputs"', "", *(f"    {line}" for line in group_table(cells, keys))]
+        out += [f"## `{group}`", "", cell_figure(data, key), ""]
+        out += ['??? note "All inputs"', "", *(f"    {line}" for line in group_table(data, keys))]
         out += [""]
     if alone:
         out += [
@@ -580,11 +590,11 @@ def module_page(
             "|---|---|---|",
         ]
         for (_module, group), keys in alone:
-            timed = [key for key in keys if SUBJECT in cells[key]]
+            timed = [key for key in keys if SUBJECT in data[key]]
             if timed:
                 key = max(timed, key=lambda key: (_size(key), keys.index(key)))
                 out.append(
-                    f"| `{group}` | {cell_name(key)} | {format_duration(cells[key][SUBJECT])} |"
+                    f"| `{group}` | {cell_name(key)} | {format_duration(data[key][SUBJECT])} |"
                 )
         out.append("")
     return "\n".join(out)
@@ -604,26 +614,26 @@ def write_nav(pages: set[str]) -> None:
     _NAV.write_text("\n".join([*lines[:start], *nav, *lines[end:]]) + "\n")
 
 
-def splice(page: str, cells: Cells, machine: str, pages: set[str]) -> str:
+def splice(page: str, data: Data, machine: str, pages: set[str]) -> str:
     """Replace every ``<!-- bench:NAME -->`` block of the main page with a freshly rendered one."""
-    groups = by_group(cells)
+    groups = by_group(data)
 
     def render(match: re.Match[str]) -> str:
         name = match.group("name")
         if name == "provenance":
             body = f"*{machine}*"
         elif name == "summary":
-            body = summary_block(cells)
+            body = summary_block(data)
         elif name == "modules":
-            body = modules_block(cells, pages)
+            body = modules_block(data, pages)
         elif name.startswith("cell "):
             module, group = name.removeprefix("cell ").split("/")
             keys = groups.get((module, group))
-            key = representative(cells, keys) if keys else None
+            key = representative(data, keys) if keys else None
             if key is None:
                 raise SystemExit(f"{name}: no such function compared with a reference in the data")
             short = module.removeprefix("test_")
-            body = cell_figure(cells, key, link=f"[all {short} benchmarks]({short}.md)")
+            body = cell_figure(data, key, link=f"[all {short} benchmarks]({short}.md)")
         else:
             raise SystemExit(f"unknown generated block {name!r}")
         return f"{match.group(1)}{body}\n{match.group(4)}"
@@ -646,23 +656,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("json_dir", type=Path, help="directory of --benchmark-json files")
     parser.add_argument("--gpu", help="GPU name, for a run that did not record one")
     args = parser.parse_args(argv)
-    cells = load(args.json_dir)
+    data = load(args.json_dir)
     machine = machine_line(args.json_dir, args.gpu)
 
     _LOGO_DIR.mkdir(parents=True, exist_ok=True)
-    for png in registry.CLEAR_DIR.glob("*.png"):
+    for png in registry.PNG_DIR.glob("*.png"):
         shutil.copyfile(png, _LOGO_DIR / png.name)
 
-    by_module: dict[str, list[tuple[GroupKey, list[aggregate.CellKey]]]] = collections.defaultdict(
-        list
-    )
-    for group, keys in by_group(cells).items():
+    by_module: dict[str, list[tuple[GroupKey, list[CellKey]]]] = collections.defaultdict(list)
+    for group, keys in by_group(data).items():
         by_module[group[0].removeprefix("test_")].append((group, keys))
     known = {m for _title, modules in api_shelves() for m in modules}
     pages = {
         module
         for module, groups in by_module.items()
-        if module in known and any(representative(cells, keys) for _g, keys in groups)
+        if module in known and any(representative(data, keys) for _g, keys in groups)
     }
     _PAGES.mkdir(parents=True, exist_ok=True)
     for stale in _PAGES.glob("*.md"):
@@ -670,10 +678,10 @@ def main(argv: list[str] | None = None) -> None:
             stale.unlink()
     for module in sorted(pages):
         (_PAGES / f"{module}.md").write_text(
-            module_page(cells, module, by_module[module], machine) + "\n"
+            module_page(data, module, by_module[module], machine) + "\n"
         )
     write_nav(pages)
-    _MAIN_PAGE.write_text(splice(_MAIN_PAGE.read_text(), cells, machine, pages))
+    _MAIN_PAGE.write_text(splice(_MAIN_PAGE.read_text(), data, machine, pages))
     print(f"wrote {len(pages)} module pages, the nav and {_MAIN_PAGE.relative_to(_REPO)}")
 
 
