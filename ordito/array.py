@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import weakref
 from collections.abc import Sequence
 from typing import Any, TypeVar, cast
 
@@ -1350,6 +1351,223 @@ def bsr_from_csr(
     else:
         matrix.notify_nnz_changed(nnz=nnz)
     return matrix
+
+
+def bsr_with_values(
+    matrix: odt.SparseMatrix, values: wp.array[odt.Block, Any]
+) -> odt.BsrMatrix[odt.Block]:
+    """
+    Build a sparse matrix with ``matrix``'s sparsity pattern and the given block values.
+
+    The pattern is **shared**, not copied: the result holds ``matrix``'s ``offsets``, ``columns``
+    and ``row_counts`` arrays, and ``matrix`` itself is not referenced. It is how a system whose
+    pattern is known to equal an existing operator's -- a mass-plus-stiffness system over a
+    Laplacian that already stores every diagonal -- is built without merging two patterns.
+
+    Parameters
+    ----------
+    matrix
+        ``(n_rows, n_cols)`` operator, in blocks, whose pattern the result takes. Rewriting that
+        pattern in place afterwards rewrites the result's too.
+    values
+        ``(matrix.values.shape[0],)`` one block per storage slot of ``matrix``, laid out as
+        ``matrix.values`` is; its dtype is the result's block type. A matrix assembled from keys
+        can hold more slots than stored entries (its ``nnz``): the entries come first, in
+        ``columns`` order, and the slots past them are carried along but never read.
+
+    Returns
+    -------
+    warp.sparse.BsrMatrix
+        ``(n_rows, n_cols)`` blocks, as ``matrix``, with ``matrix``'s stored entry count.
+
+    Raises
+    ------
+    ValueError
+        If ``values`` does not hold one block per storage slot of ``matrix``
+        (``matrix.values.shape[0]``).
+    RuntimeError
+        If ``matrix`` and ``values`` are not on one device.
+
+    See Also
+    --------
+    [`bsr_from_csr`][ordito.array.bsr_from_csr]
+    [`block_diag`][ordito.array.block_diag]
+
+    Examples
+    --------
+    All-one values on a cotangent Laplacian's pattern: each row then sums to its stored count, a
+    vertex's degree plus its diagonal (5 or 6 neighbours on an icosphere). ``values`` is sized
+    like ``L.values``, which here holds more slots than ``L``'s 1122 stored entries:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=2)
+    L = od.laplacian.cotmatrix(vertices, faces)
+    print(L.nnz_sync(), L.values.shape[0])  # 1122 2082
+    ones = wp.full(L.values.shape[0], 1.0, dtype=wp.float32)
+    counts = od.array.bsr_with_values(L, ones)
+    print(counts.offsets is L.offsets)  # True
+    row_sums = (counts @ wp.full(counts.shape[0], 1.0, dtype=wp.float32)).numpy()
+    print(row_sums.min(), row_sums.max())  # 6.0 7.0
+    ```
+    """
+    require_same_device(matrix=matrix, values=values)
+    if values.shape[0] != matrix.values.size:
+        raise ValueError(
+            f"values must hold one block per storage slot of matrix.values "
+            f"({matrix.values.shape[0]}), got {values.shape[0]}"
+        )
+    result = odt.bsr_matrix_t(values.dtype)()
+    result.nrow = int(matrix.nrow)
+    result.ncol = int(matrix.ncol)
+    result.offsets = matrix.offsets
+    result.columns = matrix.columns
+    result.values = values
+    result.row_counts = matrix.row_counts
+    result.notify_nnz_changed(nnz=int(matrix.nnz))
+    return result
+
+
+# ``block_diag``'s results, keyed weakly by the first operator of the stack.
+_BLOCK_DIAG_CACHE: weakref.WeakKeyDictionary[
+    odt.SparseMatrix, dict[tuple[int, ...], tuple[tuple[object, ...], odt.BsrMatrix[wp.float64]]]
+] = weakref.WeakKeyDictionary()
+
+
+def block_diag(matrices: Sequence[odt.SparseMatrix]) -> odt.BsrMatrix[wp.float64]:
+    """
+    Stack square sparse operators into one block-diagonal ``float64`` operator.
+
+    The operator ``scipy.sparse.block_diag`` builds. Its use here is to solve several independent
+    systems as one: a single conjugate-gradient iteration over the stack advances every block at
+    once, in the launches of one solve rather than several, and stops when the slowest block does.
+    A ``wp.mat22d`` operator enters as its scalar expansion over interleaved unknowns -- the memory
+    of a ``wp.vec2d`` array viewed as ``float64`` -- so a tangent-field system and scalar systems
+    stack together.
+
+    The result is **kept per set of operators**: a later call with the same operators, over the
+    same storage, returns the same matrix, so a solve against it replays its recorded loop (see
+    [`solve_spd`][ordito.linalg.solve_spd]). The stack is a copy, so values rewritten in place
+    in one of ``matrices`` afterwards do not reach it.
+
+    Parameters
+    ----------
+    matrices
+        One or more square operators, ``float64`` or ``wp.mat22d`` blocks, on one device.
+
+    Returns
+    -------
+    warp.sparse.BsrMatrix
+        ``(n, n)`` operator whose row count ``n`` is the sum of the blocks' scalar row counts, in
+        the order given.
+
+    Raises
+    ------
+    ValueError
+        If ``matrices`` is empty, or holds an operator that is not square or has another block type.
+    RuntimeError
+        If ``matrices`` are not all on one device.
+
+    See Also
+    --------
+    [`solve_spd_settled`][ordito.linalg.solve_spd_settled]
+    [`replicated_operator`][ordito.linalg.replicated_operator]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    sphere_vertices, sphere_faces = od.creation.icosphere(subdivisions=1)
+    box_vertices, box_faces = od.creation.box()
+    sphere_system = od.heat.heat_operators(sphere_vertices, sphere_faces)[0]
+    box_system = od.heat.heat_operators(box_vertices, box_faces)[0]
+    stacked = od.array.block_diag([sphere_system, box_system])
+    print(sphere_system.shape, box_system.shape, stacked.shape)  # (42, 42) (8, 8) (50, 50)
+    ```
+    """
+    require_same_device(matrices=list(matrices))
+    if len(matrices) == 0:
+        raise ValueError("block_diag needs at least one operator")
+    for matrix in matrices:
+        if matrix.values.dtype not in (wp.float64, wp.mat22d) or matrix.nrow != matrix.ncol:
+            raise ValueError(
+                "block_diag stacks square float64 or wp.mat22d operators, got a "
+                f"{matrix.nrow} x {matrix.ncol} operator of {matrix.values.dtype}"
+            )
+    identity = tuple(
+        i
+        for matrix in matrices
+        for i in (id(matrix.offsets), id(matrix.columns), id(matrix.values))
+    )
+    entries = _BLOCK_DIAG_CACHE.setdefault(matrices[0], {})
+    cached = entries.get(identity)
+    if cached is not None:
+        return cached[1]
+    blocks = [
+        _expanded_2x2(matrix) if matrix.values.dtype == wp.mat22d else matrix for matrix in matrices
+    ]
+    device = blocks[0].device
+    n_rows = sum(int(block.nrow) for block in blocks)
+    capacity = sum(block.values.size for block in blocks)
+    descriptors = []
+    for block in blocks:
+        descriptor = kernel_array.CsrBlock()
+        descriptor.offsets = block.offsets
+        descriptor.columns = block.columns
+        descriptor.values = block.values
+        descriptor.n_rows = int(block.nrow)
+        descriptors.append(descriptor)
+    offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    values = _launch.empty(capacity, dtype=wp.float64, device=device)
+    if n_rows == 0:
+        _launch.zero_(offsets)
+    else:
+        _launch.launch(
+            kernel_array.stack_block_diagonal,
+            dim=n_rows,
+            inputs=[_launch.array(descriptors, dtype=kernel_array.CsrBlock, device=device)],
+            outputs=[offsets, columns, values],
+            device=device,
+        )
+    # A capacity, as the blocks' own counts are: the offsets bound every row.
+    stacked = bsr_from_csr(n_rows, n_rows, offsets, columns, values, nnz=capacity)
+    # The entry holds every block's arrays, so the identities in its key cannot be reused.
+    held = tuple((matrix.offsets, matrix.columns, matrix.values) for matrix in matrices)
+    entries[identity] = (held, stacked)
+    return stacked
+
+
+def _expanded_2x2(matrix: odt.SparseMatrix) -> odt.BsrMatrix[wp.float64]:
+    """
+    Expand a compact ``wp.mat22d`` operator into its ``float64`` CSR over interleaved unknowns.
+
+    Sized off the ``values`` capacity rather than ``nnz``: the row offsets alone bound every row,
+    so a stale capacity's tail is allocated and never read.
+    """
+    device = matrix.device
+    n_rows = int(matrix.nrow)
+    capacity = 4 * matrix.values.size
+    offsets = _launch.empty(2 * n_rows + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    values = _launch.empty(capacity, dtype=wp.float64, device=device)
+    if n_rows == 0:
+        _launch.zero_(offsets)
+    else:
+        _launch.launch(
+            kernel_array.expand_block_csr_2x2,
+            dim=n_rows,
+            inputs=[matrix.offsets, matrix.columns, matrix.values],
+            outputs=[offsets, columns, values],
+            device=device,
+        )
+    return bsr_from_csr(
+        2 * n_rows, 2 * int(matrix.ncol), offsets, columns, values, nnz=4 * int(matrix.nnz)
+    )
 
 
 def csr_key_buffers(

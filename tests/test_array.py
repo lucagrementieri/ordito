@@ -18,7 +18,7 @@ import warp.sparse as wps
 import ordito as od
 import ordito.typing as odt
 from ordito import _device
-from tests.conversions import points_to_warp, warp_empty
+from tests.conversions import bsr_to_dense, points_to_warp, scipy_to_bsr, warp_empty
 
 DType = TypeVar("DType")
 
@@ -665,6 +665,99 @@ def test_triplet_buffers(dtype: type, device: str) -> None:
         assert rows_wp.dtype == wp.int32
         assert cols_wp.dtype == wp.int32
         assert values_wp.dtype == dtype
+
+
+def test_bsr_with_values_shares_the_pattern(device: str) -> None:
+    """
+    Not a library comparison: the result is ``matrix``'s pattern under the new values.
+
+    All-one values over a cotangent Laplacian's pattern make each row sum to its stored count, and
+    the pattern arrays are ``matrix``'s own. A ``values`` sized off ``nnz`` rather than the storage
+    slots raises.
+    """
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=2, device=device)
+    laplacian_wp = od.laplacian.cotmatrix(vertices_wp, faces_wp, dtype=wp.float64)
+    n = int(laplacian_wp.nrow)
+    ones_wp = wp.full(laplacian_wp.values.shape[0], 1.0, dtype=wp.float64, device=device)
+    counts_wp = od.array.bsr_with_values(laplacian_wp, ones_wp)
+    assert counts_wp.offsets is laplacian_wp.offsets
+    assert counts_wp.columns is laplacian_wp.columns
+    offsets_np = laplacian_wp.offsets.numpy()
+    row_sums_wp = wp.zeros(n, dtype=wp.float64, device=device)
+    odt.bsr_mv(counts_wp, wp.ones(n, dtype=wp.float64, device=device), row_sums_wp)
+    assert np.array_equal(row_sums_wp.numpy(), np.diff(offsets_np).astype(np.float64))
+    with pytest.raises(ValueError, match="storage slot"):
+        od.array.bsr_with_values(laplacian_wp, odt.as_dense(ones_wp[:-1]))
+
+
+def test_bsr_with_values_rejects_values_on_another_device() -> None:
+    """Not a library comparison: values on another device than the pattern raise."""
+    if not wp.is_cuda_available():
+        pytest.skip("needs both devices to construct a mismatch")
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=1, device="cpu")
+    laplacian_wp = od.laplacian.cotmatrix(vertices_wp, faces_wp, dtype=wp.float64)
+    values_wp = wp.zeros(laplacian_wp.values.size, dtype=wp.float64, device="cuda:0")
+    with pytest.raises(RuntimeError, match="one device"):
+        od.array.bsr_with_values(laplacian_wp, values_wp)
+
+
+@pytest.mark.parity("block_diag", "scipy")
+def test_block_diag_matches_scipy(device: str) -> None:
+    """
+    Class A, against ``scipy.sparse.block_diag`` of the same operators written out densely.
+
+    The stack mixes a ``wp.mat22d`` operator -- entering as its scalar expansion over interleaved
+    unknowns -- with two scalar ones, one of them a duplicate-accumulating triplet build whose
+    ``nnz`` is a stale capacity: a stack sized off that field would place the
+    second block's rows at the wrong entries. A repeated call returns the same matrix, which is what
+    lets a solve against it replay its recorded loop.
+    """
+    rng = np.random.default_rng(29)
+    n_blocks = 6
+    dense_block_np = rng.standard_normal((2 * n_blocks, 2 * n_blocks))
+    blocks_np = dense_block_np.reshape(n_blocks, 2, n_blocks, 2).transpose(0, 2, 1, 3)
+    rows_np, cols_np = np.meshgrid(np.arange(n_blocks), np.arange(n_blocks), indexing="ij")
+    vector_wp = wps.bsr_from_triplets(
+        n_blocks,
+        n_blocks,
+        wp.array(rows_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(cols_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(np.ascontiguousarray(blocks_np.reshape(-1, 2, 2)), dtype=wp.mat22d, device=device),
+    )
+    assert odt.has_blocks(vector_wp, wp.mat22d)
+    n = 9
+    rows = rng.integers(0, n, 40).astype(np.int32)
+    cols = rng.integers(0, n, 40).astype(np.int32)
+    vals = rng.standard_normal(40)
+    scalar_coo_np = scipy.sparse.coo_matrix((vals, (rows, cols)), shape=(n, n))
+    scalar_wp = scipy_to_bsr(scalar_coo_np, device)
+    # Duplicates, so the triplet build's ``nnz`` really is a capacity.
+    assert len(set(zip(rows.tolist(), cols.tolist(), strict=True))) < rows.size
+    scalar_np = scalar_coo_np.toarray()
+
+    stacked_wp = od.array.block_diag((vector_wp, scalar_wp, scalar_wp))
+
+    expected_np = scipy.sparse.block_diag((dense_block_np, scalar_np, scalar_np)).toarray()
+    assert stacked_wp.nrow == expected_np.shape[0]
+    assert np.allclose(
+        bsr_to_dense(stacked_wp, expected_np.shape[0]), expected_np, rtol=1e-12, atol=1e-12
+    )
+    assert od.array.block_diag((vector_wp, scalar_wp, scalar_wp)) is stacked_wp
+
+
+def test_block_diag_rejects_a_rectangular_operator(device: str) -> None:
+    """Not a library comparison: a rectangular block has no place on a diagonal."""
+    rectangular_wp = wps.bsr_zeros(
+        3,
+        4,
+        wp.float64,  # pyright: ignore[reportArgumentType]  # Warp types it a BlockType instance
+        device=device,
+    )
+    assert odt.has_blocks(rectangular_wp, wp.float64)
+    with pytest.raises(ValueError, match="square"):
+        od.array.block_diag((rectangular_wp,))
+    with pytest.raises(ValueError, match="at least one"):
+        od.array.block_diag(())
 
 
 @pytest.mark.parity("csr_from_keys", "scipy")

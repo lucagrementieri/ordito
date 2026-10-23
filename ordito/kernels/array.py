@@ -1117,6 +1117,80 @@ def csr_from_flagged_runs(
     csr_row_offsets(keys, inclusive, i, before, sentinel, n_rows, n_cols, out_offsets)
 
 
+@wp.kernel
+def expand_block_csr_2x2(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.mat22d],
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # One thread per block row ``i`` of a compact ``wp.mat22d`` CSR, writing scalar rows ``2 i`` and
+    # ``2 i + 1`` of the same operator over interleaved unknowns (``2 j + b`` is component ``b`` of
+    # block unknown ``j``), the memory layout of a ``wp.vec2d`` array viewed as ``float64``.
+    # Each scalar row holds ``2 * count`` entries, so its start is a closed form of the block
+    # offsets and needs no scan; columns stay sorted because the block row's are. The last thread
+    # also writes the terminating offset.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    count = offsets[i + 1] - start
+    for a in range(2):
+        row_start = 4 * start + a * 2 * count
+        out_offsets[2 * i + a] = row_start
+        for e in range(count):
+            block = values[start + e]
+            j = columns[start + e]
+            for b in range(2):
+                out_columns[row_start + 2 * e + b] = 2 * j + b
+                out_values[row_start + 2 * e + b] = block[a, b]
+    if i == offsets.shape[0] - 2:
+        out_offsets[2 * i + 2] = 4 * offsets[i + 1]
+
+
+@wp.struct
+class CsrBlock:
+    """One diagonal block of ``stack_block_diagonal``: a square scalar ``float64`` CSR."""
+
+    offsets: wp.array[wp.int32]
+    columns: wp.array[wp.int32]
+    values: wp.array[wp.float64]
+    n_rows: wp.int32
+
+
+@wp.kernel
+def stack_block_diagonal(
+    blocks: wp.array[CsrBlock],
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # One thread per row of the block-diagonal stack of ``blocks``, copying its block's row with
+    # the columns shifted by the rows above it. Each block's stored count is its own last offset,
+    # read here rather than off ``nnz`` (a capacity), so a row's start needs no
+    # scan and no readback: a handful of blocks, a handful of reads. The last thread also writes
+    # the terminating offset.
+    r = wp.int32(wp.tid())
+    row_base = wp.int32(0)
+    entry_base = wp.int32(0)
+    b = wp.int32(0)
+    while r - row_base >= blocks[b].n_rows:
+        entry_base += blocks[b].offsets[blocks[b].n_rows]
+        row_base += blocks[b].n_rows
+        b += 1
+    block = blocks[b]
+    i = r - row_base
+    start = block.offsets[i]
+    end = block.offsets[i + 1]
+    destination = entry_base + start
+    out_offsets[r] = destination
+    for e in range(end - start):
+        out_columns[destination + e] = block.columns[start + e] + row_base
+        out_values[destination + e] = block.values[start + e]
+    if r == out_offsets.shape[0] - 2:
+        out_offsets[r + 1] = entry_base + end
+
+
 # Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``. This module
 # is imported by 25 kernel modules and 15 wrappers, so its rebuilds are felt widely.
 #

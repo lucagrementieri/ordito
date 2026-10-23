@@ -545,17 +545,6 @@ def test_solve_spd_settled(bench_case: BenchCase) -> None:
     assert np.isfinite(solution.numpy()).all()
 
 
-@pytest.mark.benchmark(group="bsr_with_values")
-@pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito")
-def test_bsr_with_values(bench_case: BenchCase) -> None:
-    """A matrix over another's pattern with new values: host bookkeeping only, no launch."""
-    operator = _operator(bench_case)
-    values = wp.zeros_like(operator.values)
-    matrix = bench_case.run(lambda: od.linalg.bsr_with_values(operator, values))
-    assert matrix.offsets is operator.offsets
-
-
 def _scipy_csr(operator: odt.BsrMatrix[wp.float64], n: int) -> sp.csr_matrix:
     """Read a scalar operator back as a SciPy CSR matrix, for the reference row's input."""
     offsets_np = operator.offsets.numpy()[: n + 1]
@@ -564,41 +553,6 @@ def _scipy_csr(operator: odt.BsrMatrix[wp.float64], n: int) -> sp.csr_matrix:
         (operator.values.numpy()[:count], operator.columns.numpy()[:count], offsets_np),
         shape=(n, n),
     )
-
-
-@pytest.mark.benchmark(group="block_diag")
-@pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
-@pytest.mark.benchlibs("ordito", "scipy")
-def test_block_diag(bench_case: BenchCase) -> None:
-    """
-    Three copies of the heat system stacked block-diagonally, across the scale sweep.
-
-    ``block_diag`` keeps its result per set of operators, so the ordito row passes a fresh view of
-    the first operator (``bsr_with_values`` over its own arrays, built outside the timed region) to
-    time the build, not the cache hit. SciPy's ``block_diag`` of the same three CSR matrices is the
-    test oracle and the reference.
-    """
-    if bench_case.kind == "scipy":
-        # The reference's input is the same operator, assembled by ordito and read back.
-        device = wp.get_preferred_device()
-        system_np = _scipy_csr(
-            od.heat.heat_operators(
-                wp.array(bench_case.vertices_np, dtype=wp.vec3, device=device),
-                wp.array(bench_case.faces_np.ravel(), dtype=wp.int32, device=device),
-            )[0],
-            bench_case.n_vertices,
-        )
-        stacked_np = bench_case.run(
-            lambda: sp.block_diag((system_np, system_np, system_np), format="csr")
-        )
-        assert stacked_np.shape[0] == 3 * bench_case.n_vertices
-        return
-    system = _heat_system(bench_case)
-    stacked = bench_case.run(
-        lambda first: od.linalg.block_diag((first, system, system)),
-        setup=lambda: od.linalg.bsr_with_values(system, system.values),
-    )
-    assert stacked.nrow == 3 * bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="replicated_operator")

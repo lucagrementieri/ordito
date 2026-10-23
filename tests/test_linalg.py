@@ -18,7 +18,7 @@ from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
 
 import ordito as od
 import ordito.typing as odt
-from ordito.kernels import cholesky as kernel_cholesky
+from ordito.kernels import linalg as kernel_linalg
 from tests.comparisons import assert_nonconstant
 from tests.conversions import bsr_to_dense, scipy_to_bsr, trimesh_to_pymeshlab
 
@@ -395,9 +395,6 @@ def test_operator_entry_points_reject_an_operator_on_another_device() -> None:
         lambda: od.linalg.min_quad_with_fixed(matrix_wp, mask_wp, rhs_2d),
         lambda: od.linalg.min_quad_with_fixed_precompute(matrix_wp, mask_wp),
         lambda: od.linalg.assemble_interior_system(matrix_wp, mask_wp, free_map_wp, rhs_2d, n_free),
-        lambda: od.linalg.bsr_with_values(
-            matrix_wp, wp.zeros(matrix_wp.values.size, dtype=wp.float64, device=cuda)
-        ),
     ]
     for call in calls:
         with pytest.raises(RuntimeError, match="one device"):
@@ -947,8 +944,8 @@ def test_verified_solve_rejects_a_nan_iterate(device: str) -> None:
     perturbed_wp = odt.as_array2d(
         wp.array(expected_np + 1e-3, dtype=wp.float64, device=device), wp.float64
     )
-    unconverged = int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED)
-    failed = int(kernel_cholesky.BACKWARD_ERROR_FAILED)
+    unconverged = int(kernel_linalg.BACKWARD_ERROR_UNCONVERGED)
+    failed = int(kernel_linalg.BACKWARD_ERROR_FAILED)
     for result, answer, verdict in (
         ((1, inside, bound), solution_wp, 0),
         ((1, outside, bound), solution_wp, unconverged),
@@ -2156,65 +2153,6 @@ def test_chebyshev_preconditioner_solves_the_same_system(
         preconditioner=od.linalg.chebyshev_preconditioner(laplacian_wp),
     )
     assert np.allclose(single.numpy(), reference_np[0], rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parity("block_diag", "scipy")
-def test_block_diag_matches_scipy(device: str) -> None:
-    """
-    Class A, against ``scipy.sparse.block_diag`` of the same operators written out densely.
-
-    The stack mixes a ``wp.mat22d`` operator -- entering as its scalar expansion over interleaved
-    unknowns -- with two scalar ones, one of them a duplicate-accumulating triplet build whose
-    ``nnz`` is a stale capacity: a stack sized off that field would place the
-    second block's rows at the wrong entries. A repeated call returns the same matrix, which is what
-    lets a solve against it replay its recorded loop.
-    """
-    rng = np.random.default_rng(29)
-    n_blocks = 6
-    dense_block_np = rng.standard_normal((2 * n_blocks, 2 * n_blocks))
-    blocks_np = dense_block_np.reshape(n_blocks, 2, n_blocks, 2).transpose(0, 2, 1, 3)
-    rows_np, cols_np = np.meshgrid(np.arange(n_blocks), np.arange(n_blocks), indexing="ij")
-    vector_wp = wps.bsr_from_triplets(
-        n_blocks,
-        n_blocks,
-        wp.array(rows_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
-        wp.array(cols_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
-        wp.array(np.ascontiguousarray(blocks_np.reshape(-1, 2, 2)), dtype=wp.mat22d, device=device),
-    )
-    assert odt.has_blocks(vector_wp, wp.mat22d)
-    n = 9
-    rows = rng.integers(0, n, 40).astype(np.int32)
-    cols = rng.integers(0, n, 40).astype(np.int32)
-    vals = rng.standard_normal(40)
-    scalar_coo_np = sp.coo_matrix((vals, (rows, cols)), shape=(n, n))
-    scalar_wp = scipy_to_bsr(scalar_coo_np, device)
-    # Duplicates, so the triplet build's ``nnz`` really is a capacity.
-    assert len(set(zip(rows.tolist(), cols.tolist(), strict=True))) < rows.size
-    scalar_np = scalar_coo_np.toarray()
-
-    stacked_wp = od.linalg.block_diag((vector_wp, scalar_wp, scalar_wp))
-
-    expected_np = sp.block_diag((dense_block_np, scalar_np, scalar_np)).toarray()
-    assert stacked_wp.nrow == expected_np.shape[0]
-    assert np.allclose(
-        bsr_to_dense(stacked_wp, expected_np.shape[0]), expected_np, rtol=1e-12, atol=1e-12
-    )
-    assert od.linalg.block_diag((vector_wp, scalar_wp, scalar_wp)) is stacked_wp
-
-
-def test_block_diag_rejects_a_rectangular_operator(device: str) -> None:
-    """Not a library comparison: a rectangular block has no place on a diagonal."""
-    rectangular_wp = wps.bsr_zeros(
-        3,
-        4,
-        wp.float64,  # pyright: ignore[reportArgumentType]  # Warp types it a BlockType instance
-        device=device,
-    )
-    assert odt.has_blocks(rectangular_wp, wp.float64)
-    with pytest.raises(ValueError, match="square"):
-        od.linalg.block_diag((rectangular_wp,))
-    with pytest.raises(ValueError, match="at least one"):
-        od.linalg.block_diag(())
 
 
 @pytest.mark.parametrize("n_columns", [1, 3])

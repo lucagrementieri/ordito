@@ -1181,8 +1181,8 @@ def _heat_operators(
     if cot_entries.dtype is not wp.float32:
         cot_entries = odt.as_array2d(od.array.astype(cot_entries, wp.float32), wp.float32)
 
-    heat_system = twl.bsr_with_values(laplacian, heat_values)
-    poisson_system = twl.bsr_with_values(laplacian, poisson_values)
+    heat_system = od.array.bsr_with_values(laplacian, heat_values)
+    poisson_system = od.array.bsr_with_values(laplacian, poisson_values)
     operators = (
         heat_system,
         twl.jacobi_preconditioner(heat_system),
@@ -2411,7 +2411,7 @@ class HeatSolver:
 
         The two systems do not interact and settle at the same round, so they run as one solve
         over the block-diagonal stack ``[vector system; heat system x n_scalars]``
-        ([`block_diag`][ordito.linalg.block_diag]), in the launches of one.
+        ([`block_diag`][ordito.array.block_diag]), in the launches of one.
 
         Parameters
         ----------
@@ -2439,7 +2439,7 @@ class HeatSolver:
             # its distinct blocks -- the vector and heat systems' own factorization slots, so a
             # factorization either already holds is reused and one built here serves their solves.
             vector_system, scalar, _, _ = self.vector_operators
-            stack = twl.block_diag((vector_system, *(scalar[0],) * n_scalars))
+            stack = od.array.block_diag((vector_system, *(scalar[0],) * n_scalars))
             kept = self._systems[role] = _KeptSystem(
                 _StackedFactorization(
                     stack,

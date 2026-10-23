@@ -22,6 +22,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito.kernels import cholesky as kernel_cholesky
+from ordito.kernels import linalg as kernel_linalg
 from tests.conversions import bsr_to_csr, numpy_to_warp, scipy_to_bsr, warp_empty
 
 
@@ -351,7 +352,7 @@ def test_refinement_never_passes_a_nan_residual(
         flag = wp.zeros(1, dtype=wp.int32, device=device)
         nothing = wp.zeros(0, dtype=wp.float64, device=device)
         wp.launch(
-            kernel_cholesky.backward_error_exceeds,
+            kernel_linalg.backward_error_exceeds,
             dim=(n, 1),
             inputs=[system.offsets, system.columns, system.values,
                     wp.array(guess_np, dtype=wp.float64, device=device), rhs, wp.int32(n),
@@ -368,7 +369,7 @@ def test_refinement_never_passes_a_nan_residual(
             if base == 0:
                 flag.zero_()
             wp.launch(
-                kernel_cholesky.backward_error_exceeds,
+                kernel_linalg.backward_error_exceeds,
                 dim=(n, 1),
                 inputs=[system.offsets, system.columns, system.values,
                         wp.array(exact_np, dtype=wp.float64, device=device), rhs, wp.int32(n),
@@ -376,7 +377,7 @@ def test_refinement_never_passes_a_nan_residual(
                 outputs=[flag],
                 device=device,
             )  # fmt: skip
-            assert int(flag.numpy()[0]) == base + int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED)
+            assert int(flag.numpy()[0]) == base + int(kernel_linalg.BACKWARD_ERROR_UNCONVERGED)
 
 
 def test_negated_factorization_solves_a_negative_definite_operator(

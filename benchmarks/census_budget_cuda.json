@@ -4150,28 +4150,28 @@
    "scan": 1
   }
  },
- "benchmarks/test_linalg.py::test_block_diag[sphere_large-ordito-cuda]": {
+ "benchmarks/test_array.py::test_block_diag[sphere_large-ordito-cuda]": {
   "counts": {
    "launch": 1,
    "alloc": 4,
    "h2d": 1
   }
  },
- "benchmarks/test_linalg.py::test_block_diag[sphere_med-ordito-cuda]": {
+ "benchmarks/test_array.py::test_block_diag[sphere_med-ordito-cuda]": {
   "counts": {
    "launch": 1,
    "alloc": 4,
    "h2d": 1
   }
  },
- "benchmarks/test_linalg.py::test_block_diag[sphere_small-ordito-cuda]": {
+ "benchmarks/test_array.py::test_block_diag[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
    "alloc": 4,
    "h2d": 1
   }
  },
- "benchmarks/test_linalg.py::test_bsr_with_values[sphere_med-ordito-cuda]": {
+ "benchmarks/test_array.py::test_bsr_with_values[sphere_med-ordito-cuda]": {
   "counts": {}
  },
  "benchmarks/test_linalg.py::test_chebyshev_preconditioner[saddle-ordito-cuda]": {

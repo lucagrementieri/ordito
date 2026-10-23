@@ -34,6 +34,7 @@ from ordito.kernels.array import (
     ordered_float_bits,
     scanned_count,
 )
+from ordito.kernels.linalg import residual_and_scale
 from ordito.kernels.reduce import block_barrier, block_sum, last_ticket, take_ticket
 
 wp.set_module_options({"enable_backward": False})
@@ -735,28 +736,6 @@ def refine_start(
             wp.atomic_max(rhs_scale, column, magnitude)
 
 
-@wp.func
-def residual_and_scale(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    solution: wp.array[wp.float64],
-    rhs: wp.array[wp.float64],
-    offset: wp.int32,
-    i: wp.int32,
-) -> tuple[wp.float64, wp.float64]:
-    # Row ``i`` of ``b - A x`` in ``float64`` and its Oettli-Prager scale ``(|A| |x| + |b|)_i``,
-    # for the column starting at ``offset``: the componentwise backward error is their ratio.
-    b = rhs[offset + i]
-    total = b
-    scale = wp.abs(b)
-    for e in range(offsets[i], offsets[i + 1]):
-        term = values[e] * solution[offset + columns[e]]
-        total -= term
-        scale += wp.abs(term)
-    return total, scale
-
-
 @wp.kernel
 def residual_test(
     offsets: wp.array[wp.int32],
@@ -889,50 +868,6 @@ def null_space_shift(
         return
     r = column * n + component_rows[p]
     solution[r] = solution[r] - means[column * component_label.shape[0] + component]
-
-
-# ``backward_error_exceeds``' verdicts, past ``0`` (verified).
-BACKWARD_ERROR_FAILED = wp.int32(1)
-BACKWARD_ERROR_UNCONVERGED = wp.int32(2)
-
-
-@wp.kernel
-def backward_error_exceeds(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    solution: wp.array[wp.float64],
-    rhs: wp.array[wp.float64],
-    n: wp.int32,
-    tolerance: wp.float64,
-    residual: wp.array[wp.float64],
-    threshold: wp.array[wp.float64],
-    base: wp.int32,
-    out_flag: wp.array[wp.int32],
-) -> None:
-    # The componentwise backward error of a solution (Oettli and Prager): ``|b - A x|_i`` against
-    # ``(|A| |x| + |b|)_i``. Above ``tolerance`` anywhere, the solution is not the system's to
-    # within its own entries' size, whatever its residual norm says. Given a conjugate-gradient
-    # result's per-column ``residual`` and ``threshold`` (or ``None``), row 0 of each column also
-    # flags a column that did not converge, so one four-byte read answers both questions. Both
-    # tests are spelled "not within", so a NaN anywhere flags. The flag is raised to ``base`` plus
-    # the worst verdict: ``BACKWARD_ERROR_FAILED`` for an entry over the bar,
-    # ``BACKWARD_ERROR_UNCONVERGED`` for a column outside its threshold, which takes precedence (a
-    # maximum, so the read is the same whatever order the rows land in; the plain read first
-    # spares the atomic once it is set). A word left at or below ``base`` reads as verified, so the
-    # caller reuses it with a higher ``base`` instead of clearing it (``linalg._StampedFlag``).
-    i, column = wp.tid()
-    offset = column * n
-    total, scale = residual_and_scale(offsets, columns, values, solution, rhs, offset, i)
-    if not (wp.abs(total) <= tolerance * scale):
-        failed = base + BACKWARD_ERROR_FAILED
-        if out_flag[0] < failed:
-            wp.atomic_max(out_flag, 0, failed)
-    if i == 0 and residual.shape[0] > 0:
-        if not (residual[column] <= threshold[column]):
-            unconverged = base + BACKWARD_ERROR_UNCONVERGED
-            if out_flag[0] < unconverged:
-                wp.atomic_max(out_flag, 0, unconverged)
 
 
 # --------------------------------------------------------------------------------------

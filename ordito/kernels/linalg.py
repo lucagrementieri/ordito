@@ -556,78 +556,70 @@ def scaled_rows_and_bound(
         wp.atomic_max(out_bound, 0, bound)
 
 
-@wp.kernel
-def expand_block_csr_2x2(
+@wp.func
+def residual_and_scale(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
-    values: wp.array[wp.mat22d],
-    out_offsets: wp.array[wp.int32],
-    out_columns: wp.array[wp.int32],
-    out_values: wp.array[wp.float64],
-) -> None:
-    # One thread per block row ``i`` of a compact ``wp.mat22d`` CSR, writing scalar rows ``2 i`` and
-    # ``2 i + 1`` of the same operator over interleaved unknowns (``2 j + b`` is component ``b`` of
-    # block unknown ``j``), the memory layout of a ``wp.vec2d`` array viewed as ``float64``.
-    # Each scalar row holds ``2 * count`` entries, so its start is a closed form of the block
-    # offsets and needs no scan; columns stay sorted because the block row's are. The last thread
-    # also writes the terminating offset.
-    i = wp.int32(wp.tid())
-    start = offsets[i]
-    count = offsets[i + 1] - start
-    for a in range(2):
-        row_start = 4 * start + a * 2 * count
-        out_offsets[2 * i + a] = row_start
-        for e in range(count):
-            block = values[start + e]
-            j = columns[start + e]
-            for b in range(2):
-                out_columns[row_start + 2 * e + b] = 2 * j + b
-                out_values[row_start + 2 * e + b] = block[a, b]
-    if i == offsets.shape[0] - 2:
-        out_offsets[2 * i + 2] = 4 * offsets[i + 1]
+    values: wp.array[wp.float64],
+    solution: wp.array[wp.float64],
+    rhs: wp.array[wp.float64],
+    offset: wp.int32,
+    i: wp.int32,
+) -> tuple[wp.float64, wp.float64]:
+    # Row ``i`` of ``b - A x`` in ``float64`` and its Oettli-Prager scale ``(|A| |x| + |b|)_i``,
+    # for the column starting at ``offset``: the componentwise backward error is their ratio.
+    b = rhs[offset + i]
+    total = b
+    scale = wp.abs(b)
+    for e in range(offsets[i], offsets[i + 1]):
+        term = values[e] * solution[offset + columns[e]]
+        total -= term
+        scale += wp.abs(term)
+    return total, scale
 
 
-@wp.struct
-class CsrBlock:
-    """One diagonal block of ``stack_block_diagonal``: a square scalar ``float64`` CSR."""
-
-    offsets: wp.array[wp.int32]
-    columns: wp.array[wp.int32]
-    values: wp.array[wp.float64]
-    n_rows: wp.int32
+# ``backward_error_exceeds``' verdicts, past ``0`` (verified).
+BACKWARD_ERROR_FAILED = wp.int32(1)
+BACKWARD_ERROR_UNCONVERGED = wp.int32(2)
 
 
 @wp.kernel
-def stack_block_diagonal(
-    blocks: wp.array[CsrBlock],
-    out_offsets: wp.array[wp.int32],
-    out_columns: wp.array[wp.int32],
-    out_values: wp.array[wp.float64],
+def backward_error_exceeds(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    solution: wp.array[wp.float64],
+    rhs: wp.array[wp.float64],
+    n: wp.int32,
+    tolerance: wp.float64,
+    residual: wp.array[wp.float64],
+    threshold: wp.array[wp.float64],
+    base: wp.int32,
+    out_flag: wp.array[wp.int32],
 ) -> None:
-    # One thread per row of the block-diagonal stack of ``blocks``, copying its block's row with
-    # the columns shifted by the rows above it. Each block's stored count is its own last offset,
-    # read here rather than off ``nnz`` (a capacity), so a row's start needs no
-    # scan and no readback: a handful of blocks, a handful of reads. The last thread also writes
-    # the terminating offset.
-    r = wp.int32(wp.tid())
-    row_base = wp.int32(0)
-    entry_base = wp.int32(0)
-    b = wp.int32(0)
-    while r - row_base >= blocks[b].n_rows:
-        entry_base += blocks[b].offsets[blocks[b].n_rows]
-        row_base += blocks[b].n_rows
-        b += 1
-    block = blocks[b]
-    i = r - row_base
-    start = block.offsets[i]
-    end = block.offsets[i + 1]
-    destination = entry_base + start
-    out_offsets[r] = destination
-    for e in range(end - start):
-        out_columns[destination + e] = block.columns[start + e] + row_base
-        out_values[destination + e] = block.values[start + e]
-    if r == out_offsets.shape[0] - 2:
-        out_offsets[r + 1] = entry_base + end
+    # The componentwise backward error of a solution (Oettli and Prager): ``|b - A x|_i`` against
+    # ``(|A| |x| + |b|)_i``. Above ``tolerance`` anywhere, the solution is not the system's to
+    # within its own entries' size, whatever its residual norm says. Given a conjugate-gradient
+    # result's per-column ``residual`` and ``threshold`` (or ``None``), row 0 of each column also
+    # flags a column that did not converge, so one four-byte read answers both questions. Both
+    # tests are spelled "not within", so a NaN anywhere flags. The flag is raised to ``base`` plus
+    # the worst verdict: ``BACKWARD_ERROR_FAILED`` for an entry over the bar,
+    # ``BACKWARD_ERROR_UNCONVERGED`` for a column outside its threshold, which takes precedence (a
+    # maximum, so the read is the same whatever order the rows land in; the plain read first
+    # spares the atomic once it is set). A word left at or below ``base`` reads as verified, so the
+    # caller reuses it with a higher ``base`` instead of clearing it (``linalg._StampedFlag``).
+    i, column = wp.tid()
+    offset = column * n
+    total, scale = residual_and_scale(offsets, columns, values, solution, rhs, offset, i)
+    if not (wp.abs(total) <= tolerance * scale):
+        failed = base + BACKWARD_ERROR_FAILED
+        if out_flag[0] < failed:
+            wp.atomic_max(out_flag, 0, failed)
+    if i == 0 and residual.shape[0] > 0:
+        if not (residual[column] <= threshold[column]):
+            unconverged = base + BACKWARD_ERROR_UNCONVERGED
+            if out_flag[0] < unconverged:
+                wp.atomic_max(out_flag, 0, unconverged)
 
 
 @wp.kernel

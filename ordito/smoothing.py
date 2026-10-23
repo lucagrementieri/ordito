@@ -2089,7 +2089,7 @@ def filter_implicit_fairing(
             outputs=[values, rhs, solution_2d],
             device=device,
         )
-        system = twl.bsr_with_values(template, values)
+        system = od.array.bsr_with_values(template, values)
         # One batched solve advances all three columns together; ``M - lamb L`` over the whole mesh
         # (or its interior block) is a solve long enough for the polynomial preconditioner.
         fairing.solve(system, rhs, solution_2d, maxiter=10 * n_rows)

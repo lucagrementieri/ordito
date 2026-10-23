@@ -142,7 +142,6 @@ from ordito._device import read_scalar, read_values, require_same_device
 from ordito.cholesky import NotPositiveDefiniteError, SparseCholesky, sparse_cholesky
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
-from ordito.kernels import cholesky as kernel_cholesky
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
@@ -1540,7 +1539,7 @@ def _scalar_expansion(matrix: odt.SparseMatrix) -> odt.BsrMatrix[wp.float64]:
         )
     if n_rows > 0:
         _launch.launch(
-            kernel_linalg.expand_block_csr_2x2,
+            kernel_array.expand_block_csr_2x2,
             dim=n_rows,
             inputs=[matrix.offsets, matrix.columns, matrix.values],
             outputs=[expanded.offsets, expanded.columns, expanded.values],
@@ -1939,7 +1938,7 @@ def _verdict(
     """
     Whether a conjugate-gradient result converged and its solution passes the backward-error test.
 
-    ``0`` when both hold, ``kernels/cholesky.BACKWARD_ERROR_UNCONVERGED`` when the result did not
+    ``0`` when both hold, ``kernels/linalg.BACKWARD_ERROR_UNCONVERGED`` when the result did not
     converge, else ``BACKWARD_ERROR_FAILED``. The convergence half reads the solver's own residual
     against its threshold; the other half recomputes the residual from ``matrix``, entry by entry
     against ``(|A| |x| + |b|)_i``, which a recurrence residual drifting from the true one -- an
@@ -1949,13 +1948,13 @@ def _verdict(
     _iterations, residual, threshold = result
     # Spelled as the negation of "inside": a ``NaN`` residual is outside every threshold.
     if not isinstance(residual, wp.array) and not float(residual) <= float(threshold):
-        return int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED)
+        return int(kernel_linalg.BACKWARD_ERROR_UNCONVERGED)
     device = rhs.device
     n_columns, n = int(rhs.shape[0]), int(rhs.shape[1])
     flag = factorization._flag = _StampedFlag.reused(factorization._flag, device)  # pyright: ignore[reportPrivateUsage]
     on_device = isinstance(residual, wp.array)
     _launch.launch(
-        kernel_cholesky.backward_error_exceeds,
+        kernel_linalg.backward_error_exceeds,
         dim=(n, n_columns),
         inputs=[matrix.offsets, matrix.columns, matrix.values, solution.flatten(), rhs.flatten(),
                 wp.int32(n), wp.float64(max(VERIFIED_BACKWARD_ERROR, 100.0 * tol)),
@@ -2513,7 +2512,7 @@ def solve_spd_settled(
     # over. One four-byte read: the decision to factor is the host's.
     flag = solver.flag = _StampedFlag.reused(solver.flag, rhs.device)
     _launch.launch(
-        kernel_cholesky.backward_error_exceeds,
+        kernel_linalg.backward_error_exceeds,
         dim=(int(scalar.nrow), n_columns),
         inputs=[scalar.offsets, scalar.columns, scalar.values, solution_flat, rhs_flat,
                 wp.int32(int(scalar.nrow)), wp.float64(SETTLE_BACKWARD_ERROR), None, None,
@@ -2544,7 +2543,7 @@ class _StampedFlag:
     """
     A device word a check raises above a base to flag its finding, reused without a clear.
 
-    A check (``kernels/cholesky.backward_error_exceeds``' verdicts, ``kernels/linalg.
+    A check (``kernels/linalg.backward_error_exceeds``' verdicts, ``kernels/linalg.
     masks_differ``) raises the word to ``base`` plus its code, and the next one runs from a
     ``base`` above anything the last could have written, so the word is reused with no clear (a
     memset) per check. Zeroed again only when ``base`` nears the ``int32`` range.
@@ -3103,7 +3102,7 @@ class _AdaptiveCg:
             return result
         if verify is not None:
             verdict = verify(result)
-            if verdict != int(kernel_cholesky.BACKWARD_ERROR_UNCONVERGED):
+            if verdict != int(kernel_linalg.BACKWARD_ERROR_UNCONVERGED):
                 self.verdict = verdict
                 return result
         else:
@@ -4021,200 +4020,11 @@ def _storage_alias(matrix: odt.BsrMatrix[odt.Block]) -> odt.BsrMatrix[odt.Block]
     )
 
 
-def bsr_with_values(
-    matrix: odt.SparseMatrix, values: wp.array[odt.Block, Any]
-) -> odt.BsrMatrix[odt.Block]:
-    """
-    Build a sparse matrix with ``matrix``'s sparsity pattern and the given block values.
-
-    The pattern is **shared**, not copied: the result holds ``matrix``'s ``offsets``, ``columns``
-    and ``row_counts`` arrays, and ``matrix`` itself is not referenced. It is how a system whose
-    pattern is known to equal an existing operator's -- a mass-plus-stiffness system over a
-    Laplacian that already stores every diagonal -- is built without merging two patterns.
-
-    Parameters
-    ----------
-    matrix
-        ``(n_rows, n_cols)`` operator, in blocks, whose pattern the result takes. Rewriting that
-        pattern in place afterwards rewrites the result's too.
-    values
-        ``(matrix.values.shape[0],)`` one block per storage slot of ``matrix``, laid out as
-        ``matrix.values`` is; its dtype is the result's block type. A matrix assembled from keys
-        can hold more slots than stored entries (its ``nnz``): the entries come first, in
-        ``columns`` order, and the slots past them are carried along but never read.
-
-    Returns
-    -------
-    warp.sparse.BsrMatrix
-        ``(n_rows, n_cols)`` blocks, as ``matrix``, with ``matrix``'s stored entry count.
-
-    Raises
-    ------
-    ValueError
-        If ``values`` does not hold one block per storage slot of ``matrix``
-        (``matrix.values.shape[0]``).
-    RuntimeError
-        If ``matrix`` and ``values`` are not on one device.
-
-    See Also
-    --------
-    [`replicated_operator`][ordito.linalg.replicated_operator]
-
-    Examples
-    --------
-    All-one values on a cotangent Laplacian's pattern: each row then sums to its stored count, a
-    vertex's degree plus its diagonal (5 or 6 neighbours on an icosphere). ``values`` is sized
-    like ``L.values``, which here holds more slots than ``L``'s 1122 stored entries:
-
-    ```python
-    import warp as wp
-
-    import ordito as od
-
-    vertices, faces = od.creation.icosphere(subdivisions=2)
-    L = od.laplacian.cotmatrix(vertices, faces)
-    print(L.nnz_sync(), L.values.shape[0])  # 1122 2082
-    ones = wp.full(L.values.shape[0], 1.0, dtype=wp.float32)
-    counts = od.linalg.bsr_with_values(L, ones)
-    print(counts.offsets is L.offsets)  # True
-    row_sums = (counts @ wp.full(counts.shape[0], 1.0, dtype=wp.float32)).numpy()
-    print(row_sums.min(), row_sums.max())  # 6.0 7.0
-    ```
-    """
-    require_same_device(matrix=matrix, values=values)
-    if values.shape[0] != matrix.values.size:
-        raise ValueError(
-            f"values must hold one block per storage slot of matrix.values "
-            f"({matrix.values.shape[0]}), got {values.shape[0]}"
-        )
-    return _bsr_over(
-        int(matrix.nrow),
-        int(matrix.ncol),
-        matrix.offsets,
-        matrix.columns,
-        values,
-        int(matrix.nnz),
-        row_counts=matrix.row_counts,
-    )
-
-
 # The preconditioners this module built, keyed weakly: ``(kind, weak reference to the matrix they
 # were built for)``, which ``_batched_preconditioner_kind`` reads to recognize one.
 _PRECONDITIONER_TAGS: weakref.WeakKeyDictionary[
     wpl.LinearOperator, tuple[str, weakref.ref[odt.SparseMatrix]]
 ] = weakref.WeakKeyDictionary()
-
-
-# ``block_diag``'s results, keyed weakly by the first operator of the stack.
-_BLOCK_DIAG_CACHE: weakref.WeakKeyDictionary[
-    odt.SparseMatrix, dict[tuple[int, ...], tuple[tuple[object, ...], odt.BsrMatrix[wp.float64]]]
-] = weakref.WeakKeyDictionary()
-
-
-def block_diag(matrices: Sequence[odt.SparseMatrix]) -> odt.BsrMatrix[wp.float64]:
-    """
-    Stack square sparse operators into one block-diagonal ``float64`` operator.
-
-    The operator ``scipy.sparse.block_diag`` builds. Its use here is to solve several independent
-    systems as one: a single conjugate-gradient iteration over the stack advances every block at
-    once, in the launches of one solve rather than several, and stops when the slowest block does.
-    A ``wp.mat22d`` operator enters as its scalar expansion over interleaved unknowns -- the memory
-    of a ``wp.vec2d`` array viewed as ``float64`` -- so a tangent-field system and scalar systems
-    stack together.
-
-    The result is **kept per set of operators**: a later call with the same operators, over the
-    same storage, returns the same matrix, so a solve against it replays its recorded loop (see
-    [`solve_spd`][ordito.linalg.solve_spd]). The stack is a copy, so values rewritten in place
-    in one of ``matrices`` afterwards do not reach it.
-
-    Parameters
-    ----------
-    matrices
-        One or more square operators, ``float64`` or ``wp.mat22d`` blocks, on one device.
-
-    Returns
-    -------
-    warp.sparse.BsrMatrix
-        ``(n, n)`` operator whose row count ``n`` is the sum of the blocks' scalar row counts, in
-        the order given.
-
-    Raises
-    ------
-    ValueError
-        If ``matrices`` is empty, or holds an operator that is not square or has another block type.
-    RuntimeError
-        If ``matrices`` are not all on one device.
-
-    See Also
-    --------
-    [`solve_spd_settled`][ordito.linalg.solve_spd_settled]
-    [`replicated_operator`][ordito.linalg.replicated_operator]
-
-    Examples
-    --------
-    ```python
-    import ordito as od
-
-    sphere_vertices, sphere_faces = od.creation.icosphere(subdivisions=1)
-    box_vertices, box_faces = od.creation.box()
-    sphere_system = od.heat.heat_operators(sphere_vertices, sphere_faces)[0]
-    box_system = od.heat.heat_operators(box_vertices, box_faces)[0]
-    stacked = od.linalg.block_diag([sphere_system, box_system])
-    print(sphere_system.shape, box_system.shape, stacked.shape)  # (42, 42) (8, 8) (50, 50)
-    ```
-    """
-    require_same_device(matrices=list(matrices))
-    if len(matrices) == 0:
-        raise ValueError("block_diag needs at least one operator")
-    for matrix in matrices:
-        if matrix.values.dtype not in (wp.float64, wp.mat22d) or matrix.nrow != matrix.ncol:
-            raise ValueError(
-                "block_diag stacks square float64 or wp.mat22d operators, got a "
-                f"{matrix.nrow} x {matrix.ncol} operator of {matrix.values.dtype}"
-            )
-    identity = tuple(
-        i
-        for matrix in matrices
-        for i in (id(matrix.offsets), id(matrix.columns), id(matrix.values))
-    )
-    entries = _BLOCK_DIAG_CACHE.setdefault(matrices[0], {})
-    cached = entries.get(identity)
-    if cached is not None:
-        return cached[1]
-    blocks = [
-        _scalar_expansion(matrix) if matrix.values.dtype == wp.mat22d else matrix
-        for matrix in matrices
-    ]
-    device = blocks[0].device
-    n_rows = sum(int(block.nrow) for block in blocks)
-    capacity = sum(block.values.size for block in blocks)
-    descriptors = []
-    for block in blocks:
-        descriptor = kernel_linalg.CsrBlock()
-        descriptor.offsets = block.offsets
-        descriptor.columns = block.columns
-        descriptor.values = block.values
-        descriptor.n_rows = int(block.nrow)
-        descriptors.append(descriptor)
-    offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
-    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
-    values = _launch.empty(capacity, dtype=wp.float64, device=device)
-    if n_rows == 0:
-        _launch.zero_(offsets)
-    else:
-        _launch.launch(
-            kernel_linalg.stack_block_diagonal,
-            dim=n_rows,
-            inputs=[_launch.array(descriptors, dtype=kernel_linalg.CsrBlock, device=device)],
-            outputs=[offsets, columns, values],
-            device=device,
-        )
-    # A capacity, as the blocks' own counts are: the offsets bound every row.
-    stacked = _bsr_over(n_rows, n_rows, offsets, columns, values, capacity)
-    # The entry holds every block's arrays, so the identities in its key cannot be reused.
-    held = tuple((matrix.offsets, matrix.columns, matrix.values) for matrix in matrices)
-    entries[identity] = (held, stacked)
-    return stacked
 
 
 def replicated_operator(
@@ -4692,7 +4502,7 @@ class SquaredLaplacianPreconditioner:
                 block_dim=TILE_1D,
                 device=self._device,
             )
-        self._factor = bsr_with_values(laplacian, factor_values)
+        self._factor = od.array.bsr_with_values(laplacian, factor_values)
         self._factor_t = od.array.csr_transpose(self._factor)
         # The upper end is ``M_ff``'s Gershgorin bound, ``max_i sum_j |L_ij| / D_i``, never below
         # 2. With ``D`` the diagonal of ``L`` it is exactly 2 when every weight is non-negative and
@@ -4792,7 +4602,7 @@ class SquaredLaplacianPreconditioner:
         copy._device = self._device
         copy._factor = _owned_copy(self._factor)
         copy._factor_t = (
-            bsr_with_values(copy._factor, _launch.clone(self._factor_t.values))
+            od.array.bsr_with_values(copy._factor, _launch.clone(self._factor_t.values))
             if self._shares_pattern()
             else _owned_copy(self._factor_t)
         )

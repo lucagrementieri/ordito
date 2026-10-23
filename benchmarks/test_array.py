@@ -572,6 +572,56 @@ def test_bsr_from_csr(bench_case: BenchCase) -> None:
     assert (matrix.nrow, matrix.ncol) == (n, n)
 
 
+@pytest.mark.benchmark(group="bsr_with_values")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+def test_bsr_with_values(bench_case: BenchCase) -> None:
+    """A matrix over another's pattern with new values: host bookkeeping only, no launch."""
+    operator = od.laplacian.cotmatrix(bench_case.vertices_wp, bench_case.faces_wp, dtype=wp.float64)
+    values = wp.zeros_like(operator.values)
+    matrix = bench_case.run(lambda: od.array.bsr_with_values(operator, values))
+    assert matrix.offsets is operator.offsets
+
+
+@pytest.mark.benchmark(group="block_diag")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
+@pytest.mark.benchlibs("ordito", "scipy")
+def test_block_diag(bench_case: BenchCase) -> None:
+    """
+    Three copies of the heat system stacked block-diagonally, across the scale sweep.
+
+    ``block_diag`` keeps its result per set of operators, so the ordito row passes a fresh view of
+    the first operator (``bsr_with_values`` over its own arrays, built outside the timed region) to
+    time the build, not the cache hit. SciPy's ``block_diag`` of the same three CSR matrices is the
+    test oracle and the reference.
+    """
+    if bench_case.kind == "scipy":
+        # The reference's input is the same operator, assembled by ordito and read back.
+        device = wp.get_preferred_device()
+        system = od.heat.heat_operators(
+            wp.array(bench_case.vertices_np, dtype=wp.vec3, device=device),
+            wp.array(bench_case.faces_np.ravel(), dtype=wp.int32, device=device),
+        )[0]
+        n = bench_case.n_vertices
+        offsets_np = system.offsets.numpy()[: n + 1]
+        count = int(offsets_np[-1])
+        system_np = scipy.sparse.csr_matrix(
+            (system.values.numpy()[:count], system.columns.numpy()[:count], offsets_np),
+            shape=(n, n),
+        )
+        stacked_np = bench_case.run(
+            lambda: scipy.sparse.block_diag((system_np, system_np, system_np), format="csr")
+        )
+        assert stacked_np.shape[0] == 3 * n
+        return
+    system = od.heat.heat_operators(bench_case.vertices_wp, bench_case.faces_wp)[0]
+    stacked = bench_case.run(
+        lambda first: od.array.block_diag((first, system, system)),
+        setup=lambda: od.array.bsr_with_values(system, system.values),
+    )
+    assert stacked.nrow == 3 * bench_case.n_vertices
+
+
 @pytest.mark.benchmark(group="csr_key_buffers")
 @pytest.mark.benchlibs("ordito")
 def test_csr_key_buffers(bench_lib: BenchLibrary) -> None:
