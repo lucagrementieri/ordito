@@ -34,8 +34,10 @@ from __future__ import annotations
 
 import collections
 import gc
+import importlib.util
 import inspect
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +87,14 @@ GATED = (
     "sort",
 )
 
+# The ``ordito`` package's own directory. A path test on ``/ordito/`` alone would also match every
+# file of a checkout named ``ordito`` (CI's ``.../ordito/ordito/.venv``), Warp's internals included.
+# Found without importing it: ``pytest_configure`` must patch Warp before ``ordito`` loads.
+_SPEC = importlib.util.find_spec("ordito")
+assert _SPEC is not None
+assert _SPEC.origin is not None
+_PACKAGE = os.path.dirname(_SPEC.origin) + os.sep
+
 _STATE: dict[str, Any] = {"armed": False, "depth": 0, "cpu_row": False}
 _COUNTS: collections.Counter[str] = collections.Counter()
 _SEQUENCE: list[tuple[str, str, str]] = []
@@ -99,8 +109,8 @@ def _ordito_site(depth: int = 2) -> str:
         frame = frame.f_back if frame is not None else None
     while frame is not None:
         name = frame.f_code.co_filename
-        if "/ordito/" in name and not name.endswith(("/_launch.py", "/_device.py")):
-            return f"{name.split('/ordito/')[-1]}:{frame.f_lineno}"
+        if name.startswith(_PACKAGE) and not name.endswith(("/_launch.py", "/_device.py")):
+            return f"{name.removeprefix(_PACKAGE)}:{frame.f_lineno}"
         frame = frame.f_back
     return "?"
 
@@ -134,7 +144,7 @@ def _count_readbacks() -> None:
             ):
                 frame = inspect.currentframe()
                 caller = frame.f_back if frame is not None else None
-                if caller is not None and "/ordito/" in caller.f_code.co_filename:
+                if caller is not None and caller.f_code.co_filename.startswith(_PACKAGE):
                     _COUNTS["readback"] += 1
             return _original(self, *args, **kwargs)
 
