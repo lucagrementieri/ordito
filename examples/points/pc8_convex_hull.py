@@ -49,14 +49,8 @@ META = Meta(
 
     ![A reflex edge before and after a 2-2 flip](../assets/examples/pc8-flip.webp)
 
-    **Speed.** qhull, behind SciPy, trimesh, Open3D and MeshLab, is single-threaded on the host.
-    On the dragon's 437 645 points:
-
-    ![Benchmark](../assets/benchmarks/convex_hull-dragon-light.png#only-light)
-    ![Benchmark](../assets/benchmarks/convex_hull-dragon-dark.png#only-dark)
-
-    The gap is about 5x on the bunny's 35 947 points and 22x on the dragon. A GPU call has a floor
-    of a couple of milliseconds, so below a few thousand points qhull is as fast or faster.
+    Timings against qhull, the hull behind SciPy, trimesh, Open3D and MeshLab, are on the
+    [points benchmarks](../benchmarks/points.md#convex_hull) page.
     """,
 )
 
