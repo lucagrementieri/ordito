@@ -51,6 +51,7 @@ for f in benchmarks/test_*.py; do
 done
 uv run python -m benchmarks.aggregate results   # unstable cells (median > 1.5x min) first, then the loss table
 uv run python benchmarks/plot_comparison.py results --out charts/
+uv run python benchmarks/render_docs.py results     # redraws the pages under docs/benchmarks/
 ```
 
 With `benchmarks/devices.py`, the same `--benchmark-json=<path>` flag writes `<path>.cuda.json` and
@@ -324,6 +325,32 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
 | `--cpu-max-size` | `large` | CPU-bound libraries (every reference, plus `ordito-cpu`) skip scan meshes larger than this unless the size is named in `--size`. |
 | `--no-size-caps` | off | makes every `skip_larger_than` cap a no-op. With an explicit `--size small,medium,large,extralarge,huge` (which also lifts `--cpu-max-size`) every library runs on every mesh. |
 | `--round-budget` | off | seconds: time one warm-up call per row and cut its rounds to fit (at least one). For the uncapped sweep, where a reference call on `lucy` can take minutes. |
+
+## The uncapped sweep: every library on every mesh
+
+A default run keeps the CPU references off the two largest scan meshes and honours every
+`skip_larger_than` cap, so it never shows how far apart the libraries get at 28 M triangles.
+[`sweep.py`](sweep.py) lifts both and times only the rows a previous run has no time for, each
+under a wall-clock limit:
+
+```bash
+# after a full --bench-all-libs run into results/
+uv run python benchmarks/sweep.py run sweep/ --done results/            # resumable; hours
+uv run python benchmarks/sweep.py merge results/ sweep/ merged/
+uv run python benchmarks/render_docs.py merged/
+```
+
+- **A row runs at most `--timeout` seconds (600), setup included.** One that runs past it is
+  recorded as a timeout, and its module restarts at the next row. A long call into a compiled
+  library cannot be interrupted, so the limit ends the process; [`sweep_plugin.py`](sweep_plugin.py)
+  saves every row as it finishes, so nothing else is lost.
+- **A slow row runs fewer rounds** (`--round-budget`, 60 s of timed rounds after one warm-up call),
+  so a reference that takes minutes a call still gets a number.
+- **A row that leaves no time is classified**: a process the kernel killed counts as out of memory,
+  an abort or segfault as a crash, a failed assertion or exception as an error.
+  `merge` writes them, with the timeouts, to `incomplete.jsonl`; the docs draw a timeout as a
+  `> 10 min` bar and the others as a red cross.
+- **Rerun `run` with the same directory to resume**: recorded rows are skipped.
 
 ## Host-traffic census and its budget
 

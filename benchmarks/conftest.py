@@ -914,6 +914,15 @@ def pytest_configure(config: pytest.Config) -> None:
     _round_budget = config.getoption("--round-budget")
 
 
+def pytest_benchmark_update_machine_info(
+    config: pytest.Config, machine_info: dict[str, Any]
+) -> None:
+    """Record the GPU next to pytest-benchmark's CPU details, for ``render_docs.py``'s footer."""
+    del config
+    if wp.get_cuda_device_count() > 0:
+        machine_info["gpu"] = wp.get_cuda_device(0).name
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_benchmark_group_stats(
     config: pytest.Config, benchmarks: list[Any], group_by: str
