@@ -54,12 +54,14 @@ from typing import cast
 import numpy as np
 import pytest
 import pytorch3d.ops as p3d_ops
+import scipy.sparse
 import torch
+import trimesh as tm
 import warp as wp
 
 import ordito as od
 import ordito.typing as odt
-from conftest import BenchCase
+from conftest import BenchCase, BenchLibrary
 
 # Segment counts at a fixed total length: few large pieces against many small ones. The element
 # count copied is identical, so only the per-segment cost moves.
@@ -73,6 +75,14 @@ _segments_cache: dict[tuple[str, str, int], list[wp.array[wp.int32]]] = {}
 _keys_cache: dict[tuple[str, str], wp.array[wp.int32]] = {}
 _mask_cache: dict[tuple[str, str, float], wp.array[wp.bool]] = {}
 _gather_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], wp.array[wp.int32]]] = {}
+_triplet_cache: dict[
+    tuple[str, str], tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.float32]]
+] = {}
+_key_cache: dict[tuple[str, str], tuple[wp.array[wp.uint64], wp.array[wp.int32]]] = {}
+
+# Element count for the mesh-free allocation rows: a mid-sized operator's triplet count. They
+# allocate uninitialized storage, so the count moves nothing and one point is the whole axis.
+_ALLOCATION_COUNT = 1 << 20
 
 
 def _segments(bench_case: BenchCase, n_segments: int) -> list[wp.array[wp.int32]]:
@@ -142,6 +152,126 @@ def _gather_inputs(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[w
             wp.array(indices_np, dtype=wp.int32, device=bench_case.device),
         )
     return _gather_cache[key]
+
+
+def _face_rows(bench_case: BenchCase) -> odt.Array2dInt32:
+    """Return the face index buffer viewed as ``(n_faces, 3)`` rows."""
+    return odt.as_array2d(bench_case.faces_wp.reshape((-1, 3)), wp.int32)
+
+
+def _half_edges_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
+    """``(rows, cols)`` of every directed face edge, ``3 * n_faces`` each: a mesh's COO pattern."""
+    faces_np = bench_case.faces_np.astype(np.int32)
+    rows_np = np.ascontiguousarray(faces_np.reshape(-1))
+    cols_np = np.ascontiguousarray(np.roll(faces_np, -1, axis=1).reshape(-1))
+    return rows_np, cols_np
+
+
+def _half_edge_triplets(
+    bench_case: BenchCase,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.float32]]:
+    """Return the directed-edge pattern as device ``(rows, cols, values)`` unit triplets."""
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _triplet_cache:
+        rows_np, cols_np = _half_edges_np(bench_case)
+        device = bench_case.device
+        _triplet_cache[key] = (
+            wp.array(rows_np, dtype=wp.int32, device=device),
+            wp.array(cols_np, dtype=wp.int32, device=device),
+            wp.ones(rows_np.size, dtype=wp.float32, device=device),
+        )
+    return _triplet_cache[key]
+
+
+def _half_edge_keys(bench_case: BenchCase) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
+    """
+    Return the directed-edge keys and payloads a producer writes into a key sort's buffers.
+
+    Both buffers are sorted in place by the functions that read them, so a row copies these into a
+    fresh pair in its ``setup`` rather than handing them over.
+    """
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _key_cache:
+        rows_np, cols_np = _half_edges_np(bench_case)
+        keys_np = rows_np.astype(np.uint64) * np.uint64(bench_case.n_vertices) + cols_np
+        device = bench_case.device
+        _key_cache[key] = (
+            wp.array(keys_np, dtype=wp.uint64, device=device),
+            wp.array(np.arange(keys_np.size, dtype=np.int32), dtype=wp.int32, device=device),
+        )
+    return _key_cache[key]
+
+
+def _filled_key_buffers(bench_case: BenchCase) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
+    """Return a fresh ``csr_key_buffers`` pair holding ``_half_edge_keys`` in its leading halves."""
+    keys, order = _half_edge_keys(bench_case)
+    keys_buffer, order_buffer = od.array.csr_key_buffers(keys.size, bench_case.device)
+    wp.copy(keys_buffer, keys, count=keys.size)
+    wp.copy(order_buffer, order, count=order.size)
+    wp.synchronize_device(bench_case.device)
+    return keys_buffer, order_buffer
+
+
+def _flags_np(n: int) -> np.ndarray:
+    """``(n,)`` ``int32`` ``0`` / ``1`` flags, about half set: the in-place compactions' input."""
+    return (np.random.default_rng(3).random(n) < 0.5).astype(np.int32)
+
+
+def _fresh_copy(source: wp.array[wp.int32], device: str | None) -> wp.array[wp.int32]:
+    """Return a synchronized device copy of flags a row's call overwrites in place."""
+    copy = wp.clone(source, device=device)
+    wp.synchronize_device(device)
+    return copy
+
+
+@pytest.mark.benchmark(group="arange")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_arange(bench_case: BenchCase) -> None:
+    """
+    ``0 .. 3 * n_faces - 1`` as ``int32``: one closed-form write per element and one allocation.
+
+    The scan sweep, since the length is the only thing that moves the work. ``numpy.arange`` is
+    the reference ``tests/test_array.py`` compares against, so this row prices an allocation plus
+    one launch against a host fill, and the crossover sits where the bandwidth outruns the launch.
+    """
+    n = bench_case.faces_np.size
+    if bench_case.kind == "numpy":
+        assert bench_case.run(lambda: np.arange(n, dtype=np.int32)).size == n
+        return
+    device = bench_case.device
+    out = bench_case.run(lambda: od.array.arange(n, device=device))
+    assert out.shape == (n,)
+
+
+@pytest.mark.benchmark(group="arange_repeat")
+@pytest.mark.benchlibs("ordito")
+def test_arange_repeat(bench_case: BenchCase) -> None:
+    """
+    ``i // 3`` over ``3 * n_faces`` slots, each face's id at its three corners.
+
+    The same one-write-per-element shape as ``arange`` at the same length, so the two rows read
+    side by side; ordito-only, as the test checks it against a NumPy expression and no library
+    function.
+    """
+    n = bench_case.faces_np.size
+    device = bench_case.device
+    out = bench_case.run(lambda: od.array.arange_repeat(n, 3, device))
+    assert out.shape == (n,)
+
+
+@pytest.mark.benchmark(group="sort_pair_indices")
+@pytest.mark.benchlibs("ordito")
+def test_sort_pair_indices(bench_case: BenchCase) -> None:
+    """
+    The identity payload of a radix sort's double buffer, ``2 * 3 * n_faces`` slots.
+
+    At ``arange``'s length, so the pair prices the fill value's second half; ordito-only, as no
+    library builds a sort's scratch layout.
+    """
+    n = bench_case.faces_np.size
+    device = bench_case.device
+    out = bench_case.run(lambda: od.array.sort_pair_indices(n, -1, device))
+    assert out.shape == (2 * n,)
 
 
 @pytest.mark.benchmark(group="concatenate_arrays")
@@ -288,6 +418,27 @@ def test_split(bench_case: BenchCase, n_segments: int, copy: bool) -> None:
     assert len(parts) == n_segments
 
 
+@pytest.mark.benchmark(group="allclose")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_allclose(bench_case: BenchCase) -> None:
+    """
+    Element-wise closeness of the vertex table and a copy of it, read back as one ``bool``.
+
+    The two tables are equal, so no element short-circuits either side and the whole of both is
+    read. ``numpy.allclose`` is the reference ``tests/test_array.py`` compares against; like every
+    reduction returning a Python value, ordito's row carries a launch and a readback NumPy never
+    pays, so the scan sweep shows where the bandwidth repays them.
+    """
+    if bench_case.kind == "numpy":
+        a_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
+        b_np = a_np.copy()
+        assert bench_case.run(lambda: bool(np.allclose(a_np, b_np)))
+        return
+    a = bench_case.vertices_wp
+    b = wp.clone(a, device=bench_case.device)
+    assert bench_case.run(lambda: od.array.allclose(a, b))
+
+
 @pytest.mark.benchmark(group="sort_and_argsort")
 @pytest.mark.benchlibs("ordito", "numpy")
 def test_sort_and_argsort(bench_case: BenchCase) -> None:
@@ -316,6 +467,248 @@ def test_sort_and_argsort(bench_case: BenchCase) -> None:
     assert int(order.shape[0]) == keys.size
 
 
+@pytest.mark.benchmark(group="sort_and_argsort_in_place")
+@pytest.mark.benchlibs("ordito")
+def test_sort_and_argsort_in_place(bench_case: BenchCase) -> None:
+    """
+    The same radix sort over the same keys, handed in the sort's own double-width buffers.
+
+    At ``sort_and_argsort``'s operating point, so the pair prices the key copy and the payload
+    fill the buffer form skips. The buffers are filled in ``setup``, outside the timed region,
+    because the sort overwrites them. ordito-only: ``tests/test_array.py`` pins it to
+    ``sort_and_argsort``, which carries the NumPy oracle.
+    """
+    keys = _keys(bench_case)
+    n = keys.size
+    device = bench_case.device
+
+    def fill() -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+        keys_buffer = od.array.sort_pair_indices(n, 0, device)  # upper half is scratch
+        wp.copy(keys_buffer, keys, count=n)
+        order_buffer = od.array.sort_pair_indices(n, 0, device)
+        wp.synchronize_device(device)
+        return keys_buffer, order_buffer
+
+    sorted_keys, order = bench_case.run(
+        lambda buffers: od.array.sort_and_argsort_in_place(buffers[0], buffers[1]), setup=fill
+    )
+    assert sorted_keys.shape == (n,)
+    assert order.shape == (n,)
+
+
+@pytest.mark.benchmark(group="sort_rows")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_sort_rows(bench_case: BenchCase) -> None:
+    """
+    Each face's three corner indices sorted ascending, in place: the in-register insertion sort.
+
+    Three columns is the width every edge and face dedup sorts at, and the scan sweep moves only
+    the row count. ``numpy.sort(axis=1)`` is the reference ``tests/test_array.py`` compares
+    against; it returns a copy, so ordito's input is refreshed in ``setup`` instead, outside the
+    timed region, since its sort overwrites it.
+    """
+    if bench_case.kind == "numpy":
+        faces_np = bench_case.faces_np.astype(np.int32)
+        sorted_np = bench_case.run(lambda: np.sort(faces_np, axis=1))
+        assert sorted_np.shape == faces_np.shape
+        return
+    faces = bench_case.faces_wp
+    device = bench_case.device
+
+    def fill() -> odt.Array2dInt32:
+        fresh = odt.as_array2d(wp.clone(faces, device=device).reshape((-1, 3)), wp.int32)
+        wp.synchronize_device(device)
+        return fresh
+
+    bench_case.run(od.array.sort_rows, setup=fill)
+
+
+@pytest.mark.benchmark(group="triplet_buffers")
+@pytest.mark.benchlibs("ordito")
+def test_triplet_buffers(bench_lib: BenchLibrary) -> None:
+    """
+    Three uninitialized COO buffers: allocation only, so its cost is the allocator's per call.
+
+    Mesh-free and at one size, because nothing is written and the count does not move the work.
+    ordito-only: an allocation helper has no library counterpart.
+    """
+    device = bench_lib.device
+    rows, cols, values = bench_lib.run(
+        lambda: od.array.triplet_buffers(_ALLOCATION_COUNT, wp.float32, device)
+    )
+    assert rows.shape == cols.shape == values.shape == (_ALLOCATION_COUNT,)
+
+
+@pytest.mark.benchmark(group="empty_square_bsr")
+@pytest.mark.benchlibs("ordito")
+def test_empty_square_bsr(bench_lib: BenchLibrary) -> None:
+    """
+    The zero-entry square operator an assembler returns for a face-free mesh.
+
+    Mesh-free: it allocates the ``n_rows + 1`` zero offsets and wraps them, so the row count is
+    the only input and it moves one memset. ordito-only.
+    """
+    device = bench_lib.device
+    matrix = bench_lib.run(lambda: od.array.empty_square_bsr(_ALLOCATION_COUNT, wp.float32, device))
+    assert matrix.nrow == _ALLOCATION_COUNT
+
+
+@pytest.mark.benchmark(group="bsr_from_csr")
+@pytest.mark.benchmeshes("sphere_small")
+@pytest.mark.benchlibs("ordito")
+def test_bsr_from_csr(bench_case: BenchCase) -> None:
+    """
+    Wrapping compressed-row storage a producer already wrote as a ``BsrMatrix``, with no copy.
+
+    Host work and a fixed amount of it, so one small feature mesh is the whole axis: the storage
+    is the directed-edge operator of ``csr_from_triplets`` below, built outside the timed region.
+    ordito-only: no library wraps Warp storage.
+    """
+    rows, cols, values = _half_edge_triplets(bench_case)
+    n = bench_case.n_vertices
+    built = od.array.csr_from_triplets(n, n, rows, cols, values)
+    offsets, columns, entries = built.offsets, built.columns, built.values
+    matrix = bench_case.run(lambda: od.array.bsr_from_csr(n, n, offsets, columns, entries))
+    assert (matrix.nrow, matrix.ncol) == (n, n)
+
+
+@pytest.mark.benchmark(group="csr_key_buffers")
+@pytest.mark.benchlibs("ordito")
+def test_csr_key_buffers(bench_lib: BenchLibrary) -> None:
+    """
+    The two uninitialized double-width buffers a key producer writes into: allocation only.
+
+    Mesh-free and at one size, as for ``triplet_buffers``. ordito-only.
+    """
+    device = bench_lib.device
+    keys, order = bench_lib.run(lambda: od.array.csr_key_buffers(_ALLOCATION_COUNT, device))
+    assert keys.shape == order.shape == (2 * _ALLOCATION_COUNT,)
+
+
+@pytest.mark.benchmark(group="csr_from_keys")
+@pytest.mark.benchlibs("ordito", "scipy")
+def test_csr_from_keys(bench_case: BenchCase) -> None:
+    """
+    The CSR pattern of a mesh's ``3 * n_faces`` directed edges, sorted from their written keys.
+
+    The scan sweep, since the key count is the work. The keys are refilled in ``setup``, outside
+    the timed region, because the sort overwrites them. SciPy's ``coo_matrix(...).tocsr()`` is the
+    reference ``tests/test_array.py`` compares the pattern against; it sums the duplicate entries'
+    values where ordito returns each entry's sorted positions, so the scipy row does one more
+    pass over the values and none over the keys.
+    """
+    n = bench_case.n_vertices
+    if bench_case.kind == "scipy":
+        rows_np, cols_np = _half_edges_np(bench_case)
+        ones_np = np.ones(rows_np.size, dtype=np.float32)
+        csr_sp = bench_case.run(
+            lambda: scipy.sparse.coo_matrix((ones_np, (rows_np, cols_np)), shape=(n, n)).tocsr()
+        )
+        assert csr_sp.indptr.size == n + 1
+        return
+    count = bench_case.faces_np.size
+    offsets, _columns, starts = bench_case.run(
+        lambda buffers: od.array.csr_from_keys(buffers[0], buffers[1], count, n, n),
+        setup=lambda: _filled_key_buffers(bench_case),
+    )
+    assert offsets.shape == (n + 1,)
+    assert starts.shape == (count + 1,)
+
+
+@pytest.mark.benchmark(group="csr_from_triplets")
+@pytest.mark.benchlibs("ordito")
+def test_csr_from_triplets(bench_case: BenchCase) -> None:
+    """
+    The directed-edge operator assembled from ``3 * n_faces`` unit triplets, duplicates summed.
+
+    The scan sweep, as for ``csr_from_keys``, which this wraps: the pair prices the key packing and
+    the value pass. ordito-only, since its test's oracle is ``warp.sparse``'s own builder.
+    """
+    rows, cols, values = _half_edge_triplets(bench_case)
+    n = bench_case.n_vertices
+    matrix = bench_case.run(lambda: od.array.csr_from_triplets(n, n, rows, cols, values))
+    assert (matrix.nrow, matrix.ncol) == (n, n)
+
+
+@pytest.mark.benchmark(group="csr_from_coo_keys")
+@pytest.mark.benchlibs("ordito")
+def test_csr_from_coo_keys(bench_case: BenchCase) -> None:
+    """
+    The same operator from keys a producer wrote itself: ``csr_from_triplets`` less the packing.
+
+    At ``csr_from_triplets``' operating point, so the two rows read side by side. The keys are
+    refilled in ``setup`` because the sort overwrites them. ordito-only.
+    """
+    _rows, _cols, values = _half_edge_triplets(bench_case)
+    n = bench_case.n_vertices
+    matrix = bench_case.run(
+        lambda buffers: od.array.csr_from_coo_keys(n, n, buffers[0], buffers[1], values),
+        setup=lambda: _filled_key_buffers(bench_case),
+    )
+    assert (matrix.nrow, matrix.ncol) == (n, n)
+
+
+@pytest.mark.benchmark(group="csr_transpose")
+@pytest.mark.benchlibs("ordito")
+def test_csr_transpose(bench_case: BenchCase) -> None:
+    """
+    The transpose of the directed-edge operator, with no host readback.
+
+    The scan sweep: the entry count is the work. ordito-only -- its test's oracles are a dense
+    NumPy transpose of a small matrix and Warp's own ``bsr_transposed``, neither a timed reference.
+    """
+    rows, cols, values = _half_edge_triplets(bench_case)
+    n = bench_case.n_vertices
+    matrix = od.array.csr_from_triplets(n, n, rows, cols, values)
+    transposed = bench_case.run(lambda: od.array.csr_transpose(matrix))
+    assert (transposed.nrow, transposed.ncol) == (n, n)
+
+
+@pytest.mark.benchmark(group="index_sparse")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_index_sparse(bench_case: BenchCase) -> None:
+    """
+    The vertex-by-face incidence matrix of the face table, as CSR.
+
+    The scan sweep: ``3 * n_faces`` entries. ``trimesh.geometry.index_sparse`` is the reference
+    ``tests/test_array.py`` compares against; it returns COO, so its row includes the ``tocsr``
+    that test reads it through, which makes both sides hand back the same compressed form.
+    """
+    n = bench_case.n_vertices
+    if bench_case.kind == "trimesh":
+        faces_np = bench_case.faces_np
+        incidence_tm = bench_case.run(lambda: tm.geometry.index_sparse(n, faces_np).tocsr())
+        assert incidence_tm.shape == (n, bench_case.n_faces)
+        return
+    rows = _face_rows(bench_case)
+    matrix = bench_case.run(lambda: od.array.index_sparse(n, rows))
+    assert (matrix.nrow, matrix.ncol) == (n, bench_case.n_faces)
+
+
+@pytest.mark.benchmark(group="isin")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_isin(bench_case: BenchCase) -> None:
+    """
+    Membership of every face corner in a quarter of the vertex ids, as a mask over the corners.
+
+    The scan sweep, the corner count being the work; the test set grows with it, so the dense
+    membership table's span is the vertex count throughout. ``numpy.isin`` is the reference
+    ``tests/test_array.py`` compares against.
+    """
+    rng = np.random.default_rng(4)
+    test_np = rng.choice(bench_case.n_vertices, size=max(1, bench_case.n_vertices // 4))
+    test_np = test_np.astype(np.int32)
+    if bench_case.kind == "numpy":
+        elements_np = bench_case.faces_np.reshape(-1)
+        mask_np = bench_case.run(lambda: np.isin(elements_np, test_np))
+        assert mask_np.size == elements_np.size
+        return
+    elements = bench_case.faces_wp
+    test_elements = wp.array(test_np, dtype=wp.int32, device=bench_case.device)
+    mask = bench_case.run(lambda: od.array.isin(elements, test_elements))
+    assert mask.shape == (elements.size,)
+
+
 @pytest.mark.benchmark(group="flatnonzero")
 @pytest.mark.benchlibs("ordito", "numpy")
 @pytest.mark.parametrize("selectivity", _SELECTIVITIES, ids=["half", "sparse"])
@@ -337,6 +730,57 @@ def test_flatnonzero(bench_case: BenchCase, selectivity: float) -> None:
     assert int(indices.shape[0]) > 0
 
 
+@pytest.mark.benchmark(group="flatnonzero_in_place")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_flatnonzero_in_place(bench_case: BenchCase) -> None:
+    """
+    The positions of the ones in a half-set ``0`` / ``1`` buffer over the corners, scanning it.
+
+    ``flatnonzero``'s ``half`` point with the flags already ``int32``, so the pair prices the
+    flag pass and the scan buffer the in-place form skips. The flags are refreshed in ``setup``,
+    outside the timed region, because the scan overwrites them. ``numpy.flatnonzero`` is the
+    reference ``tests/test_array.py`` compares against.
+    """
+    flags_np = _flags_np(bench_case.faces_np.size)
+    if bench_case.kind == "numpy":
+        indices_np = bench_case.run(lambda: np.flatnonzero(flags_np))
+        assert indices_np.size > 0
+        return
+    device = bench_case.device
+    flags = wp.array(flags_np, dtype=wp.int32, device=device)
+    indices = bench_case.run(
+        od.array.flatnonzero_in_place, setup=lambda: _fresh_copy(flags, device)
+    )
+    assert 0 < indices.size < flags.size
+
+
+@pytest.mark.benchmark(group="compress_in_place")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_compress_in_place(bench_case: BenchCase) -> None:
+    """
+    The vertex positions at the ones of a half-set flag buffer, scanning the flags in place.
+
+    The scan sweep over the vertices; the same scan as ``flatnonzero_in_place`` with a ``wp.vec3``
+    gather in place of the index write. The flags are refreshed in ``setup``. ``numpy.compress``
+    is the reference ``tests/test_array.py`` compares against.
+    """
+    flags_np = _flags_np(bench_case.n_vertices)
+    if bench_case.kind == "numpy":
+        values_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
+        selected_np = flags_np.astype(bool)
+        kept_np = bench_case.run(lambda: np.compress(selected_np, values_np, axis=0))
+        assert 0 < kept_np.shape[0] < values_np.shape[0]
+        return
+    device = bench_case.device
+    flags = wp.array(flags_np, dtype=wp.int32, device=device)
+    values = bench_case.vertices_wp
+    kept = bench_case.run(
+        lambda fresh: od.array.compress_in_place(fresh, values),
+        setup=lambda: _fresh_copy(flags, device),
+    )
+    assert 0 < kept.size < values.size
+
+
 @pytest.mark.benchmark(group="gather")
 @pytest.mark.benchlibs("ordito", "numpy")
 def test_gather(bench_case: BenchCase) -> None:
@@ -354,6 +798,47 @@ def test_gather(bench_case: BenchCase) -> None:
     src, indices = _gather_inputs(bench_case)
     out = bench_case.run(lambda: od.array.gather(src, indices))
     assert int(out.shape[0]) == int(indices.shape[0])
+
+
+@pytest.mark.benchmark(group="astype")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_astype(bench_case: BenchCase) -> None:
+    """
+    The ``int32`` face buffer converted to ``float32``: one allocation and one element-wise pass.
+
+    The scan sweep, the element count being the work. ``numpy.ndarray.astype`` is the reference
+    ``tests/test_array.py`` compares against, so the ratio is bandwidth against a launch.
+    """
+    if bench_case.kind == "numpy":
+        faces_np = bench_case.faces_np.astype(np.int32).reshape(-1)
+        converted_np = bench_case.run(lambda: faces_np.astype(np.float32))
+        assert converted_np.size == faces_np.size
+        return
+    faces = bench_case.faces_wp
+    converted = bench_case.run(lambda: od.array.astype(faces, wp.float32))
+    assert converted.shape == faces.shape
+
+
+@pytest.mark.benchmark(group="copyto")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_copyto(bench_case: BenchCase) -> None:
+    """
+    The same conversion written into a buffer the caller holds: ``astype`` less the allocation.
+
+    At ``astype``'s operating point, so the pair prices the allocation. ``numpy.copyto`` is the
+    reference ``tests/test_array.py`` compares against, with ``casting="unsafe"`` for the
+    ``int32`` to ``float32`` step that ordito's conversion takes as ``astype`` does.
+    """
+    if bench_case.kind == "numpy":
+        faces_np = bench_case.faces_np.astype(np.int32).reshape(-1)
+        dst_np = np.empty(faces_np.size, dtype=np.float32)
+        bench_case.run(lambda: np.copyto(dst_np, faces_np, casting="unsafe"))
+        assert np.isfinite(dst_np).all()
+        return
+    faces = bench_case.faces_wp
+    dst = odt.empty_1d(faces.size, wp.float32, device=bench_case.device)
+    bench_case.run(lambda: od.array.copyto(dst, faces))
+    assert np.isfinite(dst.numpy()).all()
 
 
 @pytest.mark.benchmark(group="index_bound")
@@ -376,3 +861,135 @@ def test_index_bound(bench_case: BenchCase) -> None:
         faces_np = bench_case.faces_np
         result = bench_case.run(lambda: int(faces_np.max()) + 1)
         assert result == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="indices_to_mask")
+@pytest.mark.benchlibs("ordito")
+def test_indices_to_mask(bench_case: BenchCase) -> None:
+    """
+    A vertex mask over ``gather``'s half-size random index list: a zeroed allocation, a scatter.
+
+    The scan sweep, at ``gather``'s indices. ordito-only: its test is a round trip through
+    ``flatnonzero``, not a library comparison.
+    """
+    _src, indices = _gather_inputs(bench_case)
+    n = bench_case.n_vertices
+    mask = bench_case.run(lambda: od.array.indices_to_mask(indices, n))
+    assert mask.shape == (n,)
+
+
+@pytest.mark.benchmark(group="mask_to_compact_ranks")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_mask_to_compact_ranks(bench_case: BenchCase) -> None:
+    """
+    Each selected corner's rank among the selected, and their count, over ``flatnonzero``'s mask.
+
+    The ``half`` point of ``flatnonzero``, so the pair prices the scatter of indices against the
+    exclusive scan alone; the count is one tail readback. The NumPy row is the
+    ``cumsum(mask) - mask`` and population ``tests/test_array.py`` compares against.
+    """
+    if bench_case.kind == "numpy":
+        mask_np = _mask_np(bench_case, 0.5)
+
+        def ranks_np() -> tuple[np.ndarray, int]:
+            selected_np = mask_np.astype(np.int32)
+            return np.cumsum(selected_np) - selected_np, int(selected_np.sum())
+
+        index_map_np, count_np = bench_case.run(ranks_np)
+        assert index_map_np.size == mask_np.size
+        assert count_np > 0
+        return
+    mask = _mask(bench_case, 0.5)
+    index_map, count = bench_case.run(lambda: od.array.mask_to_compact_ranks(mask))
+    assert index_map.shape == (mask.size,)
+    assert count > 0
+
+
+@pytest.mark.benchmark(group="counts_to_offsets")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_counts_to_offsets(bench_case: BenchCase) -> None:
+    """
+    The total-terminated offsets of one random ``0 .. 6`` count per face, and their total.
+
+    The scan sweep over the faces: one in-place scan of the ``n_faces + 1`` buffer and one tail
+    readback. The NumPy row is the ``cumsum`` behind a zero ``tests/test_array.py`` compares
+    against.
+    """
+    counts_np = np.random.default_rng(5).integers(0, 7, bench_case.n_faces).astype(np.int32)
+    if bench_case.kind == "numpy":
+
+        def offsets_np() -> tuple[np.ndarray, int]:
+            out_np = np.concatenate([[0], np.cumsum(counts_np)]).astype(np.int32)
+            return out_np, int(out_np[-1])
+
+        out_np, total_np = bench_case.run(offsets_np)
+        assert out_np.size == counts_np.size + 1
+        assert total_np > 0
+        return
+    counts = wp.array(counts_np, dtype=wp.int32, device=bench_case.device)
+    offsets, total = bench_case.run(lambda: od.array.counts_to_offsets(counts))
+    assert offsets.shape == (counts.size + 1,)
+    assert total > 0
+
+
+@pytest.mark.benchmark(group="remap_indices")
+@pytest.mark.benchlibs("ordito")
+def test_remap_indices(bench_case: BenchCase) -> None:
+    """
+    The face buffer renumbered through a random vertex permutation: one read-through-table pass.
+
+    The scan sweep, the corner count being the work. ordito-only: what separates it from
+    ``gather`` is the sentinel pass-through, which no library function has.
+    """
+    permutation_np = np.random.default_rng(6).permutation(bench_case.n_vertices).astype(np.int32)
+    remap = wp.array(permutation_np, dtype=wp.int32, device=bench_case.device)
+    faces = bench_case.faces_wp
+    remapped = bench_case.run(lambda: od.array.remap_indices(faces, remap))
+    assert remapped.shape == faces.shape
+
+
+@pytest.mark.benchmark(group="trim_to_count")
+@pytest.mark.benchlibs("ordito")
+def test_trim_to_count(bench_case: BenchCase) -> None:
+    """
+    Two ``3 * n_faces`` atomic-append buffers cut to the counter's ``n_faces`` written slots.
+
+    One counter readback and one copy per buffer, of a prefix that grows along the scan sweep.
+    ordito-only: the test's oracle is a NumPy slice of its own input, not a library call.
+    """
+    faces, keys = bench_case.faces_wp, _keys(bench_case)
+    n_written = bench_case.n_faces
+    counter = wp.array([n_written], dtype=wp.int32, device=bench_case.device)
+    count, (faces_kept, keys_kept) = bench_case.run(
+        lambda: od.array.trim_to_count(counter, faces, keys)
+    )
+    assert count == n_written
+    assert faces_kept.shape == keys_kept.shape == (n_written,)
+
+
+def _float_corners(bench_case: BenchCase) -> wp.array[wp.float32]:
+    """Return the face buffer as ``float32`` values, the input both bit-cast rows reinterpret."""
+    return od.array.astype(bench_case.faces_wp, wp.float32)
+
+
+@pytest.mark.benchmark(group="bitcast_to_int")
+@pytest.mark.benchlibs("ordito")
+def test_bitcast_to_int(bench_case: BenchCase) -> None:
+    """
+    ``3 * n_faces`` ``float32`` values reinterpreted as ``int32``: one copy, no arithmetic.
+
+    The scan sweep, the element count being the work. ordito-only: its test is a round trip with
+    ``bitcast_from_int``, the next row, timed at the same point.
+    """
+    values = _float_corners(bench_case)
+    as_int = bench_case.run(lambda: od.array.bitcast_to_int(values))
+    assert as_int.shape == values.shape
+
+
+@pytest.mark.benchmark(group="bitcast_from_int")
+@pytest.mark.benchlibs("ordito")
+def test_bitcast_from_int(bench_case: BenchCase) -> None:
+    """The inverse reinterpretation, at ``bitcast_to_int``'s operating point. ordito-only."""
+    as_int = od.array.bitcast_to_int(_float_corners(bench_case))
+    values = bench_case.run(lambda: od.array.bitcast_from_int(as_int, wp.float32))
+    assert values.shape == as_int.shape

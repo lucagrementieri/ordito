@@ -576,6 +576,7 @@ def test_is_vertex_manifold_open3d_agreement_and_divergence(device: str) -> None
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("is_vertex_manifold", "igl")
+@pytest.mark.parity("vertex_manifold_mask", "igl")
 def test_vertex_manifold_mask(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: the per-vertex mask against ``igl.is_vertex_manifold``, which has the same shape.
@@ -620,6 +621,7 @@ def test_vertex_manifold_mask_faces_without_vertices(device: str) -> None:
     [("boy_surface", True), ("sphere_irregular", False), ("sphere_irregular_hollow", False)],
 )
 @pytest.mark.parity("face_self_intersecting_mask", "meshlib")
+@pytest.mark.parity("is_self_intersecting", "meshlib")
 def test_face_self_intersecting_mask_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str, self_intersecting: bool
 ) -> None:
@@ -746,14 +748,7 @@ def test_face_self_intersecting_mask_matches_open3d_and_pymeshlab(device: str, k
 
 
 @pytest.mark.parity("face_self_intersecting_mask", "pymeshfix")
-@pytest.mark.parity(
-    "is_self_intersecting",
-    "pymeshfix",
-    benchmarked=False,
-    reason="is_self_intersecting has no benchmark group of its own -- it is the "
-    "any() of this mask and is timed as part of is_watertight -- so the "
-    "predicate is asserted here alongside the mask it reduces.",
-)
+@pytest.mark.parity("is_self_intersecting", "pymeshfix")
 @pytest.mark.parametrize("kind", ["boxes", "spheres", "clean"])
 def test_face_self_intersecting_mask_matches_pymeshfix(device: str, kind: str) -> None:
     """
@@ -911,6 +906,7 @@ def test_face_self_intersecting_mask_tangential_contact_divergence(
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("is_winding_consistent", "trimesh")
 def test_orientation_predicates_on_consistent_meshes(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1051,6 +1047,7 @@ def _triangle_ribbon(n_quads: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 @pytest.mark.parity("face_orientation_bits", "igl")
+@pytest.mark.parity("face_flip_mask", "igl")
 def test_face_flip_mask_matches_igl(device: str) -> None:
     """
     Class B: igl's flip mask is *derived* from its reoriented face table, not returned.
@@ -1091,6 +1088,7 @@ def test_face_flip_mask_matches_igl(device: str) -> None:
 
 
 @pytest.mark.parity("face_orientation_bits", "trimesh")
+@pytest.mark.parity("face_flip_mask", "trimesh")
 def test_face_flip_mask_long_path(device: str) -> None:
     """
     A ribbon whose face-adjacency graph is a path of 8 192 nodes.

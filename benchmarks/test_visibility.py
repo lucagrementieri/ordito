@@ -29,12 +29,11 @@ Five functions, three shapes of work, and the split is what the rows are for.
   ``query_nearest_bvh_k7``. Read it against ``thickness_interior`` for the per-query cost and
   against MeshLib for the one fair CPU-versus-GPU comparison this module has.
 
-``volumetric_obscurance`` has **no group**. It shares ``ambient_occlusion``'s bundle and block
-layout and differs only in tracing to the nearest hit (``ambient_occlusion`` stops at any hit, 1.06-
-1.14x faster) and a per-hit ``exp(-tau * t)`` factor, so a group over it would re-measure the axis;
-MeshLab's
-``compute_scalar_by_volumetric_obscurance`` would nonetheless be a real second reference, and that
-is a benchmark gap rather than an API one. Recorded in ``benchmarks/README.md``.
+``volumetric_obscurance`` shares ``ambient_occlusion``'s bundle and block layout and differs only
+in tracing to the *nearest* hit (``ambient_occlusion`` may stop at any hit) and a per-hit
+``exp(-tau * t)`` factor, so its group takes the same ``rays`` sweep and reads against that one: the
+gap between the two is what the nearest-hit trace costs. ``tau`` is not an axis: no cutoff is
+derived from it, so it changes the values and not the work.
 
 Two caveats for reading the pymeshlab rows. ``compute_scalar_by_shape_diameter_function_per_vertex``
 is the most expensive per-vertex filter MeshLab ships and its ``cone_amplitude`` parameter is a
@@ -159,6 +158,35 @@ def test_ambient_occlusion(bench_case: BenchCase, n_rays: int) -> None:
         lambda: od.visibility.ambient_occlusion(mesh, points, normals=normals, n_rays=n_rays)
     )
     assert occlusion.shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="volumetric_obscurance")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.parametrize("n_rays", _N_RAYS_SWEEP)
+def test_volumetric_obscurance(bench_case: BenchCase, n_rays: int) -> None:
+    """
+    ``ambient_occlusion``'s bundle traced to the nearest hit, each hit attenuated by its distance.
+
+    MeshLab's ``compute_scalar_by_volumetric_obscurance`` is the reference
+    ``tests/test_visibility.py`` ranks against; like the occlusion filter it writes only the vertex
+    scalar, so the MeshSet is shared, and it traces on one core.
+    """
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "pymeshlab":
+        skip_larger_than(bench_case, "bunny", "MeshLab traces the whole bundle on one core")
+        meshset_pml = bench_case.meshset_pml  # writes only the vertex scalar
+        bench_case.run(
+            lambda: meshset_pml.compute_scalar_by_volumetric_obscurance(rays=n_rays, tau=0.1),
+            rounds=3,
+        )
+        assert meshset_pml.current_mesh().vertex_scalar_array().shape == (n_vertices,)
+        return
+    mesh, points = _mesh_wp(bench_case), bench_case.vertices_wp
+    normals = _vertex_normals_wp(bench_case)
+    obscurance = bench_case.run(
+        lambda: od.visibility.volumetric_obscurance(mesh, points, normals=normals, n_rays=n_rays)
+    )
+    assert obscurance.shape == (n_vertices,)
 
 
 @pytest.mark.benchmark(group="shape_diameter")

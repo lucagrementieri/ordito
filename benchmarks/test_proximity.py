@@ -326,6 +326,37 @@ def test_closest_point_on_mesh(bench_case: BenchCase) -> None:
     assert faces_hit.shape == (_N_QUERIES,)
 
 
+_mesh_cache: dict[tuple[str, str], wp.Mesh] = {}
+
+
+def _mesh_wp(bench_case: BenchCase) -> wp.Mesh:
+    """Build one ``wp.Mesh`` per ``(mesh, device)``: the input of the rows taking a prebuilt BVH."""
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _mesh_cache:
+        _mesh_cache[key] = wp.Mesh(points=bench_case.vertices_wp, indices=bench_case.faces_wp)
+    return _mesh_cache[key]
+
+
+@pytest.mark.benchmark(group="normals_at_closest_faces")
+@pytest.mark.benchlibs("ordito")
+def test_normals_at_closest_faces(bench_case: BenchCase) -> None:
+    """
+    The closest face's normal per query: ``closest_point_on_mesh``'s traversal on a prebuilt BVH.
+
+    Read against ``closest_point_on_mesh``, which builds its BVH inside the call: this one is handed
+    the ``wp.Mesh`` and computes each hit face's normal from its corners, so the gap between the
+    two groups is mostly that build.
+
+    ordito-only: no reference returns the closest face's normal as one call, and
+    ``tests/test_proximity.py`` checks it against trimesh's face normals at sampled faces, a lookup
+    rather than a query.
+    """
+    mesh = _mesh_wp(bench_case)
+    points = _query_points_wp(bench_case)
+    normals = bench_case.run(lambda: od.proximity.normals_at_closest_faces(mesh, points))
+    assert normals.shape == (_N_QUERIES,)
+
+
 _crease_np_cache: dict[str, np.ndarray] = {}
 _crease_wp_cache: dict[tuple[str, str], odt.Array2dInt32] = {}
 
@@ -544,6 +575,58 @@ def test_signed_distance_on_mesh(
         lambda: od.proximity.signed_distance_on_mesh(vertices, faces, points, sign_mode=sign_mode)
     )
     assert distance.shape == (_N_QUERIES,)
+
+
+@pytest.mark.benchmark(group="signed_distance_lattice")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_signed_distance_lattice(bench_case: BenchCase) -> None:
+    """
+    The lattice ``signed_distance_grid`` samples, without sampling it: the box and host arithmetic.
+
+    With ``bounds`` omitted the only device work is the vertex box (one reduction and one
+    readback), so the **scale** axis rather than the scan sweep: what can grow with the mesh is
+    that reduction, and three sphere sizes show whether it does. ordito-only: a lattice spec is
+    this package's own bookkeeping, with nothing to agree with.
+    """
+    vertices = bench_case.vertices_wp
+    voxel_size = 2.0 * bench_case.mean_edge
+    shape, (lower, upper) = bench_case.run(
+        lambda: od.proximity.signed_distance_lattice(vertices, voxel_size)
+    )
+    assert min(shape) >= 2
+    assert float(upper[0]) > float(lower[0])
+
+
+@pytest.mark.benchmark(group="query_mesh_aabb_with_offsets")
+@pytest.mark.benchlibs("ordito")
+def test_query_mesh_aabb_with_offsets(bench_case: BenchCase) -> None:
+    """
+    Every face whose box meets each query box, packed with ``n + 1`` offsets, on a prebuilt BVH.
+
+    The query boxes are cubes two mean edges wide about the jittered query points, so a box near
+    the surface meets a handful of faces and one away from it none: the row prices the walk, the
+    count scan and the packing pass at a hit count that does not saturate ``max_hits``.
+
+    ordito-only: no reference exposes a batched box query over a mesh's triangles, and
+    ``tests/test_proximity.py`` checks it against a brute-force box test in NumPy.
+    """
+    mesh = _mesh_wp(bench_case)
+    points_np = _query_points_np(bench_case)
+    half = bench_case.mean_edge
+    lower, upper = (
+        wp.array(
+            np.ascontiguousarray(points_np + sign * half, dtype=np.float32),
+            dtype=wp.vec3,
+            device=bench_case.device,
+        )
+        for sign in (-1.0, 1.0)
+    )
+    candidates, offsets = bench_case.run(
+        lambda: od.proximity.query_mesh_aabb_with_offsets(mesh, lower, upper)
+    )
+    assert offsets.shape == (_N_QUERIES + 1,)
+    assert candidates.ndim == 1
 
 
 _LATTICE_ROWS = [26, 80, 240]

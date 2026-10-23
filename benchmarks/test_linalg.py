@@ -94,6 +94,7 @@ _SEED = 23
 _operator_cache: dict[tuple[str, str], odt.BsrMatrix[wp.float64]] = {}
 _fixed_cache: dict[tuple[str, str, float], tuple[wp.array[wp.bool], odt.Array2dFloat64]] = {}
 _rhs_cache: dict[tuple[str, str], wp.array[wp.float64]] = {}
+_heat_cache: dict[tuple[str, str], tuple[odt.BsrMatrix[wp.float64], wp.array[wp.float64]]] = {}
 
 
 def _operator(bench_case: BenchCase) -> odt.BsrMatrix[wp.float64]:
@@ -145,6 +146,46 @@ def _rhs(bench_case: BenchCase) -> wp.array[wp.float64]:
         rhs_np = np.ascontiguousarray(bench_case.vertices_np[:, :_N_RHS].T)
         _rhs_cache[key] = wp.array(rhs_np, dtype=wp.float64, device=bench_case.device)
     return _rhs_cache[key]
+
+
+def _heat_system(bench_case: BenchCase) -> odt.BsrMatrix[wp.float64]:
+    """Return the heat system ``M - tL``: a definite operator, as the solve entry points take."""
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _heat_cache:
+        system = od.heat.heat_operators(bench_case.vertices_wp, bench_case.faces_wp)[0]
+        mass = od.laplacian.mass_matrix_entries(
+            bench_case.vertices_wp, bench_case.faces_wp, dtype=wp.float64
+        )
+        _heat_cache[key] = (system, mass)
+    return _heat_cache[key][0]
+
+
+def _heat_rhs(bench_case: BenchCase) -> wp.array[wp.float64]:
+    """Return the lumped masses, whose heat solve is the constant field."""
+    _heat_system(bench_case)
+    return _heat_cache[(bench_case.mesh_name, str(bench_case.device))][1]
+
+
+def _source_rhs(bench_case: BenchCase) -> wp.array[wp.float64]:
+    """Return one vertex's indicator: the heat method's diffusion right-hand side."""
+    rhs_np = np.zeros(bench_case.n_vertices)
+    rhs_np[0] = 1.0
+    return wp.array(rhs_np, dtype=wp.float64, device=bench_case.device)
+
+
+def _interior_laplacian(
+    bench_case: BenchCase, fraction: float
+) -> tuple[odt.BsrMatrix[wp.float64], int]:
+    """Return ``-L``'s free-free block for ``fraction`` pinned, and its row count."""
+    fixed_mask, _ = _fixed(bench_case, fraction)
+    free_map, n_free = od.linalg.free_partition(fixed_mask)
+    none = odt.as_array2d(
+        wp.zeros((0, bench_case.n_vertices), dtype=wp.float64, device=bench_case.device), wp.float64
+    )
+    l_ff, _ = od.linalg.assemble_interior_system(
+        _operator(bench_case), fixed_mask, free_map, none, n_free, scale=-1.0
+    )
+    return l_ff, n_free
 
 
 def _harmonic_endpoints_pml(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
@@ -230,6 +271,129 @@ def test_min_quad_with_fixed(bench_case: BenchCase, fixed_fraction: float) -> No
     )
     assert solution.shape[0] == _N_RHS
     assert n_free > 0, "a fully-pinned system returns without solving, so there is nothing to time"
+
+
+@pytest.mark.benchmark(group="min_quad_with_fixed_precompute")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("fixed_fraction", _FIXED_FRACTIONS, ids=["pin1pct", "pin50pct"])
+def test_min_quad_with_fixed_precompute(bench_case: BenchCase, fixed_fraction: float) -> None:
+    """
+    The reduced system's extraction and factorization, for a caller that solves it repeatedly.
+
+    Read against ``min_quad_with_fixed`` at the same pin fraction: the factorization does not care
+    about conditioning, so this row should be flat across the mesh pair where the CG solve is not.
+    """
+    operator = _operator(bench_case)
+    fixed_mask, _ = _fixed(bench_case, fixed_fraction)
+    data = bench_case.run(
+        lambda: od.linalg.min_quad_with_fixed_precompute(
+            operator, fixed_mask, coordinates=bench_case.vertices_wp
+        ),
+        rounds=3,
+    )
+    assert data.n_free > 0
+
+
+@pytest.mark.benchmark(group="free_partition")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("fixed_fraction", _FIXED_FRACTIONS, ids=["pin1pct", "pin50pct"])
+def test_free_partition(bench_case: BenchCase, fixed_fraction: float) -> None:
+    """The free degrees of freedom's compact remap: one scan and its total's readback."""
+    fixed_mask, _ = _fixed(bench_case, fixed_fraction)
+    free_map, n_free = bench_case.run(lambda: od.linalg.free_partition(fixed_mask))
+    assert free_map.shape[0] == bench_case.n_vertices
+    assert 0 < n_free < bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="free_coordinates")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("fixed_fraction", _FIXED_FRACTIONS, ids=["pin1pct", "pin50pct"])
+def test_free_coordinates(bench_case: BenchCase, fixed_fraction: float) -> None:
+    """The free rows' positions, gathered for a reduced factorization's ordering."""
+    fixed_mask, _ = _fixed(bench_case, fixed_fraction)
+    free_map, n_free = od.linalg.free_partition(fixed_mask)
+    coordinates = bench_case.run(
+        lambda: od.linalg.free_coordinates(bench_case.vertices_wp, fixed_mask, free_map, n_free)
+    )
+    assert coordinates is not None
+    assert coordinates.shape[0] == n_free
+
+
+@pytest.mark.benchmark(group="assemble_interior_system")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("fixed_fraction", _FIXED_FRACTIONS, ids=["pin1pct", "pin50pct"])
+def test_assemble_interior_system(bench_case: BenchCase, fixed_fraction: float) -> None:
+    """
+    The free-free block and its constant right-hand side, the extraction ahead of every solve.
+
+    The pin pair is the axis: the free block's ``nnz`` goes as ``(n_free / n)^2``. Not timed
+    against NumPy, whose dense partition is the test oracle and not an implementation of it.
+    """
+    operator = _operator(bench_case)
+    fixed_mask, fixed_values = _fixed(bench_case, fixed_fraction)
+    free_map, n_free = od.linalg.free_partition(fixed_mask)
+    q_uu, rhs = bench_case.run(
+        lambda: od.linalg.assemble_interior_system(
+            operator, fixed_mask, free_map, fixed_values, n_free
+        )
+    )
+    assert q_uu.nrow == n_free
+    assert rhs.shape == (_N_RHS, n_free)
+
+
+@pytest.mark.benchmark(group="partitioned_interior_system")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("fixed_fraction", _FIXED_FRACTIONS, ids=["pin1pct", "pin50pct"])
+def test_partitioned_interior_system(bench_case: BenchCase, fixed_fraction: float) -> None:
+    """
+    ``free_partition`` and ``assemble_interior_system`` in one call.
+
+    Read against the two rows above at the same point: their sum is the two-step form's cost.
+    """
+    operator = _operator(bench_case)
+    fixed_mask, fixed_values = _fixed(bench_case, fixed_fraction)
+    q_uu, rhs, _free_map, n_free = bench_case.run(
+        lambda: od.linalg.partitioned_interior_system(operator, fixed_mask, fixed_values)
+    )
+    assert q_uu.nrow == n_free
+    assert rhs.shape == (_N_RHS, n_free)
+
+
+@pytest.mark.benchmark(group="solve_spd")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_solve_spd(bench_case: BenchCase) -> None:
+    """
+    One Jacobi-preconditioned CG solve of the heat system against the lumped masses.
+
+    The single-right-hand-side form ``solve_spd_columns`` batches; the heat system's mass term
+    keeps it well conditioned, so the quality pair reads the per-iteration cost more than the count.
+    """
+    system, rhs = _heat_system(bench_case), _heat_rhs(bench_case)
+    solution = wp.zeros_like(rhs)
+
+    def run() -> tuple[int, float, float]:
+        solution.zero_()
+        return od.linalg.solve_spd(system, rhs, solution)
+
+    bench_case.run(run)
+    assert solution.shape[0] == bench_case.n_vertices
+    assert np.isfinite(solution.numpy()).all()
+
+
+@pytest.mark.benchmark(group="jacobi_preconditioner")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_jacobi_preconditioner(bench_case: BenchCase) -> None:
+    """Building the inverse diagonal: the setup every Jacobi-preconditioned solve pays first."""
+    system = _heat_system(bench_case)
+    preconditioner = bench_case.run(lambda: od.linalg.jacobi_preconditioner(system))
+    assert preconditioner.shape[0] == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="solve_spd_columns")
@@ -321,3 +485,203 @@ def test_spd_column_solver_amortized(bench_case: BenchCase, repeats: int) -> Non
 
     bench_case.run(run, rounds=3)
     assert solution.shape[0] == _N_RHS
+
+
+@pytest.mark.benchmark(group="chebyshev_preconditioner")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_chebyshev_preconditioner(bench_case: BenchCase) -> None:
+    """
+    Building the Jacobi-Chebyshev polynomial for the Poisson operator ``-L``.
+
+    The polynomial's interval is fitted on its first apply, so this row is the construction a
+    caller pays per operator, not the fit; the fit lands in the first solve that uses it.
+    """
+    system = _heat_system(bench_case)
+    preconditioner = bench_case.run(lambda: od.linalg.chebyshev_preconditioner(system))
+    assert preconditioner.shape[0] == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="operator_factorization_factor")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_operator_factorization_factor(bench_case: BenchCase) -> None:
+    """
+    ``OperatorFactorization.factor`` on a fresh holder: a whole ``sparse_cholesky`` build.
+
+    A factored holder returns at once, so every round starts from a new one (built outside the
+    timed region). Read against ``sparse_cholesky`` in ``test_cholesky.py``.
+    """
+    system = _heat_system(bench_case)
+    factored = bench_case.run(
+        lambda holder: holder.factor(),
+        setup=lambda: od.linalg.OperatorFactorization(system, bench_case.vertices_wp),
+        rounds=3,
+    )
+    assert factored
+
+
+@pytest.mark.benchmark(group="solve_spd_settled")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_solve_spd_settled(bench_case: BenchCase) -> None:
+    """
+    A settle-ruled heat diffusion from one vertex, at the heat method's own settle constants.
+
+    The quality pair is the axis: the graded mesh is where the settled iterate fails its backward
+    error check and the fallback factorization is paid (built per call, as no holder is passed).
+    """
+    system, rhs = _heat_system(bench_case), _source_rhs(bench_case)
+    solution = wp.zeros_like(rhs)
+
+    def run() -> wp.array[wp.int32]:
+        solution.zero_()
+        return od.linalg.solve_spd_settled(
+            system, rhs, solution, check_rounds=16, change_tolerance=1e-6, settle_rounds=192
+        )
+
+    rounds = bench_case.run(run, rounds=3)
+    assert rounds.shape == (1,)
+    assert np.isfinite(solution.numpy()).all()
+
+
+@pytest.mark.benchmark(group="bsr_with_values")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+def test_bsr_with_values(bench_case: BenchCase) -> None:
+    """A matrix over another's pattern with new values: host bookkeeping only, no launch."""
+    operator = _operator(bench_case)
+    values = wp.zeros_like(operator.values)
+    matrix = bench_case.run(lambda: od.linalg.bsr_with_values(operator, values))
+    assert matrix.offsets is operator.offsets
+
+
+def _scipy_csr(operator: odt.BsrMatrix[wp.float64], n: int) -> sp.csr_matrix:
+    """Read a scalar operator back as a SciPy CSR matrix, for the reference row's input."""
+    offsets_np = operator.offsets.numpy()[: n + 1]
+    count = int(offsets_np[-1])
+    return sp.csr_matrix(
+        (operator.values.numpy()[:count], operator.columns.numpy()[:count], offsets_np),
+        shape=(n, n),
+    )
+
+
+@pytest.mark.benchmark(group="block_diag")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
+@pytest.mark.benchlibs("ordito", "scipy")
+def test_block_diag(bench_case: BenchCase) -> None:
+    """
+    Three copies of the heat system stacked block-diagonally, across the scale sweep.
+
+    ``block_diag`` keeps its result per set of operators, so the ordito row passes a fresh view of
+    the first operator (``bsr_with_values`` over its own arrays, built outside the timed region) to
+    time the build, not the cache hit. SciPy's ``block_diag`` of the same three CSR matrices is the
+    test oracle and the reference.
+    """
+    if bench_case.kind == "scipy":
+        # The reference's input is the same operator, assembled by ordito and read back.
+        device = wp.get_preferred_device()
+        system_np = _scipy_csr(
+            od.heat.heat_operators(
+                wp.array(bench_case.vertices_np, dtype=wp.vec3, device=device),
+                wp.array(bench_case.faces_np.ravel(), dtype=wp.int32, device=device),
+            )[0],
+            bench_case.n_vertices,
+        )
+        stacked_np = bench_case.run(
+            lambda: sp.block_diag((system_np, system_np, system_np), format="csr")
+        )
+        assert stacked_np.shape[0] == 3 * bench_case.n_vertices
+        return
+    system = _heat_system(bench_case)
+    stacked = bench_case.run(
+        lambda first: od.linalg.block_diag((first, system, system)),
+        setup=lambda: od.linalg.bsr_with_values(system, system.values),
+    )
+    assert stacked.nrow == 3 * bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="replicated_operator")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+def test_replicated_operator(bench_case: BenchCase) -> None:
+    """One operator presented as two batched columns: a host wrapper, no copy of the matrix."""
+    system = _heat_system(bench_case)
+    batched = bench_case.run(lambda: od.linalg.replicated_operator(system, _N_RHS))
+    assert batched.shape[0] == _N_RHS * bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="squared_laplacian_preconditioner")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_squared_laplacian_preconditioner(bench_case: BenchCase) -> None:
+    """
+    The squared-Laplacian preconditioner over ``-L``'s interior block at 1% pinned.
+
+    One row-scaling walk, a transpose and the polynomial's interval, all on the device.
+    """
+    l_ff, n_free = _interior_laplacian(bench_case, _FIXED_FRACTIONS[0])
+    weight_sums = wp.full(n_free, 1.0, dtype=wp.float64, device=bench_case.device)
+    preconditioner = bench_case.run(
+        lambda: od.linalg.squared_laplacian_preconditioner(l_ff, weight_sums)
+    )
+    assert preconditioner.narrowed()[0].shape[0] == l_ff.values.size
+
+
+def _squared_laplacian_factors(
+    bench_case: BenchCase,
+) -> tuple[odt.BsrMatrix[wp.float64], odt.BsrMatrix[wp.float64], wp.array[wp.float64]]:
+    """``(M_ff, M_ffᵀ, ratios)`` at ``D = 1``: ``-L``'s interior block, its transpose, row sums."""
+    l_ff, n_free = _interior_laplacian(bench_case, _FIXED_FRACTIONS[0])
+    ratios_np = np.asarray(abs(_scipy_csr(l_ff, n_free)).sum(axis=1)).ravel()
+    ratios = wp.array(ratios_np, dtype=wp.float64, device=bench_case.device)
+    return l_ff, od.array.csr_transpose(l_ff), ratios
+
+
+@pytest.mark.benchmark(group="squared_laplacian_from_factors")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_squared_laplacian_from_factors(bench_case: BenchCase) -> None:
+    """
+    ``SquaredLaplacianPreconditioner.from_factors``: the constructor without its scaling walk.
+
+    Read against ``squared_laplacian_preconditioner``: the gap is the copy, row scaling and
+    transpose a caller that wrote the factor while assembling does not pay again.
+    """
+    factor, factor_t, ratios = _squared_laplacian_factors(bench_case)
+    preconditioner = bench_case.run(
+        lambda: od.linalg.SquaredLaplacianPreconditioner.from_factors(factor, factor_t, ratios)
+    )
+    assert preconditioner.bind(1, int(factor.nrow)) is not None
+
+
+@pytest.mark.benchmark(group="squared_laplacian_bind")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_squared_laplacian_bind(bench_case: BenchCase) -> None:
+    """``SquaredLaplacianPreconditioner.bind``: the working vectors for a two-column solve."""
+    factor, factor_t, ratios = _squared_laplacian_factors(bench_case)
+    preconditioner = od.linalg.SquaredLaplacianPreconditioner.from_factors(factor, factor_t, ratios)
+    n_free = int(factor.nrow)
+    applied = bench_case.run(lambda: preconditioner.bind(_N_RHS, n_free))
+    assert applied is not None
+
+
+@pytest.mark.benchmark(group="squared_laplacian_narrowed")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_squared_laplacian_narrowed(bench_case: BenchCase) -> None:
+    """
+    ``SquaredLaplacianPreconditioner.narrowed``: the factor's two ``float32`` value casts.
+
+    Built once per preconditioner, so every round takes a fresh one from ``from_factors``
+    (outside the timed region) and times the first, building call.
+    """
+    factor, factor_t, ratios = _squared_laplacian_factors(bench_case)
+    narrowed = bench_case.run(
+        lambda preconditioner: preconditioner.narrowed(),
+        setup=lambda: od.linalg.SquaredLaplacianPreconditioner.from_factors(
+            factor, factor_t, ratios
+        ),
+    )
+    assert narrowed[0].shape[0] == factor.values.size

@@ -41,6 +41,8 @@ appears here.
 
 from __future__ import annotations
 
+from typing import cast
+
 import igl
 import numpy as np
 import open3d as o3d
@@ -50,6 +52,7 @@ import pytorch3d.loss as p3d_loss
 import pytorch3d.structures as p3d_structures
 import warp as wp
 from meshlib import mrmeshpy as mm
+from pytorch3d.loss import point_mesh_distance as p3d_point_mesh_distance
 
 import ordito as od
 from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
@@ -124,6 +127,116 @@ def _grad_inputs(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.
     return _grad_cache[key]
 
 
+@pytest.mark.benchmark(group="chamfer_points_to_points_loss")
+@pytest.mark.benchlibs("ordito", "pytorch3d")
+@pytest.mark.parametrize("single_directional", [True, False], ids=["oneway", "symmetric"])
+def test_chamfer_points_to_points_loss(bench_case: BenchCase, single_directional: bool) -> None:
+    """
+    The differentiable cloud Chamfer, forward and backward: one optimization step's loss cost.
+
+    Read against ``chamfer_points_to_points`` at the same direction: the gap is the tape and the
+    backward pass. Each ordito round records a fresh tape, runs backward and zeroes the gradients,
+    as ``chamfer_mesh_to_mesh_loss`` does.
+
+    **pytorch3d** is the gradient oracle in ``tests/test_metrics.py`` and the one other autodiff
+    here: its row runs ``chamfer_distance`` and ``backward`` on leaf tensors and drops their
+    gradients, the same step. It has no spatial structure, so its crossover against ordito is the
+    one ``chamfer_points_to_points`` records.
+    """
+    skip_larger_than(bench_case, "dragon")
+    if bench_case.kind == "pytorch3d":
+        cloud_a_p3d, cloud_b_p3d = (
+            points_torch_from_numpy(cloud_np, bench_case.torch_device).requires_grad_(True)
+            for cloud_np in _clouds_np(bench_case)
+        )
+
+        def step_p3d() -> float:
+            import torch
+
+            loss_p3d, _ = cast(
+                "tuple[torch.Tensor, object]",
+                p3d_loss.chamfer_distance(
+                    cloud_a_p3d, cloud_b_p3d, single_directional=single_directional
+                ),
+            )
+            loss_p3d.backward()
+            cloud_a_p3d.grad, cloud_b_p3d.grad = None, None
+            return float(loss_p3d.detach())
+
+        assert bench_case.run(step_p3d) > 0.0
+        return
+    cloud_a, cloud_b = _grad_inputs(bench_case)
+
+    def step() -> wp.array[wp.float32]:
+        tape = wp.Tape()
+        loss = od.metrics.chamfer_points_to_points_loss(
+            cloud_a, cloud_b, tape=tape, single_directional=single_directional, squared=True
+        )
+        tape.backward(loss=loss)
+        tape.zero()
+        return loss
+
+    assert bench_case.run(step).shape == (1,)
+
+
+@pytest.mark.benchmark(group="chamfer_points_to_mesh_loss")
+@pytest.mark.benchlibs("ordito", "pytorch3d")
+@pytest.mark.parametrize("single_directional", [True, False], ids=["oneway", "symmetric"])
+def test_chamfer_points_to_mesh_loss(bench_case: BenchCase, single_directional: bool) -> None:
+    """
+    The differentiable cloud-to-surface Chamfer, forward and backward, gradients on both inputs.
+
+    Read against ``chamfer_points_to_mesh``: the gap is the tape and the backward pass through the
+    point-to-triangle distances. The cloud is the translated vertex copy and the mesh the original,
+    both carrying ``requires_grad``.
+
+    **pytorch3d's row is ``oneway`` only**, for the reason its gradient comparison in
+    ``tests/test_metrics.py`` is: its two-sided loss adds a face-to-point half ordito does not
+    compute, so the comparable step is its ``point_face_distance`` primitive, forward and backward,
+    over triangles gathered from a leaf vertex tensor inside the step. Three rounds: it is two
+    exhaustive point-to-triangle sweeps with no spatial structure.
+    """
+    skip_larger_than(bench_case, "dragon")
+    if bench_case.kind == "pytorch3d":
+        if not single_directional:
+            pytest.skip("pytorch3d's two-sided loss adds a face-to-point half: oneway only")
+        import torch
+
+        device = bench_case.torch_device
+        points_p3d = points_torch_from_numpy(_clouds_np(bench_case)[1], device)[0]
+        points_p3d.requires_grad_(True)
+        vertices_p3d = points_torch_from_numpy(bench_case.vertices_np, device)[0]
+        vertices_p3d.requires_grad_(True)
+        faces_p3d = torch.as_tensor(bench_case.faces_np, dtype=torch.int64, device=device)
+        first_p3d = torch.zeros(1, dtype=torch.int64, device=device)
+        n_points = int(points_p3d.shape[0])
+
+        def step_p3d() -> float:
+            point_to_face_p3d = p3d_point_mesh_distance.point_face_distance(
+                points_p3d, first_p3d, vertices_p3d[faces_p3d], first_p3d, n_points
+            )
+            loss_p3d = point_to_face_p3d.mean()
+            loss_p3d.backward()
+            points_p3d.grad, vertices_p3d.grad = None, None
+            return float(loss_p3d.detach())
+
+        assert bench_case.run(step_p3d, rounds=3) > 0.0
+        return
+    vertices, cloud = _grad_inputs(bench_case)
+    faces = bench_case.faces_wp
+
+    def step() -> wp.array[wp.float32]:
+        tape = wp.Tape()
+        loss = od.metrics.chamfer_points_to_mesh_loss(
+            cloud, vertices, faces, tape=tape, single_directional=single_directional, squared=True
+        )
+        tape.backward(loss=loss)
+        tape.zero()
+        return loss
+
+    assert bench_case.run(step).shape == (1,)
+
+
 @pytest.mark.benchmark(group="chamfer_mesh_to_mesh_loss")
 @pytest.mark.benchlibs("ordito")
 def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
@@ -142,6 +255,32 @@ def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
 
     loss = bench_case.run(run)
     assert loss.shape == (1,)
+
+
+@pytest.mark.benchmark(group="hausdorff_points_to_mesh")
+@pytest.mark.benchlibs("ordito", "igl")
+def test_hausdorff_points_to_mesh(bench_case: BenchCase) -> None:
+    """
+    Cloud-to-surface Hausdorff: ``chamfer_points_to_mesh``'s two halves, reduced with ``max``.
+
+    **libigl's row is the forward half only**, the lower bound ``chamfer_points_to_mesh``'s igl row
+    is: ``igl.point_mesh_squared_distance`` is the oracle for this half in
+    ``tests/test_metrics.py`` and has no cloud-to-cloud counterpart for the other.
+    """
+    skip_larger_than(bench_case, "dragon")
+    cloud_np = _clouds_np(bench_case)[1]
+    if bench_case.kind == "igl":
+        skip_larger_than(bench_case, "bunny", "the reference builds its AABB tree per call")
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        squared_igl, _face_igl, _closest_igl = bench_case.run(
+            lambda: igl.point_mesh_squared_distance(cloud_np, vertices_np, faces_np), rounds=3
+        )
+        assert squared_igl.shape[0] == cloud_np.shape[0]
+        return
+    cloud = _clouds_wp(bench_case)[1]
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    hausdorff = bench_case.run(lambda: od.metrics.hausdorff_points_to_mesh(cloud, vertices, faces))
+    assert hausdorff > 0.0
 
 
 @pytest.mark.benchmark(group="hausdorff_mesh_to_mesh")
@@ -404,5 +543,39 @@ def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     chamfer = bench_case.run(
         lambda: od.metrics.chamfer_points_to_mesh(cloud, vertices, faces, squared=True)
+    )
+    assert chamfer > 0.0
+
+
+@pytest.mark.benchmark(group="chamfer_mesh_to_mesh")
+@pytest.mark.benchlibs("ordito", "igl")
+def test_chamfer_mesh_to_mesh(bench_case: BenchCase) -> None:
+    """
+    Symmetric vertex-to-surface Chamfer: both meshes' trees built, both directions queried.
+
+    The plain (untaped) sibling of ``chamfer_mesh_to_mesh_loss`` and the mean-of-squares twin of
+    ``hausdorff_mesh_to_mesh``, which runs the same two queries and reads beside it.
+
+    **libigl** is the oracle in ``tests/test_metrics.py``: two ``point_mesh_squared_distance``
+    calls, one per direction, reduced on the host -- the same composition timed here. Its AABB tree
+    is built per call, as ordito's two BVHs are.
+    """
+    skip_larger_than(bench_case, "dragon")
+    if bench_case.kind == "igl":
+        skip_larger_than(bench_case, "bunny", "the reference builds its AABB tree per call")
+        cloud_a_np, cloud_b_np = _clouds_np(bench_case)
+        faces_np = bench_case.faces_np
+
+        def chamfer_igl() -> float:
+            forward_igl, _, _ = igl.point_mesh_squared_distance(cloud_a_np, cloud_b_np, faces_np)
+            backward_igl, _, _ = igl.point_mesh_squared_distance(cloud_b_np, cloud_a_np, faces_np)
+            return float(np.mean(np.asarray(forward_igl)) + np.mean(np.asarray(backward_igl)))
+
+        assert bench_case.run(chamfer_igl, rounds=3) > 0.0
+        return
+    cloud_a, cloud_b = _clouds_wp(bench_case)
+    faces = bench_case.faces_wp
+    chamfer = bench_case.run(
+        lambda: od.metrics.chamfer_mesh_to_mesh(cloud_a, faces, cloud_b, faces, squared=True)
     )
     assert chamfer > 0.0

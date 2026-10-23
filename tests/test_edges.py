@@ -196,6 +196,7 @@ def _in_ordito_edge_order(edges_np: np.ndarray) -> np.ndarray:
     return pairs_np[np.lexsort((pairs_np[:, 0], pairs_np[:, 1]))]
 
 
+@pytest.mark.parity("unique_edge_count", "trimesh")
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parametrize("bounded", [False, True], ids=["inferred", "n_vertices"])
 def test_unique_edge_count(request: pytest.FixtureRequest, mesh_name: str, bounded: bool) -> None:
@@ -806,6 +807,7 @@ def test_mean_edge_length_arrival_order_agrees_with_the_default(device: str) -> 
     assert np.isclose(fixed, arrival, rtol=1e-6, atol=0.0)
 
 
+@pytest.mark.parity("edge_length_sum", "numpy")
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_edge_length_sum_is_the_mean_times_the_edge_count(
     mesh_name: str, request: pytest.FixtureRequest

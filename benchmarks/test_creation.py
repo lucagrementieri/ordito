@@ -70,12 +70,13 @@ clipper is benchmarked directly on a non-convex star ring — the same reasoning
 ``polyline_simplify`` its own group in [`test_polyline.py`](test_polyline.py). So this row does not
 move with anything done to the ear loop: it is a floor row wearing a triangulator's name.
 
-Deliberately not benchmarked
-----------------------------
-``box``, ``icosahedron`` and ``axis`` are constant tables, so they measure only the per-wrapper
-floor — worth measuring exactly once, which ``test_box`` does. ``capsule`` and
-``extrude_triangulation`` are the ``revolve`` and triangulation engines behind a different profile,
-already covered by ``cylinder`` / ``uv_sphere`` and ``extrude_polygon``.
+Floor rows
+----------
+``box``, the four Platonic solids and ``axis`` are constant tables, so they measure only the
+per-wrapper floor; ``test_box`` is the calibration probe and the others sit on it. ``capsule`` and
+``extrude_triangulation`` are the ``revolve`` and wall engines behind a different input, so their
+rows sit beside ``uv_sphere`` and ``extrude_polygon`` at the same resolutions and should read as
+those rows do.
 """
 
 from __future__ import annotations
@@ -99,6 +100,8 @@ import ordito as od
 from conftest import BenchLibrary
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import open3d as o3d
 
 # Section counts spanning launch-latency-bound to bandwidth-bound.
@@ -196,6 +199,16 @@ def test_box(bench_lib: BenchLibrary) -> None:
         assert len(mesh_o3d.triangles) == 12
 
 
+# The ordito builder behind each ``builder`` id, named as calls rather than looked up by string so
+# every one of them is visibly timed here.
+_PLATONIC_BUILDERS: dict[str, Callable[..., tuple[wp.array[wp.vec3], wp.array[wp.int32]]]] = {
+    "tetrahedron": od.creation.tetrahedron,
+    "octahedron": od.creation.octahedron,
+    "dodecahedron": od.creation.dodecahedron,
+    "icosahedron": od.creation.icosahedron,
+}
+
+
 @pytest.mark.benchmark(group="platonic_solids")
 @pytest.mark.benchlibs("ordito", "trimesh", "igl", "open3d", "pymeshlab")
 @pytest.mark.parametrize(
@@ -247,7 +260,7 @@ def test_platonic_solids(
         assert bench_lib.run(solid_pml) == n_faces
         return
     device = bench_lib.device
-    _, faces_wp = bench_lib.run(lambda: getattr(od.creation, builder)(device=device))
+    _, faces_wp = bench_lib.run(lambda: _PLATONIC_BUILDERS[builder](device=device))
     assert faces_wp.size // 3 == n_faces
 
 
@@ -407,6 +420,33 @@ def test_uv_sphere(bench_lib: BenchLibrary, sections: int) -> None:
         mesh_class = _o3d_mesh(bench_lib)
         mesh_o3d = bench_lib.run(lambda: mesh_class.create_sphere(1.0, resolution=sections))
         assert len(mesh_o3d.triangles) > 0
+
+
+@pytest.mark.benchmark(group="capsule")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("sections", [32, 512])
+def test_capsule(bench_lib: BenchLibrary, sections: int) -> None:
+    """
+    A UV sphere split at its equator and stretched by a cylinder: ``revolve`` under another profile.
+
+    ``count = (sections, sections)`` on both sides, which trimesh's ``creation.capsule`` (the port
+    source) reads the same way: identical face counts at every point, and the default-count meshes
+    are asserted equal in ``tests/test_creation.py``. The face count is quadratic in ``sections``
+    here, so the sweep stops at 512 (half a million faces) where the revolution groups go to 4096.
+    Read it beside ``uv_sphere``: the same revolution engine behind a different profile.
+    """
+    count = (sections, sections)
+    if bench_lib.kind == "trimesh":
+        mesh_tm = bench_lib.run(
+            lambda: tm.creation.capsule(height=2.0, radius=0.5, count=list(count))
+        )
+        assert len(mesh_tm.faces) == 2 * sections * sections
+        return
+    device = bench_lib.device
+    _, faces_wp = bench_lib.run(
+        lambda: od.creation.capsule(height=2.0, radius=0.5, count=count, device=device)
+    )
+    assert faces_wp.size // 3 == 2 * sections * sections
 
 
 @pytest.mark.benchmark(group="cylinder")
@@ -708,6 +748,26 @@ def test_extrude_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
         polygon = sg.Polygon(_ring_np(ring_size))
         mesh_tm = bench_lib.run(lambda: tm.creation.extrude_polygon(polygon, 1.0))
         assert len(mesh_tm.faces) > 0
+
+
+@pytest.mark.benchmark(group="extrude_triangulation")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("ring_size", [64, 1024])
+def test_extrude_triangulation(bench_lib: BenchLibrary, ring_size: int) -> None:
+    """
+    ``extrude_polygon`` with the cap already triangulated: the boundary recovery and the walls.
+
+    The triangulation of the same convex ring is built outside the timed callable, so the
+    difference between this row and ``extrude_polygon``'s at the same ``ring_size`` is the cap
+    triangulation. ordito-only: ``tests/test_creation.py`` checks it by closure and volume rather
+    than against a library.
+    """
+    ring_wp = _ring_wp(ring_size, str(bench_lib.device))
+    cap_vertices_wp, cap_faces_wp = od.polyline.triangulate_polygon(ring_wp)
+    _, faces_wp = bench_lib.run(
+        lambda: od.creation.extrude_triangulation(cap_vertices_wp, cap_faces_wp, 1.0)
+    )
+    assert faces_wp.size // 3 == 2 * (ring_size - 2) + 2 * ring_size
 
 
 @pytest.mark.benchmark(group="sweep_polygon")

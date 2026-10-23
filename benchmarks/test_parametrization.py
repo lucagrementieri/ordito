@@ -55,9 +55,12 @@ coordinates, so the MeshSet is rebuilt per round; on the ``patch`` axis that bui
 
 from __future__ import annotations
 
+from typing import cast
+
 import igl
 import numpy as np
 import pytest
+import scipy.sparse as sp
 import warp as wp
 
 import ordito as od
@@ -102,6 +105,36 @@ def _igl_boundary(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray, np.nda
     """``(vertices, faces_i64, loop)`` for the libigl branches."""
     faces_np = bench_case.faces_np.astype(np.int64)
     return bench_case.vertices_np, faces_np, np.asarray(igl.boundary_loop(faces_np))
+
+
+def _projected_uv(bench_case: BenchCase) -> wp.array[wp.vec2]:
+    """Return the vertices projected onto ``xy``, where a closed mesh flips about half its faces."""
+    return wp.array(
+        np.ascontiguousarray(bench_case.vertices_np[:, :2]), dtype=wp.vec2, device=bench_case.device
+    )
+
+
+@pytest.mark.benchmark(group="face_flipped_mask")
+@pytest.mark.benchlibs("ordito")
+def test_face_flipped_mask(bench_case: BenchCase) -> None:
+    """
+    One signed-area test per face: a per-face map, so the scan sweep is its axis.
+
+    The planar input is the mesh projected onto ``xy``, where about half the faces are inverted.
+    ordito alone: its test oracle is a NumPy cross product, not a library function.
+    """
+    uv, faces = _projected_uv(bench_case), bench_case.faces_wp
+    mask = bench_case.run(lambda: od.parametrization.face_flipped_mask(uv, faces))
+    assert mask.shape == (bench_case.n_faces,)
+
+
+@pytest.mark.benchmark(group="face_flipped_indices")
+@pytest.mark.benchlibs("ordito")
+def test_face_flipped_indices(bench_case: BenchCase) -> None:
+    """The same test compacted to indices: read against ``face_flipped_mask``, the compaction."""
+    uv, faces = _projected_uv(bench_case), bench_case.faces_wp
+    indices = bench_case.run(lambda: od.parametrization.face_flipped_indices(uv, faces))
+    assert 0 < indices.shape[0] < bench_case.n_faces
 
 
 @pytest.mark.benchmark(group="map_vertices_to_circle")
@@ -224,6 +257,40 @@ def test_harmonic_conditioning(bench_case: BenchCase) -> None:
         assert uv_igl.shape[0] == vertices_np.shape[0]
 
 
+@pytest.mark.benchmark(group="tutte")
+@pytest.mark.benchaxis("patch")
+@pytest.mark.benchlibs("ordito", "igl")
+def test_tutte(bench_case: BenchCase) -> None:
+    """
+    Uniform-Laplacian embedding with the rim on the unit circle: ``harmonic`` with unit weights.
+
+    libigl has no ``tutte``; its row is the reference the test compares against, the uniform
+    Laplacian ``D - A`` from ``igl.adjacency_matrix`` handed to ``igl.min_quad_with_fixed`` --
+    assembly and a direct solve inside the timed call, as ordito's row assembles and solves.
+    """
+    if bench_case.kind == "ordito":
+        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+        loop, loop_uv = _boundary(bench_case)
+        uv = bench_case.run(lambda: od.parametrization.tutte(vertices, faces, loop, loop_uv))
+        assert uv.size == vertices.size
+        return
+    vertices_np, faces_np, loop_np = _igl_boundary(bench_case)
+    circle_np = igl.map_vertices_to_circle(vertices_np, loop_np)
+    n_vertices = vertices_np.shape[0]
+    zeros_np = np.zeros((n_vertices, 2))
+
+    def tutte_igl() -> np.ndarray:
+        # igl's binding types the matrix ``csc_matrix[int]``, which scipy-stubs' ``sum`` rejects.
+        adjacency = cast("sp.csc_matrix[np.int64]", igl.adjacency_matrix(faces_np))
+        degree = sp.diags(np.asarray(adjacency.sum(axis=1)).ravel().astype(np.float64))
+        return np.asarray(
+            igl.min_quad_with_fixed((degree - adjacency).tocsc(), zeros_np, loop_np, circle_np)
+        )
+
+    uv_igl = bench_case.run(tutte_igl)
+    assert uv_igl.shape == (n_vertices, 2)
+
+
 @pytest.mark.benchmark(group="arap")
 @pytest.mark.benchaxis("patch")
 @pytest.mark.benchlibs("ordito", "igl")
@@ -311,3 +378,21 @@ def test_lscm(bench_case: BenchCase) -> None:
             lambda: igl.lscm(vertices_np, faces_np, pins_np, pins_uv_np)
         )
         assert uv_igl.shape[0] == vertices_np.shape[0]
+
+
+@pytest.mark.benchmark(group="fixed_vertex_solver_factor")
+@pytest.mark.benchaxis("patch")
+@pytest.mark.benchlibs("ordito")
+def test_fixed_vertex_solver_factor(bench_case: BenchCase) -> None:
+    """
+    ``FixedVertexSolver.factor`` for the harmonic map with the rim fixed: the reuse path's price.
+
+    Every call assembles and factors the reduced system again (a held one is replaced), so one
+    solver is timed throughout. Read against the ``harmonic`` group: this is paid once, after which
+    each call fixing the same rim is a factored solve.
+    """
+    mesh = od.Trimesh(bench_case.vertices_wp, bench_case.faces_wp)
+    solver = mesh.fixed_vertex_solver()
+    loop, _loop_uv = _boundary(bench_case)
+    factored = bench_case.run(lambda: solver.factor("harmonic", loop), rounds=3)
+    assert factored

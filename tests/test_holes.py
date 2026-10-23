@@ -1354,10 +1354,8 @@ def _two_rims_of_different_edge_count(device: str):
     "pymeshfix",
     "pymeshlab",
     benchmarked=False,
-    reason="fill_small has no benchmark group: the interval DP it drives is what costs anything "
-    "and that is already timed as fill_min_weight over the same loops, so a group here would "
-    "re-measure the DP under a second name. Neither reference could carry a row anyway -- "
-    "fill_small_boundaries is 8-10 % of a pymeshfix round (5.8 ms against 67.9 ms of load on "
+    reason="fill_small's benchmark group times ordito alone, and neither reference could carry a "
+    "row: fill_small_boundaries is 8-10 % of a pymeshfix round (5.8 ms against 67.9 ms of load on "
     "bunny_decimated, 51.4 against 439.6 on bunny) and a PyTMesh takes exactly one load_array, so "
     "the build cannot leave the timed callable; meshing_close_holes sits behind pymeshlab's own "
     "~0.47 us/vertex MeshSet build. The threshold semantics are pinned here instead.",
@@ -2437,16 +2435,7 @@ def test_stitch_smooth_triangulate_only_is_stitch_min_weight(device: str):
     assert patch_np[n_before:].all()
 
 
-@pytest.mark.parity(
-    "stitch_smooth",
-    "meshlib",
-    benchmarked=False,
-    reason="stitch_smooth has no benchmark group: the band it refines is the one "
-    "stitch_min_weight already times, plus fill_smooth's finisher, and a group here "
-    "would re-measure both under a third name. stitchHolesNicely is nonetheless the "
-    "only reference that performs the whole three-stage operation, which is why the "
-    "comparison lives here.",
-)
+@pytest.mark.parity("stitch_smooth", "meshlib")
 def test_stitch_smooth_statistics_vs_meshlib(device: str):
     """
     Class C (a derived scalar): the enclosed volume, because the two bands share no vertices.

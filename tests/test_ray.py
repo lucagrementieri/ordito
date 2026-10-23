@@ -329,6 +329,7 @@ def test_intersects_rejects_mismatched_shapes(
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parity("longest_ray", "trimesh")
 def test_longest_ray(request: pytest.FixtureRequest, mesh_name: str):
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rng = np.random.default_rng(3)
@@ -364,6 +365,7 @@ def test_longest_ray_surface_normals(sphere_irregular: tuple[tm.Trimesh, wp.Mesh
     "mesh_name", ["sphere_irregular", "sphere_irregular_hollow", "torus_irregular"]
 )
 @pytest.mark.parity("winding_number", "pyvista")
+@pytest.mark.parity("contains_points", "pyvista")
 def test_contains_points_matches_pyvista(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A: ``select_interior_points`` is the same inside/outside predicate, point for point.

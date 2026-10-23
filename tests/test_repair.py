@@ -1248,9 +1248,13 @@ def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name
     assert np.isclose(volume_pml, -ours_tm.volume, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parity("make_normals_outward", "trimesh")
 def test_make_normals_outward(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Not a library comparison: both defects at once -- inconsistent winding *and* global inversion.
+    Class B (face normals): both defects at once -- inconsistent winding *and* global inversion.
+
+    The transform is the comparison of per-face normals against ``trimesh.repair.fix_normals``
+    rather than of the index rows, which may start a reversed triangle at another corner.
 
     The composition is the claim: fixing consistency alone can leave the mesh inverted, and
     fixing orientation alone cannot run on inconsistent input, so only the pair together

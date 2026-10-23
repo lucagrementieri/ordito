@@ -295,6 +295,35 @@ def test_connection_laplacian(bench_case: BenchCase) -> None:
     assert matrix.nrow == bench_case.n_vertices
 
 
+@pytest.mark.benchmark(group="mesh_operator_pattern")
+@pytest.mark.benchlibs("ordito")
+def test_mesh_operator_pattern(bench_case: BenchCase) -> None:
+    """
+    The cotangent operator's sparsity alone: one key sort over the faces.
+
+    What a caller assembling repeatedly over fixed faces pays once; read against ``cotmatrix``,
+    which builds this pattern inside every call that is not handed one.
+    """
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    pattern = bench_case.run(lambda: od.laplacian.mesh_operator_pattern(faces, n_vertices))
+    assert pattern.offsets.shape == (n_vertices + 1,)
+
+
+@pytest.mark.benchmark(group="laplacian_entries")
+@pytest.mark.benchlibs("ordito")
+def test_laplacian_entries(bench_case: BenchCase) -> None:
+    """
+    The umbrella operator's unit-weight triplets, before assembly.
+
+    The ``laplacian_equal_weight`` row below is this plus the assembly; the gap between the two is
+    the sort. ordito alone: its test compares it with ``laplacian``, not a reference library.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    rows, cols, weights = bench_case.run(lambda: od.laplacian.laplacian_entries(vertices, faces))
+    assert rows.shape == cols.shape == weights.shape
+    assert rows.shape[0] == 3 * bench_case.n_faces
+
+
 @pytest.mark.benchmark(group="laplacian_equal_weight")
 @pytest.mark.benchlibs("ordito", "trimesh", "pytorch3d")
 def test_laplacian_equal_weight(bench_case: BenchCase) -> None:

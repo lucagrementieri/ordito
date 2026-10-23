@@ -158,6 +158,25 @@ def test_split(bench_case: BenchCase) -> None:
     assert len(parts) == expected
 
 
+@pytest.mark.benchmark(group="split_with_offsets")
+@pytest.mark.benchaxis("components")
+@pytest.mark.benchlibs("ordito")
+def test_split_with_offsets(bench_case: BenchCase) -> None:
+    """
+    The same decomposition as ``split``, returned as two packed buffers with their offsets.
+
+    On ``split``'s components axis, so the gap between the two rows is the per-component slicing
+    the list form adds on ``parts_1024``. Ordito only: the test pins it against ``split``.
+    """
+    expected = {"sphere_med": 1, "parts_64": 64, "parts_1024": 1024}[bench_case.mesh_name]
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _vertices_all, vertex_offsets, faces_all, face_offsets = bench_case.run(
+        lambda: od.combine.split_with_offsets(vertices, faces), rounds=_ROUNDS
+    )
+    assert vertex_offsets.shape == face_offsets.shape == (expected + 1,)
+    assert faces_all.shape == faces.shape
+
+
 def _face_slice(bench_case: BenchCase, lo: int, hi: int) -> wp.array[wp.int32]:
     """Contiguous face-index range as a device buffer (untimed setup, so numpy is fine)."""
     return wp.array(np.arange(lo, hi, dtype=np.int32), dtype=wp.int32, device=bench_case.device)

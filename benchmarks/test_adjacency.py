@@ -53,6 +53,7 @@ import igl
 import numpy as np
 import pytest
 import trimesh as tm
+import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
@@ -274,6 +275,30 @@ def test_vertex_face_adjacency(bench_case: BenchCase, known_nv: bool) -> None:
     assert vertex_faces.size == 3 * bench_case.n_faces
 
 
+@pytest.mark.benchmark(group="vertex_face_adjacency_from_counts")
+@pytest.mark.benchaxis("valence")
+@pytest.mark.benchlibs("ordito")
+def test_vertex_face_adjacency_from_counts(bench_case: BenchCase) -> None:
+    """
+    The same incidence CSR from per-vertex corner counts the caller already holds.
+
+    At ``vertex_face_adjacency``'s operating point, so the two read side by side as the price of
+    the count pass and row-count inference this form skips. ``counts`` is overwritten by the call,
+    so each round gets a fresh copy outside the timed region. Ordito only: the test pins it against
+    ``vertex_face_adjacency``.
+    """
+    n_vertices = bench_case.n_vertices
+    faces_wp = bench_case.faces_wp
+    counts_np = np.bincount(bench_case.faces_np.reshape(-1), minlength=n_vertices)
+    counts = wp.array(counts_np.astype(np.int32), dtype=wp.int32, device=bench_case.device)
+    vertex_faces, offsets = bench_case.run(
+        lambda fresh: od.adjacency.vertex_face_adjacency_from_counts(faces_wp, fresh),
+        setup=lambda: wp.clone(counts),
+    )
+    assert offsets.size == n_vertices + 1
+    assert vertex_faces.size == 3 * bench_case.n_faces
+
+
 @pytest.mark.benchmark(group="face_adjacency_projections")
 @pytest.mark.benchlibs("ordito", "trimesh")
 def test_face_adjacency_projections(bench_case: BenchCase) -> None:
@@ -318,3 +343,23 @@ def test_face_adjacency_convex(bench_case: BenchCase) -> None:
             lambda: tm.Trimesh(vertices_np, faces_np, process=False).face_adjacency_convex
         )
         assert convex_tm.dtype == bool
+
+
+@pytest.mark.benchmark(group="sorted_face_edge_keys")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("bounded", [False, True], ids=["pair_radix", "known_nv"])
+def test_sorted_face_edge_keys(bench_case: BenchCase, bounded: bool) -> None:
+    """
+    The ``3F`` face-edge keys, packed and radix-sorted with their permutation.
+
+    ``known_nv`` packs against the vertex count and sorts only the low bits it needs; ``pair_radix``
+    sorts all 64, so the gap is the bit count of the sort. Ordito only: the test oracle is a NumPy
+    stable argsort.
+    """
+    faces_wp = bench_case.faces_wp
+    bound = bench_case.n_vertices if bounded else None
+    keys, order = bench_case.run(
+        lambda: od.adjacency.sorted_face_edge_keys(faces_wp, n_vertices=bound)
+    )
+    assert keys.shape == (3 * bench_case.n_faces,)
+    assert order.shape == (3 * bench_case.n_faces,)

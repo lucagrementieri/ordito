@@ -4,6 +4,9 @@ Benchmarks for ``ordito.sample``: uniform surface sampling and blue-noise select
 The radius targets ~2,000 samples (same helper formula as ``tests/test_sample.py``). Capped at
 ``bunny``.
 
+The three Fibonacci-lattice groups come first and take no mesh (``bench_lib``): a lattice is one
+closed-form direction per thread, so its axis is the direction count and nothing else.
+
 **This group is overwhelmingly device-bound, and reading that correctly is what closed it.** A
 Bridson active-list sampler spends nearly all of its time in kernels across ~100 rounds, and four
 micro-optimizations of its hot kernel all lost because the cost is structural: an active parent must
@@ -64,7 +67,7 @@ import trimesh as tm
 from meshlib import mrmeshpy as mm
 
 import ordito as od
-from conftest import BenchCase, skip_larger_than
+from conftest import BenchCase, BenchLibrary, skip_larger_than
 
 if TYPE_CHECKING:
     from typing_extensions import Buffer
@@ -85,6 +88,51 @@ _RADIUS_SCALES = [1.0, 0.5]
 # Sample counts for the uniform group: a decade apart, since the cost is linear in the count and
 # the mesh contributes only the one-off area CDF.
 _UNIFORM_COUNTS = [10_000, 100_000]
+
+# Direction counts for the Fibonacci lattices: a launch-floor point and a bandwidth point.
+_FIBONACCI_COUNTS = [1 << 10, 1 << 20]
+
+
+@pytest.mark.benchmark(group="sample_fibonacci_sphere")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("count", _FIBONACCI_COUNTS, ids=["n1k", "n1m"])
+def test_sample_fibonacci_sphere(bench_lib: BenchLibrary, count: int) -> None:
+    """
+    The Fibonacci lattice: one closed-form direction per thread, so the axis is the count alone.
+
+    Mesh-free (``bench_lib``): the lattice has no input. ordito-only, since no registered library
+    builds this lattice (``tests/test_sample.py`` checks it against its own closed form).
+    """
+    device = bench_lib.device
+    directions = bench_lib.run(lambda: od.sample.sample_fibonacci_sphere(count, device=device))
+    assert directions.shape == (count,)
+    assert np.isfinite(directions.numpy()).all()
+
+
+@pytest.mark.benchmark(group="sample_fibonacci_hemisphere")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("count", _FIBONACCI_COUNTS, ids=["n1k", "n1m"])
+def test_sample_fibonacci_hemisphere(bench_lib: BenchLibrary, count: int) -> None:
+    """The same lattice on the upper half, at ``sample_fibonacci_sphere``'s counts. ordito-only."""
+    device = bench_lib.device
+    directions = bench_lib.run(lambda: od.sample.sample_fibonacci_hemisphere(count, device=device))
+    assert directions.shape == (count,)
+    assert np.isfinite(directions.numpy()).all()
+
+
+@pytest.mark.benchmark(group="sample_fibonacci_cone")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("count", _FIBONACCI_COUNTS, ids=["n1k", "n1m"])
+def test_sample_fibonacci_cone(bench_lib: BenchLibrary, count: int) -> None:
+    """The same lattice in a 25-degree cone about ``+z``, at the sphere row's counts."""
+    device = bench_lib.device
+    half_angle = math.radians(25.0)
+    directions = bench_lib.run(
+        lambda: od.sample.sample_fibonacci_cone(count, half_angle, device=device)
+    )
+    assert directions.shape == (count,)
+    assert np.isfinite(directions.numpy()).all()
+
 
 _radius_cache: dict[str, float] = {}
 

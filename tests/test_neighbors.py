@@ -42,6 +42,7 @@ from tests.conversions import (
 )
 
 
+@pytest.mark.parity("mesh_from_points", "scipy")
 def test_mesh_from_points_answers_the_nearest_point(device: str) -> None:
     """
     Class A against ``KDTree``: the collapsed-triangle mesh's closest face is the nearest point.
@@ -102,6 +103,7 @@ def test_hashgrid_from_points_sizes_its_default_grid_from_the_point_count(device
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
 @pytest.mark.parity("query_ball_bvh", "scipy")
 @pytest.mark.parity("query_ball_hashgrid", "scipy")
+@pytest.mark.parity("query_ball", "scipy")
 def test_query_ball_batch(device: str, backend: Literal["bvh", "hashgrid"]):
     """
     Class B: per-query neighbour lists against ``KDTree.query_ball_point``, sorted by distance.
@@ -173,6 +175,7 @@ def test_query_ball_batch(device: str, backend: Literal["bvh", "hashgrid"]):
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
+@pytest.mark.parity("query_ball_count", "scipy")
 def test_query_ball_count_matches_scipy_and_the_list_form(
     device: str, backend: Literal["bvh", "hashgrid"]
 ) -> None:

@@ -668,6 +668,7 @@ def test_face_quality_unknown_metric(sphere_irregular: tuple[tm.Trimesh, wp.Mesh
         od.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="skewness")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
+@pytest.mark.parity("face_nondegenerate_mask", "trimesh")
 @pytest.mark.parametrize("with_degenerate", [False, True], ids=["clean", "with_degenerate"])
 def test_face_nondegenerate_mask(saddle_graded: tuple[tm.Trimesh, wp.Mesh], with_degenerate: bool):
     """
@@ -710,6 +711,7 @@ def test_face_nondegenerate_mask(saddle_graded: tuple[tm.Trimesh, wp.Mesh], with
     assert np.array_equal(nondegenerate_wp.numpy().astype(bool), nondegenerate_tm)
 
 
+@pytest.mark.parity("barycentric_to_points", "trimesh")
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 def test_barycentric_to_points(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -835,19 +837,18 @@ def test_points_to_barycentric_on_a_zero_area_triangle(device: str) -> None:
     "triangle_closest_point",
     "meshlib",
     benchmarked=False,
-    reason="the soup form of closest_point has no benchmark group: the whole-mesh query is what "
-    "costs anything and it is timed as closest_point_on_mesh, where scipy and open3d carry the "
-    "rows. MeshLib's closestPointInTriangle is a four-vector primitive anyway, so a row would time "
-    "a Python loop over the face buffer -- the per-element rule.",
+    reason="MeshLib's closestPointInTriangle is a four-vector primitive, so a row in the "
+    "triangle_closest_point group would time a Python loop over the face buffer -- the "
+    "per-element rule. The group times ordito alone; the whole-mesh query is "
+    "closest_point_on_mesh, where scipy and open3d carry the rows.",
 )
 @pytest.mark.parity(
     "barycentric_to_points",
     "meshlib",
     benchmarked=False,
-    reason="barycentric_to_points has no benchmark group of its own: it is the inverse of "
-    "points_to_barycentric, which carries the group, and one interpolation under two names would "
-    "price the same pass twice. MeshLib's triPoint is per-point besides, so the row would time the "
-    "loop.",
+    reason="MeshLib's triPoint is a per-point call, so a row in the barycentric_to_points group "
+    "would time a Python loop over the face buffer -- the per-element rule. The group's timed "
+    "reference is trimesh, whose array form is compared in test_barycentric_to_points.",
 )
 def test_soup_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -966,6 +967,7 @@ def test_face_centroids(request: pytest.FixtureRequest, mesh_name: str):
     assert (np.abs(barycentric_wp.numpy() - 1.0 / 3.0).max(axis=1) <= bound_np).all()
 
 
+@pytest.mark.parity("face_signed_volumes", "numpy")
 def test_face_signed_volumes(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A against the NumPy oracle, element-wise, plus Class B on the sum.

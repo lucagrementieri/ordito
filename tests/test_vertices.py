@@ -499,6 +499,7 @@ def test_vertex_defects_are_reproducible_when_deterministic(
     assert np.allclose(arrival_np, first_np, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parity("weighted_vertex_normals", "trimesh")
 def test_scatter_wrappers_match_trimesh_on_their_inputs_device(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:

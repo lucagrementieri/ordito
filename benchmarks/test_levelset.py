@@ -22,6 +22,9 @@ axis here and the mesh sweep is along for the ride: doubling the resolution is 8
 whatever the mesh, and a row whose slope is not ~8x is telling you the BVH, not the lattice, is the
 cost.
 
+``signed_distance_level_set`` is that extraction on a lattice handed in, timed at the same divisors
+so its group reads side by side with ``offset_mesh``'s.
+
 References
 ----------
 **meshlib** ``offsetMesh`` is the same algorithm: an OpenVDB level set at a given ``voxelSize``,
@@ -39,6 +42,8 @@ field on a lattice, and of the six CPU references only these two build one.
 """
 
 from __future__ import annotations
+
+import math
 
 import igl
 import numpy as np
@@ -134,6 +139,35 @@ def test_offset_mesh(bench_case: BenchCase, divisor: int) -> None:
     )
     assert int(offset_faces.shape[0]) > 0
     assert int(offset_vertices.shape[0]) > 0
+
+
+@pytest.mark.benchmark(group="signed_distance_level_set")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("divisor", _CELL_DIVISORS)
+def test_signed_distance_level_set(bench_case: BenchCase, divisor: int) -> None:
+    """
+    The extraction behind ``offset_mesh``, on the lattice ``offset_mesh`` would pick itself.
+
+    The lattice is ``proximity.signed_distance_lattice``'s at the same cell and the padding the
+    offset needs, built outside the timed callable, so the row is ``offset_mesh`` less its lattice
+    arithmetic: the pair should read side by side at each divisor, and a gap between them is the
+    wrapper, not the extraction.
+
+    ordito-only: the references' offsets choose their own lattices (both pad internally), so the
+    comparable reference rows are ``offset_mesh``'s, and ``tests/test_levelset.py`` pins this
+    function against its own dense lattice rather than against a library.
+    """
+    cell, distance = _cell_and_offset(bench_case, divisor)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    pad = math.ceil(distance / cell) + 2
+    shape, bounds = od.proximity.signed_distance_lattice(vertices, cell, pad=pad)
+    level_vertices, level_faces = bench_case.run(
+        lambda: od.levelset.signed_distance_level_set(
+            vertices, faces, distance, shape, bounds=bounds
+        )
+    )
+    assert level_faces.shape[0] > 0
+    assert level_vertices.shape[0] > 0
 
 
 @pytest.mark.benchmark(group="thicken_mesh")

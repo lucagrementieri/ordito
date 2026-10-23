@@ -22,6 +22,11 @@ within a class the kernels differ only in the per-segment expression:
   single-thread stack kernel. Its Notes carry the rows that lose and why the depth is bounded by
   the accepted count.
 
+Every other public function has a small row of its own as well, so that no call goes untimed,
+but the class representatives are the rows to read: the endpoint helpers (``is_closed``,
+``polyline_open``, ``polyline_close``), ``polyline_centroid`` and ``polyline_smooth_upsample`` sit
+beside the representative of their class at its operating point.
+
 ``polyline_point_distance`` is timed separately as the only function whose cost is a product of two
 sizes (query points x segments).
 
@@ -262,6 +267,52 @@ def _polyline_pv(bench_case: BenchCase) -> pv.PolyData:
     return _polyline_pv_cache[bench_case.mesh_name]
 
 
+@pytest.mark.benchmark(group="is_closed")
+@pytest.mark.benchmeshes("saddle_small")
+@pytest.mark.benchlibs("ordito")
+def test_is_closed(bench_case: BenchCase) -> None:
+    """
+    The endpoint test: one thread, one flag, one four-byte readback, whatever the length.
+
+    Flat in the polyline length by construction, so one small rim (``saddle_small``) is the whole
+    axis: the row is the launch-plus-readback floor that ``polyline_open`` and ``polyline_close``
+    each pay before deciding. ordito-only: no reference has the predicate as a call of its own.
+    """
+    polyline = _polyline_wp(bench_case)
+    closed = bench_case.run(lambda: od.polyline.is_closed(polyline))
+    assert closed is False
+
+
+@pytest.mark.benchmark(group="polyline_open")
+@pytest.mark.benchmeshes("saddle_small")
+@pytest.mark.benchlibs("ordito")
+def test_polyline_open(bench_case: BenchCase) -> None:
+    """
+    Drop a duplicated closing point: ``is_closed`` and then a view, so no copy at any length.
+
+    The input is the rim with its first point appended (built outside the timed callable), so the
+    row takes the branch that returns the view rather than the input. ordito-only.
+    """
+    closed = od.polyline.polyline_close(_polyline_wp(bench_case))
+    opened = bench_case.run(lambda: od.polyline.polyline_open(closed))
+    assert opened.size == closed.size - 1
+
+
+@pytest.mark.benchmark(group="polyline_close")
+@pytest.mark.benchaxis("polyline")
+@pytest.mark.benchlibs("ordito")
+def test_polyline_close(bench_case: BenchCase) -> None:
+    """
+    Append the first point to an open rim: ``is_closed``, one allocation and two copies.
+
+    Unlike ``polyline_open`` this copies the whole polyline, so it takes the loop-length axis.
+    ordito-only.
+    """
+    polyline = _polyline_wp(bench_case)
+    closed = bench_case.run(lambda: od.polyline.polyline_close(polyline))
+    assert closed.size == polyline.size + 1
+
+
 @pytest.mark.benchmark(group="polyline_length")
 @pytest.mark.benchaxis("polyline")
 @pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
@@ -293,6 +344,21 @@ def test_polyline_length(bench_case: BenchCase) -> None:
     assert length > 0.0
 
 
+@pytest.mark.benchmark(group="polyline_centroid")
+@pytest.mark.benchaxis("polyline")
+@pytest.mark.benchlibs("ordito")
+def test_polyline_centroid(bench_case: BenchCase) -> None:
+    """
+    The length-weighted segment-midpoint centroid: ``polyline_length``'s reduction, ``vec3``-wide.
+
+    ordito-only: ``tests/test_polyline.py`` checks it against a NumPy evaluation of the definition
+    rather than a library.
+    """
+    polyline = _polyline_wp(bench_case)
+    centroid = bench_case.run(lambda: od.polyline.polyline_centroid(polyline))
+    assert np.isfinite(np.asarray(list(centroid), dtype=np.float64)).all()
+
+
 @pytest.mark.benchmark(group="polyline_normal")
 @pytest.mark.benchaxis("polyline")
 @pytest.mark.benchlibs("ordito")
@@ -317,8 +383,8 @@ def test_polyline_normal(bench_case: BenchCase) -> None:
     orders of magnitude more accurate against a float64 reference. So the representative had the
     *good* shape and the class member it stood in for did not, which is what a one-row class cannot
     show.
-    ``polyline_centroid`` stays unrepresented: it reaches ``ordito.reduce`` the way
-    ``polyline_length`` does.
+    ``polyline_centroid`` reaches ``ordito.reduce`` the way ``polyline_length`` does, and its row
+    sits beside that one.
 
     ``rim_long`` is the row that matters here -- 65 536 vertices, the axis's asymptotic point.
     """
@@ -428,6 +494,24 @@ def test_upsample_polyline(bench_case: BenchCase) -> None:
 
     polyline = _polyline_wp(bench_case)
     dense = bench_case.run(lambda: od.polyline.polyline_upsample(polyline, step))
+    assert dense.size >= polyline.size
+
+
+@pytest.mark.benchmark(group="polyline_smooth_upsample")
+@pytest.mark.benchaxis("polyline")
+@pytest.mark.benchlibs("ordito")
+def test_smooth_upsample_polyline(bench_case: BenchCase) -> None:
+    """
+    ``polyline_upsample`` at the same step, with each inserted point placed on a fitted arc.
+
+    The same scan, readback and write pass as the linear row above, plus the two neighbour reads
+    per segment that estimate the endpoint tangents, so the pair prices the curvature-aware
+    placement. ordito-only: ``tests/test_polyline.py`` checks it against a NumPy evaluation of the
+    construction, and meshlib's subdivision only bisects along the chord.
+    """
+    step = _UPSAMPLE_FRACTION * _segment_scale(bench_case)[0]
+    polyline = _polyline_wp(bench_case)
+    dense = bench_case.run(lambda: od.polyline.polyline_smooth_upsample(polyline, step))
     assert dense.size >= polyline.size
 
 

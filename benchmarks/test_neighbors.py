@@ -645,6 +645,27 @@ def test_bvh_from_points(bench_case: BenchCase, leaf_size: int) -> None:
         assert bench_case.run(lambda: KDTree(points_np)) is not None
 
 
+@pytest.mark.benchmark(group="mesh_from_points")
+@pytest.mark.benchlibs("ordito", "scipy")
+def test_mesh_from_points(bench_case: BenchCase) -> None:
+    """
+    The collapsed-triangle ``wp.Mesh`` that ``query_nearest`` descends at ``k = 1`` on a BVH.
+
+    Read against ``bvh_from_points``: both build a tree over the same cloud, this one through
+    ``wp.Mesh`` with one degenerate triangle a point, so the gap is what the mesh form costs over a
+    bare BVH. scipy's ``KDTree`` build is the structure its oracle in ``tests/test_neighbors.py``
+    queries, timed as ``bvh_from_points`` times it.
+    """
+    skip_larger_than(bench_case, "dragon", "the scipy reference builds single-threaded")
+    if bench_case.kind == "scipy":
+        points_np = bench_case.vertices_np
+        assert bench_case.run(lambda: KDTree(points_np)) is not None
+        return
+    points = bench_case.vertices_wp
+    mesh = bench_case.run(lambda: od.neighbors.mesh_from_points(points))
+    assert mesh.indices.shape == (3 * points.size,)
+
+
 @pytest.mark.benchmark(group="hashgrid_from_points")
 @pytest.mark.benchlibs("ordito", "scipy", "igl")
 @pytest.mark.parametrize("grid_bins", _GRID_BINS)
@@ -676,6 +697,44 @@ def test_hashgrid_from_points(bench_case: BenchCase, grid_bins: int) -> None:
         lambda: od.neighbors.hashgrid_from_points(points, radius, grid_bins=grid_bins)
     )
     assert grid is not None
+
+
+_bounds_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], wp.array[wp.vec3]]] = {}
+
+
+def _vertex_boxes_wp(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3]]:
+    """One cube a mean edge wide about each vertex: the bounds ``bvh_from_bounds`` is handed."""
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _bounds_cache:
+        half = 0.5 * bench_case.mean_edge
+        vertices_np = bench_case.vertices_np
+        lower, upper = (
+            wp.array(
+                np.ascontiguousarray(vertices_np + sign * half, dtype=np.float32),
+                dtype=wp.vec3,
+                device=bench_case.device,
+            )
+            for sign in (-1.0, 1.0)
+        )
+        _bounds_cache[key] = (lower, upper)
+    return _bounds_cache[key]
+
+
+@pytest.mark.benchmark(group="bvh_from_bounds")
+@pytest.mark.benchlibs("ordito")
+def test_bvh_from_bounds(bench_case: BenchCase) -> None:
+    """
+    A BVH over per-primitive boxes rather than points: ``bvh_from_points``'s build on boxes.
+
+    One cube a mean edge wide per vertex, so the count matches ``bvh_from_points`` and the two
+    groups read side by side. ordito-only: no reference builds a tree over caller-given boxes, and
+    ``tests/test_neighbors.py`` checks the tree through ``query_bvh_ball`` against a brute-force
+    overlap test.
+    """
+    skip_larger_than(bench_case, "dragon")
+    lower, upper = _vertex_boxes_wp(bench_case)
+    bvh = bench_case.run(lambda: od.neighbors.bvh_from_bounds(lower, upper))
+    assert bvh is not None
 
 
 @pytest.mark.benchmark(group="query_ball_bvh")
@@ -725,6 +784,27 @@ def test_query_ball_bvh(bench_case: BenchCase, radius_scale: float) -> None:
         tree, queries_np = _kdtree(bench_case), _queries_np(bench_case)
         found = bench_case.run(lambda: tree.query_ball_point(queries_np, radius))
         assert len(found) == queries_np.shape[0]
+
+
+@pytest.mark.benchmark(group="query_bvh_ball")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("radius_scale", _RADIUS_SCALES)
+def test_query_bvh_ball(bench_case: BenchCase, radius_scale: float) -> None:
+    """
+    The broad-phase ball query over a prebuilt BVH of boxes: every box the ball reaches, packed.
+
+    Over ``bvh_from_bounds``'s per-vertex cubes at ``query_ball_bvh``'s radii, so the pair reads
+    against that group: no narrow phase and no distances here, a box-to-point test instead.
+    ordito-only: no reference binds a ball query over arbitrary bounds, and
+    ``tests/test_neighbors.py`` checks it against the exact point-to-box distance.
+    """
+    skip_larger_than(bench_case, "bunny", "the neighbour count grows cubically with the radius")
+    radius = radius_scale * bench_case.mean_edge
+    bvh = od.neighbors.bvh_from_bounds(*_vertex_boxes_wp(bench_case))
+    queries = _queries_wp(bench_case)
+    indices, offsets = bench_case.run(lambda: od.neighbors.query_bvh_ball(bvh, queries, radius))
+    assert offsets.shape == (queries.size + 1,)
+    assert indices.shape[0] >= 0
 
 
 @pytest.mark.benchmark(group="query_bvh_box")
@@ -777,6 +857,61 @@ def test_query_bvh_box(bench_case: BenchCase) -> None:
     indices, offsets = bench_case.run(lambda: od.neighbors.query_bvh_box(bvh, lower_wp, upper_wp))
     assert offsets.shape == (centers_np.shape[0] + 1,)
     assert indices.shape[0] >= 0
+
+
+@pytest.mark.benchmark(group="query_ball")
+@pytest.mark.benchlibs("ordito", "scipy")
+@pytest.mark.parametrize("radius_scale", _RADIUS_SCALES)
+def test_query_ball(bench_case: BenchCase, radius_scale: float) -> None:
+    """
+    The list form of ``query_ball_bvh``: the same query, split into one array per query.
+
+    At ``query_ball_bvh``'s radii and over the same prebuilt one-point-a-leaf BVH, so the gap
+    between the two groups is the ``O(n_queries)`` host slicing the module docstring keeps out of
+    the ball groups. scipy's ``KDTree.query_ball_point`` returns per-query lists too, and is the
+    oracle in ``tests/test_neighbors.py``.
+    """
+    skip_larger_than(bench_case, "bunny", "the neighbour count grows cubically with the radius")
+    radius = radius_scale * bench_case.mean_edge
+    if bench_case.kind == "scipy":
+        tree, queries_np = _kdtree(bench_case), _queries_np(bench_case)
+        found = bench_case.run(lambda: tree.query_ball_point(queries_np, radius))
+        assert len(found) == queries_np.shape[0]
+        return
+    points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
+    bvh = _bvh(bench_case, leaf_size=1)
+    neighbors, distances = bench_case.run(
+        lambda: od.neighbors.query_ball(points, queries, radius, accelerator=bvh)
+    )
+    assert len(neighbors) == len(distances) == queries.size
+
+
+@pytest.mark.benchmark(group="query_ball_count")
+@pytest.mark.benchlibs("ordito", "scipy")
+@pytest.mark.parametrize("radius_scale", _RADIUS_SCALES)
+def test_query_ball_count(bench_case: BenchCase, radius_scale: float) -> None:
+    """
+    The count half of ``query_ball_bvh``'s count-then-fill, alone: no gather, no distances.
+
+    At the same radii over the same prebuilt BVH, so ``query_ball_bvh`` less this group is the fill
+    pass. scipy's ``query_ball_point(return_length=True)`` is the oracle in
+    ``tests/test_neighbors.py`` and counts without building the lists.
+    """
+    skip_larger_than(bench_case, "bunny", "the neighbour count grows cubically with the radius")
+    radius = radius_scale * bench_case.mean_edge
+    if bench_case.kind == "scipy":
+        tree, queries_np = _kdtree(bench_case), _queries_np(bench_case)
+        counts_np = bench_case.run(
+            lambda: tree.query_ball_point(queries_np, radius, return_length=True)
+        )
+        assert np.asarray(counts_np).shape == (queries_np.shape[0],)
+        return
+    points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
+    bvh = _bvh(bench_case, leaf_size=1)
+    counts = bench_case.run(
+        lambda: od.neighbors.query_ball_count(points, queries, radius, accelerator=bvh)
+    )
+    assert counts.shape == (queries.size,)
 
 
 @pytest.mark.benchmark(group="query_ball_hashgrid")
@@ -833,6 +968,22 @@ def test_query_ball_hashgrid(bench_case: BenchCase, grid_bins: int) -> None:
     )
     assert offsets.shape[0] == queries.size + 1
     assert neighbors.shape[0] >= 0
+
+
+@pytest.mark.benchmark(group="knn_initial_radius")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_knn_initial_radius(bench_case: BenchCase) -> None:
+    """
+    ``query_nearest``'s default start radius: the cloud's box, then a closed form on the host.
+
+    The device work is one box reduction and its readback, so the **scale** axis rather than the
+    scan sweep: what can grow with the cloud is that reduction. ``k = 7``, ``ball_pivoting``'s seed
+    table. ordito-only: a search heuristic of this package, with nothing to agree with.
+    """
+    points = bench_case.vertices_wp
+    radius = bench_case.run(lambda: od.neighbors.knn_initial_radius(points, 7))
+    assert radius > 0.0
 
 
 @pytest.mark.benchmark(group="query_geodesic_ball")

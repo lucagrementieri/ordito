@@ -80,6 +80,8 @@ def test_reflection_matrix_matches_trimesh() -> None:
     assert np.allclose(matrix_wp, matrix_tm, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parity("translation_matrix", "trimesh")
+@pytest.mark.parity("scale_matrix", "trimesh")
 def test_translation_and_scale_matrices_match_trimesh() -> None:
     """Class A: the two remaining builders against ``trimesh.transformations``."""
     offset = (1.0, -2.0, 0.5)

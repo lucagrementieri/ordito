@@ -57,7 +57,9 @@ comparable.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
+import warp as wp
 
 import ordito as od
 from conftest import BenchCase
@@ -70,6 +72,23 @@ def test_halfedge_twins(bench_case: BenchCase) -> None:
     """Hash, radix sort and pair up: the ``N``-driven half of this module."""
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
     twins = bench_case.run(lambda: od.halfedge.halfedge_twins(faces, n_vertices=n_vertices))
+    assert twins.shape == (faces.size,)
+
+
+@pytest.mark.benchmark(group="require_matching_twins")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_require_matching_twins(bench_case: BenchCase) -> None:
+    """
+    Validating a caller-supplied twin table: one check launch and the readback that raises on it.
+
+    At ``halfedge_twins``'s points, so the two read side by side as what a caller supplying
+    ``twins=`` pays to have it checked against building it. Ordito only: no reference exposes a
+    caller-supplied twin table.
+    """
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
+    bench_case.run(lambda: od.halfedge.require_matching_twins(faces, twins))
     assert twins.shape == (faces.size,)
 
 
@@ -97,3 +116,41 @@ def test_vertex_one_rings_scale(bench_case: BenchCase) -> None:
         lambda: od.halfedge.vertex_one_rings(faces, twins=twins, n_vertices=n_vertices)
     )
     assert offsets.shape == (n_vertices + 1,)
+
+
+@pytest.mark.benchmark(group="halfedge_mates")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_halfedge_mates(bench_case: BenchCase) -> None:
+    """
+    The mate code of every halfedge, with the vertex count passed (bucketed on a large CUDA mesh).
+
+    The pairing ``halfedge_twins`` is built on, at its points, so the two read side by side.
+    Ordito only: the test oracle is a NumPy grouping of the halfedge rows.
+    """
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    mates = bench_case.run(lambda: od.halfedge.halfedge_mates(faces, n_vertices))
+    assert mates.shape == (faces.size,)
+
+
+@pytest.mark.benchmark(group="key_ordered_halfedges")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_key_ordered_halfedges(bench_case: BenchCase) -> None:
+    """
+    One halfedge per undirected edge (origin below destination), read back in edge-key order.
+
+    One class with no ``key_order`` given, so the row is a compaction plus the key sort of half the
+    halfedges: the ``edges_unique`` row order reached from a flag scan. The scan is an input,
+    built on the host outside the timed region. Ordito only: the test oracle is NumPy.
+    """
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    faces_np = bench_case.faces_np
+    flags_np = (faces_np < faces_np[:, [1, 2, 0]]).reshape(-1)
+    inclusive_np = np.cumsum(flags_np, dtype=np.int32)
+    count = int(inclusive_np[-1])
+    inclusive = wp.array(inclusive_np, dtype=wp.int32, device=bench_case.device)
+    halfedges = bench_case.run(
+        lambda: od.halfedge.key_ordered_halfedges(faces, inclusive, count, n_vertices=n_vertices)
+    )
+    assert halfedges.shape == (count,)

@@ -208,6 +208,31 @@ def test_edges_unique_auto_n_vertices(bench_case: BenchCase) -> None:
     assert unique_edges.shape[1] == 2
 
 
+@pytest.mark.benchmark(group="unique_edge_count")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_unique_edge_count(bench_case: BenchCase) -> None:
+    """
+    The number of unique undirected edges, without building the edge table.
+
+    At ``edges_unique``' operating point with the same ``n_vertices=`` hint, so the pair prices the
+    table the count skips. trimesh has no count of its own; its row is the unique-edge grouping of
+    the ``edges_unique`` group with ``len`` taken, which is what ``tests/test_edges.py`` compares
+    against (``len(Trimesh.edges_unique)``).
+    """
+    if bench_case.kind == "trimesh":
+        faces_np = bench_case.faces_np
+
+        def count_tm() -> int:
+            edges_sorted = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
+            unique_idx, _ = tm.grouping.unique_rows(edges_sorted)
+            return len(unique_idx)
+
+        assert bench_case.run(count_tm) > 0
+        return
+    faces, nv = bench_case.faces_wp, bench_case.n_vertices
+    assert bench_case.run(lambda: od.edges.unique_edge_count(faces, n_vertices=nv)) > 0
+
+
 @pytest.mark.benchmark(group="edges_unique_manifold")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("ordito", "igl", "potpourri3d")
@@ -357,6 +382,30 @@ def test_mean_edge_length(bench_case: BenchCase) -> None:
     else:  # igl.edge_lengths -> (#F, 3), the per-face table; its mean is getAverageEdge
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
         bench_case.run(lambda: float(np.asarray(igl.edge_lengths(vertices, faces)).mean()))
+
+
+@pytest.mark.benchmark(group="edge_length_sum")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_edge_length_sum(bench_case: BenchCase) -> None:
+    """
+    The total of the ``3 * n_faces`` per-face edge lengths, left on the device.
+
+    ``mean_edge_length`` is this total read back and divided, so the pair prices the readback.
+    The NumPy row is the sum of the per-face edge norms ``tests/test_edges.py`` compares against.
+    """
+    if bench_case.kind == "numpy":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+
+        def total_np() -> float:
+            triangles_np = vertices_np[faces_np]
+            edges_np = triangles_np - triangles_np[:, [1, 2, 0]]
+            return float(np.linalg.norm(edges_np, axis=2).sum())
+
+        assert bench_case.run(total_np) > 0.0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    total = bench_case.run(lambda: od.edges.edge_length_sum(vertices, faces))
+    assert total.shape == (1,)
 
 
 @pytest.mark.benchmark(group="mean_unique_edge_length")

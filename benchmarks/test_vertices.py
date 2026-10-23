@@ -119,6 +119,35 @@ def test_mean_vertex_normals(bench_case: BenchCase) -> None:
     assert result.shape == (n_vertices,)
 
 
+@pytest.mark.benchmark(group="weighted_vertex_normals")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_weighted_vertex_normals(bench_case: BenchCase) -> None:
+    """
+    The corner-weighted scatter, at ``mean_vertex_normals``' operating point: the weights' price.
+
+    The weights are the corner angles, the scheme ``vertex_normals(weighting="angle")`` derives,
+    and like the face normals they are *inputs* built outside the timed region on both sides.
+    ``trimesh.geometry.weighted_vertex_normals`` is the reference ``tests/test_vertices.py``
+    compares against, fed trimesh's own face normals and angles there as here.
+    """
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "trimesh":
+        mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        faces_np, normals_np, angles_np = mesh_tm.faces, mesh_tm.face_normals, mesh_tm.face_angles
+        normals_tm = bench_case.run(
+            lambda: tm.geometry.weighted_vertex_normals(n_vertices, faces_np, normals_np, angles_np)
+        )
+        assert normals_tm.shape == (n_vertices, 3)
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    face_normals, _areas = _face_normals_and_areas(bench_case)
+    face_angles = od.triangles.face_angles(vertices, faces)
+    result = bench_case.run(
+        lambda: od.vertices.weighted_vertex_normals(n_vertices, faces, face_normals, face_angles)
+    )
+    assert result.shape == (n_vertices,)
+
+
 @pytest.mark.noparity(
     "trimesh",
     oracle="open3d",

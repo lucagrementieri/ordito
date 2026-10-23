@@ -599,3 +599,200 @@ def test_transport_tangent_vectors_scale(bench_case: BenchCase) -> None:
     """The same transport over the size sweep, for the assembly-versus-solve split."""
     skip_larger_than(bench_case, "sphere_large")
     _run_transport(bench_case, amortized=False)
+
+
+@pytest.mark.benchmark(group="vector_heat_operators")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_vector_heat_operators(bench_case: BenchCase) -> None:
+    """
+    The vector solvers' whole assembly: the scalar bundle, the frames and the connection system.
+
+    The setup ``transport_tangent_vectors``' full row pays per call and its amortized row hoists.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    operators = bench_case.run(
+        lambda: od.heat.vector_heat_operators(vertices, faces), rounds=_VECTOR_HEAT_ROUNDS
+    )
+    assert operators[0].nrow == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="tangent_to_world")
+@pytest.mark.benchlibs("ordito")
+def test_tangent_to_world(bench_case: BenchCase) -> None:
+    """
+    One per-vertex frame expansion: a pure map, so the scan sweep is its axis.
+
+    The map's cost does not read the frames' values, so it is handed constant axes: the scan
+    meshes are not edge-manifold, which ``vertex_tangent_frames`` requires.
+    """
+    n, device = bench_case.n_vertices, bench_case.device
+    basis_x = wp.full(n, wp.vec3(1.0, 0.0, 0.0), dtype=wp.vec3, device=device)
+    basis_y = wp.full(n, wp.vec3(0.0, 1.0, 0.0), dtype=wp.vec3, device=device)
+    tangent = wp.full(
+        bench_case.n_vertices, wp.vec2(3.0, 4.0), dtype=wp.vec2, device=bench_case.device
+    )
+    world = bench_case.run(lambda: od.heat.tangent_to_world(tangent, basis_x, basis_y))
+    assert world.shape == (bench_case.n_vertices,)
+
+
+def _tangent_source(bench_case: BenchCase) -> wp.array[wp.vec2d]:
+    """Return one unit tangent vector at vertex 0 and zero elsewhere."""
+    source_np = np.zeros((bench_case.n_vertices, 2))
+    source_np[0] = (1.0, 0.0)
+    return wp.array(source_np, dtype=wp.vec2d, device=bench_case.device)
+
+
+@pytest.mark.benchmark(group="diffuse_tangent_field")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_diffuse_tangent_field(bench_case: BenchCase) -> None:
+    """
+    One settled vector diffusion against hoisted operators: the vector solve on its own.
+
+    The system form, so nothing is factored across rounds and every round iterates; the quality
+    pair is the axis, as for every conjugate-gradient group here.
+    """
+    vector_system, _, _, preconditioner = od.heat.vector_heat_operators(
+        bench_case.vertices_wp, bench_case.faces_wp
+    )
+    source = _tangent_source(bench_case)
+    diffused = bench_case.run(
+        lambda: od.heat.diffuse_tangent_field(vector_system, source, preconditioner=preconditioner),
+        rounds=_VECTOR_HEAT_ROUNDS,
+    )
+    assert diffused.shape == (bench_case.n_vertices,)
+    assert np.isfinite(diffused.numpy()).all()
+
+
+@pytest.mark.benchmark(group="heat_solver_factor")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_heat_solver_factor(bench_case: BenchCase) -> None:
+    """
+    ``HeatSolver.factor``: the heat and Poisson factorizations, the second sharing an analysis.
+
+    A factored solver returns at once, so each round takes a fresh mesh with its operators already
+    assembled (outside the timed region). A factorization is indifferent to conditioning, so this
+    row should be flat across the quality pair.
+    """
+
+    def fresh() -> tuple[od.Trimesh, od.heat.HeatSolver]:
+        mesh = od.Trimesh(bench_case.vertices_wp, bench_case.faces_wp)
+        solver = mesh.heat_solver()
+        assert solver.operators[0].nrow == bench_case.n_vertices
+        # The mesh rides along: the solver refers to it weakly.
+        return mesh, solver
+
+    factored = bench_case.run(
+        lambda pair: pair[1].factor(), setup=fresh, rounds=_VECTOR_HEAT_ROUNDS
+    )
+    assert factored
+
+
+def _warm_heat_solver(bench_case: BenchCase) -> tuple[od.Trimesh, od.heat.HeatSolver]:
+    """Return a mesh and its heat solver, the solver warmed until its solves run factored."""
+    mesh = od.Trimesh(bench_case.vertices_wp, bench_case.faces_wp)
+    solver = mesh.heat_solver()
+    solver.factor()
+    return mesh, solver
+
+
+@pytest.mark.benchmark(group="heat_solver_diffuse")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_heat_solver_diffuse(bench_case: BenchCase) -> None:
+    """
+    ``HeatSolver.diffuse`` from one vertex on a solver holding its factorization.
+
+    The amortized state a mesh reaches on its second solve: a factored, refined solve that should
+    read flat across the quality pair, against ``solve_spd_settled``'s iteration in test_linalg.
+    """
+    _mesh, solver = _warm_heat_solver(bench_case)
+    rhs_np = np.zeros(bench_case.n_vertices)
+    rhs_np[0] = 1.0
+    rhs = wp.array(rhs_np, dtype=wp.float64, device=bench_case.device)
+    solution = wp.zeros_like(rhs)
+
+    def run() -> None:
+        solution.zero_()
+        solver.diffuse(rhs, solution)
+
+    bench_case.run(run)
+    assert np.isfinite(solution.numpy()).all()
+
+
+@pytest.mark.benchmark(group="heat_solver_diffuse_tangent")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_heat_solver_diffuse_tangent(bench_case: BenchCase) -> None:
+    """
+    ``HeatSolver.diffuse_tangent`` on its second-solve state, the vector system factored.
+
+    Two warm calls first: the first iterates, the second factors (rent or buy). Read against
+    ``diffuse_tangent_field``, the same diffusion iterated every call.
+    """
+    _mesh, solver = _warm_heat_solver(bench_case)
+    rhs = _tangent_source(bench_case)
+    solution = wp.zeros_like(rhs)
+
+    def run() -> None:
+        solution.zero_()
+        solver.diffuse_tangent(rhs, solution)
+
+    for _ in range(2):
+        run()
+    bench_case.run(run)
+    assert np.isfinite(solution.numpy()).all()
+
+
+@pytest.mark.benchmark(group="heat_solver_diffuse_stacked")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_heat_solver_diffuse_stacked(bench_case: BenchCase) -> None:
+    """
+    ``HeatSolver.diffuse_stacked``: a tangent field and one scalar field as one solve.
+
+    What ``transport_tangent_vectors`` runs; warmed twice like ``heat_solver_diffuse_tangent``, so
+    the row is the factored steady state of the stack.
+    """
+    _mesh, solver = _warm_heat_solver(bench_case)
+    n = bench_case.n_vertices
+    rhs_np = np.zeros(3 * n)
+    rhs_np[0] = 1.0
+    rhs_np[2 * n] = 1.0
+    rhs = wp.array(rhs_np, dtype=wp.float64, device=bench_case.device)
+    solution = wp.zeros_like(rhs)
+
+    def run() -> None:
+        solution.zero_()
+        solver.diffuse_stacked(rhs, solution, 1)
+
+    for _ in range(2):
+        run()
+    bench_case.run(run)
+    assert np.isfinite(solution.numpy()).all()
+
+
+@pytest.mark.benchmark(group="heat_solver_solve_poisson")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_heat_solver_solve_poisson(bench_case: BenchCase) -> None:
+    """
+    ``HeatSolver.solve_poisson`` on a factored solver: the heat method's second stage, amortized.
+
+    The right-hand side is a unit dipole between the first and last vertex, consistent as a
+    divergence is.
+    """
+    _mesh, solver = _warm_heat_solver(bench_case)
+    rhs_np = np.zeros(bench_case.n_vertices)
+    rhs_np[0], rhs_np[-1] = 1.0, -1.0
+    rhs = wp.array(rhs_np, dtype=wp.float64, device=bench_case.device)
+    solution = wp.zeros_like(rhs)
+
+    def run() -> None:
+        solution.zero_()
+        solver.solve_poisson(rhs, solution)
+
+    bench_case.run(run)
+    assert np.isfinite(solution.numpy()).all()

@@ -370,6 +370,7 @@ def test_biharmonic_is_deterministic(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
+@pytest.mark.parity("tutte", "igl")
 def test_tutte_matches_igl_reference(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class B: igl has no ``tutte``, so the reference is its fixed-value minimizer on ``D - A``.

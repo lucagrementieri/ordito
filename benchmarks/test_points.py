@@ -102,7 +102,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
-from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
+from conftest import BenchCase, BenchLibrary, points_torch_from_numpy, skip_larger_than
 
 if TYPE_CHECKING:
     from typing_extensions import Buffer
@@ -269,6 +269,55 @@ def test_fit_line(bench_case: BenchCase) -> None:
         points_np = bench_case.vertices_np
         axis_tm = bench_case.run(lambda: tm.points.major_axis(points_np))
         assert axis_tm.shape == (3,)
+
+
+@pytest.mark.benchmark(group="centroid")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_centroid(bench_case: BenchCase) -> None:
+    """
+    The mean position of the cloud as a ``(1,)`` device array: one block-strided ``vec3`` sum.
+
+    The scan sweep, the point count being the work. ``numpy.mean(axis=0)`` is the reference
+    ``tests/test_points.py`` compares against; ordito's total stays on the device, so unlike the
+    readback reductions in ``test_reduce.py`` its row pays no host synchronisation beyond the
+    harness's own.
+    """
+    if bench_case.kind == "numpy":
+        points_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
+        assert bench_case.run(lambda: points_np.mean(axis=0)).shape == (3,)
+        return
+    points = bench_case.vertices_wp
+    assert bench_case.run(lambda: od.points.centroid(points)).shape == (1,)
+
+
+@pytest.mark.benchmark(group="centered_covariance")
+@pytest.mark.benchlibs("ordito")
+def test_centered_covariance(bench_case: BenchCase) -> None:
+    """
+    The scatter matrix about the mean: ``centroid``, then ``gram_matrix``'s fold on centred points.
+
+    At ``gram_matrix``'s operating point, so the pair prices the centring pass. ordito-only: its
+    test checks it against the NumPy definition, not a library function.
+    """
+    points = bench_case.vertices_wp
+    assert bench_case.run(lambda: od.points.centered_covariance(points)).shape == (1,)
+
+
+@pytest.mark.benchmark(group="covariance")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_covariance(bench_case: BenchCase) -> None:
+    """
+    The sample covariance: ``centered_covariance`` scaled by ``1 / (n - 1)`` on the device.
+
+    At ``centered_covariance``'s operating point. ``numpy.cov`` is the reference
+    ``tests/test_points.py`` compares against.
+    """
+    if bench_case.kind == "numpy":
+        points_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
+        assert bench_case.run(lambda: np.cov(points_np.T, ddof=1)).shape == (3, 3)
+        return
+    points = bench_case.vertices_wp
+    assert bench_case.run(lambda: od.points.covariance(points)).shape == (1,)
 
 
 @pytest.mark.benchmark(group="gram_matrix")
@@ -466,6 +515,21 @@ def test_fit_plane(bench_case: BenchCase) -> None:
         centroid_tm, normal_tm = bench_case.run(lambda: tm.points.plane_fit(points_np))
         assert centroid_tm.shape == (3,)
         assert normal_tm.shape == (3,)
+
+
+@pytest.mark.benchmark(group="plane_basis")
+@pytest.mark.benchlibs("ordito")
+def test_plane_basis(bench_lib: BenchLibrary) -> None:
+    """
+    An orthonormal ``(u, v)`` for a plane normal: two cross products on host ``wp.vec3`` values.
+
+    Host arithmetic on one vector with no array and no launch, so it is mesh-free and has no axis;
+    the row prices the per-call cost of the ``wp.vec3`` operands. ordito-only: its test checks the
+    basis's own properties.
+    """
+    normal = wp.vec3(*_PLANE_NORMAL.tolist())
+    u, v = bench_lib.run(lambda: od.points.plane_basis(normal))
+    assert abs(wp.dot(u, v)) < 1e-6
 
 
 @pytest.mark.benchmark(group="vector_angle")
@@ -686,6 +750,21 @@ def test_radius_outlier_mask(bench_case: BenchCase, radius_scale: float) -> None
             lambda: cloud.remove_radius_outlier(nb_points=_MIN_NEIGHBORS, radius=radius)
         )
         assert len(keep_indices) <= bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="point_finite_mask")
+@pytest.mark.benchlibs("ordito")
+def test_point_finite_mask(bench_case: BenchCase) -> None:
+    """
+    One ``isfinite`` flag per point: a single ``wp.map`` over the cloud.
+
+    The scan sweep, the point count being the work; expect the launch floor until the largest
+    clouds. ordito-only: open3d's ``remove_non_finite_points``, its test's reference, copies the
+    surviving cloud out, so its row would time the copy (``tests/test_points.py`` records why).
+    """
+    points = bench_case.vertices_wp
+    mask = bench_case.run(lambda: od.points.point_finite_mask(points))
+    assert mask.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="point_duplicate_mask")

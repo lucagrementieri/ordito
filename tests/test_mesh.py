@@ -199,6 +199,9 @@ def three_spheres(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("mesh_vertex_normals", "trimesh")
+@pytest.mark.parity("mesh_triangles_center", "trimesh")
+@pytest.mark.parity("mesh_centroid", "trimesh")
+@pytest.mark.parity("mesh_extents", "trimesh")
 def test_geometry_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A on the cached geometry: same quantities, same order, no transform.
@@ -237,6 +240,8 @@ def test_geometry_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str
 
 
 @pytest.mark.parametrize("mesh_name", CLOSED_MESHES)
+@pytest.mark.parity("mesh_center_mass", "trimesh")
+@pytest.mark.parity("mesh_moment_inertia", "trimesh")
 def test_mass_properties_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: ``volume``, ``center_mass`` and ``moment_inertia`` against trimesh's.
@@ -295,6 +300,7 @@ def test_scalar_properties_of_a_mesh_with_no_faces(device: str) -> None:
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("mesh_faces_unique_edges", "trimesh")
 def test_faces_unique_edges_indexes_edges_unique(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -351,6 +357,7 @@ def test_face_adjacency_projections_and_convex_match_trimesh(
 
 
 @pytest.mark.parametrize("mesh_name", CLOSED_MESHES)
+@pytest.mark.parity("mesh_contains", "trimesh")
 def test_contains_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: ``contains`` against ``trimesh.Trimesh.contains`` on a grid spanning the mesh.
@@ -466,6 +473,7 @@ def test_copy_shares_nothing(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> No
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("mesh_edges_sorted", "trimesh")
 def test_edges_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A, and the row *order* is part of the claim -- ``array_equal``, not a lexsort.
@@ -699,6 +707,7 @@ _PREDICATE_MESHES = [
 
 
 @pytest.mark.parametrize(("mesh_name", "consistent"), _PREDICATE_MESHES)
+@pytest.mark.parity("mesh_is_winding_consistent", "trimesh")
 def test_predicates_match_trimesh(
     request: pytest.FixtureRequest, mesh_name: str, consistent: bool
 ) -> None:

@@ -322,6 +322,8 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
 | `--device` | `auto` | `ordito` target(s): `auto`/`cpu`/`cuda`/`both`. `auto` = cuda if available, else cpu. The CPU references (trimesh / igl / open3d / scipy / numpy / potpourri3d / pymeshlab / pyvista / meshlib / pymeshfix) always run, and so does `pytorch3d-cuda` whenever the installed pytorch3d has a working CUDA extension (pytorch3d has no host row at all) — this flag selects among *ordito's* targets, not the references'. **`cpu`/`both` on a GPU box inflate the `ordito-cpu` rows and warn** — use `benchmarks/devices.py`. Registered in the repo-root `conftest.py`, shared with `tests/`. |
 | `--size` | `all` | comma-separated size categories for the **scan** sweep (`small,medium,large,extralarge,huge`). Naming a size also lifts the CPU cap for it. Has no effect on axis-driven groups. |
 | `--cpu-max-size` | `large` | CPU-bound libraries (every reference, plus `ordito-cpu`) skip scan meshes larger than this unless the size is named in `--size`. |
+| `--no-size-caps` | off | makes every `skip_larger_than` cap a no-op. With an explicit `--size small,medium,large,extralarge,huge` (which also lifts `--cpu-max-size`) every library runs on every mesh. |
+| `--round-budget` | off | seconds: time one warm-up call per row and cut its rounds to fit (at least one). For the uncapped sweep, where a reference call on `lucy` can take minutes. |
 
 ## Host-traffic census and its budget
 
@@ -559,17 +561,11 @@ only reference with **CUDA kernels of its own**, and it is registered for those 
 `pytorch3d-cuda` row and no host row; see its section below for why its GPU ratio is a *crossover*
 rather than a bar, and why every one of its rows has to synchronize torch's stream.
 
-#### Known coverage gaps
+#### Coverage
 
-Recorded so they are not rediscovered as surprises. A gap here is a *benchmark* gap: the function is
-public and tested, only untimed.
-
-| function | reference that exists | why there is no group yet |
-|---|---|---|
-| `visibility.volumetric_obscurance` | `compute_scalar_by_volumetric_obscurance` | it shares `ambient_occlusion`'s bundle and block layout and differs only in a nearest-hit trace and a per-hit `exp(-tau * t)` factor, so a ordito-only group would re-measure that group's axis. MeshLab's filter *is* a real second reference, so the row is worth adding — with `tau` as its axis, not `rays`. |
-| `measures.volume` | `get_geometric_measures["mesh_volume"]`, `trimesh.Trimesh.volume`, `igl.moments[0]` | untimed since before it moved out of `triangles.py`. Its device pass is now `triangles.face_signed_volumes` plus one `reduce.sum`, and the `moments` row already prices the same integrals at three readbacks against this one's — so the row would isolate the readback count, which is the axis this module is about. Worth adding. |
-| `triangles.face_signed_volumes` | none | deliberately none: it is the per-face primitive `measures.volume` reduces, and a group over it would measure the same launch twice. Time it through a `volume` row instead. |
-| `energies.lscm_hessian`, `energies.vector_area_matrix` | none with a binding | libigl exposes neither on its own — `lscm_hessian` only as `igl.lscm`'s second return, and `vector_area_matrix` not at all (`tests/test_energies.py` derives it as `(-repdiag(L, 2) - Q) / 2`). Their cost is measured through the `lscm` group in `test_parametrization`, which is also the only way a caller reaches them. |
+Every public function and method has a row: check 31 of `tests/api_conventions.py` fails the default
+`pytest` run on one that no file here names, outside its short `_BENCHMARK_EXEMPT` table of
+callables with no runtime cost to time (argument plumbing, releasing a held factorization).
 
 ### The parity gate: a benchmarked reference must be a tested reference
 

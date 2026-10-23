@@ -11,6 +11,16 @@
    "rest": []
   },
   {
+   "group": "aabb",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "aabb_union",
+   "mesh_name": null,
+   "rest": []
+  },
+  {
    "group": "all_bool",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -18,6 +28,26 @@
   {
    "group": "all_bool",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "all_bool",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "allclose",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "allclose",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "allclose",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -81,6 +111,26 @@
    ]
   },
   {
+   "group": "ambient_occlusion",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_rays",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "ambient_occlusion",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_rays",
+     "64"
+    ]
+   ]
+  },
+  {
    "group": "any_bool",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -88,6 +138,281 @@
   {
    "group": "any_bool",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "any_bool",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "arange",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "arange",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "arange",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "arange_repeat",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "arange_repeat",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "arange_repeat",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "arange_repeat",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "arange_repeat",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "arange_repeat",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "as_mat44",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "device"
+    ]
+   ]
+  },
+  {
+   "group": "as_mat44",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "host"
+    ]
+   ]
+  },
+  {
+   "group": "assemble_interior_system",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "assemble_interior_system",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "assemble_interior_system",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "assemble_interior_system",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "astype",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "astype",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "astype",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "axis",
+   "mesh_name": null,
+   "rest": [
+    [
+     "transformed",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "axis",
+   "mesh_name": null,
+   "rest": [
+    [
+     "transformed",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "ball_pivoting",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "barycentric_to_points",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "barycentric_to_points",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "barycentric_to_points",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "bitcast_from_int",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "bitcast_from_int",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "bitcast_from_int",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "bitcast_from_int",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "bitcast_from_int",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "bitcast_from_int",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "bitcast_to_int",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "bitcast_to_int",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "bitcast_to_int",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "bitcast_to_int",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "bitcast_to_int",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "bitcast_to_int",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "blue_noise",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "blue_noise",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "1.0"
+    ]
+   ]
+  },
+  {
+   "group": "boundary_loops_with_offsets",
+   "mesh_name": "holes_many",
+   "rest": []
+  },
+  {
+   "group": "boundary_loops_with_offsets",
+   "mesh_name": "rim_long",
+   "rest": []
+  },
+  {
+   "group": "boundary_loops_with_offsets",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "boundary_vertices",
+   "mesh_name": "holes_many",
+   "rest": []
+  },
+  {
+   "group": "boundary_vertices",
+   "mesh_name": "rim_long",
+   "rest": []
+  },
+  {
+   "group": "boundary_vertices",
+   "mesh_name": "sphere_med",
    "rest": []
   },
   {
@@ -96,11 +421,136 @@
    "rest": []
   },
   {
+   "group": "bridge_edges",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
    "group": "bridge_edges_smooth",
    "mesh_name": "lucy",
    "rest": []
   },
   {
+   "group": "bridge_edges_smooth",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "bsr_from_csr",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "bsr_with_values",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "build_bottom",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "bvh_from_bounds",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "bvh_from_bounds",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "bvh_from_bounds",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "bvh_from_bounds",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "bvh_from_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "leaf_size",
+     "32"
+    ]
+   ]
+  },
+  {
+   "group": "bvh_from_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "leaf_size",
+     "4"
+    ]
+   ]
+  },
+  {
+   "group": "cell_centers",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "cell_centers",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "cell_centers",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "cell_centers",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "cell_centers",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "cell_centers",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "cell_indices",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "cell_indices",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "cell_indices",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "cell_indices",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "cell_indices",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "cell_indices",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "cells",
    "mesh_name": "bunny",
    "rest": [
@@ -201,6 +651,81 @@
    ]
   },
   {
+   "group": "cells",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "order",
+     "grid"
+    ]
+   ]
+  },
+  {
+   "group": "cells",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "order",
+     "sorted"
+    ]
+   ]
+  },
+  {
+   "group": "centered_covariance",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "centered_covariance",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "centered_covariance",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "centered_covariance",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "centered_covariance",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "centered_covariance",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "centroid",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "centroid",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "centroid",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "chamfer_mesh_to_mesh",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "chamfer_mesh_to_mesh",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "chamfer_mesh_to_mesh_loss",
    "mesh_name": "bunny",
    "rest": []
@@ -216,6 +741,86 @@
    "rest": []
   },
   {
+   "group": "chamfer_mesh_to_mesh_loss",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "chamfer_points_to_mesh",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "chamfer_points_to_mesh_loss",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "single_directional",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "chamfer_points_to_mesh_loss",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "single_directional",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "chamfer_points_to_mesh_loss",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "single_directional",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "chamfer_points_to_mesh_loss",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "single_directional",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "chamfer_points_to_mesh_loss",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "single_directional",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "chamfer_points_to_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "single_directional",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "chamfer_points_to_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "single_directional",
+     "True"
+    ]
+   ]
+  },
+  {
    "group": "chamfer_points_to_points_coincident",
    "mesh_name": "bunny",
    "rest": []
@@ -229,6 +834,61 @@
    "group": "chamfer_points_to_points_coincident",
    "mesh_name": "dragon",
    "rest": []
+  },
+  {
+   "group": "chamfer_points_to_points_coincident",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "chamfer_points_to_points_loss",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "single_directional",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "chamfer_points_to_points_loss",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "single_directional",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "chebyshev_preconditioner",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "chebyshev_preconditioner",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "classify_transform",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "device"
+    ]
+   ]
+  },
+  {
+   "group": "classify_transform",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "host"
+    ]
+   ]
   },
   {
    "group": "clip_mesh_with_field",
@@ -311,6 +971,26 @@
    ]
   },
   {
+   "group": "clip_mesh_with_field",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "cap",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "clip_mesh_with_field",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "cap",
+     "True"
+    ]
+   ]
+  },
+  {
    "group": "closest_point_on_edges",
    "mesh_name": "dragon",
    "rest": []
@@ -323,6 +1003,11 @@
   {
    "group": "closest_point_on_edges",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "closest_point_on_edges",
+   "mesh_name": "tangle_torus_small",
    "rest": []
   },
   {
@@ -333,6 +1018,31 @@
   {
    "group": "closest_point_on_mesh",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "closest_point_on_mesh",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "closing",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "closing",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "closing",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "closing",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -374,6 +1084,111 @@
      "6.0"
     ]
    ]
+  },
+  {
+   "group": "cluster_decimate",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "cell_factor",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "cluster_decimate",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "cell_factor",
+     "6.0"
+    ]
+   ]
+  },
+  {
+   "group": "collision_masks",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.05"
+    ]
+   ]
+  },
+  {
+   "group": "collision_masks",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.6"
+    ]
+   ]
+  },
+  {
+   "group": "compress_in_place",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "compress_in_place",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "compress_in_place",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "concatenate_arrays",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_segments",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "concatenate_arrays",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_segments",
+     "4"
+    ]
+   ]
+  },
+  {
+   "group": "connected_component_parity_from_edges",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "connected_component_parity_from_edges",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "connected_component_parity_from_edges",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "connected_component_parity_from_edges",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "connected_component_parity_from_edges",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "connected_component_parity_from_edges",
+   "mesh_name": "sphere_small",
+   "rest": []
   },
   {
    "group": "connection_laplacian",
@@ -391,6 +1206,21 @@
    "rest": []
   },
   {
+   "group": "convex_hull",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "convex_subset",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -398,6 +1228,11 @@
   {
    "group": "convex_subset",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "convex_subset",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -433,6 +1268,26 @@
   {
    "group": "convex_subset_mask",
    "mesh_name": "lucy",
+   "rest": [
+    [
+     "n_directions",
+     "32"
+    ]
+   ]
+  },
+  {
+   "group": "convex_subset_mask",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_directions",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "convex_subset_mask",
+   "mesh_name": "sphere_small",
    "rest": [
     [
      "n_directions",
@@ -479,6 +1334,41 @@
      "3"
     ]
    ]
+  },
+  {
+   "group": "convex_superset_mask",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "subdivisions",
+     "1"
+    ]
+   ]
+  },
+  {
+   "group": "convex_superset_mask",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "subdivisions",
+     "3"
+    ]
+   ]
+  },
+  {
+   "group": "copyto",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "copyto",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "copyto",
+   "mesh_name": "sphere_small",
+   "rest": []
   },
   {
    "group": "corner_normals",
@@ -501,6 +1391,31 @@
    ]
   },
   {
+   "group": "corner_normals",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "creased",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "corner_normals",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "creased",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "cotmatrix",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "cotmatrix_entries",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -508,6 +1423,11 @@
   {
    "group": "cotmatrix_entries",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "cotmatrix_entries",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -521,6 +1441,41 @@
    "rest": []
   },
   {
+   "group": "cotmatrix_entries_intrinsic",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "counts_to_offsets",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "counts_to_offsets",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "counts_to_offsets",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "covariance",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "covariance",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "covariance",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "crease_edges",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -529,6 +1484,192 @@
    "group": "crease_edges",
    "mesh_name": "lucy",
    "rest": []
+  },
+  {
+   "group": "crease_edges",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "csr_from_coo_keys",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "csr_from_coo_keys",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "csr_from_coo_keys",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "csr_from_coo_keys",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "csr_from_coo_keys",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "csr_from_coo_keys",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "csr_from_keys",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "csr_from_keys",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "csr_from_keys",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "csr_from_triplets",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "csr_from_triplets",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "csr_from_triplets",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "csr_from_triplets",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "csr_from_triplets",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "csr_from_triplets",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "csr_key_buffers",
+   "mesh_name": null,
+   "rest": []
+  },
+  {
+   "group": "csr_transpose",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "csr_transpose",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "csr_transpose",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "csr_transpose",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "csr_transpose",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "csr_transpose",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "cumulative_arc_length",
+   "mesh_name": "rim_long",
+   "rest": []
+  },
+  {
+   "group": "cumulative_arc_length",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "cumulative_arc_length",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "cylinder_transformed",
+   "mesh_name": null,
+   "rest": [
+    [
+     "mirror",
+     "False"
+    ],
+    [
+     "sections",
+     "32"
+    ]
+   ]
+  },
+  {
+   "group": "cylinder_transformed",
+   "mesh_name": null,
+   "rest": [
+    [
+     "mirror",
+     "False"
+    ],
+    [
+     "sections",
+     "4096"
+    ]
+   ]
+  },
+  {
+   "group": "cylinder_transformed",
+   "mesh_name": null,
+   "rest": [
+    [
+     "mirror",
+     "True"
+    ],
+    [
+     "sections",
+     "32"
+    ]
+   ]
+  },
+  {
+   "group": "cylinder_transformed",
+   "mesh_name": null,
+   "rest": [
+    [
+     "mirror",
+     "True"
+    ],
+    [
+     "sections",
+     "4096"
+    ]
+   ]
   },
   {
    "group": "delete_region_keep_boundary_with_offsets",
@@ -536,6 +1677,76 @@
    "rest": []
   },
   {
+   "group": "descend_field",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "n_paths",
+     "1"
+    ]
+   ]
+  },
+  {
+   "group": "descend_field",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "n_paths",
+     "4096"
+    ]
+   ]
+  },
+  {
+   "group": "descend_field",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "n_paths",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "difference",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "difference",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "difference",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "difference",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "difference",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "difference",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "diffuse_tangent_field",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "diffuse_tangent_field",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
    "group": "dilate",
    "mesh_name": "dragon",
    "rest": []
@@ -551,6 +1762,11 @@
    "rest": []
   },
   {
+   "group": "dilate",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "discrete_gaussian_curvature",
    "mesh_name": "sphere_large",
    "rest": [
@@ -591,6 +1807,111 @@
    ]
   },
   {
+   "group": "duplicate_vertex_inverse",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "epsilon",
+     "0.0"
+    ]
+   ]
+  },
+  {
+   "group": "duplicate_vertex_inverse",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "epsilon",
+     "1e-06"
+    ]
+   ]
+  },
+  {
+   "group": "edge_length_sum",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "edge_length_sum",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "edge_length_sum",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "edge_manifold_mask",
+   "mesh_name": "fan_hub",
+   "rest": [
+    [
+     "allow_boundary_edges",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "edge_manifold_mask",
+   "mesh_name": "fan_hub",
+   "rest": [
+    [
+     "allow_boundary_edges",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "edge_manifold_mask",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "allow_boundary_edges",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "edge_manifold_mask",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "allow_boundary_edges",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "edge_winding_consistent_mask",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "edge_winding_consistent_mask",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "edge_winding_consistent_mask",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "edge_winding_consistent_mask",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "edge_winding_consistent_mask",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "edge_winding_consistent_mask",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "edges_face",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -598,6 +1919,11 @@
   {
    "group": "edges_face",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "edges_face",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -611,6 +1937,106 @@
    "rest": []
   },
   {
+   "group": "edges_length",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "edges_to_csr",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "edges_to_csr",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "edges_to_csr",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "edges_to_csr",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "edges_to_csr",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "edges_to_csr",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists_from_counts",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists_from_counts",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists_from_counts",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists_from_counts",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists_from_counts",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "edges_to_neighbor_lists_from_counts",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "edges_unique",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "edges_unique_auto_nv",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "edges_unique_inverse",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "edges_unique_length",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -618,6 +2044,16 @@
   {
    "group": "edges_unique_length",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "edges_unique_length",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "empty_square_bsr",
+   "mesh_name": null,
    "rest": []
   },
   {
@@ -631,6 +2067,11 @@
    "rest": []
   },
   {
+   "group": "enclosing_diagonal",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "equalize_triangle_areas",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -638,6 +2079,61 @@
   {
    "group": "equalize_triangle_areas",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "equalize_triangle_areas",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "equalize_triangle_areas_no_shrinkage",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "equalize_triangle_areas_no_shrinkage",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "equalize_triangle_areas_no_shrinkage",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "equalize_triangle_areas_no_shrinkage",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "equalize_triangle_areas_no_shrinkage",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "equalize_triangle_areas_no_shrinkage",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "erode",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "erode",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "erode",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "erode",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -699,6 +2195,21 @@
      "8"
     ]
    ]
+  },
+  {
+   "group": "euler_characteristic",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "euler_characteristic",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "euler_characteristic",
+   "mesh_name": "sphere_small",
+   "rest": []
   },
   {
    "group": "exclude_fully_selected_components",
@@ -716,6 +2227,31 @@
    "rest": []
   },
   {
+   "group": "extend_hole",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "extrude_triangulation",
+   "mesh_name": null,
+   "rest": [
+    [
+     "ring_size",
+     "1024"
+    ]
+   ]
+  },
+  {
+   "group": "extrude_triangulation",
+   "mesh_name": null,
+   "rest": [
+    [
+     "ring_size",
+     "64"
+    ]
+   ]
+  },
+  {
    "group": "face_adjacency",
    "mesh_name": "bunny",
    "rest": [
@@ -778,6 +2314,26 @@
   {
    "group": "face_adjacency",
    "mesh_name": "lucy",
+   "rest": [
+    [
+     "known_radix",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "face_adjacency",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "known_radix",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "face_adjacency",
+   "mesh_name": "sphere_small",
    "rest": [
     [
      "known_radix",
@@ -796,6 +2352,11 @@
    "rest": []
   },
   {
+   "group": "face_adjacency_angles",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "face_adjacency_convex",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -803,6 +2364,11 @@
   {
    "group": "face_adjacency_convex",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "face_adjacency_convex",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -818,6 +2384,11 @@
   {
    "group": "face_adjacency_projections",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "face_adjacency_projections",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -891,6 +2462,26 @@
    ]
   },
   {
+   "group": "face_adjacency_unshared",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "tabled",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "face_adjacency_unshared",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "tabled",
+     "True"
+    ]
+   ]
+  },
+  {
    "group": "face_angles",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -901,6 +2492,71 @@
    "rest": []
   },
   {
+   "group": "face_angles",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "face_box_candidates",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.05"
+    ]
+   ]
+  },
+  {
+   "group": "face_box_candidates",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.6"
+    ]
+   ]
+  },
+  {
+   "group": "face_box_candidates",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.05"
+    ]
+   ]
+  },
+  {
+   "group": "face_box_candidates",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.6"
+    ]
+   ]
+  },
+  {
+   "group": "face_box_candidates",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.05"
+    ]
+   ]
+  },
+  {
+   "group": "face_box_candidates",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.6"
+    ]
+   ]
+  },
+  {
    "group": "face_centroids",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -908,6 +2564,11 @@
   {
    "group": "face_centroids",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "face_centroids",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -921,6 +2582,11 @@
    "rest": []
   },
   {
+   "group": "face_connected_component_labels",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "face_edge_lengths",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -928,6 +2594,71 @@
   {
    "group": "face_edge_lengths",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "face_edge_lengths",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_indices",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_indices",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_indices",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_indices",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_indices",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_indices",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_mask",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_mask",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_mask",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_mask",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_mask",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "face_flipped_mask",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1001,6 +2732,91 @@
    ]
   },
   {
+   "group": "face_gradients",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "precomputed",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "face_gradients",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "precomputed",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "face_indices_from_vertex_indices",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "face_mode",
+     "all"
+    ]
+   ]
+  },
+  {
+   "group": "face_indices_from_vertex_indices",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "face_mode",
+     "any"
+    ]
+   ]
+  },
+  {
+   "group": "face_nondegenerate_mask",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "face_nondegenerate_mask",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "face_nondegenerate_mask",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "face_signed_volumes",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "face_signed_volumes",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "face_signed_volumes",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "face_watertight_mask",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "face_watertight_mask",
+   "mesh_name": "tangle_2",
+   "rest": []
+  },
+  {
    "group": "faces_to_edges",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -1011,6 +2827,11 @@
    "rest": []
   },
   {
+   "group": "faces_to_edges",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "faces_to_edges_sorted",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -1018,6 +2839,11 @@
   {
    "group": "faces_to_edges_sorted",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "faces_to_edges_sorted",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1033,6 +2859,11 @@
   {
    "group": "fill_cavities",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "fill_cavities",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1051,6 +2882,16 @@
    "rest": []
   },
   {
+   "group": "fill_loops_min_weight",
+   "mesh_name": "holes_many",
+   "rest": []
+  },
+  {
+   "group": "fill_loops_min_weight",
+   "mesh_name": "rim_short",
+   "rest": []
+  },
+  {
    "group": "fill_min_weight_chords",
    "mesh_name": "holes_many",
    "rest": [
@@ -1106,6 +2947,21 @@
    "rest": []
   },
   {
+   "group": "fill_orthographic",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "fill_small",
+   "mesh_name": "holes_many",
+   "rest": []
+  },
+  {
+   "group": "fill_small",
+   "mesh_name": "rim_short",
+   "rest": []
+  },
+  {
    "group": "fill_smooth",
    "mesh_name": "holes_many",
    "rest": [
@@ -1166,8 +3022,18 @@
    ]
   },
   {
+   "group": "fillable_loop_mask",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
    "group": "filter_humphrey",
    "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "filter_humphrey",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1211,6 +3077,31 @@
    ]
   },
   {
+   "group": "filter_mut_dif_laplacian",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "volume_constraint",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "filter_mut_dif_laplacian",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "volume_constraint",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "filter_neighborhood_average",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "filter_scalar_laplacian",
    "mesh_name": "dragon",
    "rest": []
@@ -1226,6 +3117,11 @@
    "rest": []
   },
   {
+   "group": "filter_scalar_laplacian",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "filter_sharpen",
    "mesh_name": "dragon",
    "rest": []
@@ -1241,6 +3137,11 @@
    "rest": []
   },
   {
+   "group": "filter_sharpen",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "filter_spikes",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -1248,6 +3149,46 @@
   {
    "group": "filter_spikes",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "filter_spikes",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "filter_taubin",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "first_occurrence_indices",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "first_occurrence_indices",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "first_occurrence_indices",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "first_occurrence_indices",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "first_occurrence_indices",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "first_occurrence_indices",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1271,6 +3212,11 @@
    "rest": []
   },
   {
+   "group": "fit_line",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "fit_plane",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -1278,6 +3224,26 @@
   {
    "group": "fit_plane",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "fit_plane",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "fixed_vertex_solver_factor",
+   "mesh_name": "hemisphere",
+   "rest": []
+  },
+  {
+   "group": "fixed_vertex_solver_factor",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "fixed_vertex_solver_factor",
+   "mesh_name": "saddle_small",
    "rest": []
   },
   {
@@ -1319,10 +3285,50 @@
      "0.5"
     ]
    ]
+  },
+  {
+   "group": "flatnonzero",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "selectivity",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "flatnonzero",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "selectivity",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "flatnonzero_in_place",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "flatnonzero_in_place",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "flatnonzero_in_place",
+   "mesh_name": "sphere_small",
+   "rest": []
   },
   {
    "group": "flatten_degree3_vertices",
    "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "flatten_degree3_vertices",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1346,6 +3352,146 @@
    ]
   },
   {
+   "group": "free_coordinates",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "free_coordinates",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "free_coordinates",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "free_coordinates",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "free_partition",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "free_partition",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "free_partition",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "free_partition",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "from_cells",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "from_cells",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "from_cells",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "from_cells",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "from_cells",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "from_cells",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "from_dense",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "from_dense",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "from_dense",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "from_dense",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "from_dense",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "from_dense",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "gather",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -1353,6 +3499,11 @@
   {
    "group": "gather",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "gather",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1364,6 +3515,36 @@
      "4096"
     ]
    ]
+  },
+  {
+   "group": "gram_matrix",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "gram_matrix",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "gram_matrix",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "gram_matrix",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "gram_matrix",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "gram_matrix",
+   "mesh_name": "sphere_small",
+   "rest": []
   },
   {
    "group": "graph_laplacian",
@@ -1391,6 +3572,11 @@
    "rest": []
   },
   {
+   "group": "graph_laplacian",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "grid_points",
    "mesh_name": null,
    "rest": [
@@ -1399,6 +3585,11 @@
      "256"
     ]
    ]
+  },
+  {
+   "group": "grid_transform",
+   "mesh_name": "sphere_small",
+   "rest": []
   },
   {
    "group": "group",
@@ -1413,6 +3604,31 @@
   {
    "group": "group",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "group",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "group_int_rows",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "group_int_rows",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "group_int_rows",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "group_int_rows",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1433,6 +3649,26 @@
   {
    "group": "half_space_mask",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "half_space_mask",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "halfedge_mates",
+   "mesh_name": "sphere_large",
+   "rest": []
+  },
+  {
+   "group": "halfedge_mates",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "halfedge_mates",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1476,6 +3712,271 @@
    "rest": []
   },
   {
+   "group": "hash_indices_rows",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "hash_indices_rows",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "hash_indices_rows",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "hash_indices_rows",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "hash_indices_rows",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "hash_indices_rows",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "hash_rows",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "hash_rows",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "hash_rows",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "hash_rows",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "hash_rows",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "hash_rows",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "epsilon",
+     "0.0"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "epsilon",
+     "0.0001"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "epsilon",
+     "0.0"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "epsilon",
+     "0.0001"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "epsilon",
+     "0.0"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "epsilon",
+     "0.0001"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "epsilon",
+     "0.0"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "epsilon",
+     "0.0001"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "epsilon",
+     "0.0"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "epsilon",
+     "0.0001"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "epsilon",
+     "0.0"
+    ]
+   ]
+  },
+  {
+   "group": "hash_vector_rows",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "epsilon",
+     "0.0001"
+    ]
+   ]
+  },
+  {
+   "group": "hashed_occurrence_counts",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "hashed_occurrence_counts",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "hashed_occurrence_counts",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "hashed_occurrence_counts",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "hashed_occurrence_counts",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "hashed_occurrence_counts",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "hashgrid_from_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "grid_bins",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "hashgrid_from_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "grid_bins",
+     "32"
+    ]
+   ]
+  },
+  {
+   "group": "hausdorff_mesh_to_mesh",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "hausdorff_mesh_to_mesh",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "hausdorff_mesh_to_mesh",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "hausdorff_mesh_to_mesh",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "hausdorff_points_to_mesh",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "hausdorff_points_to_mesh",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "hausdorff_points_to_points",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "heat_signed_distance_constraint",
    "mesh_name": "sphere_med",
    "rest": [
@@ -1494,6 +3995,56 @@
      "zero_set"
     ]
    ]
+  },
+  {
+   "group": "heat_solver_diffuse",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "heat_solver_diffuse",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "heat_solver_diffuse_stacked",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "heat_solver_diffuse_stacked",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "heat_solver_diffuse_tangent",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "heat_solver_diffuse_tangent",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "heat_solver_factor",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "heat_solver_factor",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "heat_solver_solve_poisson",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "heat_solver_solve_poisson",
+   "mesh_name": "saddle_graded",
+   "rest": []
   },
   {
    "group": "homology_generators_with_offsets",
@@ -1596,6 +4147,56 @@
    "rest": []
   },
   {
+   "group": "index_bound",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "index_sparse",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "index_sparse",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "index_sparse",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "indices_to_mask",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "indices_to_mask",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "indices_to_mask",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "indices_to_mask",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "indices_to_mask",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "indices_to_mask",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "inflate",
    "mesh_name": "bunny",
    "rest": []
@@ -1621,6 +4222,11 @@
    "rest": []
   },
   {
+   "group": "inflate",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "interpolate_from_points",
    "mesh_name": "dragon",
    "rest": [
@@ -1666,9 +4272,279 @@
    "rest": [
     [
      "neighborhood",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "interpolate_from_points",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "neighborhood",
      "8"
     ]
    ]
+  },
+  {
+   "group": "interpolate_from_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "neighborhood",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "interpolate_from_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "neighborhood",
+     "8"
+    ]
+   ]
+  },
+  {
+   "group": "intersection",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "intersection",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "intersection",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "intersection",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "intersection",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "intersection",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "is_closed",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "is_orientable",
+   "mesh_name": "ribbon_long",
+   "rest": []
+  },
+  {
+   "group": "is_orientable",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "is_winding_consistent",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "is_winding_consistent",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "is_winding_consistent",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "isin",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "isin",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "isin",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "jacobi_preconditioner",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "jacobi_preconditioner",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "key_ordered_halfedges",
+   "mesh_name": "sphere_large",
+   "rest": []
+  },
+  {
+   "group": "key_ordered_halfedges",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "key_ordered_halfedges",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "knn_initial_radius",
+   "mesh_name": "sphere_large",
+   "rest": []
+  },
+  {
+   "group": "knn_initial_radius",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "knn_initial_radius",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "laplacian_entries",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "laplacian_entries",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "laplacian_entries",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "laplacian_entries",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "laplacian_entries",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "laplacian_entries",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "laplacian_equal_weight",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "laplacian_inverse_distance",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "loop_directed_areas",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "loop_directed_areas_from_offsets",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "loop_directed_areas_from_offsets",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "loop_directed_areas_from_offsets",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "loop_directed_areas_from_offsets",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "loop_perimeters",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "loop_perimeters_from_offsets",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "loop_perimeters_from_offsets",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "loop_perimeters_from_offsets",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "loop_perimeters_from_offsets",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "lscm_hessian",
+   "mesh_name": "sphere_large",
+   "rest": []
+  },
+  {
+   "group": "lscm_hessian",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "lscm_hessian",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "make_normals_outward",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "make_normals_outward",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "make_normals_outward",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "make_normals_outward",
+   "mesh_name": "sphere_small",
+   "rest": []
   },
   {
    "group": "make_volume",
@@ -1678,6 +4554,11 @@
   {
    "group": "make_volume",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "make_volume",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1711,6 +4592,41 @@
    ]
   },
   {
+   "group": "mask_to_compact_ranks",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "mask_to_compact_ranks",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "mask_to_compact_ranks",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "matrix_to_numpy",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "device"
+    ]
+   ]
+  },
+  {
+   "group": "matrix_to_numpy",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "host"
+    ]
+   ]
+  },
+  {
    "group": "max_axis1",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -1718,6 +4634,16 @@
   {
    "group": "max_axis1",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "max_axis1",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "max_tangent_sphere_reach",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1731,6 +4657,11 @@
    "rest": []
   },
   {
+   "group": "mean_edge_length",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "mean_unique_edge_length",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -1738,6 +4669,11 @@
   {
    "group": "mean_unique_edge_length",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "mean_unique_edge_length",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1751,6 +4687,11 @@
    "rest": []
   },
   {
+   "group": "mean_vec3",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "mean_vertex_normals",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -1758,6 +4699,11 @@
   {
    "group": "mean_vertex_normals",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "mean_vertex_normals",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -1769,6 +4715,455 @@
    "group": "median",
    "mesh_name": "lucy",
    "rest": []
+  },
+  {
+   "group": "median",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "saddle_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_boundary_vertex_indices",
+   "mesh_name": "saddle_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "mode",
+     "invert"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "mode",
+     "rotate"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "mode",
+     "invert"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "mode",
+     "rotate"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "mode",
+     "invert"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "mode",
+     "rotate"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "mode",
+     "invert"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "mode",
+     "rotate"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "mode",
+     "invert"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_carry_directions",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "mode",
+     "rotate"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_center_mass",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_center_mass",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_center_mass",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_center_mass",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_centroid",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_centroid",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_centroid",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_centroid",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_collision_pairs",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.05"
+    ],
+    [
+     "setup",
+     "full"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_collision_pairs",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.6"
+    ],
+    [
+     "setup",
+     "full"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_collision_pairs",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.05"
+    ],
+    [
+     "setup",
+     "amortized"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_collision_pairs",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.05"
+    ],
+    [
+     "setup",
+     "full"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_collision_pairs",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.6"
+    ],
+    [
+     "setup",
+     "amortized"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_collision_pairs",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.6"
+    ],
+    [
+     "setup",
+     "full"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_edges_sorted",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_edges_sorted",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_edges_sorted",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_edges_sorted",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_extents",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_extents",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_extents",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_extents",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
   },
   {
    "group": "mesh_face_adjacency",
@@ -1803,6 +5198,216 @@
   {
    "group": "mesh_face_adjacency",
    "mesh_name": "lucy",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_face_adjacency",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_face_adjacency",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_faces_unique_edges",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_faces_unique_edges",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_faces_unique_edges",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_faces_unique_edges",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_fixed_vertex_solver",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_fixed_vertex_solver",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_from_points",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "mesh_from_warp_mesh",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_halfedge_mates",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_heat_solver",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_heat_solver",
+   "mesh_name": "sphere_small",
    "rest": [
     [
      "warm",
@@ -1891,6 +5496,736 @@
    ]
   },
   {
+   "group": "mesh_invalidation",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "mode",
+     "with_faces"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_invalidation",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "mode",
+     "with_vertices"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_orientable",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_self_intersecting",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_self_intersecting",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_self_intersecting",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_self_intersecting",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_self_intersecting",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_self_intersecting",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_self_intersecting",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_self_intersecting",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_watertight",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_watertight",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_winding_consistent",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_winding_consistent",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_winding_consistent",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_is_winding_consistent",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_laplacian_operator",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "n_rays",
+     "1"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "n_rays",
+     "1099511627776"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "n_rays",
+     "1"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "n_rays",
+     "1099511627776"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "n_rays",
+     "1"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "n_rays",
+     "1099511627776"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "n_rays",
+     "1"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "n_rays",
+     "1099511627776"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_rays",
+     "1"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_for_rays",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_rays",
+     "1099511627776"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_mesh_operator_pattern",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_moment_inertia",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_moment_inertia",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_moment_inertia",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_moment_inertia",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_operator_pattern",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "mesh_operator_pattern",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "mesh_operator_pattern",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "mesh_operator_pattern",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "mesh_operator_pattern",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "mesh_operator_pattern",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "saddle_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_oriented_boundary_edges",
+   "mesh_name": "saddle_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
    "group": "mesh_to_mesh_distance",
    "mesh_name": "dragon",
    "rest": [
@@ -1947,6 +6282,166 @@
     [
      "offset",
      "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_to_mesh_distance",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset",
+     "1.2"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_to_mesh_distance",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_traced_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_triangles_center",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_triangles_center",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_triangles_center",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_triangles_center",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
     ]
    ]
   },
@@ -2051,6 +6546,26 @@
    ]
   },
   {
+   "group": "mesh_vertex_normals",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_vertex_normals",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
    "group": "mesh_warp_mesh",
    "mesh_name": "bunny",
    "rest": [
@@ -2127,6 +6642,46 @@
     [
      "warm",
      "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_warp_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_warp_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "warm",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_with_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.05"
+    ]
+   ]
+  },
+  {
+   "group": "mesh_with_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_fraction",
+     "0.6"
     ]
    ]
   },
@@ -2141,6 +6696,51 @@
    "rest": []
   },
   {
+   "group": "mesh_with_plane",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "min_quad_with_fixed_precompute",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "min_quad_with_fixed_precompute",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "min_quad_with_fixed_precompute",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "min_quad_with_fixed_precompute",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
    "group": "min_scalar",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -2148,6 +6748,11 @@
   {
    "group": "min_scalar",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "min_scalar",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -2161,6 +6766,11 @@
    "rest": []
   },
   {
+   "group": "minmax_global_2d",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "minmax_scalar",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -2168,6 +6778,11 @@
   {
    "group": "minmax_scalar",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "minmax_scalar",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -2196,6 +6811,11 @@
    "rest": []
   },
   {
+   "group": "mollify_intrinsic",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "moments",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -2203,6 +6823,11 @@
   {
    "group": "moments",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "moments",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -2216,6 +6841,86 @@
    "rest": []
   },
   {
+   "group": "normal_matrix",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "device"
+    ]
+   ]
+  },
+  {
+   "group": "normal_matrix",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "host"
+    ]
+   ]
+  },
+  {
+   "group": "normals_at_closest_faces",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "normals_at_closest_faces",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "normals_at_closest_faces",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "normals_at_closest_faces",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "normals_at_closest_faces",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "normals_at_closest_faces",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "occupancy_at_cells",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "occupancy_at_cells",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "occupancy_at_cells",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "occupancy_at_cells",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "occupancy_at_cells",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "occupancy_at_cells",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "occupancy_at_points",
    "mesh_name": "dragon",
    "rest": [
@@ -2276,12 +6981,62 @@
    ]
   },
   {
+   "group": "occupancy_at_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_queries",
+     "10000"
+    ]
+   ]
+  },
+  {
+   "group": "occupancy_at_points",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_queries",
+     "1000000"
+    ]
+   ]
+  },
+  {
+   "group": "offset_mesh",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "divisor",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "offset_mesh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "divisor",
+     "256"
+    ]
+   ]
+  },
+  {
    "group": "offset_mesh",
    "mesh_name": "dragon",
    "rest": [
     [
      "divisor",
      "128"
+    ]
+   ]
+  },
+  {
+   "group": "offset_mesh",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "divisor",
+     "256"
     ]
    ]
   },
@@ -2311,6 +7066,16 @@
    "rest": [
     [
      "divisor",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "offset_mesh",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "divisor",
      "64"
     ]
    ]
@@ -2331,9 +7096,79 @@
    "rest": [
     [
      "divisor",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "offset_mesh",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "divisor",
      "64"
     ]
    ]
+  },
+  {
+   "group": "offset_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "divisor",
+     "128"
+    ]
+   ]
+  },
+  {
+   "group": "offset_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "divisor",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "offset_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "opening",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "opening",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "opening",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "opening",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "operator_factorization_factor",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "operator_factorization_factor",
+   "mesh_name": "saddle_graded",
+   "rest": []
   },
   {
    "group": "oriented_bounding_box",
@@ -2343,6 +7178,11 @@
   {
    "group": "oriented_bounding_box",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "oriented_bounding_box",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -2384,6 +7224,101 @@
      "4"
     ]
    ]
+  },
+  {
+   "group": "pack_1d_arrays",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_segments",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "pack_1d_arrays",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_segments",
+     "4"
+    ]
+   ]
+  },
+  {
+   "group": "partitioned_interior_system",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "partitioned_interior_system",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "partitioned_interior_system",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "partitioned_interior_system",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "fixed_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "plane_basis",
+   "mesh_name": null,
+   "rest": []
+  },
+  {
+   "group": "point_finite_mask",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "point_finite_mask",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "point_finite_mask",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "point_finite_mask",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "point_finite_mask",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "point_finite_mask",
+   "mesh_name": "sphere_small",
+   "rest": []
   },
   {
    "group": "point_plane_distance",
@@ -2406,6 +7341,11 @@
    "rest": []
   },
   {
+   "group": "point_plane_distance",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "points_to_barycentric",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -2416,6 +7356,11 @@
    "rest": []
   },
   {
+   "group": "points_to_barycentric",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "polyline_angles",
    "mesh_name": "rim_long",
    "rest": []
@@ -2427,6 +7372,36 @@
   },
   {
    "group": "polyline_angles",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "polyline_centroid",
+   "mesh_name": "rim_long",
+   "rest": []
+  },
+  {
+   "group": "polyline_centroid",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "polyline_centroid",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "polyline_close",
+   "mesh_name": "rim_long",
+   "rest": []
+  },
+  {
+   "group": "polyline_close",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "polyline_close",
    "mesh_name": "saddle_small",
    "rest": []
   },
@@ -2457,6 +7432,11 @@
   },
   {
    "group": "polyline_normal",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "polyline_open",
    "mesh_name": "saddle_small",
    "rest": []
   },
@@ -2526,6 +7506,41 @@
    "rest": []
   },
   {
+   "group": "polyline_smooth_upsample",
+   "mesh_name": "rim_long",
+   "rest": []
+  },
+  {
+   "group": "polyline_smooth_upsample",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "polyline_smooth_upsample",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "polyline_triangulate_from_offsets",
+   "mesh_name": null,
+   "rest": [
+    [
+     "n_loops",
+     "4096"
+    ]
+   ]
+  },
+  {
+   "group": "polyline_triangulate_from_offsets",
+   "mesh_name": null,
+   "rest": [
+    [
+     "n_loops",
+     "64"
+    ]
+   ]
+  },
+  {
    "group": "polyline_upsample_closed",
    "mesh_name": "rim_long",
    "rest": []
@@ -2541,6 +7556,36 @@
    "rest": []
   },
   {
+   "group": "pool_by_voxel",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "pool_by_voxel",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "pool_by_voxel",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "pool_by_voxel",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "pool_by_voxel",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "pool_by_voxel",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "principal_axes",
    "mesh_name": "bunny",
    "rest": []
@@ -2558,6 +7603,11 @@
   {
    "group": "principal_axes",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "principal_axes",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -2571,6 +7621,156 @@
    ]
   },
   {
+   "group": "procrustes",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "query_ball",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_ball",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_ball_count",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_ball_count",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "grid_bins",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "grid_bins",
+     "32"
+    ]
+   ]
+  },
+  {
+   "group": "query_bvh_ball",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_bvh_ball",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_bvh_ball",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_bvh_ball",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_bvh_ball",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_bvh_ball",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_bvh_box",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "query_geodesic_ball",
    "mesh_name": "bunny",
    "rest": []
@@ -2589,6 +7789,266 @@
    "group": "query_geodesic_ball",
    "mesh_name": "happy_buddha",
    "rest": []
+  },
+  {
+   "group": "query_geodesic_ball",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "query_mesh_aabb_with_offsets",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "query_mesh_aabb_with_offsets",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "query_mesh_aabb_with_offsets",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "query_mesh_aabb_with_offsets",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "query_mesh_aabb_with_offsets",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "query_mesh_aabb_with_offsets",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "query_nearest_bvh_k64",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "query_nearest_bvh_k7",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_bvh_k7_off_cloud",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k1",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "query_nearest_hashgrid_k7",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_edges",
+     "2.0"
+    ]
+   ]
+  },
+  {
+   "group": "query_nearest_hashgrid_k7_off_cloud",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "offset_edges",
+     "8.0"
+    ]
+   ]
   },
   {
    "group": "query_weighted_nearest",
@@ -2651,6 +8111,26 @@
    ]
   },
   {
+   "group": "query_weighted_nearest",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "weight_spread",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "query_weighted_nearest",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "weight_spread",
+     "4.0"
+    ]
+   ]
+  },
+  {
    "group": "radial_sort",
    "mesh_name": "bunny",
    "rest": []
@@ -2668,6 +8148,11 @@
   {
    "group": "radial_sort",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "radial_sort",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -2771,6 +8256,26 @@
    ]
   },
   {
+   "group": "rasterize_attribute",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "resolution",
+     "2048"
+    ]
+   ]
+  },
+  {
+   "group": "rasterize_attribute",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "resolution",
+     "512"
+    ]
+   ]
+  },
+  {
    "group": "rasterize_discrete_attribute",
    "mesh_name": "bunny",
    "rest": [
@@ -2863,6 +8368,26 @@
   {
    "group": "rasterize_discrete_attribute",
    "mesh_name": "lucy",
+   "rest": [
+    [
+     "resolution",
+     "512"
+    ]
+   ]
+  },
+  {
+   "group": "rasterize_discrete_attribute",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "resolution",
+     "2048"
+    ]
+   ]
+  },
+  {
+   "group": "rasterize_discrete_attribute",
+   "mesh_name": "sphere_small",
    "rest": [
     [
      "resolution",
@@ -2909,6 +8434,36 @@
      "True"
     ]
    ]
+  },
+  {
+   "group": "refill_region",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "triangulate_only",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "refill_region",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "triangulate_only",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "refine_and_smooth_region",
+   "mesh_name": "hemisphere",
+   "rest": []
+  },
+  {
+   "group": "refine_and_smooth_region",
+   "mesh_name": "saddle_small",
+   "rest": []
   },
   {
    "group": "refine_region_to_density",
@@ -2926,6 +8481,11 @@
    "rest": []
   },
   {
+   "group": "relax_approx",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "relax_keep_volume",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -2936,6 +8496,11 @@
    "rest": []
   },
   {
+   "group": "relax_keep_volume",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "remap_attribute_from_uv_linear",
    "mesh_name": "bunny",
    "rest": []
@@ -2956,6 +8521,11 @@
    "rest": []
   },
   {
+   "group": "remap_attribute_from_uv_linear",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "remap_attribute_from_uv_nearest",
    "mesh_name": "bunny",
    "rest": []
@@ -2976,6 +8546,11 @@
    "rest": []
   },
   {
+   "group": "remap_attribute_from_uv_nearest",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "remap_discrete_attribute_from_uv",
    "mesh_name": "bunny",
    "rest": []
@@ -2994,6 +8569,61 @@
    "group": "remap_discrete_attribute_from_uv",
    "mesh_name": "happy_buddha",
    "rest": []
+  },
+  {
+   "group": "remap_discrete_attribute_from_uv",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "remap_indices",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "remap_indices",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "remap_indices",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "remap_indices",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "remap_indices",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "remap_indices",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "remove_degenerate_and_non_manifold_faces",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "extra",
+     "0"
+    ]
+   ]
+  },
+  {
+   "group": "remove_degenerate_and_non_manifold_faces",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "extra",
+     "1024"
+    ]
+   ]
   },
   {
    "group": "remove_degree3_vertices",
@@ -3001,6 +8631,21 @@
    "rest": []
   },
   {
+   "group": "remove_degree3_vertices",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "remove_folded_faces",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "remove_folded_faces",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
    "group": "remove_tunnels",
    "mesh_name": "handles_1",
    "rest": []
@@ -3051,6 +8696,96 @@
    ]
   },
   {
+   "group": "remove_unreferenced_vertices",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "unreferenced",
+     "0"
+    ]
+   ]
+  },
+  {
+   "group": "remove_unreferenced_vertices",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "unreferenced",
+     "1"
+    ]
+   ]
+  },
+  {
+   "group": "replicated_operator",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "require_matching_twins",
+   "mesh_name": "sphere_large",
+   "rest": []
+  },
+  {
+   "group": "require_matching_twins",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "require_matching_twins",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "resample_uniform",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "cell_fraction",
+     "0.01"
+    ]
+   ]
+  },
+  {
+   "group": "resample_uniform",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "cell_fraction",
+     "0.02"
+    ]
+   ]
+  },
+  {
+   "group": "resolve_voxel_grid",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "resolve_voxel_grid",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "resolve_voxel_grid",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "resolve_voxel_grid",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "resolve_voxel_grid",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "resolve_voxel_grid",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "reverse_winding",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3061,6 +8796,61 @@
    "rest": []
   },
   {
+   "group": "reverse_winding",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "reverses_orientation",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "device"
+    ]
+   ]
+  },
+  {
+   "group": "reverses_orientation",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "host"
+    ]
+   ]
+  },
+  {
+   "group": "revoxelize",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "revoxelize",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "revoxelize",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "revoxelize",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "revoxelize",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "revoxelize",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "robust_laplacian",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3068,6 +8858,106 @@
   {
    "group": "robust_laplacian",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "robust_laplacian",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sample_fibonacci_cone",
+   "mesh_name": null,
+   "rest": [
+    [
+     "count",
+     "1024"
+    ]
+   ]
+  },
+  {
+   "group": "sample_fibonacci_cone",
+   "mesh_name": null,
+   "rest": [
+    [
+     "count",
+     "1048576"
+    ]
+   ]
+  },
+  {
+   "group": "sample_fibonacci_hemisphere",
+   "mesh_name": null,
+   "rest": [
+    [
+     "count",
+     "1024"
+    ]
+   ]
+  },
+  {
+   "group": "sample_fibonacci_hemisphere",
+   "mesh_name": null,
+   "rest": [
+    [
+     "count",
+     "1048576"
+    ]
+   ]
+  },
+  {
+   "group": "sample_fibonacci_sphere",
+   "mesh_name": null,
+   "rest": [
+    [
+     "count",
+     "1024"
+    ]
+   ]
+  },
+  {
+   "group": "sample_fibonacci_sphere",
+   "mesh_name": null,
+   "rest": [
+    [
+     "count",
+     "1048576"
+    ]
+   ]
+  },
+  {
+   "group": "sample_surface",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "count",
+     "10000"
+    ]
+   ]
+  },
+  {
+   "group": "sample_surface",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "count",
+     "100000"
+    ]
+   ]
+  },
+  {
+   "group": "sample_surface_poisson_disk",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "sample_surface_poisson_disk",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "sample_surface_poisson_disk",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -3131,6 +9021,35 @@
    ]
   },
   {
+   "group": "scatter_sum",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "scatter_sum",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "scatter_sum",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "screened_poisson",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "depth",
+     "10"
+    ],
+    [
+     "method",
+     "adaptive"
+    ]
+   ]
+  },
+  {
    "group": "screened_poisson",
    "mesh_name": "bunny",
    "rest": [
@@ -3151,6 +9070,20 @@
     [
      "depth",
      "9"
+    ],
+    [
+     "method",
+     "adaptive"
+    ]
+   ]
+  },
+  {
+   "group": "screened_poisson",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "depth",
+     "10"
     ],
     [
      "method",
@@ -3185,6 +9118,64 @@
      "adaptive"
     ]
    ]
+  },
+  {
+   "group": "screened_poisson",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "depth",
+     "7"
+    ],
+    [
+     "method",
+     "adaptive"
+    ]
+   ]
+  },
+  {
+   "group": "screened_poisson",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "depth",
+     "7"
+    ],
+    [
+     "method",
+     "dense"
+    ]
+   ]
+  },
+  {
+   "group": "seam_edge_vertices",
+   "mesh_name": "sphere_large",
+   "rest": []
+  },
+  {
+   "group": "seam_edge_vertices",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "seam_edge_vertices",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "segment_sum",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "segment_sum",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "segment_sum",
+   "mesh_name": "sphere_small",
+   "rest": []
   },
   {
    "group": "segments_with_plane",
@@ -3194,6 +9185,11 @@
   {
    "group": "segments_with_plane",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "segments_with_plane",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -3249,6 +9245,26 @@
   {
    "group": "shape_diameter",
    "mesh_name": "lucy",
+   "rest": [
+    [
+     "n_rays",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "shape_diameter",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_rays",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "shape_diameter",
+   "mesh_name": "sphere_small",
    "rest": [
     [
      "n_rays",
@@ -3267,6 +9283,11 @@
    "rest": []
   },
   {
+   "group": "shortest_path_envelope",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "signed_distance_grid",
    "mesh_name": "dragon",
    "rest": [
@@ -3319,6 +9340,161 @@
   {
    "group": "signed_distance_grid",
    "mesh_name": "lucy",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_grid",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "divisor",
+     "128"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_grid",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_lattice",
+   "mesh_name": "sphere_large",
+   "rest": []
+  },
+  {
+   "group": "signed_distance_lattice",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "signed_distance_lattice",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "divisor",
+     "128"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "divisor",
+     "128"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "divisor",
+     "128"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "divisor",
+     "128"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "divisor",
+     "128"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "divisor",
+     "128"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_level_set",
+   "mesh_name": "sphere_small",
    "rest": [
     [
      "divisor",
@@ -3377,6 +9553,26 @@
    ]
   },
   {
+   "group": "signed_distance_on_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "sign_mode",
+     "parity"
+    ]
+   ]
+  },
+  {
+   "group": "signed_distance_on_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "sign_mode",
+     "winding"
+    ]
+   ]
+  },
+  {
    "group": "slice_mesh_with_plane",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3384,6 +9580,36 @@
   {
    "group": "slice_mesh_with_plane",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "slice_mesh_with_plane",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "smooth_region",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "smooth_region_boundary",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "smooth_region_fixed_rim",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "solve_spd",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "solve_spd",
+   "mesh_name": "saddle_graded",
    "rest": []
   },
   {
@@ -3427,6 +9653,16 @@
    ]
   },
   {
+   "group": "solve_spd_settled",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "solve_spd_settled",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
    "group": "sort_and_argsort",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3434,6 +9670,316 @@
   {
    "group": "sort_and_argsort",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "sort_and_argsort",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sort_and_argsort_in_place",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "sort_and_argsort_in_place",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "sort_and_argsort_in_place",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "sort_and_argsort_in_place",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "sort_and_argsort_in_place",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "sort_and_argsort_in_place",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sort_pair_indices",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "sort_pair_indices",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "sort_pair_indices",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "sort_pair_indices",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "sort_pair_indices",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "sort_pair_indices",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sort_rows",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "sort_rows",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "sort_rows",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "bounded",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "bounded",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "bounded",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "bounded",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "bounded",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "bounded",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "bounded",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "bounded",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "bounded",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "bounded",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "bounded",
+     "False"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_face_edge_keys",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "bounded",
+     "True"
+    ]
+   ]
+  },
+  {
+   "group": "sorted_undirected_edge_keys",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "sorted_undirected_edge_keys",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "sorted_undirected_edge_keys",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "sorted_undirected_edge_keys",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "sorted_undirected_edge_keys",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "sorted_undirected_edge_keys",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_refactor",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_refactor",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_refactor",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_refactor",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_solve",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_solve",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_solve",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_solve",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_with_operator",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_with_operator",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_with_operator",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "sparse_cholesky_with_operator",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -3589,6 +10135,62 @@
    ]
   },
   {
+   "group": "split_array",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "copy",
+     "False"
+    ],
+    [
+     "n_segments",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "split_array",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "copy",
+     "False"
+    ],
+    [
+     "n_segments",
+     "4"
+    ]
+   ]
+  },
+  {
+   "group": "split_array",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "copy",
+     "True"
+    ],
+    [
+     "n_segments",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "split_array",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "copy",
+     "True"
+    ],
+    [
+     "n_segments",
+     "4"
+    ]
+   ]
+  },
+  {
    "group": "split_edges",
    "mesh_name": "sphere_large",
    "rest": [
@@ -3664,6 +10266,11 @@
    "rest": []
   },
   {
+   "group": "split_faces_along_field",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "split_mesh_with_plane",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3671,10 +10278,80 @@
   {
    "group": "split_mesh_with_plane",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "split_mesh_with_plane",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "split_with_offsets",
+   "mesh_name": "parts_1024",
+   "rest": []
+  },
+  {
+   "group": "split_with_offsets",
+   "mesh_name": "parts_64",
+   "rest": []
+  },
+  {
+   "group": "split_with_offsets",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "squared_laplacian_bind",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "squared_laplacian_bind",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "squared_laplacian_from_factors",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "squared_laplacian_from_factors",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "squared_laplacian_narrowed",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "squared_laplacian_narrowed",
+   "mesh_name": "saddle_graded",
+   "rest": []
+  },
+  {
+   "group": "squared_laplacian_preconditioner",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "squared_laplacian_preconditioner",
+   "mesh_name": "saddle_graded",
    "rest": []
   },
   {
    "group": "stitch",
+   "mesh_name": "rim_short",
+   "rest": []
+  },
+  {
+   "group": "stitch_loops",
+   "mesh_name": "rim_short",
+   "rest": []
+  },
+  {
+   "group": "stitch_loops_min_weight",
    "mesh_name": "rim_short",
    "rest": []
   },
@@ -3684,12 +10361,157 @@
    "rest": []
   },
   {
-   "group": "submesh_from_face_indices",
+   "group": "straighten_boundary",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "subdivide",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "submesh_from_vertex_mask",
    "mesh_name": "sphere_med",
    "rest": [
     [
-     "unique_indices",
-     "True"
+     "face_mode",
+     "all"
+    ]
+   ]
+  },
+  {
+   "group": "submesh_from_vertex_mask",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "face_mode",
+     "any"
+    ]
+   ]
+  },
+  {
+   "group": "submeshes_from_face_groups",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "successor_cycles",
+   "mesh_name": "sphere_large",
+   "rest": [
+    [
+     "shape",
+     "faces"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles",
+   "mesh_name": "sphere_large",
+   "rest": [
+    [
+     "shape",
+     "one_cycle"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "shape",
+     "faces"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "shape",
+     "one_cycle"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "shape",
+     "faces"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "shape",
+     "one_cycle"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles_from_table",
+   "mesh_name": "sphere_large",
+   "rest": [
+    [
+     "shape",
+     "faces"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles_from_table",
+   "mesh_name": "sphere_large",
+   "rest": [
+    [
+     "shape",
+     "one_cycle"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles_from_table",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "shape",
+     "faces"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles_from_table",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "shape",
+     "one_cycle"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles_from_table",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "shape",
+     "faces"
+    ]
+   ]
+  },
+  {
+   "group": "successor_cycles_from_table",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "shape",
+     "one_cycle"
     ]
    ]
   },
@@ -3704,6 +10526,11 @@
    "rest": []
   },
   {
+   "group": "sum_axis0",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "sum_bool",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3711,6 +10538,41 @@
   {
    "group": "sum_bool",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "sum_bool",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "sum_of_terms",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "sum_of_terms",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "sum_of_terms",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "sum_of_terms",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "sum_of_terms",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "sum_of_terms",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -3724,6 +10586,11 @@
    "rest": []
   },
   {
+   "group": "sum_scalar",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "sum_vec3",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3734,6 +10601,11 @@
    "rest": []
   },
   {
+   "group": "sum_vec3",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "surface_centroid",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3741,6 +10613,71 @@
   {
    "group": "surface_centroid",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "surface_centroid",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "surface_voxels",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "surface_voxels",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "surface_voxels",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "surface_voxels",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "surface_voxels",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "surface_voxels",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "tangent_to_world",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "tangent_to_world",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "tangent_to_world",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "tangent_to_world",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "tangent_to_world",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "tangent_to_world",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -3759,6 +10696,11 @@
    "rest": []
   },
   {
+   "group": "thickness_at_vertices",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "to_boxes",
    "mesh_name": "dragon",
    "rest": []
@@ -3774,6 +10716,71 @@
    "rest": []
   },
   {
+   "group": "to_boxes",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "to_dense",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "to_dense",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "to_dense",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "to_dense",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "to_dense",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "to_dense",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "to_field",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "to_field",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "to_field",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "to_field",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "to_field",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "to_field",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "transfer_onto_vertices",
    "mesh_name": "dragon",
    "rest": []
@@ -3786,6 +10793,11 @@
   {
    "group": "transfer_onto_vertices",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "transfer_onto_vertices",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -3799,6 +10811,11 @@
    "rest": []
   },
   {
+   "group": "transfer_through_operator",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "transform_mesh",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3806,6 +10823,11 @@
   {
    "group": "transform_mesh",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "transform_mesh",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -3819,6 +10841,11 @@
    "rest": []
   },
   {
+   "group": "transform_normals",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "transform_points",
    "mesh_name": "happy_buddha",
    "rest": []
@@ -3826,6 +10853,11 @@
   {
    "group": "transform_points",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "transform_points",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -3854,6 +10886,211 @@
    "rest": []
   },
   {
+   "group": "transform_points_inplace",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "transform_scale",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "device"
+    ]
+   ]
+  },
+  {
+   "group": "transform_scale",
+   "mesh_name": null,
+   "rest": [
+    [
+     "form",
+     "host"
+    ]
+   ]
+  },
+  {
+   "group": "transform_vectors",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "transform_vectors",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "transform_vectors",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "transform_vectors",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "transform_vectors",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "transform_vectors",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "triangle_closest_point",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "triangle_closest_point",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "triangle_closest_point",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "triangle_closest_point",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "triangle_closest_point",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "triangle_closest_point",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "triangulate_point_cloud",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "triangulate_point_cloud_unoriented",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "trim_to_count",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "trim_to_count",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "trim_to_count",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "trim_to_count",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "trim_to_count",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "trim_to_count",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "triplet_buffers",
+   "mesh_name": null,
+   "rest": []
+  },
+  {
+   "group": "union",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "union",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "union",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "union",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "union",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "union",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "unique_1d",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "unique_1d",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "unique_1d",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "unique_1d",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "unique_1d",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "unique_1d",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "unique_edge_count",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "unique_edge_count",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "unique_edge_count",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "unique_faces",
    "mesh_name": "dragon",
    "rest": [
@@ -3906,6 +11143,26 @@
   {
    "group": "unique_faces",
    "mesh_name": "lucy",
+   "rest": [
+    [
+     "duplicate_fraction",
+     "0.5"
+    ]
+   ]
+  },
+  {
+   "group": "unique_faces",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "duplicate_fraction",
+     "0.0"
+    ]
+   ]
+  },
+  {
+   "group": "unique_faces",
+   "mesh_name": "sphere_small",
    "rest": [
     [
      "duplicate_fraction",
@@ -3931,6 +11188,41 @@
   {
    "group": "vector_angle",
    "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "vector_angle",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "vector_area_matrix",
+   "mesh_name": "hemisphere",
+   "rest": []
+  },
+  {
+   "group": "vector_area_matrix",
+   "mesh_name": "saddle",
+   "rest": []
+  },
+  {
+   "group": "vector_area_matrix",
+   "mesh_name": "saddle_small",
+   "rest": []
+  },
+  {
+   "group": "vector_heat_operators",
+   "mesh_name": "sphere_large",
+   "rest": []
+  },
+  {
+   "group": "vector_heat_operators",
+   "mesh_name": "sphere_med",
+   "rest": []
+  },
+  {
+   "group": "vector_heat_operators",
+   "mesh_name": "sphere_small",
    "rest": []
   },
   {
@@ -3952,6 +11244,16 @@
      "False"
     ]
    ]
+  },
+  {
+   "group": "vertex_face_adjacency_from_counts",
+   "mesh_name": "fan_hub",
+   "rest": []
+  },
+  {
+   "group": "vertex_face_adjacency_from_counts",
+   "mesh_name": "sphere_med",
+   "rest": []
   },
   {
    "group": "vertex_normals_precomputed",
@@ -3989,6 +11291,116 @@
    "rest": []
   },
   {
+   "group": "volume",
+   "mesh_name": "bunny",
+   "rest": []
+  },
+  {
+   "group": "volume",
+   "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "volume",
+   "mesh_name": "dragon",
+   "rest": []
+  },
+  {
+   "group": "volume",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "volume",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "volume",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "volumetric_obscurance",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "n_rays",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "volumetric_obscurance",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "n_rays",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "volumetric_obscurance",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "n_rays",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "volumetric_obscurance",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "n_rays",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "volumetric_obscurance",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "n_rays",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "volumetric_obscurance",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "n_rays",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "volumetric_obscurance",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_rays",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "volumetric_obscurance",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_rays",
+     "64"
+    ]
+   ]
+  },
+  {
    "group": "voxel_corners",
    "mesh_name": "dragon",
    "rest": []
@@ -4004,6 +11416,11 @@
    "rest": []
   },
   {
+   "group": "voxel_corners",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
    "group": "voxel_down_sample",
    "mesh_name": "happy_buddha",
    "rest": [
@@ -4036,6 +11453,26 @@
   {
    "group": "voxel_down_sample",
    "mesh_name": "lucy",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "voxel_down_sample",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "divisor",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "voxel_down_sample",
+   "mesh_name": "sphere_small",
    "rest": [
     [
      "divisor",
@@ -4096,6 +11533,26 @@
   {
    "group": "voxelize_mesh",
    "mesh_name": "lucy",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ]
+  },
+  {
+   "group": "voxelize_mesh",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "divisor",
+     "256"
+    ]
+   ]
+  },
+  {
+   "group": "voxelize_mesh",
+   "mesh_name": "sphere_small",
    "rest": [
     [
      "divisor",
@@ -4117,6 +11574,41 @@
    "group": "voxelize_points",
    "mesh_name": "lucy",
    "rest": []
+  },
+  {
+   "group": "voxelize_points",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "weighted_sum",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "weighted_vertex_normals",
+   "mesh_name": "happy_buddha",
+   "rest": []
+  },
+  {
+   "group": "weighted_vertex_normals",
+   "mesh_name": "lucy",
+   "rest": []
+  },
+  {
+   "group": "weighted_vertex_normals",
+   "mesh_name": "sphere_small",
+   "rest": []
+  },
+  {
+   "group": "winding_number",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "n_queries",
+     "100000"
+    ]
+   ]
   },
   {
    "group": "winding_number",
@@ -4129,6 +11621,56 @@
    ]
   },
   {
+   "group": "winding_number",
+   "mesh_name": "happy_buddha",
+   "rest": [
+    [
+     "n_queries",
+     "100000"
+    ]
+   ]
+  },
+  {
+   "group": "winding_number",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "n_queries",
+     "10000"
+    ]
+   ]
+  },
+  {
+   "group": "winding_number",
+   "mesh_name": "lucy",
+   "rest": [
+    [
+     "n_queries",
+     "100000"
+    ]
+   ]
+  },
+  {
+   "group": "winding_number",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_queries",
+     "10000"
+    ]
+   ]
+  },
+  {
+   "group": "winding_number",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "n_queries",
+     "100000"
+    ]
+   ]
+  },
+  {
    "group": "winding_number_serial",
    "mesh_name": "bunny",
    "rest": []
@@ -4136,6 +11678,11 @@
   {
    "group": "winding_number_serial",
    "mesh_name": "bunny_decimated",
+   "rest": []
+  },
+  {
+   "group": "winding_number_serial",
+   "mesh_name": "sphere_small",
    "rest": []
   }
  ]

@@ -236,6 +236,50 @@ def test_face_quality(bench_case: BenchCase) -> None:
         assert ratio_igl.shape == (n_faces,)
 
 
+_barycentric_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
+
+
+def _barycentric_np(bench_case: BenchCase) -> np.ndarray:
+    """Return random positive weights, one ``(3,)`` row per triangle, the same on every side."""
+    return np.random.default_rng(31).random((bench_case.n_faces, 3)).astype(np.float32)
+
+
+def _barycentric_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
+    """Upload ``_barycentric_np`` once per mesh and device: an *input*, not part of the work."""
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _barycentric_cache:
+        _barycentric_cache[key] = wp.array(
+            _barycentric_np(bench_case), dtype=wp.vec3, device=bench_case.device
+        )
+    return _barycentric_cache[key]
+
+
+@pytest.mark.benchmark(group="barycentric_to_points")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_barycentric_to_points(bench_case: BenchCase) -> None:
+    """
+    One point per triangle from its barycentric weights: a ``3F`` gather and a weighted sum.
+
+    The scan sweep, beside its inverse ``points_to_barycentric``. ``trimesh.triangles.
+    barycentric_to_points`` is the reference ``tests/test_triangles.py`` compares against; it
+    takes the triangle soup, which is built outside the timed region as ordito's indexed input is.
+    """
+    if bench_case.kind == "trimesh":
+        triangles_np = bench_case.vertices_np[bench_case.faces_np]
+        barycentric_np = _barycentric_np(bench_case)
+        points_tm = bench_case.run(
+            lambda: tm.triangles.barycentric_to_points(triangles_np, barycentric_np)
+        )
+        assert points_tm.shape == (bench_case.n_faces, 3)
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    barycentric = _barycentric_wp(bench_case)
+    points = bench_case.run(
+        lambda: od.triangles.barycentric_to_points(vertices, faces, barycentric)
+    )
+    assert points.shape == (bench_case.n_faces,)
+
+
 @pytest.mark.benchmark(group="points_to_barycentric")
 @pytest.mark.benchlibs("ordito", "trimesh", "igl")
 def test_points_to_barycentric(bench_case: BenchCase) -> None:
@@ -279,6 +323,27 @@ def test_points_to_barycentric(bench_case: BenchCase) -> None:
     assert barycentric_tm.shape == (bench_case.n_faces, 3)
 
 
+@pytest.mark.benchmark(group="triangle_closest_point")
+@pytest.mark.benchlibs("ordito")
+def test_closest_point(bench_case: BenchCase) -> None:
+    """
+    The closest point of each triangle to its own query point, one triangle per row.
+
+    The scan sweep beside ``points_to_barycentric``: the queries are the face barycentres pushed
+    off the surface along a fixed direction by a mean edge, so the projection's region tests are
+    all reached. ordito-only: MeshLib's ``closestPointInTriangle``, its test's reference, is a
+    per-point call, so a row would time a Python loop over the faces.
+    """
+    centres_np = bench_case.vertices_np[bench_case.faces_np].mean(axis=1)
+    queries_np = centres_np + bench_case.mean_edge * np.array([0.6, -0.48, 0.64])
+    queries = wp.array(
+        np.ascontiguousarray(queries_np, dtype=np.float32), dtype=wp.vec3, device=bench_case.device
+    )
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    closest = bench_case.run(lambda: od.triangles.closest_point(vertices, faces, queries))
+    assert closest.shape == (bench_case.n_faces,)
+
+
 @pytest.mark.benchmark(group="face_centroids")
 @pytest.mark.benchlibs("ordito", "igl", "pyvista")
 def test_face_centroids(bench_case: BenchCase) -> None:
@@ -304,6 +369,48 @@ def test_face_centroids(bench_case: BenchCase) -> None:
     vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
     centroids_igl = bench_case.run(lambda: igl.barycenter(vertices_np, faces_np))
     assert centroids_igl.shape == (bench_case.n_faces, 3)
+
+
+@pytest.mark.benchmark(group="face_signed_volumes")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_face_signed_volumes(bench_case: BenchCase) -> None:
+    """
+    The signed volume of each face's tetrahedron with the origin: one triple product per face.
+
+    Pure per-face arithmetic on the scan sweep, like ``face_centroids``. The NumPy row is the
+    ``dot(v0, cross(v1, v2)) / 6`` oracle ``tests/test_triangles.py`` compares against.
+    """
+    if bench_case.kind == "numpy":
+        triangles_np = bench_case.vertices_np[bench_case.faces_np]
+        v0_np, v1_np, v2_np = triangles_np[:, 0], triangles_np[:, 1], triangles_np[:, 2]
+        volumes_np = bench_case.run(
+            lambda: np.einsum("ij,ij->i", v0_np, np.cross(v1_np, v2_np)) / 6.0
+        )
+        assert volumes_np.shape == (bench_case.n_faces,)
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    volumes = bench_case.run(lambda: od.triangles.face_signed_volumes(vertices, faces))
+    assert volumes.shape == (bench_case.n_faces,)
+
+
+@pytest.mark.benchmark(group="face_nondegenerate_mask")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_face_nondegenerate_mask(bench_case: BenchCase) -> None:
+    """
+    One flag per face for a non-zero altitude: a cross product and a compare.
+
+    The scan sweep, beside ``face_signed_volumes``. ``trimesh.triangles.nondegenerate`` is the
+    reference ``tests/test_triangles.py`` compares against; it takes the triangle soup, built
+    outside the timed region.
+    """
+    if bench_case.kind == "trimesh":
+        triangles_np = bench_case.vertices_np[bench_case.faces_np]
+        mask_tm = bench_case.run(lambda: tm.triangles.nondegenerate(triangles_np))
+        assert mask_tm.shape == (bench_case.n_faces,)
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    mask = bench_case.run(lambda: od.triangles.face_nondegenerate_mask(vertices, faces))
+    assert mask.shape == (bench_case.n_faces,)
 
 
 @pytest.mark.benchmark(group="corner_normals")

@@ -48,6 +48,7 @@ from tests.api_conventions import (
     array_cast_problems,
     bare_annotation_problems,
     bare_tid_problems,
+    benchmark_coverage_problems,
     builtin_cast_problems,
     claude_section_reference_problems,
     comparison_label_problems,
@@ -992,3 +993,14 @@ def test_no_warp_array_cast_in_the_package() -> None:
     problem.
     """
     _fail("warp.utils.array_cast call(s) in the package:", array_cast_problems())
+
+
+def test_every_public_callable_has_a_benchmark() -> None:
+    """
+    Every public function and method is timed by some row under ``benchmarks/``.
+
+    Not a library comparison: this is a property of the two suites' layout. Check 31. The probe
+    that shows it bites: deleting ``benchmarks/test_reduce.py``'s ``median`` row reports
+    ``reduce.median``.
+    """
+    _fail("public callable(s) with no benchmark:", benchmark_coverage_problems())

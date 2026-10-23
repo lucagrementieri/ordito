@@ -977,6 +977,7 @@ def sphere_and_box(sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str) ->
 
 
 @pytest.mark.parity("mesh_collision_pairs", "meshlib")
+@pytest.mark.parity("collision_masks", "meshlib")
 def test_mesh_collision_pairs_matches_meshlib(sphere_and_box: SphereAndBox) -> None:
     """
     Class A: the same colliding faces as ``findCollidingTriangleBitsets``, both masks.

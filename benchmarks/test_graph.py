@@ -110,6 +110,55 @@ def test_edges_to_csr(bench_case: BenchCase) -> None:
     assert adjacency.nrow == n_vertices
 
 
+@pytest.mark.benchmark(group="edges_to_neighbor_lists")
+@pytest.mark.benchlibs("ordito", "igl")
+def test_edges_to_neighbor_lists(bench_case: BenchCase) -> None:
+    """
+    Packed per-vertex neighbour lists from the unique edges: a degree count, a scan and a scatter.
+
+    The unsorted, arrival-order form that ``edges_to_csr`` above trades for its key sort, so the two
+    rows read side by side as what the sort costs. ``igl.adjacency_list`` is the same relation as a
+    Python list of lists (``tests/test_graph.py::test_edges_to_neighbor_lists_matches_igl``); it
+    reads the faces directly, so its row includes the edge discovery ordito's input already holds.
+    Capped at ``bunny``, past which building one Python list per vertex dominates.
+    """
+    if bench_case.kind == "igl":
+        skip_larger_than(bench_case, "bunny", "the reference builds one Python list per vertex")
+        faces_igl = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
+        adjacency_igl = bench_case.run(lambda: igl.adjacency_list(faces_igl))
+        assert len(adjacency_igl) == bench_case.n_vertices
+        return
+    n_vertices = bench_case.n_vertices
+    unique_edges, _ = od.edges.edges_unique(bench_case.faces_wp, n_vertices=n_vertices)
+    neighbors, offsets = bench_case.run(
+        lambda: od.graph.edges_to_neighbor_lists(n_vertices, unique_edges)
+    )
+    assert offsets.shape == (n_vertices + 1,)
+    assert neighbors.shape == (2 * unique_edges.shape[0],)
+
+
+@pytest.mark.benchmark(group="edges_to_neighbor_lists_from_counts")
+@pytest.mark.benchlibs("ordito")
+def test_edges_to_neighbor_lists_from_counts(bench_case: BenchCase) -> None:
+    """
+    The same neighbour lists from degrees the caller already holds: the scan and the scatter only.
+
+    Read against ``edges_to_neighbor_lists`` for the price of the range check and degree count it
+    skips. ``counts`` is overwritten by the call, so each round gets a fresh copy outside the timed
+    region. Ordito only: the test pins it against ``edges_to_neighbor_lists``.
+    """
+    n_vertices = bench_case.n_vertices
+    unique_edges, _ = od.edges.edges_unique(bench_case.faces_wp, n_vertices=n_vertices)
+    counts_np = np.bincount(unique_edges.numpy().reshape(-1), minlength=n_vertices)
+    counts = wp.array(counts_np.astype(np.int32), dtype=wp.int32, device=bench_case.device)
+    neighbors, offsets = bench_case.run(
+        lambda fresh: od.graph.edges_to_neighbor_lists_from_counts(unique_edges, fresh),
+        setup=lambda: wp.clone(counts),
+    )
+    assert offsets.shape == (n_vertices + 1,)
+    assert neighbors.shape == (2 * unique_edges.shape[0],)
+
+
 @pytest.mark.benchmark(group="connected_component_labels")
 @pytest.mark.benchaxis("components")
 @pytest.mark.benchlibs("ordito", "scipy", "igl", "pymeshlab", "meshlib")
@@ -171,6 +220,53 @@ def test_connected_component_labels(bench_case: BenchCase) -> None:
         assert labels_np.shape == (n_vertices,)
 
 
+_edges_cache: dict[tuple[str, str], odt.Array2dInt32] = {}
+
+
+def _unique_edges(bench_case: BenchCase) -> odt.Array2dInt32:
+    """Unique-edge table -- an *input*, built once per (mesh, device)."""
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _edges_cache:
+        _edges_cache[key] = od.edges.edges_unique(
+            bench_case.faces_wp, n_vertices=bench_case.n_vertices
+        )[0]
+    return _edges_cache[key]
+
+
+@pytest.mark.benchmark(group="connected_component_labels_from_edges")
+@pytest.mark.benchaxis("components")
+@pytest.mark.benchlibs("ordito", "scipy", "igl")
+def test_connected_component_labels_from_edges(bench_case: BenchCase) -> None:
+    """
+    ECL-CC over an edge list rather than an assembled CSR, on the same components axis.
+
+    The default ``validate=True`` with the node count passed, so the row carries the range check and
+    its readback against ``connected_component_labels``'s prebuilt adjacency. Both references take a
+    prebuilt ``scipy.sparse`` adjacency here (``tests/test_graph.py::
+    test_connected_component_labels_matches_igl`` compares the partition with both), so this row,
+    unlike the CSR group's, does not charge igl for ``adjacency_matrix``.
+    """
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "igl":
+        adjacency_igl = igl.adjacency_matrix(np.ascontiguousarray(bench_case.faces_np, np.int64))
+        n_labelled_igl, _labels_igl, _sizes_igl = bench_case.run(
+            lambda: igl.connected_components(adjacency_igl)
+        )
+        assert int(n_labelled_igl) >= 1
+        return
+    if bench_case.kind == "scipy":
+        graph = _scipy_graph(bench_case)
+        n_labelled, labels_np = bench_case.run(lambda: sp.csgraph.connected_components(graph))
+        assert n_labelled >= 1
+        assert labels_np.shape == (n_vertices,)
+        return
+    unique_edges = _unique_edges(bench_case)
+    labels = bench_case.run(
+        lambda: od.graph.connected_component_labels_from_edges(unique_edges, n_vertices)
+    )
+    assert labels.shape == (n_vertices,)
+
+
 @pytest.mark.benchmark(group="connected_component_parity_from_edges")
 @pytest.mark.benchlibs("ordito")
 def test_connected_component_parity_from_edges(bench_case: BenchCase) -> None:
@@ -226,6 +322,29 @@ def test_successor_cycles(bench_case: BenchCase, shape: str) -> None:
     edges_np, node_count = _successor_edges_np(bench_case, shape)
     edges = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=bench_case.device), wp.int32)
     flat_cycles, offsets = bench_case.run(lambda: od.graph.successor_cycles(edges, node_count))
+    assert flat_cycles.shape == (node_count,)
+    assert offsets.shape[0] == (node_count // 3 if shape == "faces" else 1) + 1
+
+
+@pytest.mark.benchmark(group="successor_cycles_from_table")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("shape", ["faces", "one_cycle"])
+def test_successor_cycles_from_table(bench_case: BenchCase, shape: str) -> None:
+    """
+    The cycles of ``successor_cycles``'s graphs, from a successor table the caller already holds.
+
+    No range check and no table scatter, so read against ``successor_cycles`` for what those cost.
+    Ordito only: no reference library ranks the cycles of a successor graph.
+    """
+    edges_np, node_count = _successor_edges_np(bench_case, shape)
+    next_np = np.full(node_count, -1, dtype=np.int32)
+    next_np[edges_np[:, 0]] = edges_np[:, 1]
+    tails = wp.array(np.ascontiguousarray(edges_np[:, 0]), dtype=wp.int32, device=bench_case.device)
+    next_node = wp.array(next_np, dtype=wp.int32, device=bench_case.device)
+    flat_cycles, offsets = bench_case.run(
+        lambda: od.graph.successor_cycles_from_table(tails, next_node)
+    )
     assert flat_cycles.shape == (node_count,)
     assert offsets.shape[0] == (node_count // 3 if shape == "faces" else 1) + 1
 

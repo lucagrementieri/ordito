@@ -35,6 +35,7 @@ from tests.conversions import (
 # Open-surface fixtures that actually have a boundary (watertight solids do not).
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("boundary_edges", "trimesh", "pyvista", "igl")
+@pytest.mark.parity("oriented_boundary_edges", "trimesh", "igl")
 def test_boundary_edges_match_trimesh_pyvista_and_igl(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -133,6 +134,7 @@ def test_boundary_queries_bucketed_match_the_key_sort(
 
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("boundary_edges", "pymeshlab", "meshlib")
+@pytest.mark.parity("boundary_vertex_indices", "pymeshlab", "meshlib")
 def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: two references mark the boundary *vertices* where ordito returns the edge pairs.

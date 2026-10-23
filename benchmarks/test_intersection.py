@@ -563,6 +563,65 @@ def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float, set
     assert pairs.shape[1] == 2
 
 
+@pytest.mark.benchmark(group="collision_masks")
+@pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.parametrize("offset_fraction", _SELF_OFFSET_FRACTIONS, ids=["deep", "grazing"])
+def test_collision_masks(bench_case: BenchCase, offset_fraction: float) -> None:
+    """
+    ``mesh_collision_pairs`` reduced to one mask per mesh: the same broad and narrow phase.
+
+    Read against that group's ``full`` rows: ``collision_masks`` takes no prebuilt BVH, so its row
+    pays the build as they do, and the gap is the reduction from pairs to masks.
+
+    meshlib's ``findCollidingTriangleBitsets`` returns exactly these two masks and is the oracle in
+    ``tests/test_intersection.py``. Its AABB trees are built lazily and cached on each ``Mesh``, so
+    they are pre-warmed outside the timed callable, as in ``mesh_collision_pairs``; its row is the
+    amortized form, the only one it has.
+    """
+    skip_larger_than(bench_case, "bunny", "broad phase allocates 16 candidate slots per triangle")
+    if bench_case.kind == "meshlib":
+        mesh_ml = _mesh_ml(bench_case)
+        shifted_ml = _shifted_mesh_ml(bench_case, offset_fraction)
+        mm.findCollidingTriangleBitsets(mm.MeshPart(mesh_ml), mm.MeshPart(shifted_ml))
+        masks_ml = bench_case.run(
+            lambda: mm.findCollidingTriangleBitsets(mm.MeshPart(mesh_ml), mm.MeshPart(shifted_ml))
+        )
+        assert len(masks_ml) == 2
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    shifted = _shifted_vertices_wp(bench_case, offset_fraction)
+    mask_a, mask_b = bench_case.run(
+        lambda: od.intersection.collision_masks(vertices, faces, shifted, faces)
+    )
+    assert mask_a.shape == mask_b.shape == (bench_case.n_faces,)
+
+
+@pytest.mark.benchmark(group="face_box_candidates")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("offset_fraction", _SELF_OFFSET_FRACTIONS, ids=["deep", "grazing"])
+def test_face_box_candidates(bench_case: BenchCase, offset_fraction: float) -> None:
+    """
+    The broad phase alone: one box walk of a prebuilt BVH per query face, into a strided table.
+
+    The shared first stage of ``mesh_with_mesh``, ``mesh_collision_pairs`` and ``collision_masks``,
+    so those groups less this one is their narrow phase. The target BVH is built outside the timed
+    callable, as a caller holding a ``Trimesh`` has it. The ``deep`` / ``grazing`` pair moves the
+    candidate count, and with it the overflow tail's size.
+
+    ordito-only: no reference exposes its box-overlap candidate list (meshlib's and VTK's collision
+    calls run their narrow phase in the same traversal), and ``tests/test_intersection.py`` checks
+    it against a brute-force box test.
+    """
+    skip_larger_than(bench_case, "bunny", "the table allocates 16 candidate slots per triangle")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    target_mesh = od.Trimesh(_shifted_vertices_wp(bench_case, offset_fraction), faces).warp_mesh
+    targets, counts, stride = bench_case.run(
+        lambda: od.intersection.face_box_candidates(vertices, faces, target_mesh)
+    )
+    assert counts.shape == (bench_case.n_faces,)
+    assert targets.shape[0] >= stride * bench_case.n_faces
+
+
 @pytest.mark.benchmark(group="segments_with_plane")
 @pytest.mark.benchlibs("ordito", "trimesh")
 def test_segments_with_plane(bench_case: BenchCase) -> None:

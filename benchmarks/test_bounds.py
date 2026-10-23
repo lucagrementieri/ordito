@@ -85,7 +85,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
-from conftest import BenchCase
+from conftest import BenchCase, BenchLibrary
 
 # Candidate orientations scored by every ``oriented_bounding_box`` row, ordito's and igl's alike.
 # Fixed and shared: the two libraries search the identical candidate set, so a row that let them
@@ -97,6 +97,12 @@ _ROTATIONS = 4096
 # add a second axis measuring nothing.
 _N_QUERIES = 10_000
 _QUERY_SEED = 7
+
+# World-to-box frame of the oriented query box: 30 degrees about z, then 20 about x. Fixed and far
+# from the identity, so no row can select through the axis-aligned path by accident.
+_OBB_FRAME_NP = np.array(
+    [[1.0, 0.0, 0.0], [0.0, 0.9396926, -0.3420201], [0.0, 0.3420201, 0.9396926]]
+) @ np.array([[0.8660254, -0.5, 0.0], [0.5, 0.8660254, 0.0], [0.0, 0.0, 1.0]])
 
 _query_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
 
@@ -165,6 +171,23 @@ def test_aabb(bench_case: BenchCase) -> None:
         mesh_o3d = bench_case.mesh_o3d
         box_o3d = bench_case.run(mesh_o3d.get_axis_aligned_bounding_box)
         assert box_o3d.get_min_bound()[0] <= box_o3d.get_max_bound()[0]
+
+
+@pytest.mark.benchmark(group="aabb_union")
+@pytest.mark.benchlibs("ordito")
+def test_aabb_union(bench_lib: BenchLibrary) -> None:
+    """
+    The box enclosing two boxes: six component-wise ``min`` / ``max`` on ``wp.vec3`` values.
+
+    Host arithmetic on four corners with no array and no launch, so it is mesh-free and has no
+    axis; the row prices the per-call cost of the ``wp.vec3`` operands. ordito-only: its tests
+    check it against a pooled ``aabb``, not a library.
+    """
+    a_min, a_max = wp.vec3(-1.0, 0.0, 2.0), wp.vec3(1.0, 3.0, 4.0)
+    b_min, b_max = wp.vec3(0.0, -5.0, 3.0), wp.vec3(2.0, 1.0, 3.5)
+    union_min, union_max = bench_lib.run(lambda: od.bounds.aabb_union(a_min, a_max, b_min, b_max))
+    assert union_min[1] == -5.0
+    assert union_max[0] == 2.0
 
 
 @pytest.mark.benchmark(group="enclosing_diagonal")
@@ -278,6 +301,110 @@ def test_points_in_aabb(bench_case: BenchCase) -> None:
         assert 0 < indices_wp.size < bench_case.n_vertices
         return
     box_o3d = o3d.geometry.AxisAlignedBoundingBox(box_np[0], box_np[1])
+    vector_o3d = _vector_o3d(bench_case)
+    indices_o3d = bench_case.run(lambda: box_o3d.get_point_indices_within_bounding_box(vector_o3d))
+    assert 0 < len(indices_o3d) < bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="points_in_aabb_mask")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_points_in_aabb_mask(bench_case: BenchCase) -> None:
+    """
+    The same six comparisons per point, kept as a mask: ``points_in_aabb`` less the compaction.
+
+    At ``points_in_aabb``'s operating point and box, so the pair prices the scan, the readback and
+    the scatter the index form adds. open3d has no mask form; its row is the same index query as
+    in ``points_in_aabb``, which ``tests/test_bounds.py`` compares this mask's ``flatnonzero``
+    against, so it is the reference's cheapest route to the same answer.
+    """
+    box_np = _box_np(bench_case)
+    if bench_case.kind == "ordito":
+        vertices_wp = bench_case.vertices_wp
+        lower_wp, upper_wp = _corners_wp(box_np)
+        mask_wp = bench_case.run(
+            lambda: od.bounds.points_in_aabb_mask(vertices_wp, lower_wp, upper_wp)
+        )
+        assert mask_wp.shape == (bench_case.n_vertices,)
+        return
+    box_o3d = o3d.geometry.AxisAlignedBoundingBox(box_np[0], box_np[1])
+    vector_o3d = _vector_o3d(bench_case)
+    indices_o3d = bench_case.run(lambda: box_o3d.get_point_indices_within_bounding_box(vector_o3d))
+    assert 0 < len(indices_o3d) < bench_case.n_vertices
+
+
+def _obb_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return a tilted query box as ordito's world-to-box frame and its ``(2, 3)`` box-space corners.
+
+    The frame is fixed and far from the identity, and the corners are ``_box_np``'s low-corner cut
+    taken in box coordinates, so the oriented rows select a strict subset as the axis-aligned
+    ones do.
+    """
+    frame_np = _OBB_FRAME_NP
+    local_np = bench_case.vertices_np @ frame_np.T
+    lower_np = local_np.min(axis=0)
+    extent_np = local_np.max(axis=0) - lower_np
+    corners_np = np.stack([lower_np - _BOX_PAD * extent_np, lower_np + _BOX_KEEP * extent_np])
+    return frame_np, corners_np
+
+
+def _obb_o3d(frame_np: np.ndarray, corners_np: np.ndarray) -> o3d.geometry.OrientedBoundingBox:
+    """Return Open3D's oriented box over the same frame and corners ordito is given."""
+    return o3d.geometry.OrientedBoundingBox(
+        frame_np.T @ corners_np.mean(axis=0), frame_np.T, np.ptp(corners_np, axis=0)
+    )
+
+
+@pytest.mark.benchmark(group="points_in_obb")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_points_in_obb(bench_case: BenchCase) -> None:
+    """
+    The indices of the points inside a tilted box: ``points_in_aabb`` behind one 3x3 rotation.
+
+    The ``scale`` axis, as for ``points_in_aabb``, so the two rows price the rotation per point.
+    open3d's ``OrientedBoundingBox.get_point_indices_within_bounding_box`` returns the same index
+    list and is the reference ``tests/test_bounds.py`` compares against; its box is built from
+    ordito's frame and corners outside the timed region.
+    """
+    frame_np, corners_np = _obb_np(bench_case)
+    if bench_case.kind == "ordito":
+        vertices_wp = bench_case.vertices_wp
+        rotation_wp = wp.mat33(*frame_np.reshape(-1).tolist())
+        lower_wp, upper_wp = _corners_wp(corners_np)
+        indices_wp = bench_case.run(
+            lambda: od.bounds.points_in_obb(vertices_wp, rotation_wp, lower_wp, upper_wp)
+        )
+        assert 0 < indices_wp.size < bench_case.n_vertices
+        return
+    box_o3d = _obb_o3d(frame_np, corners_np)
+    vector_o3d = _vector_o3d(bench_case)
+    indices_o3d = bench_case.run(lambda: box_o3d.get_point_indices_within_bounding_box(vector_o3d))
+    assert 0 < len(indices_o3d) < bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="points_in_obb_mask")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_points_in_obb_mask(bench_case: BenchCase) -> None:
+    """
+    The same tilted query kept as a mask, at ``points_in_obb``'s operating point.
+
+    open3d has no mask form; its row is the same index query as ``points_in_obb``, which
+    ``tests/test_bounds.py`` compares this mask's ``flatnonzero`` against.
+    """
+    frame_np, corners_np = _obb_np(bench_case)
+    if bench_case.kind == "ordito":
+        vertices_wp = bench_case.vertices_wp
+        rotation_wp = wp.mat33(*frame_np.reshape(-1).tolist())
+        lower_wp, upper_wp = _corners_wp(corners_np)
+        mask_wp = bench_case.run(
+            lambda: od.bounds.points_in_obb_mask(vertices_wp, rotation_wp, lower_wp, upper_wp)
+        )
+        assert mask_wp.shape == (bench_case.n_vertices,)
+        return
+    box_o3d = _obb_o3d(frame_np, corners_np)
     vector_o3d = _vector_o3d(bench_case)
     indices_o3d = bench_case.run(lambda: box_o3d.get_point_indices_within_bounding_box(vector_o3d))
     assert 0 < len(indices_o3d) < bench_case.n_vertices

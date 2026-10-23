@@ -864,6 +864,7 @@ def test_submesh_return_index_carries_an_attribute(
     assert sub_faces_wp.size > 0
 
 
+@pytest.mark.parity("submesh_from_face_mask", "trimesh")
 def test_submesh_from_face_mask(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A against trimesh *and* against the index form, which are different claims.
@@ -1238,6 +1239,7 @@ def _face_indices_from_vertex_indices_np(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parity("submesh_from_vertex_indices", "trimesh")
 @pytest.mark.parametrize("face_mode", ["all", "any"])
 def test_submesh_from_vertex_indices(
     request: pytest.FixtureRequest, face_mode: Literal["all", "any"]

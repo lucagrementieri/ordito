@@ -382,6 +382,31 @@ def test_filter_taubin(bench_case: BenchCase) -> None:
         assert bench_case.run(run).vertices.shape == vertices.shape
 
 
+@pytest.mark.benchmark(group="filter_neighborhood_average")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_filter_neighborhood_average(bench_case: BenchCase) -> None:
+    """
+    The plain 1-ring mean, ``_ITERATIONS`` passes, operator assembly included on both sides.
+
+    open3d's ``filter_smooth_simple`` is the same filter (each neighbour weighted equally, the
+    vertex itself not at all) and its test oracle; it builds its adjacency per call as ordito
+    assembles its operator per call.
+    """
+    skip_larger_than(bench_case, "dragon")
+    if bench_case.kind == "open3d":
+        mesh_o3d = bench_case.mesh_o3d
+        smoothed_o3d = bench_case.run(
+            lambda: mesh_o3d.filter_smooth_simple(number_of_iterations=_ITERATIONS)
+        )
+        assert len(smoothed_o3d.vertices) == bench_case.n_vertices
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    smoothed = bench_case.run(
+        lambda: od.smoothing.filter_neighborhood_average(vertices, faces, iterations=_ITERATIONS)
+    )
+    assert smoothed.shape == vertices.shape
+
+
 @pytest.mark.noparity(
     "pymeshlab",
     oracle="trimesh",
@@ -782,6 +807,44 @@ def test_smooth_region_fixed_rim(bench_case: BenchCase) -> None:
         lambda: od.smoothing.smooth_region_fixed_rim(vertices, faces, free_wp), rounds=3
     )
     assert smoothed.shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="refine_and_smooth_region")
+@pytest.mark.benchmeshes("saddle_small", "hemisphere")
+@pytest.mark.benchlibs("ordito")
+def test_refine_and_smooth_region(bench_case: BenchCase) -> None:
+    """
+    The refine-and-smooth half of ``holes.fill_smooth``: the rim's fill subdivided and faired.
+
+    The rim is filled outside the timed region (``fill_smooth(triangulate_only=True)``), so the row
+    is the subdivision to the mean edge length plus the cotangent smooth of the new vertices. The
+    two disk patches give one rim of 268 and of 384 vertices: the patch size is the axis.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    filled_vertices, filled_faces, patch = od.holes.fill_smooth(
+        vertices, faces, triangulate_only=True, return_patch=True
+    )
+    max_edge = float(od.edges.mean_edge_length(vertices, faces))
+    n_vertices = bench_case.n_vertices
+    refined, refined_faces, refined_patch = bench_case.run(
+        lambda: od.smoothing.refine_and_smooth_region(
+            filled_vertices,
+            filled_faces,
+            n_vertices,
+            patch,
+            max_edge=max_edge,
+            max_edge_splits=1000,
+            max_angle_change_after_flip=math.radians(30.0),
+            smooth_curvature=True,
+            smooth_boundary=True,
+            natural_smooth=False,
+            edge_weights="cotan",
+        ),
+        rounds=3,
+    )
+    assert refined.shape[0] > n_vertices
+    assert refined_patch.shape[0] == refined_faces.shape[0] // 3
+    assert np.isfinite(refined.numpy()).all()
 
 
 @pytest.mark.benchmark(group="inflate")

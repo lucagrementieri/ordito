@@ -427,6 +427,7 @@ def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parity("chamfer_mesh_to_mesh", "igl")
 def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: both metrics are reductions of ``igl.point_mesh_squared_distance`` in each direction.
@@ -442,10 +443,10 @@ def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh
     faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
     vertices_b_np = vertices_a_np + np.array([0.3, -0.15, 0.2])
 
-    sqr_a_to_b_np = _igl_point_mesh_sqr_dist(vertices_a_np, vertices_b_np, faces_np)
-    sqr_b_to_a_np = _igl_point_mesh_sqr_dist(vertices_b_np, vertices_a_np, faces_np)
-    chamfer_np = np.mean(sqr_a_to_b_np) + np.mean(sqr_b_to_a_np)
-    hausdorff_np = np.sqrt(max(sqr_a_to_b_np.max(), sqr_b_to_a_np.max()))
+    sqr_a_to_b_igl = _igl_point_mesh_sqr_dist(vertices_a_np, vertices_b_np, faces_np)
+    sqr_b_to_a_igl = _igl_point_mesh_sqr_dist(vertices_b_np, vertices_a_np, faces_np)
+    chamfer_np = np.mean(sqr_a_to_b_igl) + np.mean(sqr_b_to_a_igl)
+    hausdorff_np = np.sqrt(max(sqr_a_to_b_igl.max(), sqr_b_to_a_igl.max()))
 
     vertices_b_wp = points_to_warp(vertices_b_np, mesh_wp.device)
     chamfer_wp = od.metrics.chamfer_mesh_to_mesh(
@@ -662,6 +663,7 @@ def test_chamfer_points_to_mesh_matches_pytorch3d(device: str) -> None:
 
 
 @pytest.mark.parity("chamfer_points_to_mesh", "igl")
+@pytest.mark.parity("hausdorff_points_to_mesh", "igl")
 def test_chamfer_and_hausdorff_points_to_mesh(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B (a named composition): igl supplies the forward half, scipy the backward one.
@@ -963,14 +965,7 @@ def _fd_grad(
     return grad if indices is not None else grad.reshape(arr.shape)
 
 
-@pytest.mark.parity(
-    "chamfer_points_to_points_loss",
-    "pytorch3d",
-    benchmarked=False,
-    reason="chamfer_points_to_points_loss carries no benchmark group of its own (only its "
-    "non-differentiable sibling chamfer_points_to_points does); this is a correctness-only "
-    "comparison against pytorch3d's autograd, not a timed one.",
-)
+@pytest.mark.parity("chamfer_points_to_points_loss", "pytorch3d")
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 @pytest.mark.parametrize("single_directional", [False, True])
 def test_chamfer_points_to_points_loss_grad_matches_pytorch3d(
@@ -1074,20 +1069,7 @@ def test_chamfer_points_to_mesh_loss_grad(
     assert np.allclose(verts_wp.grad.numpy(), grad_verts_np, rtol=_FD_RTOL, atol=_FD_ATOL)
 
 
-@pytest.mark.parity(
-    "chamfer_points_to_mesh_loss",
-    "pytorch3d",
-    benchmarked=False,
-    reason="chamfer_points_to_mesh_loss carries no benchmark group of its own (only its "
-    "non-differentiable sibling chamfer_points_to_mesh does), so this is correctness-only, and "
-    "single_directional=True only: pytorch3d's point_mesh_face_distance sums point-to-face with "
-    "face-to-point (see test_chamfer_points_to_mesh_matches_pytorch3d), where ordito's backward "
-    "direction is vertex-to-nearest-point, so the two-sided loss and its gradient are not "
-    "comparable. The forward-only case needs no numpy subtraction trick to isolate, unlike the "
-    "value-only comparison above: pytorch3d's own point_face_distance primitive already returns "
-    "just the point-to-triangle term, with correct gradients w.r.t. both the points and the mesh "
-    "vertices, so it *is* the forward-only oracle directly.",
-)
+@pytest.mark.parity("chamfer_points_to_mesh_loss", "pytorch3d")
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 def test_chamfer_points_to_mesh_loss_grad_matches_pytorch3d(
     device: str, reduction: _DiffReduction

@@ -1088,10 +1088,10 @@ def test_set_algebra_needs_one_lattice(
     "revoxelize",
     "trimesh",
     benchmarked=False,
-    reason="the operation is one occupancy probe per cell of the new lattice and is dominated by "
-    "the dense allocation it fills, so a row would price to_dense and from_dense over again; both "
-    "already carry the fill_cavities and fill_orthographic groups. trimesh's own revoxelized is "
-    "additionally not a comparable row, for the sampling reason this test records.",
+    reason="this test compares against VoxelGrid.is_filled at the new cell centres, not against a "
+    "trimesh resampler: trimesh's own revoxelized samples a different lattice (the sampling reason "
+    "this test records), so there is no trimesh call computing the same grid to time beside "
+    "ordito's revoxelize row.",
 )
 def test_revoxelize_matches_trimesh(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
@@ -1273,14 +1273,7 @@ def _dense_from_mask_ml(mask_ml: mm.VoxelBitSet, shape: tuple[int, int, int]) ->
 
 
 @pytest.mark.parity("dilate", "meshlib")
-@pytest.mark.parity(
-    "erode",
-    "meshlib",
-    benchmarked=False,
-    reason="erosion has no benchmark group of its own: it is dilation's complement over the same "
-    "candidate buffer, and a second row would price the same pass under another name. The dilate "
-    "group carries the timed MeshLib row, and test_erode_matches_scipy is the scipy oracle.",
-)
+@pytest.mark.parity("erode", "meshlib")
 def test_dilate_and_erode_match_meshlib(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
 ):
@@ -1324,23 +1317,8 @@ def test_dilate_and_erode_match_meshlib(
     assert eroded_np.sum() < occupancy_np.sum() < dilated_np.sum()
 
 
-@pytest.mark.parity(
-    "closing",
-    "trimesh",
-    benchmarked=False,
-    reason="closing is dilate followed by erode and opening is the reverse, so a row would time "
-    "the two passes the dilate group already times, under a third name; trimesh's own "
-    "morphology.binary_closing is scipy.ndimage on a dense array, which the dilate group's "
-    "reference row already prices at the same connectivity.",
-)
-@pytest.mark.parity(
-    "opening",
-    "scipy",
-    benchmarked=False,
-    reason="scipy.ndimage.binary_opening has no trimesh wrapper and no benchmark row for the same "
-    "reason closing has none: it is erode then dilate, both of which the dilate group times "
-    "already, and the dense reference measures the padded box rather than the voxel set.",
-)
+@pytest.mark.parity("closing", "trimesh")
+@pytest.mark.parity("opening", "scipy")
 @pytest.mark.parametrize("connectivity", [6, 18, 26])
 def test_closing_and_opening_match_scipy(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],

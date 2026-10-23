@@ -28,6 +28,7 @@ from tests.conversions import (
 )
 
 
+@pytest.mark.parity("edges_to_neighbor_lists", "igl")
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_edges_to_neighbor_lists_matches_igl(
     mesh_name: str, request: pytest.FixtureRequest
@@ -184,6 +185,7 @@ def test_edges_to_neighbor_lists_from_counts_without_edges(device: str) -> None:
 @pytest.mark.parametrize(("node_count", "n_edges"), [(64, 24), (2048, 2047)])
 @pytest.mark.parity("connected_component_labels", "igl", "scipy")
 @pytest.mark.parity("connected_component_labels_depth", "igl", "scipy")
+@pytest.mark.parity("connected_component_labels_from_edges", "igl", "scipy")
 def test_connected_component_labels_matches_igl(device: str, node_count: int, n_edges: int) -> None:
     """
     Class B (label packing): the partition against ``igl.connected_components`` and scipy's.

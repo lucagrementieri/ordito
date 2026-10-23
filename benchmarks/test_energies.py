@@ -304,6 +304,21 @@ def test_lscm_hessian(bench_case: BenchCase) -> None:
     assert matrix.nrow == 2 * bench_case.n_vertices
 
 
+@pytest.mark.benchmark(group="vector_area_matrix")
+@pytest.mark.benchaxis("patch")
+@pytest.mark.benchlibs("ordito")
+def test_vector_area_matrix(bench_case: BenchCase) -> None:
+    """
+    The boundary vector-area matrix, on the disk patches: a closed mesh has none.
+
+    ordito alone: no library binds it (its test derives the reference from two igl functions), so
+    there is no call to time against.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    matrix = bench_case.run(lambda: od.energies.vector_area_matrix(vertices, faces))
+    assert matrix.nrow == 2 * bench_case.n_vertices
+
+
 @pytest.mark.benchmark(group="crouzeix_raviart_massmatrix")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("ordito", "igl")

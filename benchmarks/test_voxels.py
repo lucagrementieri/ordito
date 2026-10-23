@@ -38,34 +38,36 @@ single-core C++ over the same integer arithmetic, so they read as a bandwidth co
 are under half a pitch, then round each vertex to a cell), and its result neither contains nor is
 contained in the exact accept set. open3d is the oracle for that group.
 
-What has no group, and why
---------------------------
-``from_cells``, ``grid_transform``, ``cell_indices``, ``cell_centers``,
-``occupancy_at_cells``, ``erode``, ``surface_voxels``, ``to_dense``, ``from_dense`` and
-``to_field`` are each one launch over the voxel set with no allocation of their
-own, so a row would time the wrapper floor rather than the operation. Most are covered anyway
-through a group that calls them: ``fill_cavities`` and ``fill_orthographic`` both go through
-``to_dense`` (and ``fill_orthographic`` through ``from_dense``, whose candidate pass
-``fill_cavities`` fuses into its own last kernel), and ``surface_voxels`` runs the same probe kernel
-as ``erode``.
+The small rows
+--------------
+``from_cells``, ``grid_transform``, ``resolve_voxel_grid``, ``cell_indices``, ``cell_centers``,
+``occupancy_at_cells``, ``pool_by_voxel``, ``surface_voxels``, ``from_dense`` and ``to_field`` are
+each one or two launches over the voxel or point set, so at the small end their rows time the
+wrapper floor rather than the operation; they are on the scan sweep anyway, so the large end shows
+whether the work ever rises above that floor. ``grid_transform`` reads two values off the volume on
+the host and takes one small mesh rather than the sweep.
 
-``cells`` is the exception, because for ``order="sorted"`` the wrapper floor *is* the operation at
-every size -- flat over three orders of magnitude of voxel counts -- so "the row would time the
+``cells`` is the reverse case, because for ``order="sorted"`` the wrapper floor *is* the operation
+at every size -- flat over three orders of magnitude of voxel counts -- so "the row would time the
 floor" is a reason to keep the row rather than to drop it. That is what caught the two host
 readbacks the bound stage used to make.
 
-``surface_voxels`` has no reference row either: ``trimesh.voxel.morphology.surface`` exists, but it
-is the ``erode`` complement on a dense array and would measure the same thing the ``dilate`` row
-already does.
+``erode``, ``closing``, ``opening`` and ``surface_voxels`` run the same candidate and probe kernels
+as ``dilate``, composed differently, so their rows should read as one or two ``dilate`` rows. Each
+carries the dense reference its test compares against: MeshLib's ``shrinkVoxelsMask`` for
+``erode`` (the twin of the ``dilate`` row), trimesh's ``morphology.binary_closing`` for ``closing``
+and ``scipy.ndimage.binary_opening`` for ``opening``. The dense inputs are padded so the dense side
+sees the same unbounded lattice the sparse side does, as ``tests/test_voxels.py`` pads them.
+``surface_voxels`` has no reference row: ``trimesh.voxel.morphology.surface`` is the ``erode``
+complement on a dense array, which the ``erode`` row already prices.
 
-``closing`` and ``opening`` are ``dilate`` and ``erode`` composed in the two orders, so their rows
-would be the sum of two rows that already exist. ``union`` / ``intersection`` / ``difference`` and
-``revoxelize`` have no row for the reference half rather than the ordito half: MeshLib answers the
-set algebra as a bitwise fold over a dense ``VoxelBitSet``, so a ratio against a sparse rebuild
-reports the fixture's density, and trimesh's ``ops.boolean_sparse`` needs the optional ``sparse``
-package, which is not a dependency here. ``revoxelize`` is one occupancy probe per new cell over a
-dense lattice that ``to_dense`` / ``from_dense`` already carry the cost of. All four declare the
-omission with ``pytest.mark.parity(..., benchmarked=False)`` in ``tests/test_voxels.py``.
+``union`` / ``intersection`` / ``difference`` and ``revoxelize`` are ordito-only for the reference
+half: MeshLib answers the set algebra as a bitwise fold over a dense ``VoxelBitSet``, so a ratio
+against a sparse rebuild reports the fixture's density, and trimesh's ``ops.boolean_sparse`` needs
+the optional ``sparse`` package, which is not a dependency here. trimesh's ``revoxelized`` samples a
+different lattice from the one ordito resamples onto, so it is not the same operation. Both
+omissions are declared with ``pytest.mark.parity(..., benchmarked=False)`` in
+``tests/test_voxels.py``.
 """
 
 from __future__ import annotations
@@ -77,6 +79,7 @@ import numpy as np
 import pytest
 import pytorch3d.ops as p3d_ops
 import pyvista as pv
+import scipy.ndimage as ndi
 import trimesh as tm
 import trimesh.voxel.morphology as tm_morphology
 import trimesh.voxel.ops as tm_ops
@@ -269,6 +272,24 @@ def test_voxel_down_sample(bench_case: BenchCase, divisor: int) -> None:
     assert int(pooled.shape[0]) > 0
 
 
+@pytest.mark.benchmark(group="pool_by_voxel")
+@pytest.mark.benchlibs("ordito")
+def test_pool_by_voxel(bench_case: BenchCase) -> None:
+    """
+    ``voxel_down_sample``'s pooling onto a grid the caller already holds: one probe per point.
+
+    The grid is the cloud's own at the morphology pitch, built outside the timed callable, so the
+    row is the per-point probe, the segment sort and the mean, with no grid build. ordito-only:
+    ``tests/test_voxels.py`` checks it against NumPy, and ``voxel_down_sample`` carries the
+    open3d comparison.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    points = bench_case.vertices_wp
+    grid = od.voxels.voxelize_points(points, voxel_size)
+    pooled = bench_case.run(lambda: od.voxels.pool_by_voxel(grid, points, points))
+    assert int(pooled.shape[0]) == int(grid.get_active_stats().voxel_count)
+
+
 @pytest.mark.benchmark(group="cells")
 @pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("order", ["grid", "sorted"])
@@ -290,6 +311,74 @@ def test_cells(bench_case: BenchCase, order: Literal["grid", "sorted"]) -> None:
     grid = od.voxels.voxelize_points(bench_case.vertices_wp, voxel_size)
     rows = bench_case.run(lambda: od.voxels.cells(grid, order=order))
     assert int(rows.shape[1]) == 3
+
+
+@pytest.mark.benchmark(group="from_cells")
+@pytest.mark.benchlibs("ordito")
+def test_from_cells(bench_case: BenchCase) -> None:
+    """
+    ``cells``' inverse: a NanoVDB index-grid build from integer cell rows, deduplicating as it goes.
+
+    The rows are the grid's own (``cells``, outside the timed callable), so the row is the build at
+    the voxel count the morphology groups use. ordito-only.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_points(bench_case.vertices_wp, voxel_size)
+    rows = od.voxels.cells(grid)
+    _size, origin = od.voxels.grid_transform(grid)
+    rebuilt = bench_case.run(lambda: od.voxels.from_cells(rows, voxel_size, origin))
+    assert int(rebuilt.get_active_stats().voxel_count) == int(rows.shape[0])
+
+
+@pytest.mark.benchmark(group="grid_transform")
+@pytest.mark.benchmeshes("sphere_small")
+@pytest.mark.benchlibs("ordito")
+def test_grid_transform(bench_case: BenchCase) -> None:
+    """
+    The cell width and origin read off the volume's transform: host work, flat in the voxel count.
+
+    One small mesh is the whole axis, since nothing about the grid's size reaches this call.
+    ordito-only.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_points(bench_case.vertices_wp, voxel_size)
+    size, _origin = bench_case.run(lambda: od.voxels.grid_transform(grid))
+    assert np.isclose(size, voxel_size, rtol=1e-5)
+
+
+@pytest.mark.benchmark(group="resolve_voxel_grid")
+@pytest.mark.benchlibs("ordito")
+def test_resolve_voxel_grid(bench_case: BenchCase) -> None:
+    """
+    The default lattice for a cloud: one bounding-box reduction, then host arithmetic.
+
+    Both defaults are left unset, so the row prices the ``aabb`` it takes; that reduction is what
+    scales with the point count. ordito-only.
+    """
+    points = bench_case.vertices_wp
+    voxel_size, _origin = bench_case.run(lambda: od.voxels.resolve_voxel_grid(points))
+    assert voxel_size > 0.0
+
+
+@pytest.mark.benchmark(group="cell_indices")
+@pytest.mark.benchlibs("ordito")
+def test_cell_indices(bench_case: BenchCase) -> None:
+    """The integer cell of every point: one floor per coordinate, a pure per-point map."""
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    points = bench_case.vertices_wp
+    origin = wp.vec3(*bench_case.vertices_np.min(axis=0).tolist())
+    rows = bench_case.run(lambda: od.voxels.cell_indices(points, voxel_size, origin=origin))
+    assert tuple(rows.shape) == (bench_case.n_vertices, 3)
+
+
+@pytest.mark.benchmark(group="cell_centers")
+@pytest.mark.benchlibs("ordito")
+def test_cell_centers(bench_case: BenchCase) -> None:
+    """The world-space centre of every voxel: one index-to-world map per voxel. ordito-only."""
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_points(bench_case.vertices_wp, voxel_size)
+    centers = bench_case.run(lambda: od.voxels.cell_centers(grid))
+    assert centers.size == int(grid.get_active_stats().voxel_count)
 
 
 # Query counts for the membership group. The grid is fixed, so this axis is purely "how does the
@@ -338,6 +427,91 @@ def test_occupancy_at_points(bench_case: BenchCase, n_queries: int) -> None:
     assert int(mask.shape[0]) == n_queries
 
 
+@pytest.mark.benchmark(group="occupancy_at_cells")
+@pytest.mark.benchlibs("ordito")
+def test_occupancy_at_cells(bench_case: BenchCase) -> None:
+    """
+    Membership of integer cells: ``occupancy_at_points`` without the world-to-index map.
+
+    The queries are the cells of the grid's one-shell dilation (built outside the timed callable),
+    so the answer is a genuine mix: every original cell is a hit and the added shell is all misses.
+    ordito-only: ``occupancy_at_points`` carries the open3d comparison.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    queries = od.voxels.cells(od.voxels.dilate(grid))
+    mask = bench_case.run(lambda: od.voxels.occupancy_at_cells(grid, queries))
+    assert int(mask.shape[0]) == int(queries.shape[0])
+
+
+def _shifted_grid(grid: wp.Volume, device: str | None) -> wp.Volume:
+    """
+    Return the same voxel set moved three cells along ``x``, on the same lattice.
+
+    Smaller than any fixture's extent at the morphology pitch, so the two sets overlap heavily and
+    still differ: all three set operations do real work, as in ``tests/test_voxels.py``.
+    """
+    voxel_size, origin = od.voxels.grid_transform(grid)
+    rows_np = od.voxels.cells(grid).numpy() + np.array([3, 0, 0], dtype=np.int32)
+    rows = odt.as_array2d(wp.array(rows_np, dtype=wp.int32, device=device), wp.int32)
+    return od.voxels.from_cells(rows, voxel_size, origin)
+
+
+@pytest.mark.benchmark(group="union")
+@pytest.mark.benchlibs("ordito")
+def test_union(bench_case: BenchCase) -> None:
+    """
+    Cells in either grid: the two cell arrays concatenated and handed to the builder.
+
+    The cheapest of the three set operations, with no membership probe; read the other two
+    against it. ordito-only (see the module docstring).
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    shifted = _shifted_grid(grid, bench_case.device)
+    joined = bench_case.run(lambda: od.voxels.union(grid, shifted))
+    assert int(joined.get_active_stats().voxel_count) > int(grid.get_active_stats().voxel_count)
+
+
+@pytest.mark.benchmark(group="intersection")
+@pytest.mark.benchlibs("ordito")
+def test_intersection(bench_case: BenchCase) -> None:
+    """Cells in both grids: one probe of the second grid per cell of the first. ordito-only."""
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    shifted = _shifted_grid(grid, bench_case.device)
+    common = bench_case.run(lambda: od.voxels.intersection(grid, shifted))
+    assert int(common.get_active_stats().voxel_count) > 0
+
+
+@pytest.mark.benchmark(group="difference")
+@pytest.mark.benchlibs("ordito")
+def test_difference(bench_case: BenchCase) -> None:
+    """Cells in the first grid only: ``intersection``'s probe with the test inverted."""
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    shifted = _shifted_grid(grid, bench_case.device)
+    remainder = bench_case.run(lambda: od.voxels.difference(grid, shifted))
+    assert int(remainder.get_active_stats().voxel_count) > 0
+
+
+@pytest.mark.benchmark(group="revoxelize")
+@pytest.mark.benchlibs("ordito")
+def test_revoxelize(bench_case: BenchCase) -> None:
+    """
+    Resample onto a lattice of half the cell width: one occupancy probe per new cell centre.
+
+    Refinement rather than coarsening, so the dense lattice the probe runs over is eight times the
+    source box and the row prices the expensive direction. ordito-only (see the module docstring).
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    finer = bench_case.run(
+        lambda: od.voxels.revoxelize(grid, 0.5 * voxel_size), rounds=_HEAVY_ROUNDS
+    )
+    assert int(finer.get_active_stats().voxel_count) > int(grid.get_active_stats().voxel_count)
+
+
 def _voxel_mask_ml(occupancy_np: np.ndarray) -> mm.VoxelBitSet:
     """
     Load a dense occupancy array into a MeshLib ``VoxelBitSet``, in ``VoxelId`` order.
@@ -364,6 +538,32 @@ def _expand_ml(mask_ml: mm.VoxelBitSet, indexer_ml: mm.VolumeIndexer) -> mm.Voxe
     """Dilate in place by one 6-neighbour shell; ``expandVoxelsMask`` itself returns ``None``."""
     mm.expandVoxelsMask(mask_ml, indexer_ml, 1)
     return mask_ml
+
+
+def _shrink_ml(mask_ml: mm.VoxelBitSet, indexer_ml: mm.VolumeIndexer) -> mm.VoxelBitSet:
+    """Erode in place by one 6-neighbour shell; ``shrinkVoxelsMask`` itself returns ``None``."""
+    mm.shrinkVoxelsMask(mask_ml, indexer_ml, 1)
+    return mask_ml
+
+
+def _thick_dense_tm(bench_case: BenchCase, voxel_size: float, pad: int) -> np.ndarray:
+    """
+    Return trimesh's surface voxelization, padded by ``pad`` cells and dilated once.
+
+    A two-sided shell, the dense counterpart of ``_thick_grid``, for the rows whose operation
+    removes cells: a one-cell shell erodes or opens to almost nothing, which would time an empty
+    answer. The padding gives the dense side room for every cell the sparse side may reach.
+    """
+    mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+    occupancy_np = tm.voxel.creation.voxelize_subdivide(mesh_tm, pitch=voxel_size).encoding.dense
+    return ndi.binary_dilation(np.pad(occupancy_np, pad))
+
+
+def _thick_grid(bench_case: BenchCase, voxel_size: float) -> wp.Volume:
+    """Return the mesh's surface voxelization dilated once: the cell-removing rows' input."""
+    return od.voxels.dilate(
+        od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    )
 
 
 @pytest.mark.benchmark(group="dilate")
@@ -408,6 +608,100 @@ def test_dilate(bench_case: BenchCase) -> None:
     grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
     dilated = bench_case.run(lambda: od.voxels.dilate(grid))
     assert int(dilated.get_active_stats().voxel_count) > 0
+
+
+@pytest.mark.benchmark(group="erode")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_erode(bench_case: BenchCase) -> None:
+    """
+    Shrink the set by one shell: ``dilate``'s probe kernel with the test inverted.
+
+    The input is a dilated surface voxelization (``_thick_grid``), so the erosion keeps a real
+    core. MeshLib's ``shrinkVoxelsMask`` is the dense multi-threaded twin of the ``dilate`` row's
+    ``expandVoxelsMask``, asserted equal to ``erode`` in ``tests/test_voxels.py``; its input is the
+    same kind of two-sided shell from trimesh's voxelization, and it mutates, so the bitset is
+    rebuilt in the untimed ``setup`` as in ``dilate``.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    if bench_case.kind == "meshlib":
+        skip_larger_than(bench_case, "bunny", "MeshLib erodes the whole dense bounding box")
+        occupancy_np = _thick_dense_tm(bench_case, voxel_size, 1)
+        indexer_ml = mm.VolumeIndexer(mm.Vector3i(*(int(n) for n in occupancy_np.shape)))
+        eroded_ml = bench_case.run(
+            lambda mask_ml: _shrink_ml(mask_ml, indexer_ml),
+            setup=lambda: _voxel_mask_ml(occupancy_np),
+        )
+        assert 0 < eroded_ml.count() < int(occupancy_np.sum())
+        return
+
+    grid = _thick_grid(bench_case, voxel_size)
+    eroded = bench_case.run(lambda: od.voxels.erode(grid))
+    assert 0 < int(eroded.get_active_stats().voxel_count) < int(grid.get_active_stats().voxel_count)
+
+
+@pytest.mark.benchmark(group="closing")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_closing(bench_case: BenchCase) -> None:
+    """
+    ``dilate`` then ``erode`` on the surface voxelization: two morphology passes in one call.
+
+    trimesh's ``morphology.binary_closing`` is ``scipy.ndimage.binary_closing`` over the dense box,
+    which ``tests/test_voxels.py`` compares against; the box is padded by two cells, as the test
+    pads it, so the dense intermediate dilation is not clipped at the array border.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    if bench_case.kind == "trimesh":
+        skip_larger_than(bench_case, "bunny", "two dense ndimage passes over the bounding box")
+        mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        occupancy_np = np.pad(
+            tm.voxel.creation.voxelize_subdivide(mesh_tm, pitch=voxel_size).encoding.dense, 2
+        )
+        closed_tm = bench_case.run(
+            lambda: tm_morphology.binary_closing(occupancy_np), rounds=_HEAVY_ROUNDS
+        )
+        assert closed_tm.sum >= int(occupancy_np.sum())
+        return
+
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    closed = bench_case.run(lambda: od.voxels.closing(grid))
+    assert int(closed.get_active_stats().voxel_count) >= int(grid.get_active_stats().voxel_count)
+
+
+@pytest.mark.benchmark(group="opening")
+@pytest.mark.benchlibs("ordito", "scipy")
+def test_opening(bench_case: BenchCase) -> None:
+    """
+    ``erode`` then ``dilate`` on a two-sided shell, so the opening keeps a real core.
+
+    scipy's ``ndimage.binary_opening`` is the reference ``tests/test_voxels.py`` compares against
+    (trimesh does not wrap it), run over the dense two-sided shell from trimesh's voxelization.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    if bench_case.kind == "scipy":
+        skip_larger_than(bench_case, "bunny", "two dense ndimage passes over the bounding box")
+        occupancy_np = _thick_dense_tm(bench_case, voxel_size, 2)
+        opened_np = bench_case.run(lambda: ndi.binary_opening(occupancy_np), rounds=_HEAVY_ROUNDS)
+        assert 0 < int(opened_np.sum()) <= int(occupancy_np.sum())
+        return
+
+    grid = _thick_grid(bench_case, voxel_size)
+    opened = bench_case.run(lambda: od.voxels.opening(grid))
+    assert int(opened.get_active_stats().voxel_count) > 0
+
+
+@pytest.mark.benchmark(group="surface_voxels")
+@pytest.mark.benchlibs("ordito")
+def test_surface_voxels(bench_case: BenchCase) -> None:
+    """
+    The cells with an empty neighbour: ``erode``'s probe, keeping the complement.
+
+    On the same two-sided shell as ``erode``, so the two rows read side by side. ordito-only (see
+    the module docstring).
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = _thick_grid(bench_case, voxel_size)
+    shell = bench_case.run(lambda: od.voxels.surface_voxels(grid))
+    assert 0 < int(shell.get_active_stats().voxel_count) <= int(grid.get_active_stats().voxel_count)
 
 
 @pytest.mark.benchmark(group="fill_cavities")
@@ -752,3 +1046,37 @@ def test_to_dense(bench_case: BenchCase) -> None:
     grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
     occupancy, _origin = bench_case.run(lambda: od.voxels.to_dense(grid))
     assert occupancy.ndim == 3
+
+
+@pytest.mark.benchmark(group="from_dense")
+@pytest.mark.benchlibs("ordito")
+def test_from_dense(bench_case: BenchCase) -> None:
+    """
+    ``to_dense``'s inverse: compact the occupied lattice cells and build the grid from them.
+
+    The lattice is ``to_dense``'s answer on the same grid, built outside the timed callable, so the
+    pair is a round trip at one voxel set. ordito-only.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    occupancy, origin_cell = od.voxels.to_dense(grid)
+    _size, origin = od.voxels.grid_transform(grid)
+    rebuilt = bench_case.run(
+        lambda: od.voxels.from_dense(occupancy, voxel_size, origin, origin_cell=origin_cell)
+    )
+    assert int(rebuilt.get_active_stats().voxel_count) == int(grid.get_active_stats().voxel_count)
+
+
+@pytest.mark.benchmark(group="to_field")
+@pytest.mark.benchlibs("ordito")
+def test_to_field(bench_case: BenchCase) -> None:
+    """
+    ``to_dense`` padded by one cell and written as ``float32``: the field marching cubes takes.
+
+    ordito-only: trimesh's ``matrix_to_marching_cubes`` builds the same padded field internally and
+    never returns it.
+    """
+    voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    field, _bounds = bench_case.run(lambda: od.voxels.to_field(grid))
+    assert field.ndim == 3

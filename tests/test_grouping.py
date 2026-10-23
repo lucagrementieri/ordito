@@ -88,6 +88,7 @@ def test_group_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -
     assert np.array_equal(groups_wp, np.sort(groups_tm, axis=1))
 
 
+@pytest.mark.parity("group_int_rows", "trimesh")
 def test_group_int_rows(device: str) -> None:
     """
     Class B (order within a group): ``trimesh.grouping.group_rows`` at the same multiplicity.

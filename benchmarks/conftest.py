@@ -50,6 +50,13 @@ Flags
     informative on the next mesh size. Pass this flag before regenerating the table with
     ``benchmarks/regenerate_known_slow_libraries.py``, so the new table is cut from a run that saw
     every library.
+``--no-size-caps``
+    Make every ``skip_larger_than`` cap a no-op, so each row runs on every mesh it is parametrized
+    on. Combine with an explicit ``--size`` list, which lifts ``--cpu-max-size``, for a sweep that
+    times every library at every size. Off by default: the caps keep a default run short.
+``--round-budget=<seconds>``
+    Time one warm-up call per row and cut its rounds so they fit this many seconds (at least one).
+    Off by default; meant for the uncapped sweep, where one reference call can take minutes.
 """
 
 from __future__ import annotations
@@ -58,6 +65,7 @@ import functools
 import json
 import operator
 import os
+import time
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
@@ -101,6 +109,10 @@ _WARMUP_ROUNDS = 1
 # multi-second call timed against nothing were most of ``test_visibility``'s wall clock.
 REFERENCE_FREE_ROUNDS = 3
 
+# Set from ``--no-size-caps`` / ``--round-budget`` in ``pytest_configure``.
+_size_caps = True
+_round_budget: float | None = None
+
 
 class LibrarySpec(TypedDict):
     """A benchmarked library variant. ``device`` is ``None`` for the CPU-only references."""
@@ -123,6 +135,8 @@ def skip_larger_than(bench_case: BenchCase, largest: str, reason: str = "") -> N
     sized to run everywhere that "everywhere" is linear or tree-accelerated, which says nothing
     about a reference with a quadratic cost curve.
     """
+    if not _size_caps:
+        return
     spec = ALL_MESHES_BY_NAME.get(bench_case.mesh_name)
     cap_spec = ALL_MESHES_BY_NAME.get(largest)
     if spec is None or cap_spec is None:
@@ -650,6 +664,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "loses badly enough to skip by default (see skip_known_slow)."
         ),
     )
+    group.addoption(
+        "--no-size-caps",
+        action="store_true",
+        default=False,
+        help="make every skip_larger_than cap a no-op (pair with an explicit --size list).",
+    )
+    group.addoption(
+        "--round-budget",
+        action="store",
+        type=float,
+        default=None,
+        help="time one warm-up call per row and cut its rounds to fit this many seconds.",
+    )
 
 
 def _selected_sizes(config: pytest.Config) -> tuple[set[str], bool]:
@@ -882,6 +909,9 @@ def pytest_configure(config: pytest.Config) -> None:
     # ``float32`` scans take CUB's arrival-order scan (``ordito.config``). Set before any test is
     # collected, so setup and timed calls alike run in this mode for the whole session.
     od.config.set_deterministic(False)
+    global _size_caps, _round_budget  # read by skip_larger_than and run, which get no config
+    _size_caps = not config.getoption("--no-size-caps")
+    _round_budget = config.getoption("--round-budget")
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -1047,9 +1077,17 @@ class BenchLibrary:
                 wp.synchronize_device(device)
             return result
 
+        warmup_rounds = _WARMUP_ROUNDS
+        if _round_budget is not None:
+            # The warm-up call, timed by hand, sizes the rounds; pedantic then skips its own.
+            start = time.perf_counter()
+            target(*(() if setup is None else (setup(),)))
+            elapsed = time.perf_counter() - start
+            rounds = max(1, min(rounds, int(_round_budget // max(elapsed, 1e-9))))
+            warmup_rounds = 0
         if setup is None:
             result = self._benchmark.pedantic(
-                target, rounds=rounds, warmup_rounds=_WARMUP_ROUNDS, iterations=1
+                target, rounds=rounds, warmup_rounds=warmup_rounds, iterations=1
             )
         else:
 
@@ -1061,7 +1099,7 @@ class BenchLibrary:
                 target,
                 setup=make_arguments,
                 rounds=rounds,
-                warmup_rounds=_WARMUP_ROUNDS,
+                warmup_rounds=warmup_rounds,
                 iterations=1,
             )
 

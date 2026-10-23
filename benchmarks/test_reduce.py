@@ -100,6 +100,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from conftest import BenchCase
+from ordito.kernels import reduce as kernel_reduce
 
 _mask_cache: dict[tuple[str, str], wp.array[wp.bool]] = {}
 _scalar_cache: dict[tuple[str, str], wp.array[wp.float32]] = {}
@@ -349,6 +350,22 @@ def test_weighted_sum(bench_case: BenchCase) -> None:
     values, areas = _face_values_wp(bench_case), _face_areas_wp(bench_case)
     total = bench_case.run(lambda: od.reduce.weighted_sum(values, areas))
     assert np.isfinite(total)
+
+
+@pytest.mark.benchmark(group="sum_of_terms")
+@pytest.mark.benchlibs("ordito")
+def test_sum_of_terms(bench_case: BenchCase) -> None:
+    """
+    The device-side total of the per-face values: ``sum``'s blocks with the total left on device.
+
+    At ``weighted_sum``'s per-face values, with ``sum``'s own first-stage kernels
+    (``kernel_reduce.ARRAY_SUM``), so the row reads against ``sum_scalar`` as the price of the
+    readback it skips. ordito-only: its test pins it to ``sum``, which carries the NumPy oracle.
+    """
+    values = _face_values_wp(bench_case)
+    n = bench_case.n_faces
+    total = bench_case.run(lambda: od.reduce.sum_of_terms(kernel_reduce.ARRAY_SUM, [values], n))
+    assert total.shape == (1,)
 
 
 _corner_cache: dict[tuple[str, str], tuple[wp.array[wp.float32], wp.array[wp.int32]]] = {}

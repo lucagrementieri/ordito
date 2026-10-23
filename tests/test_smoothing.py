@@ -1239,6 +1239,7 @@ def test_filter_taubin_recompute_matches_open3d(
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parity("filter_neighborhood_average", "open3d")
 def test_filter_neighborhood_average(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: the plain 1-ring mean against open3d's ``filter_smooth_simple``.

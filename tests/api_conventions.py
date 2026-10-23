@@ -87,6 +87,11 @@ follows is the one-line claim each check makes, so a failure message reads in co
     still green; the API overview page lists the modules again, with a line each.
 29. **An array's entry opens with its shape as a code span**: ``(3 * n_faces,)`` flat
     triangle index buffer, not ``Length-``, ``Shape ``(``, ``Flat `` or ``Rank-1 `` first.
+30. **No ``warp.utils.array_cast`` under ``ordito/``**. Its generic kernel lives in Warp's own
+    module, so every new dtype pair rebuilds that module.
+31. **Every public function and method is timed by some benchmark row.** A module function is
+    covered by an ``od.<module>.<name>`` chain under ``benchmarks/``, a method by its name; what has
+    no runtime cost to time is exempted by name, with its reason, in ``_BENCHMARK_EXEMPT``.
 
 Why a static scan rather than importing ``ordito``
 ---------------------------------------------------
@@ -2706,4 +2711,116 @@ def array_cast_problems() -> list[str]:
                     f"{site}:{node.lineno}: calls array_cast -- convert through array.copyto or "
                     "array.astype"
                 )
+    return problems
+
+
+# --- check 31 -----------------------------------------------------------------------------------
+
+# Public callables no benchmark times, each for a stated reason. Everything with a runtime cost a
+# caller pays is timed; these are bookkeeping on an object another row already builds, or plumbing
+# whose cost is a Python branch. An entry that matches no public callable fails, so the list cannot
+# outlive what it exempts.
+_BENCHMARK_EXEMPT: dict[str, str] = {
+    "adjacency.require_paired_adjacency": "checks both tables or neither are given; no launch",
+    "mesh.mesh_arguments": "plumbing for the Trimesh-or-buffers call forms; no device work",
+    "mesh.Trimesh.invalidate": "clears cached attributes; the rows that rebuild them time the cost",
+    "mesh.Trimesh.release_factorizations": "drops held factorizations; frees, computes nothing",
+    "sample.resolve_seed": "draws a host integer when no seed is given; no device work",
+    "cholesky.held_nbytes": "sums nbytes over held factorizations; host bookkeeping",
+    "heat.HeatSolver.release": "drops held factorizations; frees, computes nothing",
+    "linalg.MinQuadWithFixedData.release": "drops a held factorization; frees, computes nothing",
+    "linalg.MinQuadWithFixedData.matches": "compares a pinned index set by identity; host only",
+    "linalg.OperatorFactorization.release": "drops a held factorization; frees, computes nothing",
+    "parametrization.FixedVertexSolver.release": "drops held factorizations; computes nothing",
+}
+
+
+def _benchmark_references() -> tuple[set[tuple[str, str]], set[str]]:
+    """
+    Read every ``od.<module>.<name>`` chain and every attribute name in ``benchmarks/``.
+
+    The chains cover module functions; the bare attribute names cover methods, which a row reaches
+    through an instance whose class the scan cannot infer, or by name as a string
+    (``test_mesh.py``'s ``_warm(bench_case, "face_normals")``).
+    """
+    chains: set[tuple[str, str]] = set()
+    attributes: set[str] = set()
+    for path in sorted(_BENCHMARKS_DIR.glob("*.py")):
+        try:
+            tree = _parse_source(path)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                attributes.add(node.value)
+            if not isinstance(node, ast.Attribute):
+                continue
+            attributes.add(node.attr)
+            parts = _dotted(node)
+            if len(parts) == 3 and parts[0] == "od":
+                chains.add((parts[1], parts[2]))
+    return chains, attributes
+
+
+def _public_methods(tree: ast.Module) -> list[tuple[str, str, int]]:
+    """
+    ``(class, method, lineno)`` for each public method of a public class.
+
+    A plain ``property`` is an accessor and is skipped; the package's own ``_CachedProperty``
+    computes on first read, so it counts.
+    """
+    methods: list[tuple[str, str, int]] = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef) or node.name.startswith("_"):
+            continue
+        for item in node.body:
+            if not isinstance(item, ast.FunctionDef) or item.name.startswith("_"):
+                continue
+            decorators = {ast.unparse(decorator) for decorator in item.decorator_list}
+            if decorators & {"property", "functools.cached_property", "cached_property"}:
+                continue
+            methods.append((node.name, item.name, item.lineno))
+    return methods
+
+
+def benchmark_coverage_problems() -> list[str]:
+    """
+    Check 31: a public function or method that no benchmark names.
+
+    A module function is covered by an ``od.<module>.<name>`` chain anywhere under ``benchmarks/``,
+    a method by its attribute name. The modules ``_MODULES_WITHOUT_BENCHMARKS`` exempts as a whole
+    are skipped; single callables are exempted in ``_BENCHMARK_EXEMPT`` with their reason.
+    """
+    if not _BENCHMARKS_DIR.is_dir():
+        return []
+    chains, attributes = _benchmark_references()
+    problems: list[str] = []
+    seen: set[str] = set()
+    for module in scan_package().modules.values():
+        if module.name in _MODULES_WITHOUT_BENCHMARKS:
+            continue
+        callables = [
+            (function.name, function.lineno, (module.name, function.name) in chains)
+            for function in module.functions
+        ]
+        tree = _parse_source(_PACKAGE_DIR / f"{module.name.replace('.', '/')}.py")
+        callables += [
+            (f"{owner}.{method}", lineno, method in attributes)
+            for owner, method, lineno in _public_methods(tree)
+        ]
+        for name, lineno, covered in callables:
+            qualified = f"{module.name}.{name}"
+            if qualified in seen:  # an ``@overload`` stub ahead of its implementation
+                continue
+            seen.add(qualified)
+            if covered or qualified in _BENCHMARK_EXEMPT:
+                continue
+            problems.append(
+                f"{module.path}:{lineno} {name}: no benchmark times it -- add a row to "
+                f"benchmarks/test_{module.name}.py"
+            )
+    problems.extend(
+        f"_BENCHMARK_EXEMPT[{name!r}]: names no public callable -- delete the entry"
+        for name in sorted(set(_BENCHMARK_EXEMPT) - seen)
+    )
     return problems

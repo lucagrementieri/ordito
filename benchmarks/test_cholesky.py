@@ -64,3 +64,43 @@ def test_sparse_cholesky_solve(bench_case: BenchCase) -> None:
     solution = wp.zeros_like(rhs)
     bench_case.run(lambda: factor.solve(rhs, solution, componentwise=True))
     assert solution.shape[0] == bench_case.n_vertices
+
+
+def _system_at_another_time(bench_case: BenchCase) -> odt.BsrMatrix[wp.float64]:
+    """Return ``M - tL`` at ten times the default diffusion time: the same pattern, new values."""
+    corners_np = bench_case.vertices_np[bench_case.faces_np.reshape(-1, 3)]
+    mean_edge = np.linalg.norm(corners_np - np.roll(corners_np, 1, axis=1), axis=2).mean()
+    return od.heat.heat_operators(
+        bench_case.vertices_wp, bench_case.faces_wp, t=10.0 * float(mean_edge) ** 2
+    )[0]
+
+
+@pytest.mark.benchmark(group="sparse_cholesky_refactor")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med", "saddle", "saddle_graded")
+@pytest.mark.benchlibs("ordito")
+def test_sparse_cholesky_refactor(bench_case: BenchCase) -> None:
+    """
+    Numeric refactorization in place of a same-pattern operator: the build without its analysis.
+
+    Read against ``sparse_cholesky`` on the same mesh: the difference is the ordering and symbolic
+    structure a caller re-solving at a new diffusion time does not pay again.
+    """
+    factor = od.cholesky.sparse_cholesky(_system(bench_case), bench_case.vertices_wp)
+    other = _system_at_another_time(bench_case)
+    bench_case.run(lambda: factor.refactor(other), rounds=3)
+    assert factor.n == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="sparse_cholesky_with_operator")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med", "saddle", "saddle_graded")
+@pytest.mark.benchlibs("ordito")
+def test_sparse_cholesky_with_operator(bench_case: BenchCase) -> None:
+    """
+    A second factorization sharing the first one's analysis: ``refactor`` plus fresh storage.
+
+    Read against ``sparse_cholesky_refactor``: the gap is the new factor's allocation.
+    """
+    factor = od.cholesky.sparse_cholesky(_system(bench_case), bench_case.vertices_wp)
+    other = _system_at_another_time(bench_case)
+    shared = bench_case.run(lambda: factor.with_operator(other), rounds=3)
+    assert shared.n == bench_case.n_vertices

@@ -87,6 +87,24 @@ def test_boundary_loops(bench_case: BenchCase) -> None:
         bench_case.run(lambda: igl.boundary_loop(faces))
 
 
+@pytest.mark.benchmark(group="boundary_loops_with_offsets")
+@pytest.mark.benchaxis("loops")
+@pytest.mark.benchlibs("ordito")
+def test_boundary_loops_with_offsets(bench_case: BenchCase) -> None:
+    """
+    The packed ``(flat_loops, offsets)`` form ``boundary_loops`` slices, at the same axis points.
+
+    Read against ``boundary_loops`` for what the per-loop slicing costs on ``holes_many``. Ordito
+    only: the test pins it against ``boundary_loops``.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    flat_loops, offsets = bench_case.run(
+        lambda: od.boundary.boundary_loops_with_offsets(vertices, faces)
+    )
+    assert int(offsets.shape[0]) >= 1
+    assert flat_loops.size <= vertices.size
+
+
 @pytest.mark.benchmark(group="boundary_edges")
 @pytest.mark.benchaxis("loops")
 @pytest.mark.benchlibs("ordito", "trimesh", "igl", "pymeshlab", "pyvista", "meshlib")
@@ -155,6 +173,38 @@ def test_boundary_edges(bench_case: BenchCase) -> None:
         assert bench_case.run(boundary_tm).ndim == 2
 
 
+@pytest.mark.benchmark(group="oriented_boundary_edges")
+@pytest.mark.benchaxis("loops")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl")
+def test_oriented_boundary_edges(bench_case: BenchCase) -> None:
+    """
+    The boundary edges in face-winding direction, at ``boundary_edges``'s axis points.
+
+    The same pass as ``boundary_edges`` keeping each row's direction, so the two read side by side.
+    ``igl.boundary_facets`` returns its edges oriented already, and trimesh's are its ``edges`` rows
+    at the multiplicity-1 keys; ``tests/test_boundary.py`` compares both with this function in
+    ``test_boundary_edges_match_trimesh_pyvista_and_igl``.
+    """
+    if bench_case.kind == "igl":
+        faces_np = bench_case.faces_np
+        edges_igl, _face_igl, _corner_igl = bench_case.run(lambda: igl.boundary_facets(faces_np))
+        assert edges_igl.ndim == 2
+        return
+    if bench_case.kind == "trimesh":  # the pure trimesh.grouping path, as in boundary_edges
+        faces_np = bench_case.faces_np
+
+        def oriented_tm() -> np.ndarray:
+            edges_np = np.asarray(tm.geometry.faces_to_edges(faces_np))
+            keys_np = np.sort(edges_np, axis=1)
+            return edges_np[np.asarray(tm.grouping.group_rows(keys_np, require_count=1))]
+
+        assert bench_case.run(oriented_tm).ndim == 2
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    edges = bench_case.run(lambda: od.boundary.oriented_boundary_edges(vertices, faces))
+    assert edges.ndim == 2
+
+
 @pytest.mark.benchmark(group="boundary_vertices")
 @pytest.mark.benchaxis("loops")
 @pytest.mark.benchlibs("ordito")
@@ -167,6 +217,35 @@ def test_boundary_vertices(bench_case: BenchCase) -> None:
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     rim = bench_case.run(lambda: od.boundary.boundary_vertices(vertices, faces))
+    assert rim.size <= vertices.size
+
+
+@pytest.mark.benchmark(group="boundary_vertex_indices")
+@pytest.mark.benchaxis("loops")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
+def test_boundary_vertex_indices(bench_case: BenchCase) -> None:
+    """
+    Sorted indices of the vertices on a boundary edge: ``boundary_vertices`` without the gather.
+
+    MeshLab's ``compute_selection_from_mesh_border`` and MeshLib's ``getBoundaryVerts`` mark the
+    same vertices as a selection (``tests/test_boundary.py::test_boundary_vertex_indices``), so they
+    are the like-for-like references here; ``boundary_edges`` times them too, as a pass that stops
+    one step short of its edge list. The MeshLib mesh is built once outside the timed callable, as
+    there.
+    """
+    if bench_case.kind == "meshlib":
+        mesh_ml = bench_case.new_mesh_ml()
+        n_vertices = bench_case.n_vertices
+        verts_ml = bench_case.run(lambda: mm.getBoundaryVerts(mesh_ml.topology))
+        assert verts_ml.size() <= n_vertices
+        return
+    if bench_case.kind == "pymeshlab":
+        meshset_pml = bench_case.meshset_pml
+        bench_case.run(meshset_pml.compute_selection_from_mesh_border)
+        assert meshset_pml.current_mesh().vertex_selection_array().shape == (bench_case.n_vertices,)
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    rim = bench_case.run(lambda: od.boundary.boundary_vertex_indices(vertices, faces))
     assert rim.size <= vertices.size
 
 
@@ -239,6 +318,28 @@ def test_loop_perimeters(bench_case: BenchCase) -> None:
     assert int(perimeters.shape[0]) == len(loops)
 
 
+@pytest.mark.benchmark(group="loop_perimeters_from_offsets")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.censusmesh("saddle_small")
+def test_loop_perimeters_from_offsets(bench_case: BenchCase) -> None:
+    """
+    Loop perimeters from the packed ``boundary_loops_with_offsets`` pair, validated by default.
+
+    At ``loop_perimeters``'s points, so the two read side by side: this form skips the list packing
+    and pays the offset check's readback instead. The pair is produced outside the timed callable.
+    Ordito only: the meshlib comparison is on the list form.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
+    n_loops = int(offsets.shape[0]) - 1
+    if n_loops == 0:
+        pytest.skip(f"{bench_case.mesh_name} is closed: there is no rim to measure")
+    perimeters = bench_case.run(
+        lambda: od.boundary.loop_perimeters_from_offsets(vertices, flat_loops, offsets)
+    )
+    assert int(perimeters.shape[0]) == n_loops
+
+
 @pytest.mark.benchmark(group="loop_directed_areas")
 @pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.censusmesh("saddle_small")
@@ -274,3 +375,24 @@ def test_loop_directed_areas(bench_case: BenchCase) -> None:
         pytest.skip(f"{bench_case.mesh_name} is closed: there is no rim to measure")
     areas = bench_case.run(lambda: od.boundary.loop_directed_areas(vertices, loops))
     assert int(areas.shape[0]) == len(loops)
+
+
+@pytest.mark.benchmark(group="loop_directed_areas_from_offsets")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.censusmesh("saddle_small")
+def test_loop_directed_areas_from_offsets(bench_case: BenchCase) -> None:
+    """
+    Loop directed areas from the packed pair, read against ``loop_perimeters_from_offsets``.
+
+    Same operating point as ``loop_directed_areas``; the pair is produced outside the timed
+    callable. Ordito only: the meshlib comparison is on the list form.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
+    n_loops = int(offsets.shape[0]) - 1
+    if n_loops == 0:
+        pytest.skip(f"{bench_case.mesh_name} is closed: there is no rim to measure")
+    areas = bench_case.run(
+        lambda: od.boundary.loop_directed_areas_from_offsets(vertices, flat_loops, offsets)
+    )
+    assert int(areas.shape[0]) == n_loops

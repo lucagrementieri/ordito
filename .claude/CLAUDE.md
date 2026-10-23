@@ -360,7 +360,7 @@ trusting and forwards `device=` from an input array (§2.1).
 - When mirroring a NumPy function, mirror its positional signature and make `device` keyword-only.
 - No speculative generality: add a parameter only when an in-repo caller needs it; remove unread ones.
 - Inverse pairs cross-reference each other and have a round-trip test.
-- Every public `ordito/<module>.py` has `tests/test_<module>.py` and `benchmarks/test_<module>.py` (check 4); tests live in the file mirroring the function's module (§5).
+- Every public `ordito/<module>.py` has `tests/test_<module>.py` and `benchmarks/test_<module>.py` (check 4); tests live in the file mirroring the function's module (§5). Every public function and method has a benchmark row (check 31).
 
 ### 4.3 Docstring, signature and body must agree
 
@@ -384,7 +384,7 @@ Renaming a keyword argument also needs a grep of the old name alone (`**splat` `
 
 ### 4.5 The mechanical gate: `tests/api_conventions.py`
 
-Thirty checks fail the default `pytest` run. Read an allowlist entry's reason before adding one; prefer fixing the code.
+Thirty-one checks fail the default `pytest` run. Read an allowlist entry's reason before adding one; prefer fixing the code.
 
 1. Summary line naming a reference library (§6).
 2. `*_mask` producer not returning `wp.array[wp.bool]`.
@@ -416,6 +416,7 @@ Thirty checks fail the default `pytest` run. Read an allowlist entry's reason be
 28. Public module missing from, duplicated in, or stale in `docs/SUMMARY.md` or `docs/reference.md` (§6).
 29. Array docstring entry opening with `Length-`, `Shape ``(`, `Flat` or `Rank-N ``(` (§6).
 30. `warp.utils.array_cast` under `ordito/` (§3.6).
+31. Public function or method that no `benchmarks/` row names (`od.<module>.<name>`; a method by name), outside `_BENCHMARK_EXEMPT` (§4.2).
 
 Two rules about the gate itself:
 
@@ -949,6 +950,38 @@ The full per-component detail is in `reference/component-status.md`; read the co
 - **`benchmarks/test_cholesky.py::sparse_cholesky_solve` times no solve**: its `solution` is reused across rounds, so from round 2 the warm start passes the residual test at once (a ~30 us replay of copies and one SpMV). Do not read a ratio off it.
 - **Poisson:** `dense` multigrid-PCG is the default (`solver_tolerance=1e-5`, non-convergence warns); `method="adaptive"` is the narrow-band backend, which always runs one FAS tau-correction cycle after its cascade (the cascade alone does not converge to the documented system) and lands a few thousandths of a cell from the dense surface; `dense` stays the default for robustness (unchecked band rounds, parity pinned to dense), not accuracy. Where the lattice outruns the samples `adaptive` resolves the same sample-scale dimples dense does. Error is not monotone in depth.
 - **Key-sorted CSR everywhere:** structural builds write keys, not triplets; a repeated assembly over fixed faces passes `pattern=`.
-- **Orders ordito reproduces itself:** `edges_unique` rows ascend by `(max, min)` key; collapse lock keys, new-vertex numbering and homology tie-breaks read row indices. Do not change `edges_unique` order casually.
+- **Orders ordito reproduces itself:** `edges_unique` rows ascend by `(max, min)` key; collapse lock keys, new-vertex numbering and homology tie-breaks read row indices. Do not change `edges_unique` order casually. This is already trimesh's order (`hashable_rows` packs column 0 into the low bits), so `edges_unique`, `face_adjacency`, `subdivide` and `oriented_boundary_edges` equal trimesh's as returned (`boundary_edges` is trimesh's `edges_sorted` rows). igl has no single order to adopt instead: `unique_edge_map` sorts by `(min, max)` keeping first-seen direction, `upsample` numbers midpoints in face-walk discovery order.
 - **`quadric_decimate`:** memoryless quadrics gathered in ascending face order (reproducible on CUDA), boundary planes added once per edge, relaxed endpoint-only independence, cost-bucketed lock key, default `feature_angle=180`. Thin parts and slits are kept by vetoing a collapse whose endpoints face opposite ways unless it removes a sliver (mean ratio < 0.05); cost ties move a cell's `i2o` and quality up to 1.4x, so judge a change over several tie perturbations.
 - **Tuned constants live next to their code and are device-gated** (`_LINK_ON_DEVICE_FROM`, `EAR_ONE_BLOCK_MAX`, `RDP_ONE_BLOCK_MAX`, `_DOWNSAMPLE_DOUBLING_FROM`, `_KNN_DEFER_MIN_POINTS`, `_NEAREST_LEAF_SIZES`, `_GEODESIC_BALL_CHUNK`, `PACK_SEGMENTS_KERNEL_FROM`); re-probe after a Warp upgrade.
+
+### Open items from the 2026-10-22 parity audit
+
+The audit of every Class B/C/D test (commits `310fb0e8`, `03226107`) left these open. Each declined item gives the reason the agent recorded, then why it might not hold; re-measure before acting either way.
+
+**Decisions suspended (owner's call):**
+
+- **`normal_consistency_loss` differs from pytorch3d on inconsistently wound or non-orientable input** (0.581 vs 0.166 on a sphere with every 7th face flipped; the docstring states it, the test pins it). pytorch3d's rule, per edge with `k` incident faces: `C(k,2) + (|Σ â_i|² − k) / 2`, `â_i` the unit `(v1 − v0) × (o_i − v0)`, needs only an edge scatter and would match on any input, fans and flips included. Not done: it adds launches and a group sum to a census-gated row (re-record both budgets).
+- **`resolve_duplicated_faces` raises `ValueError` on a duplicate group it cannot orient; igl silently drops the group.** Kept because it is documented and tested; matching igl is a behaviour change.
+- **`ears`' `ear_opp` changed meaning** to igl's (the corner opposite the ear's interior edge; it was igl's value shifted by one). No in-repo reader; an external caller would read different numbers. Confirm before a release note.
+
+**Declines whose reason may not hold:**
+
+- **`flip_t_vertices` vs MeshLab differs by 130-234 faces on the irregular fixtures**: "MeshLab flips in one serial queue; matching means copying GPL code." Doubt: a priority order can be specified from the documented behaviour and reproduced in parallel rounds without reading the source.
+- **`fix_degeneracies` / `collapse_small_triangles` vs MeshLib** (986 vs 1020 vertices kept on the saddle; a shrunk-edge chain resolved from opposite ends): "serial-queue order." Same doubt; the C bounds were tightened instead.
+- **Fold-test threshold inclusivity**: MeshLib flags at exactly the threshold, ordito does not; "at an exact float threshold that is rounding, and the pymeshlab and trimesh fold checks are strict." Doubt: never probed on an input built to sit exactly on the threshold.
+- **`polyline_upsample` keeps `floor(L / step)` points; MeshLib bisects.** "The docstring says it matches its source." Doubt: whether that source is the reference users expect.
+- **`split_faces_along_field` returns the high side first; VTK returns the low side first.** Declined only because it reorders a public return.
+- **`slice_mesh_with_plane` does not weld cut points** (384 vertices for 293 positions): trimesh's `slice_faces_plane` does not either, MeshLib does. A `weld=` keyword could serve both.
+- **`cluster_decimate` and `voxel_down_sample` grid anchoring**: MeshLib fits `ceil(extent / voxel_size)` (anisotropic, box-fitted) cells. Declined because it breaks the exact Open3D parity (cluster) or needs an API change (down-sample); the voxel test fixes the geometry so the grids coincide instead.
+- **Boundary loop direction is opposite to MeshLib's.** "Flipping would touch every `boundary_loops` consumer." Not counted; the consumers may well be direction-agnostic.
+- **Component labels are representative face ids, not igl's dense `0..k-1`.** "An extra compaction pass." Not priced; the scan may already exist in the labelling path.
+- **`log_map` angles vs potpourri3d differ by a median 13°**, relabelled B to C: "two constructions; a convention fix moved it under 0.1°." Only one convention hypothesis was tested.
+- **Heat geodesic vs igl relabelled A to C**: the gap is igl's Voronoi mass against ordito's barycentric one. An optional Voronoi mass was not considered; it would make igl a Class A oracle.
+- **Tangent-frame gauge vs potpourri3d**: geometry-central's `basis_x` is mostly the outgoing halfedge of the highest-index face, but ~10 % of vertices match no edge direction; left unexplained.
+- **MeshLab's `"med"` statistic is rank `n // 2 - 1`**; ordito has no order-statistic function, so the `median` / pymeshlab claim is checked only against NumPy.
+- **pymeshlab's LoOP outlier score is VCG's formula without λ = 3 and with an erf polynomial missing its 4th power**: a reference defect, not adopted; the test re-scores ordito that way.
+- **pytorch3d marching cubes shares 324 of 956 triangles** (its case table splits cells differently); its test stays vertex-only.
+- **`noparity` icp_mesh / pymeshlab** ("the result depends on where the process's memory lands") and **`random_soup` / trimesh** ("would need NumPy's global RNG") were not re-measured.
+- **Kept loose by measurement:** polyharmonic `k = 3` (1.3e-4), the 100 k-vertex circle map (fails 1e-5 on CPU), convex-subset recall 0.70 (27 of 31), MeshLib radius normals 0.999.
+
+**Verification not run after the audit:** the full two-process `python -m tests.devices` (only the changed test files ran on CPU), `--cpu-blocks`, and the CUDA census; the CPU census ran on `benchmarks/test_{repair,boundary,energies}.py` only (no count rose).

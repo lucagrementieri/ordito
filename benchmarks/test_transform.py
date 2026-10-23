@@ -18,6 +18,13 @@ all -- so a rigid matrix and a shear cost the same to apply, and a row per class
 same kernel five times. The class decides what is *recomputed afterwards*, which belongs to the
 caller's workflow rather than to this call.
 
+The matrix builders and readers (``translation_matrix`` / ``scale_matrix``, ``normal_matrix``,
+``classify_transform``, ``transform_scale``, ``as_mat44``, ``matrix_to_numpy``,
+``reverses_orientation``) are host arithmetic on one ``4x4``, so they take ``bench_lib`` rather
+than a mesh: no input size exists to sweep. The readers sweep the one thing that does move their
+cost, the matrix's **form** -- a host ``wp.mat44`` against a ``(1,)`` device array, which costs a
+readback -- so the pair prices that readback and nothing else.
+
 References
 ----------
 **trimesh**'s ``transformations.transform_points`` is the closest match in the suite: a pure
@@ -52,7 +59,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
-from conftest import BenchCase
+from conftest import BenchCase, BenchLibrary
 
 # The matrix every row applies: a rotation about an off-origin centre, so no component of the
 # multiply is trivially zero and none of the libraries can shortcut a translation-only path.
@@ -120,6 +127,23 @@ def test_transform_points_inplace(bench_case: BenchCase) -> None:
     assert np.isfinite(scratch.numpy()).all()
 
 
+@pytest.mark.benchmark(group="transform_vectors")
+@pytest.mark.benchlibs("ordito")
+def test_transform_vectors(bench_case: BenchCase) -> None:
+    """
+    The linear block alone, applied to one direction per vertex: ``transform_points``' twin.
+
+    The same bandwidth row as ``transform_points`` with the translation dropped, so the two read
+    side by side and should coincide. ordito-only: none of the module's references exposes a
+    translation-free map as its own call (``tests/test_transform.py`` checks it against the
+    definition rather than a library).
+    """
+    vertices_wp = bench_case.vertices_wp
+    moved_wp = bench_case.run(lambda: od.transform.transform_vectors(vertices_wp, _MATRIX_WP))
+    assert moved_wp.shape == vertices_wp.shape
+    assert np.isfinite(moved_wp.numpy()).all()
+
+
 @pytest.mark.benchmark(group="transform_mesh")
 @pytest.mark.benchlibs("ordito", "trimesh")
 def test_transform_mesh(bench_case: BenchCase) -> None:
@@ -175,3 +199,128 @@ def test_transform_normals(bench_case: BenchCase) -> None:
     # map preserves zero by design rather than producing a direction out of nothing.
     lengths = np.linalg.norm(moved_wp.numpy(), axis=1)
     assert np.isclose(lengths[lengths > 0.0], 1.0, rtol=1e-4, atol=1e-4).all()
+
+
+# The two forms a transform parameter arrives in. A ``(1,)`` device array is what a fitted
+# transform (``registration.procrustes``) hands over, and every host reader pays one readback for
+# it; a scalar ``wp.mat44`` pays none.
+_MATRIX_FORMS = ["host", "device"]
+
+
+def _matrix_in_form(bench_lib: BenchLibrary, form: str) -> wp.mat44 | wp.array[wp.mat44]:
+    """Return ``_MATRIX_WP`` as a host value or as a ``(1,)`` array on the row's device."""
+    if form == "host":
+        return _MATRIX_WP
+    return wp.array([_MATRIX_WP], dtype=wp.mat44, device=bench_lib.device)
+
+
+@pytest.mark.benchmark(group="translation_matrix")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_translation_matrix(bench_lib: BenchLibrary) -> None:
+    """
+    A translation builder: host NumPy into one ``wp.mat44``, the module's cheapest call.
+
+    trimesh's ``transformations.translation_matrix`` builds the same ``4x4`` as a NumPy array
+    (asserted equal in ``tests/test_transform.py``); ordito's row also pays the conversion into a
+    Warp matrix, which is the fixed cost every builder here shares.
+    """
+    offset = (1.0, -2.0, 0.5)
+    if bench_lib.kind == "trimesh":
+        matrix_tm = bench_lib.run(lambda: tm.transformations.translation_matrix(list(offset)))
+        assert matrix_tm.shape == (4, 4)
+        return
+    matrix_wp = bench_lib.run(lambda: od.transform.translation_matrix(offset))
+    assert np.isfinite(np.array(matrix_wp)).all()
+
+
+@pytest.mark.benchmark(group="scale_matrix")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_scale_matrix(bench_lib: BenchLibrary) -> None:
+    """
+    A uniform scale about an off-origin centre, so the builder composes a translation too.
+
+    trimesh's ``transformations.scale_matrix`` takes the same factor and origin and returns the
+    same matrix (``tests/test_transform.py``).
+    """
+    center = (1.0, -2.0, 0.5)
+    if bench_lib.kind == "trimesh":
+        matrix_tm = bench_lib.run(lambda: tm.transformations.scale_matrix(3.0, list(center)))
+        assert matrix_tm.shape == (4, 4)
+        return
+    matrix_wp = bench_lib.run(lambda: od.transform.scale_matrix(3.0, center))
+    assert np.isfinite(np.array(matrix_wp)).all()
+
+
+@pytest.mark.benchmark(group="normal_matrix")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("form", _MATRIX_FORMS)
+def test_normal_matrix(bench_lib: BenchLibrary, form: str) -> None:
+    """
+    The inverse transpose of the linear block: a singularity test and a ``3x3`` host inverse.
+
+    ordito-only: no reference returns the normal map as a value of its own.
+    """
+    matrix = _matrix_in_form(bench_lib, form)
+    normal_map = bench_lib.run(lambda: od.transform.normal_matrix(matrix))
+    assert np.isfinite(np.array(normal_map)).all()
+
+
+@pytest.mark.benchmark(group="classify_transform")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("form", _MATRIX_FORMS)
+def test_classify_transform(bench_lib: BenchLibrary, form: str) -> None:
+    """
+    The Gram-matrix and singular-value tests behind each cache decision of ``Trimesh.transform``.
+
+    The matrix is a rigid motion, so the classification runs every rung down to ``RIGID`` rather
+    than stopping at an early ``AFFINE``. ordito-only: no reference classifies a transform.
+    """
+    matrix = _matrix_in_form(bench_lib, form)
+    kind = bench_lib.run(lambda: od.transform.classify_transform(matrix))
+    assert kind == od.transform.TransformKind.RIGID
+
+
+@pytest.mark.benchmark(group="transform_scale")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("form", _MATRIX_FORMS)
+def test_transform_scale(bench_lib: BenchLibrary, form: str) -> None:
+    """The uniform scale factor, read off the Gram matrix's trace. ordito-only."""
+    matrix = _matrix_in_form(bench_lib, form)
+    scale = bench_lib.run(lambda: od.transform.transform_scale(matrix))
+    assert np.isclose(scale, 1.0, rtol=1e-5)
+
+
+@pytest.mark.benchmark(group="as_mat44")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("form", _MATRIX_FORMS)
+def test_as_mat44(bench_lib: BenchLibrary, form: str) -> None:
+    """
+    The one place a device matrix crosses to the host: free for a host value, one readback else.
+
+    The ``host`` row is the identity return and so the floor of every reader in this module; the
+    ``device`` row is the readback each of them pays on a fitted transform.
+    """
+    matrix = _matrix_in_form(bench_lib, form)
+    host = bench_lib.run(lambda: od.transform.as_mat44(matrix))
+    assert host == _MATRIX_WP
+
+
+@pytest.mark.benchmark(group="matrix_to_numpy")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("form", _MATRIX_FORMS)
+def test_matrix_to_numpy(bench_lib: BenchLibrary, form: str) -> None:
+    """``as_mat44`` plus the ``float64`` NumPy copy every host decision here reads. ordito-only."""
+    matrix = _matrix_in_form(bench_lib, form)
+    host_np = bench_lib.run(lambda: od.transform.matrix_to_numpy(matrix))
+    assert host_np.shape == (4, 4)
+    assert np.isfinite(host_np).all()
+
+
+@pytest.mark.benchmark(group="reverses_orientation")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("form", _MATRIX_FORMS)
+def test_reverses_orientation(bench_lib: BenchLibrary, form: str) -> None:
+    """The sign of the linear block's determinant: the winding decision. ordito-only."""
+    matrix = _matrix_in_form(bench_lib, form)
+    mirrors = bench_lib.run(lambda: od.transform.reverses_orientation(matrix))
+    assert mirrors is False

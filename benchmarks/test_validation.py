@@ -74,6 +74,7 @@ import igl
 import numpy as np
 import pytest
 import trimesh as tm
+import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
@@ -114,6 +115,27 @@ def test_is_vertex_manifold(bench_case: BenchCase) -> None:
         faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
         mask_igl = np.asarray(bench_case.run(lambda: igl.is_vertex_manifold(faces_np)))
         assert mask_igl.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="vertex_manifold_mask")
+@pytest.mark.benchaxis("valence")
+@pytest.mark.benchlibs("ordito", "igl")
+def test_vertex_manifold_mask(bench_case: BenchCase) -> None:
+    """
+    The per-vertex form ``is_vertex_manifold`` reduces, at the same valence points.
+
+    ``igl.is_vertex_manifold`` returns exactly this mask
+    (``tests/test_validation.py::test_vertex_manifold_mask``), so here its row is like-for-like
+    rather than a mask against a ``bool``.
+    """
+    if bench_case.kind == "igl":
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
+        mask_igl = np.asarray(bench_case.run(lambda: igl.is_vertex_manifold(faces_np)))
+        assert mask_igl.shape == (bench_case.n_vertices,)
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    mask = bench_case.run(lambda: od.validation.vertex_manifold_mask(vertices, faces))
+    assert mask.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="is_edge_manifold")
@@ -159,6 +181,59 @@ def test_is_edge_manifold(bench_case: BenchCase) -> None:
     assert bool(bench_case.run(lambda: igl.is_edge_manifold(faces_np))[0]) in (True, False)
 
 
+@pytest.mark.benchmark(group="edge_manifold_mask")
+@pytest.mark.benchaxis("valence")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("allow_boundary_edges", [True, False], ids=["boundary_ok", "closed"])
+def test_edge_manifold_mask(bench_case: BenchCase, allow_boundary_edges: bool) -> None:
+    """
+    The per-face form ``is_edge_manifold`` reduces, at the same valence points, both settings.
+
+    Ordito only: the test oracle is a NumPy edge count.
+    """
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    mask = bench_case.run(
+        lambda: od.validation.edge_manifold_mask(faces, allow_boundary_edges, n_vertices=n_vertices)
+    )
+    assert mask.shape == (bench_case.n_faces,)
+
+
+@pytest.mark.benchmark(group="is_winding_consistent")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_is_winding_consistent(bench_case: BenchCase) -> None:
+    """
+    Every interior edge traversed once each way: one halfedge pairing and a check, scan sweep.
+
+    ``Trimesh.is_winding_consistent`` is the same predicate
+    (``tests/test_validation.py::test_orientation_predicates_on_consistent_meshes``); it is a cached
+    property, so the mesh is rebuilt inside the timed callable.
+    """
+    if bench_case.kind == "trimesh":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        result = bench_case.run(
+            lambda: bool(tm.Trimesh(vertices_np, faces_np, process=False).is_winding_consistent)
+        )
+    else:
+        faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+        result = bench_case.run(
+            lambda: od.validation.is_winding_consistent(faces, n_vertices=n_vertices)
+        )
+    assert result in (True, False)
+
+
+@pytest.mark.benchmark(group="edge_winding_consistent_mask")
+@pytest.mark.benchlibs("ordito")
+def test_edge_winding_consistent_mask(bench_case: BenchCase) -> None:
+    """
+    The per-edge form of ``is_winding_consistent``, over the unique edges it builds itself.
+
+    Ordito only: the test pins it against ``is_winding_consistent``.
+    """
+    faces = bench_case.faces_wp
+    mask = bench_case.run(lambda: od.validation.edge_winding_consistent_mask(faces))
+    assert 0 < mask.size <= 3 * bench_case.n_faces
+
+
 @pytest.mark.benchmark(group="face_orientation_bits")
 @pytest.mark.benchaxis("diameter")
 @pytest.mark.benchlibs("ordito", "trimesh", "igl")
@@ -197,6 +272,53 @@ def test_face_orientation_bits(bench_case: BenchCase) -> None:
             return mesh_tm
 
         assert len(bench_case.run(fix_winding_tm).faces) == bench_case.n_faces
+
+
+@pytest.mark.benchmark(group="is_orientable")
+@pytest.mark.benchaxis("diameter")
+@pytest.mark.benchlibs("ordito")
+def test_is_orientable(bench_case: BenchCase) -> None:
+    """
+    The orientability verdict of the parity union-find, read against ``face_orientation_bits``.
+
+    On its diameter axis, where it must stay as flat. Ordito only: the test oracle is a NumPy
+    parity flood fill.
+    """
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    result = bench_case.run(lambda: od.validation.is_orientable(faces, n_vertices=n_vertices))
+    assert result is True
+
+
+@pytest.mark.benchmark(group="face_flip_mask")
+@pytest.mark.benchaxis("diameter")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl")
+def test_face_flip_mask(bench_case: BenchCase) -> None:
+    """
+    The faces whose winding a consistent orientation reverses, on ``face_orientation_bits``' axis.
+
+    The same references as there, and the same reading: ``igl.bfs_orient`` and trimesh's
+    ``fix_winding`` both rewrite the faces rather than return a mask, and the tests recover the
+    mask from them (``tests/test_validation.py::test_face_flip_mask_matches_igl`` and
+    ``::test_face_flip_mask_long_path``). trimesh mutates its mesh, so it is rebuilt per round.
+    """
+    if bench_case.kind == "igl":
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
+        faces_oriented_igl, _components_igl = bench_case.run(lambda: igl.bfs_orient(faces_np))
+        assert faces_oriented_igl.shape == (bench_case.n_faces, 3)
+        return
+    if bench_case.kind == "trimesh":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+
+        def fix_winding_tm() -> tm.Trimesh:
+            mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+            tm.repair.fix_winding(mesh_tm)
+            return mesh_tm
+
+        assert len(bench_case.run(fix_winding_tm).faces) == bench_case.n_faces
+        return
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    mask = bench_case.run(lambda: od.validation.face_flip_mask(faces, n_vertices=n_vertices))
+    assert mask.shape == (bench_case.n_faces,)
 
 
 def _run_topology_pml(bench_case: BenchCase) -> None:
@@ -245,6 +367,21 @@ def test_is_watertight(bench_case: BenchCase) -> None:
     assert result in (True, False)
 
 
+@pytest.mark.benchmark(group="face_watertight_mask")
+@pytest.mark.benchaxis("overlap")
+@pytest.mark.benchlibs("ordito")
+def test_face_watertight_mask(bench_case: BenchCase) -> None:
+    """
+    Faces all of whose edges have exactly two faces: the edge-count clause of ``is_watertight``.
+
+    At ``is_watertight``'s points, so the gap between the two rows is the vertex-manifold and
+    self-intersection clauses. Ordito only: the test oracle is a NumPy edge count.
+    """
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    mask = bench_case.run(lambda: od.validation.face_watertight_mask(faces, n_vertices=n_vertices))
+    assert mask.shape == (bench_case.n_faces,)
+
+
 @pytest.mark.benchmark(group="is_volume")
 @pytest.mark.benchaxis("overlap")
 @pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")
@@ -260,6 +397,38 @@ def test_is_volume(bench_case: BenchCase) -> None:
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
         result = bench_case.run(lambda: tm.Trimesh(vertices, faces, process=False).is_volume)
     assert result in (True, False)
+
+
+@pytest.mark.benchmark(group="is_self_intersecting")
+@pytest.mark.benchaxis("overlap")
+@pytest.mark.benchlibs("ordito", "meshlib", "pymeshfix")
+def test_is_self_intersecting(bench_case: BenchCase) -> None:
+    """
+    Whether any two faces intersect, over a ``wp.Mesh`` the caller already holds.
+
+    The verdict ``face_self_intersecting_mask`` reduces, with the BVH built outside the timed
+    callable, so read against that row for what building it costs. The two references answer it as
+    the ``any()`` of their face sets, compared with this predicate in
+    ``tests/test_validation.py``; both are timed exactly as in ``face_self_intersecting_mask``.
+    """
+    if bench_case.kind == "pymeshfix":
+        faces_pmf = bench_case.run(
+            lambda: bench_case.new_tmesh_pmf().select_intersecting_triangles(
+                tris_per_cell=50, justproper=False
+            )
+        )
+        assert faces_pmf.shape[0] <= bench_case.n_faces
+        return
+    if bench_case.kind == "meshlib":
+        mesh_part_ml = mm.MeshPart(bench_case.new_mesh_ml())
+        colliding_ml = bench_case.run(
+            lambda: mm.findSelfCollidingTrianglesBS(mesh_part_ml, touchIsIntersection=False)
+        )
+        assert colliding_ml.size() <= bench_case.n_faces
+        return
+    mesh = wp.Mesh(points=bench_case.vertices_wp, indices=bench_case.faces_wp)
+    result = bench_case.run(lambda: od.validation.is_self_intersecting(mesh))
+    assert result is (bench_case.mesh_name != "sphere_med")
 
 
 @pytest.mark.benchmark(group="face_self_intersecting_mask")

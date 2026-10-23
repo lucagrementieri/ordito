@@ -2158,6 +2158,7 @@ def test_chebyshev_preconditioner_solves_the_same_system(
     assert np.allclose(single.numpy(), reference_np[0], rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parity("block_diag", "scipy")
 def test_block_diag_matches_scipy(device: str) -> None:
     """
     Class A, against ``scipy.sparse.block_diag`` of the same operators written out densely.

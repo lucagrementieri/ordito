@@ -240,6 +240,51 @@ def test_fill_min_weight_chords(bench_case: BenchCase, resolve_multiple_edges: b
     assert result.size >= faces.size
 
 
+@pytest.mark.benchmark(group="fill_loops_min_weight")
+@pytest.mark.benchaxis("loops_dp")
+@pytest.mark.benchlibs("ordito")
+def test_fill_loops_min_weight(bench_case: BenchCase) -> None:
+    """
+    The batched interval DP over loops the caller already holds, at ``fill_min_weight``'s points.
+
+    The loops come from ``boundary_loops`` outside the timed callable, so the gap to
+    ``fill_min_weight`` is the loop extraction alone. Same metric and chord rule as that group's
+    default. Ordito only: the test pins the batched fill against per-loop calls.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    loops = od.boundary.boundary_loops(vertices, faces)
+    result = bench_case.run(
+        lambda: od.holes.fill_loops_min_weight(vertices, faces, loops, "plane_normalized", True),
+        rounds=_ROUNDS,
+    )
+    assert result.size >= faces.size
+
+
+# Edge-count cap for ``fill_small``: above ``holes_many``' three-edge loops, below ``rim_short``'s
+# 512-edge rims, so one axis point fills everything and the other nothing.
+_FILL_SMALL_MAX_EDGES = 16
+
+
+@pytest.mark.benchmark(group="fill_small")
+@pytest.mark.benchaxis("loops_dp")
+@pytest.mark.benchlibs("ordito")
+def test_fill_small(bench_case: BenchCase) -> None:
+    """
+    Fill only the loops of at most 16 edges: all of ``holes_many``'s, neither of ``rim_short``'s.
+
+    So one point is the DP over many short loops and the other is the loop measure and the
+    threshold with nothing to fill, which is what this function adds over ``fill_min_weight``.
+    Ordito only: the pymeshfix and pymeshlab comparisons in ``tests/test_holes.py`` cannot carry a
+    row (see the exemption there).
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    result = bench_case.run(
+        lambda: od.holes.fill_small(vertices, faces, max_edges=_FILL_SMALL_MAX_EDGES),
+        rounds=_ROUNDS,
+    )
+    assert result.size >= faces.size
+
+
 @pytest.mark.benchmark(group="fill_smooth")
 @pytest.mark.benchaxis("loops_dp")
 @pytest.mark.benchlibs("ordito", "meshlib")
@@ -515,6 +560,92 @@ def test_stitch_min_weight(bench_case: BenchCase) -> None:
     up = (0.0, 0.0, 1.0)
     _vertices, faces = bench_case.run(
         lambda: od.holes.stitch_min_weight(va, fa, vb, fb, up_dir=up), rounds=_ROUNDS
+    )
+    assert faces.size // 3 == n_out
+
+
+@pytest.mark.benchmark(group="stitch_smooth")
+@pytest.mark.benchmeshes("rim_short")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_stitch_smooth(bench_case: BenchCase) -> None:
+    """
+    The ``stitch_min_weight`` band refined and smoothed into both caps, at that group's point.
+
+    The gap to ``stitch_min_weight`` is the refine-and-smooth stage. ``stitchHolesNicely`` is
+    MeshLib's same three stages (``tests/test_holes.py::test_stitch_smooth_statistics_vs_meshlib``);
+    as in ``fill_smooth``, each side derives its own target edge length, so read the pair as the
+    cost of the stage rather than a like-for-like subdivision. MeshLib mutates, so its mesh is
+    rebuilt per round.
+    """
+    if bench_case.kind == "meshlib":
+        vertices_np, faces_np = _stitch_pair_np(bench_case)
+
+        def run_ml() -> int:
+            mesh_ml = mesh_ml_from_numpy(vertices_np, faces_np)
+            edges_ml = mesh_ml.topology.findHoleRepresentiveEdges()
+            settings_ml = mm.StitchHolesNicelySettings()
+            settings_ml.triangulateParams.metric = mm.getComplexStitchMetric(mesh_ml)
+            mm.stitchHolesNicely(mesh_ml, edges_ml[0], edges_ml[1], settings_ml)
+            return mesh_ml.topology.numValidFaces()
+
+        assert bench_case.run(run_ml, rounds=_ROUNDS) > len(faces_np)
+        return
+    (va, fa), (vb, fb) = _stitch_halves(bench_case)
+    _vertices, faces = bench_case.run(
+        lambda: od.holes.stitch_smooth(va, fa, vb, fb), rounds=_ROUNDS
+    )
+    assert faces.size // 3 >= (fa.size + fb.size) // 3 + _stitch_band_size(bench_case)
+
+
+_stitch_loops_cache: dict[tuple[str, str], tuple[wp.array[wp.int32], wp.array[wp.int32]]] = {}
+
+
+def _stitch_loops(bench_case: BenchCase) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """Return the one rim of each cap of [`_stitch_halves`], cached: an input, not the op."""
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _stitch_loops_cache:
+        (va, fa), (vb, fb) = _stitch_halves(bench_case)
+        _stitch_loops_cache[key] = (
+            od.boundary.longest_boundary_loop(va, fa),
+            od.boundary.longest_boundary_loop(vb, fb),
+        )
+    return _stitch_loops_cache[key]
+
+
+@pytest.mark.benchmark(group="stitch_loops")
+@pytest.mark.benchmeshes("rim_short")
+@pytest.mark.benchlibs("ordito")
+def test_stitch_loops(bench_case: BenchCase) -> None:
+    """
+    The greedy zipper over two rims the caller already holds, at ``stitch``'s point.
+
+    The gap to ``stitch`` is the rim extraction it skips. Ordito only: the test oracle is a NumPy
+    port of the zipper.
+    """
+    (va, fa), (vb, fb) = _stitch_halves(bench_case)
+    loop_a, loop_b = _stitch_loops(bench_case)
+    n_out = (fa.size + fb.size) // 3 + _stitch_band_size(bench_case)
+    _vertices, faces = bench_case.run(lambda: od.holes.stitch_loops(va, fa, loop_a, vb, fb, loop_b))
+    assert faces.size // 3 == n_out
+
+
+@pytest.mark.benchmark(group="stitch_loops_min_weight")
+@pytest.mark.benchmeshes("rim_short")
+@pytest.mark.benchlibs("ordito")
+def test_stitch_loops_min_weight(bench_case: BenchCase) -> None:
+    """
+    The grid DP over two rims the caller already holds, at ``stitch_min_weight``'s point.
+
+    Same ``vertical`` metric as that row, so the gap is the rim extraction alone. Ordito only: the
+    MeshLib comparison is on ``stitch_min_weight``, and this form's oracle is the band optimum.
+    """
+    (va, fa), (vb, fb) = _stitch_halves(bench_case)
+    loop_a, loop_b = _stitch_loops(bench_case)
+    n_out = (fa.size + fb.size) // 3 + _stitch_band_size(bench_case)
+    up = (0.0, 0.0, 1.0)
+    _vertices, faces = bench_case.run(
+        lambda: od.holes.stitch_loops_min_weight(va, fa, loop_a, vb, fb, loop_b, up_dir=up),
+        rounds=_ROUNDS,
     )
     assert faces.size // 3 == n_out
 

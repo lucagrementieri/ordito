@@ -262,6 +262,32 @@ def _wedge_atlas_np(bench_case: BenchCase) -> np.ndarray:
     return _atlas_cache[bench_case.mesh_name]
 
 
+def _seam_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
+    """Return the wedge-UV MeshSet, cached: MeshLab's seam filter only selects, so it survives."""
+    if bench_case.mesh_name not in _seam_meshset_cache:
+        meshset_pml = ml.MeshSet()
+        meshset_pml.add_mesh(
+            ml.Mesh(
+                vertex_matrix=np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64),
+                face_matrix=np.ascontiguousarray(bench_case.faces_np, dtype=np.int32),
+                w_tex_coords_matrix=np.ascontiguousarray(
+                    _wedge_atlas_np(bench_case), dtype=np.float64
+                ),
+            )
+        )
+        _seam_meshset_cache[bench_case.mesh_name] = meshset_pml
+    return _seam_meshset_cache[bench_case.mesh_name]
+
+
+def _wedge_texcoords(bench_case: BenchCase) -> wp.array[wp.vec2]:
+    """Upload ``_wedge_atlas_np`` to the case's device as per-corner ``wp.vec2`` texcoords."""
+    return wp.array(
+        np.ascontiguousarray(_wedge_atlas_np(bench_case), dtype=np.float32),
+        dtype=wp.vec2,
+        device=bench_case.device,
+    )
+
+
 @pytest.mark.benchmark(group="uv_seam_edges")
 @pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
 @pytest.mark.benchlibs("ordito", "pymeshlab")
@@ -277,31 +303,14 @@ def test_uv_seam_edges(bench_case: BenchCase) -> None:
     almost exactly and any gap between them is the components pass, not the seam test.
     """
     if bench_case.kind == "pymeshlab":
-        # Selection-only, so the wedge-UV MeshSet survives its own filter and is cached.
-        if bench_case.mesh_name not in _seam_meshset_cache:
-            meshset_pml = ml.MeshSet()
-            meshset_pml.add_mesh(
-                ml.Mesh(
-                    vertex_matrix=np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64),
-                    face_matrix=np.ascontiguousarray(bench_case.faces_np, dtype=np.int32),
-                    w_tex_coords_matrix=np.ascontiguousarray(
-                        _wedge_atlas_np(bench_case), dtype=np.float64
-                    ),
-                )
-            )
-            _seam_meshset_cache[bench_case.mesh_name] = meshset_pml
-        meshset_pml = _seam_meshset_cache[bench_case.mesh_name]
+        meshset_pml = _seam_meshset_pml(bench_case)
         bench_case.run(meshset_pml.compute_selection_by_texture_seams_per_vertex)
         # MeshLab reports only the vertex set, and unions boundaries into it -- so it does strictly
         # less than the ordito row, which also splits boundaries out and finds foldovers.
         assert meshset_pml.current_mesh().vertex_selection_array().shape == (bench_case.n_vertices,)
         return
     faces = bench_case.faces_wp
-    texcoords = wp.array(
-        np.ascontiguousarray(_wedge_atlas_np(bench_case), dtype=np.float32),
-        dtype=wp.vec2,
-        device=bench_case.device,
-    )
+    texcoords = _wedge_texcoords(bench_case)
     n_vertices = bench_case.n_vertices
     seams, boundaries, foldovers = bench_case.run(
         lambda: od.seams.uv_seam_edges(faces, texcoords, n_vertices=n_vertices)
@@ -310,3 +319,46 @@ def test_uv_seam_edges(bench_case: BenchCase) -> None:
     assert int(seams.shape[1]) == 4
     assert int(boundaries.shape[1]) == 2
     assert int(foldovers.shape[1]) == 4
+
+
+@pytest.mark.benchmark(group="seam_edge_vertices")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
+@pytest.mark.benchlibs("ordito")
+def test_seam_edge_vertices(bench_case: BenchCase) -> None:
+    """
+    The vertex pair of each ``uv_seam_edges`` seam row: one gather over the wedge atlas's seam.
+
+    At ``uv_seam_edges``'s points, with its seam rows built outside the timed callable. Ordito only:
+    the test pins it against ``oriented_boundary_edges`` and ``cut_along_edges``.
+    """
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    seams, _boundaries, _foldovers = od.seams.uv_seam_edges(
+        faces, _wedge_texcoords(bench_case), n_vertices=n_vertices
+    )
+    pairs = bench_case.run(lambda: od.seams.seam_edge_vertices(faces, seams))
+    assert pairs.shape == (seams.shape[0], 2)
+
+
+@pytest.mark.benchmark(group="uv_seam_vertex_mask")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_uv_seam_vertex_mask(bench_case: BenchCase) -> None:
+    """
+    The per-vertex seam mask of the wedge atlas, boundaries included: MeshLab's own quantity.
+
+    ``compute_selection_by_texture_seams_per_vertex`` returns exactly this mask
+    (``tests/test_seams.py::test_uv_seam_vertex_mask_matches_pymeshlab``), so this is the
+    like-for-like row that ``uv_seam_edges``, which also splits boundaries and foldovers out, is
+    not. The MeshSet is cached as there.
+    """
+    if bench_case.kind == "pymeshlab":
+        meshset_pml = _seam_meshset_pml(bench_case)
+        bench_case.run(meshset_pml.compute_selection_by_texture_seams_per_vertex)
+        assert meshset_pml.current_mesh().vertex_selection_array().shape == (bench_case.n_vertices,)
+        return
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    texcoords = _wedge_texcoords(bench_case)
+    mask = bench_case.run(
+        lambda: od.seams.uv_seam_vertex_mask(faces, texcoords, n_vertices=n_vertices)
+    )
+    assert mask.shape == (n_vertices,)

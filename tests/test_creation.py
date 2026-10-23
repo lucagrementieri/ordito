@@ -1004,6 +1004,7 @@ def test_uv_sphere_does_not_mutate_the_caller_s_count(device: str) -> None:
     assert from_tuple_wp.size == from_array_wp.size
 
 
+@pytest.mark.parity("capsule", "trimesh")
 def test_capsule(device: str) -> None:
     vertices_wp, faces_wp = od.creation.capsule(height=2.0, radius=0.5, device=device)
     mesh_tm = tm.creation.capsule(height=2.0, radius=0.5)

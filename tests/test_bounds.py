@@ -293,6 +293,7 @@ def _original_face_rows(
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular"])
 @pytest.mark.parity("points_in_aabb", "open3d")
 @pytest.mark.parity("crop_points", "open3d")
+@pytest.mark.parity("points_in_aabb_mask", "open3d")
 def test_points_in_aabb_and_crop_points_match_open3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -382,6 +383,8 @@ def test_points_in_aabb_boundary_and_non_finite_match_open3d(device: str) -> Non
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular"])
+@pytest.mark.parity("points_in_obb", "open3d")
+@pytest.mark.parity("points_in_obb_mask", "open3d")
 def test_points_in_obb_matches_open3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: the same index-list equality through an oriented box, on a tilted cloud.

@@ -322,6 +322,7 @@ def test_volumetric_obscurance_approaches_ambient_occlusion_as_tau_falls(
     assert gaps[-1] < 1e-3
 
 
+@pytest.mark.parity("volumetric_obscurance", "pymeshlab")
 def test_volumetric_obscurance_ranks_like_pymeshlab(
     torus_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:

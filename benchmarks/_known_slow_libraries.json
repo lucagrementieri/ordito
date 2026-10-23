@@ -9,56 +9,56 @@
    "mesh_name": "bunny",
    "rest": [],
    "library": "igl",
-   "ratio": 9.3
+   "ratio": 14.8
   },
   {
    "group": "aabb",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 12.3
+   "ratio": 21.1
   },
   {
    "group": "aabb",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "igl",
-   "ratio": 2.1
+   "ratio": 3.4
   },
   {
    "group": "aabb",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 3.1
+   "ratio": 4.7
   },
   {
    "group": "aabb",
    "mesh_name": "dragon",
    "rest": [],
    "library": "igl",
-   "ratio": 108.0
+   "ratio": 167.6
   },
   {
    "group": "aabb",
    "mesh_name": "dragon",
    "rest": [],
    "library": "meshlib",
-   "ratio": 2.3
+   "ratio": 4.6
   },
   {
    "group": "aabb",
    "mesh_name": "dragon",
    "rest": [],
    "library": "open3d",
-   "ratio": 9.1
+   "ratio": 14.1
   },
   {
    "group": "aabb",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 157.4
+   "ratio": 232.7
   },
   {
    "group": "annulus",
@@ -66,11 +66,11 @@
    "rest": [
     [
      "sections",
-     "4096"
+     "32"
     ]
    ],
    "library": "trimesh",
-   "ratio": 32.2
+   "ratio": 8.3
   },
   {
    "group": "annulus",
@@ -82,65 +82,77 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 5.4
+   "ratio": 31.8
+  },
+  {
+   "group": "annulus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "4096"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 224.9
   },
   {
    "group": "average_onto_faces",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "pyvista",
-   "ratio": 40.2
+   "ratio": 95.7
   },
   {
    "group": "average_onto_faces",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pyvista",
-   "ratio": 34.5
+   "ratio": 68.7
   },
   {
    "group": "average_onto_vertices",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "pymeshlab",
+   "ratio": 5.5
+  },
+  {
+   "group": "average_onto_vertices",
+   "mesh_name": "fan_hub",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 25.9
+  },
+  {
+   "group": "average_onto_vertices",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 18.5
+  },
+  {
+   "group": "average_onto_vertices",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 91.8
+  },
+  {
+   "group": "ball_pivoting",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 11.6
+  },
+  {
+   "group": "ball_pivoting",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "open3d",
    "ratio": 4.3
   },
   {
-   "group": "average_onto_vertices",
-   "mesh_name": "fan_hub",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 19.8
-  },
-  {
-   "group": "average_onto_vertices",
-   "mesh_name": "sphere_med",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 7.5
-  },
-  {
-   "group": "average_onto_vertices",
-   "mesh_name": "sphere_med",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 35.7
-  },
-  {
-   "group": "ball_pivoting",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 10.0
-  },
-  {
-   "group": "ball_pivoting",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 2.3
-  },
-  {
    "group": "blue_noise",
    "mesh_name": "bunny",
    "rest": [
@@ -150,7 +162,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 76.8
+   "ratio": 214.5
   },
   {
    "group": "blue_noise",
@@ -162,7 +174,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 267.7
+   "ratio": 531.7
   },
   {
    "group": "blue_noise",
@@ -174,7 +186,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 81.9
+   "ratio": 31.5
   },
   {
    "group": "blue_noise",
@@ -186,7 +198,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 262.4
+   "ratio": 81.4
   },
   {
    "group": "blue_noise",
@@ -198,7 +210,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 21.8
+   "ratio": 57.4
   },
   {
    "group": "blue_noise",
@@ -210,7 +222,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 68.0
+   "ratio": 130.9
   },
   {
    "group": "blue_noise",
@@ -222,7 +234,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 81.2
+   "ratio": 211.4
   },
   {
    "group": "blue_noise",
@@ -234,7 +246,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 280.1
+   "ratio": 592.6
   },
   {
    "group": "blue_noise",
@@ -246,7 +258,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 85.1
+   "ratio": 30.6
   },
   {
    "group": "blue_noise",
@@ -258,7 +270,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 274.8
+   "ratio": 91.5
   },
   {
    "group": "blue_noise",
@@ -270,7 +282,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 17.5
+   "ratio": 45.1
   },
   {
    "group": "blue_noise",
@@ -282,145 +294,161 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 65.6
+   "ratio": 135.6
   },
   {
    "group": "boundary_edges",
    "mesh_name": "holes_many",
    "rest": [],
    "library": "igl",
-   "ratio": 60.2
+   "ratio": 174.1
   },
   {
    "group": "boundary_edges",
    "mesh_name": "holes_many",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 39.6
+   "ratio": 115.7
   },
   {
    "group": "boundary_edges",
    "mesh_name": "holes_many",
    "rest": [],
    "library": "pyvista",
-   "ratio": 31.2
+   "ratio": 128.9
   },
   {
    "group": "boundary_edges",
    "mesh_name": "holes_many",
    "rest": [],
    "library": "trimesh",
-   "ratio": 25.7
+   "ratio": 75.1
   },
   {
    "group": "boundary_edges",
    "mesh_name": "rim_long",
    "rest": [],
    "library": "igl",
-   "ratio": 105.7
+   "ratio": 282.8
   },
   {
    "group": "boundary_edges",
    "mesh_name": "rim_long",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 113.4
+   "ratio": 280.5
   },
   {
    "group": "boundary_edges",
    "mesh_name": "rim_long",
    "rest": [],
    "library": "pyvista",
-   "ratio": 128.0
+   "ratio": 365.0
   },
   {
    "group": "boundary_edges",
    "mesh_name": "rim_long",
    "rest": [],
    "library": "trimesh",
-   "ratio": 47.5
+   "ratio": 115.3
   },
   {
    "group": "boundary_edges",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 61.1
+   "ratio": 183.3
   },
   {
    "group": "boundary_edges",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 40.4
+   "ratio": 126.3
   },
   {
    "group": "boundary_edges",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pyvista",
-   "ratio": 31.1
+   "ratio": 134.5
   },
   {
    "group": "boundary_edges",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "trimesh",
-   "ratio": 27.2
+   "ratio": 79.9
   },
   {
    "group": "boundary_loops",
    "mesh_name": "holes_many",
    "rest": [],
    "library": "igl",
-   "ratio": 4.9
+   "ratio": 37.8
   },
   {
    "group": "boundary_loops",
    "mesh_name": "holes_many",
    "rest": [],
    "library": "trimesh",
-   "ratio": 37.1
+   "ratio": 304.3
   },
   {
    "group": "boundary_loops",
    "mesh_name": "rim_long",
    "rest": [],
    "library": "meshlib",
-   "ratio": 33.6
+   "ratio": 181.0
   },
   {
    "group": "boundary_loops",
    "mesh_name": "rim_long",
    "rest": [],
    "library": "trimesh",
-   "ratio": 145.3
+   "ratio": 780.6
   },
   {
    "group": "boundary_loops",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 58.9
+   "ratio": 114.1
   },
   {
    "group": "boundary_loops",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "trimesh",
-   "ratio": 53.8
+   "ratio": 105.8
   },
   {
-   "group": "bvh_from_points",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "leaf_size",
-     "32"
-    ]
-   ],
-   "library": "igl",
-   "ratio": 1118.9
+   "group": "boundary_vertex_indices",
+   "mesh_name": "holes_many",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 125.5
+  },
+  {
+   "group": "boundary_vertex_indices",
+   "mesh_name": "rim_long",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 281.5
+  },
+  {
+   "group": "boundary_vertex_indices",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 131.7
+  },
+  {
+   "group": "box",
+   "mesh_name": null,
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 3.5
   },
   {
    "group": "bvh_from_points",
@@ -432,11 +460,11 @@
     ]
    ],
    "library": "igl",
-   "ratio": 1106.3
+   "ratio": 1096.8
   },
   {
    "group": "bvh_from_points",
-   "mesh_name": "bunny_decimated",
+   "mesh_name": "bunny",
    "rest": [
     [
      "leaf_size",
@@ -444,7 +472,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 36.5
+   "ratio": 1117.1
   },
   {
    "group": "bvh_from_points",
@@ -456,42 +484,54 @@
     ]
    ],
    "library": "igl",
-   "ratio": 35.2
+   "ratio": 33.1
+  },
+  {
+   "group": "bvh_from_points",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "leaf_size",
+     "32"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 34.0
   },
   {
    "group": "chamfer_points_to_mesh",
    "mesh_name": "bunny",
    "rest": [],
    "library": "igl",
-   "ratio": 16.0
+   "ratio": 34.5
   },
   {
    "group": "chamfer_points_to_mesh",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 17.6
+   "ratio": 38.6
   },
   {
    "group": "chamfer_points_to_mesh",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "igl",
-   "ratio": 21.5
+   "ratio": 35.7
   },
   {
    "group": "chamfer_points_to_mesh",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 2.7
+   "ratio": 4.3
   },
   {
    "group": "chamfer_points_to_mesh",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 172.8
+   "ratio": 839.5
   },
   {
    "group": "chamfer_points_to_points",
@@ -503,7 +543,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 3.0
+   "ratio": 22.0
   },
   {
    "group": "chamfer_points_to_points",
@@ -515,7 +555,19 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 3.6
+   "ratio": 24.8
+  },
+  {
+   "group": "chamfer_points_to_points",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "single_directional",
+     "True"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 5.9
   },
   {
    "group": "chamfer_points_to_points",
@@ -527,42 +579,66 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 2.3
+   "ratio": 6.8
+  },
+  {
+   "group": "chamfer_points_to_points",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "single_directional",
+     "True"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 81.4
+  },
+  {
+   "group": "chamfer_points_to_points",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "single_directional",
+     "False"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 82.7
   },
   {
    "group": "closest_pair",
    "mesh_name": "sphere_large",
    "rest": [],
    "library": "scipy",
-   "ratio": 129.5
+   "ratio": 212.4
   },
   {
    "group": "closest_pair",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "scipy",
-   "ratio": 52.9
+   "ratio": 56.0
   },
   {
    "group": "closest_pair",
    "mesh_name": "sphere_small",
    "rest": [],
    "library": "scipy",
-   "ratio": 6.5
+   "ratio": 5.5
   },
   {
    "group": "closest_point_on_mesh",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pyvista",
-   "ratio": 190.0
+   "ratio": 143.0
   },
   {
    "group": "closest_point_on_mesh",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 122.9
+   "ratio": 105.5
   },
   {
    "group": "cluster_decimate",
@@ -574,7 +650,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 5.7
+   "ratio": 38.6
   },
   {
    "group": "cluster_decimate",
@@ -586,7 +662,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 4.3
+   "ratio": 33.7
   },
   {
    "group": "cluster_decimate",
@@ -598,7 +674,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 23.2
+   "ratio": 161.0
   },
   {
    "group": "cluster_decimate",
@@ -610,7 +686,31 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 15.1
+   "ratio": 118.0
+  },
+  {
+   "group": "cluster_decimate",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "cell_factor",
+     "2.0"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 8.2
+  },
+  {
+   "group": "cluster_decimate",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "cell_factor",
+     "6.0"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 9.2
   },
   {
    "group": "cluster_decimate",
@@ -622,7 +722,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 3.5
+   "ratio": 28.6
   },
   {
    "group": "cluster_decimate",
@@ -634,7 +734,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 2.9
+   "ratio": 24.2
   },
   {
    "group": "cluster_decimate",
@@ -646,7 +746,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 99.0
+   "ratio": 534.6
   },
   {
    "group": "cluster_decimate",
@@ -658,19 +758,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 53.3
-  },
-  {
-   "group": "concatenate",
-   "mesh_name": "sphere_med",
-   "rest": [
-    [
-     "copies",
-     "512"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 74.3
+   "ratio": 285.5
   },
   {
    "group": "concatenate",
@@ -682,7 +770,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 13.9
+   "ratio": 29.3
   },
   {
    "group": "concatenate",
@@ -693,8 +781,8 @@
      "512"
     ]
    ],
-   "library": "trimesh",
-   "ratio": 444.8
+   "library": "meshlib",
+   "ratio": 164.1
   },
   {
    "group": "concatenate",
@@ -706,7 +794,19 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 53.6
+   "ratio": 97.9
+  },
+  {
+   "group": "concatenate",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "copies",
+     "512"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 885.6
   },
   {
    "group": "concatenate_arrays",
@@ -718,7 +818,7 @@
     ]
    ],
    "library": "numpy",
-   "ratio": 12.7
+   "ratio": 17.9
   },
   {
    "group": "concatenate_arrays",
@@ -730,19 +830,7 @@
     ]
    ],
    "library": "numpy",
-   "ratio": 2.7
-  },
-  {
-   "group": "cone",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "4096"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 244.8
+   "ratio": 4.2
   },
   {
    "group": "cone",
@@ -754,7 +842,31 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 6.3
+   "ratio": 43.0
+  },
+  {
+   "group": "cone",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "4096"
+    ]
+   ],
+   "library": "meshlib",
+   "ratio": 1663.3
+  },
+  {
+   "group": "cone",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "512"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 3.3
   },
   {
    "group": "cone",
@@ -766,7 +878,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 2.1
+   "ratio": 14.4
   },
   {
    "group": "cone",
@@ -774,11 +886,11 @@
    "rest": [
     [
      "sections",
-     "4096"
+     "32"
     ]
    ],
    "library": "trimesh",
-   "ratio": 17.5
+   "ratio": 7.7
   },
   {
    "group": "cone",
@@ -790,84 +902,117 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 4.1
+   "ratio": 20.5
+  },
+  {
+   "group": "cone",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "4096"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 119.8
   },
   {
    "group": "connected_component_labels",
    "mesh_name": "parts_1024",
    "rest": [],
    "library": "igl",
-   "ratio": 108.2
+   "ratio": 257.4
   },
   {
    "group": "connected_component_labels",
    "mesh_name": "parts_1024",
    "rest": [],
    "library": "meshlib",
-   "ratio": 22.3
+   "ratio": 48.4
   },
   {
    "group": "connected_component_labels",
    "mesh_name": "parts_1024",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 185.7
+   "ratio": 438.2
   },
   {
    "group": "connected_component_labels",
    "mesh_name": "parts_64",
    "rest": [],
    "library": "igl",
-   "ratio": 109.7
+   "ratio": 247.5
+  },
+  {
+   "group": "connected_component_labels",
+   "mesh_name": "parts_64",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 51.6
   },
   {
    "group": "connected_component_labels",
    "mesh_name": "parts_64",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 216.6
-  },
-  {
-   "group": "connected_component_labels",
-   "mesh_name": "parts_64",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 20.9
+   "ratio": 484.9
   },
   {
    "group": "connected_component_labels",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 103.8
+   "ratio": 166.0
   },
   {
    "group": "connected_component_labels",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "meshlib",
-   "ratio": 21.4
+   "ratio": 37.6
   },
   {
    "group": "connected_component_labels",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 213.1
+   "ratio": 362.5
   },
   {
    "group": "connected_component_labels_depth",
    "mesh_name": "ribbon_long",
    "rest": [],
    "library": "igl",
-   "ratio": 65.8
+   "ratio": 139.3
   },
   {
    "group": "connected_component_labels_depth",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 112.2
+   "ratio": 184.7
+  },
+  {
+   "group": "connected_component_labels_from_edges",
+   "mesh_name": "parts_1024",
+   "rest": [],
+   "library": "igl",
+   "ratio": 17.4
+  },
+  {
+   "group": "connected_component_labels_from_edges",
+   "mesh_name": "parts_64",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 17.9
+  },
+  {
+   "group": "connected_component_labels_from_edges",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 15.2
   },
   {
    "group": "containing_faces_2d",
@@ -879,19 +1024,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 19.6
-  },
-  {
-   "group": "containing_faces_2d",
-   "mesh_name": null,
-   "rest": [
-    [
-     "rows",
-     "240"
-    ]
-   ],
-   "library": "scipy",
-   "ratio": 86.6
+   "ratio": 26.7
   },
   {
    "group": "containing_faces_2d",
@@ -903,61 +1036,117 @@
     ]
    ],
    "library": "scipy",
-   "ratio": 23.0
+   "ratio": 33.8
   },
   {
-   "group": "convex_subset",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 86.4
-  },
-  {
-   "group": "convex_subset",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 54.1
-  },
-  {
-   "group": "convex_subset",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 23.4
-  },
-  {
-   "group": "convex_subset",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 17.5
-  },
-  {
-   "group": "convex_subset",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 726.0
-  },
-  {
-   "group": "convex_subset",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 139.7
-  },
-  {
-   "group": "convex_subset_mask",
-   "mesh_name": "bunny",
+   "group": "containing_faces_2d",
+   "mesh_name": null,
    "rest": [
     [
-     "n_directions",
-     "256"
+     "rows",
+     "240"
     ]
    ],
+   "library": "scipy",
+   "ratio": 120.6
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "bunny",
+   "rest": [],
    "library": "pymeshlab",
-   "ratio": 138.2
+   "ratio": 13.6
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 5.6
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 8.4
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 4.0
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 3.5
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 206.9
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 30.4
+  },
+  {
+   "group": "convex_hull",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 39.4
+  },
+  {
+   "group": "convex_subset",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 166.5
+  },
+  {
+   "group": "convex_subset",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 101.2
+  },
+  {
+   "group": "convex_subset",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 54.2
+  },
+  {
+   "group": "convex_subset",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 43.7
+  },
+  {
+   "group": "convex_subset",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 1368.3
+  },
+  {
+   "group": "convex_subset",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 252.8
   },
   {
    "group": "convex_subset_mask",
@@ -969,7 +1158,31 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 173.1
+   "ratio": 280.6
+  },
+  {
+   "group": "convex_subset_mask",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "n_directions",
+     "256"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 170.3
+  },
+  {
+   "group": "convex_subset_mask",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "n_directions",
+     "32"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 170.7
   },
   {
    "group": "convex_subset_mask",
@@ -981,31 +1194,7 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 83.7
-  },
-  {
-   "group": "convex_subset_mask",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "n_directions",
-     "32"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 107.5
-  },
-  {
-   "group": "convex_subset_mask",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "n_directions",
-     "256"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 42.3
+   "ratio": 103.2
   },
   {
    "group": "convex_subset_mask",
@@ -1017,7 +1206,31 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 44.5
+   "ratio": 75.1
+  },
+  {
+   "group": "convex_subset_mask",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "n_directions",
+     "256"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 69.4
+  },
+  {
+   "group": "convex_subset_mask",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "n_directions",
+     "32"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 60.2
   },
   {
    "group": "convex_subset_mask",
@@ -1029,31 +1242,7 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 37.1
-  },
-  {
-   "group": "convex_subset_mask",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "n_directions",
-     "32"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 36.9
-  },
-  {
-   "group": "convex_subset_mask",
-   "mesh_name": "dragon",
-   "rest": [
-    [
-     "n_directions",
-     "256"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 607.3
+   "ratio": 54.5
   },
   {
    "group": "convex_subset_mask",
@@ -1065,7 +1254,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 2250.5
+   "ratio": 2950.0
   },
   {
    "group": "convex_subset_mask",
@@ -1076,8 +1265,8 @@
      "256"
     ]
    ],
-   "library": "trimesh",
-   "ratio": 114.5
+   "library": "pymeshlab",
+   "ratio": 1570.9
   },
   {
    "group": "convex_subset_mask",
@@ -1089,77 +1278,89 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 422.5
+   "ratio": 550.7
+  },
+  {
+   "group": "convex_subset_mask",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "n_directions",
+     "256"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 293.4
   },
   {
    "group": "cotmatrix",
    "mesh_name": "bunny",
+   "rest": [],
+   "library": "igl",
+   "ratio": 82.5
+  },
+  {
+   "group": "cotmatrix",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "potpourri3d",
+   "ratio": 162.6
+  },
+  {
+   "group": "cotmatrix",
+   "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "igl",
    "ratio": 31.6
   },
   {
    "group": "cotmatrix",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "potpourri3d",
-   "ratio": 65.0
-  },
-  {
-   "group": "cotmatrix",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "igl",
-   "ratio": 15.4
-  },
-  {
-   "group": "cotmatrix",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "potpourri3d",
-   "ratio": 16.3
+   "ratio": 33.0
   },
   {
    "group": "cotmatrix",
    "mesh_name": "dragon",
    "rest": [],
    "library": "igl",
-   "ratio": 83.5
+   "ratio": 338.0
   },
   {
    "group": "cotmatrix",
    "mesh_name": "dragon",
    "rest": [],
    "library": "potpourri3d",
-   "ratio": 190.1
+   "ratio": 759.6
   },
   {
    "group": "crease_edges",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 31.1
+   "ratio": 158.2
   },
   {
    "group": "crease_edges",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pyvista",
-   "ratio": 22.8
+   "ratio": 146.4
   },
   {
    "group": "crease_edges",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 7.3
+   "ratio": 31.4
   },
   {
    "group": "crease_edges",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 7.0
+   "ratio": 38.3
   },
   {
    "group": "cut_along_edges",
@@ -1171,7 +1372,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 61.6
+   "ratio": 247.2
   },
   {
    "group": "cut_along_edges",
@@ -1183,19 +1384,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 4.0
-  },
-  {
-   "group": "cylinder",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "4096"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 313.6
+   "ratio": 16.8
   },
   {
    "group": "cylinder",
@@ -1207,6 +1396,30 @@
     ]
    ],
    "library": "meshlib",
+   "ratio": 49.4
+  },
+  {
+   "group": "cylinder",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "4096"
+    ]
+   ],
+   "library": "meshlib",
+   "ratio": 1639.1
+  },
+  {
+   "group": "cylinder",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "32"
+    ]
+   ],
+   "library": "trimesh",
    "ratio": 8.6
   },
   {
@@ -1215,11 +1428,11 @@
    "rest": [
     [
      "sections",
-     "4096"
+     "512"
     ]
    ],
    "library": "trimesh",
-   "ratio": 31.4
+   "ratio": 24.9
   },
   {
    "group": "cylinder",
@@ -1227,23 +1440,11 @@
    "rest": [
     [
      "sections",
-     "512"
+     "4096"
     ]
    ],
    "library": "trimesh",
-   "ratio": 4.9
-  },
-  {
-   "group": "delaunay_triangulation",
-   "mesh_name": null,
-   "rest": [
-    [
-     "n_points",
-     "20000"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 57.7
+   "ratio": 190.6
   },
   {
    "group": "delaunay_triangulation",
@@ -1255,21 +1456,33 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 4.9
+   "ratio": 19.1
+  },
+  {
+   "group": "delaunay_triangulation",
+   "mesh_name": null,
+   "rest": [
+    [
+     "n_points",
+     "20000"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 144.8
   },
   {
    "group": "dilate",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 4.2
+   "ratio": 4.3
   },
   {
    "group": "dilate",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 4.4
+   "ratio": 4.7
   },
   {
    "group": "discrete_gaussian_curvature",
@@ -1281,7 +1494,7 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 36.8
+   "ratio": 88.4
   },
   {
    "group": "discrete_mean_curvature",
@@ -1293,287 +1506,294 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 85.5
+   "ratio": 181.6
   },
   {
    "group": "edges_length",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 87.8
+   "ratio": 375.8
   },
   {
    "group": "edges_length",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 18.8
+   "ratio": 73.2
   },
   {
    "group": "edges_length",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 1493.3
+   "ratio": 4969.4
   },
   {
    "group": "edges_unique",
    "mesh_name": "bunny",
    "rest": [],
    "library": "igl",
-   "ratio": 70.4
+   "ratio": 230.6
   },
   {
    "group": "edges_unique",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pyvista",
-   "ratio": 32.8
+   "ratio": 113.8
   },
   {
    "group": "edges_unique",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 39.6
+   "ratio": 124.6
   },
   {
    "group": "edges_unique",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "igl",
-   "ratio": 15.1
+   "ratio": 59.5
   },
   {
    "group": "edges_unique",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 7.1
+   "ratio": 28.6
   },
   {
    "group": "edges_unique",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 7.0
+   "ratio": 28.8
   },
   {
    "group": "edges_unique",
    "mesh_name": "dragon",
    "rest": [],
    "library": "igl",
-   "ratio": 180.5
+   "ratio": 721.6
   },
   {
    "group": "edges_unique",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pyvista",
-   "ratio": 139.6
+   "ratio": 586.9
   },
   {
    "group": "edges_unique",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 133.4
+   "ratio": 531.1
   },
   {
    "group": "edges_unique_auto_nv",
    "mesh_name": "bunny",
    "rest": [],
    "library": "igl",
-   "ratio": 65.6
+   "ratio": 199.0
   },
   {
    "group": "edges_unique_auto_nv",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pyvista",
-   "ratio": 30.5
+   "ratio": 99.9
   },
   {
    "group": "edges_unique_auto_nv",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 34.5
+   "ratio": 105.1
   },
   {
    "group": "edges_unique_auto_nv",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "igl",
-   "ratio": 15.5
+   "ratio": 49.9
   },
   {
    "group": "edges_unique_auto_nv",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 7.4
+   "ratio": 23.6
   },
   {
    "group": "edges_unique_auto_nv",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 7.1
+   "ratio": 23.2
   },
   {
    "group": "edges_unique_auto_nv",
    "mesh_name": "dragon",
    "rest": [],
    "library": "igl",
-   "ratio": 206.3
+   "ratio": 747.9
   },
   {
    "group": "edges_unique_auto_nv",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pyvista",
-   "ratio": 157.8
+   "ratio": 618.4
   },
   {
    "group": "edges_unique_auto_nv",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 154.0
+   "ratio": 556.7
   },
   {
    "group": "edges_unique_inverse",
    "mesh_name": "bunny",
    "rest": [],
    "library": "igl",
-   "ratio": 57.3
+   "ratio": 243.2
   },
   {
    "group": "edges_unique_inverse",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 29.5
+   "ratio": 121.3
   },
   {
    "group": "edges_unique_inverse",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "igl",
-   "ratio": 15.1
+   "ratio": 67.2
   },
   {
    "group": "edges_unique_inverse",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 7.0
+   "ratio": 30.4
   },
   {
    "group": "edges_unique_inverse",
    "mesh_name": "dragon",
    "rest": [],
    "library": "igl",
-   "ratio": 167.4
+   "ratio": 634.4
   },
   {
    "group": "edges_unique_inverse",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 116.7
+   "ratio": 437.5
   },
   {
    "group": "edges_unique_length",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 31.8
+   "ratio": 186.2
   },
   {
    "group": "edges_unique_length",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "meshlib",
-   "ratio": 14.2
+   "ratio": 74.0
   },
   {
    "group": "edges_unique_length",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 155.1
+   "ratio": 699.5
   },
   {
    "group": "edges_unique_manifold",
    "mesh_name": "sphere_large",
    "rest": [],
    "library": "potpourri3d",
-   "ratio": 182.7
+   "ratio": 748.5
   },
   {
    "group": "edges_unique_manifold",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 61.5
+   "ratio": 235.7
   },
   {
    "group": "edges_unique_manifold",
    "mesh_name": "sphere_small",
    "rest": [],
    "library": "igl",
-   "ratio": 13.4
+   "ratio": 59.6
   },
   {
    "group": "enclosing_diagonal",
    "mesh_name": "bunny",
    "rest": [],
    "library": "igl",
-   "ratio": 2.7
+   "ratio": 5.3
   },
   {
    "group": "enclosing_diagonal",
    "mesh_name": "dragon",
    "rest": [],
    "library": "igl",
-   "ratio": 33.9
+   "ratio": 63.1
   },
   {
    "group": "estimate_normals_knn",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 15.8
+   "ratio": 15.5
   },
   {
    "group": "estimate_normals_knn",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 120.6
+   "ratio": 125.5
   },
   {
    "group": "estimate_normals_knn",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 6.7
+   "ratio": 7.0
+  },
+  {
+   "group": "estimate_normals_knn",
+   "mesh_name": "sphere_small",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 10.1
   },
   {
    "group": "estimate_normals_knn",
    "mesh_name": "sphere_small",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 11.2
+   "ratio": 18.6
   },
   {
    "group": "estimate_normals_knn",
    "mesh_name": "sphere_small",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 3.8
+   "ratio": 6.2
   },
   {
    "group": "expand_vertex_mask",
@@ -1585,7 +1805,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 24.4
+   "ratio": 39.5
   },
   {
    "group": "expand_vertex_mask",
@@ -1597,7 +1817,19 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 27.0
+   "ratio": 137.7
+  },
+  {
+   "group": "extrude_polygon",
+   "mesh_name": null,
+   "rest": [
+    [
+     "ring_size",
+     "64"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 4.2
   },
   {
    "group": "extrude_polygon",
@@ -1609,505 +1841,531 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 2.2
+   "ratio": 40.0
   },
   {
-   "group": "face_adjacency",
-   "mesh_name": "bunny",
+   "group": "extrude_polygon",
+   "mesh_name": null,
    "rest": [
     [
-     "known_radix",
-     "False"
+     "ring_size",
+     "64"
     ]
    ],
    "library": "trimesh",
-   "ratio": 41.0
-  },
-  {
-   "group": "face_adjacency",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "known_radix",
-     "False"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 8.6
-  },
-  {
-   "group": "face_adjacency",
-   "mesh_name": "dragon",
-   "rest": [
-    [
-     "known_radix",
-     "False"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 375.0
-  },
-  {
-   "group": "face_adjacency_unshared",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "tabled",
-     "True"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 748.3
-  },
-  {
-   "group": "face_adjacency_unshared",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "tabled",
-     "True"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 133.2
-  },
-  {
-   "group": "face_adjacency_unshared",
-   "mesh_name": "dragon",
-   "rest": [
-    [
-     "tabled",
-     "True"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 8782.5
-  },
-  {
-   "group": "face_angles",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 251.0
-  },
-  {
-   "group": "face_angles",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 279.0
-  },
-  {
-   "group": "face_angles",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 79.0
-  },
-  {
-   "group": "face_angles",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 72.0
-  },
-  {
-   "group": "face_angles",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 2956.7
-  },
-  {
-   "group": "face_angles",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 5201.5
-  },
-  {
-   "group": "face_centroids",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 111.4
-  },
-  {
-   "group": "face_centroids",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 28.6
-  },
-  {
-   "group": "face_centroids",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 1273.8
-  },
-  {
-   "group": "face_connected_component_labels",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "igl",
-   "ratio": 44.9
-  },
-  {
-   "group": "face_connected_component_labels",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 21.0
-  },
-  {
-   "group": "face_connected_component_labels",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "igl",
-   "ratio": 11.5
-  },
-  {
-   "group": "face_connected_component_labels",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 5.2
-  },
-  {
-   "group": "face_connected_component_labels",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "igl",
-   "ratio": 293.4
-  },
-  {
-   "group": "face_connected_component_labels",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 193.4
-  },
-  {
-   "group": "face_connected_component_labels_depth",
-   "mesh_name": "ribbon_long",
-   "rest": [],
-   "library": "igl",
-   "ratio": 17.3
-  },
-  {
-   "group": "face_connected_component_labels_depth",
-   "mesh_name": "sphere_med",
-   "rest": [],
-   "library": "igl",
-   "ratio": 44.2
-  },
-  {
-   "group": "face_defective_mask",
-   "mesh_name": "saddle",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 27.4
-  },
-  {
-   "group": "face_defective_mask",
-   "mesh_name": "saddle_graded",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 35.9
-  },
-  {
-   "group": "face_gradients",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "precomputed",
-     "False"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 406.6
-  },
-  {
-   "group": "face_gradients",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "precomputed",
-     "False"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 112.8
-  },
-  {
-   "group": "face_gradients",
-   "mesh_name": "dragon",
-   "rest": [
-    [
-     "precomputed",
-     "False"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 1735.4
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "igl",
-   "ratio": 14.4
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "meshlib",
-   "ratio": 2.0
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 9.3
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "potpourri3d",
-   "ratio": 95.8
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 13.0
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 96.3
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 70.0
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "igl",
-   "ratio": 3.3
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 2.2
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "potpourri3d",
-   "ratio": 18.4
-  },
-  {
-   "group": "face_normals_and_areas",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "pymeshlab",
    "ratio": 3.8
   },
   {
+   "group": "extrude_polygon",
+   "mesh_name": null,
+   "rest": [
+    [
+     "ring_size",
+     "1024"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 26.6
+  },
+  {
+   "group": "face_adjacency",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "known_radix",
+     "False"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 109.8
+  },
+  {
+   "group": "face_adjacency",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "known_radix",
+     "False"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 25.4
+  },
+  {
+   "group": "face_adjacency",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "known_radix",
+     "False"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 716.9
+  },
+  {
+   "group": "face_adjacency_unshared",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "tabled",
+     "True"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 1334.1
+  },
+  {
+   "group": "face_adjacency_unshared",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "tabled",
+     "True"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 215.1
+  },
+  {
+   "group": "face_adjacency_unshared",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "tabled",
+     "True"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 14247.7
+  },
+  {
+   "group": "face_angles",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 509.4
+  },
+  {
+   "group": "face_angles",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 646.0
+  },
+  {
+   "group": "face_angles",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "igl",
+   "ratio": 150.5
+  },
+  {
+   "group": "face_angles",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 146.1
+  },
+  {
+   "group": "face_angles",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 6044.7
+  },
+  {
+   "group": "face_angles",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 10457.1
+  },
+  {
+   "group": "face_centroids",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 228.6
+  },
+  {
+   "group": "face_centroids",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 59.3
+  },
+  {
+   "group": "face_centroids",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 2323.4
+  },
+  {
+   "group": "face_connected_component_labels",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "igl",
+   "ratio": 220.9
+  },
+  {
+   "group": "face_connected_component_labels",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 111.2
+  },
+  {
+   "group": "face_connected_component_labels",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "igl",
+   "ratio": 62.6
+  },
+  {
+   "group": "face_connected_component_labels",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 34.3
+  },
+  {
+   "group": "face_connected_component_labels",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "igl",
+   "ratio": 809.4
+  },
+  {
+   "group": "face_connected_component_labels",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 506.3
+  },
+  {
+   "group": "face_connected_component_labels_depth",
+   "mesh_name": "ribbon_long",
+   "rest": [],
+   "library": "igl",
+   "ratio": 20.7
+  },
+  {
+   "group": "face_connected_component_labels_depth",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "igl",
+   "ratio": 211.1
+  },
+  {
+   "group": "face_defective_mask",
+   "mesh_name": "saddle",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 96.5
+  },
+  {
+   "group": "face_defective_mask",
+   "mesh_name": "saddle_graded",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 95.1
+  },
+  {
+   "group": "face_flip_mask",
+   "mesh_name": "ribbon_long",
+   "rest": [],
+   "library": "igl",
+   "ratio": 35.0
+  },
+  {
+   "group": "face_flip_mask",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "igl",
+   "ratio": 173.5
+  },
+  {
+   "group": "face_gradients",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "precomputed",
+     "False"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 754.8
+  },
+  {
+   "group": "face_gradients",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "precomputed",
+     "False"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 193.9
+  },
+  {
+   "group": "face_gradients",
+   "mesh_name": "dragon",
+   "rest": [
+    [
+     "precomputed",
+     "False"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 3110.6
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "igl",
+   "ratio": 37.9
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 5.2
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 20.9
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "potpourri3d",
+   "ratio": 272.1
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 29.2
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 251.2
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 177.7
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "igl",
+   "ratio": 6.7
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 3.4
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "potpourri3d",
+   "ratio": 38.0
+  },
+  {
+   "group": "face_normals_and_areas",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 7.6
+  },
+  {
    "group": "face_normals_and_areas",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 36.0
+   "ratio": 63.8
   },
   {
    "group": "face_normals_and_areas",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 14.2
+   "ratio": 28.4
   },
   {
    "group": "face_normals_and_areas",
    "mesh_name": "dragon",
    "rest": [],
    "library": "igl",
-   "ratio": 167.5
+   "ratio": 352.8
   },
   {
    "group": "face_normals_and_areas",
    "mesh_name": "dragon",
    "rest": [],
    "library": "meshlib",
-   "ratio": 28.2
+   "ratio": 54.6
   },
   {
    "group": "face_normals_and_areas",
    "mesh_name": "dragon",
    "rest": [],
    "library": "open3d",
-   "ratio": 117.4
+   "ratio": 217.7
   },
   {
    "group": "face_normals_and_areas",
    "mesh_name": "dragon",
    "rest": [],
    "library": "potpourri3d",
-   "ratio": 1928.1
+   "ratio": 3676.3
   },
   {
    "group": "face_normals_and_areas",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 284.1
+   "ratio": 521.1
   },
   {
    "group": "face_normals_and_areas",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pyvista",
-   "ratio": 1105.3
+   "ratio": 2310.2
   },
   {
    "group": "face_normals_and_areas",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 2214.1
+   "ratio": 3975.8
   },
   {
    "group": "face_orientation_bits",
    "mesh_name": "ribbon_long",
    "rest": [],
    "library": "igl",
-   "ratio": 20.1
+   "ratio": 49.3
   },
   {
    "group": "face_orientation_bits",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 48.8
+   "ratio": 102.5
   },
   {
    "group": "face_quality",
    "mesh_name": "saddle",
    "rest": [],
    "library": "igl",
-   "ratio": 1104.8
+   "ratio": 2237.5
   },
   {
    "group": "face_quality",
    "mesh_name": "saddle",
    "rest": [],
    "library": "pyvista",
-   "ratio": 73.3
+   "ratio": 121.8
   },
   {
    "group": "face_quality",
    "mesh_name": "saddle_graded",
    "rest": [],
    "library": "igl",
-   "ratio": 1235.4
+   "ratio": 2787.6
   },
   {
    "group": "face_quality",
    "mesh_name": "saddle_graded",
    "rest": [],
    "library": "pyvista",
-   "ratio": 85.3
+   "ratio": 148.7
   },
   {
    "group": "face_self_intersecting_mask",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 25250.7
+   "ratio": 1663.4
   },
   {
    "group": "face_self_intersecting_mask",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshfix",
-   "ratio": 903.2
+   "ratio": 929.7
   },
   {
    "group": "face_self_intersecting_mask",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 199.0
+   "ratio": 222.1
   },
   {
    "group": "face_self_intersecting_mask",
    "mesh_name": "tangle_2",
    "rest": [],
    "library": "open3d",
-   "ratio": 6034.4
+   "ratio": 416.2
   },
   {
    "group": "face_self_intersecting_mask",
    "mesh_name": "tangle_2",
    "rest": [],
    "library": "pymeshfix",
-   "ratio": 336.2
+   "ratio": 401.8
   },
   {
    "group": "face_self_intersecting_mask",
    "mesh_name": "tangle_2",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 95.3
+   "ratio": 107.6
   },
   {
    "group": "faces_to_edges",
    "mesh_name": "bunny",
    "rest": [],
    "library": "igl",
-   "ratio": 16.2
+   "ratio": 36.4
   },
   {
    "group": "faces_to_edges",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 2.4
+   "ratio": 4.1
   },
   {
    "group": "faces_to_edges",
    "mesh_name": "dragon",
    "rest": [],
    "library": "igl",
-   "ratio": 751.4
-  },
-  {
-   "group": "farthest_point_sample",
-   "mesh_name": "sphere_med",
-   "rest": [
-    [
-     "count",
-     "1024"
-    ]
-   ],
-   "library": "open3d",
-   "ratio": 3.5
+   "ratio": 1240.2
   },
   {
    "group": "farthest_point_sample",
@@ -2123,11 +2381,23 @@
   },
   {
    "group": "farthest_point_sample",
-   "mesh_name": "sphere_small",
+   "mesh_name": "sphere_med",
    "rest": [
     [
      "count",
      "1024"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 3.6
+  },
+  {
+   "group": "farthest_point_sample",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "count",
+     "64"
     ]
    ],
    "library": "pytorch3d-cuda",
@@ -2139,60 +2409,60 @@
    "rest": [
     [
      "count",
-     "64"
+     "1024"
     ]
    ],
    "library": "pytorch3d-cuda",
-   "ratio": 2.1
+   "ratio": 3.3
   },
   {
    "group": "fill_min_weight",
    "mesh_name": "holes_many",
    "rest": [],
    "library": "open3d",
+   "ratio": 55.8
+  },
+  {
+   "group": "fill_min_weight",
+   "mesh_name": "holes_many",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 45.3
+  },
+  {
+   "group": "fill_min_weight",
+   "mesh_name": "holes_many",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 50.9
+  },
+  {
+   "group": "fill_min_weight",
+   "mesh_name": "rim_short",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 14.9
+  },
+  {
+   "group": "fill_min_weight",
+   "mesh_name": "rim_short",
+   "rest": [],
+   "library": "pymeshlab",
    "ratio": 12.1
   },
   {
-   "group": "fill_min_weight",
-   "mesh_name": "holes_many",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 8.7
-  },
-  {
-   "group": "fill_min_weight",
-   "mesh_name": "holes_many",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 10.6
-  },
-  {
-   "group": "fill_min_weight",
-   "mesh_name": "rim_short",
-   "rest": [],
-   "library": "meshlib",
-   "ratio": 6.5
-  },
-  {
-   "group": "fill_min_weight",
-   "mesh_name": "rim_short",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 5.5
-  },
-  {
    "group": "filter_humphrey",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 73.1
+   "ratio": 227.8
   },
   {
    "group": "filter_humphrey",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 15.4
+   "ratio": 50.5
   },
   {
    "group": "filter_laplacian_integration",
@@ -2204,7 +2474,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 69.2
+   "ratio": 212.2
   },
   {
    "group": "filter_laplacian_integration",
@@ -2216,7 +2486,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 30.3
+   "ratio": 120.4
   },
   {
    "group": "filter_laplacian_integration",
@@ -2228,7 +2498,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 69.9
+   "ratio": 241.9
   },
   {
    "group": "filter_laplacian_integration",
@@ -2240,7 +2510,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 31.9
+   "ratio": 129.7
   },
   {
    "group": "filter_mut_dif_laplacian",
@@ -2252,7 +2522,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 62.4
+   "ratio": 144.1
   },
   {
    "group": "filter_mut_dif_laplacian",
@@ -2264,7 +2534,7 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 87.6
+   "ratio": 199.4
   },
   {
    "group": "filter_mut_dif_laplacian",
@@ -2276,7 +2546,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 12.6
+   "ratio": 29.9
   },
   {
    "group": "filter_mut_dif_laplacian",
@@ -2288,98 +2558,105 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 18.4
+   "ratio": 41.8
   },
   {
    "group": "filter_normals",
    "mesh_name": "saddle",
    "rest": [],
    "library": "meshlib",
-   "ratio": 27.1
+   "ratio": 145.7
   },
   {
    "group": "filter_normals",
    "mesh_name": "saddle_graded",
    "rest": [],
    "library": "meshlib",
-   "ratio": 26.2
+   "ratio": 147.8
   },
   {
    "group": "filter_sharpen",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 220.1
+   "ratio": 947.3
   },
   {
    "group": "filter_sharpen",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 51.3
-  },
-  {
-   "group": "filter_taubin",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 127.0
+   "ratio": 209.5
   },
   {
    "group": "filter_taubin",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 173.8
+   "ratio": 441.1
+  },
+  {
+   "group": "filter_taubin",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 115.7
   },
   {
    "group": "filter_taubin",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 51.1
-  },
-  {
-   "group": "filter_taubin",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 20.0
+   "ratio": 134.8
   },
   {
    "group": "filter_taubin",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 28.3
+   "ratio": 94.4
+  },
+  {
+   "group": "filter_taubin",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 28.0
   },
   {
    "group": "filter_taubin",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 9.8
+   "ratio": 30.4
   },
   {
    "group": "fit_line",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 3009.5
+   "ratio": 6020.6
   },
   {
    "group": "fit_plane",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 2.3
+   "ratio": 4.2
   },
   {
    "group": "fit_plane",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 28.8
+   "ratio": 28.7
+  },
+  {
+   "group": "fit_plane",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 2.0
   },
   {
    "group": "geodesic_path",
@@ -2391,7 +2668,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 119.0
+   "ratio": 251.3
   },
   {
    "group": "geodesic_path",
@@ -2403,7 +2680,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 86.1
+   "ratio": 219.2
   },
   {
    "group": "grid",
@@ -2415,7 +2692,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 2.3
+   "ratio": 5.8
   },
   {
    "group": "grid",
@@ -2427,7 +2704,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 693.2
+   "ratio": 1451.1
   },
   {
    "group": "grid_points",
@@ -2439,14 +2716,14 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 44.2
+   "ratio": 95.7
   },
   {
    "group": "half_space_mask",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 228.2
+   "ratio": 525.8
   },
   {
    "group": "harmonic",
@@ -2458,7 +2735,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 11.7
+   "ratio": 43.3
   },
   {
    "group": "harmonic",
@@ -2470,7 +2747,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 5.5
+   "ratio": 24.4
   },
   {
    "group": "harmonic",
@@ -2482,26 +2759,21 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 2.8
+   "ratio": 11.2
   },
   {
    "group": "harmonic_conditioning",
    "mesh_name": "saddle",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 6.4
+   "ratio": 24.9
   },
   {
-   "group": "hashgrid_from_points",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "grid_bins",
-     "256"
-    ]
-   ],
-   "library": "igl",
-   "ratio": 1346.3
+   "group": "harmonic_conditioning",
+   "mesh_name": "saddle_graded",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 4.9
   },
   {
    "group": "hashgrid_from_points",
@@ -2513,11 +2785,11 @@
     ]
    ],
    "library": "igl",
-   "ratio": 2689.7
+   "ratio": 2608.6
   },
   {
    "group": "hashgrid_from_points",
-   "mesh_name": "bunny_decimated",
+   "mesh_name": "bunny",
    "rest": [
     [
      "grid_bins",
@@ -2525,7 +2797,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 37.1
+   "ratio": 1331.5
   },
   {
    "group": "hashgrid_from_points",
@@ -2537,40 +2809,40 @@
     ]
    ],
    "library": "igl",
-   "ratio": 73.4
+   "ratio": 73.1
+  },
+  {
+   "group": "hashgrid_from_points",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "grid_bins",
+     "256"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 35.9
   },
   {
    "group": "hausdorff_points_to_points",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 23.2
+   "ratio": 148.2
   },
   {
    "group": "hausdorff_points_to_points",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 8.5
+   "ratio": 24.3
   },
   {
    "group": "hausdorff_points_to_points",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 32.6
-  },
-  {
-   "group": "heat_geodesic",
-   "mesh_name": "sphere_large",
-   "rest": [
-    [
-     "setup",
-     "amortized"
-    ]
-   ],
-   "library": "potpourri3d",
-   "ratio": 2.7
+   "ratio": 1546.6
   },
   {
    "group": "heat_geodesic",
@@ -2582,7 +2854,7 @@
     ]
    ],
    "library": "potpourri3d",
-   "ratio": 183.3
+   "ratio": 304.4
   },
   {
    "group": "heat_geodesic",
@@ -2593,8 +2865,8 @@
      "amortized"
     ]
    ],
-   "library": "pymeshlab",
-   "ratio": 10.0
+   "library": "potpourri3d",
+   "ratio": 51.8
   },
   {
    "group": "heat_geodesic",
@@ -2606,7 +2878,19 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 189.9
+   "ratio": 309.5
+  },
+  {
+   "group": "heat_geodesic",
+   "mesh_name": "sphere_large",
+   "rest": [
+    [
+     "setup",
+     "amortized"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 199.4
   },
   {
    "group": "heat_geodesic",
@@ -2618,7 +2902,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 42.1
+   "ratio": 92.6
   },
   {
    "group": "heat_geodesic",
@@ -2630,7 +2914,7 @@
     ]
    ],
    "library": "potpourri3d",
-   "ratio": 37.1
+   "ratio": 83.6
   },
   {
    "group": "heat_geodesic",
@@ -2641,8 +2925,8 @@
      "amortized"
     ]
    ],
-   "library": "pymeshlab",
-   "ratio": 4.6
+   "library": "potpourri3d",
+   "ratio": 17.4
   },
   {
    "group": "heat_geodesic",
@@ -2654,7 +2938,19 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 40.2
+   "ratio": 93.2
+  },
+  {
+   "group": "heat_geodesic",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "setup",
+     "amortized"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 76.5
   },
   {
    "group": "heat_geodesic",
@@ -2666,21 +2962,71 @@
     ]
    ],
    "library": "igl",
-   "ratio": 2.5
+   "ratio": 4.8
+  },
+  {
+   "group": "heat_geodesic",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "setup",
+     "full"
+    ]
+   ],
+   "library": "potpourri3d",
+   "ratio": 2.1
+  },
+  {
+   "group": "heat_geodesic",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "setup",
+     "full"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 2.6
+  },
+  {
+   "group": "heat_geodesic",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "setup",
+     "amortized"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 7.8
   },
   {
    "group": "heat_geodesic_conditioning",
    "mesh_name": "saddle",
    "rest": [],
    "library": "igl",
-   "ratio": 5.4
+   "ratio": 15.9
   },
   {
    "group": "heat_geodesic_conditioning",
    "mesh_name": "saddle",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 3.2
+   "ratio": 9.4
+  },
+  {
+   "group": "heat_geodesic_conditioning",
+   "mesh_name": "saddle_graded",
+   "rest": [],
+   "library": "igl",
+   "ratio": 10.4
+  },
+  {
+   "group": "heat_geodesic_conditioning",
+   "mesh_name": "saddle_graded",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 6.0
   },
   {
    "group": "icosphere",
@@ -2692,7 +3038,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 10.9
+   "ratio": 62.9
   },
   {
    "group": "icosphere",
@@ -2704,7 +3050,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 118.7
+   "ratio": 772.8
   },
   {
    "group": "icosphere",
@@ -2716,7 +3062,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 2559.7
+   "ratio": 8769.4
   },
   {
    "group": "icosphere",
@@ -2728,7 +3074,7 @@
     ]
    ],
    "library": "pytorch3d-cuda",
-   "ratio": 27.3
+   "ratio": 153.1
   },
   {
    "group": "icosphere",
@@ -2740,7 +3086,7 @@
     ]
    ],
    "library": "pytorch3d-cuda",
-   "ratio": 39.9
+   "ratio": 251.1
   },
   {
    "group": "icosphere",
@@ -2752,292 +3098,343 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 238.0
+   "ratio": 811.2
   },
   {
    "group": "icp_mesh",
    "mesh_name": "sphere_small",
    "rest": [],
    "library": "pyvista",
-   "ratio": 20.9
+   "ratio": 32.9
   },
   {
    "group": "icp_point_cloud",
    "mesh_name": "sphere_large",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 20.1
+   "ratio": 97.7
   },
   {
    "group": "icp_point_cloud",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 12.1
+   "ratio": 38.4
+  },
+  {
+   "group": "icp_point_cloud",
+   "mesh_name": "sphere_small",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 5.3
   },
   {
    "group": "icp_point_cloud",
    "mesh_name": "sphere_small",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 4.2
+   "ratio": 11.8
   },
   {
    "group": "icp_point_cloud",
    "mesh_name": "sphere_small",
    "rest": [],
    "library": "trimesh",
-   "ratio": 5.8
+   "ratio": 14.9
+  },
+  {
+   "group": "icp_point_to_plane_cloud",
+   "mesh_name": "sphere_small",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 6.4
+  },
+  {
+   "group": "intersects_any",
+   "mesh_name": "shells_8",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 3.0
+  },
+  {
+   "group": "intersects_any",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 3.4
+  },
+  {
+   "group": "intersects_first",
+   "mesh_name": "shells_8",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 2.4
+  },
+  {
+   "group": "intersects_location",
+   "mesh_name": "shells_8",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 2.2
+  },
+  {
+   "group": "intersects_location",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 2.6
   },
   {
    "group": "is_edge_manifold",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "open3d",
-   "ratio": 40.9
+   "ratio": 326.2
   },
   {
    "group": "is_edge_manifold",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "pyvista",
-   "ratio": 24333.6
+   "ratio": 183978.8
   },
   {
    "group": "is_edge_manifold",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 52.6
+   "ratio": 401.4
   },
   {
    "group": "is_edge_manifold",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 47.9
+   "ratio": 362.8
+  },
+  {
+   "group": "is_self_intersecting",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "pymeshfix",
+   "ratio": 1983.0
+  },
+  {
+   "group": "is_self_intersecting",
+   "mesh_name": "tangle_2",
+   "rest": [],
+   "library": "pymeshfix",
+   "ratio": 809.3
   },
   {
    "group": "is_vertex_manifold",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "igl",
-   "ratio": 96.7
+   "ratio": 532.8
   },
   {
    "group": "is_vertex_manifold",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "open3d",
-   "ratio": 40.5
+   "ratio": 229.7
   },
   {
    "group": "is_vertex_manifold",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 72.0
+   "ratio": 530.0
   },
   {
    "group": "is_vertex_manifold",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 32.7
+   "ratio": 250.5
   },
   {
    "group": "is_volume",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 159.9
+   "ratio": 582.3
   },
   {
    "group": "is_volume",
    "mesh_name": "tangle_2",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 95.0
+   "ratio": 495.8
   },
   {
    "group": "is_watertight",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 6405.6
+   "ratio": 1355.6
   },
   {
    "group": "is_watertight",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 62.2
-  },
-  {
-   "group": "is_watertight",
-   "mesh_name": "sphere_med",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 8.8
+   "ratio": 204.3
   },
   {
    "group": "is_watertight",
    "mesh_name": "tangle_2",
    "rest": [],
    "library": "open3d",
-   "ratio": 1638.1
+   "ratio": 384.9
   },
   {
    "group": "is_watertight",
    "mesh_name": "tangle_2",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 30.0
-  },
-  {
-   "group": "is_watertight",
-   "mesh_name": "tangle_2",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 4.5
+   "ratio": 101.8
   },
   {
    "group": "isotropic_remesh",
    "mesh_name": "saddle",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 8.0
+   "ratio": 32.4
   },
   {
    "group": "isotropic_remesh",
    "mesh_name": "saddle_graded",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 22.6
+   "ratio": 93.0
   },
   {
    "group": "laplacian_equal_weight",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 15.1
+   "ratio": 71.8
   },
   {
    "group": "laplacian_equal_weight",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 3.4
+   "ratio": 14.1
   },
   {
    "group": "laplacian_equal_weight",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 130.1
+   "ratio": 304.3
   },
   {
    "group": "laplacian_inverse_distance",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 1005.9
+   "ratio": 2203.2
   },
   {
    "group": "laplacian_inverse_distance",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 150.2
+   "ratio": 314.9
   },
   {
    "group": "laplacian_inverse_distance",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 8200.8
+   "ratio": 10922.5
   },
   {
    "group": "lscm",
    "mesh_name": "hemisphere",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 6.2
+   "ratio": 43.2
+  },
+  {
+   "group": "lscm",
+   "mesh_name": "saddle",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 18.6
+  },
+  {
+   "group": "lscm",
+   "mesh_name": "saddle_small",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 6.8
   },
   {
    "group": "make_volume",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pyvista",
-   "ratio": 42.3
+   "ratio": 191.6
   },
   {
    "group": "make_volume",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 12.3
+   "ratio": 54.8
   },
   {
    "group": "make_volume",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pyvista",
-   "ratio": 219.0
+   "ratio": 2214.9
   },
   {
    "group": "make_winding_consistent",
    "mesh_name": "ribbon_long",
    "rest": [],
    "library": "igl",
-   "ratio": 16.8
+   "ratio": 31.1
   },
   {
    "group": "make_winding_consistent",
    "mesh_name": "ribbon_long",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 45.2
+   "ratio": 83.7
   },
   {
    "group": "make_winding_consistent",
    "mesh_name": "ribbon_long",
    "rest": [],
    "library": "trimesh",
-   "ratio": 12.1
+   "ratio": 20.4
   },
   {
    "group": "make_winding_consistent",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 45.0
+   "ratio": 284.5
   },
   {
    "group": "make_winding_consistent",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 64.5
+   "ratio": 397.8
   },
   {
    "group": "make_winding_consistent",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "trimesh",
-   "ratio": 23.1
-  },
-  {
-   "group": "marching_cubes",
-   "mesh_name": null,
-   "rest": [
-    [
-     "resolution",
-     "128"
-    ]
-   ],
-   "library": "igl",
-   "ratio": 42.6
+   "ratio": 139.6
   },
   {
    "group": "marching_cubes",
@@ -3049,7 +3446,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 10.8
+   "ratio": 43.1
   },
   {
    "group": "marching_cubes",
@@ -3060,8 +3457,8 @@
      "128"
     ]
    ],
-   "library": "meshlib",
-   "ratio": 10.0
+   "library": "igl",
+   "ratio": 110.4
   },
   {
    "group": "marching_cubes",
@@ -3073,7 +3470,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 6.4
+   "ratio": 30.2
   },
   {
    "group": "marching_cubes",
@@ -3084,8 +3481,8 @@
      "128"
     ]
    ],
-   "library": "pyvista",
-   "ratio": 27.2
+   "library": "meshlib",
+   "ratio": 27.5
   },
   {
    "group": "marching_cubes",
@@ -3097,49 +3494,61 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 6.4
+   "ratio": 27.9
+  },
+  {
+   "group": "marching_cubes",
+   "mesh_name": null,
+   "rest": [
+    [
+     "resolution",
+     "128"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 66.2
   },
   {
    "group": "marching_triangles",
    "mesh_name": "sphere_large",
    "rest": [],
    "library": "igl",
-   "ratio": 117.2
+   "ratio": 234.2
   },
   {
    "group": "marching_triangles",
    "mesh_name": "sphere_large",
    "rest": [],
    "library": "potpourri3d",
-   "ratio": 151.6
+   "ratio": 304.4
   },
   {
    "group": "marching_triangles",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 30.7
+   "ratio": 52.7
   },
   {
    "group": "marching_triangles",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "potpourri3d",
-   "ratio": 34.5
+   "ratio": 56.8
   },
   {
    "group": "marching_triangles",
    "mesh_name": "sphere_small",
    "rest": [],
    "library": "igl",
-   "ratio": 9.4
+   "ratio": 22.2
   },
   {
    "group": "marching_triangles",
    "mesh_name": "sphere_small",
    "rest": [],
    "library": "potpourri3d",
-   "ratio": 6.0
+   "ratio": 4.1
   },
   {
    "group": "marching_triangles_curves",
@@ -3151,7 +3560,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 39.4
+   "ratio": 71.4
   },
   {
    "group": "marching_triangles_curves",
@@ -3163,7 +3572,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 15.7
+   "ratio": 78.5
   },
   {
    "group": "marching_triangles_curves",
@@ -3175,7 +3584,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 5.6
+   "ratio": 30.5
   },
   {
    "group": "marching_triangles_curves",
@@ -3187,7 +3596,7 @@
     ]
    ],
    "library": "potpourri3d",
-   "ratio": 44.3
+   "ratio": 75.8
   },
   {
    "group": "marching_triangles_curves",
@@ -3199,7 +3608,7 @@
     ]
    ],
    "library": "potpourri3d",
-   "ratio": 42.1
+   "ratio": 199.0
   },
   {
    "group": "marching_triangles_curves",
@@ -3211,186 +3620,154 @@
     ]
    ],
    "library": "potpourri3d",
-   "ratio": 120.8
+   "ratio": 808.0
   },
   {
    "group": "mass_matrix",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "igl",
-   "ratio": 35.2
+   "ratio": 66.6
   },
   {
    "group": "mass_matrix",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 35.2
+   "ratio": 119.6
   },
   {
    "group": "mass_matrix_entries",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "igl",
-   "ratio": 50.8
-  },
-  {
-   "group": "mass_matrix_entries",
-   "mesh_name": "sphere_med",
-   "rest": [],
-   "library": "igl",
-   "ratio": 106.6
-  },
-  {
-   "group": "mean_edge_length",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 35.9
-  },
-  {
-   "group": "mean_edge_length",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 8.0
-  },
-  {
-   "group": "mean_edge_length",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 490.2
-  },
-  {
-   "group": "mean_unique_edge_length",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "meshlib",
-   "ratio": 11.2
-  },
-  {
-   "group": "mean_unique_edge_length",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 105.0
-  },
-  {
-   "group": "mean_unique_edge_length",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 136.8
-  },
-  {
-   "group": "mean_unique_edge_length",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "meshlib",
-   "ratio": 11.3
-  },
-  {
-   "group": "mean_unique_edge_length",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 23.0
-  },
-  {
-   "group": "mean_unique_edge_length",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 29.4
-  },
-  {
-   "group": "mean_unique_edge_length",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "igl",
-   "ratio": 80.0
-  },
-  {
-   "group": "mean_unique_edge_length",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 705.3
-  },
-  {
-   "group": "mean_vertex_normals",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pyvista",
    "ratio": 74.0
   },
   {
+   "group": "mass_matrix_entries",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "igl",
+   "ratio": 299.1
+  },
+  {
+   "group": "mean_edge_length",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 116.6
+  },
+  {
+   "group": "mean_edge_length",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 28.1
+  },
+  {
+   "group": "mean_edge_length",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 2131.9
+  },
+  {
+   "group": "mean_unique_edge_length",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 66.0
+  },
+  {
+   "group": "mean_unique_edge_length",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 608.6
+  },
+  {
+   "group": "mean_unique_edge_length",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 782.2
+  },
+  {
+   "group": "mean_unique_edge_length",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 62.5
+  },
+  {
+   "group": "mean_unique_edge_length",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 142.0
+  },
+  {
+   "group": "mean_unique_edge_length",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 178.5
+  },
+  {
+   "group": "mean_unique_edge_length",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "igl",
+   "ratio": 365.0
+  },
+  {
+   "group": "mean_unique_edge_length",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 3159.2
+  },
+  {
+   "group": "mean_vertex_normals",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 161.0
+  },
+  {
    "group": "mean_vertex_normals",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 18.4
+   "ratio": 32.1
   },
   {
    "group": "mean_vertex_normals",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pyvista",
-   "ratio": 423.7
+   "ratio": 516.1
   },
   {
    "group": "median",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 12.6
+   "ratio": 20.2
   },
   {
    "group": "median",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 2.7
+   "ratio": 4.4
   },
   {
    "group": "median",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 129.5
-  },
-  {
-   "group": "mesh_collision_pairs",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "offset_fraction",
-     "0.05"
-    ],
-    [
-     "setup",
-     "full"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 9295.8
-  },
-  {
-   "group": "mesh_collision_pairs",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "offset_fraction",
-     "0.6"
-    ],
-    [
-     "setup",
-     "full"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 176.5
+   "ratio": 166.3
   },
   {
    "group": "mesh_with_mesh",
@@ -3402,7 +3779,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 421.3
+   "ratio": 688.3
   },
   {
    "group": "mesh_with_mesh",
@@ -3414,7 +3791,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 641.5
+   "ratio": 755.3
   },
   {
    "group": "mesh_with_mesh",
@@ -3426,7 +3803,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 105.2
+   "ratio": 200.2
   },
   {
    "group": "mesh_with_mesh",
@@ -3438,28 +3815,28 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 158.8
+   "ratio": 160.7
   },
   {
    "group": "mesh_with_plane",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 8.9
+   "ratio": 39.0
   },
   {
    "group": "mesh_with_plane",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 2.5
+   "ratio": 9.6
   },
   {
    "group": "mesh_with_plane",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 146.7
+   "ratio": 563.9
   },
   {
    "group": "min_quad_with_fixed",
@@ -3471,96 +3848,91 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 4.6
+   "ratio": 7.6
   },
   {
    "group": "moments",
    "mesh_name": "bunny",
    "rest": [],
    "library": "meshlib",
-   "ratio": 250.1
+   "ratio": 384.0
   },
   {
    "group": "moments",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pyvista",
-   "ratio": 23.4
+   "ratio": 42.0
   },
   {
    "group": "moments",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 254.4
+   "ratio": 377.4
   },
   {
    "group": "moments",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "meshlib",
-   "ratio": 55.4
+   "ratio": 94.3
   },
   {
    "group": "moments",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 6.8
+   "ratio": 13.3
   },
   {
    "group": "moments",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 55.6
+   "ratio": 89.4
   },
   {
    "group": "moments",
    "mesh_name": "dragon",
    "rest": [],
    "library": "meshlib",
-   "ratio": 1791.9
+   "ratio": 1940.3
   },
   {
    "group": "moments",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pyvista",
-   "ratio": 106.1
+   "ratio": 126.3
   },
   {
    "group": "moments",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 1765.9
+   "ratio": 1936.4
   },
   {
    "group": "nearest_neighbor_distance",
    "mesh_name": "sphere_large",
    "rest": [],
    "library": "open3d",
-   "ratio": 46.0
+   "ratio": 84.8
   },
   {
    "group": "nearest_neighbor_distance",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 26.0
+   "ratio": 25.2
   },
   {
-   "group": "offset_mesh",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "divisor",
-     "128"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 43.1
+   "group": "nearest_neighbor_distance",
+   "mesh_name": "sphere_small",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 2.0
   },
   {
    "group": "offset_mesh",
@@ -3572,11 +3944,11 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 80.0
+   "ratio": 183.3
   },
   {
    "group": "offset_mesh",
-   "mesh_name": "bunny_decimated",
+   "mesh_name": "bunny",
    "rest": [
     [
      "divisor",
@@ -3584,7 +3956,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 36.5
+   "ratio": 134.8
   },
   {
    "group": "offset_mesh",
@@ -3596,133 +3968,193 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 62.9
+   "ratio": 150.5
+  },
+  {
+   "group": "offset_mesh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "divisor",
+     "128"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 107.8
+  },
+  {
+   "group": "oriented_boundary_edges",
+   "mesh_name": "holes_many",
+   "rest": [],
+   "library": "igl",
+   "ratio": 158.6
+  },
+  {
+   "group": "oriented_boundary_edges",
+   "mesh_name": "rim_long",
+   "rest": [],
+   "library": "igl",
+   "ratio": 250.8
+  },
+  {
+   "group": "oriented_boundary_edges",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "igl",
+   "ratio": 174.8
   },
   {
    "group": "oriented_bounding_box",
    "mesh_name": "bunny",
    "rest": [],
    "library": "igl",
-   "ratio": 30.1
+   "ratio": 33.0
   },
   {
    "group": "oriented_bounding_box",
    "mesh_name": "bunny",
    "rest": [],
    "library": "open3d",
-   "ratio": 19.6
+   "ratio": 871.5
   },
   {
    "group": "oriented_bounding_box",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 49.1
+   "ratio": 64.6
   },
   {
    "group": "oriented_bounding_box",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "igl",
-   "ratio": 7.7
+   "ratio": 9.4
   },
   {
    "group": "oriented_bounding_box",
    "mesh_name": "bunny_decimated",
    "rest": [],
-   "library": "pyvista",
-   "ratio": 5.9
+   "library": "open3d",
+   "ratio": 208.8
   },
   {
    "group": "oriented_bounding_box",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 22.5
+   "ratio": 34.9
   },
   {
    "group": "oriented_bounding_box",
    "mesh_name": "dragon",
    "rest": [],
    "library": "igl",
-   "ratio": 1073.3
+   "ratio": 1658.9
   },
   {
    "group": "oriented_bounding_box",
    "mesh_name": "dragon",
    "rest": [],
    "library": "open3d",
-   "ratio": 47.2
+   "ratio": 1399.9
   },
   {
    "group": "oriented_bounding_box",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 66.9
+   "ratio": 106.3
+  },
+  {
+   "group": "platonic_solids",
+   "mesh_name": null,
+   "rest": [
+    [
+     "builder",
+     "octahedron"
+    ],
+    [
+     "filter_name",
+     "create_octahedron"
+    ],
+    [
+     "n_faces",
+     "8"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 2.0
   },
   {
    "group": "point_duplicate_mask",
    "mesh_name": "sphere_large",
    "rest": [],
    "library": "open3d",
-   "ratio": 33.6
+   "ratio": 629.5
   },
   {
    "group": "point_duplicate_mask",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 5.6
+   "ratio": 113.5
+  },
+  {
+   "group": "point_duplicate_mask",
+   "mesh_name": "sphere_small",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 9.2
   },
   {
    "group": "point_plane_distance",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 166.5
+   "ratio": 452.3
   },
   {
    "group": "points_to_barycentric",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 133.1
+   "ratio": 319.4
   },
   {
    "group": "points_to_barycentric",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 33.1
+   "ratio": 63.5
   },
   {
    "group": "points_to_barycentric",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 3248.7
+   "ratio": 5810.0
   },
   {
    "group": "polyline_length",
    "mesh_name": "rim_long",
    "rest": [],
    "library": "pyvista",
-   "ratio": 13.0
+   "ratio": 28.0
   },
   {
    "group": "polyline_length",
    "mesh_name": "saddle",
    "rest": [],
    "library": "pyvista",
-   "ratio": 2.9
+   "ratio": 4.4
   },
   {
    "group": "polyline_length",
    "mesh_name": "saddle_small",
    "rest": [],
    "library": "pyvista",
-   "ratio": 2.3
+   "ratio": 3.7
   },
   {
    "group": "polyline_point_distance",
@@ -3734,7 +4166,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 332.1
+   "ratio": 1426.3
   },
   {
    "group": "polyline_point_distance",
@@ -3746,7 +4178,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 5306.9
+   "ratio": 7776.6
   },
   {
    "group": "polyline_point_distance",
@@ -3758,7 +4190,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 256.5
+   "ratio": 687.1
   },
   {
    "group": "polyline_point_distance",
@@ -3770,7 +4202,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 4673.0
+   "ratio": 6633.1
   },
   {
    "group": "polyline_simplify",
@@ -3782,7 +4214,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 38.3
+   "ratio": 45.0
   },
   {
    "group": "polyline_simplify",
@@ -3794,7 +4226,19 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 35.4
+   "ratio": 46.6
+  },
+  {
+   "group": "polyline_simplify",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "tolerance_fraction",
+     "0.1"
+    ]
+   ],
+   "library": "meshlib",
+   "ratio": 2.4
   },
   {
    "group": "polyline_triangulate",
@@ -3806,7 +4250,14 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 2.4
+   "ratio": 6.8
+  },
+  {
+   "group": "principal_axes",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 2.0
   },
   {
    "group": "principal_curvature",
@@ -3818,7 +4269,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 121.7
+   "ratio": 144.7
   },
   {
    "group": "principal_curvature",
@@ -3830,7 +4281,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 102.5
+   "ratio": 161.1
   },
   {
    "group": "principal_curvature",
@@ -3842,7 +4293,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 59.3
+   "ratio": 106.0
   },
   {
    "group": "principal_curvature",
@@ -3851,111 +4302,195 @@
     [
      "radius",
      "3"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 25.3
+  },
+  {
+   "group": "principal_curvature",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "radius",
+     "3"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 18.5
+  },
+  {
+   "group": "procrustes",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pytorch3d-cuda",
+   "ratio": 7.4
+  },
+  {
+   "group": "procrustes",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 30.3
+  },
+  {
+   "group": "procrustes",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "meshlib",
+   "ratio": 170.4
+  },
+  {
+   "group": "procrustes",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pytorch3d-cuda",
+   "ratio": 7.4
+  },
+  {
+   "group": "procrustes",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 11.6
+  },
+  {
+   "group": "procrustes",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "pytorch3d-cuda",
+   "ratio": 7.7
+  },
+  {
+   "group": "procrustes",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 32.9
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "target_ratio",
+     "0.5"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 16.5
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "target_ratio",
+     "0.1"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 14.2
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "target_ratio",
+     "0.5"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 14.8
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "target_ratio",
+     "0.1"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 13.7
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "target_ratio",
+     "0.5"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 57.2
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "target_ratio",
+     "0.1"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 51.4
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "target_ratio",
+     "0.5"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 14.9
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle",
+   "rest": [
+    [
+     "target_ratio",
+     "0.1"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 12.0
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "target_ratio",
+     "0.5"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 12.2
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "target_ratio",
+     "0.1"
     ]
    ],
    "library": "igl",
    "ratio": 9.7
   },
   {
-   "group": "principal_curvature",
-   "mesh_name": "sphere_small",
-   "rest": [
-    [
-     "radius",
-     "3"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 6.5
-  },
-  {
-   "group": "procrustes",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pytorch3d-cuda",
-   "ratio": 3.0
-  },
-  {
-   "group": "procrustes",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 13.3
-  },
-  {
-   "group": "procrustes",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "meshlib",
-   "ratio": 77.1
-  },
-  {
-   "group": "procrustes",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "pytorch3d-cuda",
-   "ratio": 3.0
-  },
-  {
-   "group": "procrustes",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 5.5
-  },
-  {
-   "group": "procrustes",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "pytorch3d-cuda",
-   "ratio": 3.4
-  },
-  {
-   "group": "procrustes",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 16.3
-  },
-  {
    "group": "quadric_decimate",
-   "mesh_name": "saddle",
-   "rest": [
-    [
-     "target_ratio",
-     "0.1"
-    ]
-   ],
-   "library": "igl",
-   "ratio": 2.2
-  },
-  {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle",
-   "rest": [
-    [
-     "target_ratio",
-     "0.5"
-    ]
-   ],
-   "library": "igl",
-   "ratio": 3.5
-  },
-  {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle",
-   "rest": [
-    [
-     "target_ratio",
-     "0.1"
-    ]
-   ],
-   "library": "open3d",
-   "ratio": 2.3
-  },
-  {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle",
+   "mesh_name": "saddle_graded",
    "rest": [
     [
      "target_ratio",
@@ -3963,11 +4498,35 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 3.3
+   "ratio": 12.9
   },
   {
    "group": "quadric_decimate",
-   "mesh_name": "saddle",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "target_ratio",
+     "0.1"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 10.0
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "target_ratio",
+     "0.5"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 55.0
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle_graded",
    "rest": [
     [
      "target_ratio",
@@ -3975,624 +4534,559 @@
     ]
    ],
    "library": "pymeshlab",
+   "ratio": 45.3
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "target_ratio",
+     "0.5"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 12.5
+  },
+  {
+   "group": "quadric_decimate",
+   "mesh_name": "saddle_graded",
+   "rest": [
+    [
+     "target_ratio",
+     "0.1"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 9.7
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 149.5
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 175.8
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ],
+   "library": "scipy",
+   "ratio": 149.0
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ],
+   "library": "scipy",
+   "ratio": 176.6
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 59.5
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 66.4
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "radius_scale",
+     "2.0"
+    ]
+   ],
+   "library": "scipy",
+   "ratio": 58.0
+  },
+  {
+   "group": "query_ball_bvh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "radius_scale",
+     "4.0"
+    ]
+   ],
+   "library": "scipy",
+   "ratio": 63.9
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "grid_bins",
+     "32"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 25.1
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "grid_bins",
+     "256"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 31.1
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "grid_bins",
+     "32"
+    ]
+   ],
+   "library": "scipy",
+   "ratio": 104.0
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "grid_bins",
+     "256"
+    ]
+   ],
+   "library": "scipy",
+   "ratio": 130.1
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "grid_bins",
+     "32"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 5.9
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "grid_bins",
+     "256"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 5.9
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "grid_bins",
+     "32"
+    ]
+   ],
+   "library": "scipy",
+   "ratio": 52.0
+  },
+  {
+   "group": "query_ball_hashgrid",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "grid_bins",
+     "256"
+    ]
+   ],
+   "library": "scipy",
+   "ratio": 52.3
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "igl",
+   "ratio": 730.9
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 39.6
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pytorch3d-cuda",
+   "ratio": 9.5
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 59.8
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "igl",
+   "ratio": 68.4
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 10.0
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pytorch3d-cuda",
+   "ratio": 2.4
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 17.6
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 168.7
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "pytorch3d-cuda",
+   "ratio": 47.8
+  },
+  {
+   "group": "query_nearest_bvh_k1",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 192.1
+  },
+  {
+   "group": "query_nearest_bvh_k64",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "igl",
+   "ratio": 209.3
+  },
+  {
+   "group": "query_nearest_bvh_k64",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 85.8
+  },
+  {
+   "group": "query_nearest_bvh_k64",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "igl",
+   "ratio": 47.0
+  },
+  {
+   "group": "query_nearest_bvh_k64",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 44.2
+  },
+  {
+   "group": "query_nearest_bvh_k64",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 85.0
+  },
+  {
+   "group": "query_nearest_bvh_k7",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "igl",
+   "ratio": 516.2
+  },
+  {
+   "group": "query_nearest_bvh_k7",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 26.4
+  },
+  {
+   "group": "query_nearest_bvh_k7",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 55.2
+  },
+  {
+   "group": "query_nearest_bvh_k7",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "igl",
+   "ratio": 55.5
+  },
+  {
+   "group": "query_nearest_bvh_k7",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 7.3
+  },
+  {
+   "group": "query_nearest_bvh_k7",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 20.3
+  },
+  {
+   "group": "query_nearest_bvh_k7",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 68.0
+  },
+  {
+   "group": "query_nearest_bvh_k7",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 85.0
+  },
+  {
+   "group": "query_nearest_hashgrid_k1",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "igl",
+   "ratio": 790.7
+  },
+  {
+   "group": "query_nearest_hashgrid_k1",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "open3d",
+   "ratio": 39.0
+  },
+  {
+   "group": "query_nearest_hashgrid_k1",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pytorch3d-cuda",
+   "ratio": 58.4
+  },
+  {
+   "group": "query_nearest_hashgrid_k1",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "scipy",
+   "ratio": 57.9
+  },
+  {
+   "group": "query_nearest_hashgrid_k1",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "igl",
+   "ratio": 66.1
+  },
+  {
+   "group": "query_nearest_hashgrid_k1",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "open3d",
    "ratio": 11.2
   },
   {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle",
-   "rest": [
-    [
-     "target_ratio",
-     "0.5"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 16.8
-  },
-  {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle",
-   "rest": [
-    [
-     "target_ratio",
-     "0.5"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 2.2
-  },
-  {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle_graded",
-   "rest": [
-    [
-     "target_ratio",
-     "0.5"
-    ]
-   ],
-   "library": "igl",
-   "ratio": 2.9
-  },
-  {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle_graded",
-   "rest": [
-    [
-     "target_ratio",
-     "0.5"
-    ]
-   ],
-   "library": "open3d",
-   "ratio": 3.3
-  },
-  {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle_graded",
-   "rest": [
-    [
-     "target_ratio",
-     "0.1"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 11.0
-  },
-  {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle_graded",
-   "rest": [
-    [
-     "target_ratio",
-     "0.5"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 18.6
-  },
-  {
-   "group": "quadric_decimate",
-   "mesh_name": "saddle_graded",
-   "rest": [
-    [
-     "target_ratio",
-     "0.5"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 2.3
-  },
-  {
-   "group": "query_ball_bvh",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "radius_scale",
-     "2.0"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 128.3
-  },
-  {
-   "group": "query_ball_bvh",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "radius_scale",
-     "4.0"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 174.8
-  },
-  {
-   "group": "query_ball_bvh",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "radius_scale",
-     "2.0"
-    ]
-   ],
-   "library": "scipy",
-   "ratio": 124.3
-  },
-  {
-   "group": "query_ball_bvh",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "radius_scale",
-     "4.0"
-    ]
-   ],
-   "library": "scipy",
-   "ratio": 174.9
-  },
-  {
-   "group": "query_ball_bvh",
+   "group": "query_nearest_hashgrid_k1",
    "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "radius_scale",
-     "2.0"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 49.2
-  },
-  {
-   "group": "query_ball_bvh",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "radius_scale",
-     "4.0"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 61.1
-  },
-  {
-   "group": "query_ball_bvh",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "radius_scale",
-     "2.0"
-    ]
-   ],
-   "library": "scipy",
-   "ratio": 48.3
-  },
-  {
-   "group": "query_ball_bvh",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "radius_scale",
-     "4.0"
-    ]
-   ],
-   "library": "scipy",
-   "ratio": 61.7
-  },
-  {
-   "group": "query_ball_hashgrid",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "grid_bins",
-     "256"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 27.4
-  },
-  {
-   "group": "query_ball_hashgrid",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "grid_bins",
-     "32"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 22.1
-  },
-  {
-   "group": "query_ball_hashgrid",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "grid_bins",
-     "256"
-    ]
-   ],
-   "library": "scipy",
-   "ratio": 113.6
-  },
-  {
-   "group": "query_ball_hashgrid",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "grid_bins",
-     "32"
-    ]
-   ],
-   "library": "scipy",
-   "ratio": 93.2
-  },
-  {
-   "group": "query_ball_hashgrid",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "grid_bins",
-     "256"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 5.3
-  },
-  {
-   "group": "query_ball_hashgrid",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "grid_bins",
-     "32"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 5.3
-  },
-  {
-   "group": "query_ball_hashgrid",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "grid_bins",
-     "256"
-    ]
-   ],
-   "library": "scipy",
-   "ratio": 46.8
-  },
-  {
-   "group": "query_ball_hashgrid",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "grid_bins",
-     "32"
-    ]
-   ],
-   "library": "scipy",
-   "ratio": 46.1
-  },
-  {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "igl",
-   "ratio": 483.2
-  },
-  {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 27.7
-  },
-  {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "bunny",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 6.6
+   "ratio": 17.3
   },
   {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 41.7
-  },
-  {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "igl",
-   "ratio": 48.3
-  },
-  {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 7.4
-  },
-  {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 13.3
-  },
-  {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 56.1
-  },
-  {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "pytorch3d-cuda",
-   "ratio": 15.8
-  },
-  {
-   "group": "query_nearest_bvh_k1",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 64.7
-  },
-  {
-   "group": "query_nearest_bvh_k64",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "igl",
-   "ratio": 203.0
-  },
-  {
-   "group": "query_nearest_bvh_k64",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 82.9
-  },
-  {
-   "group": "query_nearest_bvh_k64",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "igl",
-   "ratio": 46.6
-  },
-  {
-   "group": "query_nearest_bvh_k64",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 44.9
-  },
-  {
-   "group": "query_nearest_bvh_k64",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 77.4
-  },
-  {
-   "group": "query_nearest_bvh_k7",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "igl",
-   "ratio": 407.6
-  },
-  {
-   "group": "query_nearest_bvh_k7",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 21.9
-  },
-  {
-   "group": "query_nearest_bvh_k7",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 45.9
-  },
-  {
-   "group": "query_nearest_bvh_k7",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "igl",
-   "ratio": 49.1
-  },
-  {
-   "group": "query_nearest_bvh_k7",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 6.3
-  },
-  {
-   "group": "query_nearest_bvh_k7",
+   "group": "query_nearest_hashgrid_k1",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "scipy",
    "ratio": 17.7
   },
   {
-   "group": "query_nearest_bvh_k7",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 53.3
-  },
-  {
-   "group": "query_nearest_bvh_k7",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 66.7
-  },
-  {
-   "group": "query_nearest_hashgrid_k1",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "igl",
-   "ratio": 722.0
-  },
-  {
-   "group": "query_nearest_hashgrid_k1",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 37.3
-  },
-  {
-   "group": "query_nearest_hashgrid_k1",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pytorch3d-cuda",
-   "ratio": 61.3
-  },
-  {
-   "group": "query_nearest_hashgrid_k1",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 56.1
-  },
-  {
-   "group": "query_nearest_hashgrid_k1",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "igl",
-   "ratio": 68.3
-  },
-  {
-   "group": "query_nearest_hashgrid_k1",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "open3d",
-   "ratio": 10.6
-  },
-  {
-   "group": "query_nearest_hashgrid_k1",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "pytorch3d-cuda",
-   "ratio": 20.0
-  },
-  {
-   "group": "query_nearest_hashgrid_k1",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "scipy",
-   "ratio": 17.3
-  },
-  {
    "group": "query_nearest_hashgrid_k1",
    "mesh_name": "dragon",
    "rest": [],
    "library": "open3d",
-   "ratio": 140.4
+   "ratio": 131.5
   },
   {
    "group": "query_nearest_hashgrid_k1",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 161.2
+   "ratio": 146.2
   },
   {
    "group": "query_nearest_hashgrid_k1",
    "mesh_name": "dragon",
    "rest": [],
    "library": "scipy",
-   "ratio": 160.1
+   "ratio": 147.8
   },
   {
    "group": "query_nearest_hashgrid_k7",
    "mesh_name": "bunny",
    "rest": [],
    "library": "igl",
-   "ratio": 512.4
+   "ratio": 498.6
   },
   {
    "group": "query_nearest_hashgrid_k7",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 61.1
+   "ratio": 58.0
   },
   {
    "group": "query_nearest_hashgrid_k7",
    "mesh_name": "bunny",
    "rest": [],
    "library": "scipy",
-   "ratio": 60.2
+   "ratio": 57.3
   },
   {
    "group": "query_nearest_hashgrid_k7",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "igl",
-   "ratio": 62.2
+   "ratio": 60.3
   },
   {
    "group": "query_nearest_hashgrid_k7",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 23.8
+   "ratio": 23.0
   },
   {
    "group": "query_nearest_hashgrid_k7",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "scipy",
-   "ratio": 23.6
+   "ratio": 22.2
   },
   {
    "group": "query_nearest_hashgrid_k7",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 127.6
+   "ratio": 117.9
   },
   {
    "group": "query_nearest_hashgrid_k7",
    "mesh_name": "dragon",
    "rest": [],
    "library": "scipy",
-   "ratio": 128.5
+   "ratio": 119.3
   },
   {
    "group": "region_boundary_edges",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pyvista",
-   "ratio": 10.2
+   "ratio": 61.2
   },
   {
    "group": "remove_degenerate_faces",
    "mesh_name": "saddle",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 10.4
+   "ratio": 91.7
   },
   {
    "group": "remove_degenerate_faces",
    "mesh_name": "saddle",
    "rest": [],
    "library": "trimesh",
-   "ratio": 3.4
+   "ratio": 34.3
   },
   {
    "group": "remove_degenerate_faces",
    "mesh_name": "saddle_graded",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 12.1
+   "ratio": 94.5
   },
   {
    "group": "remove_degenerate_faces",
    "mesh_name": "saddle_graded",
    "rest": [],
    "library": "trimesh",
-   "ratio": 3.8
-  },
-  {
-   "group": "remove_duplicated_vertices",
-   "mesh_name": "sphere_med",
-   "rest": [
-    [
-     "epsilon",
-     "1e-06"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 49.7
+   "ratio": 31.1
   },
   {
    "group": "remove_duplicated_vertices",
@@ -4604,7 +5098,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 45.7
+   "ratio": 133.8
   },
   {
    "group": "remove_duplicated_vertices",
@@ -4615,8 +5109,8 @@
      "1e-06"
     ]
    ],
-   "library": "pymeshlab",
-   "ratio": 521.4
+   "library": "meshlib",
+   "ratio": 102.3
   },
   {
    "group": "remove_duplicated_vertices",
@@ -4628,7 +5122,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 337.4
+   "ratio": 947.0
   },
   {
    "group": "remove_duplicated_vertices",
@@ -4639,8 +5133,8 @@
      "1e-06"
     ]
    ],
-   "library": "pyvista",
-   "ratio": 65.6
+   "library": "pymeshlab",
+   "ratio": 945.5
   },
   {
    "group": "remove_duplicated_vertices",
@@ -4652,28 +5146,40 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 40.1
+   "ratio": 109.6
+  },
+  {
+   "group": "remove_duplicated_vertices",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "epsilon",
+     "1e-06"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 131.9
   },
   {
    "group": "remove_small_components",
    "mesh_name": "parts_1024",
    "rest": [],
    "library": "open3d",
-   "ratio": 58.2
+   "ratio": 439.8
   },
   {
    "group": "remove_small_components",
    "mesh_name": "parts_64",
    "rest": [],
    "library": "open3d",
-   "ratio": 60.4
+   "ratio": 466.6
   },
   {
    "group": "remove_small_components",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 54.5
+   "ratio": 365.5
   },
   {
    "group": "remove_unreferenced_vertices",
@@ -4685,7 +5191,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 3.3
+   "ratio": 12.7
   },
   {
    "group": "remove_unreferenced_vertices",
@@ -4697,7 +5203,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 3.6
+   "ratio": 13.7
   },
   {
    "group": "remove_unreferenced_vertices",
@@ -4709,7 +5215,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 44.9
+   "ratio": 156.6
   },
   {
    "group": "remove_unreferenced_vertices",
@@ -4721,7 +5227,31 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 43.3
+   "ratio": 155.4
+  },
+  {
+   "group": "remove_unreferenced_vertices",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "unreferenced",
+     "0"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 2.5
+  },
+  {
+   "group": "remove_unreferenced_vertices",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "unreferenced",
+     "1"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 2.7
   },
   {
    "group": "remove_unreferenced_vertices",
@@ -4733,7 +5263,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 30.1
+   "ratio": 114.6
   },
   {
    "group": "remove_unreferenced_vertices",
@@ -4745,19 +5275,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 36.3
-  },
-  {
-   "group": "resample_uniform",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "cell_fraction",
-     "0.01"
-    ]
-   ],
-   "library": "igl",
-   "ratio": 9.8
+   "ratio": 114.5
   },
   {
    "group": "resample_uniform",
@@ -4769,7 +5287,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 13.9
+   "ratio": 28.2
   },
   {
    "group": "resample_uniform",
@@ -4780,8 +5298,8 @@
      "0.01"
     ]
    ],
-   "library": "pymeshlab",
-   "ratio": 18.1
+   "library": "igl",
+   "ratio": 27.2
   },
   {
    "group": "resample_uniform",
@@ -4793,7 +5311,19 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 18.4
+   "ratio": 39.1
+  },
+  {
+   "group": "resample_uniform",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "cell_fraction",
+     "0.01"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 53.0
   },
   {
    "group": "resample_uniform",
@@ -4805,7 +5335,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 4.5
+   "ratio": 11.4
   },
   {
    "group": "resample_uniform",
@@ -4817,19 +5347,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 4.8
-  },
-  {
-   "group": "resample_uniform",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "cell_fraction",
-     "0.01"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 13.5
+   "ratio": 13.4
   },
   {
    "group": "resample_uniform",
@@ -4841,7 +5359,43 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 10.9
+   "ratio": 28.3
+  },
+  {
+   "group": "resample_uniform",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "cell_fraction",
+     "0.01"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 38.7
+  },
+  {
+   "group": "resolve_duplicated_faces",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "fraction",
+     "0.0"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 88.2
+  },
+  {
+   "group": "resolve_duplicated_faces",
+   "mesh_name": "sphere_med",
+   "rest": [
+    [
+     "fraction",
+     "0.1"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 101.5
   },
   {
    "group": "resolve_duplicated_faces",
@@ -4853,7 +5407,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 20.0
+   "ratio": 106.0
   },
   {
    "group": "resolve_duplicated_faces",
@@ -4865,7 +5419,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 22.9
+   "ratio": 122.2
   },
   {
    "group": "revolve",
@@ -4873,11 +5427,11 @@
    "rest": [
     [
      "sections",
-     "4096"
+     "32"
     ]
    ],
    "library": "trimesh",
-   "ratio": 338.3
+   "ratio": 6.0
   },
   {
    "group": "revolve",
@@ -4889,7 +5443,31 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 33.4
+   "ratio": 100.8
+  },
+  {
+   "group": "revolve",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "4096"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 881.5
+  },
+  {
+   "group": "sample_surface",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "count",
+     "10000"
+    ]
+   ],
+   "library": "igl",
+   "ratio": 84.6
   },
   {
    "group": "sample_surface",
@@ -4901,31 +5479,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 159.6
-  },
-  {
-   "group": "sample_surface",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "count",
-     "10000"
-    ]
-   ],
-   "library": "igl",
-   "ratio": 27.5
-  },
-  {
-   "group": "sample_surface",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "count",
-     "100000"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 190.9
+   "ratio": 453.6
   },
   {
    "group": "sample_surface",
@@ -4937,19 +5491,19 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 83.5
+   "ratio": 263.1
   },
   {
    "group": "sample_surface",
-   "mesh_name": "bunny_decimated",
+   "mesh_name": "bunny",
    "rest": [
     [
      "count",
      "100000"
     ]
    ],
-   "library": "igl",
-   "ratio": 136.1
+   "library": "trimesh",
+   "ratio": 545.8
   },
   {
    "group": "sample_surface",
@@ -4961,7 +5515,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 18.7
+   "ratio": 71.3
   },
   {
    "group": "sample_surface",
@@ -4972,8 +5526,8 @@
      "100000"
     ]
    ],
-   "library": "trimesh",
-   "ratio": 112.2
+   "library": "igl",
+   "ratio": 469.8
   },
   {
    "group": "sample_surface",
@@ -4985,7 +5539,19 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 22.2
+   "ratio": 75.8
+  },
+  {
+   "group": "sample_surface",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "count",
+     "100000"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 383.0
   },
   {
    "group": "shrink_vertex_mask",
@@ -4997,7 +5563,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 10.3
+   "ratio": 59.7
   },
   {
    "group": "shrink_vertex_mask",
@@ -5009,7 +5575,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 26.5
+   "ratio": 173.6
   },
   {
    "group": "signed_distance_on_mesh",
@@ -5021,7 +5587,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 38.7
+   "ratio": 39.6
   },
   {
    "group": "signed_distance_on_mesh",
@@ -5033,7 +5599,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 11.5
+   "ratio": 12.1
   },
   {
    "group": "signed_distance_on_mesh",
@@ -5045,7 +5611,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 245.2
+   "ratio": 249.8
   },
   {
    "group": "signed_distance_on_mesh",
@@ -5057,7 +5623,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 103.1
+   "ratio": 106.4
   },
   {
    "group": "signed_distance_on_mesh",
@@ -5069,7 +5635,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 14.7
+   "ratio": 15.8
   },
   {
    "group": "signed_distance_on_mesh",
@@ -5081,7 +5647,7 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 5.6
+   "ratio": 5.8
   },
   {
    "group": "signed_distance_on_mesh",
@@ -5093,7 +5659,7 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 99.4
+   "ratio": 102.3
   },
   {
    "group": "signed_distance_on_mesh",
@@ -5105,7 +5671,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 79.0
+   "ratio": 80.3
   },
   {
    "group": "signed_distance_on_mesh",
@@ -5117,105 +5683,105 @@
     ]
    ],
    "library": "open3d",
-   "ratio": 54.2
+   "ratio": 55.3
   },
   {
    "group": "slice_mesh_with_plane",
    "mesh_name": "bunny",
    "rest": [],
    "library": "meshlib",
-   "ratio": 14.0
+   "ratio": 111.8
   },
   {
    "group": "slice_mesh_with_plane",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "meshlib",
-   "ratio": 12.6
+   "ratio": 110.2
   },
   {
    "group": "slice_mesh_with_plane",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 174.6
+   "ratio": 1410.8
   },
   {
    "group": "split",
    "mesh_name": "parts_1024",
    "rest": [],
    "library": "open3d",
-   "ratio": 32.1
+   "ratio": 160.8
   },
   {
    "group": "split",
    "mesh_name": "parts_1024",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 187.2
+   "ratio": 941.4
   },
   {
    "group": "split",
    "mesh_name": "parts_1024",
    "rest": [],
    "library": "trimesh",
-   "ratio": 19.7
+   "ratio": 99.3
   },
   {
    "group": "split",
    "mesh_name": "parts_64",
    "rest": [],
    "library": "open3d",
-   "ratio": 32.5
+   "ratio": 122.0
   },
   {
    "group": "split",
    "mesh_name": "parts_64",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 58.0
+   "ratio": 226.6
   },
   {
    "group": "split",
    "mesh_name": "parts_64",
    "rest": [],
    "library": "trimesh",
-   "ratio": 16.0
+   "ratio": 62.2
   },
   {
    "group": "split",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 37.8
+   "ratio": 241.1
   },
   {
    "group": "split",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 22.9
+   "ratio": 154.6
   },
   {
    "group": "split",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "trimesh",
-   "ratio": 20.6
+   "ratio": 137.1
   },
   {
    "group": "split_mesh_with_plane",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pyvista",
-   "ratio": 17.2
+   "ratio": 149.4
   },
   {
    "group": "split_mesh_with_plane",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "meshlib",
-   "ratio": 7.4
+   "ratio": 46.3
   },
   {
    "group": "split_non_manifold_vertices",
@@ -5227,7 +5793,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 88.8
+   "ratio": 709.3
   },
   {
    "group": "split_non_manifold_vertices",
@@ -5239,82 +5805,70 @@
     ]
    ],
    "library": "igl",
-   "ratio": 88.1
+   "ratio": 1015.3
   },
   {
    "group": "subdivide",
    "mesh_name": "bunny",
    "rest": [],
    "library": "open3d",
-   "ratio": 28.0
+   "ratio": 98.3
   },
   {
    "group": "subdivide",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 44.3
+   "ratio": 171.9
   },
   {
    "group": "subdivide",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "open3d",
-   "ratio": 5.0
+   "ratio": 16.5
   },
   {
    "group": "subdivide",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "trimesh",
-   "ratio": 9.2
+   "ratio": 36.5
   },
   {
    "group": "subdivide",
    "mesh_name": "dragon",
    "rest": [],
    "library": "open3d",
-   "ratio": 241.1
+   "ratio": 803.2
   },
   {
    "group": "subdivide",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 257.1
+   "ratio": 878.4
   },
   {
    "group": "subdivide_loop",
    "mesh_name": "sphere_large",
    "rest": [],
    "library": "open3d",
-   "ratio": 4050.2
+   "ratio": 11325.0
   },
   {
    "group": "subdivide_loop",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 1150.9
+   "ratio": 3579.7
   },
   {
    "group": "subdivide_loop",
    "mesh_name": "sphere_small",
    "rest": [],
-   "library": "igl",
-   "ratio": 29.7
-  },
-  {
-   "group": "subdivide_to_size",
-   "mesh_name": "sphere_med",
-   "rest": [
-    [
-     "split_fraction",
-     "0.35"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 190.7
+   "library": "open3d",
+   "ratio": 82.0
   },
   {
    "group": "subdivide_to_size",
@@ -5326,7 +5880,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 77.7
+   "ratio": 278.3
   },
   {
    "group": "subdivide_to_size",
@@ -5337,8 +5891,8 @@
      "0.35"
     ]
    ],
-   "library": "pymeshlab",
-   "ratio": 297.7
+   "library": "meshlib",
+   "ratio": 619.5
   },
   {
    "group": "subdivide_to_size",
@@ -5350,19 +5904,19 @@
     ]
    ],
    "library": "pymeshlab",
-   "ratio": 116.5
+   "ratio": 403.2
   },
   {
    "group": "subdivide_to_size",
-   "mesh_name": "sphere_small",
+   "mesh_name": "sphere_med",
    "rest": [
     [
      "split_fraction",
      "0.35"
     ]
    ],
-   "library": "meshlib",
-   "ratio": 14.3
+   "library": "pymeshlab",
+   "ratio": 894.9
   },
   {
    "group": "subdivide_to_size",
@@ -5374,7 +5928,31 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 6.0
+   "ratio": 23.5
+  },
+  {
+   "group": "subdivide_to_size",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "split_fraction",
+     "0.35"
+    ]
+   ],
+   "library": "meshlib",
+   "ratio": 60.0
+  },
+  {
+   "group": "subdivide_to_size",
+   "mesh_name": "sphere_small",
+   "rest": [
+    [
+     "split_fraction",
+     "0.7"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 25.0
   },
   {
    "group": "subdivide_to_size",
@@ -5386,122 +5964,194 @@
     ]
    ],
    "library": "pymeshlab",
+   "ratio": 62.1
+  },
+  {
+   "group": "submesh_from_face_indices",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "pyvista",
+   "ratio": 76.9
+  },
+  {
+   "group": "submesh_from_face_indices",
+   "mesh_name": "sphere_med",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 111.4
+  },
+  {
+   "group": "surface_centroid",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 1353.4
+  },
+  {
+   "group": "surface_centroid",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 156.8
+  },
+  {
+   "group": "surface_centroid",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "pymeshlab",
+   "ratio": 240.0
+  },
+  {
+   "group": "surface_centroid",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 30.0
+  },
+  {
+   "group": "surface_centroid",
+   "mesh_name": "dragon",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 2212.2
+  },
+  {
+   "group": "thickness_at_vertices",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 203.8
+  },
+  {
+   "group": "thickness_at_vertices",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 42.0
+  },
+  {
+   "group": "to_boxes",
+   "mesh_name": "bunny",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 28.8
+  },
+  {
+   "group": "to_boxes",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 29.6
+  },
+  {
+   "group": "torus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "32"
+    ]
+   ],
+   "library": "meshlib",
+   "ratio": 14.2
+  },
+  {
+   "group": "torus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "512"
+    ]
+   ],
+   "library": "meshlib",
+   "ratio": 156.0
+  },
+  {
+   "group": "torus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "4096"
+    ]
+   ],
+   "library": "meshlib",
+   "ratio": 481.9
+  },
+  {
+   "group": "torus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "32"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 8.0
+  },
+  {
+   "group": "torus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "512"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 137.2
+  },
+  {
+   "group": "torus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "4096"
+    ]
+   ],
+   "library": "pymeshlab",
+   "ratio": 965.7
+  },
+  {
+   "group": "torus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "32"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 34.0
+  },
+  {
+   "group": "torus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "512"
+    ]
+   ],
+   "library": "pytorch3d-cuda",
+   "ratio": 479.5
+  },
+  {
+   "group": "torus",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "32"
+    ]
+   ],
+   "library": "trimesh",
    "ratio": 15.8
   },
   {
-   "group": "subdivide_to_size",
-   "mesh_name": "sphere_small",
-   "rest": [
-    [
-     "split_fraction",
-     "0.7"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 6.2
-  },
-  {
-   "group": "submesh_from_face_indices",
-   "mesh_name": "sphere_med",
-   "rest": [],
-   "library": "pyvista",
-   "ratio": 5.6
-  },
-  {
-   "group": "submesh_from_face_indices",
-   "mesh_name": "sphere_med",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 9.4
-  },
-  {
-   "group": "surface_centroid",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 621.4
-  },
-  {
-   "group": "surface_centroid",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 76.6
-  },
-  {
-   "group": "surface_centroid",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "pymeshlab",
-   "ratio": 121.9
-  },
-  {
-   "group": "surface_centroid",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 15.5
-  },
-  {
-   "group": "surface_centroid",
-   "mesh_name": "dragon",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 964.0
-  },
-  {
-   "group": "thickness_at_vertices",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 114.2
-  },
-  {
-   "group": "thickness_at_vertices",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 19.5
-  },
-  {
-   "group": "to_boxes",
-   "mesh_name": "bunny",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 26.6
-  },
-  {
-   "group": "to_boxes",
-   "mesh_name": "bunny_decimated",
-   "rest": [],
-   "library": "trimesh",
-   "ratio": 24.9
-  },
-  {
-   "group": "torus",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "32"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 2.0
-  },
-  {
-   "group": "torus",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "4096"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 79.5
-  },
-  {
    "group": "torus",
    "mesh_name": null,
    "rest": [
@@ -5510,68 +6160,8 @@
      "512"
     ]
    ],
-   "library": "meshlib",
-   "ratio": 20.2
-  },
-  {
-   "group": "torus",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "4096"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 168.5
-  },
-  {
-   "group": "torus",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "512"
-    ]
-   ],
-   "library": "pymeshlab",
-   "ratio": 18.4
-  },
-  {
-   "group": "torus",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "32"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 5.5
-  },
-  {
-   "group": "torus",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "512"
-    ]
-   ],
-   "library": "pytorch3d-cuda",
-   "ratio": 69.6
-  },
-  {
-   "group": "torus",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "32"
-    ]
-   ],
    "library": "trimesh",
-   "ratio": 2.5
+   "ratio": 190.8
   },
   {
    "group": "torus",
@@ -5583,68 +6173,63 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 226.9
-  },
-  {
-   "group": "torus",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "512"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 27.3
+   "ratio": 1271.2
   },
   {
    "group": "transfer_onto_vertices",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 126.0
+   "ratio": 186.7
   },
   {
    "group": "transfer_onto_vertices",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 28.7
+   "ratio": 47.0
   },
   {
    "group": "transform_points",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pyvista",
-   "ratio": 20.0
+   "ratio": 26.2
   },
   {
    "group": "transform_points",
    "mesh_name": "bunny",
    "rest": [],
    "library": "trimesh",
-   "ratio": 6.7
+   "ratio": 22.2
   },
   {
    "group": "transform_points",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 14.7
+   "ratio": 13.1
+  },
+  {
+   "group": "transform_points",
+   "mesh_name": "bunny_decimated",
+   "rest": [],
+   "library": "trimesh",
+   "ratio": 2.7
   },
   {
    "group": "transform_points",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pyvista",
-   "ratio": 136.0
+   "ratio": 147.5
   },
   {
    "group": "transform_points",
    "mesh_name": "dragon",
    "rest": [],
    "library": "trimesh",
-   "ratio": 126.2
+   "ratio": 289.1
   },
   {
    "group": "unique_faces",
@@ -5656,7 +6241,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 24.7
+   "ratio": 54.8
   },
   {
    "group": "unique_faces",
@@ -5668,7 +6253,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 34.5
+   "ratio": 79.4
   },
   {
    "group": "unique_faces",
@@ -5680,7 +6265,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 8.5
+   "ratio": 23.1
   },
   {
    "group": "unique_faces",
@@ -5692,7 +6277,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 11.0
+   "ratio": 29.2
   },
   {
    "group": "uv_sphere",
@@ -5704,19 +6289,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 3.1
-  },
-  {
-   "group": "uv_sphere",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "4096"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 489.6
+   "ratio": 21.1
   },
   {
    "group": "uv_sphere",
@@ -5728,7 +6301,19 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 70.6
+   "ratio": 573.0
+  },
+  {
+   "group": "uv_sphere",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "4096"
+    ]
+   ],
+   "library": "meshlib",
+   "ratio": 873.2
   },
   {
    "group": "uv_sphere",
@@ -5740,19 +6325,7 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 3.3
-  },
-  {
-   "group": "uv_sphere",
-   "mesh_name": null,
-   "rest": [
-    [
-     "sections",
-     "4096"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 4467.9
+   "ratio": 20.7
   },
   {
    "group": "uv_sphere",
@@ -5764,98 +6337,117 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 392.1
+   "ratio": 3227.0
+  },
+  {
+   "group": "uv_sphere",
+   "mesh_name": null,
+   "rest": [
+    [
+     "sections",
+     "4096"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 7935.9
   },
   {
    "group": "vertex_defects",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "igl",
-   "ratio": 40.4
+   "ratio": 47.7
   },
   {
    "group": "vertex_defects",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "pyvista",
-   "ratio": 35.6
+   "ratio": 44.6
   },
   {
    "group": "vertex_defects",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "trimesh",
-   "ratio": 104.6
+   "ratio": 124.1
   },
   {
    "group": "vertex_defects",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "igl",
-   "ratio": 68.0
+   "ratio": 131.4
   },
   {
    "group": "vertex_defects",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pyvista",
-   "ratio": 66.4
+   "ratio": 129.6
   },
   {
    "group": "vertex_defects",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "trimesh",
-   "ratio": 184.3
+   "ratio": 345.5
   },
   {
    "group": "vertex_normals",
    "mesh_name": "fan_hub",
    "rest": [],
-   "library": "open3d",
+   "library": "meshlib",
    "ratio": 2.3
   },
   {
    "group": "vertex_normals",
    "mesh_name": "fan_hub",
    "rest": [],
+   "library": "open3d",
+   "ratio": 2.5
+  },
+  {
+   "group": "vertex_normals",
+   "mesh_name": "fan_hub",
+   "rest": [],
    "library": "pymeshlab",
-   "ratio": 3.6
+   "ratio": 3.8
   },
   {
    "group": "vertex_normals",
    "mesh_name": "fan_hub",
    "rest": [],
    "library": "trimesh",
-   "ratio": 61.1
+   "ratio": 81.0
   },
   {
    "group": "vertex_normals",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "open3d",
-   "ratio": 4.9
+   "ratio": 17.1
   },
   {
    "group": "vertex_normals",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pymeshlab",
-   "ratio": 7.7
+   "ratio": 25.8
   },
   {
    "group": "vertex_normals",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "pytorch3d-cuda",
-   "ratio": 4.1
+   "ratio": 13.6
   },
   {
    "group": "vertex_normals",
    "mesh_name": "sphere_med",
    "rest": [],
    "library": "trimesh",
-   "ratio": 135.3
+   "ratio": 465.6
   },
   {
    "group": "voxel_down_sample",
@@ -5867,7 +6459,19 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 26.5
+   "ratio": 24.7
+  },
+  {
+   "group": "voxel_down_sample",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 4.5
   },
   {
    "group": "voxel_down_sample",
@@ -5879,7 +6483,31 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 22.6
+   "ratio": 23.3
+  },
+  {
+   "group": "voxel_down_sample",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 2.2
+  },
+  {
+   "group": "voxelize_mesh",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ],
+   "library": "meshlib",
+   "ratio": 71.0
   },
   {
    "group": "voxelize_mesh",
@@ -5891,19 +6519,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 177.8
-  },
-  {
-   "group": "voxelize_mesh",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "divisor",
-     "64"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 45.9
+   "ratio": 240.7
   },
   {
    "group": "voxelize_mesh",
@@ -5914,8 +6530,8 @@
      "256"
     ]
    ],
-   "library": "pyvista",
-   "ratio": 813.3
+   "library": "open3d",
+   "ratio": 130.4
   },
   {
    "group": "voxelize_mesh",
@@ -5927,19 +6543,7 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 577.3
-  },
-  {
-   "group": "voxelize_mesh",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "divisor",
-     "256"
-    ]
-   ],
-   "library": "meshlib",
-   "ratio": 102.5
+   "ratio": 77.9
   },
   {
    "group": "voxelize_mesh",
@@ -5951,7 +6555,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 32.1
+   "ratio": 47.5
   },
   {
    "group": "voxelize_mesh",
@@ -5962,8 +6566,20 @@
      "256"
     ]
    ],
-   "library": "pyvista",
-   "ratio": 204.0
+   "library": "meshlib",
+   "ratio": 139.9
+  },
+  {
+   "group": "voxelize_mesh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "divisor",
+     "256"
+    ]
+   ],
+   "library": "open3d",
+   "ratio": 81.0
   },
   {
    "group": "voxelize_mesh",
@@ -5975,7 +6591,19 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 160.0
+   "ratio": 25.1
+  },
+  {
+   "group": "voxelize_mesh",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "divisor",
+     "64"
+    ]
+   ],
+   "library": "trimesh",
+   "ratio": 165.0
   },
   {
    "group": "voxelize_mesh",
@@ -5987,47 +6615,35 @@
     ]
    ],
    "library": "trimesh",
-   "ratio": 2157.8
-  },
-  {
-   "group": "voxelize_mesh",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "divisor",
-     "64"
-    ]
-   ],
-   "library": "trimesh",
-   "ratio": 108.5
+   "ratio": 2947.7
   },
   {
    "group": "weighted_sum",
    "mesh_name": "bunny",
    "rest": [],
    "library": "pyvista",
-   "ratio": 54.9
+   "ratio": 102.1
   },
   {
    "group": "weighted_sum",
    "mesh_name": "bunny_decimated",
    "rest": [],
    "library": "pyvista",
-   "ratio": 14.6
+   "ratio": 21.1
   },
   {
    "group": "weighted_sum",
    "mesh_name": "dragon",
    "rest": [],
    "library": "numpy",
-   "ratio": 6.0
+   "ratio": 9.0
   },
   {
    "group": "weighted_sum",
    "mesh_name": "dragon",
    "rest": [],
    "library": "pyvista",
-   "ratio": 597.1
+   "ratio": 960.9
   },
   {
    "group": "winding_number",
@@ -6039,7 +6655,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 15.3
+   "ratio": 436.7
   },
   {
    "group": "winding_number",
@@ -6051,19 +6667,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 4.2
-  },
-  {
-   "group": "winding_number",
-   "mesh_name": "bunny",
-   "rest": [
-    [
-     "n_queries",
-     "100000"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 16.7
+   "ratio": 390.5
   },
   {
    "group": "winding_number",
@@ -6075,7 +6679,19 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 17.6
+   "ratio": 511.7
+  },
+  {
+   "group": "winding_number",
+   "mesh_name": "bunny",
+   "rest": [
+    [
+     "n_queries",
+     "100000"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 1503.4
   },
   {
    "group": "winding_number",
@@ -6087,7 +6703,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 48.2
+   "ratio": 92.3
   },
   {
    "group": "winding_number",
@@ -6099,19 +6715,7 @@
     ]
    ],
    "library": "meshlib",
-   "ratio": 47.1
-  },
-  {
-   "group": "winding_number",
-   "mesh_name": "bunny_decimated",
-   "rest": [
-    [
-     "n_queries",
-     "100000"
-    ]
-   ],
-   "library": "pyvista",
-   "ratio": 129.1
+   "ratio": 413.8
   },
   {
    "group": "winding_number",
@@ -6123,7 +6727,19 @@
     ]
    ],
    "library": "pyvista",
-   "ratio": 120.7
+   "ratio": 231.5
+  },
+  {
+   "group": "winding_number",
+   "mesh_name": "bunny_decimated",
+   "rest": [
+    [
+     "n_queries",
+     "100000"
+    ]
+   ],
+   "library": "pyvista",
+   "ratio": 1069.2
   },
   {
    "group": "winding_number",
@@ -6135,7 +6751,7 @@
     ]
    ],
    "library": "igl",
-   "ratio": 47.5
+   "ratio": 2404.1
   }
  ]
 }

@@ -180,7 +180,9 @@ def test_half_space_mask_defaults_to_the_origin(device: str) -> None:
     assert empty_wp.dtype == wp.bool
 
 
+@pytest.mark.parity("centroid", "numpy")
 def test_centroid(device: str) -> None:
+    """Class A against ``numpy.mean(axis=0)`` of the same cloud."""
     points_np = _random_points(128, seed=14)
     points_wp = points_to_warp(points_np, device)
     centroid_wp = od.centroid(points_wp)
@@ -579,7 +581,9 @@ def test_plane_basis_is_right_handed_and_orthonormal(normal: tuple[float, float,
     assert np.allclose(np.cross(u_np, v_np), unit_np, rtol=1e-6, atol=1e-6)
 
 
+@pytest.mark.parity("covariance", "numpy")
 def test_covariance(device: str) -> None:
+    """Class A against ``numpy.cov(ddof=1)`` of the same cloud."""
     points_np = _random_points(200, seed=13)
     points_wp = points_to_warp(points_np, device)
     cov_np = np.cov(points_np.T, ddof=1)
@@ -1112,11 +1116,10 @@ def test_radius_outlier_mask_matches_open3d(device: str) -> None:
     "point_finite_mask",
     "open3d",
     benchmarked=False,
-    reason="one wp.map over a three-component isfinite predicate, so a group would measure the "
-    "launch floor and nothing else -- ~11 us of host time whatever the cloud, which is the same "
-    "number every other trivial map in the package would report. open3d's remove_non_finite_points "
-    "additionally copies the surviving cloud out, so its side would be timing the copy. The "
-    "comparison is what open3d can still say about the answer, and it is exact.",
+    reason="open3d's remove_non_finite_points returns the surviving cloud rather than a mask, so "
+    "its side of the point_finite_mask group would be timing the copy out of the cloud, not the "
+    "predicate; the group times ordito alone. The comparison is what open3d can still say about "
+    "the answer, and it is exact.",
 )
 def test_point_finite_mask_matches_open3d(device: str) -> None:
     """

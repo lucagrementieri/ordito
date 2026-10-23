@@ -1,5 +1,5 @@
 """
-Benchmarks for ``ordito.ray``: the three ray-cast entry points over the mesh BVH.
+Benchmarks for ``ordito.ray``: the ray-cast entry points over the mesh BVH.
 
 Axis: **depth**, the registry's name for the number of times a ray pierces the surface
 (``sphere_med`` at 2 against ``shells_8``'s 8 concentric shells at 16). It is the axis that
@@ -60,7 +60,8 @@ in open3d demand ``Int32``/``Int64``; two conventions inside one API.
 **trimesh** has all three functions (``ray.intersects_first`` / ``intersects_any`` /
 ``intersects_id``) and is deliberately absent: its pure-Python engine takes minutes on these
 meshes, and ``tests/test_ray.py`` already holds it as the correctness oracle, which is the useful
-half.
+half. ``longest_ray`` is the exception: ``trimesh.proximity.longest_ray`` is the oracle that test
+compares it with, so its group times it.
 """
 
 from __future__ import annotations
@@ -70,6 +71,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+import pyvista as pv
+import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
@@ -341,3 +344,79 @@ def test_intersects_location(bench_case: BenchCase) -> None:
     )
     assert locations.shape == rays.shape == faces_hit.shape
     assert rays.size <= _N_RAYS
+
+
+@pytest.mark.benchmark(group="longest_ray")
+@pytest.mark.benchaxis("depth")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_longest_ray(bench_case: BenchCase) -> None:
+    """
+    Distance to the *last* surface crossing per ray: the traversal that must visit every hit.
+
+    On the depth axis for the reason ``intersects_location`` is: ``intersects_first`` stops at the
+    nearest hit, this one cannot stop before the farthest, so the crossing count is its driver.
+
+    trimesh's ``proximity.longest_ray`` is the oracle ``tests/test_ray.py`` compares against, and it
+    runs on the embree intersector (``embreex`` is installed), so its row is the multiple-hit
+    ``intersects_location`` plus a host per-ray maximum. Three rounds: the multiple-hit loop casts
+    one batch per crossing layer.
+    """
+    if bench_case.kind == "trimesh":
+        origins_np, directions_np = _rays_np(bench_case)
+        mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        _ = mesh_tm.ray  # the embree scene is built lazily: an input, as ordito's ``wp.Mesh`` is
+        distances_tm = bench_case.run(
+            lambda: tm.proximity.longest_ray(mesh_tm, origins_np, directions_np), rounds=3
+        )
+        assert distances_tm.shape == (_N_RAYS,)
+        return
+    mesh, (origins, directions) = _mesh_wp(bench_case), _rays_wp(bench_case)
+    distances = bench_case.run(lambda: od.ray.longest_ray(mesh, origins, directions))
+    assert distances.shape == (_N_RAYS,)
+
+
+def _inside_points_np(bench_case: BenchCase) -> np.ndarray:
+    """
+    ``_N_RAYS`` query points drawn uniformly from the mesh's box, grown 40% about its centre.
+
+    Grown so the queries split between inside and outside on every mesh of the axis (the shells of
+    ``shells_8`` fill their box), the construction ``tests/test_ray.py`` uses for the same reason.
+    """
+    vertices_np = bench_case.vertices_np
+    low_np, high_np = vertices_np.min(axis=0), vertices_np.max(axis=0)
+    extent_np = 1.4 * (high_np - low_np)
+    rng = np.random.default_rng(_RAY_SEED)
+    return 0.5 * (low_np + high_np) - 0.5 * extent_np + rng.random((_N_RAYS, 3)) * extent_np
+
+
+@pytest.mark.benchmark(group="contains_points")
+@pytest.mark.benchaxis("depth")
+@pytest.mark.benchlibs("ordito", "pyvista")
+def test_contains_points(bench_case: BenchCase) -> None:
+    """
+    Inside/outside by ray parity over a few jittered directions: the crossing count is the work.
+
+    Each point casts ``n_sample`` rays and counts every crossing along them, so like
+    ``longest_ray`` it cannot stop at the first hit and belongs on the depth axis.
+
+    pyvista's ``select_interior_points`` is the same predicate (``tests/test_ray.py`` compares it
+    point for point) and casts its rays serially through a VTK cell locator, three rounds.
+    ``check_surface=False`` for the reason the ``winding_number`` group gives: the check rejects
+    meshes VTK considers open, and both axis meshes are closed, so it only adds a validation pass
+    ordito's row does not run.
+    """
+    points_np = _inside_points_np(bench_case)
+    if bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        cloud_pv = pv.PolyData(np.ascontiguousarray(points_np, dtype=np.float64))
+        selected_pv = bench_case.run(
+            lambda: cloud_pv.select_interior_points(mesh_pv, check_surface=False), rounds=3
+        )
+        assert np.asarray(selected_pv.point_data["selected_points"]).shape == (_N_RAYS,)
+        return
+    mesh = _mesh_wp(bench_case)
+    points = wp.array(
+        np.ascontiguousarray(points_np, dtype=np.float32), dtype=wp.vec3, device=bench_case.device
+    )
+    inside = bench_case.run(lambda: od.ray.contains_points(mesh, points))
+    assert inside.shape == (_N_RAYS,)

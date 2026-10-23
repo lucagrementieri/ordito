@@ -684,6 +684,7 @@ def _quad_mesh(device: str) -> tuple[wp.array[wp.int32], np.ndarray]:
 
 
 @pytest.mark.parity("uv_seam_edges", "pymeshlab")
+@pytest.mark.parity("uv_seam_vertex_mask", "pymeshlab")
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parametrize("include_boundary", [True, False])
 def test_uv_seam_vertex_mask_matches_pymeshlab(

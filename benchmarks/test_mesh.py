@@ -38,6 +38,11 @@ bundles (``vector_heat_operators``, ``heat_operators``, ``vertex_tangent_frames`
 (``halfedge_twins``, ``warp_mesh``, ``mass_matrix_entries``, ``vertex_face_adjacency``, ``bounds``)
 at the bottom. The operator bundles are where the cache pays.
 
+Every other public member has a group too, after those six: the remaining cached properties as the
+same cold/warm pair, the solver accessors (``heat_solver``, ``fixed_vertex_solver``) and
+``from_warp_mesh`` on one small mesh, since they do no device work, and the methods that query
+(``contains``, ``mesh_for_rays``) at the operating point of the function they wrap.
+
 References
 ----------
 **trimesh**'s ``Trimesh`` is the model this class mirrors, and it caches the same way, so the cold
@@ -49,8 +54,10 @@ at all: open3d recomputes on request and libigl is free functions over raw array
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import trimesh as tm
+import warp as wp
 
 import ordito as od
 from conftest import BenchCase, skip_larger_than
@@ -305,3 +312,339 @@ def test_carry_directions(bench_case: BenchCase, mode: str) -> None:
         return mesh.invert() if mode == "invert" else mesh.transform(rotation)
 
     assert bench_case.run(run) is not None
+
+
+@pytest.mark.benchmark(group="mesh_from_warp_mesh")
+@pytest.mark.benchmeshes("sphere_small")
+@pytest.mark.benchlibs("ordito")
+def test_from_warp_mesh(bench_case: BenchCase) -> None:
+    """
+    ``from_warp_mesh``: wrapping a built ``wp.Mesh``, its BVH seeded as ``warp_mesh``.
+
+    The container's host cost and nothing else, so one small mesh: read against
+    ``mesh_warp_mesh``'s cold row, it is what a caller who already holds a ``wp.Mesh`` saves.
+    ordito-only, as ``mesh_warp_mesh`` is.
+    """
+    warp_mesh = wp.Mesh(points=bench_case.vertices_wp, indices=bench_case.faces_wp)
+    mesh = bench_case.run(lambda: od.Trimesh.from_warp_mesh(warp_mesh))
+    assert mesh.n_faces == bench_case.n_faces
+
+
+@pytest.mark.benchmark(group="mesh_traced_mesh")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_traced_mesh(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``traced_mesh``: the cuBQL-built BVH on CUDA, ``warp_mesh`` itself on the CPU.
+
+    Read the cold row against ``mesh_warp_mesh``'s: the gap is the costlier build the faster tree
+    pays, which ``mesh_for_rays`` weighs against the rays it saves. ordito-only for the reason
+    ``mesh_warp_mesh`` is.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    _time_property(bench_case, "traced_mesh", warm=warm, rounds=_ROUNDS)
+
+
+@pytest.mark.benchmark(group="mesh_mesh_for_rays")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("n_rays", [1, 1 << 40], ids=["rent", "buy"])
+def test_mesh_for_rays(bench_case: BenchCase, n_rays: int) -> None:
+    """
+    ``mesh_for_rays`` on a fresh mesh: one ray builds ``warp_mesh``, a huge count ``traced_mesh``.
+
+    Both rows start from an empty cache, so they are the two builds the rent-or-buy rule chooses
+    between, reached through the method that chooses. On the CPU device both return the same mesh.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    traced = bench_case.run(lambda: _cold(bench_case).mesh_for_rays(n_rays), rounds=_ROUNDS)
+    assert traced is not None
+
+
+@pytest.mark.benchmark(group="mesh_triangles_center")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_triangles_center(bench_case: BenchCase, warm: bool) -> None:
+    """``triangles_center``: one per-face map, against ``trimesh.Trimesh.triangles_center``."""
+    skip_larger_than(bench_case, "happy_buddha")
+    if bench_case.kind == "trimesh":
+        _time_trimesh_property(bench_case, "triangles_center", warm=warm)
+        return
+    _time_property(bench_case, "triangles_center", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_centroid")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_centroid(bench_case: BenchCase, warm: bool) -> None:
+    """``centroid``: the area-weighted face-centre mean, one reduction and one readback."""
+    skip_larger_than(bench_case, "happy_buddha")
+    if bench_case.kind == "trimesh":
+        _time_trimesh_property(bench_case, "centroid", warm=warm)
+        return
+    _time_property(bench_case, "centroid", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_center_mass")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_center_mass(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``center_mass``: the volume-weighted centroid of the origin tetrahedra, against trimesh's.
+
+    Only meaningful on a closed surface (``tests/test_mesh.py`` compares on closed fixtures), but
+    the integration costs the same on an open one, so the scan sweep times it as it stands.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    if bench_case.kind == "trimesh":
+        _time_trimesh_property(bench_case, "center_mass", warm=warm)
+        return
+    _time_property(bench_case, "center_mass", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_moment_inertia")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_moment_inertia(bench_case: BenchCase, warm: bool) -> None:
+    """``moment_inertia``: the second moments of the same tetrahedra, about ``center_mass``."""
+    skip_larger_than(bench_case, "happy_buddha")
+    if bench_case.kind == "trimesh":
+        _time_trimesh_property(bench_case, "moment_inertia", warm=warm)
+        return
+    _time_property(bench_case, "moment_inertia", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_extents")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_extents(bench_case: BenchCase, warm: bool) -> None:
+    """``extents``: the box's side lengths, one vertex reduction on a cold mesh."""
+    skip_larger_than(bench_case, "happy_buddha")
+    if bench_case.kind == "trimesh":
+        _time_trimesh_property(bench_case, "extents", warm=warm)
+        return
+    _time_property(bench_case, "extents", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_edges_sorted")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_edges_sorted(bench_case: BenchCase, warm: bool) -> None:
+    """``edges_sorted``: every half-edge with its endpoints ordered, against trimesh's."""
+    skip_larger_than(bench_case, "happy_buddha")
+    if bench_case.kind == "trimesh":
+        _time_trimesh_property(bench_case, "edges_sorted", warm=warm)
+        return
+    _time_property(bench_case, "edges_sorted", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_faces_unique_edges")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_faces_unique_edges(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``faces_unique_edges``: each face's three unique-edge indices, a view of the sort's inverse.
+
+    So the cold row is the ``edges_unique`` sort, and trimesh's is its own unique-row grouping.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    if bench_case.kind == "trimesh":
+        _time_trimesh_property(bench_case, "faces_unique_edges", warm=warm)
+        return
+    _time_property(bench_case, "faces_unique_edges", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_halfedge_mates")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_halfedge_mates(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``halfedge_mates``: each half-edge's partner, the pairing ``halfedge_twins`` validates.
+
+    ordito-only: trimesh has no half-edge table, and ``tests/test_mesh.py`` pins the property to
+    its free function.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    _time_property(bench_case, "halfedge_mates", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_oriented_boundary_edges")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.censusmesh("saddle_small")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_oriented_boundary_edges(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``oriented_boundary_edges``: the open edges, wound with their face.
+
+    ordito-only: ``tests/test_mesh.py`` pins it to its free function, whose own group in
+    ``benchmarks/test_boundary.py`` carries the reference.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    _time_property(bench_case, "oriented_boundary_edges", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_boundary_vertex_indices")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.censusmesh("saddle_small")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_boundary_vertex_indices(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``boundary_vertex_indices``: the vertices on an open edge, ascending.
+
+    ordito-only, for the reason ``mesh_oriented_boundary_edges`` is.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    _time_property(bench_case, "boundary_vertex_indices", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_is_winding_consistent")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_is_winding_consistent(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``is_winding_consistent``: every shared edge traversed once each way, against trimesh's.
+
+    A cached ``bool``, so the warm row's ``is not None`` check passes on ``False`` too.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    if bench_case.kind == "trimesh":
+        _time_trimesh_property(bench_case, "is_winding_consistent", warm=warm)
+        return
+    _time_property(bench_case, "is_winding_consistent", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_is_orientable")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_is_orientable(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``is_orientable``: whether some winding of every component is consistent.
+
+    ordito-only: trimesh has no orientability predicate (its ``is_winding_consistent`` answers the
+    stronger question ``mesh_is_winding_consistent`` times).
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    _time_property(bench_case, "is_orientable", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_is_self_intersecting")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_is_self_intersecting(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``is_self_intersecting``: the self-intersection half of ``is_watertight``, over a fresh BVH.
+
+    Read against ``mesh_is_watertight``: the gap is its edge-manifold clause. ordito-only: the
+    property delegates to ``validation.is_self_intersecting``, whose group carries the references.
+    """
+    skip_larger_than(bench_case, "dragon", "the self-intersection pass dominates beyond dragon")
+    _time_property(bench_case, "is_self_intersecting", warm=warm, rounds=_ROUNDS)
+
+
+@pytest.mark.benchmark(group="mesh_mesh_operator_pattern")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_mesh_operator_pattern(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``mesh_operator_pattern``: the key-sorted CSR pattern every mesh operator here shares.
+
+    The structural sort ``cotmatrix``, ``laplacian_operator`` and the heat bundles reuse, so its
+    cold row is the part of each of those a held ``Trimesh`` pays once. ordito-only: a sparsity
+    pattern is this package's assembly scheme, with nothing to agree with.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    _time_property(bench_case, "mesh_operator_pattern", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_laplacian_operator")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_laplacian_operator(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``laplacian_operator``: the uniform graph Laplacian, assembled on ``mesh_operator_pattern``.
+
+    ordito-only here: ``tests/test_mesh.py`` pins it to ``laplacian.laplacian``, whose own group in
+    ``benchmarks/test_laplacian.py`` carries the reference.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    _time_property(bench_case, "laplacian_operator", warm=warm)
+
+
+@pytest.mark.benchmark(group="mesh_heat_solver")
+@pytest.mark.benchmeshes("sphere_small")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_heat_solver(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``heat_solver()``: the kept ``HeatSolver``, built on first call and looked up after.
+
+    The solver assembles and factors nothing until its first solve (``benchmarks/test_heat.py``
+    times those), so both rows are the accessor's host cost and one small mesh says it all.
+    """
+    if warm:
+        mesh = _cold(bench_case)
+        mesh.heat_solver()
+        assert bench_case.run(mesh.heat_solver) is not None
+    else:
+        assert bench_case.run(lambda: _cold(bench_case).heat_solver()) is not None
+
+
+@pytest.mark.benchmark(group="mesh_fixed_vertex_solver")
+@pytest.mark.benchmeshes("sphere_small")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+def test_fixed_vertex_solver(bench_case: BenchCase, warm: bool) -> None:
+    """
+    ``fixed_vertex_solver()``: the kept ``FixedVertexSolver``, built on first call.
+
+    Like ``mesh_heat_solver``, the solver does no work until it factors or solves
+    (``benchmarks/test_parametrization.py``), so both rows are the accessor's host cost.
+    """
+    if warm:
+        mesh = _cold(bench_case)
+        mesh.fixed_vertex_solver()
+        assert bench_case.run(mesh.fixed_vertex_solver) is not None
+    else:
+        assert bench_case.run(lambda: _cold(bench_case).fixed_vertex_solver()) is not None
+
+
+# Query count for ``contains``, matching ``benchmarks/test_ray.py``'s ``contains_points``.
+_N_CONTAINS = 10_000
+
+
+def _contains_points_np(bench_case: BenchCase) -> np.ndarray:
+    """Uniform queries over the bounding box grown 40% about its centre, so both answers occur."""
+    vertices_np = bench_case.vertices_np
+    low_np, high_np = vertices_np.min(axis=0), vertices_np.max(axis=0)
+    extent_np = 1.4 * (high_np - low_np)
+    rng = np.random.default_rng(17)
+    return 0.5 * (low_np + high_np) - 0.5 * extent_np + rng.random((_N_CONTAINS, 3)) * extent_np
+
+
+@pytest.mark.benchmark(group="mesh_contains")
+@pytest.mark.benchaxis("depth")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_contains(bench_case: BenchCase) -> None:
+    """
+    ``contains``: ray parity through the cached ``warp_mesh``, ``contains_points`` as a method.
+
+    On the depth axis for the reason ``contains_points`` is: every crossing along each ray is
+    counted. The mesh's BVH is forced outside the timed callable, which is the point of the method
+    over the free function, so the row reads against ``contains_points`` at equal BVH state.
+
+    ``trimesh.Trimesh.contains`` is the oracle in ``tests/test_mesh.py``; it casts through the
+    embree intersector, whose scene is built outside the timed callable on the same rule. Three
+    rounds.
+    """
+    points_np = _contains_points_np(bench_case)
+    if bench_case.kind == "trimesh":
+        mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        _ = mesh_tm.ray  # the embree scene is built lazily
+        inside_tm = bench_case.run(lambda: mesh_tm.contains(points_np), rounds=3)
+        assert inside_tm.shape == (_N_CONTAINS,)
+        return
+    mesh = _warm(bench_case, "warp_mesh")
+    points = wp.array(
+        np.ascontiguousarray(points_np, dtype=np.float32), dtype=wp.vec3, device=bench_case.device
+    )
+    inside = bench_case.run(lambda: mesh.contains(points))
+    assert inside.shape == (_N_CONTAINS,)

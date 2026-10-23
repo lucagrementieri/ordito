@@ -23,6 +23,7 @@ from tests.conversions import points_to_warp, warp_empty
 DType = TypeVar("DType")
 
 
+@pytest.mark.parity("arange", "numpy")
 @pytest.mark.parametrize(
     "args",
     [(8,), (0,), (3, 11), (0, 18, 3), (2, 20, 6), (11, 3, -2), (5, 5), (5, 2), (-4, 4), (-4, 4, 3)],
@@ -538,13 +539,18 @@ def test_split_row_size_counts_rows(device: str) -> None:
         )
 
 
+@pytest.mark.parity("allclose", "numpy")
 @pytest.mark.parametrize(
     ("dtype_wp", "dtype_np"),
     [(wp.float32, np.float32), (wp.float64, np.float64), (wp.vec3, np.float32)],
     ids=["float32", "float64", "vec3"],
 )
 def test_allclose_matches_numpy(device: str, dtype_wp: type, dtype_np: type) -> None:
-    """The tolerances must instantiate at the input's precision, not always at ``float32``."""
+    """
+    Class A against [`numpy.allclose`][], on a close pair and a far one.
+
+    The tolerances must instantiate at the input's precision, not always at ``float32``.
+    """
     rng = np.random.default_rng(95)
     shape = (6, 3) if dtype_wp is wp.vec3 else (18,)
     a_np = rng.standard_normal(shape).astype(dtype_np)
@@ -621,6 +627,7 @@ def test_sort_and_argsort_in_place(device: str) -> None:
             )
 
 
+@pytest.mark.parity("sort_rows", "numpy")
 @pytest.mark.parametrize("n_cols", [1, 4, 12])
 @pytest.mark.parametrize(("dtype", "dtype_np"), [(wp.float32, np.float32), (wp.int32, np.int32)])
 def test_sort_rows(device: str, n_cols: int, dtype: type, dtype_np: type) -> None:
@@ -660,6 +667,7 @@ def test_triplet_buffers(dtype: type, device: str) -> None:
         assert values_wp.dtype == dtype
 
 
+@pytest.mark.parity("csr_from_keys", "scipy")
 def test_csr_from_keys_matches_scipy(device: str) -> None:
     """
     Class B: ``scipy.sparse.coo_matrix(...).tocsr()``, values summed through ``starts``.
@@ -916,8 +924,10 @@ def test_csr_transpose_empty(device: str) -> None:
     assert np.array_equal(transposed_wp.offsets.numpy(), np.zeros(6))
 
 
+@pytest.mark.parity("index_sparse", "trimesh")
 @pytest.mark.parametrize("data", [None, np.arange(1, 13, dtype=np.int32)])
 def test_index_sparse(data: npt.NDArray[np.int32] | None, device: str):
+    """Class A against ``trimesh.geometry.index_sparse``: the offsets and values as returned."""
     n_rows = 4
     indices = np.array([[0, 1, 2], [0, 3, 1], [1, 2, 3], [0, 2, 3]])
 
@@ -969,6 +979,7 @@ def test_index_sparse_uses_the_input_device(device: str) -> None:
     assert str(matrix.values.device) == str(indices_wp.device)
 
 
+@pytest.mark.parity("isin", "numpy")
 @pytest.mark.parametrize("shape", [(12, 3), (4, 3, 2)], ids=["2d", "rank3"])
 def test_isin_matches_numpy_at_every_rank(device: str, shape: tuple[int, ...]) -> None:
     """
@@ -1133,6 +1144,8 @@ def test_flatnonzero_indices_to_mask_round_trip(device: str) -> None:
     )
 
 
+@pytest.mark.parity("flatnonzero_in_place", "numpy")
+@pytest.mark.parity("compress_in_place", "numpy")
 @pytest.mark.parametrize("density", [0.0, 0.4, 1.0], ids=["none", "some", "all"])
 def test_flatnonzero_and_compress_in_place(device: str, density: float) -> None:
     """
@@ -1158,6 +1171,7 @@ def test_flatnonzero_and_compress_in_place(device: str, density: float) -> None:
     assert np.array_equal(flags_wp.numpy(), np.cumsum(flags_np))
 
 
+@pytest.mark.parity("mask_to_compact_ranks", "numpy")
 @pytest.mark.parametrize("invert", [False, True])
 def test_mask_to_compact_ranks_is_the_exclusive_scan_of_the_mask(device: str, invert: bool) -> None:
     """
@@ -1180,6 +1194,7 @@ def test_mask_to_compact_ranks_is_the_exclusive_scan_of_the_mask(device: str, in
     assert np.array_equal(index_map_wp.numpy()[positions_np], np.arange(count, dtype=np.int32))
 
 
+@pytest.mark.parity("counts_to_offsets", "numpy")
 def test_counts_to_offsets(device: str) -> None:
     """Class A: the total-terminated exclusive prefix sum is ``numpy.cumsum`` behind a zero."""
     rng = np.random.default_rng(41)
@@ -1322,6 +1337,7 @@ bitcast_test_data = (
 )
 
 
+@pytest.mark.parity("astype", "numpy")
 def test_astype_matches_numpy(device: str) -> None:
     """
     Class A: ``astype`` equals ``numpy.ndarray.astype`` for every conversion the package uses.
@@ -1379,6 +1395,7 @@ _OFF_TABLE_CASTS = [
 ]
 
 
+@pytest.mark.parity("copyto", "numpy")
 @pytest.mark.parametrize(
     ("dtype_np", "source", "target"),
     _OFF_TABLE_CASTS,

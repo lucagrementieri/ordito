@@ -406,6 +406,26 @@ def test_remove_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
     assert kept_faces.size > 0
 
 
+@pytest.mark.benchmark(group="remove_degenerate_and_non_manifold_faces")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("extra", _NON_MANIFOLD_COUNTS, ids=["clean", "nm1024"])
+def test_remove_degenerate_and_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
+    """
+    The degenerate-face filter, then the non-manifold passes, with one compaction at the end.
+
+    At ``remove_non_manifold_faces``' points, so the two read side by side as what the degenerate
+    stage adds and the shared compaction saves. Ordito only: the test oracle composes trimesh's
+    degenerate filter with a NumPy manifold pass, which no single reference call does.
+    """
+    vertices = bench_case.vertices_wp
+    faces = _faces_with_non_manifold_wp(bench_case, extra)
+    _kept_vertices, kept_faces = bench_case.run(
+        lambda: od.repair.remove_degenerate_and_non_manifold_faces(vertices, faces)
+    )
+    assert kept_faces.size > 0
+
+
 @pytest.mark.benchmark(group="split_non_manifold_vertices")
 @pytest.mark.benchmeshes("sphere_med")
 @pytest.mark.benchlibs("ordito", "igl", "meshlib")
@@ -643,6 +663,22 @@ def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> No
         assert 0 < len(welded.vertices) <= soup_np.shape[0]
 
 
+@pytest.mark.benchmark(group="duplicate_vertex_inverse")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("epsilon", _MERGE_EPSILONS, ids=["exact", "eps1e-6"])
+def test_duplicate_vertex_inverse(bench_case: BenchCase, epsilon: float) -> None:
+    """
+    The weld map of the same soup ``remove_duplicated_vertices`` welds: its hash-and-dedup half.
+
+    At that group's points, so the gap between the two rows is the vertex gather and face remap.
+    Ordito only: the test oracle is the documented quantization in NumPy.
+    """
+    vertices, _faces = _soup(bench_case)
+    inverse = bench_case.run(lambda: od.repair.duplicate_vertex_inverse(vertices, epsilon))
+    assert inverse.shape == (vertices.size,)
+
+
 @pytest.mark.benchmark(group="reverse_winding")
 @pytest.mark.benchlibs("ordito", "trimesh")
 def test_reverse_winding(bench_case: BenchCase) -> None:
@@ -783,6 +819,32 @@ def test_make_volume(bench_case: BenchCase) -> None:
             return mesh_tm
 
         assert len(bench_case.run(fix_inversion_tm).faces) == bench_case.n_faces
+
+
+@pytest.mark.benchmark(group="make_normals_outward")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_make_normals_outward(bench_case: BenchCase) -> None:
+    """
+    Consistent winding, then outward orientation: ``make_winding_consistent`` plus ``make_volume``.
+
+    At ``make_volume``'s points. ``trimesh.repair.fix_normals`` is the same composition
+    (``tests/test_repair.py::test_make_normals_outward`` compares the face normals); it mutates and
+    caches, so the ``tm.Trimesh`` is rebuilt inside the timed callable, and is capped at ``bunny``.
+    """
+    if bench_case.kind == "trimesh":
+        skip_larger_than(bench_case, "bunny", "the reference's winding flood fill runs on one core")
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+
+        def fix_normals_tm() -> tm.Trimesh:
+            mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+            tm.repair.fix_normals(mesh_tm)
+            return mesh_tm
+
+        assert len(bench_case.run(fix_normals_tm).faces) == bench_case.n_faces
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    oriented = bench_case.run(lambda: od.repair.make_normals_outward(vertices, faces))
+    assert int(oriented.shape[0]) == faces.size
 
 
 @pytest.mark.benchmark(group="flip_t_vertices")

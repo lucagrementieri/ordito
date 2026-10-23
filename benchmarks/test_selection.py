@@ -47,7 +47,7 @@ before/after self-comparison.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import pymeshlab as ml
@@ -292,6 +292,147 @@ def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
         mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
         parts = bench_case.run(lambda: mesh_tm.submesh([indices_np], append=False))
         assert len(parts[0].faces) == indices_np.shape[0]
+
+
+# Contiguous face groups for ``submeshes_from_face_groups``: one launch sequence whatever the count.
+_FACE_GROUPS = 64
+
+
+@pytest.mark.benchmark(group="submeshes_from_face_groups")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+def test_submeshes_from_face_groups(bench_case: BenchCase) -> None:
+    """
+    Every face of the mesh, in 64 contiguous groups, extracted as packed compact submeshes.
+
+    The batched form of ``submesh_from_face_indices`` above, on the same mesh with twice its faces,
+    so the two rows read side by side. Ordito only: the test pins each group against the single
+    call.
+    """
+    n_faces = bench_case.n_faces
+    bounds_np = np.linspace(0, n_faces, _FACE_GROUPS + 1).astype(np.int32)
+    group_faces = wp.array(np.arange(n_faces, dtype=np.int32), device=bench_case.device)
+    group_offsets = wp.array(bounds_np, dtype=wp.int32, device=bench_case.device)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _vertices_all, vertex_offsets, faces_all = bench_case.run(
+        lambda: od.selection.submeshes_from_face_groups(vertices, faces, group_faces, group_offsets)
+    )
+    assert vertex_offsets.shape == (_FACE_GROUPS + 1,)
+    assert faces_all.size == faces.size
+
+
+@pytest.mark.benchmark(group="submesh_from_face_mask")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito", "trimesh")
+def test_submesh_from_face_mask(bench_case: BenchCase) -> None:
+    """
+    The ``submesh_from_face_indices`` selection given as a face mask instead.
+
+    Same half of the faces, so the two rows read side by side as what the mask compaction adds.
+    trimesh has no mask entry point, so its row converts the mask with ``flatnonzero`` and calls
+    ``submesh`` (``tests/test_selection.py::test_submesh_from_face_mask`` compares the two).
+    """
+    _indices_wp, indices_np = _face_indices(bench_case)
+    mask_np = np.zeros(bench_case.n_faces, dtype=bool)
+    mask_np[indices_np] = True
+    if bench_case.kind == "trimesh":
+        mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        parts = bench_case.run(lambda: mesh_tm.submesh([np.flatnonzero(mask_np)], append=False))
+        assert len(parts[0].faces) == indices_np.shape[0]
+        return
+    mask = wp.array(mask_np, dtype=wp.bool, device=bench_case.device)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _sub_vertices, sub_faces = bench_case.run(
+        lambda: od.selection.submesh_from_face_mask(vertices, faces, mask)
+    )
+    assert sub_faces.size == 3 * indices_np.size
+
+
+def _region_vertex_indices_np(bench_case: BenchCase) -> np.ndarray:
+    """Return the vertices of ``_face_indices``' half of the faces, sorted and unique."""
+    _indices_wp, indices_np = _face_indices(bench_case)
+    return np.unique(bench_case.faces_np[indices_np]).astype(np.int32)
+
+
+@pytest.mark.benchmark(group="submesh_from_vertex_indices")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito", "trimesh")
+@pytest.mark.parametrize("face_mode", ["all", "any"])
+def test_submesh_from_vertex_indices(bench_case: BenchCase, face_mode: str) -> None:
+    """
+    The submesh of the faces touching the vertices of half the mesh, under both face rules.
+
+    A membership mask, a face predicate and the face-index compaction. trimesh has no
+    vertex-driven submesh, so its row picks the faces with the same NumPy predicate the test uses
+    (``tests/test_selection.py::test_submesh_from_vertex_indices``) and calls ``submesh``, both
+    inside the timed callable.
+    """
+    vertex_indices_np = _region_vertex_indices_np(bench_case)
+    if bench_case.kind == "trimesh":
+        mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        faces_np = bench_case.faces_np
+        reduce_np = np.all if face_mode == "all" else np.any
+
+        def submesh_tm() -> object:
+            hit_np = reduce_np(np.isin(faces_np, vertex_indices_np), axis=1)
+            return mesh_tm.submesh([np.flatnonzero(hit_np)], append=False)
+
+        assert len(bench_case.run(submesh_tm)[0].faces) > 0
+        return
+    vertex_indices = wp.array(vertex_indices_np, dtype=wp.int32, device=bench_case.device)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    mode = cast("Literal['all', 'any']", face_mode)
+    _sub_vertices, sub_faces = bench_case.run(
+        lambda: od.selection.submesh_from_vertex_indices(
+            vertices, faces, vertex_indices, face_mode=mode
+        )
+    )
+    assert sub_faces.size > 0
+
+
+@pytest.mark.benchmark(group="submesh_from_vertex_mask")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("face_mode", ["all", "any"])
+def test_submesh_from_vertex_mask(bench_case: BenchCase, face_mode: str) -> None:
+    """
+    The ``submesh_from_vertex_indices`` selection given as a vertex mask, at the same points.
+
+    The mask skips the membership scatter, so the two rows read side by side. Ordito only: the test
+    pins it against the index form.
+    """
+    mask_np = np.zeros(bench_case.n_vertices, dtype=bool)
+    mask_np[_region_vertex_indices_np(bench_case)] = True
+    mask = wp.array(mask_np, dtype=wp.bool, device=bench_case.device)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    mode = cast("Literal['all', 'any']", face_mode)
+    _sub_vertices, sub_faces = bench_case.run(
+        lambda: od.selection.submesh_from_vertex_mask(vertices, faces, mask, face_mode=mode)
+    )
+    assert sub_faces.size > 0
+
+
+@pytest.mark.benchmark(group="face_indices_from_vertex_indices")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("face_mode", ["all", "any"])
+def test_face_indices_from_vertex_indices(bench_case: BenchCase, face_mode: str) -> None:
+    """
+    The face indices ``submesh_from_vertex_indices`` would keep, with the vertex count passed.
+
+    The selection half of that row without the compaction, at the same points. Ordito only: the
+    test oracle is a NumPy predicate.
+    """
+    vertex_indices_np = _region_vertex_indices_np(bench_case)
+    vertex_indices = wp.array(vertex_indices_np, dtype=wp.int32, device=bench_case.device)
+    faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
+    mode = cast("Literal['all', 'any']", face_mode)
+    face_indices = bench_case.run(
+        lambda: od.selection.face_indices_from_vertex_indices(
+            faces, vertex_indices, face_mode=mode, n_vertices=n_vertices
+        )
+    )
+    assert 0 < face_indices.size <= bench_case.n_faces
 
 
 _region_cache: dict[tuple[str, str], tuple[wp.array[wp.bool], np.ndarray]] = {}

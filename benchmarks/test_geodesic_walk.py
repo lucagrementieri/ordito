@@ -185,6 +185,31 @@ def test_trace_from_face(bench_case: BenchCase) -> None:
 _PATH_COUNTS = [1, 64, 4096]
 
 
+@pytest.mark.benchmark(group="descend_field")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("n_paths", _PATH_COUNTS)
+def test_descend_field(bench_case: BenchCase, n_paths: int) -> None:
+    """
+    The descents alone: ``geodesic_path``'s walks down a distance field computed outside the row.
+
+    The same targets and path counts as ``geodesic_path`` below, so the two read side by side: the
+    gap is the heat solve the walks share.
+    """
+    device = bench_case.device
+    rng = np.random.default_rng(4)
+    targets_np = rng.integers(1, bench_case.n_vertices, n_paths).astype(np.int32)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    source = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
+    distance = od.heat.heat_geodesic(vertices, faces, source)
+    values = wp.array(distance.numpy().astype(np.float64), dtype=wp.float64, device=device)
+    starts = wp.array(targets_np, dtype=wp.int32, device=device)
+    _points, offsets = bench_case.run(
+        lambda: od.geodesic_walk.descend_field(vertices, faces, values, starts), rounds=_ROUNDS
+    )
+    assert offsets.shape == (n_paths + 1,)
+
+
 @pytest.mark.benchmark(group="geodesic_path")
 @pytest.mark.benchmeshes("sphere_med")
 @pytest.mark.benchlibs("ordito", "potpourri3d", "igl")
