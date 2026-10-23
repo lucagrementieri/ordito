@@ -622,6 +622,24 @@ def test_block_diag(bench_case: BenchCase) -> None:
     assert stacked.nrow == 3 * bench_case.n_vertices
 
 
+@pytest.mark.benchmark(group="scalar_expansion")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
+@pytest.mark.benchlibs("ordito")
+def test_scalar_expansion(bench_case: BenchCase) -> None:
+    """
+    A ``wp.mat22d`` operator over the cotangent pattern expanded to its scalar CSR, per call.
+
+    The storage is kept per operator, so a timed call is the steady state a solver pays: one
+    launch rewriting the expansion. ordito-only: no library takes Warp's block storage.
+    """
+    operator = od.laplacian.cotmatrix(bench_case.vertices_wp, bench_case.faces_wp, dtype=wp.float64)
+    n = bench_case.n_vertices
+    blocks = wp.full(operator.values.size, wp.mat22d(2.0, 1.0, 1.0, 3.0), device=operator.device)
+    matrix = od.array.bsr_from_csr(n, n, operator.offsets, operator.columns, blocks)
+    scalar = bench_case.run(lambda: od.array.scalar_expansion(matrix))
+    assert scalar.nrow == 2 * n
+
+
 @pytest.mark.benchmark(group="csr_key_buffers")
 @pytest.mark.benchlibs("ordito")
 def test_csr_key_buffers(bench_lib: BenchLibrary) -> None:

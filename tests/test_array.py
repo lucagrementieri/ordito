@@ -760,6 +760,65 @@ def test_block_diag_rejects_a_rectangular_operator(device: str) -> None:
         od.array.block_diag(())
 
 
+def test_scalar_expansion_matches_scipy(device: str) -> None:
+    """
+    Class A, against ``scipy.sparse.bsr_matrix(...).toarray()`` of the same 2 x 2 blocks.
+
+    The operator is a duplicate-accumulating triplet build, so its ``nnz`` is a stale capacity.
+    A repeated call returns the same matrix, and values rewritten in place are what it then holds:
+    the storage is kept per operator and rewritten on every call.
+    """
+    rng = np.random.default_rng(31)
+    n_blocks = 7
+    rows = rng.integers(0, n_blocks, 30).astype(np.int32)
+    cols = rng.integers(0, n_blocks, 30).astype(np.int32)
+    blocks_np = rng.standard_normal((30, 2, 2))
+    assert len(set(zip(rows.tolist(), cols.tolist(), strict=True))) < rows.size
+    matrix_wp = wps.bsr_from_triplets(
+        n_blocks,
+        n_blocks,
+        wp.array(rows, dtype=wp.int32, device=device),
+        wp.array(cols, dtype=wp.int32, device=device),
+        wp.array(blocks_np, dtype=wp.mat22d, device=device),
+    )
+    assert odt.has_blocks(matrix_wp, wp.mat22d)
+    count = int(matrix_wp.offsets.numpy()[n_blocks])
+    expected_np = scipy.sparse.bsr_matrix(
+        (
+            matrix_wp.values.numpy()[:count],
+            matrix_wp.columns.numpy()[:count],
+            matrix_wp.offsets.numpy()[: n_blocks + 1],
+        ),
+        shape=(2 * n_blocks, 2 * n_blocks),
+    ).toarray()
+    assert np.ptp(expected_np) > 1e-3
+
+    scalar_wp = od.array.scalar_expansion(matrix_wp)
+
+    assert (scalar_wp.nrow, scalar_wp.ncol) == (2 * n_blocks, 2 * n_blocks)
+    assert np.allclose(bsr_to_dense(scalar_wp, 2 * n_blocks), expected_np, rtol=1e-12, atol=1e-12)
+    matrix_wp.values.assign(
+        wp.array(2.0 * matrix_wp.values.numpy(), dtype=wp.mat22d, device=device)
+    )
+    assert od.array.scalar_expansion(matrix_wp) is scalar_wp
+    assert np.allclose(
+        bsr_to_dense(scalar_wp, 2 * n_blocks), 2.0 * expected_np, rtol=1e-12, atol=1e-12
+    )
+
+
+def test_scalar_expansion_rejects_scalar_blocks(device: str) -> None:
+    """Not a library comparison: a scalar operator has no blocks to expand."""
+    scalar_wp = wps.bsr_zeros(
+        3,
+        3,
+        wp.float64,  # pyright: ignore[reportArgumentType]  # Warp types it a BlockType instance
+        device=device,
+    )
+    assert odt.has_blocks(scalar_wp, wp.float64)
+    with pytest.raises(ValueError, match="mat22d"):
+        od.array.scalar_expansion(scalar_wp)
+
+
 @pytest.mark.parity("csr_from_keys", "scipy")
 def test_csr_from_keys_matches_scipy(device: str) -> None:
     """

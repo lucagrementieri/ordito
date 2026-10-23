@@ -1465,7 +1465,7 @@ def _solve_spd_batched(
         # as ``float64``. Warp's blocked Jacobi inverts each diagonal block's diagonal
         # *coefficients*, which is scalar Jacobi on this expansion, so the preconditioner is the
         # one the caller asked for.
-        matrix = _scalar_expansion(matrix)
+        matrix = od.array.scalar_expansion(matrix)
         rhs = _as_scalar_view(rhs)
         solution = _as_scalar_view(solution)
     if _one_block_eligible(matrix, rhs.size, kind):
@@ -1493,59 +1493,6 @@ def _solve_spd_batched(
     if check_every == 0 or not isinstance(result[0], wp.array):
         return cast("tuple[int, float, float]", result)
     return solver.host_result()
-
-
-# ``_scalar_expansion``'s results, keyed weakly by the block operator they expand.
-_EXPANSION_CACHE: weakref.WeakKeyDictionary[
-    odt.SparseMatrix,
-    tuple[tuple[tuple[int, int, int], tuple[object, ...]], odt.BsrMatrix[wp.float64]],
-] = weakref.WeakKeyDictionary()
-
-
-def _scalar_expansion(matrix: odt.SparseMatrix) -> odt.BsrMatrix[wp.float64]:
-    """
-    Expand a compact ``wp.mat22d`` operator into its ``float64`` CSR, allocated once per operator.
-
-    The key carries the block arrays' identities, as ``_cached_solver``'s does, and the entry holds
-    them, so a matrix whose storage is replaced is expanded into new storage. The expansion itself
-    is rewritten on every call -- one launch -- into the storage kept for the operator, so values
-    rewritten in place are what the next solve reads, as they are for a scalar operator; the
-    expanded matrix keeps its identity, so the solver state kept for it is reused. Sized off the
-    ``values`` capacity rather than ``nnz``: the row offsets alone bound every row, so a stale
-    capacity's tail is allocated and never read.
-    """
-    identity = (id(matrix.offsets), id(matrix.columns), id(matrix.values))
-    device = matrix.device
-    n_rows = int(matrix.nrow)
-    cached = _EXPANSION_CACHE.get(matrix)
-    if cached is not None and cached[0][0] == identity:
-        expanded = cached[1]
-    else:
-        capacity = 4 * matrix.values.size
-        offsets = _launch.empty(2 * n_rows + 1, dtype=wp.int32, device=device)
-        if n_rows == 0:
-            _launch.zero_(offsets)
-        expanded = _bsr_over(
-            2 * n_rows,
-            2 * int(matrix.ncol),
-            offsets,
-            _launch.empty(capacity, dtype=wp.int32, device=device),
-            _launch.empty(capacity, dtype=wp.float64, device=device),
-            4 * int(matrix.nnz),
-        )
-        _EXPANSION_CACHE[matrix] = (
-            (identity, (matrix.offsets, matrix.columns, matrix.values)),
-            expanded,
-        )
-    if n_rows > 0:
-        _launch.launch(
-            kernel_array.expand_block_csr_2x2,
-            dim=n_rows,
-            inputs=[matrix.offsets, matrix.columns, matrix.values],
-            outputs=[expanded.offsets, expanded.columns, expanded.values],
-            device=device,
-        )
-    return expanded
 
 
 def _as_scalar_view(vectors: odt.ArrayNd) -> wp.array[wp.float64]:
@@ -2263,7 +2210,7 @@ class OperatorFactorization:
             return False
         blocks = odt.has_blocks(self._matrix, wp.mat22d)
         scalar = (
-            _scalar_expansion(self._matrix)
+            od.array.scalar_expansion(self._matrix)
             if blocks
             else cast("odt.BsrMatrix[wp.float64]", self._matrix)
         )
@@ -2480,7 +2427,7 @@ def solve_spd_settled(
         rhs_flat, solution_flat = rhs, solution
     if odt.has_blocks(matrix, wp.mat22d):
         # Solved as its scalar expansion, as ``solve_spd`` does (``_solve_spd_batched``).
-        scalar = _scalar_expansion(matrix)
+        scalar = od.array.scalar_expansion(matrix)
         rhs_flat, solution_flat = _as_scalar_view(rhs), _as_scalar_view(solution)
     else:
         scalar = cast("odt.BsrMatrix[wp.float64]", matrix)
@@ -3845,8 +3792,8 @@ def _cached_solver(
     detected**, and need not be for correctness: the mat-vec reads them live, so the solve still
     converges to the new system's answer, and only the preconditioner -- derived from the values at
     construction -- goes stale, which changes the rate and not the fixed point. (A ``wp.mat22d``
-    operator's state reads the scalar expansion ``_scalar_expansion`` rewrites on every solve, so
-    the same holds for it.) The exception is ``narrow_values``: such a state's mat-vec reads a
+    operator's state reads the expansion ``array.scalar_expansion`` rewrites on every solve, so the
+    same holds for it.) The exception is ``narrow_values``: such a state's mat-vec reads a
     ``float32`` copy taken at construction, so it solves the old values -- which
     ``solve_spd_settled``, its one user, then catches in its backward-error check against the
     operator as stored, and answers by factorization.

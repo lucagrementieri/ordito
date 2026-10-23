@@ -1508,7 +1508,8 @@ def block_diag(matrices: Sequence[odt.SparseMatrix]) -> odt.BsrMatrix[wp.float64
     if cached is not None:
         return cached[1]
     blocks = [
-        _expanded_2x2(matrix) if matrix.values.dtype == wp.mat22d else matrix for matrix in matrices
+        scalar_expansion(matrix) if matrix.values.dtype == wp.mat22d else matrix
+        for matrix in matrices
     ]
     device = blocks[0].device
     n_rows = sum(int(block.nrow) for block in blocks)
@@ -1542,32 +1543,102 @@ def block_diag(matrices: Sequence[odt.SparseMatrix]) -> odt.BsrMatrix[wp.float64
     return stacked
 
 
-def _expanded_2x2(matrix: odt.SparseMatrix) -> odt.BsrMatrix[wp.float64]:
-    """
-    Expand a compact ``wp.mat22d`` operator into its ``float64`` CSR over interleaved unknowns.
+# ``scalar_expansion``'s results, keyed weakly by the block operator they expand.
+_EXPANSION_CACHE: weakref.WeakKeyDictionary[
+    odt.SparseMatrix,
+    tuple[tuple[tuple[int, int, int], tuple[object, ...]], odt.BsrMatrix[wp.float64]],
+] = weakref.WeakKeyDictionary()
 
-    Sized off the ``values`` capacity rather than ``nnz``: the row offsets alone bound every row,
-    so a stale capacity's tail is allocated and never read.
+
+def scalar_expansion(matrix: odt.SparseMatrix) -> odt.BsrMatrix[wp.float64]:
     """
+    Return a ``wp.mat22d`` operator as the ``float64`` CSR over its interleaved unknowns.
+
+    Unknown ``i`` of the block operator becomes unknowns ``2 * i`` and ``2 * i + 1``, so a
+    ``wp.vec2d`` right-hand side or solution is the same bytes as the ``float64`` vector this
+    matrix acts on. The scalar operator is the one ``scipy.sparse.bsr_matrix(...).tocsr()``
+    builds.
+
+    The storage is allocated once per operator and its values are rewritten on every call, so
+    values changed in place are what the returned matrix holds, and repeated calls return the
+    same matrix object (a solver state kept for it is reused). An operator whose arrays are
+    replaced is expanded into new storage.
+
+    Parameters
+    ----------
+    matrix
+        ``(n, n)`` block sparse operator with ``wp.mat22d`` blocks.
+
+    Returns
+    -------
+    odt.BsrMatrix[wp.float64]
+        ``(2 * n, 2 * n)`` scalar sparse operator. It aliases storage the next call on the same
+        operator overwrites.
+
+    Raises
+    ------
+    ValueError
+        If ``matrix`` does not have ``wp.mat22d`` blocks.
+
+    See Also
+    --------
+    [`block_diag`][ordito.array.block_diag] : Stacks expanded operators with scalar ones.
+
+    Examples
+    --------
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    offsets = wp.array([0, 1], dtype=wp.int32)
+    columns = wp.array([0], dtype=wp.int32)
+    values = wp.array([wp.mat22d(2.0, 1.0, 1.0, 3.0)], dtype=wp.mat22d)
+    matrix = od.array.bsr_from_csr(1, 1, offsets, columns, values)
+    scalar = od.array.scalar_expansion(matrix)
+    print(scalar.shape)  # (2, 2)
+    print(scalar.values.numpy().tolist())  # [2.0, 1.0, 1.0, 3.0]
+    ```
+    """
+    if matrix.values.dtype != wp.mat22d:
+        raise ValueError(
+            f"scalar_expansion expands wp.mat22d operators, got blocks of {matrix.values.dtype}"
+        )
+    identity = (id(matrix.offsets), id(matrix.columns), id(matrix.values))
     device = matrix.device
     n_rows = int(matrix.nrow)
-    capacity = 4 * matrix.values.size
-    offsets = _launch.empty(2 * n_rows + 1, dtype=wp.int32, device=device)
-    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
-    values = _launch.empty(capacity, dtype=wp.float64, device=device)
-    if n_rows == 0:
-        _launch.zero_(offsets)
+    cached = _EXPANSION_CACHE.get(matrix)
+    if cached is not None and cached[0][0] == identity:
+        expanded = cached[1]
     else:
+        # Sized off the ``values`` capacity rather than ``nnz``: the row offsets alone bound every
+        # row, so a stale capacity's tail is allocated and never read.
+        capacity = 4 * matrix.values.size
+        offsets = _launch.empty(2 * n_rows + 1, dtype=wp.int32, device=device)
+        if n_rows == 0:
+            _launch.zero_(offsets)
+        expanded = bsr_from_csr(
+            2 * n_rows,
+            2 * int(matrix.ncol),
+            offsets,
+            _launch.empty(capacity, dtype=wp.int32, device=device),
+            _launch.empty(capacity, dtype=wp.float64, device=device),
+            nnz=4 * int(matrix.nnz),
+        )
+        # The entry holds the block arrays, so the identities in its key cannot be reused.
+        _EXPANSION_CACHE[matrix] = (
+            (identity, (matrix.offsets, matrix.columns, matrix.values)),
+            expanded,
+        )
+    if n_rows > 0:
         _launch.launch(
             kernel_array.expand_block_csr_2x2,
             dim=n_rows,
             inputs=[matrix.offsets, matrix.columns, matrix.values],
-            outputs=[offsets, columns, values],
+            outputs=[expanded.offsets, expanded.columns, expanded.values],
             device=device,
         )
-    return bsr_from_csr(
-        2 * n_rows, 2 * int(matrix.ncol), offsets, columns, values, nnz=4 * int(matrix.nnz)
-    )
+    return expanded
 
 
 def csr_key_buffers(
