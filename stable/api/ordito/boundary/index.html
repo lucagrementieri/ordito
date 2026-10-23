@@ -8060,16 +8060,10 @@ ordered by ascending vertex index. Empty when the mesh has no boundary.</p>
     <div class="doc doc-contents ">
 
         <p>Find ear faces (triangles with exactly two boundary edges).</p>
-<p>For each ear face, <code>ear_opp</code> is the local index of the non-boundary edge, where local edge
-<code>i</code> is <code>(faces[f, i], faces[f, (i + 1) % 3])</code>.</p>
-<div class="admonition note">
-<p class="admonition-title"><code>igl::ears</code> numbers the edge differently</p>
-<p>The same quantity in <code>igl.ears</code> is indexed <em>opposite-vertex</em> style -- edge <code>i</code> is the
-one facing vertex <code>i</code>, <code>(faces[f, (i + 1) % 3], faces[f, (i + 2) % 3])</code> -- because it
-reads its mask from <code>igl::on_boundary</code>, whose columns are documented that way. The two
-agree on <em>which</em> faces are ears and differ on the index by a cyclic shift:
-<code>ordito_opp == (igl_opp + 1) % 3</code>.</p>
-</div>
+<p>For each ear face, <code>ear_opp</code> is the local index of the corner opposite the non-boundary
+edge -- the ear's tip -- so the interior edge is
+<code>(faces[f, (ear_opp + 1) % 3], faces[f, (ear_opp + 2) % 3])</code>. This is <code>igl.ears</code>'
+numbering, edge <code>i</code> being the one facing corner <code>i</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -8166,8 +8160,8 @@ ears exist.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(n_ears,)</code> local edge index of the interior edge for each ear face, same length as
-<code>ear</code>.</p>
+                <p><code>(n_ears,)</code> local index of the corner opposite each ear face's interior edge, same length
+as <code>ear</code>.</p>
               </div>
             </td>
           </tr>
@@ -8210,7 +8204,7 @@ ears exist.</p>
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="n">count</span><span class="o">=</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
 <span class="n">ear</span><span class="p">,</span> <span class="n">ear_opp</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">boundary</span><span class="o">.</span><span class="n">ears</span><span class="p">(</span><span class="n">faces</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">ear</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [0, 1]</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">ear_opp</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [2, 0]</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">ear_opp</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [1, 2]</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [0, 2, 3, 0, 3, 1]</span>
 </code></pre></div>
 
@@ -8310,13 +8304,7 @@ ears exist.</p>
 <span class="normal">1225</span>
 <span class="normal">1226</span>
 <span class="normal">1227</span>
-<span class="normal">1228</span>
-<span class="normal">1229</span>
-<span class="normal">1230</span>
-<span class="normal">1231</span>
-<span class="normal">1232</span>
-<span class="normal">1233</span>
-<span class="normal">1234</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ears</span><span class="p">(</span>
+<span class="normal">1228</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ears</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8325,16 +8313,10 @@ ears exist.</p>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Find ear faces (triangles with exactly two boundary edges).</span>
 
-<span class="sd">    For each ear face, ``ear_opp`` is the local index of the non-boundary edge, where local edge</span>
-<span class="sd">    ``i`` is ``(faces[f, i], faces[f, (i + 1) % 3])``.</span>
-
-<span class="sd">    !!! note "``igl::ears`` numbers the edge differently"</span>
-
-<span class="sd">        The same quantity in ``igl.ears`` is indexed *opposite-vertex* style -- edge ``i`` is the</span>
-<span class="sd">        one facing vertex ``i``, ``(faces[f, (i + 1) % 3], faces[f, (i + 2) % 3])`` -- because it</span>
-<span class="sd">        reads its mask from ``igl::on_boundary``, whose columns are documented that way. The two</span>
-<span class="sd">        agree on *which* faces are ears and differ on the index by a cyclic shift:</span>
-<span class="sd">        ``ordito_opp == (igl_opp + 1) % 3``.</span>
+<span class="sd">    For each ear face, ``ear_opp`` is the local index of the corner opposite the non-boundary</span>
+<span class="sd">    edge -- the ear's tip -- so the interior edge is</span>
+<span class="sd">    ``(faces[f, (ear_opp + 1) % 3], faces[f, (ear_opp + 2) % 3])``. This is ``igl.ears``'</span>
+<span class="sd">    numbering, edge ``i`` being the one facing corner ``i``.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -8356,8 +8338,8 @@ ears exist.</p>
 <span class="sd">        ``(n_ears,)`` face indices of ear triangles on ``faces.device``, ascending. Empty when no</span>
 <span class="sd">        ears exist.</span>
 <span class="sd">    ear_opp : wp.array[wp.int32]</span>
-<span class="sd">        ``(n_ears,)`` local edge index of the interior edge for each ear face, same length as</span>
-<span class="sd">        ``ear``.</span>
+<span class="sd">        ``(n_ears,)`` local index of the corner opposite each ear face's interior edge, same length</span>
+<span class="sd">        as ``ear``.</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
@@ -8378,7 +8360,7 @@ ears exist.</p>
 <span class="sd">    vertices, faces = od.creation.grid(count=(2, 2))</span>
 <span class="sd">    ear, ear_opp = od.boundary.ears(faces)</span>
 <span class="sd">    print(ear.numpy().tolist())  # [0, 1]</span>
-<span class="sd">    print(ear_opp.numpy().tolist())  # [2, 0]</span>
+<span class="sd">    print(ear_opp.numpy().tolist())  # [1, 2]</span>
 <span class="sd">    print(faces.numpy().tolist())  # [0, 2, 3, 0, 3, 1]</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
