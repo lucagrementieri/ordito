@@ -68,7 +68,8 @@ width = t_xmax + pad - left
 height = top - bottom + 2 * pad
 
 
-def wordmark(fill: str, note: str) -> str:
+def wordmark(stops: tuple[str, str], note: str) -> str:
+    """Return the wordmark with the letters shaded left to right between two ring colours."""
     ring_tf = (
         f"translate({ring_x - left:.2f} {top + pad - o_ymax:.2f}) "
         f"scale({scale:.5f}) translate({-rx:.2f} {-ry:.2f})"
@@ -80,17 +81,25 @@ def wordmark(fill: str, note: str) -> str:
         f"  <!-- {note} The O is the ring mark (logo.svg), scaled to the extent of the\n"
         f"       font's own capital O; the letters are Outfit (SIL OFL 1.1) converted to\n"
         f"       outlines, so the wordmark renders the same with no font installed. -->\n"
+        f'  <defs><linearGradient id="letters" x1="0" y1="0" x2="1" y2="0">'
+        f'<stop offset="0" stop-color="{stops[0]}"/><stop offset="1" stop-color="{stops[1]}"/>'
+        f"</linearGradient></defs>\n"
         f'  <g transform="{ring_tf}">{ring_paths}</g>\n'
-        f'  <path fill="{fill}" transform="translate({-left:.2f} {top + pad:.2f}) scale(1 -1)" '
+        f'  <path fill="url(#letters)" '
+        f'transform="translate({-left:.2f} {top + pad:.2f}) scale(1 -1)" '
         f'd="{text_d}"/>\n'
         f"</svg>\n"
     )
 
 
 out = repo / "docs/assets"
-(out / "wordmark.svg").write_text(wordmark("#15200A", "For light backgrounds."))
+# The letters take the ring's own colours, green into yellow: on light backgrounds its deep pair,
+# the gold darkened to hold contrast on white; on dark ones its bright pair.
+LIGHT = ("#76B900", "#C99A00")
+DARK = ("#9AD626", "#FFD93B")
+(out / "wordmark.svg").write_text(wordmark(LIGHT, "For light backgrounds."))
 (out / "wordmark-dark.svg").write_text(
-    wordmark("#F2F5EC", "For dark backgrounds: only the letter fill differs.")
+    wordmark(DARK, "For dark backgrounds: only the letter shades differ.")
 )
 print(f"viewBox {width:.0f} x {height:.0f}, aspect {width / height:.2f}")
 
@@ -115,7 +124,7 @@ def social_card(card_w: int, card_h: int) -> str:
     tag_d, tag_adv = outline("GPU mesh processing in Python", 400)
     cta_d, cta_adv = outline("pip install ordito", 500)
     tag_k, cta_k = 0.034 * card_w / upm, 0.03 * card_w / upm
-    inner = re.search(r"<svg[^>]*>(.*)</svg>", wordmark("#F2F5EC", ""), re.S).group(1)
+    inner = re.search(r"<svg[^>]*>(.*)</svg>", wordmark(DARK, ""), re.S).group(1)
     inner = re.sub(r"<title>.*?</title>|<!--.*?-->", "", inner, flags=re.S)
     mark_y = (card_h - mark_h) / 2 - 0.12 * card_h
     tag_y = mark_y + mark_h + 0.11 * card_h
