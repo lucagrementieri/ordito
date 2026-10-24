@@ -1,6 +1,6 @@
 import warp as wp
 
-from ordito.kernels.array import OverloadTable, to_vec3d
+from ordito.kernels.array import OverloadTable, store_coo_key, to_vec3d
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.laplacian import cotmatrix_row, store_half_cotangents
 from ordito.kernels.predicates import (
@@ -226,8 +226,9 @@ def sandwich_row_triplets(
     inv_mass: wp.array[wp.Float],
     sign: wp.Float,
     segment_offsets: wp.array[wp.int32],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_rows: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_vals: wp.array[wp.Float],
 ) -> None:
     # ``(A diag(d) B)_ij = sum_t A_ti d_t B_tj``; with both operands symmetric ``A_ti`` is row
@@ -250,8 +251,7 @@ def sandwich_row_triplets(
         row = a_columns[a]
         left = a_values[a] * weight
         for b in range(b_offsets[t], b_offsets[t + 1]):
-            out_rows[cursor] = row
-            out_cols[cursor] = b_columns[b]
+            store_coo_key(cursor, row, b_columns[b], n_rows, n_rows, out_keys, out_order)
             out_vals[cursor] = left * (sign * b_values[b])
             cursor += 1
 
@@ -465,8 +465,9 @@ def hessian_energy_triplets(
     areas: wp.array[wp.float64],
     inv_mass: wp.array[wp.float64],
     segment_offsets: wp.array[wp.int32],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_vals: wp.array[wp.Float],
 ) -> None:
     # ``Q = H^T Minv H`` contracted analytically over the 9 component pairs of the stacked
@@ -495,8 +496,9 @@ def hessian_energy_triplets(
                 row = faces[f * 3 + ci]
                 gradient_fi = gradients[f * 3 + ci]
                 for cj in range(3):
-                    out_rows[cursor] = row
-                    out_cols[cursor] = faces[g * 3 + cj]
+                    store_coo_key(
+                        cursor, row, faces[g * 3 + cj], n_vertices, n_vertices, out_keys, out_order
+                    )
                     out_vals[cursor] = type(out_vals[0])(
                         pair * wp.dot(gradient_fi, gradients[g * 3 + cj])
                     )
@@ -720,8 +722,9 @@ def curved_hessian_triplets(
     edge_vertex_slots: wp.array2d[wp.int32],
     par: wp.array2d[wp.float64],
     perp: wp.array2d[wp.float64],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_vals: wp.array[wp.Float],
 ) -> None:
     # Per face, the sandwich ``D^T Mi (L + K) Mi D`` restricted to this face's 6x6 block of
@@ -738,8 +741,7 @@ def curved_hessian_triplets(
         # with every other degenerate face (and every absent edge-vertex slot below) on that one
         # real matrix entry and serialize the assembly's duplicate accumulation there.
         for empty in range(144):
-            out_rows[base_out + empty] = -1
-            out_cols[base_out + empty] = -1
+            store_coo_key(base_out + empty, -1, -1, n_vertices, n_vertices, out_keys, out_order)
             out_vals[base_out + empty] = type(out_vals[0])(0.0)
         return
     # l2_0/l2_1/l2_2: column e opposite corner e (the igl intrinsic convention).
@@ -805,8 +807,9 @@ def curved_hessian_triplets(
                         )
                         out_row = row
                         out_col = col
-                    out_rows[position] = out_row
-                    out_cols[position] = out_col
+                    store_coo_key(
+                        position, out_row, out_col, n_vertices, n_vertices, out_keys, out_order
+                    )
                     out_vals[position] = type(out_vals[0])(value)
 
 
@@ -1111,8 +1114,8 @@ def lscm_hessian_csr(
 def vector_area_triplets(
     boundary_edges: wp.array2d[wp.int32],
     n_vertices: wp.int32,
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_vals: wp.array[wp.float64],
 ) -> None:
     # ``igl::vector_area_matrix``: per oriented boundary edge ``(i, j)`` the four cross-quadrant
@@ -1124,17 +1127,14 @@ def vector_area_triplets(
     j = boundary_edges[b, 1]
     q = wp.float64(0.25)
     base = 4 * b
-    out_rows[base] = i + n_vertices
-    out_cols[base] = j
+    size = 2 * n_vertices
+    store_coo_key(base, i + n_vertices, j, size, size, out_keys, out_order)
     out_vals[base] = -q
-    out_rows[base + 1] = j
-    out_cols[base + 1] = i + n_vertices
+    store_coo_key(base + 1, j, i + n_vertices, size, size, out_keys, out_order)
     out_vals[base + 1] = -q
-    out_rows[base + 2] = i
-    out_cols[base + 2] = j + n_vertices
+    store_coo_key(base + 2, i, j + n_vertices, size, size, out_keys, out_order)
     out_vals[base + 2] = q
-    out_rows[base + 3] = j + n_vertices
-    out_cols[base + 3] = i
+    store_coo_key(base + 3, j + n_vertices, i, size, size, out_keys, out_order)
     out_vals[base + 3] = q
 
 
@@ -1202,7 +1202,8 @@ def _register_overloads() -> None:
                 wp.array[d],
                 d,
                 i32,
-                i32,
+                wp.int32,
+                wp.array[wp.uint64],
                 i32,
                 wp.array[d],
             ]
@@ -1220,7 +1221,8 @@ def _register_overloads() -> None:
                 wp.array[wp.float64],
                 wp.array[wp.float64],
                 i32,
-                i32,
+                wp.int32,
+                wp.array[wp.uint64],
                 i32,
                 wp.array[d],
             ]
@@ -1240,14 +1242,14 @@ def _register_overloads() -> None:
                 wp.array2d[wp.int32],
                 wp.array2d[wp.float64],
                 wp.array2d[wp.float64],
-                i32,
+                wp.int32,
+                wp.array[wp.uint64],
                 i32,
                 wp.array[d],
             ]
             for d in _MATRIX_DTYPES
         },
     )
-
     # Keyed on the half-cotangents' dtype alone: the Laplacian is always ``float64`` here.
     LSCM_LAPLACIAN_ROWS_AND_COUNTS = OverloadTable(
         lscm_laplacian_rows_and_counts,

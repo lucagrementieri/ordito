@@ -895,6 +895,24 @@ def csr_key_nonzero(
     return csr_key(row, col, n_rows, n_cols)
 
 
+@wp.func
+def store_coo_key(
+    slot: wp.int32,
+    row: wp.int32,
+    col: wp.int32,
+    n_rows: wp.int32,
+    n_cols: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # Entry ``(row, col)`` of a coordinate build at ``slot``, as ``array.csr_from_coo_keys`` reads
+    # it: its ``csr_key`` (the sentinel outside the matrix, so it is dropped) and the identity
+    # payload, in the first half of ``array.csr_key_buffers``. A producer writing these in place of
+    # ``rows`` / ``cols`` triplets saves ``coo_keys``' launch and builds the same matrix.
+    out_keys[slot] = csr_key(row, col, n_rows, n_cols)
+    out_order[slot] = slot
+
+
 @wp.kernel
 def coo_keys(
     rows: wp.array[wp.int32],
@@ -908,8 +926,7 @@ def coo_keys(
     # buffers. An index outside the matrix gets the sentinel and is dropped, as
     # ``bsr_from_triplets`` drops it.
     i = wp.int32(wp.tid())
-    out_keys[i] = csr_key(rows[i], cols[i], n_rows, n_cols)
-    out_order[i] = i
+    store_coo_key(i, rows[i], cols[i], n_rows, n_cols, out_keys, out_order)
 
 
 @wp.kernel

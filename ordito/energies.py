@@ -382,7 +382,7 @@ def k_harmonic(
 
     Each power is assembled by one triplet pass over matching CSR rows —
     ``(A M^-1 B)_ij = sum_t A_ti M_t^-1 B_tj`` with both operands symmetric — followed by a single
-    [`csr_from_triplets`][ordito.array.csr_from_triplets], so the product is built without
+    [`csr_from_coo_keys`][ordito.array.csr_from_coo_keys], so the product is built without
     ``warp.sparse.bsr_mm``.
 
     Parameters
@@ -495,7 +495,7 @@ def _diagonal_sandwich(
 
     Row ``t`` of the product is the outer product of ``A``'s and ``B``'s rows ``t`` scaled by the
     diagonal weight, so the whole product is one count kernel, one scan, one emission kernel and a
-    single ``array.csr_from_triplets``, built without ``warp.sparse.bsr_mm``. ``bsr_mm(bsr_mm(a,
+    single ``array.csr_from_coo_keys``, built without ``warp.sparse.bsr_mm``. ``bsr_mm(bsr_mm(a,
     bsr_diag(inverse_mass)), b)`` is an equivalent construction, but this path avoids materializing
     an intermediate diagonal matrix and its scratch.
     """
@@ -518,7 +518,8 @@ def _diagonal_sandwich(
     segment_offsets, n_triplets = od.array.counts_to_offsets(counts)
 
     dtype = a.values.dtype
-    rows, cols, vals = od.array.triplet_buffers(n_triplets, dtype, device)
+    keys, order = od.array.csr_key_buffers(n_triplets, device)
+    vals = _launch.empty(n_triplets, dtype=dtype, device=device)
     if n_triplets > 0:
         _launch.launch(
             kernel_energies.SANDWICH_ROW_TRIPLETS[dtype],
@@ -533,13 +534,12 @@ def _diagonal_sandwich(
                 inverse_mass,
                 dtype(sign),
                 segment_offsets,
-                rows,
-                cols,
-                vals,
+                wp.int32(n_rows),
             ],
+            outputs=[keys, order, vals],
             device=device,
         )
-    return od.array.csr_from_triplets(n_rows, n_rows, rows, cols, vals)
+    return od.array.csr_from_coo_keys(n_rows, n_rows, keys, order, vals)
 
 
 def hessian_energy(
@@ -677,7 +677,8 @@ def hessian_energy(
     # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
     segment_offsets, n_triplets = od.array.counts_to_offsets(counts)
 
-    rows, cols, vals = od.array.triplet_buffers(n_triplets, dtype, device)
+    keys, order = od.array.csr_key_buffers(n_triplets, device)
+    vals = _launch.empty(n_triplets, dtype=dtype, device=device)
     if n_triplets > 0:
         _launch.launch(
             kernel_energies.HESSIAN_ENERGY_TRIPLETS[dtype],
@@ -690,13 +691,12 @@ def hessian_energy(
                 areas,
                 inverse_mass,
                 segment_offsets,
-                rows,
-                cols,
-                vals,
+                wp.int32(n_vertices),
             ],
+            outputs=[keys, order, vals],
             device=device,
         )
-    return od.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
+    return od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals)
 
 
 def curved_hessian_energy(
@@ -844,7 +844,8 @@ def curved_hessian_energy(
     )
 
     n_triplets = 144 * n_faces
-    rows, cols, vals = od.array.triplet_buffers(n_triplets, dtype, device)
+    keys, order = od.array.csr_key_buffers(n_triplets, device)
+    vals = _launch.empty(n_triplets, dtype=dtype, device=device)
     _launch.launch(
         kernel_energies.CURVED_HESSIAN_TRIPLETS[dtype],
         dim=n_faces,
@@ -858,13 +859,12 @@ def curved_hessian_energy(
             vertex_slots,
             par,
             perp,
-            rows,
-            cols,
-            vals,
+            wp.int32(n_vertices),
         ],
+        outputs=[keys, order, vals],
         device=device,
     )
-    return od.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
+    return od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals)
 
 
 def crouzeix_raviart_cotmatrix(
@@ -1291,7 +1291,7 @@ def vector_area_matrix(
     winding, via [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]) it adds the
     cross-quadrant entries ``(i+n, j, -1/4)``, ``(j, i+n, -1/4)``, ``(i, j+n, +1/4)``,
     ``(j+n, i, +1/4)``. On a closed mesh (no boundary) ``A`` is the zero matrix. Built natively in
-    float64 in a single [`csr_from_triplets`][ordito.array.csr_from_triplets].
+    float64 in a single [`csr_from_coo_keys`][ordito.array.csr_from_coo_keys].
 
     Parameters
     ----------
@@ -1349,15 +1349,17 @@ def vector_area_matrix(
     if n_be == 0:
         return od.array.empty_square_bsr(2 * n_vertices, wp.float64, device)
 
-    rows, cols, vals = od.array.triplet_buffers(4 * n_be, wp.float64, device)
-    # The four cross-quadrant triplets of every oriented boundary edge.
+    keys, order = od.array.csr_key_buffers(4 * n_be, device)
+    vals = _launch.empty(4 * n_be, dtype=wp.float64, device=device)
+    # The four cross-quadrant entries of every oriented boundary edge, written as their keys.
     _launch.launch(
         kernel_energies.vector_area_triplets,
         dim=n_be,
-        inputs=[boundary, wp.int32(n_vertices), rows, cols, vals],
+        inputs=[boundary, wp.int32(n_vertices)],
+        outputs=[keys, order, vals],
         device=device,
     )
-    return od.array.csr_from_triplets(2 * n_vertices, 2 * n_vertices, rows, cols, vals)
+    return od.array.csr_from_coo_keys(2 * n_vertices, 2 * n_vertices, keys, order, vals)
 
 
 def _edge_numbering(
