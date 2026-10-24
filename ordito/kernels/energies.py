@@ -2,7 +2,7 @@ import warp as wp
 
 from ordito.kernels.array import OverloadTable, to_vec3d
 from ordito.kernels.halfedge import halfedge_endpoints
-from ordito.kernels.laplacian import store_half_cotangents
+from ordito.kernels.laplacian import cotmatrix_row, store_half_cotangents
 from ordito.kernels.predicates import (
     angle_defect,
     corner_cosines_from_l2,
@@ -82,6 +82,41 @@ def dihedral_term(local: wp.int32, offset: wp.int32, terms: DihedralTerms) -> wp
     return wp.float32(1.0) - wp.cos(terms.angles[offset + local])
 
 
+@wp.func
+def smoothing_norm(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    vertices: wp.array[wp.vec3],
+    area_sums: wp.array[wp.float64],
+    method: wp.int32,
+    i: wp.int32,
+) -> wp.float32:
+    # ``|| row_scale * (L v)_i + self_scale * v_i ||`` for CSR row ``i``, with ``method``'s two
+    # scales (``laplacian_smoothing_norms`` explains them): the row walk and tail both of its
+    # kernels share, which differ only by who writes the row.
+    accumulator = wp.vec3(0.0, 0.0, 0.0)
+    diagonal = wp.float32(0.0)
+    for slot in range(offsets[i], offsets[i + 1]):
+        column = columns[slot]
+        accumulator += values[slot] * vertices[column]
+        if column == i:
+            diagonal = values[slot]
+    row_scale = wp.float32(1.0)
+    self_scale = wp.float32(-1.0)
+    if method == SMOOTHING_COT:
+        row_sum = -diagonal
+        row_scale = wp.float32(0.0)
+        if row_sum > 0.0:
+            row_scale = 1.0 / row_sum
+            self_scale = wp.float32(0.0)
+    elif method == SMOOTHING_COTCURV:
+        mass = wp.float32(area_sums[i] / wp.float64(3.0))
+        row_scale = reciprocal_scaled_or_zero(mass, wp.float32(1.0 / 6.0))
+        self_scale = wp.float32(0.0)
+    return wp.length(row_scale * accumulator + self_scale * vertices[i])
+
+
 @wp.kernel(enable_backward=False)
 def laplacian_smoothing_norms(
     offsets: wp.array[wp.int32],
@@ -121,26 +156,32 @@ def laplacian_smoothing_norms(
     # ``diagonal`` at zero and takes the same undefined-averaging fallback ``bsr_get_diag``'s own
     # zero would.
     i = wp.int32(wp.tid())
-    accumulator = wp.vec3(0.0, 0.0, 0.0)
-    diagonal = wp.float32(0.0)
-    for slot in range(offsets[i], offsets[i + 1]):
-        column = columns[slot]
-        accumulator += values[slot] * vertices[column]
-        if column == i:
-            diagonal = values[slot]
-    row_scale = wp.float32(1.0)
-    self_scale = wp.float32(-1.0)
-    if method == SMOOTHING_COT:
-        row_sum = -diagonal
-        row_scale = wp.float32(0.0)
-        if row_sum > 0.0:
-            row_scale = 1.0 / row_sum
-            self_scale = wp.float32(0.0)
-    elif method == SMOOTHING_COTCURV:
-        mass = wp.float32(area_sums[i] / wp.float64(3.0))
-        row_scale = reciprocal_scaled_or_zero(mass, wp.float32(1.0 / 6.0))
-        self_scale = wp.float32(0.0)
-    out_norms[i] = wp.length(row_scale * accumulator + self_scale * vertices[i])
+    out_norms[i] = smoothing_norm(offsets, columns, values, vertices, area_sums, method, i)
+
+
+@wp.kernel(enable_backward=False)
+def laplacian_smoothing_cot_norms(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.float32],
+    vertices: wp.array[wp.vec3],
+    area_sums: wp.array[wp.float64],
+    method: wp.int32,
+    out_values: wp.array[wp.float32],
+    out_norms: wp.array[wp.float32],
+) -> None:
+    # ``laplacian_smoothing_norms`` for the two cotangent methods, with the ``float32`` cotangent
+    # Laplacian's row written by the thread that reads it back (``kernels/laplacian.cotmatrix_row``
+    # over its mesh operator pattern), so the row's values are ``cotmatrix``'s and the residual is
+    # the stored-matrix kernel's, for one launch. Forming each entry again in the residual walk
+    # instead of storing it cost 1.4-1.5x the two kernels' device time on scrambled meshes.
+    i = wp.int32(wp.tid())
+    cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
+    out_norms[i] = smoothing_norm(offsets, columns, out_values, vertices, area_sums, method, i)
 
 
 # One ``kernels/reduce.TermSum`` per regularizer: the fused map and fixed-order (or atomic) block
@@ -959,7 +1000,7 @@ def lscm_boundary_side(
 
 
 @wp.kernel
-def lscm_boundary_counts(
+def lscm_laplacian_rows_and_counts(
     faces: wp.array[wp.int32],
     laplacian_offsets: wp.array[wp.int32],
     laplacian_columns: wp.array[wp.int32],
@@ -967,11 +1008,26 @@ def lscm_boundary_counts(
     keys: wp.array[wp.uint64],
     n_keys: wp.int32,
     order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    out_laplacian_values: wp.array[wp.float64],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # Each vertex's boundary edge count into slot ``r + 1`` (thread 0 also writes the leading
-    # zero), whose inclusive scan places every row's ``-2 A`` entries in ``lscm_hessian_csr``.
+    # One thread per vertex over ``L``'s pattern: row ``r`` of the ``float64`` cotangent Laplacian
+    # (``kernels/laplacian.cotmatrix_row``, as ``cotmatrix_rows`` writes it), and the vertex's
+    # boundary edge count into slot ``r + 1`` (thread 0 also writes the leading zero), whose
+    # inclusive scan places every row's ``-2 A`` entries in ``lscm_hessian_csr``.
     r = wp.int32(wp.tid())
+    cotmatrix_row(
+        r,
+        laplacian_offsets,
+        laplacian_columns,
+        run_start,
+        keys,
+        n_keys,
+        order,
+        cot_entries,
+        out_laplacian_values,
+    )
     if r == 0:
         out_counts[0] = 0
     count = wp.int32(0)
@@ -1010,9 +1066,9 @@ def lscm_hessian_csr(
     # followed by ``-2 A``'s (columns from ``n``), and a lower row ``r + n`` is ``-2 A``'s row
     # (columns below ``n``) followed by ``-L``'s row ``r`` shifted by ``n``; both walk ``L``'s
     # sorted row, so each row stays sorted. ``area_offsets`` is the scan of
-    # ``lscm_boundary_counts``: a row's start is ``L.offsets[r] + area_offsets[r]`` above and
-    # ``L.offsets[n] + area_offsets[n] + L.offsets[r - n] + area_offsets[r - n]`` below. Thread 0
-    # also writes the leading zero.
+    # ``lscm_laplacian_rows_and_counts``: a row's start is ``L.offsets[r] + area_offsets[r]``
+    # above and ``L.offsets[n] + area_offsets[n] + L.offsets[r - n] + area_offsets[r - n]`` below.
+    # Thread 0 also writes the leading zero.
     r = wp.int32(wp.tid())
     vertex = r
     shift = wp.int32(0)
@@ -1102,13 +1158,14 @@ SANDWICH_ROW_COUNTS: OverloadTable
 SANDWICH_ROW_TRIPLETS: OverloadTable
 HESSIAN_ENERGY_TRIPLETS: OverloadTable
 CURVED_HESSIAN_TRIPLETS: OverloadTable
+LSCM_LAPLACIAN_ROWS_AND_COUNTS: OverloadTable
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_CSR
     global SANDWICH_ROW_COUNTS, SANDWICH_ROW_TRIPLETS
-    global HESSIAN_ENERGY_TRIPLETS, CURVED_HESSIAN_TRIPLETS
+    global HESSIAN_ENERGY_TRIPLETS, CURVED_HESSIAN_TRIPLETS, LSCM_LAPLACIAN_ROWS_AND_COUNTS
     i32 = wp.array[wp.int32]
     CROUZEIX_RAVIART_MASS_DIAG = OverloadTable(
         crouzeix_raviart_mass_diag,
@@ -1186,6 +1243,26 @@ def _register_overloads() -> None:
                 i32,
                 i32,
                 wp.array[d],
+            ]
+            for d in _MATRIX_DTYPES
+        },
+    )
+
+    # Keyed on the half-cotangents' dtype alone: the Laplacian is always ``float64`` here.
+    LSCM_LAPLACIAN_ROWS_AND_COUNTS = OverloadTable(
+        lscm_laplacian_rows_and_counts,
+        {
+            d: [
+                i32,
+                i32,
+                i32,
+                i32,
+                wp.array[wp.uint64],
+                wp.int32,
+                i32,
+                wp.array2d[d],
+                wp.array[wp.float64],
+                i32,
             ]
             for d in _MATRIX_DTYPES
         },

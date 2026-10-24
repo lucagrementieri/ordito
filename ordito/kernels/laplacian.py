@@ -615,24 +615,26 @@ def cotmatrix_offdiagonal(
     return value
 
 
-@wp.kernel
-def cotmatrix_rows(
+@wp.func
+def cotmatrix_row(
+    i: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     run_start: wp.array[wp.int32],
     keys: wp.array[wp.uint64],
     count: wp.int32,
     order: wp.array[wp.int32],
-    cot_entries: wp.array2d[wp.Float],
-    out_values: wp.array[wp.Float],
+    cot_entries: Any,
+    out_values: Any,
 ) -> None:
-    # One thread per row of a mesh operator pattern (``laplacian._mesh_operator_pattern``). An
-    # off-diagonal is ``cotmatrix_offdiagonal`` and the diagonal is minus the row's off-diagonal
-    # sum, in column order, so every row sums to zero up to that one sum's rounding. A degenerate
-    # face's self-edge never reaches a row: its four contributions ``w + w - w - w`` cancelled
-    # exactly in the 12-triplet form too. The half-cotangents may be float32 or float64 whatever
-    # the matrix precision; each is cast once.
-    i = wp.int32(wp.tid())
+    # Row ``i`` of the cotangent Laplacian over a mesh operator pattern
+    # (``laplacian._mesh_operator_pattern``), written into ``out_values``. An off-diagonal is
+    # ``cotmatrix_offdiagonal`` and the diagonal is minus the row's off-diagonal sum, in column
+    # order, so every row sums to zero up to that one sum's rounding. A degenerate face's self-edge
+    # never reaches a row: its four contributions ``w + w - w - w`` cancelled exactly in the
+    # 12-triplet form too. The half-cotangents may be float32 or float64 whatever the matrix
+    # precision; each is cast once. The body of ``cotmatrix_rows``, and of the kernels that form
+    # the Laplacian's row in the thread consuming it (``kernels/energies``).
     start = offsets[i]
     end = offsets[i + 1]
     if end == start:
@@ -650,6 +652,22 @@ def cotmatrix_rows(
         total += value
     if slot >= 0:
         out_values[slot] = -total
+
+
+@wp.kernel
+def cotmatrix_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    out_values: wp.array[wp.Float],
+) -> None:
+    # One thread per row of a mesh operator pattern: ``cotmatrix_row``.
+    i = wp.int32(wp.tid())
+    cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
 
 
 @wp.kernel
