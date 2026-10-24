@@ -963,7 +963,7 @@ def test_mollify_intrinsic_restores_the_triangle_inequality(
     # That slop is also what makes this the *lower* guard on ``TOLERANCE_MOLLIFY``: at 1e-6 the
     # constant is only ~13 ULP of the mean edge, so rounding the stored sum eats far more than 5 %
     # of it and this assert fails -- which is the float32 floor
-    # ``kernels/laplacian.triangle_inequality_slack`` documents, caught rather than reasoned about.
+    # ``kernels/laplacian.smallest_triangle_margin`` documents, caught rather than reasoned about.
     margin = TOLERANCE_MOLLIFY * float(original.mean())
     assert worst_slack(mollified.numpy()).min() >= margin * (1.0 - 5e-2)
     # One global constant, added to every length: that is what keeps the operator symmetric. The

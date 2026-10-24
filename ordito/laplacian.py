@@ -32,23 +32,24 @@ arriving from libigl, where ``cotmatrix`` and ``crouzeix_raviart_cotmatrix`` sit
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import Literal, NamedTuple, cast, overload
 
+import numpy as np
 import warp as wp
 
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.config import is_deterministic
-from ordito.constants import TOLERANCE_MOLLIFY
+from ordito.constants import TILE_1D, TOLERANCE_MOLLIFY
 from ordito.edges import edges_unique, face_edge_lengths, faces_to_edges
 from ordito.kernels import laplacian as kernel_laplacian
+from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import triangles as kernel_triangles
-from ordito.reduce import max as reduce_max
-from ordito.reduce import mean as reduce_mean
 from ordito.tangent_space import halfedge_transport_angles
 from ordito.triangles import face_normals_and_areas
 
@@ -710,16 +711,25 @@ def mollify_intrinsic(
 
     # The margin scales with the *mean* edge length (matching intrinsic_delaunay's docstring and
     # this function's own), not the max: a single long edge on a graded mesh would otherwise inflate
-    # delta far past what any degenerate face on the rest of the mesh actually needs.
-    scale = float(reduce_mean(edge_lengths))
-    slack = odt.empty_1d(n_faces, wp.float32, device=device)
-    _launch.launch(
-        kernel_laplacian.triangle_inequality_slack,
-        dim=n_faces,
-        inputs=[edge_lengths, wp.float32(epsilon * scale), slack],
+    # delta far past what any degenerate face on the rest of the mesh actually needs. The length
+    # sum (``reduce.mean``'s, in either determinism setting) and the smallest triangle margin share
+    # one buffer, seeded ``(0, +inf)``, and cross in one read.
+    flat = edge_lengths.flatten()
+    bounds = _launch.pattern([0.0, math.inf], dtype=wp.float32, device=device)
+    od.reduce.sum_of_terms(
+        kernel_reduce.ARRAY_SUM, [flat], flat.size, out=_launch.view(bounds, 0, 1)
+    )
+    _launch.launch_tiled(
+        kernel_laplacian.smallest_triangle_margin,
+        dim=[kernel_reduce.blocks_1d(n_faces)],
+        inputs=[edge_lengths, bounds],
+        block_dim=TILE_1D,
         device=device,
     )
-    delta = float(reduce_max(slack))
+    # Readback: the margin decides whether anything is added, and the mean scales it.
+    total, margin = read_values(bounds, 0, 2)
+    epsilon_scaled = np.float32(epsilon * (float(total) / flat.size))
+    delta = float(max(epsilon_scaled - np.float32(margin), np.float32(0.0)))
     if delta <= 0.0:
         return odt.as_array2d(edge_lengths, wp.float32), 0.0
 
@@ -1239,39 +1249,19 @@ def laplacian_entries(
     if symmetric is None:
         symmetric = not equal_weight
     device = faces.device
-    equal_weight_flag = wp.int32(1 if equal_weight else 0)
-    if not symmetric:
-        # One directed triplet per triangle edge, matching trimesh's ``edges_to_coo(mesh.edges)``.
-        edges = faces_to_edges(faces)
-        m = int(edges.shape[0])
-        rows, cols, vals = od.array.triplet_buffers(m, dtype, device)
-        if m > 0:
-            _launch.launch(
-                kernel_laplacian.LAPLACIAN_TRIPLETS_DIRECTED[dtype],
-                dim=m,
-                inputs=[edges, vertices, equal_weight_flag, rows, cols, vals],
-                device=device,
-            )
-        return rows, cols, vals
-    # Both directed pairs of each unique undirected edge, matching trimesh's ``vertex_neighbors``
-    # (every neighbor counted once).
-    if edges is None:
-        edges, _ = edges_unique(faces, n_vertices=vertices.size, validate=False)
-    elif validate and int(edges.shape[0]) > 0:
-        n_vertices = vertices.size
-        lowest, highest = od.reduce.minmax(edges)
-        if lowest < 0 or highest >= n_vertices:
-            raise ValueError(
-                f"laplacian_entries: edges must reference vertex indices in [0, {n_vertices}), "
-                f"got a range of [{lowest}, {highest}]"
-            )
-    m_unique = int(edges.shape[0])
-    rows, cols, vals = od.array.triplet_buffers(2 * m_unique, dtype, device)
-    if m_unique > 0:
+    edges = _entry_edges(vertices, faces, symmetric, edges, validate)
+    m = int(edges.shape[0])
+    rows, cols, vals = od.array.triplet_buffers(2 * m if symmetric else m, dtype, device)
+    if m > 0:
+        kernels = (
+            kernel_laplacian.LAPLACIAN_TRIPLETS_SYMMETRIC
+            if symmetric
+            else kernel_laplacian.LAPLACIAN_TRIPLETS_DIRECTED
+        )
         _launch.launch(
-            kernel_laplacian.LAPLACIAN_TRIPLETS_SYMMETRIC[dtype],
-            dim=m_unique,
-            inputs=[edges, vertices, equal_weight_flag, rows, cols, vals],
+            kernels[dtype],
+            dim=m,
+            inputs=[edges, vertices, wp.int32(1 if equal_weight else 0), rows, cols, vals],
             device=device,
         )
     return rows, cols, vals
@@ -1317,12 +1307,12 @@ def laplacian(
         ``wp.float64`` when the operator feeds a linear-system solve; the matrix is built and
         row-normalized natively in the requested precision, in one build.
     edges
-        ``(m, 2)`` precomputed unique undirected edges, forwarded to
-        [`laplacian_entries`][ordito.laplacian.laplacian_entries], which assembles the operator
-        from them as triplets. Ignored when the adjacency is directed. Without ``edges`` the
+        ``(m, 2)`` precomputed unique undirected edges; the operator is assembled from the entries
+        [`laplacian_entries`][ordito.laplacian.laplacian_entries] would emit for them. Ignored
+        when the adjacency is directed. Without ``edges`` the
         operator's pattern is built straight from ``faces``, which is usually cheaper.
     validate
-        Forwarded to [`laplacian_entries`][ordito.laplacian.laplacian_entries]: when ``True``
+        As for [`laplacian_entries`][ordito.laplacian.laplacian_entries]: when ``True``
         (default) and ``edges`` is given, check its indices fall in ``[0, n_vertices)`` before
         launching. Pass ``False`` only when ``edges`` is known correct by construction.
     pattern
@@ -1414,16 +1404,26 @@ def laplacian(
             device=device,
         )
         return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
-    rows, cols, vals = laplacian_entries(
-        vertices,
-        faces,
-        equal_weight=equal_weight,
-        symmetric=symmetric,
-        dtype=dtype,
-        edges=edges,
-        validate=validate,
-    )
-    matrix = od.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
+    # The entries are assembled, never returned, so they are written as their sort keys.
+    edges = _entry_edges(vertices, faces, symmetric, edges, validate)
+    m = int(edges.shape[0])
+    count = 2 * m if symmetric else m
+    keys, order = od.array.csr_key_buffers(count, device)
+    vals = _launch.empty(count, dtype=dtype, device=device)
+    if m > 0:
+        kernels = (
+            kernel_laplacian.LAPLACIAN_KEYS_SYMMETRIC
+            if symmetric
+            else kernel_laplacian.LAPLACIAN_KEYS_DIRECTED
+        )
+        _launch.launch(
+            kernels[dtype],
+            dim=m,
+            inputs=[edges, vertices, wp.int32(1 if equal_weight else 0), wp.int32(n_vertices)],
+            outputs=[keys, order, vals],
+            device=device,
+        )
+    matrix = od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals)
     if n_vertices > 0 and matrix.nnz > 0:
         _launch.launch(
             kernel_laplacian.ROW_NORMALIZE[matrix.values.dtype],
@@ -1432,6 +1432,36 @@ def laplacian(
             device=device,
         )
     return matrix
+
+
+def _entry_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    symmetric: bool,
+    edges: odt.Array2dInt32 | None,
+    validate: bool,
+) -> odt.Array2dInt32:
+    """
+    Return the edges whose entries [`laplacian_entries`][ordito.laplacian.laplacian_entries] emits.
+
+    Directed: one per triangle edge, matching trimesh's ``edges_to_coo(mesh.edges)``, whatever
+    ``edges`` holds. Symmetric: each unique undirected edge, whose two directed pairs match
+    trimesh's ``vertex_neighbors`` (every neighbor counted once), taken from ``edges`` (checked
+    when ``validate``) or derived from ``faces``.
+    """
+    if not symmetric:
+        return faces_to_edges(faces)
+    if edges is None:
+        edges, _ = edges_unique(faces, n_vertices=vertices.size, validate=False)
+    elif validate and int(edges.shape[0]) > 0:
+        n_vertices = vertices.size
+        lowest, highest = od.reduce.minmax(edges)
+        if lowest < 0 or highest >= n_vertices:
+            raise ValueError(
+                f"laplacian_entries: edges must reference vertex indices in [0, {n_vertices}), "
+                f"got a range of [{lowest}, {highest}]"
+            )
+    return edges
 
 
 def graph_laplacian(

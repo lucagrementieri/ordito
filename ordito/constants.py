@@ -27,7 +27,7 @@ TOLERANCE_ZERO = 1e-12
 # contributes zero and so looks perfectly conditioned. Too *large* and that same global constant
 # perturbs the clean part of the mesh away from the true cotangent operator. ``1e-5`` sits more
 # than a decade from each arm; the bracket is measured in
-# `kernels/laplacian.triangle_inequality_slack`.
+# `kernels/laplacian.smallest_triangle_margin`.
 TOLERANCE_MOLLIFY = 1e-5
 
 # Default tolerances of [`allclose`][ordito.array.allclose], shared with the per-thread closure

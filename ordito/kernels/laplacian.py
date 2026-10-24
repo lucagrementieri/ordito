@@ -2,10 +2,16 @@ from typing import Any
 
 import warp as wp
 
-from ordito.kernels.array import OverloadTable, csr_key, csr_run_start, sorted_run_end
+from ordito.kernels.array import (
+    OverloadTable,
+    csr_key,
+    csr_run_start,
+    sorted_run_end,
+    store_coo_key,
+)
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import doublearea_from_lengths, triangle_double_area
-from ordito.kernels.reduce import GroupSumPass, device_is_cpu
+from ordito.kernels.reduce import GroupSumPass, block_chunk_1d, block_min, device_is_cpu
 from ordito.kernels.scatter import (
     add_corner_triple,
     arrival_order_add_vector,
@@ -291,6 +297,17 @@ def edge_weight(
     return wp.float32(1.0) / (wp.length(vertices[a] - vertices[b]) + wp.float32(1.0e-12))
 
 
+@wp.func
+def edge_entry(
+    edges: wp.array2d[wp.int32], e: wp.int32, vertices: wp.array[wp.vec3], equal_weight: wp.int32
+) -> tuple[wp.int32, wp.int32, wp.float32]:
+    # Edge ``e``'s endpoints and weight, which the triplet and the key kernels below both emit;
+    # they differ only in whether an entry is written as ``(row, col)`` or as its sort key.
+    a = edges[e, 0]
+    b = edges[e, 1]
+    return a, b, edge_weight(a, b, vertices, equal_weight)
+
+
 @wp.kernel
 def laplacian_triplets_directed(
     edges: wp.array2d[wp.int32],
@@ -303,11 +320,10 @@ def laplacian_triplets_directed(
     # One triplet per directed triangle edge, matching trimesh's ``mesh.edges`` adjacency.
     # ``out_vals`` is generic: the float32 edge weight is cast to the requested output dtype.
     e = wp.int32(wp.tid())
-    a = edges[e, 0]
-    b = edges[e, 1]
+    a, b, w = edge_entry(edges, e, vertices, equal_weight)
     out_rows[e] = a
     out_cols[e] = b
-    out_vals[e] = type(out_vals[e])(edge_weight(a, b, vertices, equal_weight))
+    out_vals[e] = type(out_vals[e])(w)
 
 
 @wp.kernel
@@ -323,15 +339,53 @@ def laplacian_triplets_symmetric(
     # adjacency is symmetric, matching trimesh's ``vertex_neighbors``. Duplicate multiplicity
     # cancels under row-normalization. ``out_vals`` is generic (float32 or float64).
     e = wp.int32(wp.tid())
-    a = edges[e, 0]
-    b = edges[e, 1]
-    w = type(out_vals[e * 2])(edge_weight(a, b, vertices, equal_weight))
+    a, b, weight = edge_entry(edges, e, vertices, equal_weight)
+    w = type(out_vals[e * 2])(weight)
     base = e * 2
     out_rows[base + 0] = a
     out_cols[base + 0] = b
     out_vals[base + 0] = w
     out_rows[base + 1] = b
     out_cols[base + 1] = a
+    out_vals[base + 1] = w
+
+
+@wp.kernel
+def laplacian_keys_directed(
+    edges: wp.array2d[wp.int32],
+    vertices: wp.array[wp.vec3],
+    equal_weight: wp.int32,
+    n_vertices: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_vals: wp.array[wp.Float],
+) -> None:
+    # ``laplacian_triplets_directed``'s entries as the sort keys ``array.csr_from_coo_keys`` reads,
+    # for ``laplacian.laplacian``, which assembles them and never returns the triplets.
+    e = wp.int32(wp.tid())
+    a, b, w = edge_entry(edges, e, vertices, equal_weight)
+    store_coo_key(e, a, b, n_vertices, n_vertices, out_keys, out_order)
+    out_vals[e] = type(out_vals[e])(w)
+
+
+@wp.kernel
+def laplacian_keys_symmetric(
+    edges: wp.array2d[wp.int32],
+    vertices: wp.array[wp.vec3],
+    equal_weight: wp.int32,
+    n_vertices: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_vals: wp.array[wp.Float],
+) -> None:
+    # ``laplacian_triplets_symmetric``'s two entries per edge as sort keys, in the same slots.
+    e = wp.int32(wp.tid())
+    a, b, weight = edge_entry(edges, e, vertices, equal_weight)
+    w = type(out_vals[e * 2])(weight)
+    base = e * 2
+    store_coo_key(base + 0, a, b, n_vertices, n_vertices, out_keys, out_order)
+    out_vals[base + 0] = w
+    store_coo_key(base + 1, b, a, n_vertices, n_vertices, out_keys, out_order)
     out_vals[base + 1] = w
 
 
@@ -814,17 +868,20 @@ def connection_laplacian_rows(
 
 
 @wp.kernel
-def triangle_inequality_slack(
-    edge_lengths: wp.array2d[wp.float32], epsilon: wp.float32, out_slack: wp.array[wp.float32]
+def smallest_triangle_margin(
+    edge_lengths: wp.array2d[wp.float32], out_bounds: wp.array[wp.float32]
 ) -> None:
-    # How far this triangle is from satisfying the strict triangle inequality with margin
-    # ``epsilon``, expressed as the constant that would have to be added to all three of its edges.
-    # Adding ``delta`` to all three grows each slack ``a + b - c`` by exactly ``delta`` -- the two
-    # short sides gain ``2 * delta`` and the long side gives ``delta`` of it back -- so the
-    # shortfall is the constant, undivided. Sharp & Crane (2020) eq. 3 states the same rule, and
-    # an independent port of it (kentechx/HoleFillingPy, MIT) computes the identical quantity a
-    # different way -- ``max(2 * max(L) - sum(L)) + delta``, which is ``epsilon - min_f slack_f``
-    # rearranged -- also undivided.
+    # The smallest triangle-inequality margin ``a + b - c`` over every face and side, into
+    # ``out_bounds[1]`` (seeded ``+inf``); ``laplacian.mollify_intrinsic`` turns it into the
+    # constant ``delta = max(epsilon - margin, 0)`` that would have to be added to all three edges
+    # of the worst face. Adding ``delta`` to all three grows each margin ``a + b - c`` by exactly
+    # ``delta`` -- the two short sides gain ``2 * delta`` and the long side gives ``delta`` of it
+    # back -- so the shortfall is the constant, undivided. Sharp & Crane (2020) eq. 3 states the
+    # same rule, and an independent port of it (kentechx/HoleFillingPy, MIT) computes the identical
+    # quantity a different way -- ``max(2 * max(L) - sum(L)) + delta``, which is
+    # ``epsilon - min_f margin_f`` rearranged -- also undivided. ``epsilon - x`` rounds monotonely
+    # in ``x``, so ``epsilon`` minus the smallest margin is bit for bit the largest per-face
+    # shortfall, and the margin, needing no ``epsilon``, is folded beside the mean edge length.
     #
     # **``TOLERANCE_MOLLIFY = 1e-5`` sits between two arms, both of which were swept.** Below a few
     # ULP of the mean edge length the added constant does not survive the float32 store and the
@@ -836,10 +893,18 @@ def triangle_inequality_slack(
     # decade clear of both, and a decade more conservative than that port's own 1e-4, which sits on
     # the right arm. A clean mesh yields ``delta == 0`` at every epsilon, so none of this is paid
     # where nothing is degenerate.
-    f = wp.int32(wp.tid())
-    a, b, c = row_triple(edge_lengths, f)
-    worst = wp.max(wp.max(epsilon - (a + b - c), epsilon - (b + c - a)), epsilon - (c + a - b))
-    out_slack[f] = wp.max(worst, 0.0)
+    #
+    # Lane-strided by ``wp.block_dim()`` over the block's ``ITEMS_PER_BLOCK_1D`` faces; a minimum
+    # is exact in any order, so one ``atomic_min`` per block commits it.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(edge_lengths.shape[0], block)
+    low = wp.float32(wp.inf)
+    for k in range(lane, count, wp.block_dim()):
+        a, b, c = row_triple(edge_lengths, offset + k)
+        low = wp.min(low, wp.min(wp.min(a + b - c, b + c - a), c + a - b))
+    low = block_min(low)
+    if lane == 0 and count > 0:
+        wp.atomic_min(out_bounds, 1, low)
 
 
 @wp.func
@@ -902,6 +967,8 @@ COTMATRIX_ENTRIES_INTRINSIC: OverloadTable
 ROW_NORMALIZE: OverloadTable
 LAPLACIAN_TRIPLETS_SYMMETRIC: OverloadTable
 LAPLACIAN_TRIPLETS_DIRECTED: OverloadTable
+LAPLACIAN_KEYS_SYMMETRIC: OverloadTable
+LAPLACIAN_KEYS_DIRECTED: OverloadTable
 COTMATRIX_ROWS: OverloadTable
 LAPLACIAN_ROWS: OverloadTable
 GRAPH_LAPLACIAN_ROWS: OverloadTable
@@ -913,6 +980,7 @@ def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global COTMATRIX_ENTRIES, COTMATRIX_ENTRIES_INTRINSIC, ROW_NORMALIZE
     global LAPLACIAN_TRIPLETS_SYMMETRIC, LAPLACIAN_TRIPLETS_DIRECTED
+    global LAPLACIAN_KEYS_SYMMETRIC, LAPLACIAN_KEYS_DIRECTED
     global COTMATRIX_ROWS, CONNECTION_LAPLACIAN_ROWS, LAPLACIAN_ROWS, GRAPH_LAPLACIAN_ROWS
     global MASS_DIAGONAL_ROWS
     COTMATRIX_ENTRIES = OverloadTable(
@@ -939,6 +1007,20 @@ def _register_overloads() -> None:
     }
     LAPLACIAN_TRIPLETS_SYMMETRIC = OverloadTable(laplacian_triplets_symmetric, triplet_signature)
     LAPLACIAN_TRIPLETS_DIRECTED = OverloadTable(laplacian_triplets_directed, triplet_signature)
+    key_signature = {
+        d: [
+            wp.array2d[wp.int32],
+            wp.array[wp.vec3],
+            wp.int32,
+            wp.int32,
+            wp.array[wp.uint64],
+            wp.array[wp.int32],
+            wp.array[d],
+        ]
+        for d in _MATRIX_DTYPES
+    }
+    LAPLACIAN_KEYS_SYMMETRIC = OverloadTable(laplacian_keys_symmetric, key_signature)
+    LAPLACIAN_KEYS_DIRECTED = OverloadTable(laplacian_keys_directed, key_signature)
     # ``cot_entries`` and the matrix precision are *independent* templates: cotmatrix's
     # docstring says the entries "may be float32 or float64 regardless of dtype: the assembly
     # kernel casts them to the matrix precision", so this is a genuine 2x2, not a diagonal.
