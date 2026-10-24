@@ -864,8 +864,9 @@ def arap(
         rhs_rot_sorted = _launch.empty(n_vertices, dtype=wp.vec2d, device=device)
     else:
         # Zero for the first local step; ``arap_interior_rhs`` clears them for every later one.
-        rhs_rot_x = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-        rhs_rot_y = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+        # The two rows of one ``(2, n_vertices)`` buffer.
+        rhs_rot = _launch.zeros((2, n_vertices), dtype=wp.float64, device=device)
+        rhs_rot_x, rhs_rot_y = rhs_rot[0], rhs_rot[1]
     b = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
 
     # One batched CG state for both UV columns, built once outside the loop: its temporaries and

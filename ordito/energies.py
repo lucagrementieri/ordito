@@ -57,7 +57,7 @@ from ordito.kernels import energies as kernel_energies
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
-from ordito.laplacian import MeshOperatorPattern, cotmatrix, mesh_operator_pattern
+from ordito.laplacian import MeshOperatorPattern, cotmatrix_entries, mesh_operator_pattern
 
 
 def edge_length_loss(
@@ -284,12 +284,29 @@ def laplacian_smoothing_loss(
     if n_vertices == 0 or faces.size == 0:
         return 0.0
     device = vertices.device
-    area_sums = None
+    norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     if method == "uniform":
         operator = od.laplacian.laplacian(vertices, faces, equal_weight=True)
-        selector = kernel_energies.SMOOTHING_UNIFORM
-    elif method == "cot":
-        operator = cotmatrix(vertices, faces)
+        # Each method's per-row scales are formed in the row's own thread, so no scale buffer
+        # exists.
+        _launch.launch(
+            kernel_energies.laplacian_smoothing_norms,
+            dim=n_vertices,
+            inputs=[
+                operator.offsets,
+                operator.columns,
+                operator.values,
+                vertices,
+                None,
+                kernel_energies.SMOOTHING_UNIFORM,
+                norms,
+            ],
+            device=device,
+        )
+        return float(od.reduce.mean(norms))
+    area_sums = None
+    if method == "cot":
+        cot_entries = cotmatrix_entries(vertices, faces)
         selector = kernel_energies.SMOOTHING_COT
     else:
         # ``mass_matrix_entries``' exact area sums, formed in the face pass that writes the
@@ -304,22 +321,27 @@ def laplacian_smoothing_loss(
             outputs=[cot_entries, area_sums],
             device=device,
         )
-        operator = cotmatrix(vertices, faces, cot_entries)
         selector = kernel_energies.SMOOTHING_COTCURV
-    # Each method's per-row scales are formed in the row's own thread, so no scale buffer exists.
-    norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    # The cotangent Laplacian's row is written by the thread that takes its residual, over its
+    # pattern; each method's per-row scales are formed in the same thread.
+    _, _, offsets, columns, run_start, keys, count, order = mesh_operator_pattern(faces, n_vertices)
+    values = _launch.empty(columns.size, dtype=wp.float32, device=device)
     _launch.launch(
-        kernel_energies.laplacian_smoothing_norms,
+        kernel_energies.laplacian_smoothing_cot_norms,
         dim=n_vertices,
         inputs=[
-            operator.offsets,
-            operator.columns,
-            operator.values,
+            offsets,
+            columns,
+            run_start,
+            keys,
+            wp.int32(count),
+            order,
+            cot_entries,
             vertices,
             area_sums,
             selector,
-            norms,
         ],
+        outputs=[values, norms],
         device=device,
     )
     return float(od.reduce.mean(norms))
@@ -360,7 +382,7 @@ def k_harmonic(
 
     Each power is assembled by one triplet pass over matching CSR rows —
     ``(A M^-1 B)_ij = sum_t A_ti M_t^-1 B_tj`` with both operands symmetric — followed by a single
-    [`csr_from_triplets`][ordito.array.csr_from_triplets], so the product is built without
+    [`csr_from_coo_keys`][ordito.array.csr_from_coo_keys], so the product is built without
     ``warp.sparse.bsr_mm``.
 
     Parameters
@@ -473,7 +495,7 @@ def _diagonal_sandwich(
 
     Row ``t`` of the product is the outer product of ``A``'s and ``B``'s rows ``t`` scaled by the
     diagonal weight, so the whole product is one count kernel, one scan, one emission kernel and a
-    single ``array.csr_from_triplets``, built without ``warp.sparse.bsr_mm``. ``bsr_mm(bsr_mm(a,
+    single ``array.csr_from_coo_keys``, built without ``warp.sparse.bsr_mm``. ``bsr_mm(bsr_mm(a,
     bsr_diag(inverse_mass)), b)`` is an equivalent construction, but this path avoids materializing
     an intermediate diagonal matrix and its scratch.
     """
@@ -496,7 +518,8 @@ def _diagonal_sandwich(
     segment_offsets, n_triplets = od.array.counts_to_offsets(counts)
 
     dtype = a.values.dtype
-    rows, cols, vals = od.array.triplet_buffers(n_triplets, dtype, device)
+    keys, order = od.array.csr_key_buffers(n_triplets, device)
+    vals = _launch.empty(n_triplets, dtype=dtype, device=device)
     if n_triplets > 0:
         _launch.launch(
             kernel_energies.SANDWICH_ROW_TRIPLETS[dtype],
@@ -511,13 +534,12 @@ def _diagonal_sandwich(
                 inverse_mass,
                 dtype(sign),
                 segment_offsets,
-                rows,
-                cols,
-                vals,
+                wp.int32(n_rows),
             ],
+            outputs=[keys, order, vals],
             device=device,
         )
-    return od.array.csr_from_triplets(n_rows, n_rows, rows, cols, vals)
+    return od.array.csr_from_coo_keys(n_rows, n_rows, keys, order, vals)
 
 
 def hessian_energy(
@@ -655,7 +677,8 @@ def hessian_energy(
     # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
     segment_offsets, n_triplets = od.array.counts_to_offsets(counts)
 
-    rows, cols, vals = od.array.triplet_buffers(n_triplets, dtype, device)
+    keys, order = od.array.csr_key_buffers(n_triplets, device)
+    vals = _launch.empty(n_triplets, dtype=dtype, device=device)
     if n_triplets > 0:
         _launch.launch(
             kernel_energies.HESSIAN_ENERGY_TRIPLETS[dtype],
@@ -668,13 +691,12 @@ def hessian_energy(
                 areas,
                 inverse_mass,
                 segment_offsets,
-                rows,
-                cols,
-                vals,
+                wp.int32(n_vertices),
             ],
+            outputs=[keys, order, vals],
             device=device,
         )
-    return od.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
+    return od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals)
 
 
 def curved_hessian_energy(
@@ -822,7 +844,8 @@ def curved_hessian_energy(
     )
 
     n_triplets = 144 * n_faces
-    rows, cols, vals = od.array.triplet_buffers(n_triplets, dtype, device)
+    keys, order = od.array.csr_key_buffers(n_triplets, device)
+    vals = _launch.empty(n_triplets, dtype=dtype, device=device)
     _launch.launch(
         kernel_energies.CURVED_HESSIAN_TRIPLETS[dtype],
         dim=n_faces,
@@ -836,13 +859,12 @@ def curved_hessian_energy(
             vertex_slots,
             par,
             perp,
-            rows,
-            cols,
-            vals,
+            wp.int32(n_vertices),
         ],
+        outputs=[keys, order, vals],
         device=device,
     )
-    return od.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
+    return od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals)
 
 
 def crouzeix_raviart_cotmatrix(
@@ -1132,7 +1154,7 @@ def lscm_hessian(
     faces
         ``(3 * n_faces,)`` triangle index buffer.
     cot_entries, pattern
-        Forwarded to [`cotmatrix`][ordito.laplacian.cotmatrix] for ``L``: precomputed
+        As [`cotmatrix`][ordito.laplacian.cotmatrix] takes them for ``L``: precomputed
         half-cotangent weights and sparsity, to spare their build when the Hessian is assembled
         repeatedly over one mesh.
         [`Trimesh.cotmatrix_entries`][ordito.mesh.Trimesh.cotmatrix_entries] and
@@ -1147,7 +1169,10 @@ def lscm_hessian(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``cot_entries`` and ``pattern`` are not all on one device.
+    ValueError
+        If ``cot_entries`` is given and its row count does not match ``faces``' triangle count, or
+        ``pattern`` was built for another operator or vertex count.
 
     See Also
     --------
@@ -1177,25 +1202,53 @@ def lscm_hessian(
     print(abs(energy) < 1e-6)  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        cot_entries=cot_entries,
+        pattern=None if pattern is None else pattern.offsets,
+    )
     n = vertices.size
     device = vertices.device
+    if pattern is not None and (pattern.operator != "cotmatrix" or pattern.n_vertices != n):
+        raise ValueError(
+            f"pattern was built for operator={pattern.operator!r} over {pattern.n_vertices} "
+            f"vertices; lscm_hessian needs operator='cotmatrix' over {n}"
+        )
     if n == 0:
         return od.array.empty_square_bsr(0, wp.float64, device)
     if faces.size == 0:
         return od.array.empty_square_bsr(2 * n, wp.float64, device)
+    n_faces = faces.size // 3
+    if cot_entries is None:
+        cot_entries = cotmatrix_entries(vertices, faces, dtype=wp.float64)
+    elif int(cot_entries.shape[0]) != n_faces:
+        raise ValueError(
+            f"cot_entries must have shape (n_faces, 3) = ({n_faces}, 3), "
+            f"got {(int(cot_entries.shape[0]), int(cot_entries.shape[1]))}"
+        )
     # ``L``'s pattern also carries every edge's halfedges, so the boundary term is read off it
-    # rather than paired and sorted again (``kernels/energies.lscm_boundary_side``).
+    # rather than paired and sorted again (``kernels/energies.lscm_boundary_side``), in the launch
+    # that writes ``L``'s values.
     if pattern is None:
         pattern = mesh_operator_pattern(faces, n)
-    laplacian = cotmatrix(vertices, faces, cot_entries, dtype=wp.float64, pattern=pattern)
     _, _, lap_offsets, lap_columns, run_start, keys, n_keys, order = pattern
+    laplacian_values = _launch.empty(lap_columns.size, dtype=wp.float64, device=device)
     area_offsets = _launch.empty(n + 1, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_energies.lscm_boundary_counts,
+        kernel_energies.LSCM_LAPLACIAN_ROWS_AND_COUNTS[cot_entries.dtype],
         dim=n,
-        inputs=[faces, lap_offsets, lap_columns, run_start, keys, wp.int32(n_keys), order],
-        outputs=[area_offsets],
+        inputs=[
+            faces,
+            lap_offsets,
+            lap_columns,
+            run_start,
+            keys,
+            wp.int32(n_keys),
+            order,
+            cot_entries,
+        ],
+        outputs=[laplacian_values, area_offsets],
         device=device,
     )
     _launch.array_scan(area_offsets, out_array=area_offsets, inclusive=True)
@@ -1213,7 +1266,7 @@ def lscm_hessian(
             faces,
             lap_offsets,
             lap_columns,
-            laplacian.values,
+            laplacian_values,
             run_start,
             keys,
             wp.int32(n_keys),
@@ -1238,7 +1291,7 @@ def vector_area_matrix(
     winding, via [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]) it adds the
     cross-quadrant entries ``(i+n, j, -1/4)``, ``(j, i+n, -1/4)``, ``(i, j+n, +1/4)``,
     ``(j+n, i, +1/4)``. On a closed mesh (no boundary) ``A`` is the zero matrix. Built natively in
-    float64 in a single [`csr_from_triplets`][ordito.array.csr_from_triplets].
+    float64 in a single [`csr_from_coo_keys`][ordito.array.csr_from_coo_keys].
 
     Parameters
     ----------
@@ -1296,15 +1349,17 @@ def vector_area_matrix(
     if n_be == 0:
         return od.array.empty_square_bsr(2 * n_vertices, wp.float64, device)
 
-    rows, cols, vals = od.array.triplet_buffers(4 * n_be, wp.float64, device)
-    # The four cross-quadrant triplets of every oriented boundary edge.
+    keys, order = od.array.csr_key_buffers(4 * n_be, device)
+    vals = _launch.empty(4 * n_be, dtype=wp.float64, device=device)
+    # The four cross-quadrant entries of every oriented boundary edge, written as their keys.
     _launch.launch(
         kernel_energies.vector_area_triplets,
         dim=n_be,
-        inputs=[boundary, wp.int32(n_vertices), rows, cols, vals],
+        inputs=[boundary, wp.int32(n_vertices)],
+        outputs=[keys, order, vals],
         device=device,
     )
-    return od.array.csr_from_triplets(2 * n_vertices, 2 * n_vertices, rows, cols, vals)
+    return od.array.csr_from_coo_keys(2 * n_vertices, 2 * n_vertices, keys, order, vals)
 
 
 def _edge_numbering(

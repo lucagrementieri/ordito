@@ -1,8 +1,8 @@
 import warp as wp
 
-from ordito.kernels.array import OverloadTable, to_vec3d
+from ordito.kernels.array import OverloadTable, store_coo_key, to_vec3d
 from ordito.kernels.halfedge import halfedge_endpoints
-from ordito.kernels.laplacian import store_half_cotangents
+from ordito.kernels.laplacian import cotmatrix_row, store_half_cotangents
 from ordito.kernels.predicates import (
     angle_defect,
     corner_cosines_from_l2,
@@ -82,6 +82,41 @@ def dihedral_term(local: wp.int32, offset: wp.int32, terms: DihedralTerms) -> wp
     return wp.float32(1.0) - wp.cos(terms.angles[offset + local])
 
 
+@wp.func
+def smoothing_norm(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    vertices: wp.array[wp.vec3],
+    area_sums: wp.array[wp.float64],
+    method: wp.int32,
+    i: wp.int32,
+) -> wp.float32:
+    # ``|| row_scale * (L v)_i + self_scale * v_i ||`` for CSR row ``i``, with ``method``'s two
+    # scales (``laplacian_smoothing_norms`` explains them): the row walk and tail both of its
+    # kernels share, which differ only by who writes the row.
+    accumulator = wp.vec3(0.0, 0.0, 0.0)
+    diagonal = wp.float32(0.0)
+    for slot in range(offsets[i], offsets[i + 1]):
+        column = columns[slot]
+        accumulator += values[slot] * vertices[column]
+        if column == i:
+            diagonal = values[slot]
+    row_scale = wp.float32(1.0)
+    self_scale = wp.float32(-1.0)
+    if method == SMOOTHING_COT:
+        row_sum = -diagonal
+        row_scale = wp.float32(0.0)
+        if row_sum > 0.0:
+            row_scale = 1.0 / row_sum
+            self_scale = wp.float32(0.0)
+    elif method == SMOOTHING_COTCURV:
+        mass = wp.float32(area_sums[i] / wp.float64(3.0))
+        row_scale = reciprocal_scaled_or_zero(mass, wp.float32(1.0 / 6.0))
+        self_scale = wp.float32(0.0)
+    return wp.length(row_scale * accumulator + self_scale * vertices[i])
+
+
 @wp.kernel(enable_backward=False)
 def laplacian_smoothing_norms(
     offsets: wp.array[wp.int32],
@@ -121,26 +156,32 @@ def laplacian_smoothing_norms(
     # ``diagonal`` at zero and takes the same undefined-averaging fallback ``bsr_get_diag``'s own
     # zero would.
     i = wp.int32(wp.tid())
-    accumulator = wp.vec3(0.0, 0.0, 0.0)
-    diagonal = wp.float32(0.0)
-    for slot in range(offsets[i], offsets[i + 1]):
-        column = columns[slot]
-        accumulator += values[slot] * vertices[column]
-        if column == i:
-            diagonal = values[slot]
-    row_scale = wp.float32(1.0)
-    self_scale = wp.float32(-1.0)
-    if method == SMOOTHING_COT:
-        row_sum = -diagonal
-        row_scale = wp.float32(0.0)
-        if row_sum > 0.0:
-            row_scale = 1.0 / row_sum
-            self_scale = wp.float32(0.0)
-    elif method == SMOOTHING_COTCURV:
-        mass = wp.float32(area_sums[i] / wp.float64(3.0))
-        row_scale = reciprocal_scaled_or_zero(mass, wp.float32(1.0 / 6.0))
-        self_scale = wp.float32(0.0)
-    out_norms[i] = wp.length(row_scale * accumulator + self_scale * vertices[i])
+    out_norms[i] = smoothing_norm(offsets, columns, values, vertices, area_sums, method, i)
+
+
+@wp.kernel(enable_backward=False)
+def laplacian_smoothing_cot_norms(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.float32],
+    vertices: wp.array[wp.vec3],
+    area_sums: wp.array[wp.float64],
+    method: wp.int32,
+    out_values: wp.array[wp.float32],
+    out_norms: wp.array[wp.float32],
+) -> None:
+    # ``laplacian_smoothing_norms`` for the two cotangent methods, with the ``float32`` cotangent
+    # Laplacian's row written by the thread that reads it back (``kernels/laplacian.cotmatrix_row``
+    # over its mesh operator pattern), so the row's values are ``cotmatrix``'s and the residual is
+    # the stored-matrix kernel's, for one launch. Forming each entry again in the residual walk
+    # instead of storing it cost 1.4-1.5x the two kernels' device time on scrambled meshes.
+    i = wp.int32(wp.tid())
+    cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
+    out_norms[i] = smoothing_norm(offsets, columns, out_values, vertices, area_sums, method, i)
 
 
 # One ``kernels/reduce.TermSum`` per regularizer: the fused map and fixed-order (or atomic) block
@@ -185,8 +226,9 @@ def sandwich_row_triplets(
     inv_mass: wp.array[wp.Float],
     sign: wp.Float,
     segment_offsets: wp.array[wp.int32],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_rows: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_vals: wp.array[wp.Float],
 ) -> None:
     # ``(A diag(d) B)_ij = sum_t A_ti d_t B_tj``; with both operands symmetric ``A_ti`` is row
@@ -209,8 +251,7 @@ def sandwich_row_triplets(
         row = a_columns[a]
         left = a_values[a] * weight
         for b in range(b_offsets[t], b_offsets[t + 1]):
-            out_rows[cursor] = row
-            out_cols[cursor] = b_columns[b]
+            store_coo_key(cursor, row, b_columns[b], n_rows, n_rows, out_keys, out_order)
             out_vals[cursor] = left * (sign * b_values[b])
             cursor += 1
 
@@ -424,8 +465,9 @@ def hessian_energy_triplets(
     areas: wp.array[wp.float64],
     inv_mass: wp.array[wp.float64],
     segment_offsets: wp.array[wp.int32],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_vals: wp.array[wp.Float],
 ) -> None:
     # ``Q = H^T Minv H`` contracted analytically over the 9 component pairs of the stacked
@@ -454,8 +496,9 @@ def hessian_energy_triplets(
                 row = faces[f * 3 + ci]
                 gradient_fi = gradients[f * 3 + ci]
                 for cj in range(3):
-                    out_rows[cursor] = row
-                    out_cols[cursor] = faces[g * 3 + cj]
+                    store_coo_key(
+                        cursor, row, faces[g * 3 + cj], n_vertices, n_vertices, out_keys, out_order
+                    )
                     out_vals[cursor] = type(out_vals[0])(
                         pair * wp.dot(gradient_fi, gradients[g * 3 + cj])
                     )
@@ -679,8 +722,9 @@ def curved_hessian_triplets(
     edge_vertex_slots: wp.array2d[wp.int32],
     par: wp.array2d[wp.float64],
     perp: wp.array2d[wp.float64],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_vals: wp.array[wp.Float],
 ) -> None:
     # Per face, the sandwich ``D^T Mi (L + K) Mi D`` restricted to this face's 6x6 block of
@@ -697,8 +741,7 @@ def curved_hessian_triplets(
         # with every other degenerate face (and every absent edge-vertex slot below) on that one
         # real matrix entry and serialize the assembly's duplicate accumulation there.
         for empty in range(144):
-            out_rows[base_out + empty] = -1
-            out_cols[base_out + empty] = -1
+            store_coo_key(base_out + empty, -1, -1, n_vertices, n_vertices, out_keys, out_order)
             out_vals[base_out + empty] = type(out_vals[0])(0.0)
         return
     # l2_0/l2_1/l2_2: column e opposite corner e (the igl intrinsic convention).
@@ -764,8 +807,9 @@ def curved_hessian_triplets(
                         )
                         out_row = row
                         out_col = col
-                    out_rows[position] = out_row
-                    out_cols[position] = out_col
+                    store_coo_key(
+                        position, out_row, out_col, n_vertices, n_vertices, out_keys, out_order
+                    )
                     out_vals[position] = type(out_vals[0])(value)
 
 
@@ -959,7 +1003,7 @@ def lscm_boundary_side(
 
 
 @wp.kernel
-def lscm_boundary_counts(
+def lscm_laplacian_rows_and_counts(
     faces: wp.array[wp.int32],
     laplacian_offsets: wp.array[wp.int32],
     laplacian_columns: wp.array[wp.int32],
@@ -967,11 +1011,26 @@ def lscm_boundary_counts(
     keys: wp.array[wp.uint64],
     n_keys: wp.int32,
     order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    out_laplacian_values: wp.array[wp.float64],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # Each vertex's boundary edge count into slot ``r + 1`` (thread 0 also writes the leading
-    # zero), whose inclusive scan places every row's ``-2 A`` entries in ``lscm_hessian_csr``.
+    # One thread per vertex over ``L``'s pattern: row ``r`` of the ``float64`` cotangent Laplacian
+    # (``kernels/laplacian.cotmatrix_row``, as ``cotmatrix_rows`` writes it), and the vertex's
+    # boundary edge count into slot ``r + 1`` (thread 0 also writes the leading zero), whose
+    # inclusive scan places every row's ``-2 A`` entries in ``lscm_hessian_csr``.
     r = wp.int32(wp.tid())
+    cotmatrix_row(
+        r,
+        laplacian_offsets,
+        laplacian_columns,
+        run_start,
+        keys,
+        n_keys,
+        order,
+        cot_entries,
+        out_laplacian_values,
+    )
     if r == 0:
         out_counts[0] = 0
     count = wp.int32(0)
@@ -1010,9 +1069,9 @@ def lscm_hessian_csr(
     # followed by ``-2 A``'s (columns from ``n``), and a lower row ``r + n`` is ``-2 A``'s row
     # (columns below ``n``) followed by ``-L``'s row ``r`` shifted by ``n``; both walk ``L``'s
     # sorted row, so each row stays sorted. ``area_offsets`` is the scan of
-    # ``lscm_boundary_counts``: a row's start is ``L.offsets[r] + area_offsets[r]`` above and
-    # ``L.offsets[n] + area_offsets[n] + L.offsets[r - n] + area_offsets[r - n]`` below. Thread 0
-    # also writes the leading zero.
+    # ``lscm_laplacian_rows_and_counts``: a row's start is ``L.offsets[r] + area_offsets[r]``
+    # above and ``L.offsets[n] + area_offsets[n] + L.offsets[r - n] + area_offsets[r - n]`` below.
+    # Thread 0 also writes the leading zero.
     r = wp.int32(wp.tid())
     vertex = r
     shift = wp.int32(0)
@@ -1055,8 +1114,8 @@ def lscm_hessian_csr(
 def vector_area_triplets(
     boundary_edges: wp.array2d[wp.int32],
     n_vertices: wp.int32,
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
     out_vals: wp.array[wp.float64],
 ) -> None:
     # ``igl::vector_area_matrix``: per oriented boundary edge ``(i, j)`` the four cross-quadrant
@@ -1068,17 +1127,14 @@ def vector_area_triplets(
     j = boundary_edges[b, 1]
     q = wp.float64(0.25)
     base = 4 * b
-    out_rows[base] = i + n_vertices
-    out_cols[base] = j
+    size = 2 * n_vertices
+    store_coo_key(base, i + n_vertices, j, size, size, out_keys, out_order)
     out_vals[base] = -q
-    out_rows[base + 1] = j
-    out_cols[base + 1] = i + n_vertices
+    store_coo_key(base + 1, j, i + n_vertices, size, size, out_keys, out_order)
     out_vals[base + 1] = -q
-    out_rows[base + 2] = i
-    out_cols[base + 2] = j + n_vertices
+    store_coo_key(base + 2, i, j + n_vertices, size, size, out_keys, out_order)
     out_vals[base + 2] = q
-    out_rows[base + 3] = j + n_vertices
-    out_cols[base + 3] = i
+    store_coo_key(base + 3, j + n_vertices, i, size, size, out_keys, out_order)
     out_vals[base + 3] = q
 
 
@@ -1102,13 +1158,14 @@ SANDWICH_ROW_COUNTS: OverloadTable
 SANDWICH_ROW_TRIPLETS: OverloadTable
 HESSIAN_ENERGY_TRIPLETS: OverloadTable
 CURVED_HESSIAN_TRIPLETS: OverloadTable
+LSCM_LAPLACIAN_ROWS_AND_COUNTS: OverloadTable
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_CSR
     global SANDWICH_ROW_COUNTS, SANDWICH_ROW_TRIPLETS
-    global HESSIAN_ENERGY_TRIPLETS, CURVED_HESSIAN_TRIPLETS
+    global HESSIAN_ENERGY_TRIPLETS, CURVED_HESSIAN_TRIPLETS, LSCM_LAPLACIAN_ROWS_AND_COUNTS
     i32 = wp.array[wp.int32]
     CROUZEIX_RAVIART_MASS_DIAG = OverloadTable(
         crouzeix_raviart_mass_diag,
@@ -1145,7 +1202,8 @@ def _register_overloads() -> None:
                 wp.array[d],
                 d,
                 i32,
-                i32,
+                wp.int32,
+                wp.array[wp.uint64],
                 i32,
                 wp.array[d],
             ]
@@ -1163,7 +1221,8 @@ def _register_overloads() -> None:
                 wp.array[wp.float64],
                 wp.array[wp.float64],
                 i32,
-                i32,
+                wp.int32,
+                wp.array[wp.uint64],
                 i32,
                 wp.array[d],
             ]
@@ -1183,9 +1242,29 @@ def _register_overloads() -> None:
                 wp.array2d[wp.int32],
                 wp.array2d[wp.float64],
                 wp.array2d[wp.float64],
-                i32,
+                wp.int32,
+                wp.array[wp.uint64],
                 i32,
                 wp.array[d],
+            ]
+            for d in _MATRIX_DTYPES
+        },
+    )
+    # Keyed on the half-cotangents' dtype alone: the Laplacian is always ``float64`` here.
+    LSCM_LAPLACIAN_ROWS_AND_COUNTS = OverloadTable(
+        lscm_laplacian_rows_and_counts,
+        {
+            d: [
+                i32,
+                i32,
+                i32,
+                i32,
+                wp.array[wp.uint64],
+                wp.int32,
+                i32,
+                wp.array2d[d],
+                wp.array[wp.float64],
+                i32,
             ]
             for d in _MATRIX_DTYPES
         },
