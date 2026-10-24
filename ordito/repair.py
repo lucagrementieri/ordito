@@ -854,10 +854,10 @@ def remove_non_manifold_faces(
     -------
     new_vertices : wp.array[wp.vec3]
         ``(n_new_vertices,)`` vertices still referenced after non-manifold faces are dropped,
-        compacted from index zero.
+        compacted from index zero; ``vertices`` itself, not a copy, when no face is dropped.
     new_faces : wp.array[wp.int32]
         ``(3 * n_new_faces,)`` flat buffer of the surviving (edge-manifold, up to ``max_iter``
-        passes) faces.
+        passes) faces; ``faces`` itself, not a copy, when no face is dropped.
 
     Raises
     ------
