@@ -1638,15 +1638,20 @@ def section_rim_edges(
     rim: wp.array2d[wp.int32],
     source: wp.array[wp.int32],
     shifted: wp.array[wp.float32],
+    vertices: wp.array[wp.vec3],
     out_rows: wp.array2d[wp.int32],
+    out_points: wp.array2d[wp.vec3],
 ) -> None:
     # Rim edge ``e`` and whether it has both ends on the level set, i.e. is a section edge, as one
-    # ``(a, b, flag)`` row, so the host reads the edges and their flags back in one copy.
+    # ``(a, b, flag)`` row, and its two ends' positions, so the host reads the edges, their flags
+    # and the points it chains and judges the section loops by back in one copy.
     e = wp.int32(wp.tid())
     a = rim[e, 0]
     b = rim[e, 1]
     out_rows[e, 0] = a
     out_rows[e, 1] = b
+    out_points[e, 0] = vertices[a]
+    out_points[e, 1] = vertices[b]
     out_rows[e, 2] = wp.where(
         on_level_set(source, shifted, a) and on_level_set(source, shifted, b),
         wp.int32(1),

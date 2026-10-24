@@ -1944,73 +1944,142 @@ def clip_mesh_with_field(
     n_rim = int(rim.shape[0])
     if n_rim == 0:
         return new_vertices, new_faces
-    rim_rows = odt.empty_2d((n_rim, 3), wp.int32, device=device)
+    # The rows ``(a, b, flag)`` and both ends' positions share one byte buffer, read in one copy.
+    record = _launch.empty(36 * n_rim, dtype=wp.uint8, device=device)
+    assert record.ptr is not None
+    rim_rows = wp.array(ptr=int(record.ptr), dtype=wp.int32, shape=(n_rim, 3), device=device)
+    rim_points = wp.array(
+        ptr=int(record.ptr) + 12 * n_rim, dtype=wp.vec3, shape=(n_rim, 2), device=device
+    )
     _launch.launch(
         kernel_intersections.section_rim_edges,
         dim=n_rim,
-        inputs=[rim, source, shifted, rim_rows],
+        inputs=[rim, source, shifted, new_vertices],
+        outputs=[rim_rows, rim_points],
         device=device,
     )
-    # Readback: the section edges are chained on the host.
-    rim_rows_np = rim_rows.numpy()
-    section_np = rim_rows_np[rim_rows_np[:, 2] != 0, :2]
+    # Readback: the section edges are chained, and their loops judged, on the host.
+    record_np = record.numpy()
+    rim_rows_np = record_np[: 12 * n_rim].view(np.int32).reshape(n_rim, 3)
+    section = rim_rows_np[:, 2] != 0
+    section_np = rim_rows_np[section, :2]
     if section_np.shape[0] == 0:
         return new_vertices, new_faces
     # The section's vertices are numbered compactly for the chaining, so its tables are sized by
-    # the section rather than the mesh; one upload carries the edges and the numbering back.
+    # the section rather than the mesh.
     section_ids, compact_np = np.unique(section_np, return_inverse=True)
+    compact_np = compact_np.reshape(-1, 2)
     n_ids = section_ids.size
-    upload = _launch.array(
-        np.concatenate((section_ids, compact_np.reshape(-1))).astype(np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
-    section_edges = odt.as_array2d(odt.as_dense(upload[n_ids:]).reshape((-1, 2)), wp.int32)
-    compact_cycles, offsets = od.graph.successor_cycles(section_edges, n_ids, validate=False)
-    if compact_cycles.size == 0:
+    compact_cycles, offsets = _section_cycles(compact_np, n_ids, device)
+    n_flat = compact_cycles.size
+    if n_flat == 0:
         return new_vertices, new_faces
-    cycles = cast(
-        "wp.array[wp.int32]", od.array.gather(odt.as_dense(upload[:n_ids]), compact_cycles)
+    # The ranked loops and their offsets cross in one copy; the host then gathers their points and
+    # vertices itself. The ranking returns them adjacent in one allocation, read through one view.
+    n_offsets = offsets.size
+    assert compact_cycles.ptr is not None
+    if offsets.ptr == int(compact_cycles.ptr) + 4 * n_flat:
+        ranked = wp.array(
+            ptr=int(compact_cycles.ptr), dtype=wp.int32, shape=(n_flat + n_offsets,), device=device
+        )
+    else:
+        ranked = _launch.empty(n_flat + n_offsets, dtype=wp.int32, device=device)
+        _launch.copy(ranked, compact_cycles, count=n_flat)
+        _launch.copy(ranked, offsets, dest_offset=n_flat, count=n_offsets)
+    # Readback: the loops' order and sizes, over the section alone.
+    ranked_np = ranked.numpy()
+    flat_np = ranked_np[:n_flat]
+    # Each section vertex's position, from either end of a section edge it lies on.
+    points_np = np.empty((n_ids, 3), dtype=np.float32)
+    section_points_np = record_np[12 * n_rim :].view(np.float32).reshape(n_rim, 2, 3)[section]
+    points_np[compact_np[:, 1]] = section_points_np[:, 1]
+    points_np[compact_np[:, 0]] = section_points_np[:, 0]
+    return new_vertices, _cap_section_loops(
+        new_vertices,
+        new_faces,
+        section_ids[flat_np].astype(np.int32),
+        ranked_np[n_flat:].copy(),
+        points_np[flat_np],
     )
-    return new_vertices, _cap_section_loops(new_vertices, new_faces, cycles, offsets)
+
+
+def _section_cycles(
+    edges_np: np.ndarray, node_count: int, device: wp.DeviceLike
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    [`successor_cycles`][ordito.graph.successor_cycles] of the compactly numbered section edges.
+
+    On a true successor graph, no node with two edges in or out, the successor table is formed on
+    the host and ranked straight off it
+    ([`successor_cycles_from_table`][ordito.graph.successor_cycles_from_table]), with no scatter
+    and no fill; anything else takes the edge list, whose colliding ranks are the answer there.
+    """
+    tails_np = edges_np[:, 0]
+    out_degree = np.bincount(tails_np, minlength=node_count)
+    in_degree = np.bincount(edges_np[:, 1], minlength=node_count)
+    if int(out_degree.max()) <= 1 and int(in_degree.max()) <= 1:
+        table_np = np.empty(node_count + tails_np.size, dtype=np.int32)
+        table_np[:node_count] = -1
+        table_np[tails_np] = edges_np[:, 1]
+        table_np[node_count:] = tails_np
+        table = _launch.array(table_np, dtype=wp.int32, device=device)
+        return od.graph.successor_cycles_from_table(
+            _launch.view(table, node_count, table.size), _launch.view(table, 0, node_count)
+        )
+    section_edges = odt.as_array2d(
+        _launch.array(edges_np.astype(np.int32), dtype=wp.int32, device=device), wp.int32
+    )
+    return od.graph.successor_cycles(section_edges, node_count, validate=False)
 
 
 def _cap_section_loops(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    cycles: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
+    cycles_np: np.ndarray,
+    offsets_np: np.ndarray,
+    points_np: np.ndarray,
 ) -> wp.array[wp.int32]:
     """
     Append a cap for every section loop to ``faces``.
 
-    A planar loop is ear-clipped, any other gets the min-weight fill. A loop is planar when every
-    point lies within ``_CAP_PLANAR_TOLERANCE`` of the loop's extent from its best-fit plane, which
-    a plane field's section always does. Such a loop is a polygon, and is triangulated as one, as
-    VTK caps its clipped contours; a loop whose ear clip does not return the full ``B - 2``
-    triangles (a projection that is not a simple polygon) falls back to the min-weight fill with
-    the non-planar loops.
+    ``cycles_np`` / ``offsets_np`` are the loops' vertices packed with their ``int32`` offsets, and
+    ``points_np`` their ``float32`` positions, all on the host. A planar loop is ear-clipped, any
+    other gets the min-weight fill. A loop is planar when every point lies within
+    ``_CAP_PLANAR_TOLERANCE`` of the loop's extent from its best-fit plane, which a plane field's
+    section always does. Such a loop is a polygon, and is triangulated as one, as VTK caps its
+    clipped contours; a loop whose ear clip does not return the full ``B - 2`` triangles (a
+    projection that is not a simple polygon) falls back to the min-weight fill with the non-planar
+    loops.
     """
     device = vertices.device
-    n_loops = offsets.size - 1
-    n_points = cycles.size
-    # The loop offsets, the loops' face offsets and their points share one byte buffer, so the host
-    # reads everything it decides on in one copy: offsets first, then face offsets (both 4-byte
-    # aligned), then the points' ``float32`` words.
-    offsets_bytes = 4 * (n_loops + 1)
-    packed = _launch.empty(2 * offsets_bytes + 12 * n_points, dtype=wp.uint8, device=device)
-    gathered = _byte_view(packed, 2 * offsets_bytes, wp.vec3, n_points)
-    _launch.copy(gathered, vertices[cycles])
-    _launch.copy(_byte_view(packed, 0, wp.int32, n_loops + 1), offsets)
-    # Every loop is ear-clipped, all of them together, while the host tests which are planar; a
-    # non-planar loop's triangulation is then discarded.
-    triangulated, face_offsets = od.polyline.polyline_triangulate_from_offsets(gathered, offsets)
-    _launch.copy(_byte_view(packed, offsets_bytes, wp.int32, n_loops + 1), face_offsets)
-    # Readback: the planarity test and the loop sizes, over the section alone.
-    packed_np = packed.numpy()
-    offsets_np = packed_np[:offsets_bytes].view(np.int32)
-    face_offsets_np = packed_np[offsets_bytes : 2 * offsets_bytes].view(np.int32)
-    points_np = packed_np[2 * offsets_bytes :].view(np.float32).reshape(-1, 3).astype(np.float64)
+    n_loops = offsets_np.size - 1
+    n_points = cycles_np.size
+    # The loop offsets, the loops and their points go up in one upload: ``int32`` offsets, then the
+    # ``int32`` loop vertices, then the points' ``float32`` words.
+    upload = _launch.array(
+        np.concatenate(
+            (offsets_np.view(np.uint8), cycles_np.view(np.uint8), points_np.view(np.uint8).ravel())
+        ),
+        dtype=wp.uint8,
+        device=device,
+    )
+    offsets = _byte_view(upload, 0, wp.int32, n_loops + 1)
+    cycles = _byte_view(upload, 4 * (n_loops + 1), wp.int32, n_points)
+    gathered = _byte_view(upload, 4 * (n_loops + 1 + n_points), wp.vec3, n_points)
+    # Every loop is ear-clipped, all of them together; a non-planar loop's triangulation is then
+    # discarded.
+    triangulated, face_offsets = od.polyline.polyline_triangulate_from_offsets(
+        gathered, offsets, host_offsets=offsets_np.tolist()
+    )
+    # A loop of ``k >= 3`` points writes at most ``k - 2`` rows, so when the rows add up to that
+    # every loop wrote them all and the face offsets need no readback.
+    sizes_np = np.diff(offsets_np)
+    full_np = np.maximum(sizes_np - 2, 0)
+    if int(triangulated.shape[0]) == int(full_np.sum()):
+        rows_np = full_np
+    else:
+        # Readback: the rows each loop wrote, which decide its cap.
+        rows_np = np.diff(face_offsets.numpy())
 
     cap_rows_np = np.full(n_loops, -1, dtype=np.int32)
     n_cap_rows = 0
@@ -2019,8 +2088,12 @@ def _cap_section_loops(
         zip(offsets_np[:-1].tolist(), offsets_np[1:].tolist(), strict=True)
     ):
         size = stop - start
-        n_rows = int(face_offsets_np[r + 1] - face_offsets_np[r])
-        if size >= 3 and n_rows == size - 2 and _is_planar_loop(points_np[start:stop]):
+        n_rows = int(rows_np[r])
+        if (
+            size >= 3
+            and n_rows == size - 2
+            and _is_planar_loop(points_np[start:stop].astype(np.float64))
+        ):
             cap_rows_np[r] = n_cap_rows
             n_cap_rows += n_rows
             continue
