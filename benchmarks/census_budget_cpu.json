@@ -298,8 +298,8 @@
  },
  "benchmarks/test_array.py::test_index_sparse[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 4,
-   "alloc": 7,
+   "launch": 3,
+   "alloc": 6,
    "scan": 1,
    "sort": 1
   }
@@ -450,7 +450,7 @@
  "benchmarks/test_boundary.py::test_boundary_loops[holes_many-ordito-cpu]": {
   "counts": {
    "launch": 8,
-   "alloc": 11,
+   "alloc": 9,
    "readback": 3,
    "scan": 2,
    "sort": 1
@@ -459,7 +459,7 @@
  "benchmarks/test_boundary.py::test_boundary_loops[rim_long-ordito-cpu]": {
   "counts": {
    "launch": 10,
-   "alloc": 11,
+   "alloc": 9,
    "readback": 3,
    "scan": 2,
    "sort": 1
@@ -477,7 +477,7 @@
  "benchmarks/test_boundary.py::test_boundary_loops_with_offsets[holes_many-ordito-cpu]": {
   "counts": {
    "launch": 8,
-   "alloc": 11,
+   "alloc": 9,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -486,7 +486,7 @@
  "benchmarks/test_boundary.py::test_boundary_loops_with_offsets[rim_long-ordito-cpu]": {
   "counts": {
    "launch": 10,
-   "alloc": 11,
+   "alloc": 9,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1675,8 +1675,8 @@
  },
  "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_large-ordito-cpu]": {
   "counts": {
-   "launch": 10,
-   "alloc": 21,
+   "launch": 9,
+   "alloc": 19,
    "readback": 2,
    "scan": 2,
    "sort": 2
@@ -1684,8 +1684,8 @@
  },
  "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_med-ordito-cpu]": {
   "counts": {
-   "launch": 10,
-   "alloc": 21,
+   "launch": 9,
+   "alloc": 19,
    "readback": 2,
    "scan": 2,
    "sort": 2
@@ -1693,8 +1693,8 @@
  },
  "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 10,
-   "alloc": 21,
+   "launch": 9,
+   "alloc": 19,
    "readback": 2,
    "scan": 2,
    "sort": 2
@@ -1729,8 +1729,8 @@
  },
  "benchmarks/test_energies.py::test_hessian_energy[sphere_large-ordito-cpu]": {
   "counts": {
-   "launch": 8,
-   "alloc": 17,
+   "launch": 7,
+   "alloc": 15,
    "readback": 1,
    "scan": 3,
    "sort": 1
@@ -1738,8 +1738,8 @@
  },
  "benchmarks/test_energies.py::test_hessian_energy[sphere_med-ordito-cpu]": {
   "counts": {
-   "launch": 8,
-   "alloc": 17,
+   "launch": 7,
+   "alloc": 15,
    "readback": 1,
    "scan": 3,
    "sort": 1
@@ -1747,8 +1747,8 @@
  },
  "benchmarks/test_energies.py::test_hessian_energy[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 8,
-   "alloc": 17,
+   "launch": 7,
+   "alloc": 15,
    "readback": 1,
    "scan": 3,
    "sort": 1
@@ -1756,8 +1756,8 @@
  },
  "benchmarks/test_energies.py::test_k_harmonic[sphere_large-ordito-cpu]": {
   "counts": {
-   "launch": 5,
-   "alloc": 11,
+   "launch": 4,
+   "alloc": 9,
    "readback": 1,
    "scan": 2,
    "sort": 1
@@ -1765,8 +1765,8 @@
  },
  "benchmarks/test_energies.py::test_k_harmonic[sphere_med-ordito-cpu]": {
   "counts": {
-   "launch": 5,
-   "alloc": 11,
+   "launch": 4,
+   "alloc": 9,
    "readback": 1,
    "scan": 2,
    "sort": 1
@@ -1774,8 +1774,8 @@
  },
  "benchmarks/test_energies.py::test_k_harmonic[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 5,
-   "alloc": 11,
+   "launch": 4,
+   "alloc": 9,
    "readback": 1,
    "scan": 2,
    "sort": 1
@@ -1783,7 +1783,7 @@
  },
  "benchmarks/test_energies.py::test_laplacian_smoothing_loss[sphere_large-ordito-cpu-cotcurv]": {
   "counts": {
-   "launch": 7,
+   "launch": 6,
    "alloc": 10,
    "readback": 1,
    "scan": 1,
@@ -1801,7 +1801,7 @@
  },
  "benchmarks/test_energies.py::test_laplacian_smoothing_loss[sphere_med-ordito-cpu-cotcurv]": {
   "counts": {
-   "launch": 7,
+   "launch": 6,
    "alloc": 10,
    "readback": 1,
    "scan": 1,
@@ -1819,7 +1819,7 @@
  },
  "benchmarks/test_energies.py::test_laplacian_smoothing_loss[sphere_small-ordito-cpu-cotcurv]": {
   "counts": {
-   "launch": 7,
+   "launch": 6,
    "alloc": 10,
    "readback": 1,
    "scan": 1,
@@ -1837,7 +1837,7 @@
  },
  "benchmarks/test_energies.py::test_lscm_hessian[sphere_large-ordito-cpu]": {
   "counts": {
-   "launch": 7,
+   "launch": 6,
    "alloc": 11,
    "readback": 1,
    "scan": 2,
@@ -1846,7 +1846,7 @@
  },
  "benchmarks/test_energies.py::test_lscm_hessian[sphere_med-ordito-cpu]": {
   "counts": {
-   "launch": 7,
+   "launch": 6,
    "alloc": 11,
    "readback": 1,
    "scan": 2,
@@ -1855,7 +1855,7 @@
  },
  "benchmarks/test_energies.py::test_lscm_hessian[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 7,
+   "launch": 6,
    "alloc": 11,
    "readback": 1,
    "scan": 2,
@@ -1891,8 +1891,8 @@
  },
  "benchmarks/test_energies.py::test_vector_area_matrix[hemisphere-ordito-cpu]": {
   "counts": {
-   "launch": 8,
-   "alloc": 13,
+   "launch": 7,
+   "alloc": 11,
    "readback": 1,
    "scan": 2,
    "sort": 2
@@ -1900,8 +1900,8 @@
  },
  "benchmarks/test_energies.py::test_vector_area_matrix[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 8,
-   "alloc": 13,
+   "launch": 7,
+   "alloc": 11,
    "readback": 1,
    "scan": 2,
    "sort": 2
@@ -1909,8 +1909,8 @@
  },
  "benchmarks/test_energies.py::test_vector_area_matrix[saddle_small-ordito-cpu]": {
   "counts": {
-   "launch": 8,
-   "alloc": 13,
+   "launch": 7,
+   "alloc": 11,
    "readback": 1,
    "scan": 2,
    "sort": 2
@@ -1945,8 +1945,8 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-1]": {
   "counts": {
-   "launch": 1105,
-   "alloc": 37,
+   "launch": 1104,
+   "alloc": 34,
    "h2h": 2,
    "readback": 24,
    "scan": 3,
@@ -1955,8 +1955,8 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-4096]": {
   "counts": {
-   "launch": 1308,
-   "alloc": 53,
+   "launch": 1307,
+   "alloc": 50,
    "h2h": 3,
    "readback": 220,
    "scan": 5,
@@ -1965,8 +1965,8 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-64]": {
   "counts": {
-   "launch": 1105,
-   "alloc": 37,
+   "launch": 1104,
+   "alloc": 34,
    "h2h": 2,
    "readback": 24,
    "scan": 3,
@@ -2195,7 +2195,7 @@
  "benchmarks/test_graph.py::test_successor_cycles[sphere_large-ordito-cpu-faces]": {
   "counts": {
    "launch": 8,
-   "alloc": 8,
+   "alloc": 5,
    "h2h": 1,
    "readback": 2,
    "scan": 1
@@ -2204,7 +2204,7 @@
  "benchmarks/test_graph.py::test_successor_cycles[sphere_large-ordito-cpu-one_cycle]": {
   "counts": {
    "launch": 8,
-   "alloc": 8,
+   "alloc": 5,
    "h2h": 1,
    "readback": 2,
    "scan": 1
@@ -2213,7 +2213,7 @@
  "benchmarks/test_graph.py::test_successor_cycles[sphere_med-ordito-cpu-faces]": {
   "counts": {
    "launch": 8,
-   "alloc": 8,
+   "alloc": 5,
    "h2h": 1,
    "readback": 2,
    "scan": 1
@@ -2222,7 +2222,7 @@
  "benchmarks/test_graph.py::test_successor_cycles[sphere_med-ordito-cpu-one_cycle]": {
   "counts": {
    "launch": 7,
-   "alloc": 8,
+   "alloc": 5,
    "h2h": 1,
    "readback": 2,
    "scan": 1
@@ -2231,7 +2231,7 @@
  "benchmarks/test_graph.py::test_successor_cycles[sphere_small-ordito-cpu-faces]": {
   "counts": {
    "launch": 7,
-   "alloc": 8,
+   "alloc": 5,
    "h2h": 1,
    "readback": 2,
    "scan": 1
@@ -2240,7 +2240,7 @@
  "benchmarks/test_graph.py::test_successor_cycles[sphere_small-ordito-cpu-one_cycle]": {
   "counts": {
    "launch": 6,
-   "alloc": 8,
+   "alloc": 5,
    "h2h": 1,
    "readback": 2,
    "scan": 1
@@ -2249,7 +2249,7 @@
  "benchmarks/test_graph.py::test_successor_cycles_from_table[sphere_large-ordito-cpu-faces]": {
   "counts": {
    "launch": 6,
-   "alloc": 5,
+   "alloc": 3,
    "readback": 1,
    "scan": 1
   }
@@ -2257,7 +2257,7 @@
  "benchmarks/test_graph.py::test_successor_cycles_from_table[sphere_large-ordito-cpu-one_cycle]": {
   "counts": {
    "launch": 6,
-   "alloc": 5,
+   "alloc": 3,
    "readback": 1,
    "scan": 1
   }
@@ -2265,7 +2265,7 @@
  "benchmarks/test_graph.py::test_successor_cycles_from_table[sphere_med-ordito-cpu-faces]": {
   "counts": {
    "launch": 6,
-   "alloc": 5,
+   "alloc": 3,
    "readback": 1,
    "scan": 1
   }
@@ -2273,7 +2273,7 @@
  "benchmarks/test_graph.py::test_successor_cycles_from_table[sphere_med-ordito-cpu-one_cycle]": {
   "counts": {
    "launch": 5,
-   "alloc": 5,
+   "alloc": 3,
    "readback": 1,
    "scan": 1
   }
@@ -2281,7 +2281,7 @@
  "benchmarks/test_graph.py::test_successor_cycles_from_table[sphere_small-ordito-cpu-faces]": {
   "counts": {
    "launch": 5,
-   "alloc": 5,
+   "alloc": 3,
    "readback": 1,
    "scan": 1
   }
@@ -2289,7 +2289,7 @@
  "benchmarks/test_graph.py::test_successor_cycles_from_table[sphere_small-ordito-cpu-one_cycle]": {
   "counts": {
    "launch": 4,
-   "alloc": 5,
+   "alloc": 3,
    "readback": 1,
    "scan": 1
   }
@@ -2560,7 +2560,7 @@
  "benchmarks/test_heat.py::test_extend_scalar[saddle-ordito-cpu]": {
   "counts": {
    "launch": 658,
-   "alloc": 18,
+   "alloc": 16,
    "h2h": 1,
    "readback": 22,
    "scan": 1,
@@ -2570,7 +2570,7 @@
  "benchmarks/test_heat.py::test_extend_scalar[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 1099,
-   "alloc": 155,
+   "alloc": 153,
    "h2h": 4,
    "readback": 30,
    "scan": 21,
@@ -2587,8 +2587,8 @@
  },
  "benchmarks/test_heat.py::test_heat_geodesic[sphere_large-ordito-cpu-full]": {
   "counts": {
-   "launch": 2650,
-   "alloc": 21,
+   "launch": 2649,
+   "alloc": 17,
    "h2h": 2,
    "readback": 40,
    "scan": 1,
@@ -2605,8 +2605,8 @@
  },
  "benchmarks/test_heat.py::test_heat_geodesic[sphere_med-ordito-cpu-full]": {
   "counts": {
-   "launch": 1094,
-   "alloc": 20,
+   "launch": 1093,
+   "alloc": 17,
    "h2h": 2,
    "readback": 22,
    "scan": 1,
@@ -2623,8 +2623,8 @@
  },
  "benchmarks/test_heat.py::test_heat_geodesic[sphere_small-ordito-cpu-full]": {
   "counts": {
-   "launch": 494,
-   "alloc": 21,
+   "launch": 493,
+   "alloc": 17,
    "h2h": 2,
    "readback": 10,
    "scan": 1,
@@ -2633,8 +2633,8 @@
  },
  "benchmarks/test_heat.py::test_heat_geodesic_conditioning[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 1586,
-   "alloc": 21,
+   "launch": 1585,
+   "alloc": 17,
    "h2h": 2,
    "readback": 28,
    "scan": 1,
@@ -2644,7 +2644,7 @@
  "benchmarks/test_heat.py::test_heat_geodesic_conditioning[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 1324,
-   "alloc": 177,
+   "alloc": 175,
    "h2h": 7,
    "readback": 31,
    "scan": 21,
@@ -2653,8 +2653,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cpu-band]": {
   "counts": {
-   "launch": 812,
-   "alloc": 47,
+   "launch": 811,
+   "alloc": 43,
    "h2h": 2,
    "readback": 14,
    "scan": 3,
@@ -2663,8 +2663,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cpu-ring]": {
   "counts": {
-   "launch": 1752,
-   "alloc": 47,
+   "launch": 1751,
+   "alloc": 43,
    "h2h": 2,
    "readback": 28,
    "scan": 3,
@@ -2673,8 +2673,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_conditioning[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 1326,
-   "alloc": 47,
+   "launch": 1325,
+   "alloc": 43,
    "h2h": 2,
    "readback": 22,
    "scan": 3,
@@ -2684,7 +2684,7 @@
  "benchmarks/test_heat.py::test_heat_signed_distance_conditioning[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 1546,
-   "alloc": 321,
+   "alloc": 319,
    "h2h": 7,
    "readback": 35,
    "scan": 44,
@@ -2693,8 +2693,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_constraint[sphere_med-ordito-cpu-none]": {
   "counts": {
-   "launch": 1361,
-   "alloc": 39,
+   "launch": 1360,
+   "alloc": 36,
    "h2h": 2,
    "readback": 24,
    "scan": 2,
@@ -2703,8 +2703,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_constraint[sphere_med-ordito-cpu-zero_set]": {
   "counts": {
-   "launch": 1752,
-   "alloc": 46,
+   "launch": 1751,
+   "alloc": 43,
    "h2h": 2,
    "readback": 28,
    "scan": 3,
@@ -2779,8 +2779,8 @@
  },
  "benchmarks/test_heat.py::test_log_map[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 1600,
-   "alloc": 45,
+   "launch": 1599,
+   "alloc": 42,
    "h2h": 3,
    "readback": 28,
    "scan": 2,
@@ -2790,7 +2790,7 @@
  "benchmarks/test_heat.py::test_log_map[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 1804,
-   "alloc": 340,
+   "alloc": 338,
    "h2h": 11,
    "readback": 36,
    "scan": 43,
@@ -2814,7 +2814,7 @@
  "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle-ordito-cpu-full]": {
   "counts": {
    "launch": 974,
-   "alloc": 41,
+   "alloc": 39,
    "h2h": 2,
    "readback": 23,
    "scan": 2,
@@ -2832,7 +2832,7 @@
  "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle_graded-ordito-cpu-full]": {
   "counts": {
    "launch": 1929,
-   "alloc": 316,
+   "alloc": 314,
    "h2h": 8,
    "readback": 36,
    "scan": 43,
@@ -2842,7 +2842,7 @@
  "benchmarks/test_heat.py::test_transport_tangent_vectors_scale[sphere_large-ordito-cpu]": {
   "counts": {
    "launch": 1524,
-   "alloc": 41,
+   "alloc": 39,
    "h2h": 2,
    "readback": 34,
    "scan": 2,
@@ -2852,7 +2852,7 @@
  "benchmarks/test_heat.py::test_transport_tangent_vectors_scale[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 824,
-   "alloc": 41,
+   "alloc": 39,
    "h2h": 2,
    "readback": 20,
    "scan": 2,
@@ -2862,7 +2862,7 @@
  "benchmarks/test_heat.py::test_transport_tangent_vectors_scale[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 228,
-   "alloc": 41,
+   "alloc": 39,
    "h2h": 2,
    "readback": 9,
    "scan": 2,
@@ -2872,7 +2872,7 @@
  "benchmarks/test_heat.py::test_vector_heat_operators[sphere_large-ordito-cpu]": {
   "counts": {
    "launch": 16,
-   "alloc": 29,
+   "alloc": 27,
    "readback": 1,
    "scan": 2,
    "sort": 2
@@ -2881,7 +2881,7 @@
  "benchmarks/test_heat.py::test_vector_heat_operators[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 16,
-   "alloc": 29,
+   "alloc": 27,
    "readback": 1,
    "scan": 2,
    "sort": 2
@@ -2890,7 +2890,7 @@
  "benchmarks/test_heat.py::test_vector_heat_operators[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 16,
-   "alloc": 29,
+   "alloc": 27,
    "readback": 1,
    "scan": 2,
    "sort": 2
@@ -2929,7 +2929,7 @@
  "benchmarks/test_holes.py::test_fill_cone[holes_many-ordito-cpu]": {
   "counts": {
    "launch": 9,
-   "alloc": 13,
+   "alloc": 11,
    "h2h": 2,
    "readback": 3,
    "scan": 2,
@@ -2939,7 +2939,7 @@
  "benchmarks/test_holes.py::test_fill_cone[rim_long-ordito-cpu]": {
   "counts": {
    "launch": 11,
-   "alloc": 13,
+   "alloc": 11,
    "h2h": 2,
    "readback": 3,
    "scan": 2,
@@ -2959,7 +2959,7 @@
  "benchmarks/test_holes.py::test_fill_fan[holes_many-ordito-cpu]": {
   "counts": {
    "launch": 9,
-   "alloc": 12,
+   "alloc": 10,
    "h2h": 1,
    "readback": 3,
    "scan": 2,
@@ -2969,7 +2969,7 @@
  "benchmarks/test_holes.py::test_fill_fan[rim_long-ordito-cpu]": {
   "counts": {
    "launch": 11,
-   "alloc": 12,
+   "alloc": 10,
    "h2h": 1,
    "readback": 3,
    "scan": 2,
@@ -3007,7 +3007,7 @@
  "benchmarks/test_holes.py::test_fill_min_weight[holes_many-ordito-cpu]": {
   "counts": {
    "launch": 18,
-   "alloc": 31,
+   "alloc": 29,
    "h2h": 3,
    "readback": 6,
    "scan": 2,
@@ -3017,7 +3017,7 @@
  "benchmarks/test_holes.py::test_fill_min_weight[rim_short-ordito-cpu]": {
   "counts": {
    "launch": 527,
-   "alloc": 31,
+   "alloc": 29,
    "h2h": 3,
    "readback": 6,
    "scan": 2,
@@ -3027,7 +3027,7 @@
  "benchmarks/test_holes.py::test_fill_min_weight_chords[holes_many-ordito-cpu-chords]": {
   "counts": {
    "launch": 18,
-   "alloc": 31,
+   "alloc": 29,
    "h2h": 3,
    "readback": 6,
    "scan": 2,
@@ -3037,7 +3037,7 @@
  "benchmarks/test_holes.py::test_fill_min_weight_chords[holes_many-ordito-cpu-plain]": {
   "counts": {
    "launch": 17,
-   "alloc": 30,
+   "alloc": 28,
    "h2h": 3,
    "readback": 6,
    "scan": 2,
@@ -3047,7 +3047,7 @@
  "benchmarks/test_holes.py::test_fill_min_weight_chords[rim_short-ordito-cpu-chords]": {
   "counts": {
    "launch": 527,
-   "alloc": 31,
+   "alloc": 29,
    "h2h": 3,
    "readback": 6,
    "scan": 2,
@@ -3057,7 +3057,7 @@
  "benchmarks/test_holes.py::test_fill_min_weight_chords[rim_short-ordito-cpu-plain]": {
   "counts": {
    "launch": 526,
-   "alloc": 30,
+   "alloc": 28,
    "h2h": 3,
    "readback": 6,
    "scan": 2,
@@ -3067,7 +3067,7 @@
  "benchmarks/test_holes.py::test_fill_small[holes_many-ordito-cpu]": {
   "counts": {
    "launch": 18,
-   "alloc": 31,
+   "alloc": 29,
    "h2h": 3,
    "readback": 6,
    "scan": 2,
@@ -3077,7 +3077,7 @@
  "benchmarks/test_holes.py::test_fill_small[rim_short-ordito-cpu]": {
   "counts": {
    "launch": 8,
-   "alloc": 12,
+   "alloc": 10,
    "h2h": 1,
    "readback": 3,
    "scan": 2,
@@ -3087,7 +3087,7 @@
  "benchmarks/test_holes.py::test_fill_smooth[holes_many-ordito-cpu-dp_only]": {
   "counts": {
    "launch": 18,
-   "alloc": 33,
+   "alloc": 31,
    "h2h": 4,
    "readback": 6,
    "scan": 2,
@@ -3097,7 +3097,7 @@
  "benchmarks/test_holes.py::test_fill_smooth[holes_many-ordito-cpu-refined]": {
   "counts": {
    "launch": 62,
-   "alloc": 104,
+   "alloc": 95,
    "h2h": 3,
    "readback": 20,
    "scan": 14,
@@ -3107,7 +3107,7 @@
  "benchmarks/test_holes.py::test_fill_smooth[rim_short-ordito-cpu-dp_only]": {
   "counts": {
    "launch": 527,
-   "alloc": 33,
+   "alloc": 31,
    "h2h": 4,
    "readback": 6,
    "scan": 2,
@@ -3117,7 +3117,7 @@
  "benchmarks/test_holes.py::test_fill_smooth[rim_short-ordito-cpu-refined]": {
   "counts": {
    "launch": 809,
-   "alloc": 110,
+   "alloc": 101,
    "h2h": 3,
    "readback": 76,
    "scan": 18,
@@ -3127,7 +3127,7 @@
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_dense-ordito-cpu-derived]": {
   "counts": {
    "launch": 66,
-   "alloc": 107,
+   "alloc": 98,
    "h2h": 3,
    "readback": 20,
    "scan": 15,
@@ -3137,7 +3137,7 @@
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_dense-ordito-cpu-explicit]": {
   "counts": {
    "launch": 65,
-   "alloc": 106,
+   "alloc": 97,
    "h2h": 3,
    "readback": 19,
    "scan": 15,
@@ -3147,7 +3147,7 @@
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_many-ordito-cpu-derived]": {
   "counts": {
    "launch": 62,
-   "alloc": 104,
+   "alloc": 95,
    "h2h": 3,
    "readback": 20,
    "scan": 14,
@@ -3157,7 +3157,7 @@
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_many-ordito-cpu-explicit]": {
   "counts": {
    "launch": 61,
-   "alloc": 103,
+   "alloc": 94,
    "h2h": 3,
    "readback": 19,
    "scan": 14,
@@ -3204,7 +3204,7 @@
  "benchmarks/test_holes.py::test_refill_region[sphere_small-ordito-cpu-dp_only]": {
   "counts": {
    "launch": 106,
-   "alloc": 41,
+   "alloc": 39,
    "h2h": 4,
    "readback": 7,
    "scan": 3,
@@ -3214,7 +3214,7 @@
  "benchmarks/test_holes.py::test_refill_region[sphere_small-ordito-cpu-refined]": {
   "counts": {
    "launch": 262,
-   "alloc": 194,
+   "alloc": 164,
    "h2h": 4,
    "readback": 52,
    "scan": 32,
@@ -3224,7 +3224,7 @@
  "benchmarks/test_holes.py::test_stitch[rim_short-ordito-cpu]": {
   "counts": {
    "launch": 21,
-   "alloc": 29,
+   "alloc": 25,
    "h2h": 4,
    "readback": 5,
    "scan": 4,
@@ -3251,7 +3251,7 @@
  "benchmarks/test_holes.py::test_stitch_min_weight[rim_short-ordito-cpu]": {
   "counts": {
    "launch": 62,
-   "alloc": 47,
+   "alloc": 43,
    "h2h": 5,
    "readback": 7,
    "scan": 4,
@@ -3261,7 +3261,7 @@
  "benchmarks/test_holes.py::test_stitch_smooth[rim_short-ordito-cpu]": {
   "counts": {
    "launch": 116,
-   "alloc": 128,
+   "alloc": 117,
    "h2h": 7,
    "readback": 22,
    "scan": 18,
@@ -3399,7 +3399,7 @@
  "benchmarks/test_intersection.py::test_clip_mesh_with_field[sphere_small-ordito-cpu-True]": {
   "counts": {
    "launch": 23,
-   "alloc": 38,
+   "alloc": 34,
    "h2h": 4,
    "readback": 9,
    "scan": 7,
@@ -4022,8 +4022,8 @@
  "benchmarks/test_linalg.py::test_multigrid_preconditioner[saddle-ordito-cpu]": {
   "counts": {
    "launch": 84,
-   "alloc": 87,
-   "h2h": 5,
+   "alloc": 62,
+   "h2h": 4,
    "readback": 25,
    "scan": 14,
    "sort": 8
@@ -4032,8 +4032,8 @@
  "benchmarks/test_linalg.py::test_multigrid_preconditioner[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 123,
-   "alloc": 129,
-   "h2h": 7,
+   "alloc": 92,
+   "h2h": 6,
    "readback": 34,
    "scan": 21,
    "sort": 12
@@ -4261,7 +4261,7 @@
  "benchmarks/test_mesh.py::test_boundary_loops[holes_many-ordito-cpu-cold]": {
   "counts": {
    "launch": 8,
-   "alloc": 11,
+   "alloc": 9,
    "readback": 3,
    "scan": 2,
    "sort": 1
@@ -4273,7 +4273,7 @@
  "benchmarks/test_mesh.py::test_boundary_loops[rim_long-ordito-cpu-cold]": {
   "counts": {
    "launch": 10,
-   "alloc": 11,
+   "alloc": 9,
    "readback": 3,
    "scan": 2,
    "sort": 1
@@ -4541,7 +4541,7 @@
  "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_large-ordito-cpu-cold]": {
   "counts": {
    "launch": 16,
-   "alloc": 29,
+   "alloc": 27,
    "readback": 1,
    "scan": 2,
    "sort": 2
@@ -4553,7 +4553,7 @@
  "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_med-ordito-cpu-cold]": {
   "counts": {
    "launch": 16,
-   "alloc": 29,
+   "alloc": 27,
    "readback": 1,
    "scan": 2,
    "sort": 2
@@ -4565,7 +4565,7 @@
  "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_small-ordito-cpu-cold]": {
   "counts": {
    "launch": 16,
-   "alloc": 29,
+   "alloc": 27,
    "readback": 1,
    "scan": 2,
    "sort": 2
@@ -4931,7 +4931,7 @@
  "benchmarks/test_parametrization.py::test_arap[hemisphere-ordito-cpu-10]": {
   "counts": {
    "launch": 1592,
-   "alloc": 31,
+   "alloc": 30,
    "readback": 12,
    "scan": 2,
    "sort": 1
@@ -4940,7 +4940,7 @@
  "benchmarks/test_parametrization.py::test_arap[hemisphere-ordito-cpu-3]": {
   "counts": {
    "launch": 577,
-   "alloc": 31,
+   "alloc": 30,
    "readback": 5,
    "scan": 2,
    "sort": 1
@@ -4949,7 +4949,7 @@
  "benchmarks/test_parametrization.py::test_arap[saddle-ordito-cpu-10]": {
   "counts": {
    "launch": 2502,
-   "alloc": 31,
+   "alloc": 30,
    "readback": 19,
    "scan": 2,
    "sort": 1
@@ -4958,7 +4958,7 @@
  "benchmarks/test_parametrization.py::test_arap[saddle-ordito-cpu-3]": {
   "counts": {
    "launch": 967,
-   "alloc": 31,
+   "alloc": 30,
    "readback": 8,
    "scan": 2,
    "sort": 1
@@ -4967,7 +4967,7 @@
  "benchmarks/test_parametrization.py::test_arap[saddle_small-ordito-cpu-10]": {
   "counts": {
    "launch": 1852,
-   "alloc": 31,
+   "alloc": 30,
    "readback": 14,
    "scan": 2,
    "sort": 1
@@ -4976,7 +4976,7 @@
  "benchmarks/test_parametrization.py::test_arap[saddle_small-ordito-cpu-3]": {
   "counts": {
    "launch": 837,
-   "alloc": 31,
+   "alloc": 30,
    "readback": 7,
    "scan": 2,
    "sort": 1
@@ -5028,8 +5028,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cpu-1]": {
   "counts": {
-   "launch": 547,
-   "alloc": 21,
+   "launch": 546,
+   "alloc": 19,
    "h2h": 1,
    "readback": 6,
    "scan": 2,
@@ -5038,8 +5038,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cpu-2]": {
   "counts": {
-   "launch": 446,
-   "alloc": 169,
+   "launch": 445,
+   "alloc": 167,
    "h2h": 3,
    "readback": 7,
    "scan": 24,
@@ -5048,8 +5048,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle-ordito-cpu-1]": {
   "counts": {
-   "launch": 547,
-   "alloc": 21,
+   "launch": 546,
+   "alloc": 19,
    "h2h": 1,
    "readback": 6,
    "scan": 2,
@@ -5058,8 +5058,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle-ordito-cpu-2]": {
   "counts": {
-   "launch": 440,
-   "alloc": 169,
+   "launch": 439,
+   "alloc": 167,
    "h2h": 3,
    "readback": 7,
    "scan": 24,
@@ -5068,8 +5068,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cpu-1]": {
   "counts": {
-   "launch": 287,
-   "alloc": 21,
+   "launch": 286,
+   "alloc": 19,
    "h2h": 1,
    "readback": 4,
    "scan": 2,
@@ -5078,8 +5078,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cpu-2]": {
   "counts": {
-   "launch": 313,
-   "alloc": 169,
+   "launch": 312,
+   "alloc": 167,
    "h2h": 3,
    "readback": 7,
    "scan": 22,
@@ -5088,8 +5088,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic_conditioning[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 547,
-   "alloc": 20,
+   "launch": 546,
+   "alloc": 19,
    "h2h": 1,
    "readback": 6,
    "scan": 2,
@@ -5098,8 +5098,8 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic_conditioning[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 2887,
-   "alloc": 20,
+   "launch": 2886,
+   "alloc": 19,
    "h2h": 1,
    "readback": 24,
    "scan": 2,
@@ -5108,7 +5108,7 @@
  },
  "benchmarks/test_parametrization.py::test_lscm[hemisphere-ordito-cpu]": {
   "counts": {
-   "launch": 461,
+   "launch": 460,
    "alloc": 159,
    "h2h": 3,
    "readback": 7,
@@ -5118,7 +5118,7 @@
  },
  "benchmarks/test_parametrization.py::test_lscm[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 455,
+   "launch": 454,
    "alloc": 159,
    "h2h": 3,
    "readback": 7,
@@ -5128,7 +5128,7 @@
  },
  "benchmarks/test_parametrization.py::test_lscm[saddle_small-ordito-cpu]": {
   "counts": {
-   "launch": 333,
+   "launch": 332,
    "alloc": 159,
    "h2h": 3,
    "readback": 7,
@@ -5159,8 +5159,8 @@
  },
  "benchmarks/test_parametrization.py::test_tutte[hemisphere-ordito-cpu]": {
   "counts": {
-   "launch": 547,
-   "alloc": 20,
+   "launch": 546,
+   "alloc": 19,
    "h2h": 1,
    "readback": 6,
    "scan": 2,
@@ -5169,8 +5169,8 @@
  },
  "benchmarks/test_parametrization.py::test_tutte[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 417,
-   "alloc": 20,
+   "launch": 416,
+   "alloc": 19,
    "h2h": 1,
    "readback": 5,
    "scan": 2,
@@ -5179,8 +5179,8 @@
  },
  "benchmarks/test_parametrization.py::test_tutte[saddle_small-ordito-cpu]": {
   "counts": {
-   "launch": 287,
-   "alloc": 20,
+   "launch": 286,
+   "alloc": 19,
    "h2h": 1,
    "readback": 4,
    "scan": 2,
@@ -5201,9 +5201,8 @@
  },
  "benchmarks/test_points.py::test_convex_hull[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 107,
-   "alloc": 41,
-   "h2h": 6,
+   "launch": 98,
+   "alloc": 8,
    "readback": 10,
    "scan": 10
   }
@@ -5211,7 +5210,7 @@
  "benchmarks/test_points.py::test_convex_subset[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 5,
+   "alloc": 4,
    "readback": 1,
    "scan": 1
   }
@@ -5219,25 +5218,25 @@
  "benchmarks/test_points.py::test_convex_subset_mask[sphere_small-ordito-cpu-256]": {
   "counts": {
    "launch": 3,
-   "alloc": 4
+   "alloc": 3
   }
  },
  "benchmarks/test_points.py::test_convex_subset_mask[sphere_small-ordito-cpu-32]": {
   "counts": {
    "launch": 3,
-   "alloc": 4
+   "alloc": 3
   }
  },
  "benchmarks/test_points.py::test_convex_superset_mask[sphere_small-ordito-cpu-1]": {
   "counts": {
    "launch": 6,
-   "alloc": 10
+   "alloc": 8
   }
  },
  "benchmarks/test_points.py::test_convex_superset_mask[sphere_small-ordito-cpu-3]": {
   "counts": {
    "launch": 6,
-   "alloc": 10
+   "alloc": 8
   }
  },
  "benchmarks/test_points.py::test_covariance[sphere_small-ordito-cpu]": {
@@ -5717,7 +5716,7 @@
  "benchmarks/test_polyline.py::test_polyline_triangulate_from_offsets[ordito-cpu-4096]": {
   "counts": {
    "launch": 4,
-   "alloc": 8,
+   "alloc": 7,
    "readback": 2,
    "scan": 2
   }
@@ -5725,7 +5724,7 @@
  "benchmarks/test_polyline.py::test_polyline_triangulate_from_offsets[ordito-cpu-64]": {
   "counts": {
    "launch": 4,
-   "alloc": 8,
+   "alloc": 7,
    "readback": 2,
    "scan": 2
   }
@@ -6075,7 +6074,7 @@
  "benchmarks/test_reconstruction.py::test_ball_pivoting[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 260,
-   "alloc": 41,
+   "alloc": 40,
    "readback": 12,
    "scan": 4,
    "sort": 2
@@ -6084,7 +6083,7 @@
  "benchmarks/test_reconstruction.py::test_delaunay_triangulation[ordito-cpu-20000]": {
   "counts": {
    "launch": 156,
-   "alloc": 22,
+   "alloc": 16,
    "h2h": 1,
    "readback": 39,
    "scan": 4,
@@ -6094,7 +6093,7 @@
  "benchmarks/test_reconstruction.py::test_delaunay_triangulation[ordito-cpu-2000]": {
   "counts": {
    "launch": 98,
-   "alloc": 22,
+   "alloc": 16,
    "h2h": 1,
    "readback": 26,
    "scan": 2,
@@ -6104,7 +6103,7 @@
  "benchmarks/test_reconstruction.py::test_resample_uniform[sphere_small-ordito-cpu-0.01]": {
   "counts": {
    "launch": 34,
-   "alloc": 47,
+   "alloc": 46,
    "readback": 10,
    "scan": 6,
    "sort": 4
@@ -6113,7 +6112,7 @@
  "benchmarks/test_reconstruction.py::test_resample_uniform[sphere_small-ordito-cpu-0.02]": {
   "counts": {
    "launch": 32,
-   "alloc": 46,
+   "alloc": 45,
    "readback": 9,
    "scan": 6,
    "sort": 4
@@ -6140,22 +6139,22 @@
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 18,
-   "alloc": 28,
+   "launch": 15,
+   "alloc": 26,
    "h2h": 1,
-   "readback": 7,
-   "scan": 6,
+   "readback": 6,
+   "scan": 5,
    "sort": 3
   }
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud_unoriented[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 33,
-   "alloc": 43,
+   "launch": 28,
+   "alloc": 39,
    "h2h": 1,
-   "readback": 7,
-   "scan": 6,
-   "sort": 5
+   "readback": 6,
+   "scan": 5,
+   "sort": 4
   }
  },
  "benchmarks/test_reduce.py::test_all_bool[sphere_small-ordito-cpu]": {
@@ -6468,7 +6467,7 @@
  "benchmarks/test_remesh.py::test_flip_by_objective[saddle-ordito-cpu-curvature]": {
   "counts": {
    "launch": 16,
-   "alloc": 17,
+   "alloc": 11,
    "h2h": 1,
    "readback": 4,
    "scan": 2,
@@ -6478,7 +6477,7 @@
  "benchmarks/test_remesh.py::test_flip_by_objective[saddle-ordito-cpu-planarity]": {
   "counts": {
    "launch": 16,
-   "alloc": 17,
+   "alloc": 11,
    "h2h": 1,
    "readback": 4,
    "scan": 2,
@@ -6488,7 +6487,7 @@
  "benchmarks/test_remesh.py::test_flip_by_objective[saddle_graded-ordito-cpu-curvature]": {
   "counts": {
    "launch": 16,
-   "alloc": 17,
+   "alloc": 11,
    "h2h": 1,
    "readback": 4,
    "scan": 2,
@@ -6498,7 +6497,7 @@
  "benchmarks/test_remesh.py::test_flip_by_objective[saddle_graded-ordito-cpu-planarity]": {
   "counts": {
    "launch": 16,
-   "alloc": 17,
+   "alloc": 11,
    "h2h": 1,
    "readback": 4,
    "scan": 2,
@@ -6508,7 +6507,7 @@
  "benchmarks/test_remesh.py::test_flip_to_delaunay[saddle-ordito-cpu]": {
   "counts": {
    "launch": 16,
-   "alloc": 18,
+   "alloc": 12,
    "h2h": 2,
    "readback": 4,
    "scan": 2,
@@ -6518,7 +6517,7 @@
  "benchmarks/test_remesh.py::test_flip_to_delaunay[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 16,
-   "alloc": 18,
+   "alloc": 12,
    "h2h": 2,
    "readback": 4,
    "scan": 2,
@@ -6551,26 +6550,26 @@
  },
  "benchmarks/test_remesh.py::test_isotropic_remesh[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 248,
-   "alloc": 379,
-   "readback": 59,
-   "scan": 69,
-   "sort": 27
+   "launch": 242,
+   "alloc": 269,
+   "readback": 57,
+   "scan": 67,
+   "sort": 25
   }
  },
  "benchmarks/test_remesh.py::test_isotropic_remesh[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 286,
-   "alloc": 389,
-   "readback": 70,
-   "scan": 72,
-   "sort": 28
+   "launch": 280,
+   "alloc": 279,
+   "readback": 68,
+   "scan": 70,
+   "sort": 26
   }
  },
  "benchmarks/test_remesh.py::test_quadric_decimate[saddle-ordito-cpu-0.1]": {
   "counts": {
-   "launch": 724,
-   "alloc": 409,
+   "launch": 714,
+   "alloc": 173,
    "h2h": 5,
    "readback": 16,
    "sort": 32
@@ -6579,7 +6578,7 @@
  "benchmarks/test_remesh.py::test_quadric_decimate[saddle-ordito-cpu-0.5]": {
   "counts": {
    "launch": 218,
-   "alloc": 145,
+   "alloc": 63,
    "h2h": 5,
    "readback": 5,
    "sort": 10
@@ -6587,8 +6586,8 @@
  },
  "benchmarks/test_remesh.py::test_quadric_decimate[saddle_graded-ordito-cpu-0.1]": {
   "counts": {
-   "launch": 1064,
-   "alloc": 433,
+   "launch": 1058,
+   "alloc": 183,
    "h2h": 5,
    "readback": 17,
    "sort": 34
@@ -6597,7 +6596,7 @@
  "benchmarks/test_remesh.py::test_quadric_decimate[saddle_graded-ordito-cpu-0.5]": {
   "counts": {
    "launch": 440,
-   "alloc": 217,
+   "alloc": 93,
    "h2h": 5,
    "readback": 8,
    "sort": 16
@@ -6710,7 +6709,7 @@
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_large-ordito-cpu-0.25]": {
   "counts": {
    "launch": 34,
-   "alloc": 37,
+   "alloc": 30,
    "readback": 10,
    "scan": 8,
    "sort": 5
@@ -6719,7 +6718,7 @@
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_large-ordito-cpu-None]": {
   "counts": {
    "launch": 31,
-   "alloc": 53,
+   "alloc": 39,
    "readback": 13,
    "scan": 10,
    "sort": 3
@@ -6728,7 +6727,7 @@
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_med-ordito-cpu-0.25]": {
   "counts": {
    "launch": 34,
-   "alloc": 37,
+   "alloc": 30,
    "readback": 10,
    "scan": 8,
    "sort": 5
@@ -6737,7 +6736,7 @@
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_med-ordito-cpu-None]": {
   "counts": {
    "launch": 31,
-   "alloc": 53,
+   "alloc": 39,
    "readback": 13,
    "scan": 10,
    "sort": 3
@@ -6746,7 +6745,7 @@
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_small-ordito-cpu-0.25]": {
   "counts": {
    "launch": 34,
-   "alloc": 37,
+   "alloc": 30,
    "readback": 10,
    "scan": 8,
    "sort": 5
@@ -6755,7 +6754,7 @@
  "benchmarks/test_remesh.py::test_subdivide_region_to_size[sphere_small-ordito-cpu-None]": {
   "counts": {
    "launch": 31,
-   "alloc": 53,
+   "alloc": 39,
    "readback": 13,
    "scan": 10,
    "sort": 3
@@ -6824,8 +6823,8 @@
  },
  "benchmarks/test_repair.py::test_collapse_small_triangles[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 10,
-   "alloc": 12,
+   "launch": 9,
+   "alloc": 11,
    "readback": 4,
    "scan": 1
   }
@@ -6858,9 +6857,8 @@
  },
  "benchmarks/test_repair.py::test_fix_degeneracies[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 298,
-   "alloc": 461,
-   "h2h": 3,
+   "launch": 295,
+   "alloc": 331,
    "readback": 52,
    "scan": 68,
    "sort": 26
@@ -6869,7 +6867,7 @@
  "benchmarks/test_repair.py::test_fix_self_intersections[tangle_torus-ordito-cpu-local]": {
   "counts": {
    "launch": 572,
-   "alloc": 134,
+   "alloc": 125,
    "h2h": 4,
    "readback": 66,
    "scan": 17,
@@ -6888,7 +6886,7 @@
  "benchmarks/test_repair.py::test_fix_self_intersections[tangle_torus_small-ordito-cpu-local]": {
   "counts": {
    "launch": 218,
-   "alloc": 159,
+   "alloc": 143,
    "h2h": 4,
    "readback": 43,
    "scan": 22,
@@ -6923,8 +6921,8 @@
  },
  "benchmarks/test_repair.py::test_make_solid[bunny-ordito-cpu]": {
   "counts": {
-   "launch": 150,
-   "alloc": 107,
+   "launch": 149,
+   "alloc": 104,
    "h2h": 5,
    "readback": 19,
    "scan": 10,
@@ -6933,8 +6931,8 @@
  },
  "benchmarks/test_repair.py::test_make_solid[bunny_decimated-ordito-cpu]": {
   "counts": {
-   "launch": 178,
-   "alloc": 146,
+   "launch": 177,
+   "alloc": 141,
    "h2h": 7,
    "readback": 25,
    "scan": 12,
@@ -7090,7 +7088,7 @@
  "benchmarks/test_repair.py::test_remove_t_vertices[saddle-ordito-cpu]": {
   "counts": {
    "launch": 6,
-   "alloc": 14,
+   "alloc": 8,
    "h2h": 1,
    "readback": 2,
    "scan": 1,
@@ -7100,7 +7098,7 @@
  "benchmarks/test_repair.py::test_remove_t_vertices[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 12,
-   "alloc": 17,
+   "alloc": 11,
    "h2h": 1,
    "readback": 3,
    "scan": 2,
@@ -7110,7 +7108,7 @@
  "benchmarks/test_repair.py::test_remove_tunnels[handles_1-ordito-cpu]": {
   "counts": {
    "launch": 585,
-   "alloc": 92,
+   "alloc": 90,
    "h2h": 9,
    "readback": 25,
    "scan": 24,
@@ -7120,7 +7118,7 @@
  "benchmarks/test_repair.py::test_remove_tunnels[handles_64-ordito-cpu]": {
   "counts": {
    "launch": 478,
-   "alloc": 92,
+   "alloc": 90,
    "h2h": 9,
    "readback": 27,
    "scan": 28,
@@ -7146,7 +7144,7 @@
  "benchmarks/test_repair.py::test_resolve_duplicated_faces[sphere_med-ordito-cpu-clean]": {
   "counts": {
    "launch": 4,
-   "alloc": 7,
+   "alloc": 6,
    "h2h": 1,
    "readback": 2,
    "scan": 1,
@@ -7156,7 +7154,7 @@
  "benchmarks/test_repair.py::test_resolve_duplicated_faces[sphere_med-ordito-cpu-dup10pct]": {
   "counts": {
    "launch": 4,
-   "alloc": 7,
+   "alloc": 6,
    "h2h": 1,
    "readback": 2,
    "scan": 1,
@@ -7458,7 +7456,7 @@
  "benchmarks/test_selection.py::test_delete_region_keep_boundary[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 12,
-   "alloc": 19,
+   "alloc": 17,
    "readback": 4,
    "scan": 3,
    "sort": 2
@@ -7467,7 +7465,7 @@
  "benchmarks/test_selection.py::test_delete_region_keep_boundary_with_offsets[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 13,
-   "alloc": 21,
+   "alloc": 19,
    "readback": 4,
    "scan": 4,
    "sort": 2
@@ -7631,8 +7629,8 @@
  },
  "benchmarks/test_smoothing.py::test_filter_implicit_fairing[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 3710,
-   "alloc": 49,
+   "launch": 3700,
+   "alloc": 31,
    "h2h": 10,
    "readback": 29,
    "scan": 3,
@@ -7641,8 +7639,8 @@
  },
  "benchmarks/test_smoothing.py::test_filter_implicit_fairing[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 4911,
-   "alloc": 181,
+   "launch": 4910,
+   "alloc": 172,
    "h2h": 39,
    "readback": 35,
    "scan": 23,
@@ -7764,7 +7762,7 @@
  "benchmarks/test_smoothing.py::test_refine_and_smooth_region[hemisphere-ordito-cpu]": {
   "counts": {
    "launch": 265,
-   "alloc": 102,
+   "alloc": 88,
    "readback": 68,
    "scan": 19,
    "sort": 9
@@ -7773,7 +7771,7 @@
  "benchmarks/test_smoothing.py::test_refine_and_smooth_region[saddle_small-ordito-cpu]": {
   "counts": {
    "launch": 328,
-   "alloc": 127,
+   "alloc": 106,
    "readback": 85,
    "scan": 24,
    "sort": 12
