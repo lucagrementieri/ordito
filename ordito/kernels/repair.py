@@ -24,7 +24,7 @@ from ordito.kernels.halfedge import (
     mate_twin_defect,
     next_boundary_halfedge,
 )
-from ordito.kernels.predicates import triangle_aspect_ratio, triangle_normal
+from ordito.kernels.predicates import triangle_area_vector, triangle_aspect_ratio, triangle_normal
 from ordito.kernels.reduce import GroupSumPass, read_group_sum
 from ordito.kernels.scatter import scatter_add
 from ordito.kernels.selection import face_selected_by_vertices, mark_submesh_face
@@ -34,7 +34,6 @@ from ordito.kernels.triangles import (
     face_normals_and_area,
     face_signed_volume,
     face_vertices,
-    triangle_cross,
     triangle_nondegenerate,
     triangle_quality,
     write_corner_triple,
@@ -274,13 +273,31 @@ def region_weight(inside: wp.bool) -> wp.float32:
 
 @wp.kernel
 def faces_in_vertex_region(
-    faces: wp.array[wp.int32], region: wp.array[wp.float32], out_mask: wp.array[wp.bool]
+    faces: wp.array[wp.int32],
+    region: wp.array[wp.float32],
+    out_faces: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
 ) -> None:
     # A face is in ``fix_degeneracies``' region when its three corners are, the rule the collapse
-    # candidates apply (``remesh.edge_faces_in_region``).
+    # candidates apply (``remesh.edge_faces_in_region``), written as the ``int32`` flags the flip
+    # candidates read. The corners are copied beside them into the buffer the flips rewrite in
+    # place, so a round needs no separate clone or flag conversion; once that buffer is the call's
+    # own, ``out_faces`` is ``faces`` itself and each thread rewrites the corners it read.
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
-    out_mask[f] = region[i0] > 0.0 and region[i1] > 0.0 and region[i2] > 0.0
+    out_faces[3 * f] = i0
+    out_faces[3 * f + 1] = i1
+    out_faces[3 * f + 2] = i2
+    inside = region[i0] > 0.0 and region[i1] > 0.0 and region[i2] > 0.0
+    out_flags[f] = wp.where(inside, 1, 0)
+
+
+@wp.func
+def triangle_small(v0: wp.vec3, v1: wp.vec3, v2: wp.vec3, min_dbl_area: wp.float32) -> wp.bool:
+    # ``collapse_small_triangles``' test, libigl's: the doubled area below ``min_dbl_area``. Shared
+    # by the kernel that collapses the small faces and the remap that counts the ones a collapse
+    # pass leaves, so the loop's stopping count is the next pass's own.
+    return wp.length(triangle_area_vector(v0, v1, v2)) < min_dbl_area
 
 
 @wp.kernel(enable_backward=False)
@@ -297,11 +314,10 @@ def small_triangle_collapse_edges(
     # launch -- in place of a per-face flag buffer the caller would reduce and read back.
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
-    dbl_area = wp.length(triangle_cross(vertices, faces, f))
-    if dbl_area < min_dbl_area:
-        v0 = vertices[i0]
-        v1 = vertices[i1]
-        v2 = vertices[i2]
+    v0 = vertices[i0]
+    v1 = vertices[i1]
+    v2 = vertices[i2]
+    if triangle_small(v0, v1, v2, min_dbl_area):
         # Shortest of the three edges (0,1), (1,2), (2,0); collapse its endpoints together.
         best = wp.length_sq(v1 - v0)
         a = i0
@@ -414,21 +430,31 @@ def remap_mark_nondegenerate_faces(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     labels: wp.array[wp.int32],
+    min_dbl_area: wp.float32,
     out_faces: wp.array[wp.int32],
     out_keep: wp.array[wp.bool],
     out_flags: wp.array[wp.int32],
+    out_small: wp.array[wp.int32],
 ) -> None:
     # One collapse pass after the merge closure: remap each corner to its class label, test the
     # remapped triangle with ``face_nondegenerate_mask``'s predicate, and mark the survivors for the
-    # submesh compaction, which reads ``out_faces`` as its face buffer.
+    # submesh compaction, which reads ``out_faces`` as its face buffer. A survivor that is still
+    # small is counted in ``out_small``: the compaction keeps its corners' positions and order, so
+    # this is the count the next pass's ``small_triangle_collapse_edges`` would find, and a pass
+    # that leaves none ends the loop without that launch.
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
     a = labels[i0]
     b = labels[i1]
     c = labels[i2]
     write_corner_triple(out_faces, f, a, b, c)
-    keep = triangle_nondegenerate(vertices[a], vertices[b], vertices[c])
+    v0 = vertices[a]
+    v1 = vertices[b]
+    v2 = vertices[c]
+    keep = triangle_nondegenerate(v0, v1, v2)
     mark_face_fate(out_faces, f, keep, out_keep, out_flags)
+    if keep and triangle_small(v0, v1, v2, min_dbl_area):
+        wp.atomic_add(out_small, 0, 1)
 
 
 @wp.kernel

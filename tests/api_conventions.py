@@ -245,6 +245,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "independent-set collapse engine with its degeneracy selection; isotropic_remesh, the "
         "engine's public form, also splits, flips and smooths every edge of the mesh"
     ),
+    ("repair", "remesh._flip_region_faces"): (
+        "fix_degeneracies flips the face buffer its own round kernel copied and flagged; "
+        "flip_to_delaunay would re-validate, clone the faces and convert the region mask again "
+        "every round"
+    ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "
         "rebuilds connectivity as well, which reconstruction must not do to a fresh triangulation"
