@@ -1147,9 +1147,13 @@ def _heat_operators(
             # left on the device for the system's assembly to square.
             edge_sums = _edge_length_sums(vertices, pattern)
         _, _, offsets, columns, run_start, keys, count, order = pattern
-        laplacian_values = _launch.empty(columns.size, dtype=wp.float64, device=device)
-        heat_values = _launch.empty(columns.size, dtype=wp.float64, device=device)
-        poisson_values = _launch.empty(columns.size, dtype=wp.float64, device=device)
+        # The three operators' values in one allocation: the bundle holds all three for as long as
+        # any of them.
+        n_slots = columns.size
+        values = _launch.empty(3 * n_slots, dtype=wp.float64, device=device)
+        laplacian_values = _launch.view(values, 0, n_slots)
+        heat_values = _launch.view(values, n_slots, 2 * n_slots)
+        poisson_values = _launch.view(values, 2 * n_slots, 3 * n_slots)
         _launch.launch(
             kernel_heat.HEAT_SYSTEM_ROWS[cot_entries.dtype],
             dim=n_vertices,
@@ -1405,7 +1409,7 @@ def _extend_scalar(
         _launch.zeros((2, n_vertices), dtype=wp.float64, device=device), wp.float64
     )
     # ``(min, -max, -overshoot)`` of the extension against the source values; see the kernels.
-    value_range = wp.full(3, math.inf, dtype=wp.float64, device=device)
+    value_range = _launch.full(3, math.inf, dtype=wp.float64, device=device)
     invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_heat.seed_source_scalars,

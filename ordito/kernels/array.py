@@ -913,6 +913,22 @@ def coo_keys(
 
 
 @wp.kernel
+def index_sparse_keys(
+    indices: wp.array[wp.int32],
+    n_repeats: wp.int32,
+    n_rows: wp.int32,
+    n_cols: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``coo_keys`` of ``array.index_sparse``'s triplets: row ``indices[i]``, column the index row
+    # ``i // n_repeats`` it came from, so the column buffer is never written.
+    i = wp.int32(wp.tid())
+    out_keys[i] = csr_key(indices[i], i // n_repeats, n_rows, n_cols)
+    out_order[i] = i
+
+
+@wp.kernel
 def csr_transposed_keys(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -1016,7 +1032,7 @@ def csr_row_offsets(
     # ranked ahead of it (``scanned_count``'s start): a run start that opens a new row writes the
     # bound of every row from the previous run's row up to its own -- so an empty row gets the right
     # value -- and the last in-range position writes the rest. The rule both CSR placements share;
-    # ``out_offsets`` arrives zero-filled, which is the whole answer when nothing is in range.
+    # ``csr_out_of_range`` writes the bounds when nothing is in range.
     key = keys[i]
     row = wp.int32(key // n_cols)
     if i == 0 or keys[i - 1] != key:
@@ -1028,6 +1044,21 @@ def csr_row_offsets(
     if i + 1 == inclusive.shape[0] or keys[i + 1] >= sentinel:
         for r in range(row + 1, n_rows + 1):
             out_offsets[r] = inclusive[i]
+
+
+@wp.func
+def csr_out_of_range(
+    keys: wp.array[wp.uint64], i: wp.int32, sentinel: wp.uint64, out_offsets: wp.array[wp.int32]
+) -> wp.bool:
+    """Whether sorted position ``i`` holds a dropped key; position 0 then zeroes every bound."""
+    # The keys ascend, so a sentinel at position 0 means no entry at all: ``out_offsets`` arrives
+    # uninitialized, and the one thread that sees this writes the empty matrix's bounds.
+    if keys[i] < sentinel:
+        return False
+    if i == 0:
+        for r in range(out_offsets.shape[0]):
+            out_offsets[r] = 0
+    return True
 
 
 @wp.kernel
@@ -1054,9 +1085,9 @@ def csr_from_runs(
     # writes its column and first sorted position, the last in-range position closes
     # ``out_starts``, and ``csr_row_offsets`` fills the row bounds.
     i = wp.int32(wp.tid())
-    key = keys[i]
-    if key >= sentinel:
+    if csr_out_of_range(keys, i, sentinel, out_offsets):
         return
+    key = keys[i]
     entry, opens = scanned_count(inclusive, i)
     if opens != 0:
         out_columns[entry] = wp.int32(key % n_cols)
@@ -1107,9 +1138,9 @@ def csr_from_flagged_runs(
     # writes its column and value at its rank; a row's offset is the number of kept entries before
     # its first run start, pruned or not, so a row left empty by pruning still gets its bound.
     i = wp.int32(wp.tid())
-    key = keys[i]
-    if key >= sentinel:
+    if csr_out_of_range(keys, i, sentinel, out_offsets):
         return
+    key = keys[i]
     before, kept = scanned_count(inclusive, i)
     if kept != 0:
         out_columns[before] = wp.int32(key % n_cols)

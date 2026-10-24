@@ -1745,10 +1745,15 @@ def csr_from_keys(
     ```
     """
     device = keys.device
-    offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
-    columns = _launch.empty(count, dtype=wp.int32, device=device)
     if count == 0:
-        return offsets, columns, _launch.zeros(1, dtype=wp.int32, device=device)
+        return (
+            _launch.zeros(n_rows + 1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
+        )
+    # Every bound is written by ``csr_from_runs``, the empty matrix's too.
+    offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(count, dtype=wp.int32, device=device)
     starts = _launch.empty(count + 1, dtype=wp.int32, device=device)
     sentinel = n_rows * n_cols
     _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
@@ -2074,7 +2079,8 @@ def _csr_from_coo_keys(
     """
     count = int(values.shape[0])
     device = keys.device
-    offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
+    # Every bound is written by the placing pass, the empty matrix's too.
+    offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
     columns = _launch.empty(count, dtype=wp.int32, device=device)
     summed = _launch.empty(count, dtype=values.dtype, device=device)
     sentinel = n_rows * n_cols
@@ -2196,14 +2202,28 @@ def index_sparse(
             data = astype(data, dtype)
 
     n_cols, n_repeats = indices.shape
-    cols = arange_repeat(n_cols * n_repeats, n_repeats, indices.device)
-    return csr_from_triplets(
-        n_rows,
-        indices.shape[0],
-        indices.flatten(),
-        cols,
-        data,
-        prune_numerical_zeros=prune_numerical_zeros,
+    count = indices.size
+    device = indices.device
+    if count == 0:
+        return bsr_from_csr(
+            n_rows,
+            n_cols,
+            _launch.zeros(n_rows + 1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=data.dtype, device=device),
+        )
+    # The triplets' keys straight from the index rows: a zero-valued triplet adds nothing to its
+    # entry's sum, so pruning on the sums needs no keys of its own.
+    keys, order = csr_key_buffers(count, device)
+    _launch.launch(
+        kernel_array.index_sparse_keys,
+        dim=count,
+        inputs=[indices.flatten(), wp.int32(n_repeats), wp.int32(n_rows), wp.int32(n_cols)],
+        outputs=[keys, order],
+        device=device,
+    )
+    return _csr_from_coo_keys(
+        n_rows, n_cols, keys, order, data, prune_numerical_zeros=prune_numerical_zeros
     )
 
 
