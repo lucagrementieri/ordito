@@ -2014,9 +2014,10 @@ def filter_implicit_fairing(
         else _launch.empty(0, dtype=wp.float64, device=device)
     )
     # Per-face scratch every pass rewrites: the half-cotangents (unread by the conformalized flow)
-    # and the exact area sums, which each pass clears before its face pass adds into them.
+    # and the exact area sums, which each face pass adds into from zero (the row pass clears every
+    # entry it reads).
     cot_entries = odt.empty_2d((0 if conformalized else n_faces, 3), wp.float32, device=device)
-    area_sums = _launch.empty(n, dtype=wp.float64, device=device)
+    area_sums = _launch.zeros(n, dtype=wp.float64, device=device)
     # The ordinary flow's conditioning changes as the surface moves, so its solver decides again
     # after every iterated pass; the conformalized flow's stiffness is the input's, so its first
     # pass speaks for every later one.
@@ -2048,14 +2049,15 @@ def filter_implicit_fairing(
     solution_rows = [odt.as_dense(solution_2d[column]) for column in range(3)]
     # The first pass reads the input itself: ``positions`` is its exact widening. Every pass then
     # writes the next one's ``wp.vec3`` positions beside its ``wp.vec3d`` ones, and the last pass's
-    # are the answer.
+    # are the answer. Two buffers alternate as those positions: a pass reads the last pass's and
+    # writes the other.
     current = vertices
-    for _ in range(iterations):
+    narrowed: list[wp.array[wp.vec3]] = []
+    for index in range(iterations):
         # Two launches assemble a pass: the face pass (half-cotangents of ``current`` -- the
         # ordinary flow re-linearises on the moving surface -- and the exact area sums), then one
         # row pass forming ``M - lamb L`` (or its interior block), the right-hand side and the CG
         # seed.
-        _launch.zero_(area_sums)
         _launch.launch(
             kernel_laplacian.cotmatrix_entries_and_area_sums,
             dim=n_faces,
@@ -2093,7 +2095,9 @@ def filter_implicit_fairing(
         # One batched solve advances all three columns together; ``M - lamb L`` over the whole mesh
         # (or its interior block) is a solve long enough for the polynomial preconditioner.
         fairing.solve(system, rhs, solution_2d, maxiter=10 * n_rows)
-        current = _launch.empty(n, dtype=wp.vec3, device=device)
+        if index < 2:
+            narrowed.append(_launch.empty(n, dtype=wp.vec3, device=device))
+        current = narrowed[index % 2]
         if dirichlet is None:
             _launch.map(
                 kernel_smoothing.combine_components_narrowed,

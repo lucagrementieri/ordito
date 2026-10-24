@@ -824,14 +824,19 @@ def fairing_system_rows(
     # side ``(M V)_u - A_ub x_b``, the pinned columns subtracted in row order before the mass term
     # is added, as ``interior_row_counts`` / ``interior_system_csr`` extract it. A pinned vertex's
     # value is its ``positions`` entry, which no pass writes.
+    #
+    # Each vertex's ``area_sums`` entry is cleared once read, pinned or not, so the next pass's
+    # face pass adds into zeros with no clear of its own.
     v = wp.int32(wp.tid())
+    area_sum = area_sums[v]
+    area_sums[v] = wp.float64(0.0)
     dirichlet = fixed_mask.shape[0] > 0
     i = v
     if dirichlet:
         i = free_row(fixed_mask, free_map, v)
         if i < 0:
             return
-    m = area_sums[v] / wp.float64(3.0)
+    m = area_sum / wp.float64(3.0)
     p = positions[v]
     from_cot = stiffness.shape[0] == 0
     slot = system_offsets[i]
