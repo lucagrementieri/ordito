@@ -1733,8 +1733,9 @@ def test_multigrid_aggregation_counts_the_aggregates_it_labels(
     counts = {}
     for cap in (1, od.linalg._MULTIGRID_MIS_ROUNDS):
         monkeypatch.setattr(od.linalg, "_MULTIGRID_MIS_ROUNDS", cap)
-        _diag, _power, label, sizes, n_aggregates = od.linalg._multigrid_aggregate(matrix_wp, 0)
-        label_np, sizes_np = label.numpy(), sizes.numpy()
+        aggregation = od.linalg._multigrid_aggregate(matrix_wp, 0)
+        n_aggregates = aggregation.n_aggregates
+        label_np, sizes_np = aggregation.label.numpy(), aggregation.sizes.numpy()
         assert sizes_np.shape == (n_aggregates,)
         assert np.array_equal(np.unique(label_np), np.arange(n_aggregates))
         assert np.array_equal(np.bincount(label_np, minlength=n_aggregates), sizes_np)

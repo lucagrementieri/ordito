@@ -477,6 +477,48 @@ def jacobi_inverse_diagonal(
     out_inverse_diagonal[i] = inverse
 
 
+@wp.func
+def refresh_pooled_row(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    narrow: wp.int32,
+    derive: wp.int32,
+    i: wp.int32,
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+    out_narrowed: wp.array[wp.float32],
+    out_inverse_diagonal: wp.array[wp.float64],
+) -> wp.float64:
+    # Row ``i`` of a pooled conjugate-gradient state's refresh (``linalg._cached_solver``): copy the
+    # scalar CSR row into the state's own storage and re-derive, from the same walk, what the state
+    # derived from its operator when it was built -- the ``float32`` copy of the values the rounds
+    # read (``narrow``) and the Jacobi inverse diagonal (``derive >= 1``). Returns the row's
+    # Gershgorin ratio, which the Jacobi-Chebyshev interval is refitted to (``derive == 2``; ``0``
+    # otherwise). Each is the same arithmetic as the kernel that built it
+    # (``jacobi_inverse_diagonal`` / ``jacobi_dominance_bound``), so a refreshed state holds what a
+    # new one would. The arrays a flag leaves off may be ``None``. The last row also writes the
+    # terminating offset.
+    start = offsets[i]
+    end = offsets[i + 1]
+    out_offsets[i] = start
+    if i == out_offsets.shape[0] - 2:
+        out_offsets[i + 1] = end
+    for e in range(start, end):
+        value = values[e]
+        out_columns[e] = columns[e]
+        out_values[e] = value
+        if narrow != 0:
+            out_narrowed[e] = wp.float32(value)
+    ratio = wp.float64(0.0)
+    if derive != 0:
+        inverse, row_ratio = jacobi_row(offsets, columns, values, i)
+        out_inverse_diagonal[i] = inverse
+        ratio = row_ratio
+    return ratio
+
+
 @wp.kernel
 def refresh_pooled_operator(
     offsets: wp.array[wp.int32],
@@ -489,33 +531,48 @@ def refresh_pooled_operator(
     out_values: wp.array[wp.float64],
     out_narrowed: wp.array[wp.float32],
     out_inverse_diagonal: wp.array[wp.float64],
-    out_ratio: wp.array[wp.float64],
 ) -> None:
-    # One thread per row: copy a scalar CSR operator into a pooled conjugate-gradient state's own
-    # storage (``linalg._cached_solver``) and re-derive, from the same walk of the row, what the
-    # state derived from its operator when it was built -- the ``float32`` copy of the values the
-    # rounds read (``narrow``), the Jacobi inverse diagonal (``derive >= 1``) and the Gershgorin
-    # ratio the Jacobi-Chebyshev interval is refitted to (``derive == 2``). Each is the same
-    # arithmetic as the kernel that built it (``jacobi_inverse_diagonal`` /
-    # ``jacobi_dominance_bound``), so a refreshed state holds what a new one would. The arrays a
-    # flag leaves off may be ``None``. The last thread also writes the terminating offset.
+    # One thread per row of a pooled state's refresh (``refresh_pooled_row``), for a state with no
+    # interval to refit. ``refresh_pooled_operator_bound`` is the same rows under the
+    # Jacobi-Chebyshev polynomial, reducing their ratios as it goes.
     i = wp.int32(wp.tid())
-    start = offsets[i]
-    end = offsets[i + 1]
-    out_offsets[i] = start
-    if i == out_offsets.shape[0] - 2:
-        out_offsets[i + 1] = end
-    for e in range(start, end):
-        value = values[e]
-        out_columns[e] = columns[e]
-        out_values[e] = value
-        if narrow != 0:
-            out_narrowed[e] = wp.float32(value)
-    if derive != 0:
-        inverse, ratio = jacobi_row(offsets, columns, values, i)
-        out_inverse_diagonal[i] = inverse
-        if derive == 2:
-            out_ratio[i] = ratio
+    refresh_pooled_row(
+        offsets, columns, values, narrow, derive, i,
+        out_offsets, out_columns, out_values, out_narrowed, out_inverse_diagonal,
+    )  # fmt: skip
+
+
+@wp.kernel
+def refresh_pooled_operator_bound(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    narrow: wp.int32,
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+    out_narrowed: wp.array[wp.float32],
+    out_inverse_diagonal: wp.array[wp.float64],
+    out_bound: wp.array[wp.float64],
+) -> None:
+    # ``refresh_pooled_operator`` at ``derive == 2`` with the rows' largest Gershgorin ratio
+    # committed into ``out_bound[0]``, which the caller holds at ``-inf`` (``chebyshev_steps``
+    # leaves it there), so the refit needs no reduction launch of its own. The block shape and the
+    # ``atomic_max`` commit are ``jacobi_dominance_bound``'s: a maximum is exact in any order.
+    block, lane = wp.tid()
+    base, count = block_chunk_1d(offsets.shape[0] - 1, block)
+    if count <= 0:
+        return
+    local = wp.float64(-1.0e308)
+    for k in range(lane, count, wp.block_dim()):
+        ratio = refresh_pooled_row(
+            offsets, columns, values, narrow, wp.int32(2), base + k,
+            out_offsets, out_columns, out_values, out_narrowed, out_inverse_diagonal,
+        )  # fmt: skip
+        local = wp.max(local, ratio)
+    bound = block_max(local)
+    if lane == 0:
+        wp.atomic_max(out_bound, 0, bound)
 
 
 @wp.kernel
@@ -640,14 +697,19 @@ def chebyshev_steps(
     # order, and the steps are ``linalg._chebyshev_steps``': the degree is one more than the
     # length of ``out_steps``, and the first iterate ``source / theta`` is folded into the first
     # two steps' scales (see ``multigrid.chebyshev_step``).
+    #
+    # The bound is consumed: it is left at ``-inf``, the seed a pooled state's next refresh commits
+    # its maximum into (``refresh_pooled_operator_bound``), so a refit clears nothing.
+    maximum = bound[0]
+    bound[0] = wp.float64(-wp.inf)
     relative = wp.min(interval / wp.float64(wp.max(n, 1)), cap)
     lower = wp.float64(0.0)
     upper = wp.float64(0.0)
     if squared != 0:
-        upper = wp.max(bound[0], wp.float64(2.0))
+        upper = wp.max(maximum, wp.float64(2.0))
         lower = relative * (upper / wp.float64(2.0))
     else:
-        dominance = wp.max(bound[0], wp.float64(1e-3))
+        dominance = wp.max(maximum, wp.float64(1e-3))
         lower = wp.max(relative, wp.float64(1.0) - dominance)
         upper = wp.float64(1.0) + dominance
     theta = wp.float64(0.5) * (upper + lower)

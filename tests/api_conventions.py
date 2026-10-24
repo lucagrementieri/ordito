@@ -593,6 +593,12 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``angle_sums`` is ``filter_spikes``' accumulator: read for the spike test, then re-zeroed in
     # place for the next pass's scatter.
     ("smoothing", "mark_spikes"): frozenset({"angle_sums"}),
+    # ``bound`` is a Chebyshev fit's Gershgorin maximum, consumed: left at ``-inf`` as the seed a
+    # pooled state's next refresh commits into.
+    ("linalg", "chebyshev_steps"): frozenset({"bound"}),
+    # ``area_sums`` is ``filter_implicit_fairing``'s per-pass accumulator: read for the mass, then
+    # re-zeroed in place for the next pass's face pass.
+    ("smoothing", "fairing_system_rows"): frozenset({"area_sums"}),
     # scratch / persistent state
     ("adjacency", "scatter_vertex_faces"): frozenset({"cursor"}),
     ("smoothing", "scatter_incidence_rows"): frozenset({"cursor"}),

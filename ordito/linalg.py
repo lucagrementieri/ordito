@@ -129,7 +129,7 @@ import os
 import warnings
 import weakref
 from collections.abc import Callable, Generator, Sequence
-from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeGuard, cast, overload
 
 import numpy as np
 import warp as wp
@@ -3321,24 +3321,43 @@ class _BatchedCg:
 
         One launch (``kernels/linalg.refresh_pooled_operator``) copies the pattern and the values
         and rewrites what construction derived from them -- the narrowed values, the Jacobi
-        inverse diagonal -- and, under the Jacobi-Chebyshev polynomial, the Gershgorin ratios its
-        interval is refitted to on the device. A squared-Laplacian ``preconditioner`` is the
+        inverse diagonal -- and, under the Jacobi-Chebyshev polynomial
+        (``refresh_pooled_operator_bound``), the largest Gershgorin ratio its interval is refitted
+        to on the device. A squared-Laplacian ``preconditioner`` is the
         caller's own, so its arrays are copied into the state's copy of it. The recorded graph
         reads these same arrays, so the state then solves ``matrix`` with no new recording. Only for
         a state built with ``own_storage``, whose operator and preconditioner have these shapes.
         """
         assert self._owns_storage
         owned = self._matrix
-        chebyshev = isinstance(self._cycle, _JacobiChebyshevApply)
         narrowed = None if self._round_values is owned.values else self._round_values
-        ratios = None
-        if chebyshev:
-            assert isinstance(self._cycle, _JacobiChebyshevApply)
+        if isinstance(self._cycle, _JacobiChebyshevApply):
+            # The rows' largest ratio is committed into the polynomial's bound as they are walked,
+            # and the refit reads it from there.
             owner = self._cycle.owner
-            if owner.ratios is None:
-                owner.ratios = odt.empty_1d(self._n, wp.float64, device=self._device)
-            ratios = owner.ratios
-        if self._n > 0:
+            if self._n > 0:
+                _launch.launch_tiled(
+                    kernel_linalg.refresh_pooled_operator_bound,
+                    dim=[kernel_reduce.blocks_1d(self._n)],
+                    inputs=[
+                        matrix.offsets,
+                        matrix.columns,
+                        matrix.values,
+                        wp.int32(0 if narrowed is None else 1),
+                    ],
+                    outputs=[
+                        owned.offsets,
+                        owned.columns,
+                        owned.values,
+                        narrowed,
+                        self._inv_diag,
+                        owner.bound,
+                    ],
+                    block_dim=TILE_1D,
+                    device=self._device,
+                )
+            owner.refit()
+        elif self._n > 0:
             _launch.launch(
                 kernel_linalg.refresh_pooled_operator,
                 dim=self._n,
@@ -3347,21 +3366,11 @@ class _BatchedCg:
                     matrix.columns,
                     matrix.values,
                     wp.int32(0 if narrowed is None else 1),
-                    wp.int32(2 if chebyshev else (0 if self._inv_diag is None else 1)),
+                    wp.int32(0 if self._inv_diag is None else 1),
                 ],
-                outputs=[
-                    owned.offsets,
-                    owned.columns,
-                    owned.values,
-                    narrowed,
-                    self._inv_diag,
-                    ratios,
-                ],
+                outputs=[owned.offsets, owned.columns, owned.values, narrowed, self._inv_diag],
                 device=self._device,
             )
-        if chebyshev:
-            assert isinstance(self._cycle, _JacobiChebyshevApply)
-            self._cycle.owner.refit()
         if isinstance(preconditioner, SquaredLaplacianPreconditioner):
             assert isinstance(self._cycle, _SquaredLaplacianApply)
             self._cycle.owner._assign(preconditioner)  # pyright: ignore[reportPrivateUsage]
@@ -4686,10 +4695,10 @@ class _JacobiChebyshev:
         # otherwise cost.
         self.matrix = matrix
         self.inverse_diagonal = _launch.empty(self.n, dtype=wp.float64, device=self.device)
-        # The rows' ratios, which only a pooled state's ``refresh`` writes, for ``refit``; this
-        # setup folds their maximum in the walk that writes ``D⁻¹`` (``_dominance_bound``).
-        self.ratios: odt.Array1dFloat64 | None = None
-        bound = _dominance_bound(matrix, self.inverse_diagonal)
+        # The rows' largest ratio, folded in the walk that writes ``D⁻¹`` (``_dominance_bound``).
+        # Kept for ``refit``: the fit leaves it at ``-inf``, and a pooled state's ``refresh``
+        # commits the refreshed rows' maximum into it.
+        self.bound = _dominance_bound(matrix, self.inverse_diagonal)
         # Gershgorin's discs for ``D⁻¹ A`` are centred on 1 with radius ``r_i = sum_j |A_ij| /
         # |A_ii|``, whatever the diagonal's sign. ``1 + max r`` bounds the spectrum from above, and
         # a polynomial fitted short of it changes sign past its end, as a clamped negative
@@ -4701,19 +4710,13 @@ class _JacobiChebyshev:
         # 1 - r), 1 + r]`` with ``r = max(max_i r_i, 1e-3)``, computed on the device
         # (``_device_chebyshev_steps``).
         self.steps = _device_chebyshev_steps(
-            bound, self.n, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False
+            self.bound, self.n, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False
         )
 
     def refit(self) -> None:
-        """Refit the steps, in place, to ``ratios`` as a pooled state's ``refresh`` rewrote them."""
-        assert self.ratios is not None
+        """Refit the steps, in place, to ``bound`` as a pooled state's ``refresh`` rewrote it."""
         _device_chebyshev_steps(
-            _ratio_bound(self.ratios),
-            self.n,
-            CHEBYSHEV_INTERVAL,
-            CHEBYSHEV_DEGREE,
-            squared=False,
-            out=self.steps,
+            self.bound, self.n, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False, out=self.steps
         )
 
     def bind(self, n_columns: int, stride: int) -> _JacobiChebyshevApply:
@@ -4842,8 +4845,8 @@ def _ratio_bound(ratios: wp.array[wp.float64, Any]) -> wp.array[wp.float64]:
     Reduce stored per-row ratios to their maximum, a ``(1,)`` device array.
 
     The bound ``_device_chebyshev_steps`` reads, for ratios a caller wrote itself
-    (``SquaredLaplacianPreconditioner.from_factors``, a pooled state's ``refresh``); a
-    preconditioner built here folds the maximum in the walk that forms them.
+    (``SquaredLaplacianPreconditioner.from_factors``); a preconditioner built here, or refreshed by
+    a pooled state, folds the maximum in the walk that forms them.
     """
     device = ratios.device
     n = ratios.size
@@ -4980,8 +4983,9 @@ def _multigrid_hierarchy(
     """
     levels: list[_MultigridLevel] = []
     operator = matrix
-    # The level operator's stored entry count when the host holds it: every coarse operator leaves
-    # ``_multigrid_galerkin`` with its ``nnz`` synced, the caller's may carry a stale one.
+    # The level operator's stored entry count when the host holds it: every coarse operator but the
+    # coarsest leaves ``_multigrid_galerkin`` with its ``nnz`` synced, the caller's may carry a
+    # stale one.
     stored: int | None = None
     while True:
         level = _MultigridLevel(operator)
@@ -4991,35 +4995,65 @@ def _multigrid_hierarchy(
         # The diagonal, read by the aggregation's strength test (``sqrt(|A_ii|)``) and the smoother
         # (``1 / A_ii``), and the power iteration's first step are formed by the aggregation's own
         # setup launch.
-        diag, power, label, sizes, n_aggregates = _multigrid_aggregate(operator, seed)
+        aggregation = _multigrid_aggregate(operator, seed)
+        n_aggregates = aggregation.n_aggregates
         if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
         # ``omega D^-1``, the damping already folded in, so the smoother and the prolongator read
         # one scaled diagonal and no level reads its spectral radius back to the host.
-        level.inverse_diagonal = _multigrid_damped_diagonal(operator, diag, power, seed)
+        level.inverse_diagonal = _multigrid_damped_diagonal(
+            operator, aggregation.diagonal, aggregation.power, aggregation.spare, seed
+        )
         level.prolongator = _multigrid_prolongator(
-            operator, label, sizes, n_aggregates, level.inverse_diagonal, stored
+            operator,
+            aggregation.label,
+            aggregation.sizes,
+            n_aggregates,
+            level.inverse_diagonal,
+            stored,
         )
         level.restrictor = od.array.csr_transpose(level.prolongator)
-        operator = _multigrid_galerkin(operator, level.prolongator)
-        stored = int(operator.nnz)
+        # The next level is the coarsest when it is small enough or the depth cap stops it: its
+        # operator reaches only the dense inverse, which reads its stored count off the offsets it
+        # reads whole, so its ``nnz`` is left unsynced.
+        coarsest = n_aggregates <= _MULTIGRID_MAX_COARSE or len(levels) + 1 >= _MULTIGRID_MAX_LEVELS
+        operator = _multigrid_galerkin(
+            operator, level.prolongator, aggregation.starts, synced=not coarsest
+        )
+        stored = None if coarsest else int(operator.nnz)
     coarse_inverse = _multigrid_dense_inverse(levels[-1].operator)
     if coarse_inverse is None:
         return None
     return levels, coarse_inverse
 
 
-def _multigrid_aggregate(
-    matrix: odt.BsrMatrix[wp.float64], seed: int
-) -> tuple[wp.array[wp.float64], wp.array[wp.float64], wp.array[wp.int32], wp.array[wp.int32], int]:
+class _Aggregation(NamedTuple):
+    """One level's aggregation (``_multigrid_aggregate``), and the scratch its later steps reuse."""
+
+    diagonal: wp.array[wp.float64]
+    """``(n,)`` the operator's diagonal, which the setup launch extracts for the strength test."""
+    power: wp.array[wp.float64]
+    """``(n,)`` the first step of the smoother's power iteration (``_multigrid_damped_diagonal``),
+    which needs only the row and so rides on the same launch."""
+    spare: wp.array[wp.float64]
+    """``(n,)`` scratch for the power iteration's other iterate."""
+    label: wp.array[wp.int32]
+    """``(n,)`` each row's aggregate."""
+    sizes: wp.array[wp.int32]
+    """``(n_aggregates,)`` each aggregate's row count, counted by the spread's final hop."""
+    n_aggregates: int
+    starts: wp.array[wp.int64]
+    """``(n + 1,)`` scratch, spent by the independent set: the level's Galerkin assemblies count
+    and scan their contributions in it (``_row_key_assembly``)."""
+
+
+def _multigrid_aggregate(matrix: odt.BsrMatrix[wp.float64], seed: int) -> _Aggregation:
     """
     Aggregate label per row, from a distance-2 maximal independent set on the off-diagonal graph.
 
-    Returns ``(diagonal, power, label, sizes, n_aggregates)``: ``matrix``'s diagonal, which the
-    setup launch extracts for the strength test and hands on to the smoother; the first step of the
-    smoother's power iteration (``_multigrid_damped_diagonal``), which needs only the row and so
-    rides on the same launch; and ``sizes`` each aggregate's row count, counted by the spread's
-    final hop.
+    Each kind of per-row buffer the level needs is cut from one allocation: the ``float64`` and
+    the ``int32`` ones (none outlives the level's setup but ``power``, which becomes the damped
+    diagonal and so has its own), and the propagation keys, which become ``starts``.
 
     The selection is the randomized-priority pattern ``sample.dart_select_minima`` runs, lifted to
     distance 2 by propagating the packed ``(state, priority, index)`` maximum over one-hop
@@ -5038,14 +5072,15 @@ def _multigrid_aggregate(
     # The diagonal; ``sqrt(|A_ii|)`` per row, so the strength test below is a product rather than
     # a square root per edge, read by both walks; the priority order; the undecided start state;
     # and the power iteration's first step -- one launch.
-    diagonal = _launch.empty(n, dtype=wp.float64, device=device)
-    scaled_diagonal = _launch.empty(n, dtype=wp.float64, device=device)
-    priority = _launch.empty(n, dtype=wp.uint32, device=device)
-    state = _launch.empty(n, dtype=wp.int32, device=device)
-    power = _launch.empty(n, dtype=wp.float64, device=device)
+    floats = _launch.empty(3 * n, dtype=wp.float64, device=device)
+    diagonal, scaled_diagonal, spare = (_launch.view(floats, k * n, (k + 1) * n) for k in range(3))
+    ints = _launch.empty(4 * n + 2, dtype=wp.int32, device=device)
+    state, next_state, flags, label = (_launch.view(ints, k * n, (k + 1) * n) for k in range(4))
     # The undecided count (cleared by every round's first launch) and the roots so far (cleared
     # by the setup launch), read together.
-    counts = _launch.empty(2, dtype=wp.int32, device=device)
+    counts = _launch.view(ints, 4 * n, 4 * n + 2)
+    priority = _launch.empty(n, dtype=wp.uint32, device=device)
+    power = _launch.empty(n, dtype=wp.float64, device=device)
     _launch.launch(
         kernel_mg.mis_level_setup,
         dim=n,
@@ -5053,11 +5088,10 @@ def _multigrid_aggregate(
         outputs=[diagonal, scaled_diagonal, priority, state, power, counts],
         device=device,
     )
-    next_state = _launch.empty(n, dtype=wp.int32, device=device)
-    key = _launch.empty(n, dtype=wp.int64, device=device)
-    # Every node's root flag, written by the round that decides it (and every round it is still
-    # undecided), so the scan below needs no map over the final state.
-    flags = _launch.empty(n, dtype=wp.int32, device=device)
+    starts = _launch.empty(n + 1, dtype=wp.int64, device=device)
+    key = _launch.view(starts, 0, n)
+    # ``flags`` holds every node's root flag, written by the round that decides it (and every
+    # round it is still undecided), so the scan below needs no map over the final state.
     first_check, check_every = (
         (_MULTIGRID_MIS_FIRST_CHECK, _MULTIGRID_MIS_CHECK_EVERY) if device.is_cuda else (1, 1)
     )
@@ -5111,7 +5145,6 @@ def _multigrid_aggregate(
         outputs=[hop, None],
         device=device,
     )
-    label = _launch.empty(n, dtype=wp.int32, device=device)
     sizes = _launch.zeros(n_aggregates, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_mg.spread_aggregate_labels,
@@ -5120,13 +5153,14 @@ def _multigrid_aggregate(
         outputs=[label, sizes],
         device=device,
     )
-    return diagonal, power, label, sizes, n_aggregates
+    return _Aggregation(diagonal, power, spare, label, sizes, n_aggregates, starts)
 
 
 def _multigrid_damped_diagonal(
     matrix: odt.BsrMatrix[wp.float64],
     diagonal: wp.array[wp.float64],
     first_step: wp.array[wp.float64],
+    spare: wp.array[wp.float64],
     seed: int,
 ) -> wp.array[wp.float64]:
     """
@@ -5135,7 +5169,7 @@ def _multigrid_damped_diagonal(
     ``diagonal`` is ``matrix``'s own; ``D^-1`` is ``array.inverse_or_one`` of it, which the kernels
     apply as they read it. ``first_step`` is the power iteration's first iterate, ``D^-1 A s`` of
     the sign vector, which the aggregation's setup launch forms (``_multigrid_aggregate``); this
-    buffer is spent by the iteration.
+    buffer is spent by the iteration, and ``spare`` is scratch of its length for the other iterate.
 
     ``rho`` comes from an unnormalized power iteration. Normalizing every step would cost a host
     readback per step; leaving the iterate to grow and taking the geometric mean of the growth over
@@ -5154,7 +5188,7 @@ def _multigrid_damped_diagonal(
     device = matrix.device
     n = int(matrix.nrow)
     x = first_step
-    y = _launch.empty(n, dtype=wp.float64, device=device)
+    y = spare
     for _ in range(1, _MULTIGRID_POWER_STEPS - 1):
         _launch.launch(
             kernel_mg.power_step,
@@ -5276,10 +5310,18 @@ def _multigrid_prolongator(
 
 
 def _multigrid_galerkin(
-    matrix: odt.BsrMatrix[wp.float64], prolongator: odt.BsrMatrix[wp.float64]
+    matrix: odt.BsrMatrix[wp.float64],
+    prolongator: odt.BsrMatrix[wp.float64],
+    starts: wp.array[wp.int64],
+    *,
+    synced: bool,
 ) -> odt.BsrMatrix[wp.float64]:
     """
     Form the coarse operator ``P^T A P``, with its exactly-zero entries pruned.
+
+    Its ``nnz`` is synced when ``synced``; otherwise that field may be a capacity (the key
+    assembly's contribution count), for a consumer reading only the offsets. ``starts`` is
+    ``(n + 1,)`` ``int64`` scratch both assemblies count in, one after the other.
 
     Two key assemblies and no sparse product: ``A P`` from its ``A_ij P_jl`` products
     (``kernels/algorithms/multigrid.product_keys``), then ``P^T (A P)`` from each fine row's
@@ -5306,6 +5348,7 @@ def _multigrid_galerkin(
         [matrix.offsets, matrix.columns, p.offsets],
         kernel_mg.product_keys,
         [matrix.offsets, matrix.columns, matrix.values, p.offsets, p.columns, p.values],
+        starts,
         budget=budget,
         synced=False,
     )
@@ -5319,8 +5362,10 @@ def _multigrid_galerkin(
         [p.offsets, product.offsets],
         kernel_mg.galerkin_keys,
         [p.offsets, p.columns, p.values, product.offsets, product.columns, product.values],
+        starts,
         budget=budget,
         out_rows=n_coarse,
+        synced=synced,
     )
     if galerkin is None:
         # ``bsr_mm``'s structural zeros are what ``bsr_compress`` drops here; it reads the
@@ -5342,6 +5387,7 @@ def _row_key_assembly(
     count_inputs: Sequence[object],
     key_kernel: odt.Kernel,
     key_inputs: Sequence[object],
+    starts: wp.array[wp.int64],
     *,
     budget: int,
     out_rows: int | None = None,
@@ -5351,7 +5397,8 @@ def _row_key_assembly(
     Sum the contributions ``n`` fine rows emit into a pruned CSR, ``nnz``-synced when ``synced``.
 
     Each row's thread counts its contributions (``count_kernel`` writes ``counts[i + 1]`` and a
-    leading zero, in ``int64``), the counts are scanned in place into starts, and ``key_kernel``
+    leading zero, in ``int64``, into the ``(n + 1,)`` scratch ``starts``), the counts are scanned in
+    place into starts, and ``key_kernel``
     writes row ``i``'s keys, identity payloads and values from ``starts[i]``, its last two inputs
     the result's shape. The result has ``out_rows`` rows (``n`` by default) and ``n_cols``
     columns. ``None``, with nothing allocated past the counts, when the contributions would number
@@ -5360,7 +5407,6 @@ def _row_key_assembly(
     """
     # Counted and scanned in 64 bits: the budget test must see the true total, which an ``int32``
     # scan wraps on a dense level.
-    starts = _launch.empty(n + 1, dtype=wp.int64, device=device)
     _launch.launch(count_kernel, dim=n, inputs=count_inputs, outputs=[starts], device=device)
     _launch.array_scan(starts, starts, inclusive=True)
     # The total sizes the key buffers, and decides the fallback.
@@ -5388,8 +5434,8 @@ def _synced(matrix: odt.BsrMatrix[wp.float64]) -> odt.BsrMatrix[wp.float64]:
     ``matrix`` with its ``nnz`` field repaired to the stored count.
 
     A key assembly leaves ``nnz`` at the contribution count, and ``csr_transpose``, ``bsr_mm`` and
-    the V-cycle's launches read the field rather than the offsets, so every hierarchy matrix pays
-    the one readback here.
+    the next level's assembly read the field rather than the offsets, so every hierarchy matrix
+    but the coarsest operator (read only by the dense inverse) pays the one readback here.
     """
     matrix.nnz_sync()
     return matrix
@@ -5533,17 +5579,28 @@ class _MultigridCycle:
         self._n_columns = n_columns
         self._sweeps = max(1, int(sweeps))
 
+        # Every level's working vectors are views of one buffer, uninitialized: each is written
+        # before it is read (the top level's padding is never read at all).
         for depth, level in enumerate(levels):
-            top = depth == 0
-            level.stride = stride if top else level.n
+            level.stride = stride if depth == 0 else level.n
             level.dim = n_columns * level.stride
             level.matvec_dim = n_columns * level.n
-            level.ax = _launch.zeros(level.dim, dtype=wp.float64, device=self._device)
-            level.r = _launch.zeros(level.dim, dtype=wp.float64, device=self._device)
-            if top:
-                continue
-            level.b = _launch.zeros(level.dim, dtype=wp.float64, device=self._device)
-            level.x = _launch.zeros(level.dim, dtype=wp.float64, device=self._device)
+        counts = [2 if depth == 0 else 4 for depth in range(len(levels))]
+        total = sum(count * level.dim for count, level in zip(counts, levels, strict=True))
+        vectors = _launch.empty(total, dtype=wp.float64, device=self._device)
+        start = 0
+        for count, level in zip(counts, levels, strict=True):
+            views: list[wp.array[wp.float64]] = []
+            for _ in range(count):
+                # An empty level (an empty operator) holds the empty buffer itself: Warp refuses a
+                # zero-length view.
+                views.append(
+                    _launch.view(vectors, start, start + level.dim) if level.dim else vectors
+                )
+                start += level.dim
+            level.ax, level.r = views[0], views[1]
+            if count == 4:
+                level.b, level.x = views[2], views[3]
         for depth, level in enumerate(levels[:-1]):
             child = levels[depth + 1]
             level.restrict_dim = n_columns * child.n
