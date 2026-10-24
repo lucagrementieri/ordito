@@ -754,8 +754,10 @@ def successor_cycles(
     # The successor table and its tails in one pass over the edges, the tails in node space so the
     # ranking walks the nodes in ascending order; a node with several out-edges (malformed input)
     # is listed once, so the ranking places every node at most once.
-    next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
-    tails = _launch.full(node_count, -1, dtype=wp.int32, device=device)
+    # Both node-sized tables are halves of one ``-1``-filled buffer: one allocation and one fill.
+    table = _launch.full(2 * node_count, -1, dtype=wp.int32, device=device)
+    next_node = _launch.view(table, 0, node_count)
+    tails = _launch.view(table, node_count, 2 * node_count)
     _launch.launch(
         kernel_graph.scatter_successor_tails, dim=m, inputs=[edges, next_node, tails], device=device
     )
@@ -867,7 +869,11 @@ def _ranked_successor_cycles(
     m = tails.size
     node_count = next_node.size
     hops, rounds = kernel_graph.pointer_jump_schedule(max_length)
-    windows = _launch.empty(node_count, dtype=wp.vec3i, device=device)
+    # The ranking's windows and, past one round, their ping-pong partner: one allocation.
+    pair = _launch.empty(
+        node_count if rounds == 1 else 2 * node_count, dtype=wp.vec3i, device=device
+    )
+    windows = _launch.view(pair, 0, node_count)
     # Per cycle start, ``(1, length)``, accumulated by the last round and scanned in place.
     cycle_counts = _launch.zeros(node_count, dtype=wp.vec2i, device=device)
     _launch.launch(
@@ -877,7 +883,7 @@ def _ranked_successor_cycles(
         device=device,
     )
     if rounds > 1:
-        spare = _launch.empty(node_count, dtype=wp.vec3i, device=device)
+        spare = _launch.view(pair, node_count, 2 * node_count)
         window = hops
         for r in range(1, rounds):
             _launch.launch(
@@ -900,12 +906,14 @@ def _ranked_successor_cycles(
     # Sizes both outputs: the cycle count and the ranked node count, in one read.
     total = read_scalar(cycle_counts)
     n_cycles, n_ranked = int(total[0]), int(total[1])
-    allocate = _launch.zeros if zero_unwritten else _launch.empty
-    flat = allocate(n_ranked, dtype=wp.int32, device=device)
     if n_cycles == 0:
-        return flat, _launch.zeros(1, dtype=wp.int32, device=device)
-    # Every entry, the leading zero and the total included, is written by the cycle it bounds.
-    offsets = _launch.empty(n_cycles + 1, dtype=wp.int32, device=device)
+        return _launch.empty_packed(wp.int32, device)
+    # Both outputs in one allocation, the offsets after the nodes. Every offset, the leading zero
+    # and the total included, is written by the cycle it bounds.
+    allocate = _launch.zeros if zero_unwritten else _launch.empty
+    packed = allocate(n_ranked + n_cycles + 1, dtype=wp.int32, device=device)
+    flat = _launch.view(packed, 0, n_ranked)
+    offsets = _launch.view(packed, n_ranked, n_ranked + n_cycles + 1)
     _launch.launch(
         kernel_graph.scatter_closed_cycles,
         dim=m,

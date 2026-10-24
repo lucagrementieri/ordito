@@ -1217,8 +1217,10 @@ def ears(
     n_ears = int(read_scalar(inclusive))
     if n_ears == 0:
         return empty, empty
-    ear = _launch.empty(n_ears, dtype=wp.int32, device=device)
-    ear_opp = _launch.empty(n_ears, dtype=wp.int32, device=device)
+    # Both outputs in one allocation, every entry written by the emit.
+    pair = _launch.empty(2 * n_ears, dtype=wp.int32, device=device)
+    ear = _launch.view(pair, 0, n_ears)
+    ear_opp = _launch.view(pair, n_ears, 2 * n_ears)
     _launch.launch(
         kernel_boundary.emit_ears,
         dim=n_faces,
