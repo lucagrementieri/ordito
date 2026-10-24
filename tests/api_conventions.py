@@ -250,6 +250,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "flip_to_delaunay would re-validate, clone the faces and convert the region mask again "
         "every round"
     ),
+    ("reconstruction", "repair._wound_with_mates"): (
+        "triangulate_point_cloud labels the components of the faces make_winding_consistent "
+        "wound, and reads the halfedge mates the winding fix already paired, moved with each "
+        "flipped face, as make_normals_outward does; the public form returns the faces alone"
+    ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "
         "rebuilds connectivity as well, which reconstruction must not do to a fresh triangulation"
@@ -672,7 +677,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ),
     ("algorithms.convex_hull", "propose_flips"): frozenset({"changed", "dirty", "lock"}),
     # A follow pass's reset: the growth loop's ``counters`` word, bids and split flags (above).
-    ("algorithms.convex_hull", "begin_follow"): frozenset({"counters", "best", "flags"}),
     ("algorithms.convex_hull", "apply_flips"): frozenset(
         {"tri", "adj", "state", "changed", "group"}
     ),

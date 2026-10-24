@@ -776,12 +776,13 @@ def _hull_support_extremes_kernel(width: int) -> wp.Kernel:
         directions: wp.array[wp.vec3],
         n_slices: wp.int32,
         out_best_max: wp.array[wp.float32],
-        out_best_min: wp.array[wp.float32],
+        out_best_neg_min: wp.array[wp.float32],
         out_slice_max: wp.array2d[wp.float32],
         out_slice_min: wp.array2d[wp.float32],
     ) -> None:
         # Thread ``(b, j)`` reduces directions ``b * width ..`` over slice ``j``. Max and min are
-        # exact, so the grouping changes no extreme.
+        # exact, so the grouping changes no extreme. The minimum is kept negated, as the maximum of
+        # the negated values (negation is exact), so both start from ``-inf`` in one filled buffer.
         #
         # ``out_slice_max`` / ``out_slice_min`` keep a bound on each ``(direction, slice)`` extreme
         # for the filtered sweeps after this one (``support_indices``, ``mark_hull_support``): a
@@ -846,7 +847,7 @@ def _hull_support_extremes_kernel(width: int) -> wp.Kernel:
                 # A slice past the end of the cloud contributes nothing.
                 if local_max[d] > -FLOAT32_INF_CONSTANT:
                     wp.atomic_max(out_best_max, k, local_max[d])
-                    wp.atomic_min(out_best_min, k, local_min[d])
+                    wp.atomic_max(out_best_neg_min, k, -local_min[d])
 
     return wp.kernel(hull_support_extremes, name=f"hull_support_extremes_{width}")
 
@@ -859,19 +860,20 @@ HULL_SUPPORT_EXTREMES = RegisterBlockedTable(
 @wp.func
 def support_thresholds(
     best_max: wp.array[wp.float32],
-    best_min: wp.array[wp.float32],
+    best_neg_min: wp.array[wp.float32],
     tolerance: wp.float32,
     k: wp.int32,
 ) -> tuple[wp.float32, wp.float32]:
-    """Direction ``k``'s ``(upper, lower)`` support thresholds."""
+    """Direction ``k``'s ``(upper, lower)`` support thresholds, from its max and negated min."""
     # A point supports direction ``k`` when its support value reaches ``upper`` (along ``+n``) or
     # ``lower`` (along ``-n``). The slack scales with the per-direction support extent so the test
     # is scale-invariant and stays above the float32 dot-product noise floor. Shared by
     # `mark_hull_support` and `support_indices`, which both tie-break against it: a future change
     # to the formula (e.g. a different scale-invariance fix) has one definition to change rather
     # than two that can drift.
-    slack = tolerance * (best_max[k] - best_min[k])
-    return best_max[k] - slack, best_min[k] + slack
+    best_min = -best_neg_min[k]
+    slack = tolerance * (best_max[k] - best_min)
+    return best_max[k] - slack, best_min + slack
 
 
 @wp.func
@@ -879,7 +881,7 @@ def mark_support_slice(
     points: wp.array[wp.vec3],
     directions: wp.array[wp.vec3],
     best_max: wp.array[wp.float32],
-    best_min: wp.array[wp.float32],
+    best_neg_min: wp.array[wp.float32],
     tolerance: wp.float32,
     stride: wp.int32,
     slice_max: wp.array2d[wp.float32],
@@ -899,7 +901,7 @@ def mark_support_slice(
     # A hemisphere direction n covers both +n (max, supports the vertex farthest
     # along n) and -n (min, supports the vertex farthest along -n).
     direction = directions[k]
-    upper, lower = support_thresholds(best_max, best_min, tolerance, k)
+    upper, lower = support_thresholds(best_max, best_neg_min, tolerance, k)
     if slice_max.shape[0] > 0:
         if slice_max[k, j] < upper and slice_min[k, j] > lower:
             return
@@ -914,7 +916,7 @@ def mark_hull_support(
     points: wp.array[wp.vec3],
     directions: wp.array[wp.vec3],
     best_max: wp.array[wp.float32],
-    best_min: wp.array[wp.float32],
+    best_neg_min: wp.array[wp.float32],
     tolerance: wp.float32,
     stride: wp.int32,
     slice_max: wp.array2d[wp.float32],
@@ -928,7 +930,7 @@ def mark_hull_support(
         points,
         directions,
         best_max,
-        best_min,
+        best_neg_min,
         tolerance,
         stride,
         slice_max,
@@ -945,7 +947,7 @@ def flag_hull_support(
     points: wp.array[wp.vec3],
     directions: wp.array[wp.vec3],
     best_max: wp.array[wp.float32],
-    best_min: wp.array[wp.float32],
+    best_neg_min: wp.array[wp.float32],
     tolerance: wp.float32,
     stride: wp.int32,
     slice_max: wp.array2d[wp.float32],
@@ -958,7 +960,7 @@ def flag_hull_support(
         points,
         directions,
         best_max,
-        best_min,
+        best_neg_min,
         tolerance,
         stride,
         slice_max,
@@ -975,7 +977,7 @@ def support_indices(
     points: wp.array[wp.vec3],
     directions: wp.array[wp.vec3],
     best_max: wp.array[wp.float32],
-    best_min: wp.array[wp.float32],
+    best_neg_min: wp.array[wp.float32],
     tolerance: wp.float32,
     stride: wp.int32,
     slice_max: wp.array2d[wp.float32],
@@ -984,7 +986,7 @@ def support_indices(
     # ``mark_hull_support``'s two launch shapes, for the upper threshold alone, stopping at a
     # thread's first attaining point -- its points ascend, so that is its lowest.
     k, j = wp.tid()
-    upper, _lower = support_thresholds(best_max, best_min, tolerance, k)
+    upper, _lower = support_thresholds(best_max, best_neg_min, tolerance, k)
     if slice_max.shape[0] > 0:
         if slice_max[k, j] < upper:
             return
@@ -998,11 +1000,7 @@ def support_indices(
 
 
 @wp.kernel
-def shell_bounds(
-    shell_vertices: wp.indexedarray[wp.vec3],
-    out_centroid: wp.array[wp.vec3],
-    out_radius: wp.array[wp.float32],
-) -> None:
+def shell_bounds(shell_vertices: wp.indexedarray[wp.vec3], out_shell: wp.array[wp.vec4]) -> None:
     # One thread: the shell has a few hundred vertices at most, and reducing on device keeps the
     # support sweep and the tetrahedron build in one launch chain with no host readback between.
     # ``shell_vertices`` is the points gathered through the support indices as a Python-scope
@@ -1023,8 +1021,15 @@ def shell_bounds(
     for i in range(n):
         radius = wp.max(radius, wp.length(shell_vertices[i] - center))
 
-    out_centroid[0] = center
-    out_radius[0] = radius
+    # Centroid and radius in one word, which the two kernels after this one read.
+    out_shell[0] = wp.vec4(center[0], center[1], center[2], radius)
+
+
+@wp.func
+def shell_centroid(shell: wp.array[wp.vec4]) -> wp.vec3:
+    """Return the shell centroid ``shell_bounds`` packed into its word's first three components."""
+    word = shell[0]
+    return wp.vec3(word[0], word[1], word[2])
 
 
 @wp.func
@@ -1052,7 +1057,7 @@ def centroid_offset(point: wp.vec3, centroid: wp.vec3) -> wp.vec3:
 def tetrahedron_planes(
     shell_vertices: wp.indexedarray[wp.vec3],
     shell_faces: wp.array[wp.int32],
-    centroid: wp.array[wp.vec3],
+    shell: wp.array[wp.vec4],
     flatness: wp.float32,
     out_planes: wp.array2d[wp.vec4],
     out_valid: wp.array[wp.bool],
@@ -1062,9 +1067,10 @@ def tetrahedron_planes(
     # rounding is relative to the shell's size rather than to how far the cloud sits from the
     # origin (see there).
     apex = wp.vec3(0.0, 0.0, 0.0)
-    a = centroid_offset(shell_vertices[shell_faces[t * 3 + 0]], centroid[0])
-    b = centroid_offset(shell_vertices[shell_faces[t * 3 + 1]], centroid[0])
-    c = centroid_offset(shell_vertices[shell_faces[t * 3 + 2]], centroid[0])
+    centroid = shell_centroid(shell)
+    a = centroid_offset(shell_vertices[shell_faces[t * 3 + 0]], centroid)
+    b = centroid_offset(shell_vertices[shell_faces[t * 3 + 1]], centroid)
+    c = centroid_offset(shell_vertices[shell_faces[t * 3 + 2]], centroid)
 
     # Scale-free flatness test: the determinant of the three apex edges against their length
     # product. A sliver's face normals are ill-conditioned cross products of nearly parallel edges,
@@ -1096,8 +1102,7 @@ def mark_hull_superset(
     points: wp.array[wp.vec3],
     planes: wp.array2d[wp.vec4],
     valid: wp.array[wp.bool],
-    centroid: wp.array[wp.vec3],
-    radius: wp.array[wp.float32],
+    shell: wp.array[wp.vec4],
     margin: wp.float32,
     out_mask: wp.array[wp.bool],
 ) -> None:
@@ -1105,11 +1110,11 @@ def mark_hull_superset(
     # In the centroid's frame, as the planes are. Evaluated on raw coordinates the plane test's
     # float32 error grew with the cloud's distance from the origin while ``slack`` scales with its
     # size: a ball of radius 1 centred at 1e3 lost true hull vertices (3 of 1 976 at 200 k points).
-    point = centroid_offset(points[i], centroid[0])
+    point = centroid_offset(points[i], shell_centroid(shell))
     # Strict interior only, by a real distance. A point on a tetrahedron's boundary can still be a
     # hull vertex, and requiring it to clear every face by `slack` means float32 error in the plane
     # evaluation can only keep a point that could have been dropped -- never drop a hull vertex.
-    slack = margin * radius[0]
+    slack = margin * shell[0][3]
     n_tetra = valid.shape[0]
     keep = wp.int32(1)
     for t in range(n_tetra):

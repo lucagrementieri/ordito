@@ -381,10 +381,11 @@ def triangulate_point_cloud(
     if n_candidates == 0:
         return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
 
-    faces = _repeated_oriented_triangles(out_tris, fan_counts, n_candidates, n)
+    faces = _repeated_oriented_triangles(points, out_tris, fan_counts, n_candidates)
     if faces.size == 0:
         return _launch.clone(points), faces
-    # Every face carries a distinct vertex set, so the duplicate-resolution stage has nothing to do.
+    # Every face carries a distinct vertex set and none is degenerate, so the duplicate-resolution
+    # and degenerate-face stages have nothing to do.
     # Trusted normals keep their winding (``orient=False``): ``make_normals_outward`` would rewind a
     # whole inward-normal cloud's mesh outward, silently breaking that contract. Estimated normals
     # have no sign to keep, so the mesh is oriented instead (each fan was wound by its own center's
@@ -392,10 +393,15 @@ def triangulate_point_cloud(
     # centre at each component's farthest corner.
     if oriented:
         return _clean_reconstruction(
-            points, faces, crit_hole_length, orient=False, deduplicate=False
+            points, faces, crit_hole_length, orient=False, deduplicate=False, nondegenerate=True
         )
     return _clean_reconstruction(
-        points, faces, crit_hole_length, away_from=_box_center(bounds), deduplicate=False
+        points,
+        faces,
+        crit_hole_length,
+        away_from=_box_center(bounds),
+        deduplicate=False,
+        nondegenerate=True,
     )
 
 
@@ -418,7 +424,10 @@ def _box_center(bounds: tuple[wp.vec3, wp.vec3]) -> wp.vec3:
 
 
 def _repeated_oriented_triangles(
-    tris: odt.ArrayNdInt32, inclusive_counts: wp.array[wp.int32], n_candidates: int, n: int
+    points: wp.array[wp.vec3],
+    tris: odt.ArrayNdInt32,
+    inclusive_counts: wp.array[wp.int32],
+    n_candidates: int,
 ) -> wp.array[wp.int32]:
     """
     Keep one oriented representative per candidate triangle two or three fans agree on.
@@ -432,9 +441,11 @@ def _repeated_oriented_triangles(
 
     The faces come out in ascending key order, which is the order the duplicate-resolution stage
     of [`_clean_reconstruction`][ordito.reconstruction._clean_reconstruction] would emit them in:
-    no two carry the same vertex set, so that stage keeps every one and needs no pass.
+    no two carry the same vertex set, so that stage keeps every one and needs no pass. A degenerate
+    representative is dropped here, as that function's degenerate-face stage would drop it.
     """
     device = tris.device
+    n = points.size
     # Double-width, as ``warp.utils.radix_sort_pairs`` wants: the upper halves are its scratch.
     keys = _launch.empty(2 * n_candidates, dtype=wp.uint64, device=device)
     slots = _launch.empty(2 * n_candidates, dtype=wp.int32, device=device)
@@ -449,11 +460,12 @@ def _repeated_oriented_triangles(
         keys, slots, count=n_candidates, end_bit=min(64, max(1, (n**3 - 1).bit_length()))
     )
 
+    rows = tris.reshape((-1, 3))
     flags = _launch.empty(n_candidates, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_reconstruction.repeated_triangle_flags,
         dim=n_candidates,
-        inputs=[keys, wp.int32(n_candidates), flags],
+        inputs=[points, keys, slots, rows, wp.int32(n_candidates), flags],
         device=device,
     )
     _launch.array_scan(flags, out_array=flags, inclusive=True)
@@ -464,7 +476,7 @@ def _repeated_oriented_triangles(
         _launch.launch(
             kernel_reconstruction.emit_repeated_triangles,
             dim=n_candidates,
-            inputs=[flags, slots, tris.reshape((-1, 3)), faces],
+            inputs=[flags, slots, rows, faces],
             device=device,
         )
     return faces
@@ -2819,6 +2831,7 @@ def _clean_reconstruction(
     orient: bool = True,
     away_from: wp.vec3 | None = None,
     deduplicate: bool = True,
+    nondegenerate: bool = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Shared reconstruction cleanup: dedup, drop degenerate/non-manifold, orient, fill small holes.
@@ -2832,16 +2845,25 @@ def _clean_reconstruction(
     ``_face_away_from``'s, which also decides open components. ``deduplicate=False`` skips the
     duplicate-resolution stage for a caller whose faces already carry pairwise distinct vertex
     sets *in ascending unoriented-key order* -- the order that stage emits -- so the result is
-    unchanged.
+    unchanged. ``nondegenerate=True`` skips the degenerate-face test for a caller whose faces hold
+    no degenerate face.
     """
     if faces.size == 0:
         return _launch.clone(points), faces
 
     if deduplicate:
         faces, _ = od.repair.resolve_duplicated_faces(faces, n_vertices=points.size)
-    # One vertex compaction for both filters, rather than one after each: the faces here are this
-    # package's own, so their indices are in range, which the combined filter requires.
-    vertices, faces = od.repair.remove_degenerate_and_non_manifold_faces(points, faces)
+    if nondegenerate:
+        # The combined filter's answer: with no degenerate face its first stage only compacts the
+        # vertices, which commutes with the manifold filter. That compacts them only when it drops
+        # a face, so the referenced vertices are compacted here otherwise.
+        vertices, faces = od.repair.remove_non_manifold_faces(points, faces)
+        if vertices is points:
+            vertices, faces, _ = od.repair.remove_unreferenced_vertices(points, faces)
+    else:
+        # One vertex compaction for both filters, rather than one after each: the faces here are
+        # this package's own, so their indices are in range, which the combined filter requires.
+        vertices, faces = od.repair.remove_degenerate_and_non_manifold_faces(points, faces)
 
     if faces.size > 0:
         if away_from is not None:
@@ -2870,8 +2892,12 @@ def _face_away_from(
     """
     n_faces = faces.size // 3
     device = faces.device
-    faces = od.repair.make_winding_consistent(faces, n_vertices=vertices.size)
-    labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+    # ``make_winding_consistent`` with the wound faces' halfedge mates, which the labelling reads
+    # rather than pairing the halfedges again.
+    faces, mates = od.repair._wound_with_mates(faces, vertices.size)  # pyright: ignore[reportPrivateUsage]
+    labels = od.adjacency.face_connected_component_labels(
+        faces, n_vertices=vertices.size, mates=mates
+    )
     farthest = _launch.full(n_faces, -1, dtype=wp.int64, device=device)
     _launch.launch(
         kernel_reconstruction.farthest_component_corners,
