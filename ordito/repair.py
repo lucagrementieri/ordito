@@ -696,9 +696,10 @@ def resolve_duplicated_faces(
     end_bit = max(1, (min(n_vertices**3, 1 << 64) - 1).bit_length())
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
     # The keep flags at the sorted positions with the error word right behind them, so one readback
-    # takes the kept count and the error together; the decided face of each run start beside them.
+    # takes the kept count and the error together; the decided face of each run start beside them,
+    # in the payload's upper half, the sort's scratch until now.
     flags = _launch.zeros(n_faces + 1, dtype=wp.int32, device=device)
-    keep = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    keep = _launch.view(order, n_faces, 2 * n_faces)
     _launch.launch(
         kernel_repair.resolve_duplicate_runs,
         dim=n_faces,
@@ -1695,6 +1696,9 @@ def fix_degeneracies(
     feature = wp.float32(math.pi)
     current_vertices = vertices
     current_faces = faces
+    # Collapses only ever remove faces, so one flag buffer sized for the input serves every round
+    # through its leading entries.
+    region_flags = _launch.empty(n_faces, dtype=wp.int32, device=device)
     for _ in range(max_iter):
         n_current = current_faces.size
         # The caller's buffer is copied before the first flips; every later one is this call's own
@@ -1704,7 +1708,7 @@ def fix_degeneracies(
             if current_faces is faces
             else current_faces
         )
-        face_region = _launch.empty(n_current // 3, dtype=wp.int32, device=device)
+        face_region = _launch.view(region_flags, 0, n_current // 3)
         _launch.launch(
             kernel_repair.faces_in_vertex_region,
             dim=n_current // 3,
