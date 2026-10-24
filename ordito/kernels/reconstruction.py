@@ -49,7 +49,7 @@ from ordito.kernels.reduce import (
     term_sum_1d,
 )
 from ordito.kernels.scatter import scatter_add
-from ordito.kernels.triangles import corner_triple
+from ordito.kernels.triangles import corner_triple, triangle_nondegenerate
 
 wp.set_module_options({"enable_backward": False})
 
@@ -681,12 +681,20 @@ def candidate_triangle_keys(
 
 @wp.kernel
 def repeated_triangle_flags(
-    sorted_keys: wp.array[wp.uint64], n: wp.int32, out_flags: wp.array[wp.int32]
+    points: wp.array[wp.vec3],
+    sorted_keys: wp.array[wp.uint64],
+    sorted_slots: wp.array[wp.int32],
+    tris: wp.array2d[wp.int32],
+    n: wp.int32,
+    out_flags: wp.array[wp.int32],
 ) -> None:
     # ``1`` at the start of a run of two or three equal keys: a triangle two or three fans agree
     # on. ``grouping.mark_group_starts`` is the same test for one exact run length; this one
     # accepts either length in one pass, because keeping both keeps them merged in key order.
     # Nested rather than one ``and`` chain: each test reads an index only its guard makes valid.
+    # A degenerate triangle is not kept either -- the face ``emit_repeated_triangles`` writes,
+    # tested as ``repair.nondegenerate_face_flags`` tests it -- so the cleanup needs no
+    # degenerate-face pass.
     i = wp.int32(wp.tid())
     key = sorted_keys[i]
     flag = wp.int32(0)
@@ -696,6 +704,12 @@ def repeated_triangle_flags(
             if i + 3 < n:
                 if sorted_keys[i + 3] == key:
                     flag = 0  # a run longer than three
+    if flag != 0:
+        slot = sorted_slots[i]
+        if not triangle_nondegenerate(
+            points[tris[slot, 0]], points[tris[slot, 1]], points[tris[slot, 2]]
+        ):
+            flag = 0
     out_flags[i] = flag
 
 

@@ -83,7 +83,7 @@ COUNT_APPENDED = wp.int32(0)
 COUNT_SPLITS = wp.int32(1)
 COUNT_LIVE = wp.int32(2)
 COUNT_STATUS = wp.int32(3)
-# Entries in the live list a follow pass reads (``begin_follow`` moves the append count here).
+# Entries in the live list a follow pass reads: the growth round's first pass appends here.
 COUNT_FOLLOW = wp.int32(4)
 COUNTERS_SIZE = 5
 
@@ -99,6 +99,16 @@ CHECK_REFLEX = wp.int32(0)
 CHECK_NON_EXTREME = wp.int32(1)
 CHECK_LIVE_FACES = wp.int32(2)
 CHECK_SIZE = 3
+
+# Offsets into the one zeroed ``int32`` word buffer a build allocates: the growth counters, the
+# growth flip rounds' state word (no loop advances it), Flip-Flop's loop state word (its condition
+# seeded by ``start_tetrahedron``), the start tetrahedron's corners and the closing check word.
+WORD_COUNTERS = 0
+WORD_GROWTH_STATE = WORD_COUNTERS + COUNTERS_SIZE
+WORD_FLIP_STATE = WORD_GROWTH_STATE + kernel_array.LOOP_ADVANCE_STATE_SIZE
+WORD_CORNERS = WORD_FLIP_STATE + kernel_array.LOOP_ADVANCE_STATE_SIZE
+WORD_CHECK = WORD_CORNERS + 4
+WORDS_SIZE = WORD_CHECK + CHECK_SIZE
 
 LOCK_FREE = wp.int32(2147483647)
 DEAD_FACE = wp.vec3i(-1, -1, -1)
@@ -232,14 +242,19 @@ def commit_beyond(
     face: wp.int32,
     proxy: wp.float32,
     counters: wp.array[wp.int32],
+    slot: wp.int32,
+    bid: wp.bool,
     best: wp.array[wp.int64],
     flags: wp.array[wp.int32],
     out_live: wp.array[wp.vec2i],
 ):
-    # Keep a point that is beyond its face: append it to the next live list, bid for the face and
-    # flag the face for this round's split. The list's order is arrival order and decides nothing:
-    # the bids are an ``atomic_max`` of unique keys.
-    out_live[kernel_array.append_slot(counters, COUNT_APPENDED)] = wp.vec2i(i, face)
+    # Keep a point that is beyond its face: append it to the next live list, counted in
+    # ``counters[slot]``, and with ``bid`` set bid for the face and flag it for this round's split.
+    # The list's order is arrival order and decides nothing: the bids are an ``atomic_max`` of
+    # unique keys.
+    out_live[kernel_array.append_slot(counters, slot)] = wp.vec2i(i, face)
+    if not bid:
+        return
     # A bid below the face's current best changes nothing, so it skips the atomic: the first pass
     # has four faces for the whole cloud, and every bid serialized on them. A stale read only costs
     # an atomic that loses.
@@ -317,9 +332,12 @@ def start_tetrahedron(
     counters: wp.array[wp.int32],
     out_corners: wp.array[wp.int32],
     out_kernel_point: wp.array[wp.vec3d],
+    out_flip_state: wp.array[wp.int32],
 ) -> None:
     # dim=1. Wind the four picked corners outward, write the tetrahedron's faces and adjacency,
-    # and place the kernel point; or record why the cloud has no tetrahedron.
+    # and place the kernel point; or record why the cloud has no tetrahedron. Also seeds Flip-Flop's
+    # loop condition, which ``wp.capture_while`` reads before its first round.
+    out_flip_state[kernel_array.LOOP_CONDITION] = 1
     ia = kernel_array.unpack_ranked_index(keys[0])
     ib = kernel_array.unpack_ranked_index(keys[1])
     ic = kernel_array.unpack_ranked_index(keys[2])
@@ -391,7 +409,7 @@ def seed_points(
         face += 1
     beyond, proxy = beyond_face(points, tri[face], p)
     if beyond:
-        commit_beyond(i, face, proxy, counters, best, flags, out_live)
+        commit_beyond(i, face, proxy, counters, COUNT_APPENDED, True, best, flags, out_live)
 
 
 # --- Growth rounds ---------------------------------------------------------------------------
@@ -436,6 +454,7 @@ def split_faces(
         counters[COUNT_SPLITS] = offsets[n_faces - 1]
         counters[COUNT_LIVE] = counters[COUNT_APPENDED]
         counters[COUNT_APPENDED] = 0
+        counters[COUNT_FOLLOW] = 0
     out_next_flags[f] = 0
     if flags[f] == 0:
         child[f] = -1
@@ -474,21 +493,6 @@ def split_faces(
 
 
 @wp.kernel
-def begin_follow(
-    counters: wp.array[wp.int32], best: wp.array[wp.int64], flags: wp.array[wp.int32]
-) -> None:
-    # Before a follow pass: its input count moves out of the append slot, and every face's bid and
-    # split flag is cleared, since the pass re-bids every surviving point onto the faces the flips
-    # left -- a flagged face may have lost its only bidder.
-    f = wp.int32(wp.tid())
-    if f == 0:
-        counters[COUNT_FOLLOW] = counters[COUNT_APPENDED]
-        counters[COUNT_APPENDED] = 0
-    best[f] = wp.int64(-1)
-    flags[f] = 0
-
-
-@wp.kernel
 def assign_points(
     points: wp.array[wp.vec3],
     kernel_point: wp.array[wp.vec3d],
@@ -502,10 +506,14 @@ def assign_points(
     best: wp.array[wp.int64],
     flags: wp.array[wp.int32],
     follow: wp.int32,
+    last: wp.int32,
     out_live: wp.array[wp.vec2i],
 ) -> None:
     # With ``follow`` set, a follow pass after a further flip round of the same growth round: the
     # list is the previous pass's output, its length in ``COUNT_FOLLOW``, and no face was split.
+    # Only the round's ``last`` pass bids, into the bids and flags the split cleared, and appends
+    # to ``COUNT_APPENDED``; an earlier pass's bids would be stale after the next flip round, so it
+    # only relocates and culls, appending to ``COUNT_FOLLOW`` (a round has at most two passes).
     #
     # One growth pass: follow a split face's point into the child cone holding it, then, if the
     # round's flips rewrote that child, into the rewritten face holding it; drop the point if it
@@ -558,7 +566,17 @@ def assign_points(
         f = wp.where(chosen >= 0, chosen, fallback)
     beyond, proxy = beyond_face(points, tri[f], p)
     if beyond:
-        commit_beyond(i, f, proxy, counters, best, flags, out_live)
+        commit_beyond(
+            i,
+            f,
+            proxy,
+            counters,
+            wp.where(last != 0, COUNT_APPENDED, COUNT_FOLLOW),
+            last != 0,
+            best,
+            flags,
+            out_live,
+        )
 
 
 # --- Flip-Flop -------------------------------------------------------------------------------
@@ -916,7 +934,8 @@ def flag_extreme_vertices(
 ) -> None:
     # A vertex is an extreme point when at least three strictly convex edges meet it; with two it
     # lies on a hull edge, with none inside a facet. Every face writes its corners' flags (the
-    # same value from each), its own live flag for the output scan, and counts itself live.
+    # same value from each), its own live flag for the output scan, and counts itself live. An
+    # empty ``out_vertex_flags`` skips the vertex flags, which only an extreme-only rebuild reads.
     f = wp.int32(wp.tid())
     t = tri[f]
     live = t[0] >= 0
@@ -924,10 +943,12 @@ def flag_extreme_vertices(
     if not live:
         return
     wp.atomic_add(out_check, CHECK_LIVE_FACES, 1)
+    write_flags = out_vertex_flags.shape[0] > 0
     for k in range(3):
         v = t[k]
         extreme = convex[v] >= 3
-        out_vertex_flags[v] = wp.where(extreme, 1, 0)
+        if write_flags:
+            out_vertex_flags[v] = wp.where(extreme, 1, 0)
         if not extreme:
             out_check[CHECK_NON_EXTREME] = 1
 
