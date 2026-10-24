@@ -7272,7 +7272,29 @@ residual, a length, doubles:</p>
 <span class="normal">322</span>
 <span class="normal">323</span>
 <span class="normal">324</span>
-<span class="normal">325</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_smoothing_loss</span><span class="p">(</span>
+<span class="normal">325</span>
+<span class="normal">326</span>
+<span class="normal">327</span>
+<span class="normal">328</span>
+<span class="normal">329</span>
+<span class="normal">330</span>
+<span class="normal">331</span>
+<span class="normal">332</span>
+<span class="normal">333</span>
+<span class="normal">334</span>
+<span class="normal">335</span>
+<span class="normal">336</span>
+<span class="normal">337</span>
+<span class="normal">338</span>
+<span class="normal">339</span>
+<span class="normal">340</span>
+<span class="normal">341</span>
+<span class="normal">342</span>
+<span class="normal">343</span>
+<span class="normal">344</span>
+<span class="normal">345</span>
+<span class="normal">346</span>
+<span class="normal">347</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_smoothing_loss</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"uniform"</span><span class="p">,</span> <span class="s2">"cot"</span><span class="p">,</span> <span class="s2">"cotcurv"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"uniform"</span><span class="p">,</span>
@@ -7357,12 +7379,29 @@ residual, a length, doubles:</p>
     <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="mf">0.0</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">area_sums</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">norms</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"uniform"</span><span class="p">:</span>
         <span class="n">operator</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">laplacian</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">equal_weight</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-        <span class="n">selector</span> <span class="o">=</span> <span class="n">kernel_energies</span><span class="o">.</span><span class="n">SMOOTHING_UNIFORM</span>
-    <span class="k">elif</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"cot"</span><span class="p">:</span>
-        <span class="n">operator</span> <span class="o">=</span> <span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+        <span class="c1"># Each method's per-row scales are formed in the row's own thread, so no scale buffer</span>
+        <span class="c1"># exists.</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_energies</span><span class="o">.</span><span class="n">laplacian_smoothing_norms</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+                <span class="n">operator</span><span class="o">.</span><span class="n">offsets</span><span class="p">,</span>
+                <span class="n">operator</span><span class="o">.</span><span class="n">columns</span><span class="p">,</span>
+                <span class="n">operator</span><span class="o">.</span><span class="n">values</span><span class="p">,</span>
+                <span class="n">vertices</span><span class="p">,</span>
+                <span class="kc">None</span><span class="p">,</span>
+                <span class="n">kernel_energies</span><span class="o">.</span><span class="n">SMOOTHING_UNIFORM</span><span class="p">,</span>
+                <span class="n">norms</span><span class="p">,</span>
+            <span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">norms</span><span class="p">))</span>
+    <span class="n">area_sums</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"cot"</span><span class="p">:</span>
+        <span class="n">cot_entries</span> <span class="o">=</span> <span class="n">cotmatrix_entries</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
         <span class="n">selector</span> <span class="o">=</span> <span class="n">kernel_energies</span><span class="o">.</span><span class="n">SMOOTHING_COT</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="c1"># ``mass_matrix_entries``' exact area sums, formed in the face pass that writes the</span>
@@ -7377,22 +7416,27 @@ residual, a length, doubles:</p>
             <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">cot_entries</span><span class="p">,</span> <span class="n">area_sums</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
-        <span class="n">operator</span> <span class="o">=</span> <span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cot_entries</span><span class="p">)</span>
         <span class="n">selector</span> <span class="o">=</span> <span class="n">kernel_energies</span><span class="o">.</span><span class="n">SMOOTHING_COTCURV</span>
-    <span class="c1"># Each method's per-row scales are formed in the row's own thread, so no scale buffer exists.</span>
-    <span class="n">norms</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The cotangent Laplacian's row is written by the thread that takes its residual, over its</span>
+    <span class="c1"># pattern; each method's per-row scales are formed in the same thread.</span>
+    <span class="n">_</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">run_start</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">mesh_operator_pattern</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">columns</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_energies</span><span class="o">.</span><span class="n">laplacian_smoothing_norms</span><span class="p">,</span>
+        <span class="n">kernel_energies</span><span class="o">.</span><span class="n">laplacian_smoothing_cot_norms</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
-            <span class="n">operator</span><span class="o">.</span><span class="n">offsets</span><span class="p">,</span>
-            <span class="n">operator</span><span class="o">.</span><span class="n">columns</span><span class="p">,</span>
-            <span class="n">operator</span><span class="o">.</span><span class="n">values</span><span class="p">,</span>
+            <span class="n">offsets</span><span class="p">,</span>
+            <span class="n">columns</span><span class="p">,</span>
+            <span class="n">run_start</span><span class="p">,</span>
+            <span class="n">keys</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">count</span><span class="p">),</span>
+            <span class="n">order</span><span class="p">,</span>
+            <span class="n">cot_entries</span><span class="p">,</span>
             <span class="n">vertices</span><span class="p">,</span>
             <span class="n">area_sums</span><span class="p">,</span>
             <span class="n">selector</span><span class="p">,</span>
-            <span class="n">norms</span><span class="p">,</span>
         <span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">values</span><span class="p">,</span> <span class="n">norms</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">norms</span><span class="p">))</span>
@@ -7433,7 +7477,7 @@ operator; the two are related (<code>harmonic</code> minimizes this form with th
 they are not interchangeable.</p>
 <p>Each power is assembled by one triplet pass over matching CSR rows —
 <code>(A M^-1 B)_ij = sum_t A_ti M_t^-1 B_tj</code> with both operands symmetric — followed by a single
-<a class="autorefs autorefs-internal" title="csr_from_triplets" href="../array/#ordito.array.csr_from_triplets"><code>csr_from_triplets</code></a>, so the product is built without
+<a class="autorefs autorefs-internal" title="csr_from_coo_keys" href="../array/#ordito.array.csr_from_coo_keys"><code>csr_from_coo_keys</code></a>, so the product is built without
 <code>warp.sparse.bsr_mm</code>.</p>
 
 
@@ -7607,29 +7651,7 @@ scalar type on its device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">342</span>
-<span class="normal">343</span>
-<span class="normal">344</span>
-<span class="normal">345</span>
-<span class="normal">346</span>
-<span class="normal">347</span>
-<span class="normal">348</span>
-<span class="normal">349</span>
-<span class="normal">350</span>
-<span class="normal">351</span>
-<span class="normal">352</span>
-<span class="normal">353</span>
-<span class="normal">354</span>
-<span class="normal">355</span>
-<span class="normal">356</span>
-<span class="normal">357</span>
-<span class="normal">358</span>
-<span class="normal">359</span>
-<span class="normal">360</span>
-<span class="normal">361</span>
-<span class="normal">362</span>
-<span class="normal">363</span>
-<span class="normal">364</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">364</span>
 <span class="normal">365</span>
 <span class="normal">366</span>
 <span class="normal">367</span>
@@ -7722,7 +7744,29 @@ scalar type on its device.</p>
 <span class="normal">454</span>
 <span class="normal">455</span>
 <span class="normal">456</span>
-<span class="normal">457</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">k_harmonic</span><span class="p">(</span>
+<span class="normal">457</span>
+<span class="normal">458</span>
+<span class="normal">459</span>
+<span class="normal">460</span>
+<span class="normal">461</span>
+<span class="normal">462</span>
+<span class="normal">463</span>
+<span class="normal">464</span>
+<span class="normal">465</span>
+<span class="normal">466</span>
+<span class="normal">467</span>
+<span class="normal">468</span>
+<span class="normal">469</span>
+<span class="normal">470</span>
+<span class="normal">471</span>
+<span class="normal">472</span>
+<span class="normal">473</span>
+<span class="normal">474</span>
+<span class="normal">475</span>
+<span class="normal">476</span>
+<span class="normal">477</span>
+<span class="normal">478</span>
+<span class="normal">479</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">k_harmonic</span><span class="p">(</span>
     <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Float</span><span class="p">],</span> <span class="n">mass</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7743,7 +7787,7 @@ scalar type on its device.</p>
 
 <span class="sd">    Each power is assembled by one triplet pass over matching CSR rows —</span>
 <span class="sd">    ``(A M^-1 B)_ij = sum_t A_ti M_t^-1 B_tj`` with both operands symmetric — followed by a single</span>
-<span class="sd">    [`csr_from_triplets`][ordito.array.csr_from_triplets], so the product is built without</span>
+<span class="sd">    [`csr_from_coo_keys`][ordito.array.csr_from_coo_keys], so the product is built without</span>
 <span class="sd">    ``warp.sparse.bsr_mm``.</span>
 
 <span class="sd">    Parameters</span>
@@ -8063,29 +8107,7 @@ biharmonic operator penalizes it at the boundary:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">523</span>
-<span class="normal">524</span>
-<span class="normal">525</span>
-<span class="normal">526</span>
-<span class="normal">527</span>
-<span class="normal">528</span>
-<span class="normal">529</span>
-<span class="normal">530</span>
-<span class="normal">531</span>
-<span class="normal">532</span>
-<span class="normal">533</span>
-<span class="normal">534</span>
-<span class="normal">535</span>
-<span class="normal">536</span>
-<span class="normal">537</span>
-<span class="normal">538</span>
-<span class="normal">539</span>
-<span class="normal">540</span>
-<span class="normal">541</span>
-<span class="normal">542</span>
-<span class="normal">543</span>
-<span class="normal">544</span>
-<span class="normal">545</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">545</span>
 <span class="normal">546</span>
 <span class="normal">547</span>
 <span class="normal">548</span>
@@ -8217,7 +8239,29 @@ biharmonic operator penalizes it at the boundary:</p>
 <span class="normal">674</span>
 <span class="normal">675</span>
 <span class="normal">676</span>
-<span class="normal">677</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hessian_energy</span><span class="p">(</span>
+<span class="normal">677</span>
+<span class="normal">678</span>
+<span class="normal">679</span>
+<span class="normal">680</span>
+<span class="normal">681</span>
+<span class="normal">682</span>
+<span class="normal">683</span>
+<span class="normal">684</span>
+<span class="normal">685</span>
+<span class="normal">686</span>
+<span class="normal">687</span>
+<span class="normal">688</span>
+<span class="normal">689</span>
+<span class="normal">690</span>
+<span class="normal">691</span>
+<span class="normal">692</span>
+<span class="normal">693</span>
+<span class="normal">694</span>
+<span class="normal">695</span>
+<span class="normal">696</span>
+<span class="normal">697</span>
+<span class="normal">698</span>
+<span class="normal">699</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hessian_energy</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span>
@@ -8352,7 +8396,8 @@ biharmonic operator penalizes it at the boundary:</p>
     <span class="c1"># Host readback: only the device knows the scan total, and it sizes the triplet buffers.</span>
     <span class="n">segment_offsets</span><span class="p">,</span> <span class="n">n_triplets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">counts_to_offsets</span><span class="p">(</span><span class="n">counts</span><span class="p">)</span>
 
-    <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">triplet_buffers</span><span class="p">(</span><span class="n">n_triplets</span><span class="p">,</span> <span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_key_buffers</span><span class="p">(</span><span class="n">n_triplets</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">vals</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_triplets</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_triplets</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_energies</span><span class="o">.</span><span class="n">HESSIAN_ENERGY_TRIPLETS</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
@@ -8365,13 +8410,12 @@ biharmonic operator penalizes it at the boundary:</p>
                 <span class="n">areas</span><span class="p">,</span>
                 <span class="n">inverse_mass</span><span class="p">,</span>
                 <span class="n">segment_offsets</span><span class="p">,</span>
-                <span class="n">rows</span><span class="p">,</span>
-                <span class="n">cols</span><span class="p">,</span>
-                <span class="n">vals</span><span class="p">,</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span>
             <span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">vals</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_triplets</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_coo_keys</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">vals</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -8625,29 +8669,7 @@ device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">680</span>
-<span class="normal">681</span>
-<span class="normal">682</span>
-<span class="normal">683</span>
-<span class="normal">684</span>
-<span class="normal">685</span>
-<span class="normal">686</span>
-<span class="normal">687</span>
-<span class="normal">688</span>
-<span class="normal">689</span>
-<span class="normal">690</span>
-<span class="normal">691</span>
-<span class="normal">692</span>
-<span class="normal">693</span>
-<span class="normal">694</span>
-<span class="normal">695</span>
-<span class="normal">696</span>
-<span class="normal">697</span>
-<span class="normal">698</span>
-<span class="normal">699</span>
-<span class="normal">700</span>
-<span class="normal">701</span>
-<span class="normal">702</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">702</span>
 <span class="normal">703</span>
 <span class="normal">704</span>
 <span class="normal">705</span>
@@ -8790,7 +8812,29 @@ device.</p>
 <span class="normal">842</span>
 <span class="normal">843</span>
 <span class="normal">844</span>
-<span class="normal">845</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">curved_hessian_energy</span><span class="p">(</span>
+<span class="normal">845</span>
+<span class="normal">846</span>
+<span class="normal">847</span>
+<span class="normal">848</span>
+<span class="normal">849</span>
+<span class="normal">850</span>
+<span class="normal">851</span>
+<span class="normal">852</span>
+<span class="normal">853</span>
+<span class="normal">854</span>
+<span class="normal">855</span>
+<span class="normal">856</span>
+<span class="normal">857</span>
+<span class="normal">858</span>
+<span class="normal">859</span>
+<span class="normal">860</span>
+<span class="normal">861</span>
+<span class="normal">862</span>
+<span class="normal">863</span>
+<span class="normal">864</span>
+<span class="normal">865</span>
+<span class="normal">866</span>
+<span class="normal">867</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">curved_hessian_energy</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span>
@@ -8935,7 +8979,8 @@ device.</p>
     <span class="p">)</span>
 
     <span class="n">n_triplets</span> <span class="o">=</span> <span class="mi">144</span> <span class="o">*</span> <span class="n">n_faces</span>
-    <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">triplet_buffers</span><span class="p">(</span><span class="n">n_triplets</span><span class="p">,</span> <span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_key_buffers</span><span class="p">(</span><span class="n">n_triplets</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">vals</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_triplets</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_energies</span><span class="o">.</span><span class="n">CURVED_HESSIAN_TRIPLETS</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
@@ -8949,13 +8994,12 @@ device.</p>
             <span class="n">vertex_slots</span><span class="p">,</span>
             <span class="n">par</span><span class="p">,</span>
             <span class="n">perp</span><span class="p">,</span>
-            <span class="n">rows</span><span class="p">,</span>
-            <span class="n">cols</span><span class="p">,</span>
-            <span class="n">vals</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span>
         <span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">vals</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_triplets</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_coo_keys</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">vals</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -9223,148 +9267,148 @@ that sum to zero:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">848</span>
-<span class="normal">849</span>
-<span class="normal">850</span>
-<span class="normal">851</span>
-<span class="normal">852</span>
-<span class="normal">853</span>
-<span class="normal">854</span>
-<span class="normal">855</span>
-<span class="normal">856</span>
-<span class="normal">857</span>
-<span class="normal">858</span>
-<span class="normal">859</span>
-<span class="normal">860</span>
-<span class="normal">861</span>
-<span class="normal">862</span>
-<span class="normal">863</span>
-<span class="normal">864</span>
-<span class="normal">865</span>
-<span class="normal">866</span>
-<span class="normal">867</span>
-<span class="normal">868</span>
-<span class="normal">869</span>
-<span class="normal">870</span>
-<span class="normal">871</span>
-<span class="normal">872</span>
-<span class="normal">873</span>
-<span class="normal">874</span>
-<span class="normal">875</span>
-<span class="normal">876</span>
-<span class="normal">877</span>
-<span class="normal">878</span>
-<span class="normal">879</span>
-<span class="normal">880</span>
-<span class="normal">881</span>
-<span class="normal">882</span>
-<span class="normal">883</span>
-<span class="normal">884</span>
-<span class="normal">885</span>
-<span class="normal">886</span>
-<span class="normal">887</span>
-<span class="normal">888</span>
-<span class="normal">889</span>
-<span class="normal">890</span>
-<span class="normal">891</span>
-<span class="normal">892</span>
-<span class="normal">893</span>
-<span class="normal">894</span>
-<span class="normal">895</span>
-<span class="normal">896</span>
-<span class="normal">897</span>
-<span class="normal">898</span>
-<span class="normal">899</span>
-<span class="normal">900</span>
-<span class="normal">901</span>
-<span class="normal">902</span>
-<span class="normal">903</span>
-<span class="normal">904</span>
-<span class="normal">905</span>
-<span class="normal">906</span>
-<span class="normal">907</span>
-<span class="normal">908</span>
-<span class="normal">909</span>
-<span class="normal">910</span>
-<span class="normal">911</span>
-<span class="normal">912</span>
-<span class="normal">913</span>
-<span class="normal">914</span>
-<span class="normal">915</span>
-<span class="normal">916</span>
-<span class="normal">917</span>
-<span class="normal">918</span>
-<span class="normal">919</span>
-<span class="normal">920</span>
-<span class="normal">921</span>
-<span class="normal">922</span>
-<span class="normal">923</span>
-<span class="normal">924</span>
-<span class="normal">925</span>
-<span class="normal">926</span>
-<span class="normal">927</span>
-<span class="normal">928</span>
-<span class="normal">929</span>
-<span class="normal">930</span>
-<span class="normal">931</span>
-<span class="normal">932</span>
-<span class="normal">933</span>
-<span class="normal">934</span>
-<span class="normal">935</span>
-<span class="normal">936</span>
-<span class="normal">937</span>
-<span class="normal">938</span>
-<span class="normal">939</span>
-<span class="normal">940</span>
-<span class="normal">941</span>
-<span class="normal">942</span>
-<span class="normal">943</span>
-<span class="normal">944</span>
-<span class="normal">945</span>
-<span class="normal">946</span>
-<span class="normal">947</span>
-<span class="normal">948</span>
-<span class="normal">949</span>
-<span class="normal">950</span>
-<span class="normal">951</span>
-<span class="normal">952</span>
-<span class="normal">953</span>
-<span class="normal">954</span>
-<span class="normal">955</span>
-<span class="normal">956</span>
-<span class="normal">957</span>
-<span class="normal">958</span>
-<span class="normal">959</span>
-<span class="normal">960</span>
-<span class="normal">961</span>
-<span class="normal">962</span>
-<span class="normal">963</span>
-<span class="normal">964</span>
-<span class="normal">965</span>
-<span class="normal">966</span>
-<span class="normal">967</span>
-<span class="normal">968</span>
-<span class="normal">969</span>
-<span class="normal">970</span>
-<span class="normal">971</span>
-<span class="normal">972</span>
-<span class="normal">973</span>
-<span class="normal">974</span>
-<span class="normal">975</span>
-<span class="normal">976</span>
-<span class="normal">977</span>
-<span class="normal">978</span>
-<span class="normal">979</span>
-<span class="normal">980</span>
-<span class="normal">981</span>
-<span class="normal">982</span>
-<span class="normal">983</span>
-<span class="normal">984</span>
-<span class="normal">985</span>
-<span class="normal">986</span>
-<span class="normal">987</span>
-<span class="normal">988</span>
-<span class="normal">989</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_cotmatrix</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 870</span>
+<span class="normal"> 871</span>
+<span class="normal"> 872</span>
+<span class="normal"> 873</span>
+<span class="normal"> 874</span>
+<span class="normal"> 875</span>
+<span class="normal"> 876</span>
+<span class="normal"> 877</span>
+<span class="normal"> 878</span>
+<span class="normal"> 879</span>
+<span class="normal"> 880</span>
+<span class="normal"> 881</span>
+<span class="normal"> 882</span>
+<span class="normal"> 883</span>
+<span class="normal"> 884</span>
+<span class="normal"> 885</span>
+<span class="normal"> 886</span>
+<span class="normal"> 887</span>
+<span class="normal"> 888</span>
+<span class="normal"> 889</span>
+<span class="normal"> 890</span>
+<span class="normal"> 891</span>
+<span class="normal"> 892</span>
+<span class="normal"> 893</span>
+<span class="normal"> 894</span>
+<span class="normal"> 895</span>
+<span class="normal"> 896</span>
+<span class="normal"> 897</span>
+<span class="normal"> 898</span>
+<span class="normal"> 899</span>
+<span class="normal"> 900</span>
+<span class="normal"> 901</span>
+<span class="normal"> 902</span>
+<span class="normal"> 903</span>
+<span class="normal"> 904</span>
+<span class="normal"> 905</span>
+<span class="normal"> 906</span>
+<span class="normal"> 907</span>
+<span class="normal"> 908</span>
+<span class="normal"> 909</span>
+<span class="normal"> 910</span>
+<span class="normal"> 911</span>
+<span class="normal"> 912</span>
+<span class="normal"> 913</span>
+<span class="normal"> 914</span>
+<span class="normal"> 915</span>
+<span class="normal"> 916</span>
+<span class="normal"> 917</span>
+<span class="normal"> 918</span>
+<span class="normal"> 919</span>
+<span class="normal"> 920</span>
+<span class="normal"> 921</span>
+<span class="normal"> 922</span>
+<span class="normal"> 923</span>
+<span class="normal"> 924</span>
+<span class="normal"> 925</span>
+<span class="normal"> 926</span>
+<span class="normal"> 927</span>
+<span class="normal"> 928</span>
+<span class="normal"> 929</span>
+<span class="normal"> 930</span>
+<span class="normal"> 931</span>
+<span class="normal"> 932</span>
+<span class="normal"> 933</span>
+<span class="normal"> 934</span>
+<span class="normal"> 935</span>
+<span class="normal"> 936</span>
+<span class="normal"> 937</span>
+<span class="normal"> 938</span>
+<span class="normal"> 939</span>
+<span class="normal"> 940</span>
+<span class="normal"> 941</span>
+<span class="normal"> 942</span>
+<span class="normal"> 943</span>
+<span class="normal"> 944</span>
+<span class="normal"> 945</span>
+<span class="normal"> 946</span>
+<span class="normal"> 947</span>
+<span class="normal"> 948</span>
+<span class="normal"> 949</span>
+<span class="normal"> 950</span>
+<span class="normal"> 951</span>
+<span class="normal"> 952</span>
+<span class="normal"> 953</span>
+<span class="normal"> 954</span>
+<span class="normal"> 955</span>
+<span class="normal"> 956</span>
+<span class="normal"> 957</span>
+<span class="normal"> 958</span>
+<span class="normal"> 959</span>
+<span class="normal"> 960</span>
+<span class="normal"> 961</span>
+<span class="normal"> 962</span>
+<span class="normal"> 963</span>
+<span class="normal"> 964</span>
+<span class="normal"> 965</span>
+<span class="normal"> 966</span>
+<span class="normal"> 967</span>
+<span class="normal"> 968</span>
+<span class="normal"> 969</span>
+<span class="normal"> 970</span>
+<span class="normal"> 971</span>
+<span class="normal"> 972</span>
+<span class="normal"> 973</span>
+<span class="normal"> 974</span>
+<span class="normal"> 975</span>
+<span class="normal"> 976</span>
+<span class="normal"> 977</span>
+<span class="normal"> 978</span>
+<span class="normal"> 979</span>
+<span class="normal"> 980</span>
+<span class="normal"> 981</span>
+<span class="normal"> 982</span>
+<span class="normal"> 983</span>
+<span class="normal"> 984</span>
+<span class="normal"> 985</span>
+<span class="normal"> 986</span>
+<span class="normal"> 987</span>
+<span class="normal"> 988</span>
+<span class="normal"> 989</span>
+<span class="normal"> 990</span>
+<span class="normal"> 991</span>
+<span class="normal"> 992</span>
+<span class="normal"> 993</span>
+<span class="normal"> 994</span>
+<span class="normal"> 995</span>
+<span class="normal"> 996</span>
+<span class="normal"> 997</span>
+<span class="normal"> 998</span>
+<span class="normal"> 999</span>
+<span class="normal">1000</span>
+<span class="normal">1001</span>
+<span class="normal">1002</span>
+<span class="normal">1003</span>
+<span class="normal">1004</span>
+<span class="normal">1005</span>
+<span class="normal">1006</span>
+<span class="normal">1007</span>
+<span class="normal">1008</span>
+<span class="normal">1009</span>
+<span class="normal">1010</span>
+<span class="normal">1011</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_cotmatrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">cot_entries</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9737,29 +9781,7 @@ follow <a class="autorefs autorefs-internal" title="edges_unique" href="../edges
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 992</span>
-<span class="normal"> 993</span>
-<span class="normal"> 994</span>
-<span class="normal"> 995</span>
-<span class="normal"> 996</span>
-<span class="normal"> 997</span>
-<span class="normal"> 998</span>
-<span class="normal"> 999</span>
-<span class="normal">1000</span>
-<span class="normal">1001</span>
-<span class="normal">1002</span>
-<span class="normal">1003</span>
-<span class="normal">1004</span>
-<span class="normal">1005</span>
-<span class="normal">1006</span>
-<span class="normal">1007</span>
-<span class="normal">1008</span>
-<span class="normal">1009</span>
-<span class="normal">1010</span>
-<span class="normal">1011</span>
-<span class="normal">1012</span>
-<span class="normal">1013</span>
-<span class="normal">1014</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1014</span>
 <span class="normal">1015</span>
 <span class="normal">1016</span>
 <span class="normal">1017</span>
@@ -9825,7 +9847,29 @@ follow <a class="autorefs autorefs-internal" title="edges_unique" href="../edges
 <span class="normal">1077</span>
 <span class="normal">1078</span>
 <span class="normal">1079</span>
-<span class="normal">1080</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_massmatrix</span><span class="p">(</span>
+<span class="normal">1080</span>
+<span class="normal">1081</span>
+<span class="normal">1082</span>
+<span class="normal">1083</span>
+<span class="normal">1084</span>
+<span class="normal">1085</span>
+<span class="normal">1086</span>
+<span class="normal">1087</span>
+<span class="normal">1088</span>
+<span class="normal">1089</span>
+<span class="normal">1090</span>
+<span class="normal">1091</span>
+<span class="normal">1092</span>
+<span class="normal">1093</span>
+<span class="normal">1094</span>
+<span class="normal">1095</span>
+<span class="normal">1096</span>
+<span class="normal">1097</span>
+<span class="normal">1098</span>
+<span class="normal">1099</span>
+<span class="normal">1100</span>
+<span class="normal">1101</span>
+<span class="normal">1102</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_massmatrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
@@ -10006,7 +10050,7 @@ solve directly. Matches the <code>Q</code> returned by <code>igl.lscm</code> exa
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Forwarded to <a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> for <code>L</code>: precomputed
+                <p>As <a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> takes them for <code>L</code>: precomputed
 half-cotangent weights and sparsity, to spare their build when the Hessian is assembled
 repeatedly over one mesh.
 <a class="autorefs autorefs-internal" title="cotmatrix_entries" href="../mesh/#ordito.mesh.Trimesh.cotmatrix_entries"><code>Trimesh.cotmatrix_entries</code></a> and
@@ -10032,7 +10076,7 @@ ones to pass.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Forwarded to <a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> for <code>L</code>: precomputed
+                <p>As <a class="autorefs autorefs-internal" title="cotmatrix" href="../laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> takes them for <code>L</code>: precomputed
 half-cotangent weights and sparsity, to spare their build when the Hessian is assembled
 repeatedly over one mesh.
 <a class="autorefs autorefs-internal" title="cotmatrix_entries" href="../mesh/#ordito.mesh.Trimesh.cotmatrix_entries"><code>Trimesh.cotmatrix_entries</code></a> and
@@ -10086,7 +10130,18 @@ ones to pass.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code> and <code>faces</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code>, <code>cot_entries</code> and <code>pattern</code> are not all on one device.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>cot_entries</code> is given and its row count does not match <code>faces</code>' triangle count, or
+<code>pattern</code> was built for another operator or vertex count.</p>
               </div>
             </td>
           </tr>
@@ -10131,29 +10186,7 @@ ones to pass.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1110</span>
-<span class="normal">1111</span>
-<span class="normal">1112</span>
-<span class="normal">1113</span>
-<span class="normal">1114</span>
-<span class="normal">1115</span>
-<span class="normal">1116</span>
-<span class="normal">1117</span>
-<span class="normal">1118</span>
-<span class="normal">1119</span>
-<span class="normal">1120</span>
-<span class="normal">1121</span>
-<span class="normal">1122</span>
-<span class="normal">1123</span>
-<span class="normal">1124</span>
-<span class="normal">1125</span>
-<span class="normal">1126</span>
-<span class="normal">1127</span>
-<span class="normal">1128</span>
-<span class="normal">1129</span>
-<span class="normal">1130</span>
-<span class="normal">1131</span>
-<span class="normal">1132</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1132</span>
 <span class="normal">1133</span>
 <span class="normal">1134</span>
 <span class="normal">1135</span>
@@ -10248,7 +10281,60 @@ ones to pass.</p>
 <span class="normal">1224</span>
 <span class="normal">1225</span>
 <span class="normal">1226</span>
-<span class="normal">1227</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
+<span class="normal">1227</span>
+<span class="normal">1228</span>
+<span class="normal">1229</span>
+<span class="normal">1230</span>
+<span class="normal">1231</span>
+<span class="normal">1232</span>
+<span class="normal">1233</span>
+<span class="normal">1234</span>
+<span class="normal">1235</span>
+<span class="normal">1236</span>
+<span class="normal">1237</span>
+<span class="normal">1238</span>
+<span class="normal">1239</span>
+<span class="normal">1240</span>
+<span class="normal">1241</span>
+<span class="normal">1242</span>
+<span class="normal">1243</span>
+<span class="normal">1244</span>
+<span class="normal">1245</span>
+<span class="normal">1246</span>
+<span class="normal">1247</span>
+<span class="normal">1248</span>
+<span class="normal">1249</span>
+<span class="normal">1250</span>
+<span class="normal">1251</span>
+<span class="normal">1252</span>
+<span class="normal">1253</span>
+<span class="normal">1254</span>
+<span class="normal">1255</span>
+<span class="normal">1256</span>
+<span class="normal">1257</span>
+<span class="normal">1258</span>
+<span class="normal">1259</span>
+<span class="normal">1260</span>
+<span class="normal">1261</span>
+<span class="normal">1262</span>
+<span class="normal">1263</span>
+<span class="normal">1264</span>
+<span class="normal">1265</span>
+<span class="normal">1266</span>
+<span class="normal">1267</span>
+<span class="normal">1268</span>
+<span class="normal">1269</span>
+<span class="normal">1270</span>
+<span class="normal">1271</span>
+<span class="normal">1272</span>
+<span class="normal">1273</span>
+<span class="normal">1274</span>
+<span class="normal">1275</span>
+<span class="normal">1276</span>
+<span class="normal">1277</span>
+<span class="normal">1278</span>
+<span class="normal">1279</span>
+<span class="normal">1280</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -10273,7 +10359,7 @@ ones to pass.</p>
 <span class="sd">    faces</span>
 <span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
 <span class="sd">    cot_entries, pattern</span>
-<span class="sd">        Forwarded to [`cotmatrix`][ordito.laplacian.cotmatrix] for ``L``: precomputed</span>
+<span class="sd">        As [`cotmatrix`][ordito.laplacian.cotmatrix] takes them for ``L``: precomputed</span>
 <span class="sd">        half-cotangent weights and sparsity, to spare their build when the Hessian is assembled</span>
 <span class="sd">        repeatedly over one mesh.</span>
 <span class="sd">        [`Trimesh.cotmatrix_entries`][ordito.mesh.Trimesh.cotmatrix_entries] and</span>
@@ -10288,7 +10374,10 @@ ones to pass.</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces``, ``cot_entries`` and ``pattern`` are not all on one device.</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``cot_entries`` is given and its row count does not match ``faces``' triangle count, or</span>
+<span class="sd">        ``pattern`` was built for another operator or vertex count.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -10318,25 +10407,53 @@ ones to pass.</p>
 <span class="sd">    print(abs(energy) &lt; 1e-6)  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span>
+        <span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span>
+        <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span>
+        <span class="n">cot_entries</span><span class="o">=</span><span class="n">cot_entries</span><span class="p">,</span>
+        <span class="n">pattern</span><span class="o">=</span><span class="kc">None</span> <span class="k">if</span> <span class="n">pattern</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">pattern</span><span class="o">.</span><span class="n">offsets</span><span class="p">,</span>
+    <span class="p">)</span>
     <span class="n">n</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
+    <span class="k">if</span> <span class="n">pattern</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="p">(</span><span class="n">pattern</span><span class="o">.</span><span class="n">operator</span> <span class="o">!=</span> <span class="s2">"cotmatrix"</span> <span class="ow">or</span> <span class="n">pattern</span><span class="o">.</span><span class="n">n_vertices</span> <span class="o">!=</span> <span class="n">n</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"pattern was built for operator=</span><span class="si">{</span><span class="n">pattern</span><span class="o">.</span><span class="n">operator</span><span class="si">!r}</span><span class="s2"> over </span><span class="si">{</span><span class="n">pattern</span><span class="o">.</span><span class="n">n_vertices</span><span class="si">}</span><span class="s2"> "</span>
+            <span class="sa">f</span><span class="s2">"vertices; lscm_hessian needs operator='cotmatrix' over </span><span class="si">{</span><span class="n">n</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span>
     <span class="k">if</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">empty_square_bsr</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">empty_square_bsr</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">n_faces</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
+    <span class="k">if</span> <span class="n">cot_entries</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">cot_entries</span> <span class="o">=</span> <span class="n">cotmatrix_entries</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="nb">int</span><span class="p">(</span><span class="n">cot_entries</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">!=</span> <span class="n">n_faces</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"cot_entries must have shape (n_faces, 3) = (</span><span class="si">{</span><span class="n">n_faces</span><span class="si">}</span><span class="s2">, 3), "</span>
+            <span class="sa">f</span><span class="s2">"got </span><span class="si">{</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">cot_entries</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span><span class="w"> </span><span class="nb">int</span><span class="p">(</span><span class="n">cot_entries</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]))</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span>
     <span class="c1"># ``L``'s pattern also carries every edge's halfedges, so the boundary term is read off it</span>
-    <span class="c1"># rather than paired and sorted again (``kernels/energies.lscm_boundary_side``).</span>
+    <span class="c1"># rather than paired and sorted again (``kernels/energies.lscm_boundary_side``), in the launch</span>
+    <span class="c1"># that writes ``L``'s values.</span>
     <span class="k">if</span> <span class="n">pattern</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">pattern</span> <span class="o">=</span> <span class="n">mesh_operator_pattern</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
-    <span class="n">laplacian</span> <span class="o">=</span> <span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">cot_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">pattern</span><span class="o">=</span><span class="n">pattern</span><span class="p">)</span>
     <span class="n">_</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">lap_offsets</span><span class="p">,</span> <span class="n">lap_columns</span><span class="p">,</span> <span class="n">run_start</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">n_keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">pattern</span>
+    <span class="n">laplacian_values</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">lap_columns</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">area_offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_energies</span><span class="o">.</span><span class="n">lscm_boundary_counts</span><span class="p">,</span>
+        <span class="n">kernel_energies</span><span class="o">.</span><span class="n">LSCM_LAPLACIAN_ROWS_AND_COUNTS</span><span class="p">[</span><span class="n">cot_entries</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">lap_offsets</span><span class="p">,</span> <span class="n">lap_columns</span><span class="p">,</span> <span class="n">run_start</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_keys</span><span class="p">),</span> <span class="n">order</span><span class="p">],</span>
-        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">area_offsets</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+            <span class="n">faces</span><span class="p">,</span>
+            <span class="n">lap_offsets</span><span class="p">,</span>
+            <span class="n">lap_columns</span><span class="p">,</span>
+            <span class="n">run_start</span><span class="p">,</span>
+            <span class="n">keys</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_keys</span><span class="p">),</span>
+            <span class="n">order</span><span class="p">,</span>
+            <span class="n">cot_entries</span><span class="p">,</span>
+        <span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">laplacian_values</span><span class="p">,</span> <span class="n">area_offsets</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">area_offsets</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">area_offsets</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
@@ -10354,7 +10471,7 @@ ones to pass.</p>
             <span class="n">faces</span><span class="p">,</span>
             <span class="n">lap_offsets</span><span class="p">,</span>
             <span class="n">lap_columns</span><span class="p">,</span>
-            <span class="n">laplacian</span><span class="o">.</span><span class="n">values</span><span class="p">,</span>
+            <span class="n">laplacian_values</span><span class="p">,</span>
             <span class="n">run_start</span><span class="p">,</span>
             <span class="n">keys</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_keys</span><span class="p">),</span>
@@ -10393,7 +10510,7 @@ enclosed by the boundary UV curve: for each <strong>oriented</strong> boundary e
 winding, via <a class="autorefs autorefs-internal" title="oriented_boundary_edges" href="../boundary/#ordito.boundary.oriented_boundary_edges"><code>oriented_boundary_edges</code></a>) it adds the
 cross-quadrant entries <code>(i+n, j, -1/4)</code>, <code>(j, i+n, -1/4)</code>, <code>(i, j+n, +1/4)</code>,
 <code>(j+n, i, +1/4)</code>. On a closed mesh (no boundary) <code>A</code> is the zero matrix. Built natively in
-float64 in a single <a class="autorefs autorefs-internal" title="csr_from_triplets" href="../array/#ordito.array.csr_from_triplets"><code>csr_from_triplets</code></a>.</p>
+float64 in a single <a class="autorefs autorefs-internal" title="csr_from_coo_keys" href="../array/#ordito.array.csr_from_coo_keys"><code>csr_from_coo_keys</code></a>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -10529,60 +10646,7 @@ no boundary and an empty matrix:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1230</span>
-<span class="normal">1231</span>
-<span class="normal">1232</span>
-<span class="normal">1233</span>
-<span class="normal">1234</span>
-<span class="normal">1235</span>
-<span class="normal">1236</span>
-<span class="normal">1237</span>
-<span class="normal">1238</span>
-<span class="normal">1239</span>
-<span class="normal">1240</span>
-<span class="normal">1241</span>
-<span class="normal">1242</span>
-<span class="normal">1243</span>
-<span class="normal">1244</span>
-<span class="normal">1245</span>
-<span class="normal">1246</span>
-<span class="normal">1247</span>
-<span class="normal">1248</span>
-<span class="normal">1249</span>
-<span class="normal">1250</span>
-<span class="normal">1251</span>
-<span class="normal">1252</span>
-<span class="normal">1253</span>
-<span class="normal">1254</span>
-<span class="normal">1255</span>
-<span class="normal">1256</span>
-<span class="normal">1257</span>
-<span class="normal">1258</span>
-<span class="normal">1259</span>
-<span class="normal">1260</span>
-<span class="normal">1261</span>
-<span class="normal">1262</span>
-<span class="normal">1263</span>
-<span class="normal">1264</span>
-<span class="normal">1265</span>
-<span class="normal">1266</span>
-<span class="normal">1267</span>
-<span class="normal">1268</span>
-<span class="normal">1269</span>
-<span class="normal">1270</span>
-<span class="normal">1271</span>
-<span class="normal">1272</span>
-<span class="normal">1273</span>
-<span class="normal">1274</span>
-<span class="normal">1275</span>
-<span class="normal">1276</span>
-<span class="normal">1277</span>
-<span class="normal">1278</span>
-<span class="normal">1279</span>
-<span class="normal">1280</span>
-<span class="normal">1281</span>
-<span class="normal">1282</span>
-<span class="normal">1283</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1283</span>
 <span class="normal">1284</span>
 <span class="normal">1285</span>
 <span class="normal">1286</span>
@@ -10606,7 +10670,62 @@ no boundary and an empty matrix:</p>
 <span class="normal">1304</span>
 <span class="normal">1305</span>
 <span class="normal">1306</span>
-<span class="normal">1307</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
+<span class="normal">1307</span>
+<span class="normal">1308</span>
+<span class="normal">1309</span>
+<span class="normal">1310</span>
+<span class="normal">1311</span>
+<span class="normal">1312</span>
+<span class="normal">1313</span>
+<span class="normal">1314</span>
+<span class="normal">1315</span>
+<span class="normal">1316</span>
+<span class="normal">1317</span>
+<span class="normal">1318</span>
+<span class="normal">1319</span>
+<span class="normal">1320</span>
+<span class="normal">1321</span>
+<span class="normal">1322</span>
+<span class="normal">1323</span>
+<span class="normal">1324</span>
+<span class="normal">1325</span>
+<span class="normal">1326</span>
+<span class="normal">1327</span>
+<span class="normal">1328</span>
+<span class="normal">1329</span>
+<span class="normal">1330</span>
+<span class="normal">1331</span>
+<span class="normal">1332</span>
+<span class="normal">1333</span>
+<span class="normal">1334</span>
+<span class="normal">1335</span>
+<span class="normal">1336</span>
+<span class="normal">1337</span>
+<span class="normal">1338</span>
+<span class="normal">1339</span>
+<span class="normal">1340</span>
+<span class="normal">1341</span>
+<span class="normal">1342</span>
+<span class="normal">1343</span>
+<span class="normal">1344</span>
+<span class="normal">1345</span>
+<span class="normal">1346</span>
+<span class="normal">1347</span>
+<span class="normal">1348</span>
+<span class="normal">1349</span>
+<span class="normal">1350</span>
+<span class="normal">1351</span>
+<span class="normal">1352</span>
+<span class="normal">1353</span>
+<span class="normal">1354</span>
+<span class="normal">1355</span>
+<span class="normal">1356</span>
+<span class="normal">1357</span>
+<span class="normal">1358</span>
+<span class="normal">1359</span>
+<span class="normal">1360</span>
+<span class="normal">1361</span>
+<span class="normal">1362</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10617,7 +10736,7 @@ no boundary and an empty matrix:</p>
 <span class="sd">    winding, via [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]) it adds the</span>
 <span class="sd">    cross-quadrant entries ``(i+n, j, -1/4)``, ``(j, i+n, -1/4)``, ``(i, j+n, +1/4)``,</span>
 <span class="sd">    ``(j+n, i, +1/4)``. On a closed mesh (no boundary) ``A`` is the zero matrix. Built natively in</span>
-<span class="sd">    float64 in a single [`csr_from_triplets`][ordito.array.csr_from_triplets].</span>
+<span class="sd">    float64 in a single [`csr_from_coo_keys`][ordito.array.csr_from_coo_keys].</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -10675,15 +10794,17 @@ no boundary and an empty matrix:</p>
     <span class="k">if</span> <span class="n">n_be</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">empty_square_bsr</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 
-    <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">triplet_buffers</span><span class="p">(</span><span class="mi">4</span> <span class="o">*</span> <span class="n">n_be</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-    <span class="c1"># The four cross-quadrant triplets of every oriented boundary edge.</span>
+    <span class="n">keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_key_buffers</span><span class="p">(</span><span class="mi">4</span> <span class="o">*</span> <span class="n">n_be</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">vals</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">4</span> <span class="o">*</span> <span class="n">n_be</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The four cross-quadrant entries of every oriented boundary edge, written as their keys.</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_energies</span><span class="o">.</span><span class="n">vector_area_triplets</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_be</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">boundary</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">boundary</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">)],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">vals</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_triplets</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_coo_keys</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">vals</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

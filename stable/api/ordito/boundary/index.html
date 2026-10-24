@@ -10329,7 +10329,9 @@ as <code>ear</code>.</p>
 <span class="normal">1225</span>
 <span class="normal">1226</span>
 <span class="normal">1227</span>
-<span class="normal">1228</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ears</span><span class="p">(</span>
+<span class="normal">1228</span>
+<span class="normal">1229</span>
+<span class="normal">1230</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ears</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10407,8 +10409,10 @@ as <code>ear</code>.</p>
     <span class="n">n_ears</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">inclusive</span><span class="p">))</span>
     <span class="k">if</span> <span class="n">n_ears</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">empty</span><span class="p">,</span> <span class="n">empty</span>
-    <span class="n">ear</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_ears</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">ear_opp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_ears</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># Both outputs in one allocation, every entry written by the emit.</span>
+    <span class="n">pair</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_ears</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">ear</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">pair</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">n_ears</span><span class="p">)</span>
+    <span class="n">ear_opp</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">pair</span><span class="p">,</span> <span class="n">n_ears</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_ears</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_boundary</span><span class="o">.</span><span class="n">emit_ears</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>

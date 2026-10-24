@@ -12995,7 +12995,12 @@ is dropped. Entry 0 collects payloads 0 and 2:</p>
 <span class="normal">1776</span>
 <span class="normal">1777</span>
 <span class="normal">1778</span>
-<span class="normal">1779</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">csr_from_keys</span><span class="p">(</span>
+<span class="normal">1779</span>
+<span class="normal">1780</span>
+<span class="normal">1781</span>
+<span class="normal">1782</span>
+<span class="normal">1783</span>
+<span class="normal">1784</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">csr_from_keys</span><span class="p">(</span>
     <span class="n">keys</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">],</span> <span class="n">order</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">n_rows</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">n_cols</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -13056,10 +13061,15 @@ is dropped. Entry 0 collects payloads 0 and 2:</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">keys</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_rows</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">columns</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_rows</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+        <span class="p">)</span>
+    <span class="c1"># Every bound is written by ``csr_from_runs``, the empty matrix's too.</span>
+    <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_rows</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">columns</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">starts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="nb">sentinel</span> <span class="o">=</span> <span class="n">n_rows</span> <span class="o">*</span> <span class="n">n_cols</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">count</span><span class="p">,</span> <span class="n">end_bit</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">sentinel</span><span class="o">.</span><span class="n">bit_length</span><span class="p">()))</span>
@@ -13344,20 +13354,15 @@ bound until <code>nnz_sync()</code>, exactly as after <code>bsr_from_triplets</c
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 8 places</summary>
+      <summary>Referenced by 6 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.bsr_from_csr">bsr_from_csr</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.csr_from_coo_keys">csr_from_coo_keys</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.csr_from_keys">csr_from_keys</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.csr_transpose">csr_transpose</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.index_sparse">index_sparse</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.triplet_buffers">triplet_buffers</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.k_harmonic">k_harmonic</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.vector_area_matrix">vector_area_matrix</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.bsr_from_csr">bsr_from_csr</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.csr_from_coo_keys">csr_from_coo_keys</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.csr_from_keys">csr_from_keys</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.csr_transpose">csr_transpose</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.index_sparse">index_sparse</a></span> · <span class="ordito-backlink"><a href="./#ordito.array">array</a> › <a href="./#ordito.array.triplet_buffers">triplet_buffers</a></span></p>
     </details>
 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1782</span>
-<span class="normal">1783</span>
-<span class="normal">1784</span>
-<span class="normal">1785</span>
-<span class="normal">1786</span>
-<span class="normal">1787</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1787</span>
 <span class="normal">1788</span>
 <span class="normal">1789</span>
 <span class="normal">1790</span>
@@ -13467,7 +13472,12 @@ bound until <code>nnz_sync()</code>, exactly as after <code>bsr_from_triplets</c
 <span class="normal">1894</span>
 <span class="normal">1895</span>
 <span class="normal">1896</span>
-<span class="normal">1897</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">csr_from_triplets</span><span class="p">(</span>
+<span class="normal">1897</span>
+<span class="normal">1898</span>
+<span class="normal">1899</span>
+<span class="normal">1900</span>
+<span class="normal">1901</span>
+<span class="normal">1902</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">csr_from_triplets</span><span class="p">(</span>
     <span class="n">n_rows</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">n_cols</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">rows</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdInt32</span><span class="p">,</span>
@@ -13810,15 +13820,16 @@ until <code>nnz_sync()</code>, as after <a class="autorefs autorefs-internal" ti
 </code></pre></div>
 
           
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 2 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.k_harmonic">k_harmonic</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.vector_area_matrix">vector_area_matrix</a></span></p>
+    </details>
+
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1900</span>
-<span class="normal">1901</span>
-<span class="normal">1902</span>
-<span class="normal">1903</span>
-<span class="normal">1904</span>
-<span class="normal">1905</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1905</span>
 <span class="normal">1906</span>
 <span class="normal">1907</span>
 <span class="normal">1908</span>
@@ -13898,7 +13909,12 @@ until <code>nnz_sync()</code>, as after <a class="autorefs autorefs-internal" ti
 <span class="normal">1982</span>
 <span class="normal">1983</span>
 <span class="normal">1984</span>
-<span class="normal">1985</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">csr_from_coo_keys</span><span class="p">(</span>
+<span class="normal">1985</span>
+<span class="normal">1986</span>
+<span class="normal">1987</span>
+<span class="normal">1988</span>
+<span class="normal">1989</span>
+<span class="normal">1990</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">csr_from_coo_keys</span><span class="p">(</span>
     <span class="n">n_rows</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">n_cols</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">keys</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">],</span>
@@ -14118,12 +14134,7 @@ entries. Its <code>nnz</code> may be a capacity (the stored entries are <code>of
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1988</span>
-<span class="normal">1989</span>
-<span class="normal">1990</span>
-<span class="normal">1991</span>
-<span class="normal">1992</span>
-<span class="normal">1993</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1993</span>
 <span class="normal">1994</span>
 <span class="normal">1995</span>
 <span class="normal">1996</span>
@@ -14187,7 +14198,12 @@ entries. Its <code>nnz</code> may be a capacity (the stored entries are <code>of
 <span class="normal">2054</span>
 <span class="normal">2055</span>
 <span class="normal">2056</span>
-<span class="normal">2057</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">csr_transpose</span><span class="p">(</span><span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]:</span>
+<span class="normal">2057</span>
+<span class="normal">2058</span>
+<span class="normal">2059</span>
+<span class="normal">2060</span>
+<span class="normal">2061</span>
+<span class="normal">2062</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">csr_transpose</span><span class="p">(</span><span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Transpose a sparse matrix of scalar blocks, with no host readback.</span>
 
@@ -14470,13 +14486,7 @@ matrix are cast to <code>dtype</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2121</span>
-<span class="normal">2122</span>
-<span class="normal">2123</span>
-<span class="normal">2124</span>
-<span class="normal">2125</span>
-<span class="normal">2126</span>
-<span class="normal">2127</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2127</span>
 <span class="normal">2128</span>
 <span class="normal">2129</span>
 <span class="normal">2130</span>
@@ -14556,7 +14566,27 @@ matrix are cast to <code>dtype</code>.</p>
 <span class="normal">2204</span>
 <span class="normal">2205</span>
 <span class="normal">2206</span>
-<span class="normal">2207</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">index_sparse</span><span class="p">(</span>
+<span class="normal">2207</span>
+<span class="normal">2208</span>
+<span class="normal">2209</span>
+<span class="normal">2210</span>
+<span class="normal">2211</span>
+<span class="normal">2212</span>
+<span class="normal">2213</span>
+<span class="normal">2214</span>
+<span class="normal">2215</span>
+<span class="normal">2216</span>
+<span class="normal">2217</span>
+<span class="normal">2218</span>
+<span class="normal">2219</span>
+<span class="normal">2220</span>
+<span class="normal">2221</span>
+<span class="normal">2222</span>
+<span class="normal">2223</span>
+<span class="normal">2224</span>
+<span class="normal">2225</span>
+<span class="normal">2226</span>
+<span class="normal">2227</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">index_sparse</span><span class="p">(</span>
     <span class="n">n_rows</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">indices</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span>
     <span class="n">data</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -14634,14 +14664,28 @@ matrix are cast to <code>dtype</code>.</p>
             <span class="n">data</span> <span class="o">=</span> <span class="n">astype</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">dtype</span><span class="p">)</span>
 
     <span class="n">n_cols</span><span class="p">,</span> <span class="n">n_repeats</span> <span class="o">=</span> <span class="n">indices</span><span class="o">.</span><span class="n">shape</span>
-    <span class="n">cols</span> <span class="o">=</span> <span class="n">arange_repeat</span><span class="p">(</span><span class="n">n_cols</span> <span class="o">*</span> <span class="n">n_repeats</span><span class="p">,</span> <span class="n">n_repeats</span><span class="p">,</span> <span class="n">indices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">csr_from_triplets</span><span class="p">(</span>
-        <span class="n">n_rows</span><span class="p">,</span>
-        <span class="n">indices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span>
-        <span class="n">indices</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span>
-        <span class="n">cols</span><span class="p">,</span>
-        <span class="n">data</span><span class="p">,</span>
-        <span class="n">prune_numerical_zeros</span><span class="o">=</span><span class="n">prune_numerical_zeros</span><span class="p">,</span>
+    <span class="n">count</span> <span class="o">=</span> <span class="n">indices</span><span class="o">.</span><span class="n">size</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">indices</span><span class="o">.</span><span class="n">device</span>
+    <span class="k">if</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">bsr_from_csr</span><span class="p">(</span>
+            <span class="n">n_rows</span><span class="p">,</span>
+            <span class="n">n_cols</span><span class="p">,</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_rows</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">data</span><span class="o">.</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+        <span class="p">)</span>
+    <span class="c1"># The triplets' keys straight from the index rows: a zero-valued triplet adds nothing to its</span>
+    <span class="c1"># entry's sum, so pruning on the sums needs no keys of its own.</span>
+    <span class="n">keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">csr_key_buffers</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_array</span><span class="o">.</span><span class="n">index_sparse_keys</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">count</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">indices</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_repeats</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_rows</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_cols</span><span class="p">)],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">_csr_from_coo_keys</span><span class="p">(</span>
+        <span class="n">n_rows</span><span class="p">,</span> <span class="n">n_cols</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">prune_numerical_zeros</span><span class="o">=</span><span class="n">prune_numerical_zeros</span>
     <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -14861,27 +14905,7 @@ selects the strategy and anchors the table.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2210</span>
-<span class="normal">2211</span>
-<span class="normal">2212</span>
-<span class="normal">2213</span>
-<span class="normal">2214</span>
-<span class="normal">2215</span>
-<span class="normal">2216</span>
-<span class="normal">2217</span>
-<span class="normal">2218</span>
-<span class="normal">2219</span>
-<span class="normal">2220</span>
-<span class="normal">2221</span>
-<span class="normal">2222</span>
-<span class="normal">2223</span>
-<span class="normal">2224</span>
-<span class="normal">2225</span>
-<span class="normal">2226</span>
-<span class="normal">2227</span>
-<span class="normal">2228</span>
-<span class="normal">2229</span>
-<span class="normal">2230</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2230</span>
 <span class="normal">2231</span>
 <span class="normal">2232</span>
 <span class="normal">2233</span>
@@ -15007,7 +15031,27 @@ selects the strategy and anchors the table.</p>
 <span class="normal">2353</span>
 <span class="normal">2354</span>
 <span class="normal">2355</span>
-<span class="normal">2356</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">isin</span><span class="p">(</span>
+<span class="normal">2356</span>
+<span class="normal">2357</span>
+<span class="normal">2358</span>
+<span class="normal">2359</span>
+<span class="normal">2360</span>
+<span class="normal">2361</span>
+<span class="normal">2362</span>
+<span class="normal">2363</span>
+<span class="normal">2364</span>
+<span class="normal">2365</span>
+<span class="normal">2366</span>
+<span class="normal">2367</span>
+<span class="normal">2368</span>
+<span class="normal">2369</span>
+<span class="normal">2370</span>
+<span class="normal">2371</span>
+<span class="normal">2372</span>
+<span class="normal">2373</span>
+<span class="normal">2374</span>
+<span class="normal">2375</span>
+<span class="normal">2376</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">isin</span><span class="p">(</span>
     <span class="n">elements</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">test_elements</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Int</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_index</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -15291,27 +15335,7 @@ number of non-zero entries. Empty when nothing is non-zero.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2430</span>
-<span class="normal">2431</span>
-<span class="normal">2432</span>
-<span class="normal">2433</span>
-<span class="normal">2434</span>
-<span class="normal">2435</span>
-<span class="normal">2436</span>
-<span class="normal">2437</span>
-<span class="normal">2438</span>
-<span class="normal">2439</span>
-<span class="normal">2440</span>
-<span class="normal">2441</span>
-<span class="normal">2442</span>
-<span class="normal">2443</span>
-<span class="normal">2444</span>
-<span class="normal">2445</span>
-<span class="normal">2446</span>
-<span class="normal">2447</span>
-<span class="normal">2448</span>
-<span class="normal">2449</span>
-<span class="normal">2450</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2450</span>
 <span class="normal">2451</span>
 <span class="normal">2452</span>
 <span class="normal">2453</span>
@@ -15356,7 +15380,27 @@ number of non-zero entries. Empty when nothing is non-zero.</p>
 <span class="normal">2492</span>
 <span class="normal">2493</span>
 <span class="normal">2494</span>
-<span class="normal">2495</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flatnonzero</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="normal">2495</span>
+<span class="normal">2496</span>
+<span class="normal">2497</span>
+<span class="normal">2498</span>
+<span class="normal">2499</span>
+<span class="normal">2500</span>
+<span class="normal">2501</span>
+<span class="normal">2502</span>
+<span class="normal">2503</span>
+<span class="normal">2504</span>
+<span class="normal">2505</span>
+<span class="normal">2506</span>
+<span class="normal">2507</span>
+<span class="normal">2508</span>
+<span class="normal">2509</span>
+<span class="normal">2510</span>
+<span class="normal">2511</span>
+<span class="normal">2512</span>
+<span class="normal">2513</span>
+<span class="normal">2514</span>
+<span class="normal">2515</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flatnonzero</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return the indices of the non-zero entries of a 1D array (``numpy.flatnonzero``).</span>
 
@@ -15530,27 +15574,7 @@ scan. The buffer is consumed -- it holds the flags' inclusive scan on return.</p
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2498</span>
-<span class="normal">2499</span>
-<span class="normal">2500</span>
-<span class="normal">2501</span>
-<span class="normal">2502</span>
-<span class="normal">2503</span>
-<span class="normal">2504</span>
-<span class="normal">2505</span>
-<span class="normal">2506</span>
-<span class="normal">2507</span>
-<span class="normal">2508</span>
-<span class="normal">2509</span>
-<span class="normal">2510</span>
-<span class="normal">2511</span>
-<span class="normal">2512</span>
-<span class="normal">2513</span>
-<span class="normal">2514</span>
-<span class="normal">2515</span>
-<span class="normal">2516</span>
-<span class="normal">2517</span>
-<span class="normal">2518</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2518</span>
 <span class="normal">2519</span>
 <span class="normal">2520</span>
 <span class="normal">2521</span>
@@ -15576,7 +15600,27 @@ scan. The buffer is consumed -- it holds the flags' inclusive scan on return.</p
 <span class="normal">2541</span>
 <span class="normal">2542</span>
 <span class="normal">2543</span>
-<span class="normal">2544</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flatnonzero_in_place</span><span class="p">(</span><span class="n">flags</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="normal">2544</span>
+<span class="normal">2545</span>
+<span class="normal">2546</span>
+<span class="normal">2547</span>
+<span class="normal">2548</span>
+<span class="normal">2549</span>
+<span class="normal">2550</span>
+<span class="normal">2551</span>
+<span class="normal">2552</span>
+<span class="normal">2553</span>
+<span class="normal">2554</span>
+<span class="normal">2555</span>
+<span class="normal">2556</span>
+<span class="normal">2557</span>
+<span class="normal">2558</span>
+<span class="normal">2559</span>
+<span class="normal">2560</span>
+<span class="normal">2561</span>
+<span class="normal">2562</span>
+<span class="normal">2563</span>
+<span class="normal">2564</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flatnonzero_in_place</span><span class="p">(</span><span class="n">flags</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return the indices of the ones in a ``0`` / ``1`` flag buffer, scanning it in place.</span>
 
@@ -15742,27 +15786,7 @@ is consumed -- it holds the flags' inclusive scan on return.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2547</span>
-<span class="normal">2548</span>
-<span class="normal">2549</span>
-<span class="normal">2550</span>
-<span class="normal">2551</span>
-<span class="normal">2552</span>
-<span class="normal">2553</span>
-<span class="normal">2554</span>
-<span class="normal">2555</span>
-<span class="normal">2556</span>
-<span class="normal">2557</span>
-<span class="normal">2558</span>
-<span class="normal">2559</span>
-<span class="normal">2560</span>
-<span class="normal">2561</span>
-<span class="normal">2562</span>
-<span class="normal">2563</span>
-<span class="normal">2564</span>
-<span class="normal">2565</span>
-<span class="normal">2566</span>
-<span class="normal">2567</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2567</span>
 <span class="normal">2568</span>
 <span class="normal">2569</span>
 <span class="normal">2570</span>
@@ -15791,7 +15815,27 @@ is consumed -- it holds the flags' inclusive scan on return.</p>
 <span class="normal">2593</span>
 <span class="normal">2594</span>
 <span class="normal">2595</span>
-<span class="normal">2596</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">compress_in_place</span><span class="p">(</span><span class="n">flags</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+<span class="normal">2596</span>
+<span class="normal">2597</span>
+<span class="normal">2598</span>
+<span class="normal">2599</span>
+<span class="normal">2600</span>
+<span class="normal">2601</span>
+<span class="normal">2602</span>
+<span class="normal">2603</span>
+<span class="normal">2604</span>
+<span class="normal">2605</span>
+<span class="normal">2606</span>
+<span class="normal">2607</span>
+<span class="normal">2608</span>
+<span class="normal">2609</span>
+<span class="normal">2610</span>
+<span class="normal">2611</span>
+<span class="normal">2612</span>
+<span class="normal">2613</span>
+<span class="normal">2614</span>
+<span class="normal">2615</span>
+<span class="normal">2616</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">compress_in_place</span><span class="p">(</span><span class="n">flags</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return the values at the ones of a ``0`` / ``1`` flag buffer, scanning it in place.</span>
 
@@ -16009,27 +16053,7 @@ first axis when <code>indices</code> is empty.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2612</span>
-<span class="normal">2613</span>
-<span class="normal">2614</span>
-<span class="normal">2615</span>
-<span class="normal">2616</span>
-<span class="normal">2617</span>
-<span class="normal">2618</span>
-<span class="normal">2619</span>
-<span class="normal">2620</span>
-<span class="normal">2621</span>
-<span class="normal">2622</span>
-<span class="normal">2623</span>
-<span class="normal">2624</span>
-<span class="normal">2625</span>
-<span class="normal">2626</span>
-<span class="normal">2627</span>
-<span class="normal">2628</span>
-<span class="normal">2629</span>
-<span class="normal">2630</span>
-<span class="normal">2631</span>
-<span class="normal">2632</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2632</span>
 <span class="normal">2633</span>
 <span class="normal">2634</span>
 <span class="normal">2635</span>
@@ -16073,7 +16097,27 @@ first axis when <code>indices</code> is empty.</p>
 <span class="normal">2673</span>
 <span class="normal">2674</span>
 <span class="normal">2675</span>
-<span class="normal">2676</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">gather</span><span class="p">(</span>
+<span class="normal">2676</span>
+<span class="normal">2677</span>
+<span class="normal">2678</span>
+<span class="normal">2679</span>
+<span class="normal">2680</span>
+<span class="normal">2681</span>
+<span class="normal">2682</span>
+<span class="normal">2683</span>
+<span class="normal">2684</span>
+<span class="normal">2685</span>
+<span class="normal">2686</span>
+<span class="normal">2687</span>
+<span class="normal">2688</span>
+<span class="normal">2689</span>
+<span class="normal">2690</span>
+<span class="normal">2691</span>
+<span class="normal">2692</span>
+<span class="normal">2693</span>
+<span class="normal">2694</span>
+<span class="normal">2695</span>
+<span class="normal">2696</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">gather</span><span class="p">(</span>
     <span class="n">src</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">]</span> <span class="o">|</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">]</span> <span class="o">|</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -16304,27 +16348,7 @@ contiguous table, as <a class="autorefs autorefs-internal" title="hash_rows" hre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2679</span>
-<span class="normal">2680</span>
-<span class="normal">2681</span>
-<span class="normal">2682</span>
-<span class="normal">2683</span>
-<span class="normal">2684</span>
-<span class="normal">2685</span>
-<span class="normal">2686</span>
-<span class="normal">2687</span>
-<span class="normal">2688</span>
-<span class="normal">2689</span>
-<span class="normal">2690</span>
-<span class="normal">2691</span>
-<span class="normal">2692</span>
-<span class="normal">2693</span>
-<span class="normal">2694</span>
-<span class="normal">2695</span>
-<span class="normal">2696</span>
-<span class="normal">2697</span>
-<span class="normal">2698</span>
-<span class="normal">2699</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2699</span>
 <span class="normal">2700</span>
 <span class="normal">2701</span>
 <span class="normal">2702</span>
@@ -16358,7 +16382,27 @@ contiguous table, as <a class="autorefs autorefs-internal" title="hash_rows" hre
 <span class="normal">2730</span>
 <span class="normal">2731</span>
 <span class="normal">2732</span>
-<span class="normal">2733</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">astype</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">DType</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="normal">2733</span>
+<span class="normal">2734</span>
+<span class="normal">2735</span>
+<span class="normal">2736</span>
+<span class="normal">2737</span>
+<span class="normal">2738</span>
+<span class="normal">2739</span>
+<span class="normal">2740</span>
+<span class="normal">2741</span>
+<span class="normal">2742</span>
+<span class="normal">2743</span>
+<span class="normal">2744</span>
+<span class="normal">2745</span>
+<span class="normal">2746</span>
+<span class="normal">2747</span>
+<span class="normal">2748</span>
+<span class="normal">2749</span>
+<span class="normal">2750</span>
+<span class="normal">2751</span>
+<span class="normal">2752</span>
+<span class="normal">2753</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">astype</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">DType</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Element-wise dtype conversion, shape and rank preserved (``numpy.ndarray.astype``).</span>
 
@@ -16558,27 +16602,7 @@ contiguous, since the rank-2 conversion flattens.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2736</span>
-<span class="normal">2737</span>
-<span class="normal">2738</span>
-<span class="normal">2739</span>
-<span class="normal">2740</span>
-<span class="normal">2741</span>
-<span class="normal">2742</span>
-<span class="normal">2743</span>
-<span class="normal">2744</span>
-<span class="normal">2745</span>
-<span class="normal">2746</span>
-<span class="normal">2747</span>
-<span class="normal">2748</span>
-<span class="normal">2749</span>
-<span class="normal">2750</span>
-<span class="normal">2751</span>
-<span class="normal">2752</span>
-<span class="normal">2753</span>
-<span class="normal">2754</span>
-<span class="normal">2755</span>
-<span class="normal">2756</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2756</span>
 <span class="normal">2757</span>
 <span class="normal">2758</span>
 <span class="normal">2759</span>
@@ -16616,7 +16640,27 @@ contiguous, since the rank-2 conversion flattens.</p>
 <span class="normal">2791</span>
 <span class="normal">2792</span>
 <span class="normal">2793</span>
-<span class="normal">2794</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">copyto</span><span class="p">(</span><span class="n">dst</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">2794</span>
+<span class="normal">2795</span>
+<span class="normal">2796</span>
+<span class="normal">2797</span>
+<span class="normal">2798</span>
+<span class="normal">2799</span>
+<span class="normal">2800</span>
+<span class="normal">2801</span>
+<span class="normal">2802</span>
+<span class="normal">2803</span>
+<span class="normal">2804</span>
+<span class="normal">2805</span>
+<span class="normal">2806</span>
+<span class="normal">2807</span>
+<span class="normal">2808</span>
+<span class="normal">2809</span>
+<span class="normal">2810</span>
+<span class="normal">2811</span>
+<span class="normal">2812</span>
+<span class="normal">2813</span>
+<span class="normal">2814</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">copyto</span><span class="p">(</span><span class="n">dst</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Copy ``src`` into ``dst``, converting each element to ``dst``'s dtype (``numpy.copyto``).</span>
 
@@ -16834,27 +16878,7 @@ half of that check can ever fire. Pass this instead and the packing's <code>vali
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2797</span>
-<span class="normal">2798</span>
-<span class="normal">2799</span>
-<span class="normal">2800</span>
-<span class="normal">2801</span>
-<span class="normal">2802</span>
-<span class="normal">2803</span>
-<span class="normal">2804</span>
-<span class="normal">2805</span>
-<span class="normal">2806</span>
-<span class="normal">2807</span>
-<span class="normal">2808</span>
-<span class="normal">2809</span>
-<span class="normal">2810</span>
-<span class="normal">2811</span>
-<span class="normal">2812</span>
-<span class="normal">2813</span>
-<span class="normal">2814</span>
-<span class="normal">2815</span>
-<span class="normal">2816</span>
-<span class="normal">2817</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2817</span>
 <span class="normal">2818</span>
 <span class="normal">2819</span>
 <span class="normal">2820</span>
@@ -16893,7 +16917,27 @@ half of that check can ever fire. Pass this instead and the packing's <code>vali
 <span class="normal">2853</span>
 <span class="normal">2854</span>
 <span class="normal">2855</span>
-<span class="normal">2856</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">index_bound</span><span class="p">(</span><span class="n">indices</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdInt</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">require_non_negative</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="normal">2856</span>
+<span class="normal">2857</span>
+<span class="normal">2858</span>
+<span class="normal">2859</span>
+<span class="normal">2860</span>
+<span class="normal">2861</span>
+<span class="normal">2862</span>
+<span class="normal">2863</span>
+<span class="normal">2864</span>
+<span class="normal">2865</span>
+<span class="normal">2866</span>
+<span class="normal">2867</span>
+<span class="normal">2868</span>
+<span class="normal">2869</span>
+<span class="normal">2870</span>
+<span class="normal">2871</span>
+<span class="normal">2872</span>
+<span class="normal">2873</span>
+<span class="normal">2874</span>
+<span class="normal">2875</span>
+<span class="normal">2876</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">index_bound</span><span class="p">(</span><span class="n">indices</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdInt</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">require_non_negative</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Exclusive upper bound on an index buffer's values, as ``max(indices) + 1``.</span>
 
@@ -17095,27 +17139,7 @@ half of that check can ever fire. Pass this instead and the packing's <code>vali
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2859</span>
-<span class="normal">2860</span>
-<span class="normal">2861</span>
-<span class="normal">2862</span>
-<span class="normal">2863</span>
-<span class="normal">2864</span>
-<span class="normal">2865</span>
-<span class="normal">2866</span>
-<span class="normal">2867</span>
-<span class="normal">2868</span>
-<span class="normal">2869</span>
-<span class="normal">2870</span>
-<span class="normal">2871</span>
-<span class="normal">2872</span>
-<span class="normal">2873</span>
-<span class="normal">2874</span>
-<span class="normal">2875</span>
-<span class="normal">2876</span>
-<span class="normal">2877</span>
-<span class="normal">2878</span>
-<span class="normal">2879</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2879</span>
 <span class="normal">2880</span>
 <span class="normal">2881</span>
 <span class="normal">2882</span>
@@ -17143,7 +17167,27 @@ half of that check can ever fire. Pass this instead and the packing's <code>vali
 <span class="normal">2904</span>
 <span class="normal">2905</span>
 <span class="normal">2906</span>
-<span class="normal">2907</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">indices_to_mask</span><span class="p">(</span>
+<span class="normal">2907</span>
+<span class="normal">2908</span>
+<span class="normal">2909</span>
+<span class="normal">2910</span>
+<span class="normal">2911</span>
+<span class="normal">2912</span>
+<span class="normal">2913</span>
+<span class="normal">2914</span>
+<span class="normal">2915</span>
+<span class="normal">2916</span>
+<span class="normal">2917</span>
+<span class="normal">2918</span>
+<span class="normal">2919</span>
+<span class="normal">2920</span>
+<span class="normal">2921</span>
+<span class="normal">2922</span>
+<span class="normal">2923</span>
+<span class="normal">2924</span>
+<span class="normal">2925</span>
+<span class="normal">2926</span>
+<span class="normal">2927</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">indices_to_mask</span><span class="p">(</span>
     <span class="n">indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">n</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17331,27 +17375,7 @@ unselected entries 1 and 4 are renumbered 0 and 1:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2910</span>
-<span class="normal">2911</span>
-<span class="normal">2912</span>
-<span class="normal">2913</span>
-<span class="normal">2914</span>
-<span class="normal">2915</span>
-<span class="normal">2916</span>
-<span class="normal">2917</span>
-<span class="normal">2918</span>
-<span class="normal">2919</span>
-<span class="normal">2920</span>
-<span class="normal">2921</span>
-<span class="normal">2922</span>
-<span class="normal">2923</span>
-<span class="normal">2924</span>
-<span class="normal">2925</span>
-<span class="normal">2926</span>
-<span class="normal">2927</span>
-<span class="normal">2928</span>
-<span class="normal">2929</span>
-<span class="normal">2930</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2930</span>
 <span class="normal">2931</span>
 <span class="normal">2932</span>
 <span class="normal">2933</span>
@@ -17392,7 +17416,27 @@ unselected entries 1 and 4 are renumbered 0 and 1:</p>
 <span class="normal">2968</span>
 <span class="normal">2969</span>
 <span class="normal">2970</span>
-<span class="normal">2971</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mask_to_compact_ranks</span><span class="p">(</span>
+<span class="normal">2971</span>
+<span class="normal">2972</span>
+<span class="normal">2973</span>
+<span class="normal">2974</span>
+<span class="normal">2975</span>
+<span class="normal">2976</span>
+<span class="normal">2977</span>
+<span class="normal">2978</span>
+<span class="normal">2979</span>
+<span class="normal">2980</span>
+<span class="normal">2981</span>
+<span class="normal">2982</span>
+<span class="normal">2983</span>
+<span class="normal">2984</span>
+<span class="normal">2985</span>
+<span class="normal">2986</span>
+<span class="normal">2987</span>
+<span class="normal">2988</span>
+<span class="normal">2989</span>
+<span class="normal">2990</span>
+<span class="normal">2991</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mask_to_compact_ranks</span><span class="p">(</span>
     <span class="n">mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">invert</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17587,27 +17631,7 @@ payload from <code>3 * n_faces</code> and would gain a synchronization they curr
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2974</span>
-<span class="normal">2975</span>
-<span class="normal">2976</span>
-<span class="normal">2977</span>
-<span class="normal">2978</span>
-<span class="normal">2979</span>
-<span class="normal">2980</span>
-<span class="normal">2981</span>
-<span class="normal">2982</span>
-<span class="normal">2983</span>
-<span class="normal">2984</span>
-<span class="normal">2985</span>
-<span class="normal">2986</span>
-<span class="normal">2987</span>
-<span class="normal">2988</span>
-<span class="normal">2989</span>
-<span class="normal">2990</span>
-<span class="normal">2991</span>
-<span class="normal">2992</span>
-<span class="normal">2993</span>
-<span class="normal">2994</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2994</span>
 <span class="normal">2995</span>
 <span class="normal">2996</span>
 <span class="normal">2997</span>
@@ -17649,7 +17673,27 @@ payload from <code>3 * n_faces</code> and would gain a synchronization they curr
 <span class="normal">3033</span>
 <span class="normal">3034</span>
 <span class="normal">3035</span>
-<span class="normal">3036</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">counts_to_offsets</span><span class="p">(</span><span class="n">counts</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
+<span class="normal">3036</span>
+<span class="normal">3037</span>
+<span class="normal">3038</span>
+<span class="normal">3039</span>
+<span class="normal">3040</span>
+<span class="normal">3041</span>
+<span class="normal">3042</span>
+<span class="normal">3043</span>
+<span class="normal">3044</span>
+<span class="normal">3045</span>
+<span class="normal">3046</span>
+<span class="normal">3047</span>
+<span class="normal">3048</span>
+<span class="normal">3049</span>
+<span class="normal">3050</span>
+<span class="normal">3051</span>
+<span class="normal">3052</span>
+<span class="normal">3053</span>
+<span class="normal">3054</span>
+<span class="normal">3055</span>
+<span class="normal">3056</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">counts_to_offsets</span><span class="p">(</span><span class="n">counts</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Total-terminated exclusive prefix sum of ``counts``, plus their total.</span>
 
@@ -17861,27 +17905,7 @@ for non-negative <code>indices[i]</code>, and <code>out[i] = indices[i]</code> o
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3055</span>
-<span class="normal">3056</span>
-<span class="normal">3057</span>
-<span class="normal">3058</span>
-<span class="normal">3059</span>
-<span class="normal">3060</span>
-<span class="normal">3061</span>
-<span class="normal">3062</span>
-<span class="normal">3063</span>
-<span class="normal">3064</span>
-<span class="normal">3065</span>
-<span class="normal">3066</span>
-<span class="normal">3067</span>
-<span class="normal">3068</span>
-<span class="normal">3069</span>
-<span class="normal">3070</span>
-<span class="normal">3071</span>
-<span class="normal">3072</span>
-<span class="normal">3073</span>
-<span class="normal">3074</span>
-<span class="normal">3075</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3075</span>
 <span class="normal">3076</span>
 <span class="normal">3077</span>
 <span class="normal">3078</span>
@@ -17915,7 +17939,27 @@ for non-negative <code>indices[i]</code>, and <code>out[i] = indices[i]</code> o
 <span class="normal">3106</span>
 <span class="normal">3107</span>
 <span class="normal">3108</span>
-<span class="normal">3109</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_indices</span><span class="p">(</span><span class="n">indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">remap</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="normal">3109</span>
+<span class="normal">3110</span>
+<span class="normal">3111</span>
+<span class="normal">3112</span>
+<span class="normal">3113</span>
+<span class="normal">3114</span>
+<span class="normal">3115</span>
+<span class="normal">3116</span>
+<span class="normal">3117</span>
+<span class="normal">3118</span>
+<span class="normal">3119</span>
+<span class="normal">3120</span>
+<span class="normal">3121</span>
+<span class="normal">3122</span>
+<span class="normal">3123</span>
+<span class="normal">3124</span>
+<span class="normal">3125</span>
+<span class="normal">3126</span>
+<span class="normal">3127</span>
+<span class="normal">3128</span>
+<span class="normal">3129</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_indices</span><span class="p">(</span><span class="n">indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">remap</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Remap an index buffer through a lookup table, passing negative (sentinel) entries through.</span>
 
@@ -18107,27 +18151,7 @@ its buffer's device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3112</span>
-<span class="normal">3113</span>
-<span class="normal">3114</span>
-<span class="normal">3115</span>
-<span class="normal">3116</span>
-<span class="normal">3117</span>
-<span class="normal">3118</span>
-<span class="normal">3119</span>
-<span class="normal">3120</span>
-<span class="normal">3121</span>
-<span class="normal">3122</span>
-<span class="normal">3123</span>
-<span class="normal">3124</span>
-<span class="normal">3125</span>
-<span class="normal">3126</span>
-<span class="normal">3127</span>
-<span class="normal">3128</span>
-<span class="normal">3129</span>
-<span class="normal">3130</span>
-<span class="normal">3131</span>
-<span class="normal">3132</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3132</span>
 <span class="normal">3133</span>
 <span class="normal">3134</span>
 <span class="normal">3135</span>
@@ -18164,7 +18188,27 @@ its buffer's device.</p>
 <span class="normal">3166</span>
 <span class="normal">3167</span>
 <span class="normal">3168</span>
-<span class="normal">3169</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trim_to_count</span><span class="p">(</span>
+<span class="normal">3169</span>
+<span class="normal">3170</span>
+<span class="normal">3171</span>
+<span class="normal">3172</span>
+<span class="normal">3173</span>
+<span class="normal">3174</span>
+<span class="normal">3175</span>
+<span class="normal">3176</span>
+<span class="normal">3177</span>
+<span class="normal">3178</span>
+<span class="normal">3179</span>
+<span class="normal">3180</span>
+<span class="normal">3181</span>
+<span class="normal">3182</span>
+<span class="normal">3183</span>
+<span class="normal">3184</span>
+<span class="normal">3185</span>
+<span class="normal">3186</span>
+<span class="normal">3187</span>
+<span class="normal">3188</span>
+<span class="normal">3189</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trim_to_count</span><span class="p">(</span>
     <span class="n">counter</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="n">buffers</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -18350,27 +18394,7 @@ copy on <code>data.device</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3172</span>
-<span class="normal">3173</span>
-<span class="normal">3174</span>
-<span class="normal">3175</span>
-<span class="normal">3176</span>
-<span class="normal">3177</span>
-<span class="normal">3178</span>
-<span class="normal">3179</span>
-<span class="normal">3180</span>
-<span class="normal">3181</span>
-<span class="normal">3182</span>
-<span class="normal">3183</span>
-<span class="normal">3184</span>
-<span class="normal">3185</span>
-<span class="normal">3186</span>
-<span class="normal">3187</span>
-<span class="normal">3188</span>
-<span class="normal">3189</span>
-<span class="normal">3190</span>
-<span class="normal">3191</span>
-<span class="normal">3192</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3192</span>
 <span class="normal">3193</span>
 <span class="normal">3194</span>
 <span class="normal">3195</span>
@@ -18431,7 +18455,27 @@ copy on <code>data.device</code>.</p>
 <span class="normal">3250</span>
 <span class="normal">3251</span>
 <span class="normal">3252</span>
-<span class="normal">3253</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bitcast_to_int</span><span class="p">(</span>
+<span class="normal">3253</span>
+<span class="normal">3254</span>
+<span class="normal">3255</span>
+<span class="normal">3256</span>
+<span class="normal">3257</span>
+<span class="normal">3258</span>
+<span class="normal">3259</span>
+<span class="normal">3260</span>
+<span class="normal">3261</span>
+<span class="normal">3262</span>
+<span class="normal">3263</span>
+<span class="normal">3264</span>
+<span class="normal">3265</span>
+<span class="normal">3266</span>
+<span class="normal">3267</span>
+<span class="normal">3268</span>
+<span class="normal">3269</span>
+<span class="normal">3270</span>
+<span class="normal">3271</span>
+<span class="normal">3272</span>
+<span class="normal">3273</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bitcast_to_int</span><span class="p">(</span>
     <span class="n">data</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">],</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int64</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -18654,27 +18698,7 @@ tail is left uninitialized.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3256</span>
-<span class="normal">3257</span>
-<span class="normal">3258</span>
-<span class="normal">3259</span>
-<span class="normal">3260</span>
-<span class="normal">3261</span>
-<span class="normal">3262</span>
-<span class="normal">3263</span>
-<span class="normal">3264</span>
-<span class="normal">3265</span>
-<span class="normal">3266</span>
-<span class="normal">3267</span>
-<span class="normal">3268</span>
-<span class="normal">3269</span>
-<span class="normal">3270</span>
-<span class="normal">3271</span>
-<span class="normal">3272</span>
-<span class="normal">3273</span>
-<span class="normal">3274</span>
-<span class="normal">3275</span>
-<span class="normal">3276</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3276</span>
 <span class="normal">3277</span>
 <span class="normal">3278</span>
 <span class="normal">3279</span>
@@ -18720,7 +18744,27 @@ tail is left uninitialized.</p>
 <span class="normal">3319</span>
 <span class="normal">3320</span>
 <span class="normal">3321</span>
-<span class="normal">3322</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bitcast_from_int</span><span class="p">(</span>
+<span class="normal">3322</span>
+<span class="normal">3323</span>
+<span class="normal">3324</span>
+<span class="normal">3325</span>
+<span class="normal">3326</span>
+<span class="normal">3327</span>
+<span class="normal">3328</span>
+<span class="normal">3329</span>
+<span class="normal">3330</span>
+<span class="normal">3331</span>
+<span class="normal">3332</span>
+<span class="normal">3333</span>
+<span class="normal">3334</span>
+<span class="normal">3335</span>
+<span class="normal">3336</span>
+<span class="normal">3337</span>
+<span class="normal">3338</span>
+<span class="normal">3339</span>
+<span class="normal">3340</span>
+<span class="normal">3341</span>
+<span class="normal">3342</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bitcast_from_int</span><span class="p">(</span>
     <span class="n">data</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int64</span><span class="p">],</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">],</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>

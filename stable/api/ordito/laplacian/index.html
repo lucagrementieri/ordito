@@ -7145,8 +7145,7 @@ itself. <code>tests/test_laplacian.py</code> compares the two through that produ
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 64</span>
-<span class="normal"> 65</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 65</span>
 <span class="normal"> 66</span>
 <span class="normal"> 67</span>
 <span class="normal"> 68</span>
@@ -7243,7 +7242,8 @@ itself. <code>tests/test_laplacian.py</code> compares the two through that produ
 <span class="normal">159</span>
 <span class="normal">160</span>
 <span class="normal">161</span>
-<span class="normal">162</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_gradients</span><span class="p">(</span>
+<span class="normal">162</span>
+<span class="normal">163</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_gradients</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -7530,8 +7530,7 @@ are computed in float32 (the vertex precision) and cast to <code>dtype</code> on
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">173</span>
-<span class="normal">174</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">174</span>
 <span class="normal">175</span>
 <span class="normal">176</span>
 <span class="normal">177</span>
@@ -7596,7 +7595,8 @@ are computed in float32 (the vertex precision) and cast to <code>dtype</code> on
 <span class="normal">236</span>
 <span class="normal">237</span>
 <span class="normal">238</span>
-<span class="normal">239</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cotmatrix_entries</span><span class="p">(</span>
+<span class="normal">239</span>
+<span class="normal">240</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cotmatrix_entries</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7831,8 +7831,7 @@ hypotenuse, opposite the right angle, no weight:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">250</span>
-<span class="normal">251</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">251</span>
 <span class="normal">252</span>
 <span class="normal">253</span>
 <span class="normal">254</span>
@@ -7893,7 +7892,8 @@ hypotenuse, opposite the right angle, no weight:</p>
 <span class="normal">309</span>
 <span class="normal">310</span>
 <span class="normal">311</span>
-<span class="normal">312</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cotmatrix_entries_intrinsic</span><span class="p">(</span>
+<span class="normal">312</span>
+<span class="normal">313</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cotmatrix_entries_intrinsic</span><span class="p">(</span>
     <span class="n">edge_lengths</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span><span class="p">,</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8232,8 +8232,7 @@ annihilates a linear function at every interior vertex (linear precision):</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">342</span>
-<span class="normal">343</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">343</span>
 <span class="normal">344</span>
 <span class="normal">345</span>
 <span class="normal">346</span>
@@ -8356,7 +8355,8 @@ annihilates a linear function at every interior vertex (linear precision):</p>
 <span class="normal">463</span>
 <span class="normal">464</span>
 <span class="normal">465</span>
-<span class="normal">466</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cotmatrix</span><span class="p">(</span>
+<span class="normal">466</span>
+<span class="normal">467</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cotmatrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">cot_entries</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8747,8 +8747,7 @@ operator is the plain cotangent one:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">479</span>
-<span class="normal">480</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">480</span>
 <span class="normal">481</span>
 <span class="normal">482</span>
 <span class="normal">483</span>
@@ -8855,7 +8854,8 @@ operator is the plain cotangent one:</p>
 <span class="normal">584</span>
 <span class="normal">585</span>
 <span class="normal">586</span>
-<span class="normal">587</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">robust_laplacian</span><span class="p">(</span>
+<span class="normal">587</span>
+<span class="normal">588</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">robust_laplacian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">epsilon</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">TOLERANCE_MOLLIFY</span><span class="p">,</span>
@@ -9159,8 +9159,7 @@ because it is the honest measure of how much the geometry had to be changed.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">642</span>
-<span class="normal">643</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">643</span>
 <span class="normal">644</span>
 <span class="normal">645</span>
 <span class="normal">646</span>
@@ -9245,7 +9244,17 @@ because it is the honest measure of how much the geometry had to be changed.</p>
 <span class="normal">725</span>
 <span class="normal">726</span>
 <span class="normal">727</span>
-<span class="normal">728</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mollify_intrinsic</span><span class="p">(</span>
+<span class="normal">728</span>
+<span class="normal">729</span>
+<span class="normal">730</span>
+<span class="normal">731</span>
+<span class="normal">732</span>
+<span class="normal">733</span>
+<span class="normal">734</span>
+<span class="normal">735</span>
+<span class="normal">736</span>
+<span class="normal">737</span>
+<span class="normal">738</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mollify_intrinsic</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">epsilon</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">TOLERANCE_MOLLIFY</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9316,16 +9325,25 @@ because it is the honest measure of how much the geometry had to be changed.</p>
 
     <span class="c1"># The margin scales with the *mean* edge length (matching intrinsic_delaunay's docstring and</span>
     <span class="c1"># this function's own), not the max: a single long edge on a graded mesh would otherwise inflate</span>
-    <span class="c1"># delta far past what any degenerate face on the rest of the mesh actually needs.</span>
-    <span class="n">scale</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">reduce_mean</span><span class="p">(</span><span class="n">edge_lengths</span><span class="p">))</span>
-    <span class="n">slack</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_1d</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_laplacian</span><span class="o">.</span><span class="n">triangle_inequality_slack</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edge_lengths</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">epsilon</span> <span class="o">*</span> <span class="n">scale</span><span class="p">),</span> <span class="n">slack</span><span class="p">],</span>
+    <span class="c1"># delta far past what any degenerate face on the rest of the mesh actually needs. The length</span>
+    <span class="c1"># sum (``reduce.mean``'s, in either determinism setting) and the smallest triangle margin share</span>
+    <span class="c1"># one buffer, seeded ``(0, +inf)``, and cross in one read.</span>
+    <span class="n">flat</span> <span class="o">=</span> <span class="n">edge_lengths</span><span class="o">.</span><span class="n">flatten</span><span class="p">()</span>
+    <span class="n">bounds</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">pattern</span><span class="p">([</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">math</span><span class="o">.</span><span class="n">inf</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">sum_of_terms</span><span class="p">(</span>
+        <span class="n">kernel_reduce</span><span class="o">.</span><span class="n">ARRAY_SUM</span><span class="p">,</span> <span class="p">[</span><span class="n">flat</span><span class="p">],</span> <span class="n">flat</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">bounds</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
+        <span class="n">kernel_laplacian</span><span class="o">.</span><span class="n">smallest_triangle_margin</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="n">n_faces</span><span class="p">)],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edge_lengths</span><span class="p">,</span> <span class="n">bounds</span><span class="p">],</span>
+        <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">delta</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">reduce_max</span><span class="p">(</span><span class="n">slack</span><span class="p">))</span>
+    <span class="c1"># Readback: the margin decides whether anything is added, and the mean scales it.</span>
+    <span class="n">total</span><span class="p">,</span> <span class="n">margin</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">bounds</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
+    <span class="n">epsilon_scaled</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">epsilon</span> <span class="o">*</span> <span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">total</span><span class="p">)</span> <span class="o">/</span> <span class="n">flat</span><span class="o">.</span><span class="n">size</span><span class="p">))</span>
+    <span class="n">delta</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">epsilon_scaled</span> <span class="o">-</span> <span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">margin</span><span class="p">),</span> <span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="mf">0.0</span><span class="p">)))</span>
     <span class="k">if</span> <span class="n">delta</span> <span class="o">&lt;=</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">edge_lengths</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">),</span> <span class="mf">0.0</span>
 
@@ -9572,17 +9590,7 @@ parallel:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">731</span>
-<span class="normal">732</span>
-<span class="normal">733</span>
-<span class="normal">734</span>
-<span class="normal">735</span>
-<span class="normal">736</span>
-<span class="normal">737</span>
-<span class="normal">738</span>
-<span class="normal">739</span>
-<span class="normal">740</span>
-<span class="normal">741</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">741</span>
 <span class="normal">742</span>
 <span class="normal">743</span>
 <span class="normal">744</span>
@@ -9708,7 +9716,17 @@ parallel:</p>
 <span class="normal">864</span>
 <span class="normal">865</span>
 <span class="normal">866</span>
-<span class="normal">867</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connection_laplacian</span><span class="p">(</span>
+<span class="normal">867</span>
+<span class="normal">868</span>
+<span class="normal">869</span>
+<span class="normal">870</span>
+<span class="normal">871</span>
+<span class="normal">872</span>
+<span class="normal">873</span>
+<span class="normal">874</span>
+<span class="normal">875</span>
+<span class="normal">876</span>
+<span class="normal">877</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connection_laplacian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">cot_entries</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10026,17 +10044,7 @@ only for the values.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">919</span>
-<span class="normal">920</span>
-<span class="normal">921</span>
-<span class="normal">922</span>
-<span class="normal">923</span>
-<span class="normal">924</span>
-<span class="normal">925</span>
-<span class="normal">926</span>
-<span class="normal">927</span>
-<span class="normal">928</span>
-<span class="normal">929</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">929</span>
 <span class="normal">930</span>
 <span class="normal">931</span>
 <span class="normal">932</span>
@@ -10096,7 +10104,17 @@ only for the values.</p>
 <span class="normal">986</span>
 <span class="normal">987</span>
 <span class="normal">988</span>
-<span class="normal">989</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_operator_pattern</span><span class="p">(</span>
+<span class="normal">989</span>
+<span class="normal">990</span>
+<span class="normal">991</span>
+<span class="normal">992</span>
+<span class="normal">993</span>
+<span class="normal">994</span>
+<span class="normal">995</span>
+<span class="normal">996</span>
+<span class="normal">997</span>
+<span class="normal">998</span>
+<span class="normal">999</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_operator_pattern</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -10452,17 +10470,7 @@ directed case and <code>m == 2 * n_unique_edges</code> for the symmetric case.</
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1144</span>
-<span class="normal">1145</span>
-<span class="normal">1146</span>
-<span class="normal">1147</span>
-<span class="normal">1148</span>
-<span class="normal">1149</span>
-<span class="normal">1150</span>
-<span class="normal">1151</span>
-<span class="normal">1152</span>
-<span class="normal">1153</span>
-<span class="normal">1154</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1154</span>
 <span class="normal">1155</span>
 <span class="normal">1156</span>
 <span class="normal">1157</span>
@@ -10575,17 +10583,7 @@ directed case and <code>m == 2 * n_unique_edges</code> for the symmetric case.</
 <span class="normal">1264</span>
 <span class="normal">1265</span>
 <span class="normal">1266</span>
-<span class="normal">1267</span>
-<span class="normal">1268</span>
-<span class="normal">1269</span>
-<span class="normal">1270</span>
-<span class="normal">1271</span>
-<span class="normal">1272</span>
-<span class="normal">1273</span>
-<span class="normal">1274</span>
-<span class="normal">1275</span>
-<span class="normal">1276</span>
-<span class="normal">1277</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_entries</span><span class="p">(</span>
+<span class="normal">1267</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_entries</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">equal_weight</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
@@ -10683,39 +10681,19 @@ directed case and <code>m == 2 * n_unique_edges</code> for the symmetric case.</
     <span class="k">if</span> <span class="n">symmetric</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">symmetric</span> <span class="o">=</span> <span class="ow">not</span> <span class="n">equal_weight</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
-    <span class="n">equal_weight_flag</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="mi">1</span> <span class="k">if</span> <span class="n">equal_weight</span> <span class="k">else</span> <span class="mi">0</span><span class="p">)</span>
-    <span class="k">if</span> <span class="ow">not</span> <span class="n">symmetric</span><span class="p">:</span>
-        <span class="c1"># One directed triplet per triangle edge, matching trimesh's ``edges_to_coo(mesh.edges)``.</span>
-        <span class="n">edges</span> <span class="o">=</span> <span class="n">faces_to_edges</span><span class="p">(</span><span class="n">faces</span><span class="p">)</span>
-        <span class="n">m</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">edges</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-        <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">triplet_buffers</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">m</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">kernel_laplacian</span><span class="o">.</span><span class="n">LAPLACIAN_TRIPLETS_DIRECTED</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">equal_weight_flag</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">],</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
-        <span class="k">return</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span>
-    <span class="c1"># Both directed pairs of each unique undirected edge, matching trimesh's ``vertex_neighbors``</span>
-    <span class="c1"># (every neighbor counted once).</span>
-    <span class="k">if</span> <span class="n">edges</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">edges</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">edges_unique</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-    <span class="k">elif</span> <span class="n">validate</span> <span class="ow">and</span> <span class="nb">int</span><span class="p">(</span><span class="n">edges</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
-        <span class="n">lowest</span><span class="p">,</span> <span class="n">highest</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">minmax</span><span class="p">(</span><span class="n">edges</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">lowest</span> <span class="o">&lt;</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">highest</span> <span class="o">&gt;=</span> <span class="n">n_vertices</span><span class="p">:</span>
-            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-                <span class="sa">f</span><span class="s2">"laplacian_entries: edges must reference vertex indices in [0, </span><span class="si">{</span><span class="n">n_vertices</span><span class="si">}</span><span class="s2">), "</span>
-                <span class="sa">f</span><span class="s2">"got a range of [</span><span class="si">{</span><span class="n">lowest</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">highest</span><span class="si">}</span><span class="s2">]"</span>
-            <span class="p">)</span>
-    <span class="n">m_unique</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">edges</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-    <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">triplet_buffers</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">m_unique</span><span class="p">,</span> <span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">m_unique</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="n">edges</span> <span class="o">=</span> <span class="n">_entry_edges</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">symmetric</span><span class="p">,</span> <span class="n">edges</span><span class="p">,</span> <span class="n">validate</span><span class="p">)</span>
+    <span class="n">m</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">edges</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+    <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">triplet_buffers</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">m</span> <span class="k">if</span> <span class="n">symmetric</span> <span class="k">else</span> <span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">m</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">kernels</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">kernel_laplacian</span><span class="o">.</span><span class="n">LAPLACIAN_TRIPLETS_SYMMETRIC</span>
+            <span class="k">if</span> <span class="n">symmetric</span>
+            <span class="k">else</span> <span class="n">kernel_laplacian</span><span class="o">.</span><span class="n">LAPLACIAN_TRIPLETS_DIRECTED</span>
+        <span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_laplacian</span><span class="o">.</span><span class="n">LAPLACIAN_TRIPLETS_SYMMETRIC</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
-            <span class="n">dim</span><span class="o">=</span><span class="n">m_unique</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">equal_weight_flag</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">],</span>
+            <span class="n">kernels</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="mi">1</span> <span class="k">if</span> <span class="n">equal_weight</span> <span class="k">else</span> <span class="mi">0</span><span class="p">),</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
     <span class="k">return</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span>
@@ -10873,9 +10851,9 @@ row-normalized natively in the requested precision, in one build.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(m, 2)</code> precomputed unique undirected edges, forwarded to
-<a class="autorefs autorefs-internal" title="laplacian_entries" href="./#ordito.laplacian.laplacian_entries"><code>laplacian_entries</code></a>, which assembles the operator
-from them as triplets. Ignored when the adjacency is directed. Without <code>edges</code> the
+                <p><code>(m, 2)</code> precomputed unique undirected edges; the operator is assembled from the entries
+<a class="autorefs autorefs-internal" title="laplacian_entries" href="./#ordito.laplacian.laplacian_entries"><code>laplacian_entries</code></a> would emit for them. Ignored
+when the adjacency is directed. Without <code>edges</code> the
 operator's pattern is built straight from <code>faces</code>, which is usually cheaper.</p>
               </div>
             </td>
@@ -10892,7 +10870,7 @@ operator's pattern is built straight from <code>faces</code>, which is usually c
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Forwarded to <a class="autorefs autorefs-internal" title="laplacian_entries" href="./#ordito.laplacian.laplacian_entries"><code>laplacian_entries</code></a>: when <code>True</code>
+                <p>As for <a class="autorefs autorefs-internal" title="laplacian_entries" href="./#ordito.laplacian.laplacian_entries"><code>laplacian_entries</code></a>: when <code>True</code>
 (default) and <code>edges</code> is given, check its indices fall in <code>[0, n_vertices)</code> before
 launching. Pass <code>False</code> only when <code>edges</code> is known correct by construction.</p>
               </div>
@@ -11018,7 +10996,17 @@ or vertex count.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1280</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1270</span>
+<span class="normal">1271</span>
+<span class="normal">1272</span>
+<span class="normal">1273</span>
+<span class="normal">1274</span>
+<span class="normal">1275</span>
+<span class="normal">1276</span>
+<span class="normal">1277</span>
+<span class="normal">1278</span>
+<span class="normal">1279</span>
+<span class="normal">1280</span>
 <span class="normal">1281</span>
 <span class="normal">1282</span>
 <span class="normal">1283</span>
@@ -11212,12 +11200,12 @@ or vertex count.</p>
 <span class="sd">        ``wp.float64`` when the operator feeds a linear-system solve; the matrix is built and</span>
 <span class="sd">        row-normalized natively in the requested precision, in one build.</span>
 <span class="sd">    edges</span>
-<span class="sd">        ``(m, 2)`` precomputed unique undirected edges, forwarded to</span>
-<span class="sd">        [`laplacian_entries`][ordito.laplacian.laplacian_entries], which assembles the operator</span>
-<span class="sd">        from them as triplets. Ignored when the adjacency is directed. Without ``edges`` the</span>
+<span class="sd">        ``(m, 2)`` precomputed unique undirected edges; the operator is assembled from the entries</span>
+<span class="sd">        [`laplacian_entries`][ordito.laplacian.laplacian_entries] would emit for them. Ignored</span>
+<span class="sd">        when the adjacency is directed. Without ``edges`` the</span>
 <span class="sd">        operator's pattern is built straight from ``faces``, which is usually cheaper.</span>
 <span class="sd">    validate</span>
-<span class="sd">        Forwarded to [`laplacian_entries`][ordito.laplacian.laplacian_entries]: when ``True``</span>
+<span class="sd">        As for [`laplacian_entries`][ordito.laplacian.laplacian_entries]: when ``True``</span>
 <span class="sd">        (default) and ``edges`` is given, check its indices fall in ``[0, n_vertices)`` before</span>
 <span class="sd">        launching. Pass ``False`` only when ``edges`` is known correct by construction.</span>
 <span class="sd">    pattern</span>
@@ -11309,16 +11297,26 @@ or vertex count.</p>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">bsr_from_csr</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">values</span><span class="p">)</span>
-    <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span> <span class="o">=</span> <span class="n">laplacian_entries</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span>
-        <span class="n">faces</span><span class="p">,</span>
-        <span class="n">equal_weight</span><span class="o">=</span><span class="n">equal_weight</span><span class="p">,</span>
-        <span class="n">symmetric</span><span class="o">=</span><span class="n">symmetric</span><span class="p">,</span>
-        <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span>
-        <span class="n">edges</span><span class="o">=</span><span class="n">edges</span><span class="p">,</span>
-        <span class="n">validate</span><span class="o">=</span><span class="n">validate</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="n">matrix</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_triplets</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">rows</span><span class="p">,</span> <span class="n">cols</span><span class="p">,</span> <span class="n">vals</span><span class="p">)</span>
+    <span class="c1"># The entries are assembled, never returned, so they are written as their sort keys.</span>
+    <span class="n">edges</span> <span class="o">=</span> <span class="n">_entry_edges</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">symmetric</span><span class="p">,</span> <span class="n">edges</span><span class="p">,</span> <span class="n">validate</span><span class="p">)</span>
+    <span class="n">m</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">edges</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+    <span class="n">count</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">m</span> <span class="k">if</span> <span class="n">symmetric</span> <span class="k">else</span> <span class="n">m</span>
+    <span class="n">keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_key_buffers</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">vals</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">m</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">kernels</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">kernel_laplacian</span><span class="o">.</span><span class="n">LAPLACIAN_KEYS_SYMMETRIC</span>
+            <span class="k">if</span> <span class="n">symmetric</span>
+            <span class="k">else</span> <span class="n">kernel_laplacian</span><span class="o">.</span><span class="n">LAPLACIAN_KEYS_DIRECTED</span>
+        <span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernels</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="mi">1</span> <span class="k">if</span> <span class="n">equal_weight</span> <span class="k">else</span> <span class="mi">0</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">)],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">vals</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="n">matrix</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_coo_keys</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">vals</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">matrix</span><span class="o">.</span><span class="n">nnz</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_laplacian</span><span class="o">.</span><span class="n">ROW_NORMALIZE</span><span class="p">[</span><span class="n">matrix</span><span class="o">.</span><span class="n">values</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
@@ -11510,37 +11508,7 @@ not affect the uniform weights.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1437</span>
-<span class="normal">1438</span>
-<span class="normal">1439</span>
-<span class="normal">1440</span>
-<span class="normal">1441</span>
-<span class="normal">1442</span>
-<span class="normal">1443</span>
-<span class="normal">1444</span>
-<span class="normal">1445</span>
-<span class="normal">1446</span>
-<span class="normal">1447</span>
-<span class="normal">1448</span>
-<span class="normal">1449</span>
-<span class="normal">1450</span>
-<span class="normal">1451</span>
-<span class="normal">1452</span>
-<span class="normal">1453</span>
-<span class="normal">1454</span>
-<span class="normal">1455</span>
-<span class="normal">1456</span>
-<span class="normal">1457</span>
-<span class="normal">1458</span>
-<span class="normal">1459</span>
-<span class="normal">1460</span>
-<span class="normal">1461</span>
-<span class="normal">1462</span>
-<span class="normal">1463</span>
-<span class="normal">1464</span>
-<span class="normal">1465</span>
-<span class="normal">1466</span>
-<span class="normal">1467</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1467</span>
 <span class="normal">1468</span>
 <span class="normal">1469</span>
 <span class="normal">1470</span>
@@ -11590,7 +11558,37 @@ not affect the uniform weights.</p>
 <span class="normal">1514</span>
 <span class="normal">1515</span>
 <span class="normal">1516</span>
-<span class="normal">1517</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">graph_laplacian</span><span class="p">(</span>
+<span class="normal">1517</span>
+<span class="normal">1518</span>
+<span class="normal">1519</span>
+<span class="normal">1520</span>
+<span class="normal">1521</span>
+<span class="normal">1522</span>
+<span class="normal">1523</span>
+<span class="normal">1524</span>
+<span class="normal">1525</span>
+<span class="normal">1526</span>
+<span class="normal">1527</span>
+<span class="normal">1528</span>
+<span class="normal">1529</span>
+<span class="normal">1530</span>
+<span class="normal">1531</span>
+<span class="normal">1532</span>
+<span class="normal">1533</span>
+<span class="normal">1534</span>
+<span class="normal">1535</span>
+<span class="normal">1536</span>
+<span class="normal">1537</span>
+<span class="normal">1538</span>
+<span class="normal">1539</span>
+<span class="normal">1540</span>
+<span class="normal">1541</span>
+<span class="normal">1542</span>
+<span class="normal">1543</span>
+<span class="normal">1544</span>
+<span class="normal">1545</span>
+<span class="normal">1546</span>
+<span class="normal">1547</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">graph_laplacian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -11909,37 +11907,7 @@ icosphere:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1536</span>
-<span class="normal">1537</span>
-<span class="normal">1538</span>
-<span class="normal">1539</span>
-<span class="normal">1540</span>
-<span class="normal">1541</span>
-<span class="normal">1542</span>
-<span class="normal">1543</span>
-<span class="normal">1544</span>
-<span class="normal">1545</span>
-<span class="normal">1546</span>
-<span class="normal">1547</span>
-<span class="normal">1548</span>
-<span class="normal">1549</span>
-<span class="normal">1550</span>
-<span class="normal">1551</span>
-<span class="normal">1552</span>
-<span class="normal">1553</span>
-<span class="normal">1554</span>
-<span class="normal">1555</span>
-<span class="normal">1556</span>
-<span class="normal">1557</span>
-<span class="normal">1558</span>
-<span class="normal">1559</span>
-<span class="normal">1560</span>
-<span class="normal">1561</span>
-<span class="normal">1562</span>
-<span class="normal">1563</span>
-<span class="normal">1564</span>
-<span class="normal">1565</span>
-<span class="normal">1566</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1566</span>
 <span class="normal">1567</span>
 <span class="normal">1568</span>
 <span class="normal">1569</span>
@@ -12026,7 +11994,37 @@ icosphere:</p>
 <span class="normal">1650</span>
 <span class="normal">1651</span>
 <span class="normal">1652</span>
-<span class="normal">1653</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix_entries</span><span class="p">(</span>
+<span class="normal">1653</span>
+<span class="normal">1654</span>
+<span class="normal">1655</span>
+<span class="normal">1656</span>
+<span class="normal">1657</span>
+<span class="normal">1658</span>
+<span class="normal">1659</span>
+<span class="normal">1660</span>
+<span class="normal">1661</span>
+<span class="normal">1662</span>
+<span class="normal">1663</span>
+<span class="normal">1664</span>
+<span class="normal">1665</span>
+<span class="normal">1666</span>
+<span class="normal">1667</span>
+<span class="normal">1668</span>
+<span class="normal">1669</span>
+<span class="normal">1670</span>
+<span class="normal">1671</span>
+<span class="normal">1672</span>
+<span class="normal">1673</span>
+<span class="normal">1674</span>
+<span class="normal">1675</span>
+<span class="normal">1676</span>
+<span class="normal">1677</span>
+<span class="normal">1678</span>
+<span class="normal">1679</span>
+<span class="normal">1680</span>
+<span class="normal">1681</span>
+<span class="normal">1682</span>
+<span class="normal">1683</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix_entries</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
@@ -12345,37 +12343,7 @@ icosphere:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/laplacian.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1656</span>
-<span class="normal">1657</span>
-<span class="normal">1658</span>
-<span class="normal">1659</span>
-<span class="normal">1660</span>
-<span class="normal">1661</span>
-<span class="normal">1662</span>
-<span class="normal">1663</span>
-<span class="normal">1664</span>
-<span class="normal">1665</span>
-<span class="normal">1666</span>
-<span class="normal">1667</span>
-<span class="normal">1668</span>
-<span class="normal">1669</span>
-<span class="normal">1670</span>
-<span class="normal">1671</span>
-<span class="normal">1672</span>
-<span class="normal">1673</span>
-<span class="normal">1674</span>
-<span class="normal">1675</span>
-<span class="normal">1676</span>
-<span class="normal">1677</span>
-<span class="normal">1678</span>
-<span class="normal">1679</span>
-<span class="normal">1680</span>
-<span class="normal">1681</span>
-<span class="normal">1682</span>
-<span class="normal">1683</span>
-<span class="normal">1684</span>
-<span class="normal">1685</span>
-<span class="normal">1686</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1686</span>
 <span class="normal">1687</span>
 <span class="normal">1688</span>
 <span class="normal">1689</span>
@@ -12441,7 +12409,37 @@ icosphere:</p>
 <span class="normal">1749</span>
 <span class="normal">1750</span>
 <span class="normal">1751</span>
-<span class="normal">1752</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix</span><span class="p">(</span>
+<span class="normal">1752</span>
+<span class="normal">1753</span>
+<span class="normal">1754</span>
+<span class="normal">1755</span>
+<span class="normal">1756</span>
+<span class="normal">1757</span>
+<span class="normal">1758</span>
+<span class="normal">1759</span>
+<span class="normal">1760</span>
+<span class="normal">1761</span>
+<span class="normal">1762</span>
+<span class="normal">1763</span>
+<span class="normal">1764</span>
+<span class="normal">1765</span>
+<span class="normal">1766</span>
+<span class="normal">1767</span>
+<span class="normal">1768</span>
+<span class="normal">1769</span>
+<span class="normal">1770</span>
+<span class="normal">1771</span>
+<span class="normal">1772</span>
+<span class="normal">1773</span>
+<span class="normal">1774</span>
+<span class="normal">1775</span>
+<span class="normal">1776</span>
+<span class="normal">1777</span>
+<span class="normal">1778</span>
+<span class="normal">1779</span>
+<span class="normal">1780</span>
+<span class="normal">1781</span>
+<span class="normal">1782</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mass_matrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
