@@ -255,6 +255,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "wound, and reads the halfedge mates the winding fix already paired, moved with each "
         "flipped face, as make_normals_outward does; the public form returns the faces alone"
     ),
+    ("reconstruction", "holes._fill_small"): (
+        "triangulate_point_cloud fills the small holes of faces it owns, so a mesh with none keeps "
+        "them where fill_small documents a copy, and the boundary walk reads the halfedge mates "
+        "its winding fix already moved with each flipped face"
+    ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "
         "rebuilds connectivity as well, which reconstruction must not do to a fresh triangulation"

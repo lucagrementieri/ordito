@@ -503,6 +503,32 @@ def flipped_halfedge(h: wp.int32, flipped: wp.bool) -> wp.int32:
     return base + 2 - (h - base)
 
 
+@wp.func
+def mate_code_face(mate: wp.int32) -> wp.int32:
+    # The face whose flip moves halfedge mate code ``mate`` (``flipped_mate_code``): the mate's own,
+    # or a ``-2 - lowest`` code's lowest halfedge's. Face 0 for a boundary ``-1``, which no flip
+    # moves, so a caller reads that face's flip unguarded and ``flipped_mate_code`` ignores it.
+    if mate >= 0:
+        return mate // 3
+    if mate <= -2:
+        return (-2 - mate) // 3
+    return 0
+
+
+@wp.func
+def flipped_mate_code(mate: wp.int32, flipped: wp.bool) -> wp.int32:
+    # Mate code ``mate`` once ``write_face_winding`` has reversed the face it names
+    # (``mate_code_face``) when ``flipped``. A flip moves halfedges within their own face
+    # (``flipped_halfedge``) and pairs the same undirected edges, so a mate is the old one moved
+    # with its face. A ``-2 - lowest`` code moves its halfedge too, which then still names a
+    # halfedge of the edge but no longer always its lowest; a ``-1`` stays.
+    if mate >= 0:
+        return flipped_halfedge(mate, flipped)
+    if mate <= -2:
+        return -2 - flipped_halfedge(-2 - mate, flipped)
+    return mate
+
+
 @wp.kernel
 def flip_faces_and_mates_by_parity(
     faces: wp.array[wp.int32],
@@ -511,23 +537,18 @@ def flip_faces_and_mates_by_parity(
     out_faces: wp.array[wp.int32],
     out_mates: wp.array[wp.int32],
 ) -> None:
-    # ``flip_faces_by_parity``, also carrying ``faces``' halfedge mates over to the flipped faces,
-    # so a consumer of the wound mesh pairs no halfedges again. A flip moves halfedges within their
-    # own face (``flipped_halfedge``) and pairs the same undirected edges, so each mate is the old
-    # one moved with its face. A code ``-2 - lowest`` moves its halfedge too, which then still names
-    # a halfedge of the edge but no longer always its lowest; a ``-1`` stays.
+    # ``flip_faces_by_parity``, also carrying ``faces``' halfedge mates over to the flipped faces
+    # (``flipped_mate_code``), so a consumer of the wound mesh pairs no halfedges again.
+    # ``flip_faces_and_mates_by_component_sign`` does the same for a flip read off a component's
+    # sum; the two differ only by where a face's flip comes from.
     f = wp.int32(wp.tid())
     flip = face_parity_flip(words, f)
     write_face_winding(faces, f, flip, out_faces)
     for k in range(3):
         h = 3 * f + k
         mate = mates[h]
-        if mate >= 0:
-            mate = flipped_halfedge(mate, face_parity_flip(words, mate // 3))
-        elif mate <= -2:
-            lowest = -2 - mate
-            mate = -2 - flipped_halfedge(lowest, face_parity_flip(words, lowest // 3))
-        out_mates[flipped_halfedge(h, flip)] = mate
+        mate_flip = face_parity_flip(words, mate_code_face(mate))
+        out_mates[flipped_halfedge(h, flip)] = flipped_mate_code(mate, mate_flip)
 
 
 @wp.kernel
@@ -642,6 +663,17 @@ def mark_kept_components(
     mark_face_fate(faces, f, keep, out_keep, out_flags)
 
 
+@wp.func
+def component_sign_flip(
+    labels: wp.array[wp.int32],
+    component_sum: wp.array[wp.float32],
+    component_sums: GroupSumPass,
+    f: wp.int32,
+) -> wp.bool:
+    # Whether face ``f`` is reversed: its component's sum, read through its own label, is negative.
+    return read_group_sum(component_sum, component_sums, labels[f]) < wp.float32(0.0)
+
+
 @wp.kernel
 def flip_faces_by_component_sign(
     faces: wp.array[wp.int32],
@@ -661,8 +693,33 @@ def flip_faces_by_component_sign(
     # The sum is read through ``reduce.read_group_sum`` likewise, so the exact group sum needs no
     # finish launch.
     f = wp.int32(wp.tid())
-    total = read_group_sum(component_sum, component_sums, labels[f])
-    write_face_winding(faces, f, total < wp.float32(0.0), out_faces)
+    write_face_winding(
+        faces, f, component_sign_flip(labels, component_sum, component_sums, f), out_faces
+    )
+
+
+@wp.kernel
+def flip_faces_and_mates_by_component_sign(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    component_sum: wp.array[wp.float32],
+    component_sums: GroupSumPass,
+    out_faces: wp.array[wp.int32],
+    out_mates: wp.array[wp.int32],
+) -> None:
+    # ``flip_faces_by_component_sign``, also carrying ``faces``' halfedge mates over to the flipped
+    # faces as ``flip_faces_and_mates_by_parity`` does, so a consumer of the oriented mesh (the
+    # hole fill of ``triangulate_point_cloud``) pairs no halfedges again. Each mate's move reads
+    # the flip of the face it names, which a ``-2 - lowest`` code may place in another component.
+    f = wp.int32(wp.tid())
+    flip = component_sign_flip(labels, component_sum, component_sums, f)
+    write_face_winding(faces, f, flip, out_faces)
+    for k in range(3):
+        h = 3 * f + k
+        mate = mates[h]
+        mate_flip = component_sign_flip(labels, component_sum, component_sums, mate_code_face(mate))
+        out_mates[flipped_halfedge(h, flip)] = flipped_mate_code(mate, mate_flip)
 
 
 @wp.kernel

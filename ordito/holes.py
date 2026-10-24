@@ -441,15 +441,20 @@ class _EdgeTable:
     ``rim_opposite`` finds, per rim edge, the opposite vertex of its single adjacent face (and
     that it has exactly one); a ``(n_vertices,)`` slot scratch
     supports the forbidden-chord mask of every loop at once. Both answers are rim-sized, so neither
-    builds a table of the mesh's edges: the one sort is of the rim's own keys.
+    builds a table of the mesh's edges: the one sort is of the rim's own keys. ``n_vertices`` is
+    given by a caller whose face indices are known to lie below it, and measured otherwise.
     """
 
-    def __init__(self, vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> None:
+    def __init__(
+        self, vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], n_vertices: int | None = None
+    ) -> None:
         device = faces.device
         # Derived from the face indices rather than taken from ``len(vertices)``, deliberately: the
         # ``min`` half of this reduction is the only negative-index guard between a malformed face
         # buffer and the gathers below, which would otherwise read out of bounds instead of raising.
-        n_vertices = od.array.index_bound(faces, require_non_negative=True)
+        # Any bound above every index orders the rim keys alike, so a given one changes no answer.
+        if n_vertices is None:
+            n_vertices = od.array.index_bound(faces, require_non_negative=True)
         self.vertices = vertices
         self.faces = faces
         self.n_halfedges = faces.size // 3 * 3
@@ -760,6 +765,8 @@ def _fill_packed_loops(
     metric: str,
     resolve_multiple_edges: bool,
     smooth_boundary: bool,
+    *,
+    n_vertices: int | None = None,
 ) -> wp.array[wp.int32]:
     """
     Min-weight-triangulate every packed loop **together** and append the fill faces.
@@ -770,10 +777,11 @@ def _fill_packed_loops(
     per (loop, span), a device-side min-area retry mask instead of a host branch per loop, and a
     one-thread-per-loop traceback that keeps the predecessor table on the device. What is left on
     the host is two scalar reads of one small state buffer: whether any loop needs the fallback
-    metric, and whether the traceback fell short of a full triangulation anywhere.
+    metric, and whether the traceback fell short of a full triangulation anywhere. ``n_vertices``
+    is [`_EdgeTable`][ordito.holes._EdgeTable]'s.
     """
     device = faces.device
-    edge_table = _EdgeTable(vertices, faces)
+    edge_table = _EdgeTable(vertices, faces, n_vertices)
     primary_id = _METRIC_IDS[metric]
     combine_id = _METRIC_COMBINE.get(metric, 0)
     min_area_id = _METRIC_IDS["min_area"]
@@ -1235,9 +1243,31 @@ def fill_small(
     if (max_perimeter is None) == (max_edges is None):
         raise ValueError("pass exactly one of max_perimeter or max_edges")
 
-    packed = _hole_loops(vertices, faces)
+    filled = _fill_small(vertices, faces, max_perimeter, max_edges)
+    return _launch.clone(faces) if filled is faces else filled
+
+
+def _fill_small(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_perimeter: float | None,
+    max_edges: int | None = None,
+    *,
+    mates: wp.array[wp.int32] | None = None,
+    n_vertices: int | None = None,
+) -> wp.array[wp.int32]:
+    """
+    [`fill_small`][ordito.holes.fill_small]'s answer, ``faces`` itself where nothing is filled.
+
+    For a caller that owns ``faces`` and so needs no copy of them. ``mates`` are ``faces``'
+    halfedge mates when the caller holds them (a ``-2`` code need not name the lowest halfedge),
+    which the boundary walk then reads rather than pairing the halfedges again. ``n_vertices`` is
+    ``vertices.size`` from a caller whose face indices are known to lie in ``[0, n_vertices)``,
+    which spares the fill its index-bound reduction and readback. Exactly one threshold, unchecked.
+    """
+    packed = _hole_loops(vertices, faces, mates=mates)
     if packed is None:
-        return _launch.clone(faces)
+        return faces
 
     if max_edges is not None:
         small_np = packed.sizes_np <= max_edges
@@ -1246,10 +1276,12 @@ def fill_small(
         # rather than a copy of the whole vertex buffer plus one of each loop.
         small_np = packed.perimeters(vertices) <= max_perimeter
     if not small_np.any():
-        return _launch.clone(faces)
+        return faces
     if not small_np.all():
         packed = _compact_packed_loops(packed.flat_loops, packed.sizes_np, small_np)
-    return _fill_packed_loops(vertices, faces, packed, "plane_normalized", True, True)
+    return _fill_packed_loops(
+        vertices, faces, packed, "plane_normalized", True, True, n_vertices=n_vertices
+    )
 
 
 @overload
@@ -3931,14 +3963,18 @@ def _mean_rim_edge_length(vertices: wp.array[wp.vec3], loops: _PackedLoops) -> f
 
 
 def _hole_loops(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], preserve_largest_hole: bool = False
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    preserve_largest_hole: bool = False,
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> _PackedLoops | None:
     """
     Pack the fillable boundary loops (>= 3 vertices) of a mesh for on-device triangulation.
 
     Returns ``None`` when there is no fillable boundary loop. Costs **one** host readback (the loop
     offsets, which the ragged indexing needs anyway), plus a second one only under
-    ``preserve_largest_hole``.
+    ``preserve_largest_hole``. ``mates`` are ``faces``' halfedge mates when the caller holds them.
 
     That second readback stays on the host on purpose, and not because the argmax could not run on
     the device: what the host needs is the resulting *mask*, to build the ragged gather index that
@@ -3952,7 +3988,7 @@ def _hole_loops(
     [`polyline_length`][ordito.polyline.polyline_length] call per loop (two synchronizations
     each).
     """
-    packed = _boundary_loops_packed(vertices, faces)
+    packed = _boundary_loops_packed(vertices, faces, mates=mates)
     if packed is None:
         return None
 
@@ -3989,19 +4025,22 @@ def _compact_packed_loops(
 
 
 def _boundary_loops_packed(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], np.ndarray, wp.array[wp.int32]] | None:
     """
     Every boundary loop of a mesh as one packed buffer, its host sizes and its device offsets.
 
-    ``None`` if there is none.
+    ``None`` if there is none. ``mates`` are ``faces``' halfedge mates when the caller holds them.
 
     The packed buffer is
     [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]' own, handed on
     unsplit; the sizes come from the single offsets readback the ragged indexing needs anyway, or
     with one loop from the buffer's own length.
     """
-    flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
+    flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces, mates=mates)
     if offsets.size == 1:
         return None
     if offsets.size == 2:

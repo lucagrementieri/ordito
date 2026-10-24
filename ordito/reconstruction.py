@@ -2866,21 +2866,26 @@ def _clean_reconstruction(
         vertices, faces = od.repair.remove_degenerate_and_non_manifold_faces(points, faces)
 
     if faces.size > 0:
+        mates: wp.array[wp.int32] | None = None
         if away_from is not None:
-            faces = _face_away_from(vertices, faces, away_from)
+            faces, mates = _face_away_from(vertices, faces, away_from)
         elif orient:
             faces = od.repair.make_normals_outward(vertices, faces)
         if crit_hole_length != 0.0:
             hole_length = crit_hole_length
             if hole_length < 0.0:
                 hole_length = 0.1 * od.bounds.enclosing_diagonal(points)
-            faces = od.holes.fill_small(vertices, faces, hole_length)
+            # The faces are this function's own, so a mesh with nothing to fill keeps them rather
+            # than copying them, and their indices are below ``vertices.size`` (compacted above).
+            faces = od.holes._fill_small(  # pyright: ignore[reportPrivateUsage]
+                vertices, faces, hole_length, mates=mates, n_vertices=vertices.size
+            )
     return vertices, faces
 
 
 def _face_away_from(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], center: wp.vec3
-) -> wp.array[wp.int32]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Wind each component consistently, facing away from ``center`` at its farthest corner.
 
@@ -2888,7 +2893,9 @@ def _face_away_from(
     centre, the lowest vertex on a tie, keeps a normal pointing away from the centre, and the rest
     of the component follows it. Unlike an outward
     test by signed volume it decides an open component too; on a closed one it agrees, since the
-    surface lies inside the sphere through its farthest point. Nonempty ``faces``.
+    surface lies inside the sphere through its farthest point. Nonempty ``faces``. Returns the
+    oriented faces and their halfedge mates (a ``-2`` code need not name the lowest halfedge),
+    moved with each flipped face, for the hole fill to read rather than pair again.
     """
     n_faces = faces.size // 3
     device = faces.device
@@ -2916,11 +2923,12 @@ def _face_away_from(
         device=device,
     )
     out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    out_mates = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_repair.flip_faces_by_component_sign,
+        kernel_repair.flip_faces_and_mates_by_component_sign,
         dim=n_faces,
-        inputs=[faces, labels, sums.out, sums.launch_pass],
-        outputs=[out_faces],
+        inputs=[faces, mates, labels, sums.out, sums.launch_pass],
+        outputs=[out_faces, out_mates],
         device=device,
     )
-    return out_faces
+    return out_faces, out_mates
