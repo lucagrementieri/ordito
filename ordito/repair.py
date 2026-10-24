@@ -80,7 +80,10 @@ from ordito.kernels import repair as kernel_repair
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import selection as kernel_selection
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
-from ordito.remesh import _collapse_pass  # pyright: ignore[reportPrivateUsage]
+from ordito.remesh import (
+    _collapse_pass,  # pyright: ignore[reportPrivateUsage]
+    _flip_region_faces,  # pyright: ignore[reportPrivateUsage]
+)
 from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPrivateUsage]
 from ordito.validation import (
     _closed_signed_volume,  # pyright: ignore[reportPrivateUsage]
@@ -97,6 +100,8 @@ _VOXEL_REBUILD_RESOLUTION = 128
 # this only bounds a round.
 _DEGENERACY_COLLAPSE_PASSES = 10
 _DEGENERACY_COLLAPSE_ROUNDS = 2
+# Delone flip passes per ``fix_degeneracies`` round, ``remesh.flip_to_delaunay``'s default.
+_DEGENERACY_FLIP_ITERATIONS = 100
 
 # ``remove_tunnels``' search through the basis vertices: the ball rows a root starts with, how much
 # wider a root whose ball outgrew them is searched again, the scratch entries one launch may
@@ -1482,13 +1487,15 @@ def collapse_small_triangles(
     current_vertices = vertices
     current_faces = faces
     max_iterations = faces.size  # bounded: each collapsing pass drops at least one face
-    # One small-face counter for the whole loop, never reset: the kernel that finds the small faces
-    # counts them, so the stopping test is one 4-byte read rather than a per-face flag buffer
-    # reduced on the device first, and a pass found none exactly when the running total did not
-    # move.
-    n_small = _launch.zeros(1, dtype=wp.int32, device=device)
+    # Two small-face counters for the whole loop, never reset: slot 0 counts the input's small faces
+    # as the first pass finds them, slot 1 the small faces each pass leaves behind, counted by the
+    # remap that decides them. So the stopping test is one 4-byte read rather than a per-face flag
+    # buffer reduced on the device first, a pass left none exactly when slot 1 did not move, and
+    # the pass after the last collapse is never launched.
+    n_small = _launch.zeros(2, dtype=wp.int32, device=device)
+    n_left = odt.as_dense(n_small[1:])
     small_so_far = 0
-    for _ in range(max_iterations):
+    for iteration in range(max_iterations):
         n_current = current_faces.size // 3
         if n_current == 0:
             break
@@ -1500,11 +1507,8 @@ def collapse_small_triangles(
             inputs=[current_vertices, current_faces, min_dbl_area, pairs, n_small],
             device=device,
         )
-
-        small_total = int(read_scalar(n_small, 0))
-        if small_total == small_so_far:
+        if iteration == 0 and int(read_scalar(n_small, 0)) == 0:
             break
-        small_so_far = small_total
 
         # Non-flagged faces emit a self-pair (i0, i0); these are self-loops that leave the
         # connected-components closure unchanged, so all rows can be passed without filtering.
@@ -1527,12 +1531,17 @@ def collapse_small_triangles(
         _launch.launch(
             kernel_repair.remap_mark_nondegenerate_faces,
             dim=n_current,
-            inputs=[current_vertices, current_faces, labels, remapped_faces, keep_mask, ranks],
+            inputs=[current_vertices, current_faces, labels, min_dbl_area],
+            outputs=[remapped_faces, keep_mask, ranks, n_left],
             device=device,
         )
         current_vertices, current_faces, _vertex_index, _ranks = _compact_marked_submesh(
             current_vertices, remapped_faces, keep_mask, ranks, keep_masked=True, with_index=False
         )
+        small_total = int(read_scalar(n_small, 1))
+        if small_total == small_so_far:
+            break
+        small_so_far = small_total
 
     return current_vertices, current_faces
 
@@ -1688,20 +1697,29 @@ def fix_degeneracies(
     current_faces = faces
     for _ in range(max_iter):
         n_current = current_faces.size
-        face_region = _launch.empty(n_current // 3, dtype=wp.bool, device=device)
+        # The caller's buffer is copied before the first flips; every later one is this call's own
+        # (a flip or collapse output) and is flipped in place.
+        flipped = (
+            _launch.empty(n_current, dtype=wp.int32, device=device)
+            if current_faces is faces
+            else current_faces
+        )
+        face_region = _launch.empty(n_current // 3, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_repair.faces_in_vertex_region,
             dim=n_current // 3,
             inputs=[current_faces, region],
-            outputs=[face_region],
+            outputs=[flipped, face_region],
             device=device,
         )
-        current_faces = od.remesh.flip_to_delaunay(
+        current_faces = flipped
+        _flip_region_faces(
             current_vertices,
             current_faces,
-            region=face_region,
-            max_angle_change=math.radians(max_angle_change),
-            max_deviation=max_deviation,
+            face_region,
+            math.radians(max_angle_change),
+            max_deviation,
+            _DEGENERACY_FLIP_ITERATIONS,
             critical_aspect_ratio=critical_aspect_ratio,
         )
         current_vertices, current_faces, _incidence, kept_region = _collapse_pass(

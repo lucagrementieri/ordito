@@ -4813,16 +4813,19 @@ def _flip_region_faces(
     max_deviation: float | None,
     max_iter: int,
     topology: _FlipTopology | None = None,
+    *,
+    critical_aspect_ratio: float = 1000.0,
 ) -> int:
     """
     Run the parallel Delone flip pass over the region, mutating ``faces`` in place.
 
     ``topology`` is handed through to ``_flip_interior_edges``, which leaves it describing
-    ``faces`` as the pass leaves it.
+    ``faces`` as the pass leaves it. ``critical_aspect_ratio`` is
+    [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay]'s.
     """
     device = faces.device
     n_vertices = vertices.size
-    mac, mdsq, car = _flip_gates(max_angle_change, max_deviation)
+    mac, mdsq, car = _flip_gates(max_angle_change, max_deviation, critical_aspect_ratio)
 
     def launch(
         adjacency: odt.Array2dInt32,
