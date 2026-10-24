@@ -1182,14 +1182,23 @@ def dissection_relabel(
 
 @wp.kernel
 def seed_dissection(
-    n: wp.int32, chunk: wp.int32, out_table: wp.array[wp.int32], out_segments: wp.array2d[wp.int32]
+    n: wp.int32,
+    chunk: wp.int32,
+    out_table: wp.array[wp.int32],
+    out_segments: wp.array2d[wp.int32],
+    out_order: wp.array[wp.int32],
+    out_tag: wp.array[wp.int32],
 ) -> None:
     # The first depth's one segment: every row, at the start of the order, with no parent node.
     # ``out_table`` holds the depth's segment starts then its live-shifted task offsets -- the
     # inclusive scan ``dissection_bookkeeping`` leaves for every later depth -- a thread an entry.
+    # A thread a row too: the order starts as the identity and no row has a median side yet.
     p = wp.int32(wp.tid())
+    if p < n:
+        out_order[p] = p
+        out_tag[p] = -1
     slots = out_table.shape[0] // 2 - 1
-    if p > 0:
+    if p > 0 and p < out_table.shape[0]:
         out_table[p] = wp.where(p <= slots + 1, n, n + (n + chunk - 1) // chunk)
     if p == 0:
         out_segments[0, 0] = 0
@@ -1666,15 +1675,19 @@ def supernode_heights(
 
 
 # One supernode's prefix-summed quantities in supernode order: front entries, solve-block entries,
-# forward and backward chunk slots, forward and backward tasks.
-front_terms = wp.types.vector(length=6, dtype=wp.int64)
+# forward and backward chunk slots, forward and backward tasks; then, in level order, the
+# level-major counts the solve maps are laid out by (``level_terms``), so one scan forms both.
+front_terms = wp.types.vector(length=10, dtype=wp.int64)
+# The first of ``front_terms``' level-major counts.
+LEVEL_TERMS = wp.constant(6)
 # ``analysis_schedule`` layout: a header (``SCHEDULE_ROWS``, ``SCHEDULE_GROUPS``,
 # ``SCHEDULE_PANELS``, the terms' totals from ``SCHEDULE_TERMS``), one row of ``LEVEL_FIELDS`` per
 # level and a closing row, every level's panel work, then four entries per extend-add group.
 SCHEDULE_ROWS = wp.constant(0)
 SCHEDULE_GROUPS = wp.constant(1)
 SCHEDULE_PANELS = wp.constant(2)
-# The ``front_terms`` totals, each as two ``int32`` digits in base ``2^31`` (high, then low).
+# The supernode-order ``front_terms`` totals, each as two ``int32`` digits in base ``2^31`` (high,
+# then low).
 SCHEDULE_TERMS = wp.constant(3)
 SCHEDULE_HEADER = wp.constant(15)
 LEVEL_FIELDS = wp.constant(10)
@@ -1778,24 +1791,28 @@ def level_terms(
     level_nodes: wp.array[wp.int32],
     ncol: wp.array[wp.int32],
     front_size: wp.array[wp.int32],
-    out_terms: wp.array[wp.vec4i],
+    out_terms: wp.array[front_terms],
 ) -> None:
     # The level-major counts the solve maps are laid out by -- forward tasks, front rows, backward
-    # tasks, columns -- in level order, after a zero slot, for one scan.
+    # tasks, columns -- in level order, after the zero slot, into the terms' last four components
+    # (``front_terms_and_keys`` wrote the first six and zeroed them all). Each count is an
+    # ``int32`` term, so the ``int64`` scan's low half is the ``int32`` scan of the terms.
     r = wp.int32(wp.tid())
     sn = level_nodes[r]
     _f_chunks, _b_chunks, f_count, b_count = solve_task_counts(
         wp.int64(ncol[sn]), wp.int64(front_size[sn])
     )
-    out_terms[r + 1] = wp.vec4i(wp.int32(f_count), front_size[sn], wp.int32(b_count), ncol[sn])
-    if r == 0:
-        out_terms[0] = wp.vec4i(0, 0, 0, 0)
+    terms = out_terms[r + 1]
+    terms[LEVEL_TERMS] = wp.int64(wp.int32(f_count))
+    terms[LEVEL_TERMS + 1] = wp.int64(front_size[sn])
+    terms[LEVEL_TERMS + 2] = wp.int64(wp.int32(b_count))
+    terms[LEVEL_TERMS + 3] = wp.int64(ncol[sn])
+    out_terms[r + 1] = terms
 
 
 @wp.kernel
 def split_terms(
     terms: wp.array[front_terms],
-    level_sums: wp.array[wp.vec4i],
     level_nodes: wp.array[wp.int32],
     out_front_offset: wp.array[wp.int64],
     out_block_offset: wp.array[wp.int64],
@@ -1813,11 +1830,10 @@ def split_terms(
     out_block_offset[i] = t[1]
     out_f_base[i] = wp.int32(t[2])
     out_b_base[i] = wp.int32(t[3])
-    sums = level_sums[i]
     for k in range(4):
-        out_level_offsets[k, i] = sums[k]
+        out_level_offsets[k, i] = wp.int32(t[LEVEL_TERMS + k])
     if i < level_nodes.shape[0]:
-        out_column_base[level_nodes[i]] = sums[3]
+        out_column_base[level_nodes[i]] = wp.int32(t[LEVEL_TERMS + 3])
 
 
 @wp.kernel
@@ -1975,12 +1991,17 @@ def node_order_keys(
     node_start: wp.array[wp.int32],
     out_keys: wp.array[wp.int32],
     out_vertices: wp.array[wp.int32],
+    out_ancestor: wp.array[wp.int32],
+    out_parent: wp.array[wp.int32],
 ) -> None:
     # Each vertex keyed by its node's first position: a stable sort of the vertices in index order
-    # is the elimination order, every node's rows in ascending vertex index.
+    # is the elimination order, every node's rows in ascending vertex index. The same thread seeds
+    # the elimination tree's rounds: every supernode its own ancestor, with no parent yet.
     v = wp.int32(wp.tid())
     out_keys[v] = node_start[node[v]]
     out_vertices[v] = v
+    out_ancestor[v] = v
+    out_parent[v] = -1
 
 
 @wp.kernel
@@ -2024,30 +2045,6 @@ def structure_parent(
 
 
 @wp.kernel
-def count_structure_paths(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    pos: wp.array[wp.int32],
-    owner: wp.array[wp.int32],
-    column_end: wp.array[wp.int32],
-    parent: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
-) -> None:
-    # The row structure as paths: an operator entry's row belongs to the structure of the
-    # supernode of its column and of every ancestor up to the row's owner (exclusive). Row ``i``'s
-    # count of those ``(supernode, row)`` pairs over its entries.
-    i = wp.int32(wp.tid())
-    r = pos[i]
-    count = wp.int32(0)
-    for e in range(offsets[i], offsets[i + 1]):
-        k = owns_entry(pos, owner, column_end, i, columns[e])
-        while k >= 0:
-            count += 1
-            k = structure_parent(parent, column_end, k, r)
-    out_counts[i] = count
-
-
-@wp.kernel
 def write_structure_paths(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -2058,15 +2055,15 @@ def write_structure_paths(
     height: wp.array[wp.int32],
     n: wp.int32,
     shift: wp.int32,
-    ends: wp.array[wp.int32],
+    ends: wp.array[wp.vec2i],
     out_keys: wp.array[wp.uint64],
     out_values: wp.array[wp.int32],
 ) -> None:
-    # ``count_structure_paths``' pairs, each packed as ``(height, supernode, row)`` for one sort
-    # and deduplication: the rows come out level-major, each supernode's ascending, at the slots
-    # the counts' inclusive scan ``ends`` gives row ``i``.
+    # ``count_row_entries``' structure pairs, each packed as ``(height, supernode, row)`` for one
+    # sort and deduplication: the rows come out level-major, each supernode's ascending, at the
+    # slots the counts' inclusive scan ``ends`` gives row ``i``.
     i = wp.int32(wp.tid())
-    q = wp.where(i > 0, ends[wp.max(i - 1, 0)], 0)
+    q = wp.where(i > 0, ends[wp.max(i - 1, 0)][1], 0)
     r = pos[i]
     for e in range(offsets[i], offsets[i + 1]):
         k = owns_entry(pos, owner, column_end, i, columns[e])
@@ -2165,41 +2162,51 @@ def stores_entry(
 
 
 @wp.kernel
-def count_lower_entries(
+def count_row_entries(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     pos: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
+    owner: wp.array[wp.int32],
+    column_end: wp.array[wp.int32],
+    parent: wp.array[wp.int32],
+    out_counts: wp.array[wp.vec2i],
     out_header: wp.array[wp.int32],
 ) -> None:
-    # Row ``i``'s entries in the permuted lower triangle, and the pattern's structural symmetry:
-    # every stored ``(i, j)`` must have its ``(j, i)`` stored too. The ordering, the row structure
-    # and the entry maps read one triangle each, so a one-sided entry would leave the factor's
-    # fill short of it and its extend-add out of its parent's front.
+    # Row ``i``'s entries in the permuted lower triangle, and its row-structure pairs, for one
+    # scan of both. The row structure as paths: an operator entry's row belongs to the structure
+    # of the supernode of its column and of every ancestor up to the row's owner (exclusive); row
+    # ``i``'s count of those ``(supernode, row)`` pairs over its entries. And the pattern's
+    # structural symmetry: every stored ``(i, j)`` must have its ``(j, i)`` stored too. The
+    # ordering, the row structure and the entry maps read one triangle each, so a one-sided entry
+    # would leave the factor's fill short of it and its extend-add out of its parent's front.
     i = wp.int32(wp.tid())
-    count = wp.int32(0)
+    lower = wp.int32(0)
+    paths = wp.int32(0)
     r = pos[i]
     for e in range(offsets[i], offsets[i + 1]):
         j = columns[e]
         if permuted_lower(pos, r, j) >= 0:
-            count += 1
+            lower += 1
         if j != i and stores_entry(offsets, columns, j, i) == 0:
             out_header[HEADER_ASYMMETRIC] = 1
-    out_counts[i] = count
+        k = owns_entry(pos, owner, column_end, i, j)
+        while k >= 0:
+            paths += 1
+            k = structure_parent(parent, column_end, k, r)
+    out_counts[i] = wp.vec2i(lower, paths)
 
 
 @wp.kernel
 def structure_counts(
-    path_ends: wp.array[wp.int32],
-    lower_ends: wp.array[wp.int32],
+    ends: wp.array[wp.vec2i],
     component_ends: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     out_header: wp.array[wp.int32],
 ) -> None:
     # One thread: the scanned totals into the analysis header, for its one read.
-    n = lower_ends.shape[0]
-    out_header[HEADER_PAIRS] = path_ends[n - 1]
-    out_header[HEADER_ENTRIES] = lower_ends[n - 1]
+    n = ends.shape[0]
+    out_header[HEADER_PAIRS] = ends[n - 1][1]
+    out_header[HEADER_ENTRIES] = ends[n - 1][0]
     out_header[HEADER_COMPONENTS] = component_ends[n - 1]
     out_header[HEADER_STORED] = offsets[n]
 
@@ -2216,15 +2223,16 @@ def write_lower_entries(
     front_offset: wp.array[wp.int64],
     row_offsets: wp.array[wp.int32],
     rows: wp.array[wp.int32],
-    ends: wp.array[wp.int32],
+    ends: wp.array[wp.vec2i],
     out_source: wp.array[wp.int32],
     out_target: wp.array[wp.int64],
     out_row: wp.array[wp.int32],
     out_column: wp.array[wp.int32],
 ) -> None:
-    # The lower triangle of the permuted operator, in stored order: each entry's front slot.
+    # The lower triangle of the permuted operator, in stored order: each entry's front slot, at the
+    # slots the lower counts' inclusive scan (``ends``' first component) gives row ``i``.
     i = wp.int32(wp.tid())
-    q = wp.where(i > 0, ends[wp.max(i - 1, 0)], 0)
+    q = wp.where(i > 0, ends[wp.max(i - 1, 0)][0], 0)
     r = pos[i]
     for e in range(offsets[i], offsets[i + 1]):
         c = permuted_lower(pos, r, columns[e])
