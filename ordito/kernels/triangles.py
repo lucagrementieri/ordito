@@ -659,11 +659,11 @@ def face_centroids(
 
 
 @wp.func
-def face_gradient(
+def face_gradient_given(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    normals: wp.array[wp.vec3],
-    areas: wp.array[wp.float32],
+    normal: wp.vec3,
+    face_area: wp.float32,
     values: wp.array[wp.float64],
     f: wp.int32,
 ) -> wp.vec3d:
@@ -674,11 +674,13 @@ def face_gradient(
     # exponentially and a float32 sum of the cross products loses the far field, so the geometry is
     # promoted rather than the result being widened after the fact.
     #
-    # A degenerate face contributes nothing and returns the zero vector.
+    # A degenerate face contributes nothing and returns the zero vector. The face's unit normal and
+    # area are passed in: read from caller tables (``face_gradient``) or formed in the thread by
+    # ``face_normals_and_area`` (``face_gradients_from_positions``), the same values either way.
     i0, i1, i2 = corner_triple(faces, f)
     v0, v1, v2 = face_vertices_vec3d(vertices, faces, f)
-    n = to_vec3d(normals[f])
-    area = wp.float64(areas[f])
+    n = to_vec3d(normal)
+    area = wp.float64(face_area)
 
     grad = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
     if area > wp.float64(0.0):
@@ -688,6 +690,19 @@ def face_gradient(
             + values[i2] * wp.cross(n, v1 - v0)
         ) / (wp.float64(2.0) * area)
     return grad
+
+
+@wp.func
+def face_gradient(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    normals: wp.array[wp.vec3],
+    areas: wp.array[wp.float32],
+    values: wp.array[wp.float64],
+    f: wp.int32,
+) -> wp.vec3d:
+    # ``face_gradient_given`` with face ``f``'s normal and area read from per-face tables.
+    return face_gradient_given(vertices, faces, normals[f], areas[f], values, f)
 
 
 @wp.func
@@ -717,6 +732,22 @@ def face_gradients(
 ) -> None:
     f = wp.int32(wp.tid())
     out_gradients[f] = face_gradient(vertices, faces, normals, areas, values, f)
+
+
+@wp.kernel
+def face_gradients_from_positions(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    out_gradients: wp.array[wp.vec3d],
+) -> None:
+    # ``face_gradients`` with the normal and area formed in the thread by ``face_normals_and_area``
+    # (the body of ``face_normals_and_areas``), so the result is bit for bit the two-kernel one
+    # and no per-face normal or area table is written. The kernels differ only in where the normal
+    # and area come from.
+    f = wp.int32(wp.tid())
+    normal, area = face_normals_and_area(vertices, faces, f)
+    out_gradients[f] = face_gradient_given(vertices, faces, normal, area, values, f)
 
 
 # Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``.
