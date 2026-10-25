@@ -34,7 +34,6 @@ from ordito._device import read_scalar, read_values, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.graph import successor_cycles_from_table
-from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import halfedge as kernel_halfedge
 
@@ -563,12 +562,12 @@ def loop_perimeters(
     ```
     """
     require_same_device(vertices=vertices, loops=loops)
-    packed = _pack_loop_segments(vertices, loops)
+    packed = _pack_loop_segments(loops)
     if packed is None:
         return _launch.empty(0, dtype=wp.float32, device=vertices.device)
-    flat_loops, loop_id, offsets = packed
+    flat_loops, offsets = packed
     return _launch_loop_measure(
-        kernel_boundary.loop_perimeters, wp.float32, vertices, flat_loops, loop_id, offsets
+        kernel_boundary.loop_perimeters, wp.float32, vertices, flat_loops, None, offsets
     )
 
 
@@ -601,9 +600,9 @@ def loop_perimeters_from_offsets(
         ``flat_loops[offsets[i] : offsets[i + 1]]``.
     loop_id
         ``(n_loop_vertices,)`` optional precomputed label saying which loop each packed position
-        belongs to. Built here when ``None``, which costs an allocation and a launch -- **roughly
-        doubling the call**, since the measure itself is one launch. Pass it when the caller
-        already holds it, as [`ordito.holes`][ordito.holes] does.
+        belongs to. When ``None``, each position finds its loop by a binary search of ``offsets``
+        instead; pass it when the caller already holds it, as [`ordito.holes`][ordito.holes]
+        does.
     validate
         When ``True`` (default), check that ``offsets`` is non-decreasing from ``0`` to
         ``flat_loops``' length before launching -- a real cost (a host readback of ``offsets``),
@@ -646,12 +645,7 @@ def loop_perimeters_from_offsets(
     if validate:
         _validate_packed_loops(flat_loops, offsets, "loop_perimeters_from_offsets")
     return _launch_loop_measure(
-        kernel_boundary.loop_perimeters,
-        wp.float32,
-        vertices,
-        flat_loops,
-        _loop_owner_labels(flat_loops, offsets) if loop_id is None else loop_id,
-        offsets,
+        kernel_boundary.loop_perimeters, wp.float32, vertices, flat_loops, None, offsets
     )
 
 
@@ -714,12 +708,12 @@ def loop_directed_areas(
     ```
     """
     require_same_device(vertices=vertices, loops=loops)
-    packed = _pack_loop_segments(vertices, loops)
+    packed = _pack_loop_segments(loops)
     if packed is None:
         return _launch.empty(0, dtype=wp.vec3, device=vertices.device)
-    flat_loops, loop_id, offsets = packed
+    flat_loops, offsets = packed
     return _launch_loop_measure(
-        kernel_boundary.loop_directed_areas, wp.vec3, vertices, flat_loops, loop_id, offsets
+        kernel_boundary.loop_directed_areas, wp.vec3, vertices, flat_loops, None, offsets
     )
 
 
@@ -751,9 +745,9 @@ def loop_directed_areas_from_offsets(
         ``flat_loops[offsets[i] : offsets[i + 1]]``.
     loop_id
         ``(n_loop_vertices,)`` optional precomputed label saying which loop each packed position
-        belongs to. Built here when ``None``, which costs an allocation and a launch -- **roughly
-        doubling the call**, since the measure itself is one launch. Pass it when the caller
-        already holds it, as [`ordito.holes`][ordito.holes] does.
+        belongs to. When ``None``, each position finds its loop by a binary search of ``offsets``
+        instead; pass it when the caller already holds it, as [`ordito.holes`][ordito.holes]
+        does.
     validate
         When ``True`` (default), check that ``offsets`` is non-decreasing from ``0`` to
         ``flat_loops``' length before launching -- see
@@ -794,12 +788,7 @@ def loop_directed_areas_from_offsets(
     if validate:
         _validate_packed_loops(flat_loops, offsets, "loop_directed_areas_from_offsets")
     return _launch_loop_measure(
-        kernel_boundary.loop_directed_areas,
-        wp.vec3,
-        vertices,
-        flat_loops,
-        _loop_owner_labels(flat_loops, offsets) if loop_id is None else loop_id,
-        offsets,
+        kernel_boundary.loop_directed_areas, wp.vec3, vertices, flat_loops, None, offsets
     )
 
 
@@ -836,7 +825,7 @@ def _launch_loop_measure(
     dtype: type,
     vertices: wp.array[wp.vec3],
     flat_loops: wp.array[wp.int32],
-    loop_id: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32] | None,
     offsets: wp.array[wp.int32],
 ) -> odt.ArrayNd:
     """
@@ -880,47 +869,17 @@ _ORDERED_LOOP_MEASURES = {
 }
 
 
-def _loop_owner_labels(
-    flat_loops: wp.array[wp.int32], offsets: wp.array[wp.int32]
-) -> wp.array[wp.int32]:
-    """
-    Which loop each packed position belongs to, built on the device from ``offsets`` alone.
-
-    The list form builds the same labels on the host with ``numpy.repeat``, because it already has
-    the sizes there; the packed form does not, and reading them back to reuse that path would cost
-    a synchronization this saves. So the two forms build ``loop_id`` differently on purpose, and
-    each is the cheaper one for the inputs it has.
-    """
-    n_loops = offsets.size - 1
-    device = flat_loops.device
-    loop_id = _launch.empty(flat_loops.size, dtype=wp.int32, device=device)
-    if n_loops <= 0:
-        return loop_id
-    _launch.launch(
-        kernel_array.segment_owner_labels, dim=n_loops, inputs=[offsets, loop_id], device=device
-    )
-    return loop_id
-
-
 def _pack_loop_segments(
-    vertices: wp.array[wp.vec3], loops: Sequence[wp.array[wp.int32]]
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]] | None:
+    loops: Sequence[wp.array[wp.int32]],
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]] | None:
     """
-    Pack a list of cycles into the three arrays a segmented per-loop kernel needs.
+    Pack a list of cycles into the arrays a segmented per-loop kernel needs.
 
-    ``loop_id`` inverts ``offsets`` so a ``dim=total`` launch finds its own loop without a search,
-    which is what lets both measures above run in one launch over every loop at once. ``None`` when
-    there is nothing to measure.
+    ``(flat_loops, offsets)``: the kernels find each packed position's loop by a search of
+    ``offsets`` (``kernels/array.loop_owner``) when no ``loop_id`` table is given, which is what
+    lets both measures above run in one launch over every loop at once with nothing uploaded but
+    the pack. ``None`` when there is nothing to measure.
     """
-    # The NumPy here is host-side *metadata* -- one integer per loop, read off each loop's own
-    # ``shape`` -- so it is the sanctioned kind and not a readback: nothing crosses the bus except
-    # the uploads at the end, and there is no device buffer to reduce.
-    #
-    # The sizes are already on the host, so ``numpy.repeat`` builds ``loop_id`` here where the
-    # packed form, which has only device offsets, launches ``kernels/array.py``'s
-    # ``segment_owner_labels``. This is also why the packed form takes ``loop_id`` as a keyword:
-    # the two forms build it from different inputs and each is the cheaper one for what it holds.
-    device = vertices.device
     loops = list(loops)
     for loop in loops:
         odt.ensure_ndim(loop, 1, dtype=wp.int32)
@@ -930,11 +889,7 @@ def _pack_loop_segments(
     # come straight from ``boundary_loops``, which already sliced them out of one packed
     # buffer -- so the pack is free instead of one ``wp.copy`` per rim.
     flat_loops, offsets = od.array.pack_1d_arrays(loops, copy=False)
-    sizes_np = np.array([loop.size for loop in loops], dtype=np.int32)
-    loop_id = _launch.array(
-        np.repeat(np.arange(len(loops), dtype=np.int32), sizes_np), dtype=wp.int32, device=device
-    )
-    return flat_loops, loop_id, offsets
+    return flat_loops, offsets
 
 
 def longest_boundary_loop(
