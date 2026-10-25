@@ -29,7 +29,7 @@ def reciprocal_or_zero(value: wp.Float) -> wp.Float:
 def reciprocal_scaled_or_zero(value: wp.Float, numerator: wp.Float) -> wp.Float:
     # ``numerator / value``, with the ``reciprocal_or_zero`` convention above for a non-positive
     # denominator: a vertex whose lumped area is zero contributes nothing rather than an infinity.
-    # Called by ``laplacian_smoothing_norms`` and by ``scaled_angle_defect`` below.
+    # Called by ``smoothing_norm`` and by ``scaled_angle_defect`` below.
     if value > type(value)(0.0):
         return numerator / value
     return type(value)(0.0)
@@ -44,7 +44,7 @@ def scaled_angle_defect(angle_sum: wp.float64) -> wp.float64:
     return reciprocal_scaled_or_zero(angle_sum, angle_defect(angle_sum))
 
 
-# ``laplacian_smoothing_norms``' warp-uniform method selector, one per
+# ``smoothing_norm``'s warp-uniform method selector, one per
 # ``energies.laplacian_smoothing_loss`` method.
 SMOOTHING_UNIFORM = wp.constant(0)
 SMOOTHING_COT = wp.constant(1)
@@ -93,7 +93,7 @@ def smoothing_norm(
     i: wp.int32,
 ) -> wp.float32:
     # ``|| row_scale * (L v)_i + self_scale * v_i ||`` for CSR row ``i``, with ``method``'s two
-    # scales (``laplacian_smoothing_norms`` explains them): the row walk and tail both of its
+    # scales (``smoothing_norm_term`` explains them): the row walk and tail both of its
     # kernels share, which differ only by who writes the row.
     accumulator = wp.vec3(0.0, 0.0, 0.0)
     diagonal = wp.float32(0.0)
@@ -117,16 +117,21 @@ def smoothing_norm(
     return wp.length(row_scale * accumulator + self_scale * vertices[i])
 
 
-@wp.kernel(enable_backward=False)
-def laplacian_smoothing_norms(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float32],
-    vertices: wp.array[wp.vec3],
-    area_sums: wp.array[wp.float64],
-    method: wp.int32,
-    out_norms: wp.array[wp.float32],
-) -> None:
+@wp.struct
+class SmoothingNormTerms:
+    """``laplacian_smoothing_loss``' row count, stored Laplacian rows, positions and method."""
+
+    n: wp.int32
+    offsets: wp.array[wp.int32]
+    columns: wp.array[wp.int32]
+    values: wp.array[wp.float32]
+    vertices: wp.array[wp.vec3]
+    area_sums: wp.array[wp.float64]
+    method: wp.int32
+
+
+@wp.func
+def smoothing_norm_term(local: wp.int32, offset: wp.int32, terms: SmoothingNormTerms) -> wp.float32:
     # ``|| row_scale * (L v)_i + self_scale * v_i ||`` for one CSR row, with the two scales of
     # ``energies.laplacian_smoothing_loss``'s ``method`` formed in the row's own thread:
     #
@@ -155,8 +160,17 @@ def laplacian_smoothing_norms(
     # *present* in the pattern, and that is not load-bearing: an absent diagonal leaves
     # ``diagonal`` at zero and takes the same undefined-averaging fallback ``bsr_get_diag``'s own
     # zero would.
-    i = wp.int32(wp.tid())
-    out_norms[i] = smoothing_norm(offsets, columns, values, vertices, area_sums, method, i)
+    #
+    # Summed where it is formed (``SMOOTHING_NORM_SUM``), so no per-row norm is stored.
+    return smoothing_norm(
+        terms.offsets,
+        terms.columns,
+        terms.values,
+        terms.vertices,
+        terms.area_sums,
+        terms.method,
+        offset + local,
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -174,11 +188,14 @@ def laplacian_smoothing_cot_norms(
     out_values: wp.array[wp.float32],
     out_norms: wp.array[wp.float32],
 ) -> None:
-    # ``laplacian_smoothing_norms`` for the two cotangent methods, with the ``float32`` cotangent
+    # ``smoothing_norm_term`` for the two cotangent methods, with the ``float32`` cotangent
     # Laplacian's row written by the thread that reads it back (``kernels/laplacian.cotmatrix_row``
     # over its mesh operator pattern), so the row's values are ``cotmatrix``'s and the residual is
     # the stored-matrix kernel's, for one launch. Forming each entry again in the residual walk
     # instead of storing it cost 1.4-1.5x the two kernels' device time on scrambled meshes.
+    # Folding the norms' mean into this pass as a ``term_sum_1d`` (as the uniform method does) was
+    # measured and declined: 1.14x this kernel and the sum's device time at 655 k scrambled
+    # vertices and 7x at 10 k, where every lane walks the last chunk's rows serially.
     i = wp.int32(wp.tid())
     cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
     out_norms[i] = smoothing_norm(offsets, columns, out_values, vertices, area_sums, method, i)
@@ -188,6 +205,7 @@ def laplacian_smoothing_cot_norms(
 # sum that ``energies._mean_of_terms`` hands to ``reduce.sum_of_terms``.
 EDGE_DEVIATION_SUM = term_sum_1d(edge_deviation_term, EdgeDeviationTerms, "edge_deviation_sum")
 DIHEDRAL_SUM = term_sum_1d(dihedral_term, DihedralTerms, "dihedral_sum")
+SMOOTHING_NORM_SUM = term_sum_1d(smoothing_norm_term, SmoothingNormTerms, "smoothing_norm_sum")
 
 
 @wp.kernel

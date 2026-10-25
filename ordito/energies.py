@@ -322,26 +322,20 @@ def laplacian_smoothing_loss(
     if n_vertices == 0 or faces.size == 0:
         return 0.0
     device = vertices.device
-    norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     if method == "uniform":
         laplacian = od.laplacian.laplacian(vertices, faces, equal_weight=True, pattern=pattern)
         # Each method's per-row scales are formed in the row's own thread, so no scale buffer
-        # exists.
-        _launch.launch(
-            kernel_energies.laplacian_smoothing_norms,
-            dim=n_vertices,
-            inputs=[
-                laplacian.offsets,
-                laplacian.columns,
-                laplacian.values,
-                vertices,
-                None,
-                kernel_energies.SMOOTHING_UNIFORM,
-                norms,
-            ],
-            device=device,
-        )
-        return float(od.reduce.mean(norms))
+        # exists, and the umbrella norms are summed where they are formed, as ``reduce.mean`` sums
+        # them, so no norm buffer exists either.
+        terms = kernel_energies.SmoothingNormTerms()
+        terms.n = n_vertices
+        terms.offsets = laplacian.offsets
+        terms.columns = laplacian.columns
+        terms.values = laplacian.values
+        terms.vertices = vertices
+        terms.method = kernel_energies.SMOOTHING_UNIFORM
+        return _mean_of_terms(kernel_energies.SMOOTHING_NORM_SUM, terms, n_vertices, device)
+    norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     area_sums = None
     if method == "cot":
         cot_entries = cotmatrix_entries(vertices, faces)
