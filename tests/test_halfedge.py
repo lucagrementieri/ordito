@@ -241,8 +241,7 @@ def _sorted_and_bucketed_pairings(
     """
     pairings = []
     for bound in (None, n_vertices):
-        defect_counts = wp.zeros(2, dtype=wp.int32, device=faces_wp.device)
-        twins = od.halfedge._pair_halfedges(faces_wp, bound, defect_counts)  # pyright: ignore[reportPrivateUsage]
+        twins, defect_counts = od.halfedge._pair_halfedges(faces_wp, bound, 2)  # pyright: ignore[reportPrivateUsage]
         pairings.append((twins.numpy(), defect_counts.numpy()))
     (sorted_twins, sorted_defects), (bucketed_twins, bucketed_defects) = pairings
     return sorted_twins, sorted_defects, bucketed_twins, bucketed_defects
