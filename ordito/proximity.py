@@ -528,6 +528,11 @@ def mesh_to_mesh_distance(
         require_nonempty_mesh(faces_b, "mesh_to_mesh_distance")
         mesh_b = wp.Mesh(points=vertices_b, indices=faces_b)
 
+    # The per-face AABBs stay: the kernel's box-gap prune reads them, so they are not merely the
+    # input to a build. There is no second acceleration structure built over them -- the kernels
+    # read the ``wp.Mesh`` built above's own BVH directly with ``wp.mesh_get_bvh``.
+    lower = _launch.empty(n_faces_b, dtype=wp.vec3, device=device)
+    upper = _launch.empty(n_faces_b, dtype=wp.vec3, device=device)
     # The walk's three running scalars in one buffer (``kernels.proximity.*_SLOT``): the published
     # prune limit, the corner seed and the upper bound that grows every face's query box.
     if upper_bound is None:
@@ -562,10 +567,12 @@ def mesh_to_mesh_distance(
             ],
             device=device,
         )
+        # The same launch writes ``lower`` / ``upper``, B's per-face boxes, from trailing threads.
         _launch.launch(
             kernel_proximity.sampled_corner_distance_min,
-            dim=n_samples,
-            inputs=[mesh_b.id, vertices_a, faces_a, sample_stride, bounds],
+            dim=n_samples + n_faces_b,
+            inputs=[mesh_b.id, vertices_a, faces_a, sample_stride, n_samples, vertices_b, faces_b],
+            outputs=[bounds, lower, upper],
             device=device,
         )
     else:
@@ -594,17 +601,14 @@ def mesh_to_mesh_distance(
             device=device,
         )
 
-    # The per-face AABBs stay: the kernel's box-gap prune reads them, so they are not merely the
-    # input to a build. There is no second acceleration structure built over them -- the kernels
-    # read the ``wp.Mesh`` built above's own BVH directly with ``wp.mesh_get_bvh``.
-    lower = _launch.empty(n_faces_b, dtype=wp.vec3, device=device)
-    upper = _launch.empty(n_faces_b, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_triangles.face_aabb_bounds,
-        dim=n_faces_b,
-        inputs=[vertices_b, faces_b, lower, upper],
-        device=device,
-    )
+        # The per-face boxes, which the sampled bound's launch writes in the other branch.
+        _launch.launch(
+            kernel_triangles.face_aabb_bounds,
+            dim=n_faces_b,
+            inputs=[vertices_b, faces_b, lower, upper],
+            device=device,
+        )
+
     distance_sq = _launch.empty(n_faces_a, dtype=wp.float32, device=device)
     witness = _launch.empty(n_faces_a, dtype=wp.int32, device=device)
     # The broad phase is wildly unbalanced -- most query faces return no candidate at all, while a

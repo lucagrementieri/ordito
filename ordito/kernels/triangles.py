@@ -856,6 +856,22 @@ def corner_normals(
     out_corner_normals[face, corner - face * 3] = total
 
 
+@wp.func
+def write_face_aabb(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
+) -> None:
+    # Face ``f``'s axis-aligned box into ``out_lower[f]`` / ``out_upper[f]``: ``face_aabb_bounds``
+    # per thread, and the trailing threads of ``proximity.sampled_corner_distance_min``.
+    v0, v1, v2 = face_vertices(vertices, faces, f)
+    lower, upper = triangle_aabb(v0, v1, v2)
+    out_lower[f] = lower
+    out_upper[f] = upper
+
+
 @wp.kernel
 def face_aabb_bounds(
     vertices: wp.array[wp.vec3],
@@ -864,7 +880,4 @@ def face_aabb_bounds(
     out_upper: wp.array[wp.vec3],
 ) -> None:
     f = wp.int32(wp.tid())
-    v0, v1, v2 = face_vertices(vertices, faces, f)
-    lower, upper = triangle_aabb(v0, v1, v2)
-    out_lower[f] = lower
-    out_upper[f] = upper
+    write_face_aabb(vertices, faces, f, out_lower, out_upper)

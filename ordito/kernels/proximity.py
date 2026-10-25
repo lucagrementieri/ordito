@@ -422,7 +422,12 @@ def sampled_corner_distance_min(
     query_vertices: wp.array[wp.vec3],
     query_faces: wp.array[wp.int32],
     query_stride: wp.int32,
+    n_samples: wp.int32,
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
     out_bounds: wp.array[wp.float32],
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
 ) -> None:
     # The smallest distance from a sample point of the query surface to the target -- the upper
     # bound the broad phase is grown by, into ``out_bounds[UPPER_BOUND_SLOT]`` -- and the same
@@ -434,7 +439,17 @@ def sampled_corner_distance_min(
     #
     # The ``<`` read before the atomics keeps the single-slot contention to the points that improve
     # it; ``atomic_min`` is exact, so the minimum is the one a reduction would return.
-    p = sampled_corner(query_vertices, query_faces, query_stride, wp.int32(wp.tid()))
+    #
+    # The ``n_samples`` leading threads are the samples; the trailing ``len(out_lower)`` write the
+    # target's per-face boxes the walk prunes with (``triangles.face_aabb_bounds``), which depend
+    # on nothing here and so take no launch of their own.
+    t = wp.int32(wp.tid())
+    if t >= n_samples:
+        kernel_triangles.write_face_aabb(
+            target_vertices, target_faces, t - n_samples, out_lower, out_upper
+        )
+        return
+    p = sampled_corner(query_vertices, query_faces, query_stride, t)
     _closest, distance, _face = closest_point_query(
         target_mesh, p, wp.sqrt(out_bounds[SEED_SQ_SLOT]) * _SEED_RELAX
     )
