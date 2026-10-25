@@ -3,7 +3,13 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT, TOLERANCE_ZERO_CONSTANT, UINT64_MAX_CONSTANT
-from ordito.kernels.adjacency import edge_pair_topology, write_edge_row, write_face_edge_keys
+from ordito.kernels.adjacency import (
+    edge_endpoints,
+    edge_pair_topology,
+    write_edge_row,
+    write_face_edge_keys,
+    write_face_edge_keys_and_order,
+)
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
@@ -23,6 +29,7 @@ from ordito.kernels.array import (
     to_vec3d,
     unpack_edge_key,
 )
+from ordito.kernels.edges import emit_sorted_unique_edge
 from ordito.kernels.grouping import (
     hash_find,
     hash_find_or_insert,
@@ -1736,6 +1743,34 @@ def is_feature_edge(
 # walks, the ring locks, both fold vetoes), and the deterministic smoothing ring sorts its rows.
 
 
+@wp.func
+def count_corner_topology(
+    c: wp.int32,
+    e: wp.int32,
+    faces: wp.array[wp.int32],
+    out_edge_face_count: wp.array[wp.int32],
+    out_edge_faces: wp.array2d[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> wp.int32:
+    # Corner ``c`` of unique edge ``e``, over zeroed counts: its face onto the edge
+    # (``scatter.append_to_pair_slot``, whose arrival slot it returns) and the corner onto its
+    # vertex's face count. Corner 0 writes the scan's leading zero.
+    n_vertices = out_counts.shape[0] // 2
+    slot = append_to_pair_slot(e, c // 3, out_edge_face_count, out_edge_faces)
+    wp.atomic_add(out_counts, n_vertices + faces[c], 1)
+    if c == 0:
+        out_offsets[0] = 0
+    return slot
+
+
+@wp.func
+def count_edge_degrees(out_counts: wp.array[wp.int32], u: wp.int32, v: wp.int32) -> None:
+    # A unique edge onto both endpoints' ring degrees, once per edge.
+    wp.atomic_add(out_counts, u, 1)
+    wp.atomic_add(out_counts, v, 1)
+
+
 @wp.kernel
 def count_edge_topology(
     inverse: wp.array[wp.int32],
@@ -1747,20 +1782,49 @@ def count_edge_topology(
     out_counts: wp.array[wp.int32],
     out_offsets: wp.array[wp.int32],
 ) -> None:
-    # One thread per corner, over zeroed counts: the corner's face onto its unique edge
-    # (``scatter.append_to_pair_slot``), the corner onto its vertex's face count, and -- with
-    # ``ring`` (warp-uniform) -- the edge onto both endpoints' degrees, by the one corner that drew
-    # the edge's first slot. Thread 0 writes the scan's leading zero.
+    # One thread per corner of a grouping the caller holds (``count_corner_topology``), and --
+    # with ``ring`` (warp-uniform) -- the edge onto both endpoints' degrees, by the one corner that
+    # drew the edge's first slot. ``emit_edge_topology`` is the same count fused into the emit of a
+    # grouping it builds: the two differ only in where the edge comes from and which corner counts
+    # its degrees.
     c = wp.int32(wp.tid())
-    n_vertices = out_counts.shape[0] // 2
     e = inverse[c]
-    slot = append_to_pair_slot(e, c // 3, out_edge_face_count, out_edge_faces)
+    slot = count_corner_topology(
+        c, e, faces, out_edge_face_count, out_edge_faces, out_counts, out_offsets
+    )
     if ring != 0 and slot == 0:
-        wp.atomic_add(out_counts, unique_edges[e, 0], 1)
-        wp.atomic_add(out_counts, unique_edges[e, 1], 1)
-    wp.atomic_add(out_counts, n_vertices + faces[c], 1)
-    if c == 0:
-        out_offsets[0] = 0
+        count_edge_degrees(out_counts, unique_edges[e, 0], unique_edges[e, 1])
+
+
+@wp.kernel
+def emit_edge_topology(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    ring: wp.int32,
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
+    out_edge_face_count: wp.array[wp.int32],
+    out_edge_faces: wp.array2d[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # ``edges.emit_sorted_unique_edges`` and ``count_edge_topology`` in one pass over the sorted
+    # corners: each position emits its corner's inverse entry (and the run start its edge's row),
+    # then counts the corner as ``count_edge_topology`` does, the run start counting the degrees.
+    # Within a run the stable sort keeps the corners ascending, so the CPU device fills each edge's
+    # face slots in the corner order ``count_edge_topology`` does.
+    i = wp.int32(wp.tid())
+    corner, e, start = emit_sorted_unique_edge(
+        faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
+    )
+    count_corner_topology(
+        corner, e, faces, out_edge_face_count, out_edge_faces, out_counts, out_offsets
+    )
+    if ring != 0 and start:
+        u, v = edge_endpoints(faces, corner)
+        count_edge_degrees(out_counts, u, v)
 
 
 @wp.kernel
@@ -3427,11 +3491,14 @@ def compact_surviving_faces(
     positions: wp.array[wp.vec3],
     low: wp.array[wp.float32],
     high: wp.array[wp.float32],
+    key_base: wp.uint64,
     out_faces: wp.array[wp.int32],
     out_totals: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
     out_low: wp.array[wp.float32],
     out_high: wp.array[wp.float32],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
 ) -> None:
     # A collapse pass's whole compaction, over ``max(n_faces, n_targets)`` threads. ``face_offsets``
     # and ``ranks`` are the two halves of one inclusive scan over ``mark_surviving_faces``' face
@@ -3448,6 +3515,9 @@ def compact_surviving_faces(
     #   bands by its inverse reproduces. Empty bands (a uniform target, ``None`` at launch) are not
     #   written. The outputs are sized for every target, so this runs before the host knows the
     #   count; the caller keeps their live prefix.
+    # - With ``out_keys`` (empty skips it), a surviving face also writes its edge keys packed
+    #   against ``key_base`` and their identity payload into the next pass's sort buffers
+    #   (``adjacency.write_face_edge_keys_and_order``), the launch that pass would open with.
     t = wp.int32(wp.tid())
     n_faces = face_offsets.shape[0] - 1
     if t < ranks.shape[0] - 1:
@@ -3471,6 +3541,8 @@ def compact_surviving_faces(
     s1, _k1 = scanned_slot(ranks, i1)
     s2, _k2 = scanned_slot(ranks, i2)
     write_corner_triple(out_faces, row, s0, s1, s2)
+    if out_keys.shape[0] > 0:
+        write_face_edge_keys_and_order(out_faces, row, key_base, out_keys, out_order)
 
 
 # Objective for ``objective_flip_candidates``. A warp-uniform kernel argument rather than a
