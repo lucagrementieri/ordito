@@ -1114,8 +1114,11 @@ def _chamfer(
     Combine forward/backward Euclidean distances into a Chamfer value.
 
     Under ``squared`` the distances are squared element-wise before reduction (the ``pytorch3d``
-    convention), and a reduced value never materializes the squared array -- see
-    [`_reduce_squared`][ordito.metrics._reduce_squared]. Otherwise they are reduced as they are.
+    convention), and a reduced value never materializes the squared array: ``"sum"`` and
+    ``"mean"`` square each term inside [`_totals_of_both`][ordito.metrics._totals_of_both], and
+    ``"max"`` squares the largest distance -- in ``float32``, which is exact rather than
+    approximate: rounding is monotone, so the largest rounded square is the rounded square of the
+    largest distance. Otherwise they are reduced as they are.
     """
     backward = cast(wp.array[wp.float32], distances.backward)
     if point_reduction is None:
@@ -1127,35 +1130,30 @@ def _chamfer(
             return sq_forward
         return sq_forward, _square(backward)
 
-    reduce = _reduce_squared if squared else _reduce_plain
-    if point_reduction == "max" and not single_directional and distances.forward_max is None:
-        largest = _max_of_both(distances.forward, backward)
-        return float(np.float32(largest) * np.float32(largest)) if squared else largest
-    if point_reduction != "max" and not single_directional:
-        total_forward, total_backward = _totals_of_both(distances.forward, backward, squared)
+    if point_reduction != "max":
+        if single_directional and not squared:
+            # One array as it is: ``reduce.sum``, whose arrival-order form is one launch.
+            total_forward = od.reduce.sum(cast(odt.Array1dFloat32, distances.forward))
+            total_backward = 0.0
+        else:
+            total_forward, total_backward = _totals_of_both(
+                distances.forward, None if single_directional else backward, squared
+            )
         if point_reduction == "mean":
-            return total_forward / distances.forward.size + total_backward / backward.size
+            total_forward /= distances.forward.size
+            if not single_directional:
+                total_backward /= backward.size
         return total_forward + total_backward
-    reduced_forward = reduce(distances.forward, point_reduction, distances.forward_max)
-    if single_directional:
-        return reduced_forward
-    reduced_backward = reduce(backward, point_reduction, None)
-    if point_reduction == "max":
-        return max(reduced_forward, reduced_backward)
-    return reduced_forward + reduced_backward
 
-
-def _reduce_plain(
-    distances: wp.array[wp.float32], point_reduction: _PointReduction, known_max: float | None
-) -> float:
-    """Reduce non-empty Euclidean ``distances`` as they are; the unsquared sibling of the below."""
-    distances_1d = cast(odt.Array1dFloat32, distances)
-    if point_reduction == "max":
-        return known_max if known_max is not None else od.reduce.max(distances_1d)
-    total = od.reduce.sum(distances_1d)
-    if point_reduction == "mean":
-        return total / distances.size
-    return total
+    if not single_directional and distances.forward_max is None:
+        largest = _max_of_both(distances.forward, backward)
+    else:
+        largest = distances.forward_max
+        if largest is None:
+            largest = od.reduce.max(cast(odt.Array1dFloat32, distances.forward))
+        if not single_directional:
+            largest = max(largest, od.reduce.max(cast(odt.Array1dFloat32, backward)))
+    return float(np.float32(largest) * np.float32(largest)) if squared else largest
 
 
 def _square(distances: wp.array[wp.float32]) -> odt.Array1dFloat32:
@@ -1164,27 +1162,6 @@ def _square(distances: wp.array[wp.float32]) -> odt.Array1dFloat32:
     if n > 0:
         _launch.map(kernel_array.square_scalar, distances, out=squared)
     return squared
-
-
-def _reduce_squared(
-    distances: wp.array[wp.float32], point_reduction: _PointReduction, known_max: float | None
-) -> float:
-    """
-    Reduce the element-wise squares of non-empty ``distances`` without building them.
-
-    ``"sum"`` and ``"mean"`` are [`weighted_sum`][ordito.reduce.weighted_sum] of the distances by
-    themselves. ``"max"`` squares the largest distance -- ``known_max`` when the caller already
-    holds it -- in ``float32``, which is exact rather than approximate: rounding is monotone, so
-    the largest rounded square is the rounded square of the largest distance.
-    """
-    distances_1d = cast(odt.Array1dFloat32, distances)
-    if point_reduction == "max":
-        largest = np.float32(known_max if known_max is not None else od.reduce.max(distances_1d))
-        return float(largest * largest)
-    total = od.reduce.weighted_sum(distances_1d, distances_1d)
-    if point_reduction == "mean":
-        return total / distances.size
-    return total
 
 
 def _hausdorff(distances: _Distances, single_directional: bool) -> float:
@@ -1228,33 +1205,40 @@ def _max_of_both(forward: wp.array[wp.float32], backward: wp.array[wp.float32]) 
 
 
 def _totals_of_both(
-    forward: wp.array[wp.float32], backward: wp.array[wp.float32], squared: bool
+    forward: wp.array[wp.float32], backward: wp.array[wp.float32] | None, squared: bool
 ) -> tuple[float, float]:
     """
-    Totals of two non-empty distance arrays (of their squares under ``squared``) in one readback.
+    Totals of non-empty distance arrays (of their squares under ``squared``) in one readback.
 
-    The symmetric ``"sum"`` / ``"mean"`` counterpart of
-    [`_max_of_both`][ordito.metrics._max_of_both]: each total is
-    [`sum_of_terms`][ordito.reduce.sum_of_terms] over ``reduce.sum``'s own kernels (the weighted
-    sum's, of the distances by themselves, under ``squared``), so it is formed exactly as
-    [`reduce.sum`][ordito.reduce.sum] (respectively ``reduce.weighted_sum``) forms it, in either
-    determinism setting. Each writes its own slot of one two-slot buffer, so both come back in one
-    copy.
+    The ``"sum"`` / ``"mean"`` counterpart of [`_max_of_both`][ordito.metrics._max_of_both]: both
+    arrays' block sums in one launch and one block folding them in a fixed order into the two
+    leading slots of the same buffer, so both come back in one copy, repeating bit for bit
+    whatever [`is_deterministic`][ordito.config.is_deterministic] says. ``backward=None`` (a
+    directed Chamfer value) totals ``forward`` alone, with ``0.0`` for the second total.
     """
     device = forward.device
-    kernels = kernel_reduce.WEIGHTED_SUM if squared else kernel_reduce.ARRAY_SUM
-    # The atomic form adds into its slot, so the buffer starts at zero exactly when it runs.
-    atomic = kernels.atomic is not None and not is_deterministic()
-    totals = (_launch.zeros if atomic else _launch.empty)(2, dtype=wp.float32, device=device)
-    for slot, distances in enumerate((forward, backward)):
-        inputs = [distances, distances] if squared else [distances]
-        od.reduce.sum_of_terms(
-            kernels,
-            inputs,
-            distances.size,
-            out=odt.as_dense(totals[slot : slot + 1]),
-            device=device,
-        )
+    forward_blocks = kernel_reduce.blocks_1d(forward.size)
+    blocks = forward_blocks
+    if backward is not None:
+        blocks += kernel_reduce.blocks_1d(backward.size)
+    # Two result slots, then one row per block; every slot is written before it is read.
+    totals = _launch.empty(2 + blocks, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
+        kernel_metrics.block_totals_of_pair,
+        dim=[blocks],
+        inputs=[forward, forward if backward is None else backward, forward_blocks, int(squared)],
+        outputs=[totals],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    _launch.launch_tiled(
+        kernel_metrics.fold_totals_of_pair,
+        dim=[1],
+        inputs=[forward_blocks],
+        outputs=[totals],
+        block_dim=TILE_1D,
+        device=device,
+    )
     # The two totals are the function's answer.
     total_forward, total_backward = read_values(totals, 0, 2)
     return float(total_forward), float(total_backward)

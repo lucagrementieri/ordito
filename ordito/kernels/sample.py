@@ -4,7 +4,21 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.array import scanned_count
-from ordito.kernels.triangles import face_signed_volume, face_vertices
+from ordito.kernels.reduce import (
+    block_chunk_1d,
+    block_sum,
+    fold_block_totals,
+    last_ticket_vector,
+    minmax_vec3_chunk,
+    stage_block_total,
+    write_block_value,
+)
+from ordito.kernels.triangles import (
+    face_area,
+    face_area_weighted_centroid,
+    face_signed_volume,
+    face_vertices,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -19,10 +33,9 @@ wp.set_module_options({"enable_backward": False})
 GOLDEN_ANGLE = wp.constant(wp.float64(math.pi * (3.0 - math.sqrt(5.0))))
 
 
-@wp.kernel
-def fibonacci_lattice(
-    count: wp.int32, z_span: wp.float32, out_directions: wp.array[wp.vec3]
-) -> None:
+@wp.func
+def fibonacci_direction(i: wp.int32, count: wp.int32, z_span: wp.float32) -> wp.vec3:
+    # Direction ``i`` of the ``count``-point Fibonacci lattice over a band of height ``z_span``.
     # z descends uniformly through (1 - z_span, 1); the offset 0.5 centers the samples.
     # z_span = 2 covers the full sphere, z_span = 1 the positive-z hemisphere.
     #
@@ -32,14 +45,39 @@ def fibonacci_lattice(
     # nothing to ~4 096 directions, 11 % of the minimum neighbour spacing at 100 000, and 0.21 rad
     # of azimuth at 1e6 -- the uniformity this lattice exists for. It costs nothing: the whole
     # call is launch- and allocation-bound, flat from 64 to 200 000 directions on both devices.
-    i = wp.int32(wp.tid())
     count_f = wp.float32(count)
     z = 1.0 - z_span * (wp.float32(i) + 0.5) / count_f
     radius = wp.sqrt(wp.max(0.0, 1.0 - z * z))
     theta = GOLDEN_ANGLE * wp.float64(i)
-    out_directions[i] = wp.vec3(
-        radius * wp.float32(wp.cos(theta)), radius * wp.float32(wp.sin(theta)), z
-    )
+    return wp.vec3(radius * wp.float32(wp.cos(theta)), radius * wp.float32(wp.sin(theta)), z)
+
+
+@wp.kernel
+def fibonacci_lattice(
+    count: wp.int32, z_span: wp.float32, out_directions: wp.array[wp.vec3]
+) -> None:
+    # The whole lattice, one direction a thread (``fibonacci_direction``).
+    i = wp.int32(wp.tid())
+    out_directions[i] = fibonacci_direction(i, count, z_span)
+
+
+@wp.kernel
+def face_areas_and_vertex_box(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    box: wp.int32,
+    out_cdf: wp.array[wp.float32],
+) -> None:
+    # ``triangles.face_areas`` into the leading ``n_faces`` slots of ``out_cdf`` and, from the
+    # trailing ``chunks_1d(n_vertices)`` threads, the vertices' box folded into packed box ``box``
+    # of the same buffer (``reduce.minmax_vec3_chunked``'s layout, seeded ``inf``), so the CDF's
+    # total and the box come back in one readback.
+    t = wp.int32(wp.tid())
+    n_faces = faces.shape[0] // 3
+    if t < n_faces:
+        out_cdf[t] = face_area(vertices, faces, t)
+    else:
+        minmax_vec3_chunk(vertices, t - n_faces, out_cdf, box)
 
 
 @wp.kernel
@@ -69,22 +107,68 @@ def sample_surface(
     out_points[tid] = v0 * w + v1 * uv.x + v2 * uv.y
 
 
+@wp.kernel(module="unique")
+def surface_centroid_apex(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_apex: wp.array[wp.vec4],
+    out_volumes: wp.array[wp.float32],
+) -> None:
+    # The area-weighted surface centroid ``sample.sample_volume`` fans its tetrahedra from, in one
+    # launch: each block folds the ``triangles.face_area_weighted_centroid`` sums (components 0-2)
+    # and areas (component 3) of the faces ``block_chunk_1d`` gives it, lanes striding them by
+    # ``wp.block_dim()`` (so the one CPU lane walks them all), into its row of a
+    # ``_launch.block_partials``-layout buffer of width 1; the block drawing the last ticket adds
+    # the rows in a fixed order and writes the centroid (all-NaN for zero area, as
+    # ``measures.surface_centroid`` returns) and the area into slot 0. Always the fixed-order
+    # commit, so a seeded draw repeats on CUDA: the apex moves every sample. Its own module
+    # (``module="unique"``): the only tiled launch here, at ``TILE_1D``, so the module launched at
+    # the default width is not built a second time. Block 0 also clears the negative-volume flag
+    # in the last slot of ``tetrahedron_volumes_flag_negative``'s buffer, which runs next and
+    # writes every other slot, so that buffer needs no zeroing of its own.
+    block, lane = wp.tid()
+    if block == 0 and lane == 0:
+        out_volumes[out_volumes.shape[0] - 1] = wp.float32(0.0)
+    n_blocks = out_apex.shape[0] - 2
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    total = wp.vec4(0.0, 0.0, 0.0, 0.0)
+    for k in range(lane, count, wp.block_dim()):
+        contrib, area = face_area_weighted_centroid(vertices, faces, offset + k)
+        total += wp.vec4(contrib[0], contrib[1], contrib[2], area)
+    folded = block_sum(total)
+    if stage_block_total(block, lane, folded, out_apex, 0, 1, n_blocks, last_ticket_vector) != 0:
+        summed = fold_block_totals(lane, out_apex, 0, 1, n_blocks, wp.vec4(0.0, 0.0, 0.0, 0.0))
+        area = summed[3]
+        apex = wp.vec4(wp.nan, wp.nan, wp.nan, area)
+        if area != wp.float32(0.0):
+            apex = wp.vec4(summed[0] / area, summed[1] / area, summed[2] / area, area)
+        write_block_value(lane, out_apex, 0, 1, apex)
+
+
+@wp.func
+def apex_point(center: wp.array[wp.vec4]) -> wp.vec3:
+    # The fan apex ``surface_centroid_apex`` leaves in slot 0.
+    apex = center[0]
+    return wp.vec3(apex[0], apex[1], apex[2])
+
+
 @wp.kernel
 def tetrahedron_volumes_flag_negative(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    center: wp.array[wp.vec3],
+    center: wp.array[wp.vec4],
     out_volumes: wp.array[wp.float32],
 ) -> None:
     # ``triangles.face_signed_volumes`` (the same ``face_signed_volume`` helper) with the
-    # star-shaped test folded in: the buffer carries one slot past the faces, zero-seeded, that any
+    # star-shaped test folded in: the buffer carries one slot past the faces, zero-seeded (by
+    # ``surface_centroid_apex``), that any
     # negative tetrahedron sets to ``1``. The wrapper scans the face slots in place into the CDF
     # and reads its total and this flag in one readback, rather than reducing a ``min``
     # separately. Every writer stores the same value, so the unordered stores need no atomic.
-    # ``center`` is the one-element buffer ``measures.fold_centroid_partials`` writes, so the
-    # centroid never crosses to the host.
+    # ``center`` is the buffer ``surface_centroid_apex`` writes, so the centroid never crosses to
+    # the host.
     fi = wp.int32(wp.tid())
-    volume = face_signed_volume(vertices, faces, fi, center[0])
+    volume = face_signed_volume(vertices, faces, fi, apex_point(center))
     out_volumes[fi] = volume
     if volume < wp.float32(0.0):
         out_volumes[out_volumes.shape[0] - 1] = wp.float32(1.0)
@@ -94,7 +178,7 @@ def tetrahedron_volumes_flag_negative(
 def sample_volume_tetrahedra(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    center: wp.array[wp.vec3],
+    center: wp.array[wp.vec4],
     cdf: wp.array[wp.float32],
     total: wp.float32,
     seed: wp.int32,
@@ -121,7 +205,7 @@ def sample_volume_tetrahedra(
     s3 = wp.max(abc)
     s2 = a + b + c - s1 - s3
 
-    apex = center[0]
+    apex = apex_point(center)
     out_points[tid] = apex * (1.0 - s3) + v0 * s1 + v1 * (s2 - s1) + v2 * (s3 - s2)
 
 
@@ -262,9 +346,12 @@ def apply_deletions(
     alpha: wp.float32,
     alive: wp.array[wp.int32],
     weights: wp.array[wp.float32],
+    out_max_count: wp.array[wp.int32],
 ) -> None:
     # Delete this round's flagged points and take their contributions off the survivors' weights,
-    # in one pass. ``alive`` and ``weights`` are in-place state carried across rounds.
+    # in one pass. ``alive`` and ``weights`` are in-place state carried across rounds. Thread 0
+    # also re-zeroes the maxima count the host has read this round, for the next round's
+    # ``find_local_maxima`` to accumulate into, so no memset runs between rounds.
     #
     # A deleted thread clears its own ``alive`` slot while its neighbours may be reading it. That
     # is benign because the skip below tests ``deleted_mask[j]`` as well: a neighbour this round
@@ -272,6 +359,8 @@ def apply_deletions(
     # not written this round at all. So the predicate -- and the set of contributions subtracted --
     # is exactly that of clearing every deleted slot first and subtracting after.
     i = wp.int32(wp.tid())
+    if i == 0:
+        out_max_count[0] = 0
     if deleted_mask[i] == 0:
         return
     alive[i] = 0

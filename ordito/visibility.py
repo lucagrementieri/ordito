@@ -39,7 +39,6 @@ from typing import Literal
 
 import warp as wp
 
-import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
@@ -291,20 +290,13 @@ def _occlusion_bundle(
     if m == 0:
         return out_occlusion
 
-    directions = od.sample.sample_fibonacci_hemisphere(n_rays, device=device)
+    # The hemisphere lattice (``sample_fibonacci_hemisphere``'s, a band of height 1).
+    directions, *limits = _bundle_inputs(mesh, points, max_t, n_rays, 1.0)
     # One block per point, lanes over the bundle -- see ``kernel_visibility.BUNDLE_BLOCK`` for why
     # this wins over a thread per point, and why the width is 64.
     # Binary occlusion asks only whether each ray is blocked (an any-hit trace); obscurance needs
     # the nearest hit's distance.
-    trace = [
-        mesh.id,
-        points,
-        normals,
-        directions,
-        _WEIGHT_MODES[weight],
-        *_bundle_limits(mesh, points, max_t),
-        out_occlusion,
-    ]
+    trace = [mesh.id, points, normals, directions, _WEIGHT_MODES[weight], *limits, out_occlusion]
     if tau > 0.0:
         kernel, inputs = kernel_visibility.obscurance, [*trace[:4], wp.float32(tau), *trace[4:]]
     elif m >= _OCCLUSION_POINT_MAJOR_FROM and wp.get_device(device).is_cuda:
@@ -480,7 +472,8 @@ def shape_diameter(
     if m == 0:
         return _launch.empty(0, dtype=wp.float32, device=device)
 
-    directions = od.sample.sample_fibonacci_cone(n_rays, cone_angle, device=device)
+    # ``sample_fibonacci_cone``'s lattice.
+    directions, *limits = _bundle_inputs(mesh, points, max_t, n_rays, 1.0 - math.cos(cone_angle))
     # Distances are kept so the trimming pass can revisit them against a mean the first pass had not
     # finished computing; re-tracing instead would double the only expensive part of the kernel.
     scratch = odt.empty_2d((m, n_rays), wp.float32, device=device)
@@ -493,7 +486,7 @@ def shape_diameter(
             points,
             normals,
             directions,
-            *_bundle_limits(mesh, points, max_t),
+            *limits,
             wp.float32(trim),
             scratch,
             out_diameter,
@@ -586,7 +579,7 @@ def thickness(
     if method == "max_sphere":
         # ``max_tangent_sphere``'s defaults; the diameter is stored as the sphere's radius is
         # formed, so it takes no pass of its own.
-        normals = _resolve_normals(mesh, points, normals, "max_tangent_sphere")
+        normals = _tangent_sphere_normals(mesh, points, normals, "max_tangent_sphere")
         if points.size == 0:
             return _launch.empty(0, dtype=wp.float32, device=points.device)
         return _tangent_spheres(mesh, points, normals, not exterior, 1e-6, 100, 2.0)[1]
@@ -690,7 +683,7 @@ def max_tangent_sphere(
     # Resolved (and, for a caller-supplied array, normalized) before the empty-input early return
     # and before the AABB reductions below -- a mismatched or non-unit ``normals`` is a property of
     # ``normals`` alone, and there is no reason to pay for two reductions first only to reject it.
-    normals = _resolve_normals(mesh, points, normals, "max_tangent_sphere")
+    normals = _tangent_sphere_normals(mesh, points, normals, "max_tangent_sphere")
     if m == 0:
         return (
             _launch.empty(0, dtype=wp.vec3, device=device),
@@ -699,10 +692,24 @@ def max_tangent_sphere(
     return _tangent_spheres(mesh, points, normals, inwards, threshold, max_iter, 1.0)
 
 
+def _tangent_sphere_normals(
+    mesh: wp.Mesh, points: wp.array[wp.vec3], normals: wp.array[wp.vec3] | None, name: str
+) -> wp.array[wp.vec3] | None:
+    """
+    [`_resolve_normals`][ordito.visibility._resolve_normals] for the tangent-sphere passes.
+
+    ``None`` when the closest faces' normals are wanted from a mesh with faces: those
+    [`_tangent_spheres`][ordito.visibility._tangent_spheres] forms in its first launch.
+    """
+    if normals is None and mesh.indices.size > 0:
+        return None
+    return _resolve_normals(mesh, points, normals, name)
+
+
 def _tangent_spheres(
     mesh: wp.Mesh,
     points: wp.array[wp.vec3],
-    normals: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3] | None,
     inwards: bool,
     threshold: float,
     max_iter: int,
@@ -713,6 +720,8 @@ def _tangent_spheres(
 
     Radii are stored multiplied by ``radius_scale`` (``2`` for
     [`thickness`][ordito.visibility.thickness], exact), so a diameter needs no second pass.
+    ``normals=None`` takes each point's closest-face normal, formed in the launch that reduces the
+    boxes.
     """
     device = points.device
     m = points.size
@@ -726,13 +735,21 @@ def _tangent_spheres(
     # capped at it, and a centre farther than that from the mesh misses and stops the sphere where
     # an unbounded query would keep shrinking it, so the two converge to different spheres.
     corners = _launch.full(12, math.inf, dtype=wp.float32, device=device)
+    computed_normals = None
+    if normals is None:
+        computed_normals = _launch.empty(m, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_reduce.minmax_vec3_pair_chunked,
-        dim=kernel_reduce.chunks_1d(mesh.points.size) + kernel_reduce.chunks_1d(m),
-        inputs=[mesh.points, points, wp.int32(1)],
-        outputs=[corners],
+        kernel_visibility.tangent_sphere_setup,
+        dim=kernel_reduce.chunks_1d(mesh.points.size)
+        + kernel_reduce.chunks_1d(m)
+        + (0 if computed_normals is None else m),
+        inputs=[wp.uint64(mesh.id), mesh.points, mesh.indices, points],
+        outputs=[corners, computed_normals],
         device=device,
     )
+    if computed_normals is not None:
+        normals = computed_normals
+    assert normals is not None
     # Every ray-bundle measure in this module normalizes defensively per-thread (see
     # `hemisphere_frame`); this path shrinks a sphere along the ray direction directly with no such
     # guard, so a caller-supplied non-unit normal would silently scale `sphere_center`'s radius away
@@ -837,25 +854,30 @@ def _resolve_normals(
     return normals
 
 
-def _bundle_limits(
-    mesh: wp.Mesh, points: wp.array[wp.vec3], max_t: float | None
-) -> tuple[wp.array[wp.float32], wp.float32, wp.float64]:
+def _bundle_inputs(
+    mesh: wp.Mesh, points: wp.array[wp.vec3], max_t: float | None, n_rays: int, z_span: float
+) -> tuple[wp.array[wp.vec3], wp.array[wp.float32], wp.float32, wp.float64]:
     """
-    Form the ray-bundle kernels' ``(corners, caller_max_t, offset_scale)`` arguments.
+    Form the ray-bundle kernels' ``(directions, corners, caller_max_t, offset_scale)`` arguments.
 
-    ``corners`` is the box enclosing the mesh and the non-empty ``points`` (one packed box,
-    reduced in one launch); the kernels form its diagonal -- the default ray length and the scale
-    of the ray-origin offset (``_SURFACE_OFFSET`` of it) -- in the thread, so no search radius is
-    read back. ``caller_max_t`` is NaN when ``max_t`` is ``None``.
+    ``directions`` is the ``n_rays``-point Fibonacci lattice over a band of height ``z_span``, the
+    [`ordito.sample`][ordito.sample] generators' own. ``corners`` is the box enclosing the mesh
+    and the non-empty ``points`` (one packed box); both are formed in one launch. The kernels form
+    the box's diagonal -- the default ray length and the scale of the ray-origin offset
+    (``_SURFACE_OFFSET`` of it) -- in the thread, so no search radius is read back.
+    ``caller_max_t`` is NaN when ``max_t`` is ``None``.
     """
     device = points.device
     corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
+    directions = _launch.empty(n_rays, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_reduce.minmax_vec3_pair_chunked,
-        dim=kernel_reduce.chunks_1d(mesh.points.size) + kernel_reduce.chunks_1d(points.size),
-        inputs=[mesh.points, points, wp.int32(0)],
-        outputs=[corners],
+        kernel_visibility.bundle_setup,
+        dim=kernel_reduce.chunks_1d(mesh.points.size)
+        + kernel_reduce.chunks_1d(points.size)
+        + n_rays,
+        inputs=[mesh.points, points, wp.float32(z_span)],
+        outputs=[corners, directions],
         device=device,
     )
     caller_max_t = math.nan if max_t is None else max_t
-    return corners, wp.float32(caller_max_t), wp.float64(_SURFACE_OFFSET)
+    return directions, corners, wp.float32(caller_max_t), wp.float64(_SURFACE_OFFSET)

@@ -60,9 +60,9 @@ def is_in_half_space(point: wp.vec3, plane_normal: wp.vec3, plane_origin: wp.vec
 
 @wp.func
 def centroid_from_sum(point_sum: wp.array[wp.vec3], n: wp.float32) -> wp.vec3:
-    # ``point_sum[0] / n`` -- the same ``wp.div`` ``points.centroid``'s map applies, so a consumer
-    # reading the raw sum gets the centroid's exact bits -- and the zero vector for a length-zero
-    # array, which is how the uncentred Gram matrix asks for no center.
+    # ``point_sum[0] / n`` -- the same ``wp.div`` ``points.centroid``'s reproducible commit
+    # applies, so a consumer reading the raw sum gets the centroid's exact bits -- and the zero
+    # vector for a length-zero array, which is how the uncentred Gram matrix asks for no center.
     if point_sum.shape[0] == 0:
         return wp.vec3(0.0, 0.0, 0.0)
     return point_sum[0] / n
@@ -74,7 +74,7 @@ def point_sum(
 ) -> None:
     # ``sum(points) / divisor`` for ``points.centroid`` (``divisor = n``) and the centred scatter
     # matrix (``1.0``, which divides exactly), as a reproducible block commit
-    # (``store_block_total_divided``; its ``atomic_add`` form leaves the division to the caller):
+    # (``store_block_total_divided``):
     # one block per ``ITEMS_PER_BLOCK_1D`` points, lanes striding the block's own chunk by
     # ``wp.block_dim()``, so the one CPU lane walks it all.
     chunk, lane = wp.tid()
@@ -238,9 +238,9 @@ def centered_covariance(
         points, centroid_from_sum(center, center_divisor), offset, remaining, lane, wp.block_dim()
     )
 
-    # Block-collective, so it runs outside the ``lane == 0`` guard. ``divisor`` scales the
-    # reproducible result (``covariance``'s ``n - ddof``; ``1.0``, which divides exactly, for the
-    # scatter and Gram matrices); the ``atomic_add`` form leaves it to the caller.
+    # Block-collective, so it runs outside the ``lane == 0`` guard. ``divisor`` scales the result
+    # (``covariance``'s ``n - ddof``; ``1.0``, which divides exactly, for the scatter and Gram
+    # matrices).
     if finish == SCATTER_ONLY:
         store_block_total_divided(chunk, lane, m, out_cov, 0, stride, last_ticket_matrix, divisor)
         return

@@ -44,7 +44,6 @@ from ordito.array import flatnonzero
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
-from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import sample as kernel_sample
 from ordito.kernels import triangles as kernel_triangles
@@ -437,7 +436,8 @@ def sample_surface_poisson_disk(
     # 6. Parallel round-based elimination
     alive_count = init_count
     is_max = _launch.zeros(init_count, dtype=wp.int32, device=device)
-    # The round's maxima count, accumulated by the flagging pass itself and re-zeroed once read.
+    # The round's maxima count, accumulated by the flagging pass itself and re-zeroed once read (by
+    # the deletion pass).
     max_count = _launch.zeros(1, dtype=wp.int32, device=device)
     # The radix sort's double-width buffers, reused every round: each round rewrites the keys and
     # the identity payload in their leading halves, and the upper halves are sort scratch.
@@ -467,7 +467,6 @@ def sample_surface_poisson_disk(
 
         # The one readback per round: every branch below depends on the count.
         n_max = int(read_scalar(max_count, 0))
-        _launch.zero_(max_count)
         if n_max == 0:
             # Nothing is flagged only when no alive point has an alive neighbour inside ``r_max``
             # -- otherwise the heaviest alive point with a neighbour is flagged, the test being a
@@ -486,6 +485,7 @@ def sample_surface_poisson_disk(
             kernel_sample.apply_deletions,
             dim=init_count,
             inputs=[deleted_mask, nbr_idx, nbr_dists, offsets, r_max, r_min, alpha, alive, weights],
+            outputs=[max_count],
             device=device,
         )
         alive_count -= n_max
@@ -639,8 +639,9 @@ def sample_surface_blue_noise(
             _launch.empty(0, dtype=wp.int32, device=device),
         )
 
-    # The surface area is the total of the area CDF the pool is drawn from below.
-    cdf, surface_area = _face_cdf(vertices, faces, None)
+    # The surface area is the total of the area CDF the pool is drawn from below; the vertices' box,
+    # read back with it, encloses the pool and anchors the dart loop's grid.
+    cdf, surface_area, box = _face_cdf_and_vertex_box(vertices, faces)
     expected = surface_area * (math.pi * math.sqrt(3.0) / 6.0) / (math.pi * radius * radius / 4.0)
     nx = max(1, int(30.0 * expected))
 
@@ -656,14 +657,56 @@ def sample_surface_blue_noise(
     init_points, init_face_indices = _draw_surface_samples(
         vertices, faces, cdf, surface_area, nx, pool_seed
     )
-    return _dart_throw_blue_noise(init_points, init_face_indices, radius, priority_seed)
+    return _dart_throw_blue_noise(init_points, init_face_indices, radius, priority_seed, box)
+
+
+def _face_cdf_and_vertex_box(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> tuple[wp.array[wp.float32], float, tuple[wp.vec3, wp.vec3]]:
+    """
+    [`_face_cdf`][ordito.sample._face_cdf] of the areas, and the box of ``vertices``, in one sync.
+
+    The areas and the box are formed in one launch into one buffer (the CDF, then the packed box
+    ``reduce.minmax_vec3_chunked`` writes, at the next multiple of six), so the scan's total and
+    the box come back in one readback. ``faces`` must be non-empty.
+    """
+    device = vertices.device
+    n_faces = faces.size // 3
+    box = (n_faces + 5) // 6
+    buffer = _launch.full(6 * box + 6, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_sample.face_areas_and_vertex_box,
+        dim=n_faces + kernel_reduce.chunks_1d(vertices.size),
+        inputs=[vertices, faces, box],
+        outputs=[buffer],
+        device=device,
+    )
+    cdf = _launch.view(buffer, 0, n_faces)
+    _launch.array_scan(cdf, out_array=cdf)
+    # Host readback: the total sizes the pool and decides whether to raise, and the box sizes the
+    # dart loop's grid.
+    values = read_values(buffer, n_faces - 1, 6 * box + 7 - n_faces)
+    total = float(values[0])
+    if total <= 0.0:
+        raise ValueError("total face weight must be positive")
+    lower = wp.vec3(*values[-6:-3])
+    upper = wp.vec3(-values[-3], -values[-2], -values[-1])
+    return cdf, total, (lower, upper)
 
 
 def _dart_throw_blue_noise(
-    pool_points: wp.array[wp.vec3], pool_faces: wp.array[wp.int32], radius: float, seed: int
+    pool_points: wp.array[wp.vec3],
+    pool_faces: wp.array[wp.int32],
+    radius: float,
+    seed: int,
+    box: tuple[wp.vec3, wp.vec3],
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Maximal Poisson-disk subset of ``pool_points`` by randomized-priority parallel dart throwing.
+
+    ``box`` encloses the pool (the mesh vertices' box) and anchors the background grid; the
+    grid's cells are ``radius`` wide wherever it is anchored, so the selection does not depend on
+    it.
 
     See ``kernels/algorithms/blue_noise.py`` for why the result has the same distribution as one
     pass of the serial algorithm. The loop is a handful of rounds over a shrinking work list;
@@ -689,13 +732,14 @@ def _dart_throw_blue_noise(
         return empty
 
     # Background grid at cell size ``radius``, so a 3x3x3 neighbourhood covers the disk exactly.
-    bbox_min, bbox_max = od.bounds.aabb(pool_points)
+    bbox_min, bbox_max = box
     inv_cell_size = np.float32(1.0 / radius)
-    # The grid's side, one past the largest cell coordinate: ``kernels/algorithms/blue_noise.
-    # grid_coord`` is monotone in the point, so that coordinate is the bounding box's upper
-    # corner's, evaluated here in the kernel's float32 arithmetic.
+    # The grid's side, two past the largest cell coordinate of the box's upper corner:
+    # ``kernels/algorithms/blue_noise.grid_coord`` is monotone in the point and evaluated here in
+    # the kernel's float32 arithmetic, and the extra cell holds a pool point that rounding placed a
+    # hair past the vertices' box (one below the lower corner truncates to cell 0).
     span = np.asarray(bbox_max, dtype=np.float32) - np.asarray(bbox_min, dtype=np.float32)
-    grid_w = int((span * inv_cell_size).astype(np.int32).max()) + 1
+    grid_w = int((span * inv_cell_size).astype(np.int32).max()) + 2
 
     # Bucket the pool by cell: one radix sort of the cell keys gives both the per-cell membership
     # lists and, through the run starts of the sorted keys, the distinct cells and the
@@ -1038,11 +1082,14 @@ def sample_volume(
     # readback brings back the total (the scan's last element) and the flag together, so the
     # star-shaped test needs no separate ``min`` reduction. The empty mesh, where "no negative
     # volumes" holds vacuously, launches nothing.
-    cdf = _launch.zeros(n_faces + 1, dtype=wp.float32, device=vertices.device)
     total_vol = 0.0
     center = None
+    cdf = None
     if n_faces > 0:
-        center = _surface_centroid_on_device(vertices, faces, n_faces)
+        # Every face slot is written by the volume pass and the flag slot is cleared by the
+        # centroid pass before it, so the buffer starts uninitialized.
+        cdf = _launch.empty(n_faces + 1, dtype=wp.float32, device=vertices.device)
+        center = _surface_centroid_on_device(vertices, faces, cdf)
         _launch.launch(
             kernel_sample.tetrahedron_volumes_flag_negative,
             dim=n_faces,
@@ -1068,8 +1115,10 @@ def sample_volume(
 
     if total_vol == 0.0:
         raise ValueError("mesh has zero volume")
+    # n_faces > 0 here, so the volume pass computed both.
+    assert center is not None
+    assert cdf is not None
     cdf = odt.as_dense(cdf[:n_faces])
-    assert center is not None  # n_faces > 0 here, so the volume pass computed it
 
     out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
     _launch.launch(
@@ -1090,36 +1139,32 @@ def sample_volume(
 
 
 def _surface_centroid_on_device(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], n_faces: int
-) -> wp.array[wp.vec3]:
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_volumes: wp.array[wp.float32]
+) -> wp.array[wp.vec4]:
     """
-    [`surface_centroid`][ordito.measures.surface_centroid] as a one-element device buffer.
+    [`surface_centroid`][ordito.measures.surface_centroid] in slot 0 of a device buffer.
 
-    The same block partials, folded by one block on the device so the centroid feeds the volume
-    kernels without a sync. It agrees with ``surface_centroid`` to rounding, not bit for bit (a
-    parallel ``float32`` fold rather than a sequential ``float64`` one), and repeats exactly from
-    call to call. Requires ``n_faces > 0``.
+    Folded on the device in one launch (``kernel_sample.surface_centroid_apex``), so the centroid
+    feeds the volume kernels without a sync; component 3 holds the area. It agrees with
+    ``surface_centroid`` to rounding, not bit for bit (a parallel ``float32`` fold rather than a
+    sequential ``float64`` one), and repeats exactly from call to call. The same launch clears
+    the last slot of ``out_volumes``, the negative-volume flag of the volume pass after it.
+    Requires a non-empty ``faces``.
     """
     device = vertices.device
-    blocks = kernel_reduce.blocks_1d(n_faces)
-    partials = _launch.empty(blocks, dtype=wp.vec4, device=device)
+    blocks = kernel_reduce.blocks_1d(faces.size // 3)
+    # The ``_launch.block_partials`` layout at width 1, in the fixed-order form whatever the
+    # setting: the result slot, the ticket counter, then one row per block.
+    out_apex = _launch.zeros(blocks + 2, dtype=wp.vec4, device=device)
     _launch.launch_tiled(
-        kernel_measures.centroid_partials,
+        kernel_sample.surface_centroid_apex,
         dim=[blocks],
-        inputs=[vertices, faces, wp.int32(n_faces), partials],
+        inputs=[vertices, faces],
+        outputs=[out_apex, out_volumes],
         block_dim=TILE_1D,
         device=device,
     )
-    out_center = _launch.empty(1, dtype=wp.vec3, device=device)
-    _launch.launch_tiled(
-        kernel_measures.fold_centroid_partials,
-        dim=[1],
-        inputs=[partials],
-        outputs=[out_center],
-        block_dim=TILE_1D,
-        device=device,
-    )
-    return out_center
+    return out_apex
 
 
 def resolve_seed(seed: int | None) -> int:

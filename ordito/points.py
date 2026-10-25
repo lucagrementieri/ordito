@@ -270,12 +270,7 @@ def centroid(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     print(center.numpy()[0])  # [1. 2. 3.]
     ```
     """
-    n = points.size
-    out = _point_sum(points, divisor=float(max(n, 1)))
-    if n > 0 and not is_deterministic():
-        # The ``atomic_add`` commit has no last block to divide in.
-        _launch.map(wp.div, out, wp.float32(n), out=out)
-    return out
+    return _point_sum(points, divisor=float(max(points.size, 1)))
 
 
 def gram_matrix(points: wp.array[wp.vec3]) -> wp.array[wp.mat33]:
@@ -572,11 +567,7 @@ def covariance(points: wp.array[wp.vec3], ddof: int = 1) -> wp.array[wp.mat33]:
     n = points.size
     if n - ddof <= 0:
         raise ValueError(f"covariance requires n > ddof, got n={n}, ddof={ddof}")
-    out = _scatter_matrix(points, _point_sum(points), float(n), divisor=float(n - ddof))
-    if not is_deterministic():
-        # The ``atomic_add`` commit has no last block to divide in.
-        _launch.map(wp.div, out, wp.float32(n - ddof), out=out)
-    return out
+    return _scatter_matrix(points, _point_sum(points), float(n), divisor=float(n - ddof))
 
 
 def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec3]:
@@ -773,12 +764,7 @@ def estimate_normals(
 
 
 def _point_sum(points: wp.array[wp.vec3], divisor: float = 1.0) -> wp.array[wp.vec3]:
-    """
-    ``sum(points)`` as a ``(1,)`` device array, zero when ``points`` is empty.
-
-    Divided by ``divisor`` in the reproducible commit only: while
-    [`ordito.config.is_deterministic`][ordito.config.is_deterministic] is off the caller divides.
-    """
+    """``sum(points) / divisor`` as a ``(1,)`` device array, zero when ``points`` is empty."""
     device = points.device
     n = points.size
     if n == 0:
@@ -807,7 +793,7 @@ def _scatter_matrix(
 
     ``center`` is either a centroid (``center_divisor = 1.0``, which divides exactly) or the raw
     point sum with ``n``; ``None`` is the zero center, i.e. the uncentred Gram matrix. The result
-    is divided by ``divisor`` in the reproducible commit only, as in ``_point_sum``.
+    is divided by ``divisor``, as in ``_point_sum``.
     """
     device = points.device
     n = points.size

@@ -822,42 +822,54 @@ def span_cell(axis: wp.int32, a: wp.int32, b: wp.int32, t: wp.int32) -> wp.vec3i
     return wp.vec3i(a, b, t)
 
 
+@wp.func
+def span_line_offsets(shape: wp.vec3i) -> wp.vec3i:
+    # Where each axis's lines start in ``axis_span_bounds``' table: every line along ``axis`` is
+    # indexed ``a * shape[other_b] + b`` over the two other axes, axis 0's first.
+    return wp.vec3i(0, shape[1] * shape[2], shape[1] * shape[2] + shape[0] * shape[2])
+
+
 @wp.kernel
-def fill_axis_span(
-    occupancy: wp.array3d[wp.bool],
-    axis: wp.int32,
-    length: wp.int32,
-    accumulate: wp.bool,
-    out_filled: wp.array3d[wp.bool],
-) -> None:
-    # One thread per line along ``axis``: mark every cell between the first and the last occupied
-    # one. trimesh's ``ops.fill_orthographic`` intersects the three axes' results.
+def axis_span_bounds(occupancy: wp.array3d[wp.bool], out_spans: wp.array[wp.vec2i]) -> None:
+    # One thread per line of the lattice along each of its three axes: the first and last occupied
+    # cell along it (``-1, -1`` for an empty line), for ``occupied_cells_in_spans``. trimesh's
+    # ``ops.fill_orthographic`` intersects the three axes' ``[first, last]`` intervals.
     #
-    # ``accumulate`` (warp-uniform) intersects into ``out_filled`` rather than overwriting it, so
-    # the three axis passes write one lattice and need no separate intersection pass between them.
-    # That read is race-free: every cell lies on exactly one line per axis, so the thread that
-    # reads a cell here is the only one writing it in this launch.
-    #
-    # Declined, measured (device time, 50**3 to 400**3 cells): the first pass probing the grid
-    # instead of reading ``dense_occupancy``'s lattice, 0.39-0.69x, and the last pass writing the
-    # grid-build candidates instead of ``occupied_cells`` reading ``out_filled``, 0.44-0.85x. A
-    # thread per *line* walks its cells in sequence and writes them strided, where the passes they
-    # would replace are a thread per cell, coalesced.
-    a, b = wp.tid()
+    # The lines only read; the cell pass after them intersects the three intervals at each cell and
+    # writes the grid-build candidates coalesced, so no filled lattice is written. Declined,
+    # measured (device time, 50**3 to 400**3 cells), for the passes this replaced: the first pass
+    # probing the grid instead of reading ``dense_occupancy``'s lattice, 0.39-0.69x, and a line
+    # pass writing the grid-build candidates instead of a cell pass reading its lattice,
+    # 0.44-0.85x. A thread per *line* walks its cells in sequence and writes them strided, where a
+    # pass that writes is best a thread per cell, coalesced.
+    line = wp.int32(wp.tid())
+    shape = wp.vec3i(occupancy.shape[0], occupancy.shape[1], occupancy.shape[2])
+    offsets = span_line_offsets(shape)
+    axis = wp.int32(0)
+    if line >= offsets[2]:
+        axis = 2
+    elif line >= offsets[1]:
+        axis = 1
+    local = line - offsets[axis]
+    # The second of the two other axes: ``k`` for axes 0 and 1, ``j`` for axis 2.
+    width = wp.where(axis == 2, shape[1], shape[2])
+    a = local // width
+    b = local - a * width
     first = wp.int32(-1)
     last = wp.int32(-1)
-    for t in range(length):
+    for t in range(shape[axis]):
         cell = span_cell(axis, a, b, t)
         if occupancy[cell[0], cell[1], cell[2]]:
             if first < 0:
                 first = t
             last = t
-    for t in range(length):
-        cell = span_cell(axis, a, b, t)
-        inside = first >= 0 and t >= first and t <= last
-        if accumulate:
-            inside = inside and out_filled[cell[0], cell[1], cell[2]]
-        out_filled[cell[0], cell[1], cell[2]] = inside
+    out_spans[line] = wp.vec2i(first, last)
+
+
+@wp.func
+def in_span(span: wp.vec2i, t: wp.int32) -> wp.bool:
+    # Whether ``t`` lies in a line's ``[first, last]`` occupied interval; never for an empty line.
+    return span[0] >= 0 and t >= span[0] and t <= span[1]
 
 
 @wp.func
@@ -1015,6 +1027,28 @@ def occupied_cells(
     i, j, k = wp.tid()
     row = flat_cell_index(i, j, k, occupancy.shape[1], occupancy.shape[2])
     write_dense_candidate(row, base, i, j, k, occupancy[i, j, k], out_cells, out_mask)
+
+
+@wp.kernel
+def occupied_cells_in_spans(
+    spans: wp.array[wp.vec2i],
+    shape: wp.vec3i,
+    base: wp.vec3i,
+    out_cells: wp.array2d[wp.int32],
+    out_mask: wp.array[wp.int32],
+) -> None:
+    # ``occupied_cells`` of the orthographic fill: a cell is kept when it lies inside the occupied
+    # interval of its line along every axis (``axis_span_bounds``), the intersection trimesh's
+    # ``ops.fill_orthographic`` forms, read off the three spans with no filled lattice between.
+    i, j, k = wp.tid()
+    offsets = span_line_offsets(shape)
+    inside = (
+        in_span(spans[offsets[0] + j * shape[2] + k], i)
+        and in_span(spans[offsets[1] + i * shape[2] + k], j)
+        and in_span(spans[offsets[2] + i * shape[1] + j], k)
+    )
+    row = flat_cell_index(i, j, k, shape[1], shape[2])
+    write_dense_candidate(row, base, i, j, k, inside, out_cells, out_mask)
 
 
 @wp.kernel

@@ -24,10 +24,18 @@ from ordito.kernels.predicates import (
     closest_point_on_segment,
     is_in_aabb,
     is_strictly_inside_aabb,
+    segment_aabb,
     triangle_aabb,
     triangle_triangle_distance_sq,
 )
-from ordito.kernels.reduce import block_argmin, block_barrier, block_chunk, block_max, block_sum
+from ordito.kernels.reduce import (
+    block_argmin,
+    block_barrier,
+    block_chunk,
+    block_max,
+    block_sum,
+    minmax_vec3_chunk,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -137,6 +145,34 @@ def closest_faces_both_ways(
     _closest, distance, face = closest_point_query(mesh_id, p, wp.float32(wp.inf))
     out_distance[tid] = distance
     out_face[tid] = face
+
+
+@wp.kernel
+def edge_bounds_and_scene_box(
+    vertices: wp.array[wp.vec3],
+    edges: wp.array2d[wp.int32],
+    queries: wp.array[wp.vec3],
+    n_query_chunks: wp.int32,
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
+    out_corners: wp.array[wp.float32],
+) -> None:
+    # ``closest_point_on_edges``' two inputs in one launch: ``edges.edge_aabb_bounds`` from the
+    # leading ``len(out_lower)`` threads (no thread when the caller holds the BVH and passes
+    # length-zero bounds), then ``reduce.minmax_vec3_pair_chunked``'s two boxes, ``vertices`` into
+    # box 0 and the first ``n_query_chunks`` chunks of ``queries`` into box 1, of the twelve
+    # ``out_corners`` slots seeded ``inf``.
+    t = wp.int32(wp.tid())
+    n_edges = out_lower.shape[0]
+    vertex_chunks = (vertices.shape[0] + TILE_1D - 1) // TILE_1D
+    if t < n_edges:
+        lower, upper = segment_aabb(vertices[edges[t, 0]], vertices[edges[t, 1]])
+        out_lower[t] = lower
+        out_upper[t] = upper
+    elif t < n_edges + vertex_chunks:
+        minmax_vec3_chunk(vertices, t - n_edges, out_corners, wp.int32(0))
+    elif t < n_edges + vertex_chunks + n_query_chunks:
+        minmax_vec3_chunk(queries, t - n_edges - vertex_chunks, out_corners, wp.int32(1))
 
 
 @wp.kernel
@@ -386,7 +422,12 @@ def sampled_corner_distance_min(
     query_vertices: wp.array[wp.vec3],
     query_faces: wp.array[wp.int32],
     query_stride: wp.int32,
+    n_samples: wp.int32,
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
     out_bounds: wp.array[wp.float32],
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
 ) -> None:
     # The smallest distance from a sample point of the query surface to the target -- the upper
     # bound the broad phase is grown by, into ``out_bounds[UPPER_BOUND_SLOT]`` -- and the same
@@ -398,7 +439,17 @@ def sampled_corner_distance_min(
     #
     # The ``<`` read before the atomics keeps the single-slot contention to the points that improve
     # it; ``atomic_min`` is exact, so the minimum is the one a reduction would return.
-    p = sampled_corner(query_vertices, query_faces, query_stride, wp.int32(wp.tid()))
+    #
+    # The ``n_samples`` leading threads are the samples; the trailing ``len(out_lower)`` write the
+    # target's per-face boxes the walk prunes with (``triangles.face_aabb_bounds``), which depend
+    # on nothing here and so take no launch of their own.
+    t = wp.int32(wp.tid())
+    if t >= n_samples:
+        kernel_triangles.write_face_aabb(
+            target_vertices, target_faces, t - n_samples, out_lower, out_upper
+        )
+        return
+    p = sampled_corner(query_vertices, query_faces, query_stride, t)
     _closest, distance, _face = closest_point_query(
         target_mesh, p, wp.sqrt(out_bounds[SEED_SQ_SLOT]) * _SEED_RELAX
     )
@@ -1079,6 +1130,23 @@ def normals_at_closest_faces(
     out_normals[tid] = face_normals[closest_face_or_first(mesh_id, points[tid], max_dist)]
 
 
+@wp.func
+def closest_face_normal(
+    mesh_id: wp.uint64,
+    p: wp.vec3,
+    max_dist: wp.float32,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+) -> wp.vec3:
+    # The normal of ``p``'s closest face (``closest_face_or_first``), formed from its corners by the
+    # same ``face_normals_and_area`` the per-face table is built with, so the value is the table's
+    # entry. Shared by ``normals_at_closest_faces_computed`` and
+    # ``visibility.tangent_sphere_setup``.
+    face = closest_face_or_first(mesh_id, p, max_dist)
+    normal, _area = kernel_triangles.face_normals_and_area(vertices, faces, face)
+    return normal
+
+
 @wp.kernel
 def normals_at_closest_faces_computed(
     mesh_id: wp.uint64,
@@ -1088,14 +1156,11 @@ def normals_at_closest_faces_computed(
     faces: wp.array[wp.int32],
     out_normals: wp.array[wp.vec3],
 ) -> None:
-    # ``normals_at_closest_faces`` with the hit face's normal formed from its corners in the thread,
-    # by the same ``face_normals_and_area`` the per-face table is built with, so the value is the
-    # table's entry. The two kernels differ only in where the normal comes from: a whole-mesh table
-    # costs a launch and two face-sized buffers the queries read a few entries of.
+    # ``normals_at_closest_faces`` with the hit face's normal formed in the thread
+    # (``closest_face_normal``). The two kernels differ only in where the normal comes from: a
+    # whole-mesh table costs a launch and two face-sized buffers the queries read a few entries of.
     tid = wp.int32(wp.tid())
-    face = closest_face_or_first(mesh_id, points[tid], max_dist)
-    normal, _area = kernel_triangles.face_normals_and_area(vertices, faces, face)
-    out_normals[tid] = normal
+    out_normals[tid] = closest_face_normal(mesh_id, points[tid], max_dist, vertices, faces)
 
 
 @wp.func

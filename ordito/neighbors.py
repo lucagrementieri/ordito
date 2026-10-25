@@ -673,18 +673,12 @@ def query_ball(
     if single_query:
         queries = _launch.array([queries], dtype=wp.vec3, device=device)
 
-    neighbor_indices_flat, neighbor_distances_flat, offsets = query_ball_with_offsets(
-        points,
-        queries,
-        r,
-        accelerator=accelerator,
-        backend=backend,
-        grid_bins=grid_bins,
-        leaf_size=leaf_size,
-        return_sorted=return_sorted,
+    # The per-query views need host bounds: read once, in place of the total the query would
+    # read to size its buffers, and shared by both splits.
+    neighbor_indices_flat, neighbor_distances_flat, _, bounds = _ball_query(
+        points, queries, r, accelerator, backend, grid_bins, leaf_size, return_sorted, True
     )
-    # Readback: the per-query views need host bounds; read once and shared by both splits.
-    bounds = offsets.numpy().tolist()
+    assert bounds is not None
     neighbor_indices = od.array.split(neighbor_indices_flat, bounds, copy=copy)
     neighbor_distances = od.array.split(neighbor_distances_flat, bounds, copy=copy)
 
@@ -879,6 +873,29 @@ def query_ball_with_offsets(
     ```
     """
     require_same_device(points=points, queries=queries, accelerator=accelerator)
+    indices, distances, offsets, _ = _ball_query(
+        points, queries, r, accelerator, backend, grid_bins, leaf_size, return_sorted, False
+    )
+    return indices, distances, offsets
+
+
+def _ball_query(
+    points: wp.array[wp.vec3],
+    queries: wp.array[wp.vec3] | wp.vec3,
+    r: float,
+    accelerator: wp.HashGrid | wp.Bvh | None,
+    backend: QueryBackend | None,
+    grid_bins: int | None,
+    leaf_size: int,
+    return_sorted: bool,
+    host_offsets: bool,
+) -> tuple[wp.array[wp.int32], wp.array[wp.float32], wp.array[wp.int32], list[int] | None]:
+    """
+    [`query_ball_with_offsets`][ordito.neighbors.query_ball_with_offsets] past its device check.
+
+    With ``host_offsets`` the offsets are also returned as a host list, read back in place of the
+    total the emission is sized by, so a caller splitting per query pays one sync; else ``None``.
+    """
     kind, resolved = _resolve_accelerator(accelerator, backend)
     if kind == "hashgrid":
         return _ball_with_offsets(
@@ -890,6 +907,7 @@ def query_ball_with_offsets(
             ),
             accel=kernel_neighbors.ACCEL_HASHGRID,
             return_sorted=return_sorted,
+            host_offsets=host_offsets,
         )
     return _ball_with_offsets(
         points,
@@ -900,6 +918,7 @@ def query_ball_with_offsets(
         ),
         accel=kernel_neighbors.ACCEL_BVH,
         return_sorted=return_sorted,
+        host_offsets=host_offsets,
     )
 
 
@@ -911,7 +930,8 @@ def _ball_with_offsets(
     build_accelerator: Callable[[], wp.HashGrid | wp.Bvh],
     accel: wp.int32,
     return_sorted: bool,
-) -> tuple[wp.array[wp.int32], wp.array[wp.float32], wp.array[wp.int32]]:
+    host_offsets: bool,
+) -> tuple[wp.array[wp.int32], wp.array[wp.float32], wp.array[wp.int32], list[int] | None]:
     """
     Count, scan, gather and optionally sort one ball query -- the body both accelerators share.
 
@@ -934,6 +954,7 @@ def _ball_with_offsets(
             _launch.empty(0, dtype=wp.int32, device=device),
             _launch.empty(0, dtype=wp.float32, device=device),
             _launch.zeros(m + 1, dtype=wp.int32, device=device),
+            [0] * (m + 1) if host_offsets else None,
         )
 
     accelerator = build_accelerator()
@@ -948,12 +969,20 @@ def _ball_with_offsets(
         device=device,
     )
     _launch.array_scan(neighbor_counts, out_array=neighbor_counts, inclusive=True)
-    total_neighbors = int(read_scalar(offsets))
+    bounds = None
+    if host_offsets:
+        # Readback: the caller's per-query split needs every bound, and the total is the last.
+        bounds = offsets.numpy().tolist()
+        total_neighbors = int(bounds[-1])
+    else:
+        # Readback: the total sizes the neighbour buffers.
+        total_neighbors = int(read_scalar(offsets))
     if total_neighbors == 0:
         return (
             _launch.empty(0, dtype=wp.int32, device=device),
             _launch.empty(0, dtype=wp.float32, device=device),
             offsets,
+            bounds,
         )
 
     flat_len = total_neighbors * (2 if return_sorted else 1)
@@ -977,7 +1006,7 @@ def _ball_with_offsets(
 
     if not return_sorted:
         # Sized exactly, so the buffers are the answer as they stand.
-        return neighbor_indices_flat, neighbor_distances_flat, offsets
+        return neighbor_indices_flat, neighbor_distances_flat, offsets, bounds
     wp.utils.segmented_sort_pairs(
         neighbor_distances_flat, neighbor_indices_flat, total_neighbors, offsets
     )
@@ -986,6 +1015,7 @@ def _ball_with_offsets(
         _launch.clone(odt.as_dense(neighbor_indices_flat[:total_neighbors])),
         _launch.clone(odt.as_dense(neighbor_distances_flat[:total_neighbors])),
         offsets,
+        bounds,
     )
 
 

@@ -22,7 +22,14 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D
 from ordito.kernels.array import atomic_min_packed_box, binary_search_index_left
-from ordito.kernels.reduce import block_chunk, block_chunk_1d, block_max, block_sum, tile_chunk
+from ordito.kernels.reduce import (
+    block_chunk,
+    block_chunk_1d,
+    block_max,
+    block_sum,
+    sum_strided_rows,
+    tile_chunk,
+)
 from ordito.kernels.triangles import face_vertices
 
 # Relative coplanarity tolerance for the triangle-interior test, matching
@@ -478,3 +485,57 @@ def max_of_pair(
         best = block_max_of_chunk(second, chunk - first_blocks, lane)
     if lane == 0:
         wp.atomic_max(out_max, 0, best)
+
+
+@wp.func
+def lane_sum_of_chunk(
+    values: wp.array[wp.float32], chunk: wp.int32, lane: wp.int32, squared: wp.int32
+) -> wp.float32:
+    # This lane's share of the sum of block ``chunk``'s ``ITEMS_PER_BLOCK_1D`` chunk of ``values``
+    # (of their squares when ``squared`` is non-zero), lanes striding the chunk by
+    # ``wp.block_dim()`` as in ``block_max_of_chunk``.
+    offset, count = block_chunk_1d(values.shape[0], chunk)
+    total = wp.float32(0.0)
+    for k in range(lane, count, wp.block_dim()):
+        value = values[offset + k]
+        total += wp.where(squared != 0, value * value, value)
+    return total
+
+
+@wp.kernel(enable_backward=False)
+def block_totals_of_pair(
+    first: wp.array[wp.float32],
+    second: wp.array[wp.float32],
+    first_blocks: wp.int32,
+    squared: wp.int32,
+    out_partials: wp.array[wp.float32],
+) -> None:
+    # The first stage of the totals of two arrays (of their squares under ``squared``):
+    # ``max_of_pair``'s block split, the leading ``first_blocks`` blocks summing ``first`` and the
+    # rest ``second``, each block's sum stored at ``out_partials[2 + block]`` for
+    # ``fold_totals_of_pair``. Stored rather than added, so no slot need start at zero.
+    chunk, lane = wp.tid()
+    local = wp.float32(0.0)
+    if chunk < first_blocks:
+        local = lane_sum_of_chunk(first, chunk, lane, squared)
+    else:
+        local = lane_sum_of_chunk(second, chunk - first_blocks, lane, squared)
+    folded = block_sum(local)
+    if lane == 0:
+        out_partials[2 + chunk] = folded
+
+
+@wp.kernel(enable_backward=False)
+def fold_totals_of_pair(first_blocks: wp.int32, out_totals: wp.array[wp.float32]) -> None:
+    # One block adds ``block_totals_of_pair``'s rows in a fixed order, the first ``first_blocks``
+    # into ``out_totals[0]`` and the rest into ``out_totals[1]``: lanes stride the rows by
+    # ``wp.block_dim()`` (the one CPU lane walks them all) and one ``block_sum`` combines both.
+    _block, lane = wp.tid()
+    n_rows = out_totals.shape[0] - 2
+    zero = wp.float32(0.0)
+    head = sum_strided_rows(lane, out_totals, 2, 1, first_blocks, zero)
+    tail = sum_strided_rows(lane, out_totals, 2 + first_blocks, 1, n_rows - first_blocks, zero)
+    totals = block_sum(wp.vec2(head, tail))
+    if lane == 0:
+        out_totals[0] = totals[0]
+        out_totals[1] = totals[1]

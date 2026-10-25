@@ -8,10 +8,15 @@ from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import (
     ITEMS_PER_BLOCK_1D,
     block_chunk_1d,
+    block_last_ticket,
+    block_sum,
+    finish_block_total,
     last_ticket,
+    stage_block_fold,
     store_block_sum,
     store_block_total,
     store_sum_and_count,
+    thread_fence,
 )
 from ordito.kernels.transform import transform_point_mat44
 
@@ -305,6 +310,92 @@ def build_procrustes_matrix(
     out_matrix[0] = procrustes_matrix(a, b, acc, use_reflection, use_translation, use_scale)
 
 
+@wp.func
+def continue_icp_loop(
+    old_cost: wp.float64,
+    cost: wp.float64,
+    threshold: wp.float64,
+    max_iterations: wp.int32,
+    out_state: wp.array[wp.int32],
+) -> None:
+    # Both ICP loops' shared stopping rule, run once a round has kept a fit of cost ``cost``: count
+    # the round, and continue while fewer than ``max_iterations`` have run and the cost fell from
+    # ``old_cost`` by at least ``threshold``. ``old_cost`` is ``inf`` before the first kept fit,
+    # which no finite threshold's test reads as convergence -- the ``float64`` test of two
+    # ``float32`` values the host loops formed from their Python floats.
+    iteration = out_state[LOOP_ROUND] + 1
+    out_state[LOOP_ROUND] = iteration
+    keep_going = not (old_cost - cost < threshold) and iteration < max_iterations
+    out_state[LOOP_CONDITION] = wp.where(keep_going, wp.int32(1), wp.int32(0))
+
+
+@wp.func
+def close_point_to_point_round(
+    threshold: wp.float64,
+    max_iterations: wp.int32,
+    fitted: wp.mat44,
+    out_acc: wp.array[wp.float32],
+    out_total: wp.array[wp.mat44],
+    out_state: wp.array[wp.int32],
+) -> None:
+    """
+    Close one ``icp`` iteration on the device and decide whether another runs.
+
+    Run by one thread of the last block of ``fit_transform_and_accumulate_cost``, once the fit's
+    cost is complete: the point-to-point sibling of ``close_point_to_plane_round``, the host loop's
+    tail after its fit, so the loop body is one fixed sequence ``_device.run_device_loop`` records
+    once.
+
+    - **weightless** (the fit's weight sum is exactly zero -- every correspondence rejected by the
+      distance gate): the fit ``fitted`` is a matrix of NaN and is *not* kept, and the loop stops.
+      The host loop broke before rebinding its result, which is what this reproduces without a
+      ping-pong of the fit's buffers: the fit lands in ``fitted`` and only an accepted one is
+      copied into ``out_total``;
+    - otherwise ``fitted`` becomes ``out_total``, its cost ``out_acc[ACC_KEPT_COST]``, and the loop
+      continues while fewer than ``max_iterations`` have run and the cost fell by at least
+      ``threshold``.
+
+    ``ACC_KEPT_COST`` doubles as the previous iteration's cost. The round counter advances exactly
+    when a fit is kept, so while it reads 0 there is no previous cost and the test reads ``inf``,
+    the host loop's seed -- and a weightless round 0 writes ``inf`` there, the answer of a call
+    that kept nothing. The moments are zeroed after every block has read them, by this one thread,
+    so no memset precedes the next round's fit.
+    """
+    w_sum = out_acc[ACC_W_SUM]
+    cost = out_acc[ACC_COST]
+    for slot in range(PROCRUSTES_ACC_SIZE):
+        out_acc[slot] = wp.float32(0.0)
+    first = out_state[LOOP_ROUND] == 0
+    if w_sum == wp.float32(0.0):
+        if first:
+            out_acc[ACC_KEPT_COST] = wp.float32(FLOAT32_INF_CONSTANT)
+        out_state[LOOP_CONDITION] = 0
+        return
+    old_cost = wp.float64(FLOAT32_INF_CONSTANT)
+    if not first:
+        old_cost = wp.float64(out_acc[ACC_KEPT_COST])
+    out_total[0] = fitted
+    out_acc[ACC_KEPT_COST] = cost
+    continue_icp_loop(old_cost, wp.float64(cost), threshold, max_iterations, out_state)
+
+
+@wp.func
+def last_atomic_block(
+    lane: wp.int32, out_ticket: wp.array[wp.int32], n_blocks: wp.int32
+) -> wp.int32:
+    # The last block of a launch whose blocks committed by ``atomic_add`` (``ordito.config``'s
+    # deterministic setting off): non-zero, in every lane, for the block drawing the last of
+    # ``n_blocks`` integer tickets on ``out_ticket[0]``, whose reads then see every block's adds
+    # (each block fenced before its ticket). That block resets the counter, so a loop's next round
+    # needs no clearing. The reproducible commit has its last block already, the one that folds.
+    last = block_last_ticket(lane, out_ticket, 0, wp.int32(0), n_blocks, last_ticket)
+    if last != 0:
+        thread_fence()
+        if lane == 0:
+            out_ticket[0] = wp.int32(0)
+    return last
+
+
 @wp.kernel
 def fit_transform_and_accumulate_cost(
     a: wp.array[wp.vec3],
@@ -315,8 +406,14 @@ def fit_transform_and_accumulate_cost(
     use_translation: wp.bool,
     use_scale: wp.bool,
     stride: wp.int32,
+    n_blocks: wp.int32,
+    threshold: wp.float64,
+    max_iterations: wp.int32,
     out_matrix: wp.array[wp.mat44],
     out_transformed: wp.array[wp.vec3],
+    out_total: wp.array[wp.mat44],
+    out_state: wp.array[wp.int32],
+    out_ticket: wp.array[wp.int32],
 ) -> None:
     # Form the fit from the finished moments, apply it to ``a``, publish the moved points, and
     # reduce the weighted mean squared residual against ``b`` into the packed accumulator's cost
@@ -355,7 +452,21 @@ def fit_transform_and_accumulate_cost(
             out_transformed[i] = moved
         w = sample_weight(weights, i)
         local += w * wp.length_sq(b[i] - moved)
-    store_block_total(chunk, lane, local / acc[ACC_W_SUM], acc, ACC_COST, stride, last_ticket)
+    share = local / acc[ACC_W_SUM]
+    if out_state.shape[0] == 0:
+        store_block_total(chunk, lane, share, acc, ACC_COST, stride, last_ticket)
+        return
+    # ``icp``'s round: the block that completes the cost closes it (``close_point_to_point_round``)
+    # in this launch, after every block has read the moments it zeroes. Its fit is the matrix every
+    # lane formed, so the kept transform is ``out_matrix[0]``'s bits.
+    folded = block_sum(share)
+    last = stage_block_fold(chunk, lane, folded, acc, ACC_COST, stride, last_ticket)
+    if acc.shape[0] == stride:
+        last = last_atomic_block(lane, out_ticket, n_blocks)
+    elif last != 0:
+        finish_block_total(lane, acc, ACC_COST, stride, n_blocks, wp.float32(0.0))
+    if last != 0 and lane == 0:
+        close_point_to_point_round(threshold, max_iterations, transform, acc, out_total, out_state)
 
 
 # --- Iterative closest point (ICP) -----------------------------------------
@@ -483,73 +594,6 @@ def point_to_point_correspondence_pass(
     out_closest[tid] = closest
     if out_weights.shape[0] > 0:
         out_weights[tid] = distance_threshold_weight(distance, index, max_distance)
-
-
-@wp.func
-def continue_icp_loop(
-    old_cost: wp.float64,
-    cost: wp.float64,
-    threshold: wp.float64,
-    max_iterations: wp.int32,
-    out_state: wp.array[wp.int32],
-) -> None:
-    # Both ICP loops' shared stopping rule, run once a round has kept a fit of cost ``cost``: count
-    # the round, and continue while fewer than ``max_iterations`` have run and the cost fell from
-    # ``old_cost`` by at least ``threshold``. ``old_cost`` is ``inf`` before the first kept fit,
-    # which no finite threshold's test reads as convergence -- the ``float64`` test of two
-    # ``float32`` values the host loops formed from their Python floats.
-    iteration = out_state[LOOP_ROUND] + 1
-    out_state[LOOP_ROUND] = iteration
-    keep_going = not (old_cost - cost < threshold) and iteration < max_iterations
-    out_state[LOOP_CONDITION] = wp.where(keep_going, wp.int32(1), wp.int32(0))
-
-
-@wp.kernel
-def point_to_point_round(
-    threshold: wp.float64,
-    max_iterations: wp.int32,
-    fitted: wp.array[wp.mat44],
-    out_acc: wp.array[wp.float32],
-    out_total: wp.array[wp.mat44],
-    out_state: wp.array[wp.int32],
-) -> None:
-    """
-    Close one ``icp`` iteration on the device and decide whether another runs.
-
-    ``dim=1``, the point-to-point sibling of ``point_to_plane_round``: the host loop's tail after
-    its fit, so the loop body is one fixed sequence ``_device.run_device_loop`` records once.
-
-    - **weightless** (the fit's weight sum is exactly zero -- every correspondence rejected by the
-      distance gate): the fit ``fitted`` is a matrix of NaN and is *not* kept, and the loop stops.
-      The host loop broke before rebinding its result, which is what this reproduces without a
-      ping-pong of the fit's buffers: the fit lands in ``fitted`` and only an accepted one is
-      copied into ``out_total``;
-    - otherwise ``fitted`` becomes ``out_total``, its cost ``out_acc[ACC_KEPT_COST]``, and the loop
-      continues while fewer than ``max_iterations`` have run and the cost fell by at least
-      ``threshold``.
-
-    ``ACC_KEPT_COST`` doubles as the previous iteration's cost. The round counter advances exactly
-    when a fit is kept, so while it reads 0 there is no previous cost and the test reads ``inf``,
-    the host loop's seed -- and a weightless round 0 writes ``inf`` there, the answer of a call
-    that kept nothing. The moments are zeroed after they are read, by this one thread, so no memset
-    precedes the next round's fit.
-    """
-    w_sum = out_acc[ACC_W_SUM]
-    cost = out_acc[ACC_COST]
-    for slot in range(PROCRUSTES_ACC_SIZE):
-        out_acc[slot] = wp.float32(0.0)
-    first = out_state[LOOP_ROUND] == 0
-    if w_sum == wp.float32(0.0):
-        if first:
-            out_acc[ACC_KEPT_COST] = wp.float32(FLOAT32_INF_CONSTANT)
-        out_state[LOOP_CONDITION] = 0
-        return
-    old_cost = wp.float64(FLOAT32_INF_CONSTANT)
-    if not first:
-        old_cost = wp.float64(out_acc[ACC_KEPT_COST])
-    out_total[0] = fitted[0]
-    out_acc[ACC_KEPT_COST] = cost
-    continue_icp_loop(old_cost, wp.float64(cost), threshold, max_iterations, out_state)
 
 
 @wp.func
@@ -799,66 +843,6 @@ def point_to_plane_tile(
     return jtj, jtr, cost, weight_sum
 
 
-@wp.kernel
-def accumulate_point_to_plane(
-    source: wp.array[wp.vec3],
-    target: wp.array[wp.vec3],
-    normals: wp.array[wp.vec3],
-    distance: wp.array[wp.float32],
-    triangle_id: wp.array[wp.int32],
-    max_distance: wp.float32,
-    robust_kind: wp.int32,
-    robust_scale: wp.float32,
-    stride: wp.int32,
-    out_acc: wp.array[wp.float32],
-) -> None:
-    # Launched ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)``: one block per
-    # ``ITEMS_PER_BLOCK_1D`` correspondences, lanes striding that block's own chunk, and one packed
-    # block reduction of all 44 moment slots (the normal matrix, the right-hand side, the two
-    # scalars) stored in the block's ``stride``-slot row, which the last block adds in a fixed
-    # order into the leading slots.
-    #
-    # It was every lane walking a ``TILE_1D`` chunk with lane 0 publishing, which put one add per
-    # block on each of 44 hot addresses at ``n / TILE_1D`` blocks. Same finding as
-    # ``accumulate_procrustes_moments``: the redundant lanes were nearly free and the atomic
-    # contention was the cost, worth an order of magnitude at a million correspondences.
-    #
-    # One packed fold rather than three (matrix, vector, scalar pair): ``block_sum`` of a vector is
-    # componentwise the per-quantity sums, bit for bit, so this is two barriers per block fewer and
-    # the three accumulators are one buffer. The tree is the *more* accurate arm on every
-    # component, which matters here because the normal matrix is what ``point_to_plane_round``
-    # factorizes.
-    i, lane = wp.tid()
-    offset, remaining = block_chunk_1d(source.shape[0], i)
-    if remaining <= 0:
-        return
-
-    tile_jtj, tile_jtr, tile_cost, tile_weight_sum = point_to_plane_tile(
-        source,
-        target,
-        normals,
-        distance,
-        triangle_id,
-        max_distance,
-        robust_kind,
-        robust_scale,
-        offset,
-        remaining,
-        lane,
-        wp.block_dim(),
-    )
-
-    # The default constructor, not a zero-fill: every slot is written just below.
-    packed = wp.vector(length=ICP_MOMENT_SLOTS, dtype=wp.float32)
-    for r in range(6):
-        packed[ICP_JTR + r] = tile_jtr[r]
-        for c in range(6):
-            packed[ICP_JTJ + r * 6 + c] = tile_jtj[r, c]
-    packed[ICP_COST] = tile_cost
-    packed[ICP_WEIGHT_SUM] = tile_weight_sum
-    store_block_sum(i, lane, packed, out_acc, 0, stride)
-
-
 @wp.func
 def solve_spd6(a: wp.spatial_matrix, b: wp.spatial_vector) -> wp.spatial_vector:
     """
@@ -925,8 +909,8 @@ def solve_spd6(a: wp.spatial_matrix, b: wp.spatial_vector) -> wp.spatial_vector:
     return x
 
 
-@wp.kernel
-def point_to_plane_round(
+@wp.func
+def close_point_to_plane_round(
     damping: wp.float32,
     threshold: wp.float64,
     max_iterations: wp.int32,
@@ -938,7 +922,8 @@ def point_to_plane_round(
     """
     Close one ``icp_point_to_plane`` iteration on the device and decide whether another runs.
 
-    ``dim=1``. The host loop's whole per-iteration tail -- the weightless test, the 6x6 solve, the
+    Run by one thread of the last block of ``accumulate_point_to_plane``, once the moments are
+    complete. The host loop's whole per-iteration tail -- the weightless test, the 6x6 solve, the
     composition into the running transform and the convergence test -- so that the loop body is a
     fixed sequence ``_device.run_device_loop`` can record once and replay, with no readback:
 
@@ -1007,3 +992,81 @@ def point_to_plane_round(
         old_cost = wp.float64(out_acc[ICP_OLD_COST])
     out_acc[ICP_OLD_COST] = cost
     continue_icp_loop(old_cost, wp.float64(cost), threshold, max_iterations, out_state)
+
+
+@wp.kernel
+def accumulate_point_to_plane(
+    source: wp.array[wp.vec3],
+    target: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    distance: wp.array[wp.float32],
+    triangle_id: wp.array[wp.int32],
+    max_distance: wp.float32,
+    robust_kind: wp.int32,
+    robust_scale: wp.float32,
+    stride: wp.int32,
+    n_blocks: wp.int32,
+    damping: wp.float32,
+    threshold: wp.float64,
+    max_iterations: wp.int32,
+    out_acc: wp.array[wp.float32],
+    out_total: wp.array[wp.mat44],
+    out_step: wp.array[wp.mat44],
+    out_state: wp.array[wp.int32],
+    out_ticket: wp.array[wp.int32],
+) -> None:
+    # Launched ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)``: one block per
+    # ``ITEMS_PER_BLOCK_1D`` correspondences, lanes striding that block's own chunk, and one packed
+    # block reduction of all 44 moment slots (the normal matrix, the right-hand side, the two
+    # scalars) stored in the block's ``stride``-slot row, which the last block adds in a fixed
+    # order into the leading slots.
+    #
+    # It was every lane walking a ``TILE_1D`` chunk with lane 0 publishing, which put one add per
+    # block on each of 44 hot addresses at ``n / TILE_1D`` blocks. Same finding as
+    # ``accumulate_procrustes_moments``: the redundant lanes were nearly free and the atomic
+    # contention was the cost, worth an order of magnitude at a million correspondences.
+    #
+    # One packed fold rather than three (matrix, vector, scalar pair): ``block_sum`` of a vector is
+    # componentwise the per-quantity sums, bit for bit, so this is two barriers per block fewer and
+    # the three accumulators are one buffer. The tree is the *more* accurate arm on every
+    # component, which matters here because the normal matrix is what ``point_to_plane_round``
+    # factorizes.
+    i, lane = wp.tid()
+    offset, remaining = block_chunk_1d(source.shape[0], i)
+    if remaining <= 0:
+        return
+
+    tile_jtj, tile_jtr, tile_cost, tile_weight_sum = point_to_plane_tile(
+        source,
+        target,
+        normals,
+        distance,
+        triangle_id,
+        max_distance,
+        robust_kind,
+        robust_scale,
+        offset,
+        remaining,
+        lane,
+        wp.block_dim(),
+    )
+
+    # The default constructor, not a zero-fill: every slot is written just below.
+    packed = wp.vector(length=ICP_MOMENT_SLOTS, dtype=wp.float32)
+    for r in range(6):
+        packed[ICP_JTR + r] = tile_jtr[r]
+        for c in range(6):
+            packed[ICP_JTJ + r * 6 + c] = tile_jtj[r, c]
+    packed[ICP_COST] = tile_cost
+    packed[ICP_WEIGHT_SUM] = tile_weight_sum
+    last = store_block_sum(i, lane, packed, out_acc, 0, stride)
+    if out_state.shape[0] == 0:
+        return
+    # A loop round: the block that completes the moments closes it (``close_point_to_plane_round``)
+    # in this launch. A zero-length ``out_state`` (the scoring pass after the loop) only sums.
+    if out_acc.shape[0] == stride:
+        last = last_atomic_block(lane, out_ticket, n_blocks)
+    if last != 0 and lane == 0:
+        close_point_to_plane_round(
+            damping, threshold, max_iterations, out_acc, out_total, out_step, out_state
+        )
